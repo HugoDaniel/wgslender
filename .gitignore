@@ -1,0 +1,26 @@
+# Build artifacts
+/build/
+/dist/
+zig-out/
+.zig-cache/
+
+# Test artifacts
+*.test
+coverage.out
+coverage.html
+testdata/*.minified
+testdata/tint/
+
+# IDE/Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Temp/scratch
+/tmp/
+
+# OS files
+.DS_Store
+Thumbs.db

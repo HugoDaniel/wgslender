@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>wgslender-wasm Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; max-width: 1200px; margin: 0 auto; }
+        h1 { color: #333; }
+        .section { margin: 20px 0; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; }
+        textarea { width: 100%; height: 200px; font-family: monospace; font-size: 14px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; margin: 5px 0; }
+        .options { margin: 10px 0; padding: 15px; background: #f5f5f5; border-radius: 5px; }
+        .options label { display: inline-block; margin-right: 20px; font-weight: normal; }
+        .stats { color: #666; margin-top: 10px; }
+        .error { color: red; }
+        .success { color: green; }
+        pre { background: #f0f0f0; padding: 10px; overflow-x: auto; }
+    </style>
+</head>
+<body>
+    <h1>wgslender-wasm Test</h1>
+
+    <div id="status" class="section">Loading WASM...</div>
+
+    <div class="section">
+        <label for="input">Input WGSL:</label>
+        <textarea id="input">// Example WGSL shader
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+@group(0) @binding(1) var<storage, read_write> data: array<f32>;
+
+struct Uniforms {
+    scale: f32,
+    offset: f32,
+}
+
+fn computeValue(index: u32) -> f32 {
+    let scaledValue = data[index] * uniforms.scale;
+    let finalValue = scaledValue + uniforms.offset;
+    return finalValue;
+}
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+    let index = id.x;
+    data[index] = computeValue(index);
+}</textarea>
+    </div>
+
+    <div class="options">
+        <label><input type="checkbox" id="minifyWhitespace" checked> minifyWhitespace</label>
+        <label><input type="checkbox" id="minifyIdentifiers" checked> minifyIdentifiers</label>
+        <label><input type="checkbox" id="minifySyntax" checked> minifySyntax</label>
+        <label><input type="checkbox" id="mangleExternalBindings"> mangleExternalBindings</label>
+        <br><br>
+        <label>keepNames (comma-separated): <input type="text" id="keepNames" placeholder="e.g., myFunc,myVar" style="width: 300px;"></label>
+    </div>
+
+    <button onclick="runMinify()">Minify</button>
+
+    <div class="section">
+        <label>Output:</label>
+        <textarea id="output" readonly></textarea>
+        <div id="stats" class="stats"></div>
+    </div>
+
+    <div class="section">
+        <h2>Test Results</h2>
+        <div id="tests"></div>
+    </div>
+
+    <script src="wasm_exec.js"></script>
+    <script src="lib/browser.js"></script>
+    <script>
+        const statusEl = document.getElementById('status');
+        const inputEl = document.getElementById('input');
+        const outputEl = document.getElementById('output');
+        const statsEl = document.getElementById('stats');
+        const testsEl = document.getElementById('tests');
+
+        async function init() {
+            try {
+                await wgslender.initialize({ wasmURL: 'wgslender.wasm' });
+                statusEl.innerHTML = '<span class="success">WASM loaded! Version: ' + wgslender.version + '</span>';
+                runTests();
+            } catch (err) {
+                statusEl.innerHTML = '<span class="error">Error loading WASM: ' + err.message + '</span>';
+                console.error(err);
+            }
+        }
+
+        function runMinify() {
+            if (!wgslender.isInitialized()) {
+                alert('WASM not loaded yet');
+                return;
+            }
+
+            const source = inputEl.value;
+            const options = {
+                minifyWhitespace: document.getElementById('minifyWhitespace').checked,
+                minifyIdentifiers: document.getElementById('minifyIdentifiers').checked,
+                minifySyntax: document.getElementById('minifySyntax').checked,
+                mangleExternalBindings: document.getElementById('mangleExternalBindings').checked,
+            };
+
+            const keepNames = document.getElementById('keepNames').value.trim();
+            if (keepNames) {
+                options.keepNames = keepNames.split(',').map(s => s.trim());
+            }
+
+            console.log('Options:', options);
+
+            const result = wgslender.minify(source, options);
+
+            outputEl.value = result.code;
+
+            if (result.errors.length > 0) {
+                statsEl.innerHTML = '<span class="error">Errors: ' + result.errors.map(e => e.message).join(', ') + '</span>';
+            } else {
+                const reduction = ((1 - result.minifiedSize / result.originalSize) * 100).toFixed(1);
+                statsEl.innerHTML = `Original: ${result.originalSize} bytes → Minified: ${result.minifiedSize} bytes (${reduction}% reduction)`;
+            }
+        }
+
+        function runTests() {
+            const tests = [
+                {
+                    name: 'Basic minification',
+                    input: 'const x = 1;\nconst y = 2;',
+                    options: { minifyWhitespace: true, minifyIdentifiers: true, minifySyntax: true },
+                    check: (r) => r.code.length < 25 && !r.errors.length
+                },
+                {
+                    name: 'Whitespace only',
+                    input: 'fn foo() { return 1; }',
+                    options: { minifyWhitespace: true, minifyIdentifiers: false },
+                    check: (r) => r.code.includes('foo') && !r.errors.length
+                },
+                {
+                    name: 'External binding aliasing (default)',
+                    input: '@group(0) @binding(0) var<uniform> uniforms: f32;\nfn use() -> f32 { return uniforms * 2.0; }',
+                    options: { minifyWhitespace: true, minifyIdentifiers: true },
+                    check: (r) => r.code.includes('var<uniform> uniforms') && r.code.includes('let ') && !r.errors.length
+                },
+                {
+                    name: 'External binding mangling',
+                    input: '@group(0) @binding(0) var<uniform> uniforms: f32;\nfn use() -> f32 { return uniforms * 2.0; }',
+                    options: { minifyWhitespace: true, minifyIdentifiers: true, mangleExternalBindings: true },
+                    check: (r) => !r.code.includes('uniforms') && !r.code.includes('let ') && !r.errors.length
+                },
+                {
+                    name: 'Keep names',
+                    input: 'fn myHelper() -> f32 { return 1.0; }\nfn other() -> f32 { return myHelper(); }',
+                    options: { minifyWhitespace: true, minifyIdentifiers: true, keepNames: ['myHelper'] },
+                    check: (r) => r.code.includes('myHelper') && !r.errors.length
+                },
+            ];
+
+            let html = '<pre>';
+            for (const test of tests) {
+                try {
+                    const result = wgslender.minify(test.input, test.options);
+                    const passed = test.check(result);
+                    html += `${passed ? '✓' : '✗'} ${test.name}\n`;
+                    if (!passed) {
+                        html += `  Output: ${result.code}\n`;
+                        if (result.errors.length) {
+                            html += `  Errors: ${result.errors.map(e => e.message).join(', ')}\n`;
+                        }
+                    }
+                } catch (err) {
+                    html += `✗ ${test.name}\n  Error: ${err.message}\n`;
+                }
+            }
+            html += '</pre>';
+            testsEl.innerHTML = html;
+        }
+
+        init();
+    </script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+{
+  "name": "wgslender",
+  "version": "0.4.0",
+  "description": "WGSL minifier for WebGPU shaders - WebAssembly build",
+  "main": "lib/main.js",
+  "module": "esm/browser.js",
+  "browser": {
+    "./lib/main.js": "./lib/browser.js"
+  },
+  "types": "lib/main.d.ts",
+  "bin": {
+    "wgslender": "bin/wgslender"
+  },
+  "exports": {
+    ".": {
+      "browser": {
+        "import": "./esm/browser.js",
+        "default": "./lib/browser.js"
+      },
+      "node": {
+        "import": "./esm/node.mjs",
+        "require": "./lib/main.js"
+      },
+      "default": "./lib/main.js"
+    },
+    "./wasm": "./wgslender.wasm"
+  },
+  "files": [
+    "lib",
+    "esm",
+    "bin",
+    "wgslender.wasm"
+  ],
+  "keywords": [
+    "wgsl",
+    "webgpu",
+    "minifier",
+    "shader",
+    "wasm",
+    "webassembly",
+    "gpu",
+    "wgslender"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HugoDaniel/wgslender"
+  },
+  "homepage": "https://github.com/HugoDaniel/wgslender",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16"
+  }
+}

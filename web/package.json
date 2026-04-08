@@ -1,0 +1,12 @@
+{
+  "name": "wgslender-web",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "boredom --html src/components --static src --static public",
+    "build": "bash build.sh"
+  },
+  "devDependencies": {
+    "boredom": "npm:@mr_hugo/boredom@^0.25.26"
+  }
+}

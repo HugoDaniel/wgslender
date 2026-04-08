@@ -1,0 +1,1 @@
+../../npm/miniray/wasm_exec.js

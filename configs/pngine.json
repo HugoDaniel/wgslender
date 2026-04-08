@@ -1,0 +1,16 @@
+{
+    "$schema": "../schemas/wgslender.schema.json",
+    "_comment": "Configuration for PNGine WebGPU DSL (https://github.com/HugoDaniel/pngine)",
+    "minifyWhitespace": true,
+    "minifyIdentifiers": true,
+    "minifySyntax": true,
+    "mangleExternalBindings": false,
+    "preserveUniformStructTypes": true,
+    "keepNames": [
+        "PngineInputs",
+        "TimeInputs",
+        "CanvasInputs",
+        "SceneTimeInputs",
+        "GlobalTimeInputs"
+    ]
+}

@@ -1,0 +1,492 @@
+const std = @import("std");
+const wgslender = @import("wgslender");
+
+const CliArgs = struct {
+    input_path: ?[]const u8 = null,
+    output_path: ?[]const u8 = null,
+    options: wgslender.Minifier.Options = wgslender.Minifier.defaultOptions(),
+    source_map: bool = false,
+    source_map_inline: bool = false,
+    subcommand: enum { minify, validate, reflect, compile } = .minify,
+    validate_format: ValidateFormat = .text,
+    strict: bool = false,
+    line_offset: i32 = 0,
+    compact: bool = false,
+    show_help: bool = false,
+
+    const ValidateFormat = enum { text, json };
+};
+
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.arena.allocator();
+    const io = init.io;
+
+    var args = parseArgs(allocator, init.minimal.args, io) orelse return;
+
+    // Read input
+    const source = try readSource(allocator, io, args.input_path);
+
+    switch (args.subcommand) {
+        .validate => try runValidate(
+            allocator,
+            io,
+            source,
+            args.validate_format,
+            args.strict,
+            args.line_offset,
+            args.input_path,
+        ),
+        .reflect => try runReflect(allocator, io, source, args.compact),
+        .compile => try runCompile(allocator, io, source, args.output_path, args.options),
+        .minify => try runMinify(
+            allocator,
+            io,
+            source,
+            args.options,
+            args.output_path,
+            args.source_map,
+            args.source_map_inline,
+        ),
+    }
+}
+
+fn parseArgs(allocator: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
+    const File = std.Io.File;
+    var args = CliArgs{};
+    var config_path: ?[]const u8 = null;
+    var cli_no_mangle = false;
+    var cli_no_tree_shaking = false;
+    var no_config = false;
+    var cli_minify_all = false;
+    var cli_minify_whitespace: ?bool = null;
+    var cli_minify_identifiers: ?bool = null;
+    var cli_minify_syntax: ?bool = null;
+    var source_map_sources = false;
+    var keep_names_raw: ?[]const u8 = null;
+
+    var args_iter = std.process.Args.Iterator.init(raw_args);
+    _ = args_iter.skip(); // skip program name
+    while (args_iter.next()) |arg| {
+        if (std.mem.eql(u8, arg, "validate")) {
+            args.subcommand = .validate;
+        } else if (std.mem.eql(u8, arg, "compile")) {
+            args.subcommand = .compile;
+        } else if (std.mem.eql(u8, arg, "reflect")) {
+            args.subcommand = .reflect;
+        } else if (std.mem.eql(u8, arg, "-o")) {
+            args.output_path = args_iter.next();
+        } else if (std.mem.eql(u8, arg, "--config")) {
+            config_path = args_iter.next();
+        } else if (std.mem.eql(u8, arg, "--no-config")) {
+            no_config = true;
+        } else if (std.mem.eql(u8, arg, "--no-mangle")) {
+            cli_no_mangle = true;
+        } else if (std.mem.eql(u8, arg, "--minify")) {
+            cli_minify_all = true;
+        } else if (std.mem.eql(u8, arg, "--minify-whitespace")) {
+            cli_minify_whitespace = true;
+        } else if (std.mem.eql(u8, arg, "--minify-identifiers")) {
+            cli_minify_identifiers = true;
+        } else if (std.mem.eql(u8, arg, "--minify-syntax")) {
+            cli_minify_syntax = true;
+        } else if (std.mem.eql(u8, arg, "--mangle-external-bindings")) {
+            args.options.mangle_external_bindings = true;
+        } else if (std.mem.eql(u8, arg, "--no-tree-shaking")) {
+            cli_no_tree_shaking = true;
+        } else if (std.mem.eql(u8, arg, "--preserve-uniform-struct-types")) {
+            args.options.preserve_uniform_struct_types = true;
+        } else if (std.mem.eql(u8, arg, "--sort-declarations")) {
+            args.options.sort_declarations = true;
+        } else if (std.mem.eql(u8, arg, "--scope-local-rename")) {
+            args.options.scope_local_rename = true;
+        } else if (std.mem.eql(u8, arg, "--source-map")) {
+            args.source_map = true;
+        } else if (std.mem.eql(u8, arg, "--source-map-inline")) {
+            args.source_map_inline = true;
+        } else if (std.mem.eql(u8, arg, "--source-map-sources")) {
+            source_map_sources = true;
+        } else if (std.mem.eql(u8, arg, "--keep-names")) {
+            keep_names_raw = args_iter.next();
+        } else if (std.mem.eql(u8, arg, "--format")) {
+            if (args_iter.next()) |fmt| {
+                if (std.mem.eql(u8, fmt, "json")) {
+                    args.validate_format = .json;
+                } else if (std.mem.eql(u8, fmt, "text")) {
+                    args.validate_format = .text;
+                }
+            }
+        } else if (std.mem.eql(u8, arg, "--strict")) {
+            args.strict = true;
+        } else if (std.mem.eql(u8, arg, "--line-offset")) {
+            if (args_iter.next()) |val| {
+                args.line_offset = std.fmt.parseInt(i32, val, 10) catch 0;
+            }
+        } else if (std.mem.eql(u8, arg, "--compact")) {
+            args.compact = true;
+        } else if (std.mem.eql(u8, arg, "--version")) {
+            File.stdout().writeStreamingAll(io, "wgslender v" ++ wgslender.version ++ "\n") catch {};
+            return null;
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            File.stdout().writeStreamingAll(io, usage_text) catch {};
+            return null;
+        } else if (arg.len > 0 and arg[0] != '-') {
+            args.input_path = arg;
+        }
+    }
+
+    if (!loadConfig(&args, allocator, io, config_path, no_config)) return null;
+    applyMinifyOverrides(
+        &args.options,
+        cli_minify_all,
+        cli_minify_whitespace,
+        cli_minify_identifiers,
+        cli_minify_syntax,
+        cli_no_mangle,
+        cli_no_tree_shaking,
+    );
+    if (keep_names_raw) |raw| args.options.keep_names = parseKeepNames(allocator, raw);
+    configureSourceMap(&args, source_map_sources);
+
+    return args;
+}
+
+/// Load config from explicit path or auto-discover from parent directories.
+fn loadConfig(
+    args: *CliArgs,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    config_path: ?[]const u8,
+    no_config: bool,
+) bool {
+    const File = std.Io.File;
+    const Dir = std.Io.Dir;
+
+    if (config_path) |path| {
+        const content = Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch {
+            File.stderr().writeStreamingAll(io, "error: could not read config file\n") catch {};
+            return false;
+        };
+        const config = wgslender.Config.parseJson(allocator, content) catch {
+            File.stderr().writeStreamingAll(io, "error: invalid config JSON\n") catch {};
+            return false;
+        };
+        args.options = config.toOptions();
+    } else if (!no_config) {
+        const start = if (args.input_path) |p| std.fs.path.dirname(p) else null;
+        if (wgslender.Config.discover(allocator, io, start)) |config| {
+            args.options = config.toOptions();
+        }
+    }
+    return true;
+}
+
+/// Apply CLI minification flag overrides with correct precedence.
+/// Granular flags (--minify-*) disable unspecified passes; --minify forces all on.
+fn applyMinifyOverrides(
+    options: *wgslender.Minifier.Options,
+    cli_minify_all: bool,
+    cli_minify_whitespace: ?bool,
+    cli_minify_identifiers: ?bool,
+    cli_minify_syntax: ?bool,
+    cli_no_mangle: bool,
+    cli_no_tree_shaking: bool,
+) void {
+    const has_granular = cli_minify_whitespace != null or
+        cli_minify_identifiers != null or cli_minify_syntax != null;
+    if (has_granular) {
+        options.minify_whitespace = cli_minify_whitespace orelse false;
+        options.minify_identifiers = cli_minify_identifiers orelse false;
+        options.minify_syntax = cli_minify_syntax orelse false;
+    }
+    if (cli_minify_all) {
+        options.minify_whitespace = true;
+        options.minify_identifiers = true;
+        options.minify_syntax = true;
+    }
+    if (cli_no_mangle) options.minify_identifiers = false;
+    if (cli_no_tree_shaking) options.tree_shaking = false;
+}
+
+fn parseKeepNames(allocator: std.mem.Allocator, raw: []const u8) []const []const u8 {
+    var names: std.ArrayListUnmanaged([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, raw, ',');
+    while (it.next()) |name| {
+        const trimmed = std.mem.trim(u8, name, " ");
+        if (trimmed.len > 0) {
+            names.append(allocator, trimmed) catch {};
+        }
+    }
+    return names.items;
+}
+
+fn configureSourceMap(args: *CliArgs, source_map_sources: bool) void {
+    const generate = args.source_map or args.source_map_inline;
+    if (!generate) return;
+
+    args.options.generate_source_map = true;
+    args.options.source_map_options.include_source = source_map_sources;
+    if (args.input_path) |path| {
+        args.options.source_map_options.source_name = std.fs.path.basename(path);
+    }
+    if (args.output_path) |path| {
+        args.options.source_map_options.file = std.fs.path.basename(path);
+    }
+}
+
+fn readSource(allocator: std.mem.Allocator, io: std.Io, input_path: ?[]const u8) ![:0]const u8 {
+    var source_bytes: []u8 = undefined;
+    if (input_path) |path| {
+        source_bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
+    } else {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var tmp: [4096]u8 = undefined;
+        while (true) {
+            const n = std.Io.File.stdin().readStreaming(io, &.{&tmp}) catch break;
+            if (n == 0) break;
+            try buf.appendSlice(allocator, tmp[0..n]);
+        }
+        source_bytes = buf.items;
+    }
+    const sb = try allocator.alloc(u8, source_bytes.len + 1);
+    @memcpy(sb[0..source_bytes.len], source_bytes);
+    sb[source_bytes.len] = 0;
+    return sb[0..source_bytes.len :0];
+}
+
+fn runMinify(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, options: wgslender.Minifier.Options, output_path: ?[]const u8, ext_source_map: bool, source_map_inline: bool) !void {
+    const result = try wgslender.minifyWithOptions(allocator, source, options);
+    const File = std.Io.File;
+    const Dir = std.Io.Dir;
+
+    if (output_path) |path| {
+        const file = try Dir.cwd().createFile(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, result.code);
+
+        // Append inline source map comment
+        if (source_map_inline) {
+            if (result.source_map) |sm| {
+                var comment_buf: std.ArrayListUnmanaged(u8) = .empty;
+                comment_buf.append(allocator, '\n') catch {};
+                sm.toComment(&comment_buf, allocator, true);
+                try file.writeStreamingAll(io, comment_buf.items);
+            }
+        }
+    } else {
+        try File.stdout().writeStreamingAll(io, result.code);
+
+        // Append inline source map comment to stdout
+        if (source_map_inline) {
+            if (result.source_map) |sm| {
+                var comment_buf: std.ArrayListUnmanaged(u8) = .empty;
+                comment_buf.append(allocator, '\n') catch {};
+                sm.toComment(&comment_buf, allocator, true);
+                try File.stdout().writeStreamingAll(io, comment_buf.items);
+            }
+        }
+    }
+
+    // Write external source map file
+    if (ext_source_map and !source_map_inline) {
+        if (result.source_map) |sm| {
+            if (output_path) |path| {
+                var map_path_buf: std.ArrayListUnmanaged(u8) = .empty;
+                map_path_buf.appendSlice(allocator, path) catch {};
+                map_path_buf.appendSlice(allocator, ".map") catch {};
+                const map_path = map_path_buf.items;
+
+                var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+                sm.toJson(&json_buf, allocator);
+
+                const map_file = try Dir.cwd().createFile(io, map_path, .{});
+                defer map_file.close(io);
+                try map_file.writeStreamingAll(io, json_buf.items);
+
+                try File.stderr().writeStreamingAll(io, "Source map: ");
+                try File.stderr().writeStreamingAll(io, map_path);
+                try File.stderr().writeStreamingAll(io, "\n");
+            }
+        }
+    }
+
+    if (result.errors.len > 0) {
+        for (result.errors) |err| {
+            try File.stderr().writeStreamingAll(io, "error: ");
+            try File.stderr().writeStreamingAll(io, err.message);
+            try File.stderr().writeStreamingAll(io, "\n");
+        }
+    }
+}
+
+fn runValidate(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    source: [:0]const u8,
+    format: CliArgs.ValidateFormat,
+    strict: bool,
+    line_offset: i32,
+    input_path: ?[]const u8,
+) !void {
+    const File = std.Io.File;
+    const Diagnostic = wgslender.Diagnostic;
+
+    var result = try wgslender.validateWithOptions(allocator, source, .{
+        .strict_mode = strict,
+        .line_offset = line_offset,
+    });
+
+    const is_valid = if (strict)
+        result.valid and result.diagnostics.warningCount() == 0
+    else
+        result.valid;
+
+    switch (format) {
+        .json => {
+            var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+            json_buf.appendSlice(allocator, "{\"valid\":") catch {};
+            json_buf.appendSlice(allocator, if (is_valid) "true" else "false") catch {};
+            json_buf.appendSlice(allocator, ",\"diagnostics\":[") catch {};
+            for (result.diagnostics.diagnostics.items, 0..) |*entry, i| {
+                if (i > 0) json_buf.append(allocator, ',') catch {};
+                Diagnostic.entryToJson(&json_buf, allocator, entry);
+            }
+            json_buf.appendSlice(allocator, "],\"errorCount\":") catch {};
+            Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.errorCount());
+            json_buf.appendSlice(allocator, ",\"warningCount\":") catch {};
+            Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.warningCount());
+            json_buf.appendSlice(allocator, "}\n") catch {};
+            try File.stdout().writeStreamingAll(io, json_buf.items);
+        },
+        .text => {
+            const file_prefix = input_path orelse "<stdin>";
+            for (result.diagnostics.diagnostics.items) |entry| {
+                var tmp: [20]u8 = undefined;
+                try File.stderr().writeStreamingAll(io, file_prefix);
+                try File.stderr().writeStreamingAll(io, ":");
+                const line_s = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.line}) catch "";
+                try File.stderr().writeStreamingAll(io, line_s);
+                try File.stderr().writeStreamingAll(io, ":");
+                const col_s = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.column}) catch "";
+                try File.stderr().writeStreamingAll(io, col_s);
+                try File.stderr().writeStreamingAll(io, ": ");
+                try File.stderr().writeStreamingAll(io, entry.severity.string());
+                try File.stderr().writeStreamingAll(io, ": ");
+                try File.stderr().writeStreamingAll(io, entry.message);
+                if (entry.code.len > 0) {
+                    try File.stderr().writeStreamingAll(io, " [");
+                    try File.stderr().writeStreamingAll(io, entry.code);
+                    try File.stderr().writeStreamingAll(io, "]");
+                }
+                try File.stderr().writeStreamingAll(io, "\n");
+            }
+
+            if (is_valid) {
+                try File.stdout().writeStreamingAll(io, "valid\n");
+            } else {
+                try File.stdout().writeStreamingAll(io, "invalid\n");
+            }
+        },
+    }
+
+    if (!is_valid) {
+        std.process.exit(1);
+    }
+}
+
+fn runReflect(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, compact: bool) !void {
+    const File = std.Io.File;
+
+    // Tokenize + parse
+    const tokens = try wgslender.Lexer.tokenize(allocator, source);
+    var parser = try wgslender.Parser.init(allocator, source, tokens);
+    const module = parser.parse() catch {
+        try File.stderr().writeStreamingAll(io, "error: parse failed\n");
+        for (parser.errors.items) |err| {
+            try File.stderr().writeStreamingAll(io, "  ");
+            try File.stderr().writeStreamingAll(io, err.message);
+            try File.stderr().writeStreamingAll(io, "\n");
+        }
+        return;
+    };
+
+    // Reflect
+    const result = wgslender.Reflect.reflect(allocator, module);
+
+    // Serialize to JSON
+    var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+    if (compact) {
+        result.toJson(&json_buf, allocator);
+    } else {
+        result.toJsonPretty(&json_buf, allocator);
+    }
+
+    try File.stdout().writeStreamingAll(io, json_buf.items);
+    try File.stdout().writeStreamingAll(io, "\n");
+}
+
+fn runCompile(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, output_path: ?[]const u8, minify_options: wgslender.Minifier.Options) !void {
+    const File = std.Io.File;
+    const Dir = std.Io.Dir;
+
+    var result = try wgslender.compile(allocator, source, .{
+        .minify = true,
+        .minify_options = minify_options,
+    });
+    defer result.deinit(allocator);
+
+    if (output_path) |path| {
+        const file = try Dir.cwd().createFile(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, result.wasm);
+    } else {
+        try File.stdout().writeStreamingAll(io, result.wasm);
+    }
+
+    // Print stats to stderr
+    var tmp: [64]u8 = undefined;
+    try File.stderr().writeStreamingAll(io, "Original: ");
+    var s = std.fmt.bufPrint(&tmp, "{d}", .{result.original_size}) catch "";
+    try File.stderr().writeStreamingAll(io, s);
+    try File.stderr().writeStreamingAll(io, " bytes -> WASM: ");
+    s = std.fmt.bufPrint(&tmp, "{d}", .{result.wasm_size}) catch "";
+    try File.stderr().writeStreamingAll(io, s);
+    try File.stderr().writeStreamingAll(io, " bytes\n");
+}
+
+const usage_text =
+    \\Usage: wgslender [command] [options] [file.wgsl]
+    \\
+    \\Commands:
+    \\  (default)                        Minify WGSL source
+    \\  validate                         Validate WGSL source
+    \\  reflect                          Extract bindings, layouts, and entry points as JSON
+    \\  compile                          Compile WGSL to a .wasm binary shader
+    \\
+    \\Options:
+    \\  -o <path>                        Output file
+    \\  --config <path>                  Config file (JSON)
+    \\  --no-config                      Ignore config files
+    \\  --minify                         Enable all minification (default)
+    \\  --minify-whitespace              Only minify whitespace
+    \\  --minify-identifiers             Only minify identifiers
+    \\  --minify-syntax                  Only minify syntax
+    \\  --no-mangle                      Don't rename identifiers
+    \\  --mangle-external-bindings       Rename uniform/storage variables
+    \\  --no-tree-shaking                Keep all declarations
+    \\  --preserve-uniform-struct-types   Keep struct names used in uniforms
+    \\  --sort-declarations              Sort declarations by kind for compression
+    \\  --scope-local-rename             Per-function canonical naming for compression
+    \\  --keep-names <names>             Comma-separated names to preserve
+    \\  --source-map                     Generate source map file (.map)
+    \\  --source-map-inline              Embed source map as inline data URI
+    \\  --source-map-sources             Include original source in source map
+    \\  --compact                        Compact JSON output (reflect)
+    \\  --format <text|json>              Output format for validate (default: text)
+    \\  --strict                         Treat warnings as errors (validate)
+    \\  --line-offset <n>                Add n to reported line numbers (validate)
+    \\  --version                        Show version
+    \\  -h, --help                       Show this help
+    \\
+    \\If no input file is given, reads from stdin.
+    \\
+;

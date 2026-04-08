@@ -1,0 +1,390 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+
+const CONFIG_FILE_NAMES = ['wgslender.json', '.wgslenderrc', '.wgslenderrc.json'];
+
+function findConfig(startDir) {
+  let dir = path.resolve(startDir);
+  while (true) {
+    for (const name of CONFIG_FILE_NAMES) {
+      const configPath = path.join(dir, name);
+      if (fs.existsSync(configPath)) {
+        return configPath;
+      }
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+const args = process.argv.slice(2);
+
+if (args[0] === 'reflect') {
+  runReflect(args.slice(1));
+} else if (args[0] === 'validate') {
+  runValidate(args.slice(1));
+} else {
+  runMinify(args);
+}
+
+function printUsage() {
+  console.log(`Usage: wgslender [options] [file]
+       wgslender validate [options] [file]
+       wgslender reflect [options] [file]
+
+Options:
+  -h, --help                       Show this help message
+  -v, --version                    Show version
+  -o, --output <file>              Output file (default: stdout)
+  --config <file>                  Load config from JSON file
+  --no-config                      Skip config file auto-discovery
+  --no-mangle                      Disable identifier minification
+  --no-whitespace                  Disable whitespace minification
+  --no-tree-shaking                Keep all declarations (disable dead code elimination)
+  --mangle-external-bindings       Mangle uniform/storage variable names
+  --preserve-uniform-struct-types  Keep struct names used in uniform/storage declarations
+  --keep-names <names>             Comma-separated list of names to preserve
+  --source-map                     Generate external source map file (.map)
+  --source-map-inline              Embed source map as inline data URI comment
+  --source-map-sources             Include original source content in source map
+
+Subcommands:
+  validate                         Validate WGSL source and report diagnostics
+  reflect                          Extract bindings, struct layouts, and entry points as JSON
+
+Config file:
+  Searches for wgslender.json, .wgslenderrc, or .wgslenderrc.json starting from
+  the input file's directory and walking up to parent directories.
+  CLI flags override config file settings.
+
+If no file is specified, reads from stdin.
+
+Examples:
+  wgslender shader.wgsl
+  wgslender shader.wgsl -o shader.min.wgsl
+  wgslender --keep-names main,uniforms shader.wgsl
+  wgslender --source-map -o shader.min.wgsl shader.wgsl
+  wgslender validate shader.wgsl
+  wgslender reflect shader.wgsl
+  cat shader.wgsl | wgslender > shader.min.wgsl
+`);
+}
+
+function printValidateUsage() {
+  console.log(`Usage: wgslender validate [options] [file]
+
+Validate WGSL source code and report diagnostics.
+
+Options:
+  -h, --help            Show this help message
+  --json                Output diagnostics as JSON
+
+Examples:
+  wgslender validate shader.wgsl
+  wgslender validate --json shader.wgsl
+`);
+}
+
+function printReflectUsage() {
+  console.log(`Usage: wgslender reflect [options] [file]
+
+Extract binding information, struct layouts, and entry points from WGSL source.
+
+Options:
+  -h, --help            Show this help message
+  -o, --output <file>   Write JSON output to file (default: stdout)
+  --compact             Output compact JSON (default: pretty-printed)
+
+Examples:
+  wgslender reflect shader.wgsl
+  wgslender reflect shader.wgsl -o info.json
+  wgslender reflect --compact shader.wgsl
+`);
+}
+
+function printVersion() {
+  const pkg = require('../package.json');
+  console.log(`wgslender ${pkg.version}`);
+}
+
+function readInput(inputFile) {
+  if (inputFile) {
+    try {
+      return fs.readFileSync(inputFile, 'utf8');
+    } catch (err) {
+      console.error(`Error reading file: ${err.message}`);
+      process.exit(1);
+    }
+  }
+  return fs.readFileSync(0, 'utf8');
+}
+
+function runValidate(args) {
+  let inputFile = null;
+  let jsonOutput = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '-h' || arg === '--help') {
+      printValidateUsage();
+      process.exit(0);
+    } else if (arg === '-v' || arg === '--version') {
+      printVersion();
+      process.exit(0);
+    } else if (arg === '--json') {
+      jsonOutput = true;
+    } else if (!arg.startsWith('-')) {
+      inputFile = arg;
+    } else {
+      console.error(`Unknown option: ${arg}`);
+      process.exit(1);
+    }
+  }
+
+  async function main() {
+    const source = readInput(inputFile);
+    const { initialize, validate } = require('../lib/main.js');
+
+    try {
+      await initialize();
+      const result = validate(source);
+
+      if (jsonOutput) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        if (result.valid) {
+          console.log('valid');
+        } else {
+          console.log('invalid');
+          for (const d of result.diagnostics) {
+            const loc = d.line ? `${d.line}:${d.column}: ` : '';
+            console.error(`${loc}${d.severity}: ${d.message}`);
+          }
+        }
+      }
+
+      process.exit(result.valid ? 0 : 1);
+    } catch (err) {
+      console.error(`Validation error: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  main();
+}
+
+function runReflect(args) {
+  let inputFile = null;
+  let outputFile = null;
+  let compact = false;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '-h' || arg === '--help') {
+      printReflectUsage();
+      process.exit(0);
+    } else if (arg === '-v' || arg === '--version') {
+      printVersion();
+      process.exit(0);
+    } else if (arg === '-o' || arg === '--output') {
+      outputFile = args[++i];
+    } else if (arg === '--compact') {
+      compact = true;
+    } else if (!arg.startsWith('-')) {
+      inputFile = arg;
+    } else {
+      console.error(`Unknown option: ${arg}`);
+      process.exit(1);
+    }
+  }
+
+  async function main() {
+    const source = readInput(inputFile);
+    const { initialize, reflect } = require('../lib/main.js');
+
+    try {
+      await initialize();
+      const result = reflect(source);
+      const output = compact
+        ? JSON.stringify(result)
+        : JSON.stringify(result, null, 2);
+
+      if (outputFile) {
+        fs.writeFileSync(outputFile, output + '\n');
+      } else {
+        console.log(output);
+      }
+    } catch (err) {
+      console.error(`Reflection error: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  main();
+}
+
+function runMinify(args) {
+  let inputFile = null;
+  let outputFile = null;
+  let options = {
+    minifyWhitespace: true,
+    minifyIdentifiers: true,
+    minifySyntax: true,
+    treeShaking: true,
+    mangleExternalBindings: false,
+    preserveUniformStructTypes: false,
+    keepNames: []
+  };
+  let configFile = null;
+  let noConfig = false;
+  let sourceMap = false;
+  let sourceMapInline = false;
+  let sourceMapSources = false;
+  const cliFlags = new Set();
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '-h' || arg === '--help') {
+      printUsage();
+      process.exit(0);
+    } else if (arg === '-v' || arg === '--version') {
+      printVersion();
+      process.exit(0);
+    } else if (arg === '-o' || arg === '--output') {
+      outputFile = args[++i];
+    } else if (arg === '--no-mangle') {
+      options.minifyIdentifiers = false;
+      cliFlags.add('minifyIdentifiers');
+    } else if (arg === '--no-whitespace') {
+      options.minifyWhitespace = false;
+      cliFlags.add('minifyWhitespace');
+    } else if (arg === '--no-tree-shaking') {
+      options.treeShaking = false;
+      cliFlags.add('treeShaking');
+    } else if (arg === '--mangle-external-bindings') {
+      options.mangleExternalBindings = true;
+      cliFlags.add('mangleExternalBindings');
+    } else if (arg === '--preserve-uniform-struct-types') {
+      options.preserveUniformStructTypes = true;
+      cliFlags.add('preserveUniformStructTypes');
+    } else if (arg === '--keep-names') {
+      options.keepNames = args[++i].split(',').map(s => s.trim());
+      cliFlags.add('keepNames');
+    } else if (arg === '--source-map') {
+      sourceMap = true;
+    } else if (arg === '--source-map-inline') {
+      sourceMapInline = true;
+    } else if (arg === '--source-map-sources') {
+      sourceMapSources = true;
+    } else if (arg === '--config') {
+      configFile = args[++i];
+    } else if (arg === '--no-config') {
+      noConfig = true;
+    } else if (!arg.startsWith('-')) {
+      inputFile = arg;
+    } else {
+      console.error(`Unknown option: ${arg}`);
+      process.exit(1);
+    }
+  }
+
+  // Resolve config file: explicit --config wins, then auto-discovery unless --no-config
+  let resolvedConfigPath = null;
+  if (configFile) {
+    resolvedConfigPath = configFile;
+  } else if (!noConfig) {
+    const startDir = inputFile ? path.dirname(path.resolve(inputFile)) : process.cwd();
+    resolvedConfigPath = findConfig(startDir);
+  }
+
+  // Load config file — config provides base, CLI flags override
+  if (resolvedConfigPath) {
+    try {
+      const config = JSON.parse(fs.readFileSync(resolvedConfigPath, 'utf8'));
+      if (config.minifyWhitespace !== undefined && !cliFlags.has('minifyWhitespace')) {
+        options.minifyWhitespace = config.minifyWhitespace;
+      }
+      if (config.minifyIdentifiers !== undefined && !cliFlags.has('minifyIdentifiers')) {
+        options.minifyIdentifiers = config.minifyIdentifiers;
+      }
+      if (config.minifySyntax !== undefined && !cliFlags.has('minifySyntax')) {
+        options.minifySyntax = config.minifySyntax;
+      }
+      if (config.mangleExternalBindings !== undefined && !cliFlags.has('mangleExternalBindings')) {
+        options.mangleExternalBindings = config.mangleExternalBindings;
+      }
+      if (config.treeShaking !== undefined && !cliFlags.has('treeShaking')) {
+        options.treeShaking = config.treeShaking;
+      }
+      if (config.preserveUniformStructTypes !== undefined && !cliFlags.has('preserveUniformStructTypes')) {
+        options.preserveUniformStructTypes = config.preserveUniformStructTypes;
+      }
+      if (config.keepNames) {
+        options.keepNames = [...options.keepNames, ...config.keepNames];
+      }
+    } catch (err) {
+      console.error(`Error loading config file: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  // Source map
+  if (sourceMap || sourceMapInline) {
+    options.sourceMap = true;
+    if (sourceMapSources) {
+      options.sourceMapSources = true;
+    }
+  }
+
+  async function main() {
+    const source = readInput(inputFile);
+    const { initialize, minify } = require('../lib/main.js');
+
+    try {
+      await initialize();
+      const result = minify(source, options);
+
+      if (result.errors && result.errors.length > 0) {
+        for (const err of result.errors) {
+          const loc = err.line ? `line ${err.line}, column ${err.column}: ` : '';
+          console.error(`Error: ${loc}${err.message}`);
+        }
+        process.exit(1);
+      }
+
+      // Write minified code
+      if (outputFile) {
+        let output = result.code;
+        if (sourceMapInline && result.sourceMap) {
+          const mapJson = JSON.stringify(result.sourceMap);
+          const mapBase64 = Buffer.from(mapJson).toString('base64');
+          output += '\n//# sourceMappingURL=data:application/json;base64,' + mapBase64;
+        }
+        fs.writeFileSync(outputFile, output);
+
+        // Write external source map
+        if (sourceMap && !sourceMapInline && result.sourceMap) {
+          const mapPath = outputFile + '.map';
+          fs.writeFileSync(mapPath, JSON.stringify(result.sourceMap));
+          process.stderr.write(`Source map: ${mapPath}\n`);
+        }
+      } else {
+        let output = result.code;
+        if (sourceMapInline && result.sourceMap) {
+          const mapJson = JSON.stringify(result.sourceMap);
+          const mapBase64 = Buffer.from(mapJson).toString('base64');
+          output += '\n//# sourceMappingURL=data:application/json;base64,' + mapBase64;
+        }
+        process.stdout.write(output);
+      }
+    } catch (err) {
+      console.error(`Minification error: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  main();
+}
