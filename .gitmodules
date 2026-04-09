@@ -1,0 +1,9 @@
+[submodule "external/lsp-kit"]
+	path = external/lsp-kit
+	url = git@github.com:zigtools/lsp-kit.git
+[submodule "external/gpuweb"]
+	path = external/gpuweb
+	url = git@github.com:gpuweb/gpuweb.git
+[submodule "external/lsp-client"]
+	path = external/lsp-client
+	url = git@github.com:codemirror/lsp-client.git

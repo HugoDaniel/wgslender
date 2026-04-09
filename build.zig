@@ -60,6 +60,53 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("wasm", "Build WASM binary");
     wasm_step.dependOn(&install_wasm.step);
 
+    // LSP server (native)
+    const lsp_kit_dep = b.dependency("lsp_kit", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const lsp_mod = lsp_kit_dep.module("lsp");
+
+    const lsp_exe = b.addExecutable(.{
+        .name = "wgslender-lsp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("lsp/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "wgslender", .module = wgslender_mod },
+                .{ .name = "lsp", .module = lsp_mod },
+            },
+        }),
+    });
+
+    const install_lsp = b.addInstallArtifact(lsp_exe, .{});
+    const lsp_step = b.step("lsp", "Build the WGSL LSP server");
+    lsp_step.dependOn(&install_lsp.step);
+
+    // LSP server (WASM)
+    const lsp_wasm = b.addExecutable(.{
+        .name = "wgslender-lsp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("lsp/wasm.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "wgslender", .module = b.addModule("wgslender-wasm", .{
+                    .root_source_file = b.path("src/root.zig"),
+                    .target = wasm_target,
+                    .optimize = .ReleaseSmall,
+                }) },
+            },
+        }),
+    });
+    lsp_wasm.entry = .disabled;
+    lsp_wasm.rdynamic = true;
+
+    const install_lsp_wasm = b.addInstallArtifact(lsp_wasm, .{});
+    const lsp_wasm_step = b.step("lsp-wasm", "Build the WGSL LSP WASM module");
+    lsp_wasm_step.dependOn(&install_lsp_wasm.step);
+
     // Unit tests (src/)
     const unit_tests = b.addTest(.{
         .root_module = b.createModule(.{

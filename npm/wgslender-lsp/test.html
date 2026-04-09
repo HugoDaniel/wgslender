@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>wgslender-lsp test</title>
+  <style>
+    * { margin: 0; box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: #1e1e2e; color: #cdd6f4; padding: 20px; }
+    h1 { font-size: 16px; font-weight: 500; margin-bottom: 12px; color: #89b4fa; }
+    #status { font-size: 13px; margin-bottom: 12px; color: #a6adc8; }
+    #status.ready { color: #a6e3a1; }
+    #status.error { color: #f38ba8; }
+    #editor { border: 1px solid #313244; border-radius: 6px; overflow: hidden; }
+    .cm-editor { height: 70vh; }
+    .cm-editor .cm-scroller { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 14px; }
+    /* Diagnostic styling */
+    .cm-lintRange-error { background: none; text-decoration: underline wavy #f38ba8; }
+    .cm-lintRange-warning { background: none; text-decoration: underline wavy #f9e2af; }
+    .cm-diagnostic-error { border-left-color: #f38ba8; }
+    .cm-diagnostic-warning { border-left-color: #f9e2af; }
+    .cm-lint-marker-error { content: none; color: #f38ba8; }
+    .cm-lint-marker-warning { content: none; color: #f9e2af; }
+  </style>
+</head>
+<body>
+  <h1>wgslender-lsp</h1>
+  <div id="status">Loading WASM...</div>
+  <div id="editor"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "codemirror": "https://esm.sh/codemirror@6",
+      "@codemirror/lang-javascript": "https://esm.sh/@codemirror/lang-javascript@6",
+      "@codemirror/state": "https://esm.sh/@codemirror/state@6",
+      "@codemirror/view": "https://esm.sh/@codemirror/view@6",
+      "@codemirror/language": "https://esm.sh/@codemirror/language@6",
+      "@codemirror/commands": "https://esm.sh/@codemirror/commands@6",
+      "@codemirror/autocomplete": "https://esm.sh/@codemirror/autocomplete@6",
+      "@codemirror/lint": "https://esm.sh/@codemirror/lint@6",
+      "@codemirror/search": "https://esm.sh/@codemirror/search@6",
+      "@codemirror/theme-one-dark": "https://esm.sh/@codemirror/theme-one-dark@6",
+      "@lezer/highlight": "https://esm.sh/@lezer/highlight@1",
+      "@lezer/common": "https://esm.sh/@lezer/common@1",
+      "@lezer/lr": "https://esm.sh/@lezer/lr@1"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import {EditorState} from "@codemirror/state"
+    import {EditorView, keymap} from "@codemirror/view"
+    import {defaultKeymap, indentWithTab} from "@codemirror/commands"
+    import {oneDark} from "@codemirror/theme-one-dark"
+    import {lintGutter, setDiagnostics} from "@codemirror/lint"
+    import {syntaxHighlighting, defaultHighlightStyle} from "@codemirror/language"
+
+    // ---- WASM LSP inline (no bundler needed) ----
+
+    const _encoder = new TextEncoder()
+    const _decoder = new TextDecoder()
+    let _wasm = null
+
+    async function initLSP() {
+      const response = await fetch('./wgslender-lsp.wasm')
+      const wasmModule = await WebAssembly.compileStreaming(response)
+      const instance = await WebAssembly.instantiate(wasmModule, {})
+      _wasm = instance.exports
+    }
+
+    function lspSend(json) {
+      const encoded = _encoder.encode(json)
+      const ptr = _wasm.wgslender_lsp_alloc(encoded.length)
+      if (!ptr) throw new Error('WASM alloc failed')
+      new Uint8Array(_wasm.memory.buffer, ptr, encoded.length).set(encoded)
+      _wasm.wgslender_lsp_send(ptr, encoded.length)
+
+      const responses = []
+      while (true) {
+        const rptr = _wasm.wgslender_lsp_recv()
+        if (!rptr) break
+        const len = new DataView(_wasm.memory.buffer).getUint32(rptr, true)
+        const msg = _decoder.decode(new Uint8Array(_wasm.memory.buffer, rptr + 4, len))
+        _wasm.wgslender_lsp_dealloc(rptr, len + 4)
+        responses.push(JSON.parse(msg))
+      }
+      return responses
+    }
+
+    // ---- Diagnostics bridge (WASM LSP → CodeMirror lint) ----
+
+    const FILE_URI = 'file:///shader.wgsl'
+    let editorView = null
+
+    function pushDiagnosticsToEditor(lspDiags) {
+      if (!editorView) return
+      const doc = editorView.state.doc
+      const cmDiags = []
+      for (const d of lspDiags) {
+        const from = posToOffset(doc, d.range.start)
+        let to = posToOffset(doc, d.range.end)
+        if (to <= from) to = Math.min(from + 1, doc.length)
+        cmDiags.push({
+          from, to,
+          severity: d.severity === 1 ? 'error' : d.severity === 2 ? 'warning' : 'info',
+          message: d.message,
+          source: d.source || 'wgslender',
+        })
+      }
+      editorView.dispatch(setDiagnostics(editorView.state, cmDiags))
+    }
+
+    function posToOffset(doc, pos) {
+      if (pos.line >= doc.lines) return doc.length
+      const line = doc.line(pos.line + 1) // CodeMirror lines are 1-based
+      return Math.min(line.from + pos.character, line.to)
+    }
+
+    function validateSource(source) {
+      const responses = lspSend(JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'textDocument/didChange',
+        params: {
+          textDocument: { uri: FILE_URI, version: ++docVersion },
+          contentChanges: [{ text: source }],
+        }
+      }))
+
+      for (const r of responses) {
+        if (r.method === 'textDocument/publishDiagnostics') {
+          pushDiagnosticsToEditor(r.params.diagnostics)
+        }
+      }
+    }
+
+    // ---- Editor setup ----
+
+    const sampleShader = `// Try editing this WGSL shader — errors appear in real time.
+
+struct VertexOutput {
+    @builtin(position) pos: vec4f,
+    @location(0) color: vec3f,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
+    var out: VertexOutput;
+    let x = f32(i32(idx) - 1);
+    let y = f32(i32(idx & 1u) * 2 - 1);
+    out.pos = vec4f(x, y, 0.0, 1.0);
+    out.color = vec3f(x + 0.5, y + 0.5, 0.5);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+    return vec4f(in.color, 1.0);
+}
+`
+
+    let docVersion = 0
+    let debounceTimer = null
+
+    const statusEl = document.getElementById('status')
+
+    try {
+      await initLSP()
+
+      // Initialize the LSP
+      lspSend(JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { capabilities: {} }
+      }))
+      lspSend(JSON.stringify({
+        jsonrpc: '2.0', method: 'initialized', params: {}
+      }))
+
+      // Open the file
+      const openResponses = lspSend(JSON.stringify({
+        jsonrpc: '2.0', method: 'textDocument/didOpen',
+        params: {
+          textDocument: {
+            uri: FILE_URI, languageId: 'wgsl', version: ++docVersion,
+            text: sampleShader,
+          }
+        }
+      }))
+
+      // Create editor
+      const updateListener = EditorView.updateListener.of(update => {
+        if (!update.docChanged) return
+        clearTimeout(debounceTimer)
+        debounceTimer = setTimeout(() => {
+          validateSource(update.state.doc.toString())
+        }, 200)
+      })
+
+      editorView = new EditorView({
+        state: EditorState.create({
+          doc: sampleShader,
+          extensions: [
+            keymap.of([...defaultKeymap, indentWithTab]),
+            oneDark,
+            syntaxHighlighting(defaultHighlightStyle),
+            lintGutter(),
+            updateListener,
+          ],
+        }),
+        parent: document.getElementById('editor'),
+      })
+
+      // Apply initial diagnostics
+      for (const r of openResponses) {
+        if (r.method === 'textDocument/publishDiagnostics') {
+          pushDiagnosticsToEditor(r.params.diagnostics)
+        }
+      }
+
+      statusEl.textContent = 'Ready — edit the shader to see live diagnostics'
+      statusEl.className = 'ready'
+    } catch (e) {
+      statusEl.textContent = 'Error: ' + e.message
+      statusEl.className = 'error'
+      console.error(e)
+    }
+  </script>
+</body>
+</html>

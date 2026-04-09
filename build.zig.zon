@@ -8,6 +8,12 @@
         "build.zig.zon",
         "src",
         "cli",
+        "lsp",
         "tests",
+    },
+    .dependencies = .{
+        .lsp_kit = .{
+            .path = "external/lsp-kit",
+        },
     },
 }

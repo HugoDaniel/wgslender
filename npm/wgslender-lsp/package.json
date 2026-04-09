@@ -1,0 +1,23 @@
+{
+  "name": "wgslender-lsp",
+  "version": "0.1.0",
+  "description": "WGSL Language Server powered by wgslender (WASM build)",
+  "main": "index.js",
+  "module": "index.mjs",
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./index.mjs",
+      "require": "./index.js"
+    },
+    "./wasm": "./wgslender-lsp.wasm"
+  },
+  "files": [
+    "index.js",
+    "index.mjs",
+    "index.d.ts",
+    "wgslender-lsp.wasm"
+  ],
+  "keywords": ["wgsl", "lsp", "language-server", "webgpu", "wasm", "codemirror"],
+  "license": "MIT"
+}
