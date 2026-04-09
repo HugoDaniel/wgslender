@@ -209,7 +209,8 @@ fn resolveStructLayouts(v: *Validator) void {
                     }
                     seen_members.put(v.allocator, member_name, {}) catch {};
                     const member_type = v.resolveType(member.typ) orelse {
-                        v.addError(v.symbolLoc(member.name), v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
+                        if (member.typ != .ident)
+                            v.addError(v.symbolLoc(member.name), v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
                         continue;
                     };
                     // Validate @align and @size attributes
@@ -451,7 +452,8 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) void {
     }
 
     if (decl_type == null) {
-        v.addErrorWithCode(loc, Diagnostic.Code.invalid_override, v.fmtError("cannot determine type for 'override {s}'", .{name}));
+        if (d.typ == null or d.typ.? != .ident)
+            v.addErrorWithCode(loc, Diagnostic.Code.invalid_override, v.fmtError("cannot determine type for 'override {s}'", .{name}));
         return;
     }
 
@@ -520,7 +522,9 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) void {
     }
 
     if (decl_type == null) {
-        v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot determine type for 'var {s}'", .{name}));
+        // Skip if resolveType already reported "unknown type" for .ident
+        if (d.typ == null or d.typ.? != .ident)
+            v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot determine type for 'var {s}'", .{name}));
         return;
     }
 
@@ -2417,7 +2421,16 @@ fn isNonUniformBuiltin(name: []const u8) bool {
 
 fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
     switch (ast_type) {
-        .ident => |t| return v.lookupType(t.name),
+        .ident => |t| {
+            if (v.lookupType(t.name)) |typ| return typ;
+            // Type not found — report with suggestion if close match exists.
+            if (v.suggestType(t.name)) |suggestion| {
+                v.addErrorWithCode(0, Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'; did you mean '{s}'?", .{ t.name, suggestion }));
+            } else {
+                v.addErrorWithCode(0, Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'", .{t.name}));
+            }
+            return null;
+        },
         .vec => |t| {
             var elem_scalar: *const Types.Scalar = Types.scalar_f32_ptr;
             if (t.elem_type) |et| {
@@ -2612,6 +2625,87 @@ fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
     }
 
     return null;
+}
+
+/// Find the closest type name to `name` within Levenshtein distance 2.
+/// Checks built-in WGSL types plus user-defined structs and aliases.
+fn suggestType(v: *Validator, name: []const u8) ?[]const u8 {
+    // Suffixed variants first — they're more commonly intended than bare constructors.
+    const builtins = [_][]const u8{
+        "bool",  "i32",   "u32",   "f32",   "f16",
+        "sampler",        "sampler_comparison",
+        "vec2f", "vec2i", "vec2u", "vec2h", "vec2",
+        "vec3f", "vec3i", "vec3u", "vec3h", "vec3",
+        "vec4f", "vec4i", "vec4u", "vec4h", "vec4",
+        "mat2x2f",  "mat2x2h",  "mat2x2",
+        "mat2x3f",  "mat2x3h",  "mat2x3",
+        "mat2x4f",  "mat2x4h",  "mat2x4",
+        "mat3x2f",  "mat3x2h",  "mat3x2",
+        "mat3x3f",  "mat3x3h",  "mat3x3",
+        "mat3x4f",  "mat3x4h",  "mat3x4",
+        "mat4x2f",  "mat4x2h",  "mat4x2",
+        "mat4x3f",  "mat4x3h",  "mat4x3",
+        "mat4x4f",  "mat4x4h",  "mat4x4",
+        "array",
+        "texture_depth_2d",             "texture_depth_2d_array",
+        "texture_depth_cube",           "texture_depth_cube_array",
+        "texture_depth_multisampled_2d", "texture_external",
+    };
+    var best: ?[]const u8 = null;
+    var best_dist: usize = 3; // only suggest if distance <= 2
+    for (&builtins) |candidate| {
+        const d = levenshteinBounded(name, candidate, best_dist);
+        if (d < best_dist) {
+            best = candidate;
+            best_dist = d;
+        }
+    }
+    // User-defined struct types
+    var sit = v.struct_types.iterator();
+    while (sit.next()) |entry| {
+        const d = levenshteinBounded(name, entry.key_ptr.*, best_dist);
+        if (d < best_dist) {
+            best = entry.key_ptr.*;
+            best_dist = d;
+        }
+    }
+    // Type aliases
+    var ait = v.alias_types.iterator();
+    while (ait.next()) |entry| {
+        const d = levenshteinBounded(name, entry.key_ptr.*, best_dist);
+        if (d < best_dist) {
+            best = entry.key_ptr.*;
+            best_dist = d;
+        }
+    }
+    return best;
+}
+
+/// Levenshtein distance with early termination at `max`.
+fn levenshteinBounded(a: []const u8, b: []const u8, max: usize) usize {
+    if (a.len > max and b.len > max and
+        (if (a.len > b.len) a.len - b.len else b.len - a.len) >= max)
+        return max;
+    if (a.len == 0) return b.len;
+    if (b.len == 0) return a.len;
+    // Use a single row of the DP matrix (stack-allocated, bounded).
+    const width = b.len + 1;
+    if (width > 128) return max; // don't bother with very long names
+    var row: [128]usize = undefined;
+    for (0..width) |j| row[j] = j;
+    for (a, 0..) |ca, i| {
+        var prev = i;
+        row[0] = i + 1;
+        for (b, 0..) |cb, j| {
+            const cost: usize = if (ca == cb) 0 else 1;
+            const ins = row[j + 1] + 1;
+            const del = row[j] + 1;
+            const sub = prev + cost;
+            prev = row[j + 1];
+            row[j + 1] = @min(ins, @min(del, sub));
+        }
+    }
+    return row[b.len];
 }
 
 fn parseVectorShorthand(v: *Validator, name: []const u8) ?Types.Type {
