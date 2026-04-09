@@ -177,6 +177,19 @@ pub fn build(b: *std.Build) void {
     });
     const run_validation_related_tests = b.addRunArtifact(validation_related_tests);
 
+    // Validation range tests (tests/)
+    const validation_range_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/validation_range_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "wgslender", .module = wgslender_mod },
+            },
+        }),
+    });
+    const run_validation_range_tests = b.addRunArtifact(validation_range_tests);
+
     // Collision tests (tests/)
     const collision_tests = b.addTest(.{
         .root_module = b.createModule(.{
@@ -300,6 +313,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_validation_tests.step);
     test_step.dependOn(&run_validation_location_tests.step);
     test_step.dependOn(&run_validation_related_tests.step);
+    test_step.dependOn(&run_validation_range_tests.step);
     test_step.dependOn(&run_collision_tests.step);
     test_step.dependOn(&run_regression_tests.step);
     test_step.dependOn(&run_compute_toys_tests.step);

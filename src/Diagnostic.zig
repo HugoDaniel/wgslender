@@ -296,12 +296,31 @@ pub fn addErrorWithCode(self: *Diagnostic, allocator: std.mem.Allocator, offset:
     });
 }
 
+/// Add an error with an error code spanning a byte range.
+pub fn addErrorWithCodeRange(self: *Diagnostic, allocator: std.mem.Allocator, start: u32, end: u32, code: []const u8, message: []const u8) void {
+    self.add(allocator, .{
+        .severity = .@"error",
+        .code = code,
+        .message = message,
+        .range = self.makeRange(start, end),
+    });
+}
+
 /// Add a warning at a single byte offset.
 pub fn addWarning(self: *Diagnostic, allocator: std.mem.Allocator, offset: u32, message: []const u8) void {
     self.add(allocator, .{
         .severity = .warning,
         .message = message,
         .range = self.makeRange(offset, offset + 1),
+    });
+}
+
+/// Add a warning spanning a byte range.
+pub fn addWarningRange(self: *Diagnostic, allocator: std.mem.Allocator, start: u32, end: u32, message: []const u8) void {
+    self.add(allocator, .{
+        .severity = .warning,
+        .message = message,
+        .range = self.makeRange(start, end),
     });
 }
 

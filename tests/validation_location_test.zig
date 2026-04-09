@@ -1011,8 +1011,8 @@ test "did-you-mean suggests function name for identifier" {
     ;
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
-    // 'comput' should suggest 'compute' (error at call location)
-    try expectErrorAtWithMessage(result, 4, 11, "did you mean 'compute'");
+    // 'comput' should suggest 'compute' (error at function name)
+    try expectErrorAtWithMessage(result, 4, 5, "did you mean 'compute'");
 }
 
 test "did-you-mean suggests builtin function name" {
@@ -1024,8 +1024,8 @@ test "did-you-mean suggests builtin function name" {
     ;
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
-    // 'sine' should suggest 'sin' (error at call location)
-    try expectErrorAtWithMessage(result, 3, 19, "did you mean 'sin'");
+    // 'sine' should suggest 'sin' (error at function name)
+    try expectErrorAtWithMessage(result, 3, 15, "did you mean 'sin'");
 }
 
 test "no suggestion for completely wrong identifier" {
@@ -1060,8 +1060,8 @@ test "did-you-mean suggests close builtin function call" {
     ;
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
-    // 'coss' should suggest 'cos' (error at call location)
-    try expectErrorAtWithMessage(result, 3, 19, "did you mean 'cos'");
+    // 'coss' should suggest 'cos' (error at function name)
+    try expectErrorAtWithMessage(result, 3, 15, "did you mean 'cos'");
 }
 
 test "did-you-mean suggests close user function call" {
@@ -1074,8 +1074,8 @@ test "did-you-mean suggests close user function call" {
     ;
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
-    // error at call location (opening paren)
-    try expectErrorAtWithMessage(result, 4, 23, "did you mean 'calculate'");
+    // error at function name
+    try expectErrorAtWithMessage(result, 4, 15, "did you mean 'calculate'");
 }
 
 test "no suggestion for completely wrong call" {

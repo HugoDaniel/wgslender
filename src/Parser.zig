@@ -32,6 +32,7 @@ errors: std.ArrayListUnmanaged(ParseError),
 pub const ParseError = struct {
     message: []const u8,
     pos: u32,
+    end: u32 = 0,
     code: []const u8 = "",
 };
 
@@ -205,7 +206,9 @@ fn currentStart(self: *const Parser) u32 {
 }
 
 fn addError(self: *Parser, message: []const u8) void {
-    self.errors.append(self.allocator, .{ .message = message, .pos = self.currentStart() }) catch {};
+    const start = self.currentStart();
+    const text = self.currentText();
+    self.errors.append(self.allocator, .{ .message = message, .pos = start, .end = start +| @as(u32, @intCast(text.len)) }) catch {};
 }
 
 fn isIdentLike(self: *const Parser) bool {

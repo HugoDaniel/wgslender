@@ -93,10 +93,11 @@ pub fn validateWithOptions(allocator: Allocator, source: [:0]const u8, options: 
         diags.* = Diagnostic.init(alloc, source);
         diags.line_offset = options.line_offset;
         for (parser.errors.items) |err| {
+            const end = if (err.end > err.pos) err.end else err.pos + 1;
             if (err.code.len > 0) {
-                diags.addErrorWithCode(alloc, err.pos, err.code, err.message);
+                diags.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
             } else {
-                diags.addError(alloc, err.pos, err.message);
+                diags.addErrorRange(alloc, err.pos, end, err.message);
             }
         }
         return .{ .valid = false, .diagnostics = diags, ._arena = arena };
@@ -104,10 +105,11 @@ pub fn validateWithOptions(allocator: Allocator, source: [:0]const u8, options: 
     var result = try Validator.validate(alloc, module, options);
     // Inject parser errors (e.g. reserved word usage) into validation diagnostics
     for (parser.errors.items) |err| {
+        const end = if (err.end > err.pos) err.end else err.pos + 1;
         if (err.code.len > 0) {
-            result.diagnostics.addErrorWithCode(alloc, err.pos, err.code, err.message);
+            result.diagnostics.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
         } else {
-            result.diagnostics.addError(alloc, err.pos, err.message);
+            result.diagnostics.addErrorRange(alloc, err.pos, end, err.message);
         }
         result.valid = false;
     }
