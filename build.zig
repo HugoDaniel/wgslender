@@ -295,6 +295,15 @@ pub fn build(b: *std.Build) void {
     tint_step.dependOn(&run_tint_tests.step);
 
     // LSP Handler tests (lsp/)
+    const handler_mod = b.addModule("Handler", .{
+        .root_source_file = b.path("lsp/Handler.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "wgslender", .module = wgslender_mod },
+        },
+    });
+
     const handler_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("lsp/Handler.zig"),
@@ -306,6 +315,20 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_handler_tests = b.addRunArtifact(handler_tests);
+
+    // Code action integration tests (tests/)
+    const code_action_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/code_action_test.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "wgslender", .module = wgslender_mod },
+                .{ .name = "Handler", .module = handler_mod },
+            },
+        }),
+    });
+    const run_code_action_tests = b.addRunArtifact(code_action_tests);
 
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_unit_tests.step);
@@ -322,4 +345,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_sourcemap_tests.step);
     test_step.dependOn(&run_tint_tests.step);
     test_step.dependOn(&run_handler_tests.step);
+    test_step.dependOn(&run_code_action_tests.step);
 }
