@@ -28,6 +28,7 @@ current_loc: u32,
 
 // Errors
 errors: std.ArrayListUnmanaged(ParseError),
+expr_context: []const u8 = "",
 
 pub const ParseError = struct {
     message: []const u8,
@@ -105,7 +106,8 @@ fn eat(self: *Parser, tag: Tag) bool {
 
 fn expect(self: *Parser, tag: Tag) bool {
     if (self.currentTag() != tag) {
-        self.addError("expected token");
+        const msg = std.fmt.allocPrint(self.allocator, "expected '{s}'", .{tag.symbol()}) catch "expected token";
+        self.addError(msg);
         return false;
     }
     self.advance();
@@ -674,8 +676,9 @@ fn parseConstDecl(self: *Parser) !*Ast.ConstDecl {
         decl.name = try self.declareSymbol(text, .@"const", .{}, loc);
     }
 
-    if (self.eat(.colon)) decl.typ = try self.parseType();
+    if (self.eat(.colon)) decl.typ = try self.parseType("after ':' in const declaration");
     _ = self.expect(.eq);
+    self.expr_context = "after '=' in const declaration";
     decl.initializer = try self.parseExpression();
     _ = self.expect(.semicolon);
     return decl;
@@ -692,8 +695,11 @@ fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
         decl.name = try self.declareSymbol(text, .override, .{}, loc);
     }
 
-    if (self.eat(.colon)) decl.typ = try self.parseType();
-    if (self.eat(.eq)) decl.initializer = try self.parseExpression();
+    if (self.eat(.colon)) decl.typ = try self.parseType("after ':' in override declaration");
+    if (self.eat(.eq)) {
+        self.expr_context = "after '=' in override declaration";
+        decl.initializer = try self.parseExpression();
+    }
     _ = self.expect(.semicolon);
     return decl;
 }
@@ -721,8 +727,11 @@ fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute)) !*
         decl.name = try self.declareSymbol(text, .@"var", flags, loc);
     }
 
-    if (self.eat(.colon)) decl.typ = try self.parseType();
-    if (self.eat(.eq)) decl.initializer = try self.parseExpression();
+    if (self.eat(.colon)) decl.typ = try self.parseType("after ':' in var declaration");
+    if (self.eat(.eq)) {
+        self.expr_context = "after '=' in var declaration";
+        decl.initializer = try self.parseExpression();
+    }
     _ = self.expect(.semicolon);
     return decl;
 }
@@ -738,8 +747,9 @@ fn parseLetDecl(self: *Parser) !*Ast.LetDecl {
         decl.name = try self.declareSymbol(text, .let, .{}, loc);
     }
 
-    if (self.eat(.colon)) decl.typ = try self.parseType();
+    if (self.eat(.colon)) decl.typ = try self.parseType("after ':' in let declaration");
     _ = self.expect(.eq);
+    self.expr_context = "after '=' in let declaration";
     decl.initializer = try self.parseExpression();
     _ = self.expect(.semicolon);
     return decl;
@@ -789,7 +799,7 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
 
     if (self.eat(.arrow)) {
         decl.return_attr = try self.parseAttributes();
-        decl.return_type = try self.parseType();
+        decl.return_type = try self.parseType("after '->' in function return type");
     }
 
     decl.body = try self.parseCompoundStmt();
@@ -807,7 +817,7 @@ fn parseParameters(self: *Parser) !std.ArrayListUnmanaged(Ast.Parameter) {
         self.advance();
         const name = try self.declareSymbol(text, .parameter, .{}, loc);
         _ = self.expect(.colon);
-        const typ = try self.parseType();
+        const typ = try self.parseType("after ':' in function parameter");
         try params.append(self.allocator, .{ .attributes = param_attrs, .name = name, .typ = typ });
         if (!self.eat(.comma)) break;
         if (self.currentTag() == .r_paren) break;
@@ -835,7 +845,7 @@ fn parseStructDecl(self: *Parser) !*Ast.StructDecl {
         self.advance();
         const name = try self.declareSymbolNoScope(text, .member, .{}, member_loc);
         _ = self.expect(.colon);
-        const typ = try self.parseType();
+        const typ = try self.parseType("after ':' in struct member");
         try decl.members.append(self.allocator, .{ .attributes = member_attrs, .name = name, .typ = typ });
         _ = self.eat(.comma);
     }
@@ -853,7 +863,7 @@ fn parseAliasDecl(self: *Parser) !*Ast.AliasDecl {
         name = try self.declareSymbol(text, .alias, .{}, loc);
     }
     _ = self.expect(.eq);
-    const typ = try self.parseType();
+    const typ = try self.parseType("after '=' in alias declaration");
     _ = self.expect(.semicolon);
     decl.* = .{ .name = name, .typ = typ };
     return decl;
@@ -863,6 +873,7 @@ fn parseConstAssert(self: *Parser) !*Ast.ConstAssertDecl {
     if (self.currentTag() == .keyword_const) self.advance();
     _ = self.expect(.keyword_const_assert);
     const decl = try self.allocator.create(Ast.ConstAssertDecl);
+    self.expr_context = "in const_assert";
     decl.* = .{ .expr = (try self.parseExpression()) orelse return error.ParseFailed };
     _ = self.expect(.semicolon);
     return decl;
@@ -872,7 +883,7 @@ fn parseConstAssert(self: *Parser) !*Ast.ConstAssertDecl {
 // Types
 // =========================================================================
 
-fn parseType(self: *Parser) error{OutOfMemory, ParseFailed}!Ast.Type {
+fn parseType(self: *Parser, context: []const u8) error{OutOfMemory, ParseFailed}!Ast.Type {
     if (self.eatIdent()) |name| {
         const name_loc = self.currentStart();
         self.advance();
@@ -884,7 +895,11 @@ fn parseType(self: *Parser) error{OutOfMemory, ParseFailed}!Ast.Type {
         return .{ .ident = typ };
     }
 
-    self.addError("expected type");
+    const msg = if (context.len > 0)
+        std.fmt.allocPrint(self.allocator, "expected type {s}", .{context}) catch "expected type"
+    else
+        @as([]const u8, "expected type");
+    self.addError(msg);
     const err_loc = self.currentStart();
     self.advance();
     const typ = try self.allocator.create(Ast.IdentType);
@@ -897,7 +912,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
 
     if (isVecName(name)) {
         const size = name[3] - '0';
-        const elem = try self.parseType();
+        const elem = try self.parseType("in vector type");
         _ = self.expect(.gt);
         const typ = try self.allocator.create(Ast.VecType);
         typ.* = .{ .size = size, .elem_type = elem, .loc = name_loc };
@@ -907,7 +922,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
     if (isMatName(name)) {
         const cols = name[3] - '0';
         const rows = name[5] - '0';
-        const elem = try self.parseType();
+        const elem = try self.parseType("in matrix type");
         _ = self.expect(.gt);
         const typ = try self.allocator.create(Ast.MatType);
         typ.* = .{ .cols = cols, .rows = rows, .elem_type = elem, .loc = name_loc };
@@ -915,9 +930,12 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
     }
 
     if (std.mem.eql(u8, name, "array")) {
-        const elem = try self.parseType();
+        const elem = try self.parseType("in array type");
         var size: ?Ast.Expr = null;
-        if (self.eat(.comma)) size = try self.parseTemplateArgExpr();
+        if (self.eat(.comma)) {
+            self.expr_context = "in array size";
+            size = try self.parseTemplateArgExpr();
+        }
         _ = self.expect(.gt);
         const typ = try self.allocator.create(Ast.ArrayType);
         typ.* = .{ .elem_type = elem, .size = size };
@@ -927,7 +945,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
     if (std.mem.eql(u8, name, "ptr")) {
         const addr = self.parseAddressSpace();
         _ = self.expect(.comma);
-        const elem = try self.parseType();
+        const elem = try self.parseType("in pointer type");
         var access: Ast.AccessMode = .none;
         if (self.eat(.comma)) access = self.parseAccessMode();
         _ = self.expect(.gt);
@@ -937,7 +955,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
     }
 
     if (std.mem.eql(u8, name, "atomic")) {
-        const elem = try self.parseType();
+        const elem = try self.parseType("in atomic type");
         _ = self.expect(.gt);
         const typ = try self.allocator.create(Ast.AtomicType);
         typ.* = .{ .elem_type = elem, .loc = name_loc };
@@ -955,15 +973,15 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
             }
             if (self.eat(.comma)) typ.access_mode = self.parseAccessMode();
         } else if (info.kind != .depth and info.kind != .depth_multisampled) {
-            typ.sampled_type = try self.parseType();
+            typ.sampled_type = try self.parseType("in texture type");
         }
         _ = self.expect(.gt);
         return .{ .texture = typ };
     }
 
     // Generic templated type
-    _ = try self.parseType();
-    while (self.eat(.comma)) _ = try self.parseType();
+    _ = try self.parseType("in template arguments");
+    while (self.eat(.comma)) _ = try self.parseType("in template arguments");
     _ = self.expect(.gt);
     const typ = try self.allocator.create(Ast.IdentType);
     typ.* = .{ .name = name, .ref = .none, .loc = name_loc };
@@ -1222,6 +1240,7 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
             .l_bracket => {
                 const bracket_loc = self.currentStart();
                 self.advance();
+                self.expr_context = "in array index";
                 const idx = (try self.parseExpression()) orelse return null;
                 _ = self.expect(.r_bracket);
                 const node = try self.allocator.create(Ast.IndexExpr);
@@ -1281,6 +1300,7 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
         },
         .l_paren => {
             self.advance();
+            self.expr_context = "after '('";
             const expr = (try self.parseExpression()) orelse return null;
             _ = self.expect(.r_paren);
             const node = try self.allocator.create(Ast.ParenExpr);
@@ -1288,7 +1308,11 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
             return .{ .paren = node };
         },
         else => {
-            self.addError("expected expression");
+            const msg = if (self.expr_context.len > 0)
+                std.fmt.allocPrint(self.allocator, "expected expression {s}", .{self.expr_context}) catch "expected expression"
+            else
+                @as([]const u8, "expected expression");
+            self.addError(msg);
             self.advance();
             return null;
         },
@@ -1314,6 +1338,7 @@ fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?A
 fn parseExpressionList(self: *Parser) !std.ArrayListUnmanaged(Ast.Expr) {
     var exprs: std.ArrayListUnmanaged(Ast.Expr) = .empty;
     if (self.currentTag() == .r_paren) return exprs;
+    self.expr_context = "in arguments";
     if (try self.parseExpression()) |first| {
         try exprs.append(self.allocator, first);
     }
@@ -1408,6 +1433,7 @@ fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
         },
         .l_paren => {
             self.advance();
+            self.expr_context = "after '('";
             const expr = (try self.parseTemplateArgExpr()) orelse return null;
             _ = self.expect(.r_paren);
             const node = try self.allocator.create(Ast.ParenExpr);
@@ -1415,7 +1441,11 @@ fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
             return .{ .paren = node };
         },
         else => {
-            self.addError("expected expression");
+            const msg = if (self.expr_context.len > 0)
+                std.fmt.allocPrint(self.allocator, "expected expression {s}", .{self.expr_context}) catch "expected expression"
+            else
+                @as([]const u8, "expected expression");
+            self.addError(msg);
             self.advance();
             return null;
         },
@@ -1439,6 +1469,7 @@ fn parseStatement(self: *Parser) error{OutOfMemory, ParseFailed}!?Ast.Stmt {
             const loc = self.currentStart();
             self.advance();
             if (self.eat(.keyword_if)) {
+                self.expr_context = "after 'if' in break";
                 const cond = (try self.parseExpression()) orelse return null;
                 _ = self.expect(.semicolon);
                 const node = try self.allocator.create(Ast.BreakIfStmt);
@@ -1499,6 +1530,7 @@ fn parseReturnStmt(self: *Parser) !*Ast.ReturnStmt {
     const node = try self.allocator.create(Ast.ReturnStmt);
     node.* = .{ .loc = loc };
     if (self.currentTag() != .semicolon) {
+        self.expr_context = "after 'return'";
         node.value = try self.parseExpression();
     }
     _ = self.expect(.semicolon);
@@ -1507,6 +1539,7 @@ fn parseReturnStmt(self: *Parser) !*Ast.ReturnStmt {
 
 fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
     _ = self.expect(.keyword_if);
+    self.expr_context = "in if condition";
     const node = try self.allocator.create(Ast.IfStmt);
     node.* = .{
         .condition = (try self.parseExpression()) orelse return error.ParseFailed,
@@ -1524,6 +1557,7 @@ fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
 
 fn parseSwitchStmt(self: *Parser) !*Ast.SwitchStmt {
     _ = self.expect(.keyword_switch);
+    self.expr_context = "in switch expression";
     const node = try self.allocator.create(Ast.SwitchStmt);
     node.* = .{
         .expr = (try self.parseExpression()) orelse return error.ParseFailed,
@@ -1536,6 +1570,7 @@ fn parseSwitchStmt(self: *Parser) !*Ast.SwitchStmt {
             // default case
         } else {
             _ = self.expect(.keyword_case);
+            self.expr_context = "in case selector";
             if (try self.parseExpression()) |sel| try c.selectors.append(self.allocator, sel);
             while (self.eat(.comma)) {
                 if (try self.parseExpression()) |sel| try c.selectors.append(self.allocator, sel);
@@ -1574,6 +1609,7 @@ fn parseForStmt(self: *Parser) !*Ast.ForStmt {
 
     // Condition
     if (self.currentTag() != .semicolon) {
+        self.expr_context = "in for condition";
         node.condition = try self.parseExpression();
     }
     _ = self.expect(.semicolon);
@@ -1590,6 +1626,7 @@ fn parseForStmt(self: *Parser) !*Ast.ForStmt {
 }
 
 fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
+    self.expr_context = "in for update";
     const left = (try self.parseExpression()) orelse return null;
 
     // Check for assignment or incr/decr
@@ -1614,6 +1651,7 @@ fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
     if (self.parseAssignOp()) |op| {
         const loc = self.currentStart();
         self.advance();
+        self.expr_context = "in for update assignment";
         const right = (try self.parseExpression()) orelse return null;
         const node = try self.allocator.create(Ast.AssignStmt);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
@@ -1633,6 +1671,7 @@ fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
 
 fn parseWhileStmt(self: *Parser) !*Ast.WhileStmt {
     _ = self.expect(.keyword_while);
+    self.expr_context = "in while condition";
     const node = try self.allocator.create(Ast.WhileStmt);
     node.* = .{
         .condition = (try self.parseExpression()) orelse return error.ParseFailed,
@@ -1652,6 +1691,7 @@ fn parseLoopStmt(self: *Parser) !*Ast.LoopStmt {
 }
 
 fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
+    self.expr_context = "in statement";
     const left = (try self.parseExpression()) orelse return null;
 
     switch (self.currentTag()) {
@@ -1677,6 +1717,7 @@ fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
     if (self.parseAssignOp()) |op| {
         const loc = self.currentStart();
         self.advance();
+        self.expr_context = "in assignment";
         const right = (try self.parseExpression()) orelse return null;
         _ = self.expect(.semicolon);
         const node = try self.allocator.create(Ast.AssignStmt);
@@ -1691,7 +1732,7 @@ fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
         return .{ .call = node };
     }
 
-    self.addError("expected statement");
+    self.addError("expected assignment, increment, or function call");
     return null;
 }
 
@@ -1855,6 +1896,26 @@ fn expectNoError(input: [:0]const u8) !void {
     var parser = try Parser.init(alloc, input, tokens);
     _ = try parser.parse();
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+}
+
+fn expectParseErrorMessage(input: [:0]const u8, expected_msg: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const tokens = try Lexer.tokenize(alloc, input);
+    var parser = try Parser.init(alloc, input, tokens);
+    _ = parser.parse() catch {};
+    if (parser.errors.items.len == 0) return error.TestExpectedError;
+
+    for (parser.errors.items) |err| {
+        if (std.mem.indexOf(u8, err.message, expected_msg) != null) return;
+    }
+    std.debug.print("\nExpected error containing: '{s}'\nActual errors:\n", .{expected_msg});
+    for (parser.errors.items) |err| {
+        std.debug.print("  - {s}\n", .{err.message});
+    }
+    return error.TestExpectedError;
 }
 
 // -------------------------------------------------------------------------
@@ -3041,6 +3102,73 @@ test "parser: trailing comma in function parameters" {
         \\  return a + (b - a) * t;
         \\}
     );
+}
+
+// -------------------------------------------------------------------------
+// Contextual error message tests
+// -------------------------------------------------------------------------
+
+test "parser error: expect names the expected token" {
+    // Missing semicolons
+    try expectParseErrorMessage("const x = 1", "expected ';'");
+    try expectParseErrorMessage("var x: i32", "expected ';'");
+    try expectParseErrorMessage("let x = 1", "expected ';'");
+    // Missing closing paren
+    try expectParseErrorMessage("fn foo(x: i32 {}", "expected ')'");
+    // Missing closing brace
+    try expectParseErrorMessage("fn foo() { return;", "expected '}'");
+    // Missing closing angle bracket
+    try expectParseErrorMessage("var x: vec3<f32;", "expected '>'");
+    // Missing equals
+    try expectParseErrorMessage("const x 1;", "expected '='");
+    // Missing colon in parameter
+    try expectParseErrorMessage("fn foo(x i32) {}", "expected ':'");
+}
+
+test "parser error: expected type with context" {
+    // Type after colon in var declaration
+    try expectParseErrorMessage("var x: 999;", "expected type after ':' in var declaration");
+    // Type after arrow in function return type
+    try expectParseErrorMessage("fn foo() -> 456 {}", "expected type after '->' in function return type");
+    // Type after colon in function parameter
+    try expectParseErrorMessage("fn foo(x: 123) {}", "expected type after ':' in function parameter");
+    // Type after colon in struct member
+    try expectParseErrorMessage("struct Foo { x: 123 }", "expected type after ':' in struct member");
+    // Type after equals in alias declaration
+    try expectParseErrorMessage("alias T = 123;", "expected type after '=' in alias declaration");
+    // Type after colon in const declaration
+    try expectParseErrorMessage("const x: 123 = 1;", "expected type after ':' in const declaration");
+    // Type after colon in override declaration
+    try expectParseErrorMessage("override x: 123;", "expected type after ':' in override declaration");
+    // Type after colon in let declaration
+    try expectParseErrorMessage("fn f() { let x: 123 = 1; }", "expected type after ':' in let declaration");
+    // Type in vector type
+    try expectParseErrorMessage("var x: vec3<123>;", "expected type in vector type");
+    // Type in array type
+    try expectParseErrorMessage("var x: array<123>;", "expected type in array type");
+    // Type in matrix type
+    try expectParseErrorMessage("var x: mat2x2<123>;", "expected type in matrix type");
+}
+
+test "parser error: expected expression with context" {
+    // Expression after = in const
+    try expectParseErrorMessage("const x = ;", "expected expression after '=' in const declaration");
+    // Expression after = in let
+    try expectParseErrorMessage("fn f() { let x = ; }", "expected expression after '=' in let declaration");
+    // Expression after = in var
+    try expectParseErrorMessage("var x: i32 = ;", "expected expression after '=' in var declaration");
+    // Expression in if condition
+    try expectParseErrorMessage("fn f() { if ; {} }", "expected expression in if condition");
+    // Expression in while condition
+    try expectParseErrorMessage("fn f() { while ; {} }", "expected expression in while condition");
+    // Expression in switch
+    try expectParseErrorMessage("fn f() { switch ; {} }", "expected expression in switch expression");
+    // Expression after return (return with invalid token, not just semicolon)
+    try expectParseErrorMessage("fn f() -> i32 { return +; }", "after 'return'");
+}
+
+test "parser error: expected assignment or call in statement" {
+    try expectParseErrorMessage("fn foo() { 42; }", "expected assignment, increment, or function call");
 }
 
 pub const Error = error{ParseFailed} || std.mem.Allocator.Error;

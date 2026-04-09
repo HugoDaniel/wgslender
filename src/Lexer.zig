@@ -174,6 +174,31 @@ pub const Tag = enum(u8) {
         result[@intFromEnum(Tag.colon)] = ":";
         result[@intFromEnum(Tag.comma)] = ",";
         result[@intFromEnum(Tag.underscore)] = "_";
+        // Keywords
+        result[@intFromEnum(Tag.keyword_alias)] = "alias";
+        result[@intFromEnum(Tag.keyword_break)] = "break";
+        result[@intFromEnum(Tag.keyword_case)] = "case";
+        result[@intFromEnum(Tag.keyword_const)] = "const";
+        result[@intFromEnum(Tag.keyword_const_assert)] = "const_assert";
+        result[@intFromEnum(Tag.keyword_continue)] = "continue";
+        result[@intFromEnum(Tag.keyword_continuing)] = "continuing";
+        result[@intFromEnum(Tag.keyword_default)] = "default";
+        result[@intFromEnum(Tag.keyword_diagnostic)] = "diagnostic";
+        result[@intFromEnum(Tag.keyword_discard)] = "discard";
+        result[@intFromEnum(Tag.keyword_else)] = "else";
+        result[@intFromEnum(Tag.keyword_enable)] = "enable";
+        result[@intFromEnum(Tag.keyword_fn)] = "fn";
+        result[@intFromEnum(Tag.keyword_for)] = "for";
+        result[@intFromEnum(Tag.keyword_if)] = "if";
+        result[@intFromEnum(Tag.keyword_let)] = "let";
+        result[@intFromEnum(Tag.keyword_loop)] = "loop";
+        result[@intFromEnum(Tag.keyword_override)] = "override";
+        result[@intFromEnum(Tag.keyword_requires)] = "requires";
+        result[@intFromEnum(Tag.keyword_return)] = "return";
+        result[@intFromEnum(Tag.keyword_struct)] = "struct";
+        result[@intFromEnum(Tag.keyword_switch)] = "switch";
+        result[@intFromEnum(Tag.keyword_var)] = "var";
+        result[@intFromEnum(Tag.keyword_while)] = "while";
         return result;
     }
 };
