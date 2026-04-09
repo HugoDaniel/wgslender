@@ -497,3 +497,68 @@ test "single-char identifier range" {
     // "x" is 1 char
     try expectErrorWidth(result, "undeclared identifier", 1);
 }
+
+// =========================================================================
+// Deduplication
+// =========================================================================
+
+test "unknown type in function signature is not duplicated" {
+    // This used to produce 3x "unknown type 'BadType'" because resolveType
+    // was called in phase 3.5 (registerFunctionSignatures) and again in
+    // phase 4 (validateFunction) for parameters and return types.
+    const source =
+        \\@fragment
+        \\fn main(input: BadType) {}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // Count how many times "unknown type 'BadType'" appears
+    var count: u32 = 0;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "unknown type 'BadType'") != null) {
+            count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 1), count);
+}
+
+test "unknown return type is not duplicated" {
+    const source =
+        \\@vertex
+        \\fn main() -> BadOutput {
+        \\  return vec4f(0.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    var count: u32 = 0;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "unknown type 'BadOutput'") != null) {
+            count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 1), count);
+}
+
+test "multiple unknown types each appear exactly once" {
+    const source =
+        \\@vertex
+        \\fn main(a: TypeA, b: TypeB) -> TypeC {
+        \\  return vec4f(0.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    var count_a: u32 = 0;
+    var count_b: u32 = 0;
+    var count_c: u32 = 0;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (d.severity != .@"error") continue;
+        if (std.mem.indexOf(u8, d.message, "'TypeA'") != null) count_a += 1;
+        if (std.mem.indexOf(u8, d.message, "'TypeB'") != null) count_b += 1;
+        if (std.mem.indexOf(u8, d.message, "'TypeC'") != null) count_c += 1;
+    }
+    try std.testing.expectEqual(@as(u32, 1), count_a);
+    try std.testing.expectEqual(@as(u32, 1), count_b);
+    try std.testing.expectEqual(@as(u32, 1), count_c);
+}

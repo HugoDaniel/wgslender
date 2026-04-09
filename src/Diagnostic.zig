@@ -512,6 +512,44 @@ fn getSourceLine(self: *const Diagnostic, line_number: u32) []const u8 {
     return src[line_start..line_end];
 }
 
+/// Remove duplicate diagnostics (same offset and message).
+/// Preserves the first occurrence and the original order.
+pub fn deduplicate(self: *Diagnostic) void {
+    const entries = self.diagnostics.items;
+    if (entries.len <= 1) return;
+
+    // In-place stable dedup: walk forward, keeping entries whose
+    // (start offset, message) pair hasn't been seen before.
+    var write: usize = 0;
+    for (0..entries.len) |read| {
+        const entry = entries[read];
+        const is_dup = blk: {
+            for (entries[0..write]) |kept| {
+                if (kept.range.start.offset == entry.range.start.offset and
+                    std.mem.eql(u8, kept.message, entry.message))
+                {
+                    break :blk true;
+                }
+            }
+            break :blk false;
+        };
+        if (!is_dup) {
+            entries[write] = entry;
+            write += 1;
+        }
+    }
+    self.diagnostics.items.len = write;
+
+    // Recompute has_errors from remaining entries.
+    self.has_errors = false;
+    for (self.diagnostics.items) |d| {
+        if (d.severity == .@"error") {
+            self.has_errors = true;
+            break;
+        }
+    }
+}
+
 /// Remove all diagnostics.
 pub fn clear(self: *Diagnostic) void {
     self.diagnostics.items.len = 0;
@@ -729,6 +767,65 @@ test "DiagnosticList clear" {
     dl.clear();
     try std.testing.expectEqual(@as(u32, 0), dl.count());
     try std.testing.expect(!dl.hasErrors());
+}
+
+test "deduplicate removes exact duplicates" {
+    const allocator = std.testing.allocator;
+    var dl = Diagnostic.init(allocator, "fn main() {}");
+    defer dl.deinit(allocator);
+
+    dl.addError(allocator, 3, "unknown type 'Foo'");
+    dl.addError(allocator, 3, "unknown type 'Foo'"); // duplicate
+    dl.addError(allocator, 7, "unknown type 'Bar'");
+    dl.addError(allocator, 3, "unknown type 'Foo'"); // duplicate
+    dl.addError(allocator, 7, "unknown type 'Bar'"); // duplicate
+
+    try std.testing.expectEqual(@as(u32, 5), dl.count());
+
+    dl.deduplicate();
+
+    try std.testing.expectEqual(@as(u32, 2), dl.count());
+    try std.testing.expect(dl.hasErrors());
+}
+
+test "deduplicate preserves different messages at same offset" {
+    const allocator = std.testing.allocator;
+    var dl = Diagnostic.init(allocator, "fn main() {}");
+    defer dl.deinit(allocator);
+
+    dl.addError(allocator, 3, "error A");
+    dl.addError(allocator, 3, "error B"); // same offset, different message — keep
+
+    dl.deduplicate();
+
+    try std.testing.expectEqual(@as(u32, 2), dl.count());
+}
+
+test "deduplicate preserves same message at different offsets" {
+    const allocator = std.testing.allocator;
+    var dl = Diagnostic.init(allocator, "fn main() {}");
+    defer dl.deinit(allocator);
+
+    dl.addError(allocator, 3, "unknown type 'Foo'");
+    dl.addError(allocator, 7, "unknown type 'Foo'"); // same message, different offset — keep
+
+    dl.deduplicate();
+
+    try std.testing.expectEqual(@as(u32, 2), dl.count());
+}
+
+test "deduplicate recomputes has_errors" {
+    const allocator = std.testing.allocator;
+    var dl = Diagnostic.init(allocator, "fn main() {}");
+    defer dl.deinit(allocator);
+
+    dl.addWarning(allocator, 0, "warning");
+    dl.addWarning(allocator, 0, "warning"); // duplicate
+
+    dl.deduplicate();
+
+    try std.testing.expectEqual(@as(u32, 1), dl.count());
+    try std.testing.expect(!dl.hasErrors()); // only warnings, no errors
 }
 
 test "DiagnosticFilter" {

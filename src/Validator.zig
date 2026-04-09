@@ -145,6 +145,9 @@ pub fn validate(allocator: Allocator, module: *Ast.Module, options: Options) !Re
     // Phase 5: Uniformity analysis
     v.analyzeUniformity();
 
+    // Remove duplicate diagnostics produced by overlapping phases
+    diags.deduplicate();
+
     return .{
         .valid = !diags.hasErrors(),
         .diagnostics = diags,
