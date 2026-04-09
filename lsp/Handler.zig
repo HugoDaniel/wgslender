@@ -44,6 +44,8 @@ pub const LspDiagnostic = struct {
     range: Range,
     severity: DiagnosticSeverity,
     message: []const u8,
+    code: []const u8 = "",
+    spec_url: []const u8 = "",
     related: []const LspRelatedInfo = &.{},
 };
 
@@ -126,11 +128,12 @@ pub fn validateDocument(self: *Handler, source: []const u8) ![]LspDiagnostic {
     return diags;
 }
 
+const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
+
 fn convertDiagnostic(allocator: std.mem.Allocator, entry: *const WgslDiagnostic.Entry) LspDiagnostic {
     var related: []const LspRelatedInfo = &.{};
     if (entry.related.len > 0) {
-        const rel = allocator.alloc(LspRelatedInfo, entry.related.len) catch &.{};
-        if (rel.len > 0) {
+        if (allocator.alloc(LspRelatedInfo, entry.related.len)) |rel| {
             for (entry.related, 0..) |r, ri| {
                 rel[ri] = .{
                     .range = .{
@@ -147,7 +150,7 @@ fn convertDiagnostic(allocator: std.mem.Allocator, entry: *const WgslDiagnostic.
                 };
             }
             related = rel;
-        }
+        } else |_| {}
     }
     return .{
         .range = .{
@@ -167,6 +170,107 @@ fn convertDiagnostic(allocator: std.mem.Allocator, entry: *const WgslDiagnostic.
             else => .information,
         },
         .message = entry.message,
+        .code = entry.code,
+        .spec_url = if (entry.code.len > 0 and entry.spec_ref.len > 0) blk: {
+            const url = allocator.alloc(u8, wgsl_spec_base.len + entry.spec_ref.len) catch break :blk "";
+            @memcpy(url[0..wgsl_spec_base.len], wgsl_spec_base);
+            @memcpy(url[wgsl_spec_base.len..], entry.spec_ref);
+            break :blk url;
+        } else "",
         .related = related,
     };
+}
+
+// =========================================================================
+// Tests
+// =========================================================================
+
+test "convertDiagnostic preserves code" {
+    const entry = WgslDiagnostic.Entry{ .code = "E0200" };
+    const result = convertDiagnostic(std.testing.allocator, &entry);
+    try std.testing.expectEqualStrings("E0200", result.code);
+}
+
+test "convertDiagnostic builds spec_url from spec_ref" {
+    const entry = WgslDiagnostic.Entry{ .code = "E0700", .spec_ref = "uniformity" };
+    const result = convertDiagnostic(std.testing.allocator, &entry);
+    defer std.testing.allocator.free(result.spec_url);
+    try std.testing.expectEqualStrings("https://www.w3.org/TR/WGSL/#uniformity", result.spec_url);
+}
+
+test "convertDiagnostic omits code and spec_url when empty" {
+    const entry = WgslDiagnostic.Entry{};
+    const result = convertDiagnostic(std.testing.allocator, &entry);
+    try std.testing.expectEqual(@as(usize, 0), result.code.len);
+    try std.testing.expectEqual(@as(usize, 0), result.spec_url.len);
+}
+
+test "convertDiagnostic omits spec_url when code empty" {
+    const entry = WgslDiagnostic.Entry{ .spec_ref = "uniformity" };
+    const result = convertDiagnostic(std.testing.allocator, &entry);
+    try std.testing.expectEqual(@as(usize, 0), result.spec_url.len);
+}
+
+fn freeDiagnostics(allocator: std.mem.Allocator, diags: []LspDiagnostic) void {
+    for (diags) |d| {
+        if (d.related.len > 0) allocator.free(d.related);
+        if (d.spec_url.len > 0) allocator.free(d.spec_url);
+    }
+    allocator.free(diags);
+}
+
+test "code round-trips through validateDocument" {
+    // A type mismatch triggers a diagnostic with code "E0200".
+    const source =
+        \\const x: i32 = 1.5;
+    ;
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+
+    const diags = try handler.validateDocument(source);
+    defer freeDiagnostics(std.testing.allocator, diags);
+
+    // Find a diagnostic with a code
+    for (diags) |d| {
+        if (d.code.len > 0) {
+            try std.testing.expect(std.mem.startsWith(u8, d.code, "E"));
+            return;
+        }
+    }
+    std.debug.print("\nExpected a diagnostic with a code, got {d} diagnostics:\n", .{diags.len});
+    for (diags) |d| {
+        std.debug.print("  [{s}] {s}\n", .{ d.code, d.message });
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "spec_url round-trips through validateDocument" {
+    // workgroupBarrier inside a branch on a non-uniform builtin triggers
+    // a uniformity error with code (E0701) and spec_ref ("uniformity").
+    const source =
+        \\@compute @workgroup_size(64)
+        \\fn main(@builtin(global_invocation_id) global_invocation_id: vec3<u32>) {
+        \\  if (global_invocation_id.x > 0) {
+        \\    workgroupBarrier();
+        \\  }
+        \\}
+    ;
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+
+    const diags = try handler.validateDocument(source);
+    defer freeDiagnostics(std.testing.allocator, diags);
+
+    for (diags) |d| {
+        if (d.spec_url.len > 0) {
+            try std.testing.expectEqualStrings("https://www.w3.org/TR/WGSL/#uniformity", d.spec_url);
+            try std.testing.expect(d.code.len > 0);
+            return;
+        }
+    }
+    std.debug.print("\nExpected a diagnostic with spec_url, got {d} diagnostics:\n", .{diags.len});
+    for (diags) |d| {
+        std.debug.print("  [{s}] {s}\n", .{ d.code, d.message });
+    }
+    return error.TestUnexpectedResult;
 }

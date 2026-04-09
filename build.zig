@@ -281,6 +281,19 @@ pub fn build(b: *std.Build) void {
     const tint_step = b.step("tint-test", "Run Tint semantic preservation tests");
     tint_step.dependOn(&run_tint_tests.step);
 
+    // LSP Handler tests (lsp/)
+    const handler_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("lsp/Handler.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "wgslender", .module = wgslender_mod },
+            },
+        }),
+    });
+    const run_handler_tests = b.addRunArtifact(handler_tests);
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&run_unit_tests.step);
     test_step.dependOn(&run_snapshot_tests.step);
@@ -294,4 +307,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_semantic_tests.step);
     test_step.dependOn(&run_sourcemap_tests.step);
     test_step.dependOn(&run_tint_tests.step);
+    test_step.dependOn(&run_handler_tests.step);
 }

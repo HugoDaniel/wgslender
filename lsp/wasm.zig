@@ -180,6 +180,16 @@ fn emitDiagnostics(uri: []const u8) void {
         appendStr(&buf, ",\"source\":\"wgslender\",\"message\":\"");
         Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.message);
         appendStr(&buf, "\"");
+        if (diag.code.len > 0) {
+            appendStr(&buf, ",\"code\":\"");
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.code);
+            appendStr(&buf, "\"");
+        }
+        if (diag.spec_url.len > 0) {
+            appendStr(&buf, ",\"codeDescription\":{\"href\":\"");
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.spec_url);
+            appendStr(&buf, "\"}");
+        }
         if (diag.related.len > 0) {
             appendStr(&buf, ",\"relatedInformation\":[");
             for (diag.related, 0..) |rel, ri| {

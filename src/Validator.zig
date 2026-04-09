@@ -2518,7 +2518,7 @@ const UniformityAnalyzer = struct {
             .code = code,
             .message = message,
             .range = ua.diags.makeRange(loc, loc + 1),
-            .spec_ref = "15",
+            .spec_ref = "uniformity",
         });
     }
 };

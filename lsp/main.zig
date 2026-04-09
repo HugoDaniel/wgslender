@@ -151,6 +151,8 @@ const NativeServer = struct {
                     .information => .Information,
                     .hint => .Hint,
                 },
+                .code = if (d.code.len > 0) .{ .string = d.code } else null,
+                .codeDescription = if (d.spec_url.len > 0) .{ .href = d.spec_url } else null,
                 .source = "wgslender",
                 .message = d.message,
                 .relatedInformation = related_info,
