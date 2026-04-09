@@ -101,6 +101,11 @@ pub fn isBuiltin(name: []const u8) bool {
     return table.has(name);
 }
 
+/// Returns a slice of all builtin function name strings.
+pub fn names() []const []const u8 {
+    return table.keys();
+}
+
 // =========================================================================
 // Builtin Entries
 // =========================================================================

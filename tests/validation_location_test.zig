@@ -829,3 +829,315 @@ test "atomic with non-integer element type reports location" {
     // 'atomic' at line 1, col 20
     try expectErrorAtWithMessage(result, 1, 20, "atomic type requires");
 }
+
+// =========================================================================
+// "Did you mean?" — Struct member suggestions
+// =========================================================================
+
+test "did-you-mean suggests close struct member" {
+    const source =
+        \\struct Vertex { position: f32 }
+        \\@fragment
+        \\fn main() {
+        \\    var s : Vertex;
+        \\    let tmp = s.positon;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 5, 16, "did you mean 'position'");
+}
+
+test "did-you-mean suggests struct member with transposition" {
+    const source =
+        \\struct Mesh { color: vec4f }
+        \\@fragment
+        \\fn main() {
+        \\    var s : Mesh;
+        \\    let tmp = s.colro;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 5, 16, "did you mean 'color'");
+}
+
+test "no suggestion for completely wrong struct member" {
+    const source =
+        \\struct S { x: f32 }
+        \\@fragment
+        \\fn main() {
+        \\    var s : S;
+        \\    let tmp = s.foobar;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    const diags = result.diagnostics.diagnostics.items;
+    for (diags) |d| {
+        if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "foobar") != null) {
+            try std.testing.expect(std.mem.indexOf(u8, d.message, "did you mean") == null);
+            return;
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "did-you-mean struct member off-by-one char" {
+    const source =
+        \\struct S { normal: vec3f }
+        \\@fragment
+        \\fn main() {
+        \\    var s : S;
+        \\    let tmp = s.norml;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 5, 16, "did you mean 'normal'");
+}
+
+test "did-you-mean struct member picks best from multiple" {
+    const source =
+        \\struct S { position: f32, rotation: f32 }
+        \\@fragment
+        \\fn main() {
+        \\    var s : S;
+        \\    let tmp = s.positon;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'positon' is distance 1 from 'position', distance 3+ from 'rotation'
+    try expectErrorAtWithMessage(result, 5, 16, "did you mean 'position'");
+}
+
+// =========================================================================
+// "Did you mean?" — @builtin value suggestions
+// =========================================================================
+
+test "did-you-mean suggests close builtin value" {
+    const source =
+        \\@vertex
+        \\fn main(@builtin(positon) idx: u32) -> @builtin(position) vec4f {
+        \\    return vec4f(0.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 2, 9, "did you mean 'position'");
+}
+
+test "did-you-mean for misspelled builtin vertex_index" {
+    const source =
+        \\@vertex
+        \\fn main(@builtin(vertex_indx) idx: u32) -> @builtin(position) vec4f {
+        \\    return vec4f(0.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 2, 9, "did you mean 'vertex_index'");
+}
+
+test "unknown builtin value with no close match" {
+    const source =
+        \\@vertex
+        \\fn main(@builtin(xyzzy) idx: u32) -> @builtin(position) vec4f {
+        \\    return vec4f(0.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 2, 9, "unknown @builtin value");
+    const diags = result.diagnostics.diagnostics.items;
+    for (diags) |d| {
+        if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "xyzzy") != null) {
+            try std.testing.expect(std.mem.indexOf(u8, d.message, "did you mean") == null);
+            return;
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "did-you-mean builtin with underscore typo" {
+    const source =
+        \\@compute @workgroup_size(1)
+        \\fn main(@builtin(local_invocationid) id: vec3u) {
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 2, 9, "did you mean 'local_invocation_id'");
+}
+
+test "builtin wrong for stage suggests valid alternative" {
+    const source =
+        \\@fragment
+        \\fn main(@builtin(vertex_index) idx: u32) -> @location(0) vec4f {
+        \\    return vec4f(0.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // vertex_index is known but invalid for fragment stage
+    try expectErrorAtWithMessage(result, 2, 9, "is not valid for fragment shaders");
+}
+
+// =========================================================================
+// "Did you mean?" — Undeclared identifier suggestions
+// =========================================================================
+
+test "did-you-mean suggests close variable name" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    var position : f32 = 1.0;
+        \\    let tmp = positon;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 15, "did you mean 'position'");
+}
+
+test "did-you-mean suggests function name for identifier" {
+    const source =
+        \\fn compute() {}
+        \\@fragment
+        \\fn main() {
+        \\    comput();
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'comput' should suggest 'compute' (error at call location)
+    try expectErrorAtWithMessage(result, 4, 11, "did you mean 'compute'");
+}
+
+test "did-you-mean suggests builtin function name" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let tmp = sine(1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'sine' should suggest 'sin' (error at call location)
+    try expectErrorAtWithMessage(result, 3, 19, "did you mean 'sin'");
+}
+
+test "no suggestion for completely wrong identifier" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let tmp = xyzzyplugh;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    const diags = result.diagnostics.diagnostics.items;
+    for (diags) |d| {
+        if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "xyzzyplugh") != null) {
+            try std.testing.expect(std.mem.indexOf(u8, d.message, "did you mean") == null);
+            return;
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
+// =========================================================================
+// "Did you mean?" — Not-callable suggestions
+// =========================================================================
+
+test "did-you-mean suggests close builtin function call" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let tmp = coss(1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'coss' should suggest 'cos' (error at call location)
+    try expectErrorAtWithMessage(result, 3, 19, "did you mean 'cos'");
+}
+
+test "did-you-mean suggests close user function call" {
+    const source =
+        \\fn calculate() -> f32 { return 1.0; }
+        \\@fragment
+        \\fn main() {
+        \\    let tmp = calculat();
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // error at call location (opening paren)
+    try expectErrorAtWithMessage(result, 4, 23, "did you mean 'calculate'");
+}
+
+test "no suggestion for completely wrong call" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let tmp = fooBarBaz();
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    const diags = result.diagnostics.diagnostics.items;
+    for (diags) |d| {
+        if (d.severity == .@"error") {
+            try std.testing.expect(std.mem.indexOf(u8, d.message, "did you mean") == null);
+            return;
+        }
+    }
+    return error.TestUnexpectedResult;
+}
+
+// =========================================================================
+// "Did you mean?" — Swizzle component hints
+// =========================================================================
+
+test "swizzle error shows valid components hint" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    var v : vec3f;
+        \\    let tmp = v.q;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // error at member expression (`.` position)
+    try expectErrorAtWithMessage(result, 4, 16, "valid components are xyzw or rgba");
+}
+
+test "swizzle with invalid character in multi-component shows hint" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    var v : vec3f;
+        \\    let tmp = v.xq;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 16, "valid components are xyzw or rgba");
+}
+
+test "swizzle out-of-bounds does not show components hint" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    var v : vec2f;
+        \\    let tmp = v.z;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // Out-of-bounds error should NOT mention "valid components"
+    try expectErrorAtWithMessage(result, 4, 16, "out of bounds");
+}

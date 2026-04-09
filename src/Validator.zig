@@ -1007,7 +1007,56 @@ fn hasBuiltinAttr(attrs: std.ArrayListUnmanaged(Ast.Attribute), builtin_name: []
     return false;
 }
 
+const all_builtin_values = [_][]const u8{
+    "vertex_index",
+    "instance_index",
+    "position",
+    "front_facing",
+    "sample_index",
+    "sample_mask",
+    "frag_depth",
+    "local_invocation_id",
+    "local_invocation_index",
+    "global_invocation_id",
+    "workgroup_id",
+    "num_workgroups",
+    "subgroup_invocation_id",
+    "subgroup_size",
+};
+
+const vertex_input_builtins = [_][]const u8{ "vertex_index", "instance_index" };
+const vertex_output_builtins = [_][]const u8{"position"};
+const fragment_input_builtins = [_][]const u8{ "position", "front_facing", "sample_index", "sample_mask", "subgroup_invocation_id", "subgroup_size" };
+const fragment_output_builtins = [_][]const u8{ "frag_depth", "sample_mask" };
+const compute_input_builtins = [_][]const u8{ "local_invocation_id", "local_invocation_index", "global_invocation_id", "workgroup_id", "num_workgroups", "subgroup_invocation_id", "subgroup_size" };
+
+fn isKnownBuiltinValue(name: []const u8) bool {
+    for (&all_builtin_values) |v| {
+        if (std.mem.eql(u8, name, v)) return true;
+    }
+    return false;
+}
+
+fn getStageBuiltins(stage: ShaderStage, is_input: bool) []const []const u8 {
+    return switch (stage) {
+        .vertex => if (is_input) &vertex_input_builtins else &vertex_output_builtins,
+        .fragment => if (is_input) &fragment_input_builtins else &fragment_output_builtins,
+        .compute => if (is_input) &compute_input_builtins else &.{},
+        .none => &all_builtin_values,
+    };
+}
+
 fn validateBuiltinForStage(v: *Validator, builtin_name: []const u8, is_input: bool, loc: u32) void {
+    // Check if the name is a known builtin value at all
+    if (!isKnownBuiltinValue(builtin_name)) {
+        if (suggestName(builtin_name, &all_builtin_values, 3)) |s| {
+            v.addErrorWithCode(loc, Diagnostic.Code.invalid_builtin, v.fmtError("unknown @builtin value '{s}'; did you mean '{s}'?", .{ builtin_name, s }));
+        } else {
+            v.addErrorWithCode(loc, Diagnostic.Code.invalid_builtin, v.fmtError("unknown @builtin value '{s}'", .{builtin_name}));
+        }
+        return;
+    }
+
     const valid = switch (v.current_stage) {
         .vertex => if (is_input)
             isVertexInput(builtin_name)
@@ -1025,7 +1074,12 @@ fn validateBuiltinForStage(v: *Validator, builtin_name: []const u8, is_input: bo
     };
 
     if (!valid) {
-        v.addErrorWithCode(loc, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders", .{ builtin_name, v.current_stage.string() }));
+        const stage_builtins = getStageBuiltins(v.current_stage, is_input);
+        if (suggestName(builtin_name, stage_builtins, 3)) |s| {
+            v.addErrorWithCode(loc, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders; did you mean '{s}'?", .{ builtin_name, v.current_stage.string(), s }));
+        } else {
+            v.addErrorWithCode(loc, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders", .{ builtin_name, v.current_stage.string() }));
+        }
     }
 }
 
@@ -1454,7 +1508,11 @@ fn checkIdent(v: *Validator, e: *Ast.IdentExpr) ?Types.Type {
     }
 
     // Undefined identifier
-    v.addErrorWithCode(e.loc, Diagnostic.Code.undefined_symbol, v.fmtError("use of undeclared identifier '{s}'", .{e.name}));
+    if (v.suggestIdentifier(e.name)) |s| {
+        v.addErrorWithCode(e.loc, Diagnostic.Code.undefined_symbol, v.fmtError("use of undeclared identifier '{s}'; did you mean '{s}'?", .{ e.name, s }));
+    } else {
+        v.addErrorWithCode(e.loc, Diagnostic.Code.undefined_symbol, v.fmtError("use of undeclared identifier '{s}'", .{e.name}));
+    }
     return null;
 }
 
@@ -1720,7 +1778,11 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) ?Types.Type {
                             },
                             else => {
                                 // Symbol exists but is not a function
-                                v.addErrorWithCode(e.loc, Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
+                                if (v.suggestCallable(callee_name)) |s| {
+                                    v.addErrorWithCode(e.loc, Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
+                                } else {
+                                    v.addErrorWithCode(e.loc, Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
+                                }
                                 return null;
                             },
                         }
@@ -1736,7 +1798,11 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) ?Types.Type {
 
                 // Not resolvable — report error
                 if (callee_name.len > 0 and !Builtins.isBuiltin(callee_name)) {
-                    v.addErrorWithCode(e.loc, Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
+                    if (v.suggestCallable(callee_name)) |s| {
+                        v.addErrorWithCode(e.loc, Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
+                    } else {
+                        v.addErrorWithCode(e.loc, Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
+                    }
                     return null;
                 }
             },
@@ -1746,7 +1812,11 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) ?Types.Type {
 
     // Unresolved call — if we have a name and it's not a builtin, error
     if (callee_name.len > 0) {
-        v.addErrorWithCode(e.loc, Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
+        if (v.suggestCallable(callee_name)) |s| {
+            v.addErrorWithCode(e.loc, Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
+        } else {
+            v.addErrorWithCode(e.loc, Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
+        }
     }
     return null;
 }
@@ -1997,7 +2067,7 @@ fn validateSwizzle(v: *Validator, name: []const u8, vec_width: u8, loc: u32, bas
         const xyzw_idx = std.mem.indexOfScalar(u8, xyzw, c);
         const rgba_idx = std.mem.indexOfScalar(u8, rgba, c);
         if (xyzw_idx == null and rgba_idx == null) {
-            v.addErrorWithCode(loc, Diagnostic.Code.no_such_member, v.fmtError("invalid swizzle '.{s}' on type '{s}'", .{ name, base_type.string() }));
+            v.addErrorWithCode(loc, Diagnostic.Code.no_such_member, v.fmtError("invalid swizzle '.{s}' on type '{s}'; valid components are xyzw or rgba", .{ name, base_type.string() }));
             return false;
         }
         if (xyzw_idx != null) has_xyzw = true;
@@ -2037,12 +2107,22 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) ?Types.Type {
                 v.makeRelated(v.symbolLoc(sd.name), v.fmtError("struct '{s}' defined here", .{st.name}))
             else
                 &[_]Diagnostic.RelatedInfo{};
-            v.addErrorWithRelated(e.loc, Diagnostic.Code.no_such_member, v.fmtError("struct '{s}' has no member '{s}'", .{ st.name, e.member_name }), related);
+            const suggestion = blk: {
+                var field_names: [64][]const u8 = undefined;
+                const count = @min(st.fields.len, 64);
+                for (0..count) |i| field_names[i] = st.fields[i].name;
+                break :blk suggestName(e.member_name, field_names[0..count], 3);
+            };
+            if (suggestion) |s| {
+                v.addErrorWithRelated(e.loc, Diagnostic.Code.no_such_member, v.fmtError("struct '{s}' has no member '{s}'; did you mean '{s}'?", .{ st.name, e.member_name, s }), related);
+            } else {
+                v.addErrorWithRelated(e.loc, Diagnostic.Code.no_such_member, v.fmtError("struct '{s}' has no member '{s}'", .{ st.name, e.member_name }), related);
+            }
             return null;
         },
         .vector => |ve| {
             if (e.member_name.len < 1 or e.member_name.len > 4) {
-                v.addErrorWithCode(e.loc, Diagnostic.Code.no_such_member, v.fmtError("invalid swizzle '.{s}' on type '{s}'", .{ e.member_name, base_type.string() }));
+                v.addErrorWithCode(e.loc, Diagnostic.Code.no_such_member, v.fmtError("invalid swizzle '.{s}' on type '{s}'; valid components are xyzw or rgba", .{ e.member_name, base_type.string() }));
                 return null;
             }
             if (!v.validateSwizzle(e.member_name, ve.width, e.loc, base_type)) return null;
@@ -2750,6 +2830,76 @@ fn levenshteinBounded(a: []const u8, b: []const u8, max: usize) usize {
         }
     }
     return row[b.len];
+}
+
+/// Find the closest name within Levenshtein distance `max_dist` (exclusive).
+/// Returns null if no candidate is close enough.
+fn suggestName(name: []const u8, candidates: []const []const u8, max_dist: usize) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_dist: usize = max_dist;
+    for (candidates) |candidate| {
+        const d = levenshteinBounded(name, candidate, best_dist);
+        if (d < best_dist) {
+            best = candidate;
+            best_dist = d;
+        }
+    }
+    return best;
+}
+
+/// Suggest a close match for an undeclared identifier from all visible symbols and builtin functions.
+fn suggestIdentifier(v: *Validator, name: []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_dist: usize = 3;
+    // User-defined symbols
+    for (v.module.symbols.items) |sym| {
+        if (sym.original_name.len == 0 or sym.kind == .unbound) continue;
+        const d = levenshteinBounded(name, sym.original_name, best_dist);
+        if (d < best_dist) {
+            best = sym.original_name;
+            best_dist = d;
+        }
+    }
+    // Builtin functions
+    for (Builtins.names()) |bname| {
+        const d = levenshteinBounded(name, bname, best_dist);
+        if (d < best_dist) {
+            best = bname;
+            best_dist = d;
+        }
+    }
+    return best;
+}
+
+/// Suggest a close match for a not-callable name from builtin functions, user functions, and type constructors.
+fn suggestCallable(v: *Validator, name: []const u8) ?[]const u8 {
+    var best: ?[]const u8 = null;
+    var best_dist: usize = 3;
+    // Builtin functions
+    for (Builtins.names()) |bname| {
+        const d = levenshteinBounded(name, bname, best_dist);
+        if (d < best_dist) {
+            best = bname;
+            best_dist = d;
+        }
+    }
+    // User-defined functions
+    for (v.module.symbols.items) |sym| {
+        if (sym.kind != .function or sym.original_name.len == 0) continue;
+        const d = levenshteinBounded(name, sym.original_name, best_dist);
+        if (d < best_dist) {
+            best = sym.original_name;
+            best_dist = d;
+        }
+    }
+    // Type constructors
+    if (v.suggestType(name)) |type_name| {
+        const d = levenshteinBounded(name, type_name, best_dist);
+        if (d < best_dist) {
+            best = type_name;
+        }
+    }
+    return best;
 }
 
 fn parseVectorShorthand(v: *Validator, name: []const u8) ?Types.Type {
