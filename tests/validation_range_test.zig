@@ -540,6 +540,295 @@ test "unknown return type is not duplicated" {
     try std.testing.expectEqual(@as(u32, 1), count);
 }
 
+// =========================================================================
+// Swizzle / vector member ranges
+// =========================================================================
+
+test "invalid swizzle underlines dot+swizzle" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  let v = vec3f(1.0, 2.0, 3.0);
+        \\  let s = v.wxyz;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // ".wxyz" is 1 (dot) + 4 (swizzle) = 5 chars
+    try expectErrorWidth(result, "swizzle", 5);
+}
+
+test "out-of-bounds swizzle component on vec2" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  let v = vec2f(1.0, 2.0);
+        \\  let s = v.z;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // ".z" is 2 chars
+    try expectErrorWidth(result, "out of bounds", 2);
+}
+
+test "mixed swizzle groups xyzw and rgba" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  let v = vec3f(1.0, 2.0, 3.0);
+        \\  let s = v.xr;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // ".xr" is 3 chars
+    try expectErrorWidth(result, "mixes xyzw and rgba", 3);
+}
+
+// =========================================================================
+// Index expression ranges
+// =========================================================================
+
+test "not-indexable error underlines bracket" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  let x: f32 = 1.0;
+        \\  let y = x[0];
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // '[' is 1 char
+    try expectErrorWidth(result, "not indexable", 1);
+}
+
+test "array index type error underlines bracket" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  var a: array<f32, 4>;
+        \\  let v = a[1.5];
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorWidth(result, "array index must be integer", 1);
+}
+
+// =========================================================================
+// More unary operator ranges
+// =========================================================================
+
+test "unary negation of bool underlines -" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  let a = -true;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // '-' is 1 char
+    try expectErrorWidth(result, "requires numeric", 1);
+}
+
+test "deref non-pointer underlines *" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  let x: f32 = 1.0;
+        \\  let y = *x;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // '*' is 1 char
+    try expectErrorWidth(result, "cannot dereference", 1);
+}
+
+// =========================================================================
+// Function call argument ranges
+// =========================================================================
+
+test "wrong argument count underlines function name" {
+    const source =
+        \\fn foo(a: f32, b: f32) -> f32 { return a + b; }
+        \\@fragment
+        \\fn main() {
+        \\  let x = foo(1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "foo" is 3 chars
+    try expectErrorWidth(result, "expects 2 arguments", 3);
+}
+
+test "wrong argument type underlines function name" {
+    const source =
+        \\fn foo(a: i32) -> i32 { return a; }
+        \\@fragment
+        \\fn main() {
+        \\  let x = foo(1.5);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "foo" is 3 chars
+    try expectErrorWidth(result, "argument 1", 3);
+}
+
+test "builtin arg count error underlines function name" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  let x = sin();
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "sin" is 3 chars
+    try expectErrorWidth(result, "expects", 3);
+}
+
+// =========================================================================
+// If / while / for condition ranges
+// =========================================================================
+
+test "if condition type error underlines condition expression" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  if (42) {}
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "42" is 2 chars
+    try expectErrorWidth(result, "if condition must be 'bool'", 2);
+}
+
+test "while condition type error underlines condition" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  while (123) {}
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "123" is 3 chars
+    try expectErrorWidth(result, "while condition must be 'bool'", 3);
+}
+
+test "for condition type error underlines condition" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  for (var i = 0; 99; i++) {}
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "99" is 2 chars
+    try expectErrorWidth(result, "for condition must be 'bool'", 2);
+}
+
+// =========================================================================
+// Compound assignment / increment
+// =========================================================================
+
+test "compound assignment operator error underlines operator" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  var x: i32 = 0;
+        \\  x += 1.5;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "+=" is 2 chars
+    try expectErrorWidth(result, "invalid operands", 2);
+}
+
+test "incr/decr on float underlines operand expression" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  var x: f32 = 0.0;
+        \\  x++;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "x" is 1 char
+    try expectErrorWidth(result, "increment/decrement", 1);
+}
+
+// =========================================================================
+// Empty struct range
+// =========================================================================
+
+test "empty struct error underlines struct name" {
+    const source =
+        \\struct Empty {}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "Empty" is 5 chars
+    try expectErrorWidth(result, "must have at least one member", 5);
+}
+
+// =========================================================================
+// Missing function return range
+// =========================================================================
+
+test "missing return underlines function name" {
+    const source =
+        \\fn compute() -> f32 {
+        \\  let x = 1.0;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "compute" is 7 chars
+    try expectErrorWidth(result, "must return a value", 7);
+}
+
+// =========================================================================
+// Exact column position tests
+// =========================================================================
+
+test "error at exact column with indentation" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let myvar = unknownIdent;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "unknownIdent" starts at col 17, ends at col 29
+    try expectErrorRange(result, "undeclared identifier", 17, 29);
+}
+
+test "error at column 1 for top-level declaration" {
+    const source =
+        \\struct E {}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // "E" is at col 8, ends at col 9
+    try expectErrorRange(result, "must have at least one member", 8, 9);
+}
+
+// =========================================================================
+// Deduplication
+// =========================================================================
+
 test "multiple unknown types each appear exactly once" {
     const source =
         \\@vertex
