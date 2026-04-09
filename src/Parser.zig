@@ -870,23 +870,25 @@ fn parseConstAssert(self: *Parser) !*Ast.ConstAssertDecl {
 
 fn parseType(self: *Parser) error{OutOfMemory, ParseFailed}!Ast.Type {
     if (self.eatIdent()) |name| {
+        const name_loc = self.currentStart();
         self.advance();
         if (self.currentTag() == .lt) {
-            return self.parseTemplatedType(name);
+            return self.parseTemplatedType(name, name_loc);
         }
         const typ = try self.allocator.create(Ast.IdentType);
-        typ.* = .{ .name = name, .ref = .none };
+        typ.* = .{ .name = name, .ref = .none, .loc = name_loc };
         return .{ .ident = typ };
     }
 
     self.addError("expected type");
+    const err_loc = self.currentStart();
     self.advance();
     const typ = try self.allocator.create(Ast.IdentType);
-    typ.* = .{ .name = "error", .ref = .none };
+    typ.* = .{ .name = "error", .ref = .none, .loc = err_loc };
     return .{ .ident = typ };
 }
 
-fn parseTemplatedType(self: *Parser, name: []const u8) !Ast.Type {
+fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
     _ = self.expect(.lt);
 
     if (isVecName(name)) {
@@ -894,7 +896,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8) !Ast.Type {
         const elem = try self.parseType();
         _ = self.expect(.gt);
         const typ = try self.allocator.create(Ast.VecType);
-        typ.* = .{ .size = size, .elem_type = elem };
+        typ.* = .{ .size = size, .elem_type = elem, .loc = name_loc };
         return .{ .vec = typ };
     }
 
@@ -904,7 +906,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8) !Ast.Type {
         const elem = try self.parseType();
         _ = self.expect(.gt);
         const typ = try self.allocator.create(Ast.MatType);
-        typ.* = .{ .cols = cols, .rows = rows, .elem_type = elem };
+        typ.* = .{ .cols = cols, .rows = rows, .elem_type = elem, .loc = name_loc };
         return .{ .mat = typ };
     }
 
@@ -934,7 +936,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8) !Ast.Type {
         const elem = try self.parseType();
         _ = self.expect(.gt);
         const typ = try self.allocator.create(Ast.AtomicType);
-        typ.* = .{ .elem_type = elem };
+        typ.* = .{ .elem_type = elem, .loc = name_loc };
         return .{ .atomic = typ };
     }
 
@@ -960,7 +962,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8) !Ast.Type {
     while (self.eat(.comma)) _ = try self.parseType();
     _ = self.expect(.gt);
     const typ = try self.allocator.create(Ast.IdentType);
-    typ.* = .{ .name = name, .ref = .none };
+    typ.* = .{ .name = name, .ref = .none, .loc = name_loc };
     return .{ .ident = typ };
 }
 
@@ -1266,7 +1268,7 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
 
             // Templated constructor: array<T, N>(...) or vec2<f32>(...)
             if (self.currentTag() == .lt and isTemplatedTypeName(text)) {
-                return self.parseTemplatedConstructor(text);
+                return self.parseTemplatedConstructor(text, loc);
             }
 
             const node = try self.allocator.create(Ast.IdentExpr);
@@ -1289,8 +1291,8 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
     }
 }
 
-fn parseTemplatedConstructor(self: *Parser, name: []const u8) !?Ast.Expr {
-    const template_type = try self.parseTemplatedType(name);
+fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
+    const template_type = try self.parseTemplatedType(name, name_loc);
     if (self.currentTag() != .l_paren) {
         const node = try self.allocator.create(Ast.IdentExpr);
         node.* = .{ .name = name, .ref = .none };

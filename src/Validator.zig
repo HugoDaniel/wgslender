@@ -2425,9 +2425,9 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
             if (v.lookupType(t.name)) |typ| return typ;
             // Type not found — report with suggestion if close match exists.
             if (v.suggestType(t.name)) |suggestion| {
-                v.addErrorWithCode(0, Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'; did you mean '{s}'?", .{ t.name, suggestion }));
+                v.addErrorWithCode(t.loc, Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'; did you mean '{s}'?", .{ t.name, suggestion }));
             } else {
-                v.addErrorWithCode(0, Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'", .{t.name}));
+                v.addErrorWithCode(t.loc, Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'", .{t.name}));
             }
             return null;
         },
@@ -2455,13 +2455,13 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
                         .scalar => |s| {
                             // Spec: matrix element type must be f32, f16, or AbstractFloat.
                             if (!s.isFloat()) {
-                                v.addErrorWithCode(0, Diagnostic.Code.invalid_matrix_element, v.fmtError("matrix element type must be f32 or f16, got '{s}'", .{resolved.string()}));
+                                v.addErrorWithCode(t.loc, Diagnostic.Code.invalid_matrix_element, v.fmtError("matrix element type must be f32 or f16, got '{s}'", .{resolved.string()}));
                                 return null;
                             }
                             elem_scalar = s;
                         },
                         else => {
-                            v.addErrorWithCode(0, Diagnostic.Code.invalid_matrix_element, v.fmtError("matrix element type must be scalar, got '{s}'", .{resolved.string()}));
+                            v.addErrorWithCode(t.loc, Diagnostic.Code.invalid_matrix_element, v.fmtError("matrix element type must be scalar, got '{s}'", .{resolved.string()}));
                             return null;
                         },
                     }
@@ -2508,7 +2508,7 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
                 .scalar => |s| {
                     // Spec: atomic type requires i32 or u32 only.
                     if (s.kind != .i32 and s.kind != .u32) {
-                        v.addErrorWithCode(0, Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires i32 or u32, got '{s}'", .{elem_type.string()}));
+                        v.addErrorWithCode(t.loc, Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires i32 or u32, got '{s}'", .{elem_type.string()}));
                         return null;
                     }
                     const result = v.allocator.create(Types.Atomic) catch return null;
@@ -2516,7 +2516,7 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
                     return .{ .atomic = result };
                 },
                 else => {
-                    v.addErrorWithCode(0, Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires scalar element, got '{s}'", .{elem_type.string()}));
+                    v.addErrorWithCode(t.loc, Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires scalar element, got '{s}'", .{elem_type.string()}));
                     return null;
                 },
             }

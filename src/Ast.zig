@@ -299,12 +299,14 @@ pub const Type = union(enum) {
 pub const IdentType = struct {
     name: []const u8,
     ref: SymbolIndex = .none,
+    loc: u32 = 0,
 };
 
 pub const VecType = struct {
     size: u8, // 2, 3, or 4
     elem_type: ?Type = null,
     shorthand: []const u8 = "",
+    loc: u32 = 0,
 };
 
 pub const MatType = struct {
@@ -312,6 +314,7 @@ pub const MatType = struct {
     rows: u8,
     elem_type: ?Type = null,
     shorthand: []const u8 = "",
+    loc: u32 = 0,
 };
 
 pub const ArrayType = struct {
@@ -327,6 +330,7 @@ pub const PtrType = struct {
 
 pub const AtomicType = struct {
     elem_type: Type,
+    loc: u32 = 0,
 };
 
 pub const SamplerType = struct {

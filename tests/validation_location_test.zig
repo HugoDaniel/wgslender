@@ -561,3 +561,271 @@ test "return type mismatch reports return keyword" {
     // 'return' at line 2, col 5
     try expectErrorAtWithMessage(result, 2, 5, "return");
 }
+
+fn expectAnyErrorAtWithMessage(result: wgslender.Validator.Result, expected_line: u32, expected_col: u32, pattern: []const u8) !void {
+    try std.testing.expect(!result.valid);
+    const diags = result.diagnostics.diagnostics.items;
+    for (diags) |d| {
+        if (d.severity == .@"error" and
+            d.range.start.line == expected_line and
+            d.range.start.column == expected_col and
+            std.mem.indexOf(u8, d.message, pattern) != null)
+        {
+            return;
+        }
+    }
+    std.debug.print("\nExpected error containing \"{s}\" at {d}:{d}, got:\n", .{ pattern, expected_line, expected_col });
+    for (diags) |d| {
+        std.debug.print("  {d}:{d} [{s}] {s}\n", .{ d.range.start.line, d.range.start.column, d.code, d.message });
+    }
+    return error.TestUnexpectedResult;
+}
+
+// =========================================================================
+// Unknown Type Location Tests
+// =========================================================================
+
+test "unknown type in var reports type location" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    var x : MyType;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'MyType' starts at line 3, col 13
+    try expectErrorAtWithMessage(result, 3, 13, "unknown type");
+}
+
+test "unknown type in function return reports type location" {
+    const source =
+        \\fn foo() -> BadType {
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'BadType' starts at line 1, col 13
+    try expectErrorAtWithMessage(result, 1, 13, "unknown type");
+}
+
+test "unknown type in function parameter reports type location" {
+    const source =
+        \\@fragment
+        \\fn main(x: BadType) {
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'BadType' starts at line 2, col 12
+    try expectErrorAtWithMessage(result, 2, 12, "unknown type");
+}
+
+test "unknown type in struct member reports type location" {
+    const source =
+        \\struct Foo {
+        \\    x: BadType,
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'BadType' at line 2, col 8
+    try expectErrorAtWithMessage(result, 2, 8, "unknown type");
+}
+
+test "unknown type in let reports type location" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let x : BadType = 1;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'BadType' at line 3, col 13
+    try expectErrorAtWithMessage(result, 3, 13, "unknown type");
+}
+
+test "unknown type in const reports type location" {
+    const source =
+        \\const x : BadType = 1;
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'BadType' at line 1, col 11
+    try expectErrorAtWithMessage(result, 1, 11, "unknown type");
+}
+
+test "unknown type in override reports type location" {
+    const source =
+        \\override x : BadType = 1;
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'BadType' at line 1, col 14
+    try expectErrorAtWithMessage(result, 1, 14, "unknown type");
+}
+
+test "unknown type in alias reports type location" {
+    const source =
+        \\alias T = BadType;
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'BadType' at line 1, col 11
+    try expectErrorAtWithMessage(result, 1, 11, "unknown type");
+}
+
+test "multiple unknown type refs report distinct locations" {
+    const source =
+        \\struct Foo { x: f32 }
+        \\fn bar() -> Fo {
+        \\    var a: Fo;
+        \\    return a;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // Return type 'Fo' at line 2 col 13, var type 'Fo' at line 3 col 12
+    // (return type may be resolved in multiple phases, producing duplicates)
+    try expectAnyErrorAtWithMessage(result, 2, 13, "unknown type 'Fo'");
+    try expectAnyErrorAtWithMessage(result, 3, 12, "unknown type 'Fo'");
+}
+
+// =========================================================================
+// "Did you mean?" Suggestion Tests
+// =========================================================================
+
+test "did-you-mean suggests close struct name" {
+    const source =
+        \\struct MyVertex { x: f32 }
+        \\@fragment
+        \\fn main() {
+        \\    var v : MyVertx;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'MyVertx' at line 4, col 13
+    try expectErrorAtWithMessage(result, 4, 13, "did you mean 'MyVertex'");
+}
+
+test "did-you-mean suggests close builtin type" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    var x : vec4x;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'vec4x' at line 3, col 13 — should suggest vec4f, vec4i, vec4u, or vec4h
+    try expectErrorAtWithMessage(result, 3, 13, "did you mean");
+}
+
+test "unknown type with did-you-mean reports type location" {
+    const source =
+        \\struct VertexOutputs { @builtin(position) pos: vec4f }
+        \\@fragment
+        \\fn main(x: VertexOutput) {
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'VertexOutput' at line 3, col 12
+    try expectErrorAtWithMessage(result, 3, 12, "did you mean 'VertexOutputs'");
+}
+
+test "no suggestion for completely different name" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    var x : CompletelyWrong;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // Should say "unknown type" without "did you mean"
+    try expectErrorAtWithMessage(result, 3, 13, "unknown type");
+    const diags = result.diagnostics.diagnostics.items;
+    for (diags) |d| {
+        if (d.severity == .@"error") {
+            try std.testing.expect(std.mem.indexOf(u8, d.message, "did you mean") == null);
+            break;
+        }
+    }
+}
+
+// =========================================================================
+// Renamed struct scenario (user's exact case)
+// =========================================================================
+
+test "renamed struct VertexOutput to VertexOutputs — three distinct error locations" {
+    const source =
+        \\struct VertexOutputs {
+        \\    @builtin(position) pos: vec4f,
+        \\    @location(0) color: vec3f,
+        \\}
+        \\@vertex
+        \\fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
+        \\    var out: VertexOutput;
+        \\    let x = f32(i32(idx) - 1);
+        \\    let y = f32(i32(idx & 1u) * 2 - 1);
+        \\    out.pos = vec4f(x, y, 0.0, 1.0);
+        \\    out.color = vec3f(x + 0.5, y + 0.5, 0.5);
+        \\    return out;
+        \\}
+        \\@fragment
+        \\fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+        \\    return vec4f(in.color, 1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // Three distinct locations where 'VertexOutput' is used:
+    // Line 6 col 48: -> VertexOutput (return type)
+    // Line 7 col 14: var out: VertexOutput
+    // Line 15 col 16: in: VertexOutput (parameter)
+    // All should contain "did you mean 'VertexOutputs'?"
+    // (return/param types may be resolved in multiple phases, producing duplicates)
+    const diags = result.diagnostics.diagnostics.items;
+
+    // Verify all "unknown type 'VertexOutput'" errors include the suggestion
+    for (diags) |d| {
+        if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "unknown type 'VertexOutput'") != null) {
+            try std.testing.expect(std.mem.indexOf(u8, d.message, "did you mean 'VertexOutputs'") != null);
+        }
+    }
+
+    // Verify errors exist at each of the three distinct source locations
+    try expectAnyErrorAtWithMessage(result, 6, 48, "unknown type 'VertexOutput'");
+    try expectAnyErrorAtWithMessage(result, 7, 14, "unknown type 'VertexOutput'");
+    try expectAnyErrorAtWithMessage(result, 15, 16, "unknown type 'VertexOutput'");
+}
+
+// =========================================================================
+// Matrix / Atomic Type Location Tests
+// =========================================================================
+
+test "matrix with non-float element type reports location" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    var m : mat2x2<i32>;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'mat2x2' at line 3, col 13
+    try expectErrorAtWithMessage(result, 3, 13, "matrix element");
+}
+
+test "atomic with non-integer element type reports location" {
+    const source =
+        \\var<workgroup> a : atomic<f32>;
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // 'atomic' at line 1, col 20
+    try expectErrorAtWithMessage(result, 1, 20, "atomic type requires");
+}
