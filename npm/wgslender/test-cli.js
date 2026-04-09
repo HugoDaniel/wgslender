@@ -12,7 +12,7 @@ const path = require('path');
 const os = require('os');
 
 const CLI = path.join(__dirname, 'bin', 'wgslender');
-const TESTDATA = path.join(__dirname, '..', '..', 'testdata');
+const TESTDATA = path.join(__dirname, '..', '..', 'tests', 'testdata');
 const EXAMPLE = path.join(TESTDATA, 'example.wgsl');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'wgslender-cli-test-'));
 

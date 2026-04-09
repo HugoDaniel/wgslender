@@ -1,13 +1,12 @@
 //! Validation test harness.
 //!
-//! Tests the Zig validator against annotated .wgsl test files from testdata/validation/.
+//! Tests the Zig validator against annotated .wgsl test files from tests/testdata/validation/.
 //! Each test file uses annotations to specify expected outcomes:
 //!   // @expect-valid          — shader should validate
 //!   // @spec-ref: ...         — shader should validate (spec reference)
 //!   // @expect-error CODE "pattern"  — shader should have error with CODE and message containing pattern
 //!
-//! Test data is embedded at compile time via the "validation_data" module, which
-//! lives at the project root (above zig/) so @embedFile can reach testdata/.
+//! Test data is embedded at compile time via the "validation_data" module.
 
 const std = @import("std");
 const wgslender = @import("wgslender");

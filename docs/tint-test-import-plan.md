@@ -5,7 +5,7 @@
 Wgslender uses ~1,500 WGSL test files from the Dawn Tint test suite to validate minification correctness. These tests verify that minified code parses correctly and passes semantic validation.
 
 **Source:** Dawn repository `test/tint/` directory
-**Target:** `testdata/tint/` (not committed, must be imported locally)
+**Target:** `tests/testdata/tint/` (not committed, must be imported locally)
 
 ## Running the Tests
 
@@ -18,20 +18,20 @@ The test files must be imported from a local Dawn repository clone:
 git clone https://dawn.googlesource.com/dawn ~/Development/dawn
 
 # Create testdata directory
-mkdir -p testdata/tint
+mkdir -p tests/testdata/tint
 
 # Import test categories
-cp -r ~/Development/dawn/test/tint/expressions testdata/tint/
-cp -r ~/Development/dawn/test/tint/statements testdata/tint/
-cp -r ~/Development/dawn/test/tint/bug/tint testdata/tint/bug/
-cp -r ~/Development/dawn/test/tint/types testdata/tint/
-cp -r ~/Development/dawn/test/tint/samples testdata/tint/
-cp -r ~/Development/dawn/test/tint/benchmark testdata/tint/
-cp -r ~/Development/dawn/test/tint/shadowing testdata/tint/
-cp -r ~/Development/dawn/test/tint/loops testdata/tint/
-cp -r ~/Development/dawn/test/tint/var testdata/tint/
-cp -r ~/Development/dawn/test/tint/identifiers testdata/tint/
-cp -r ~/Development/dawn/test/tint/out_of_order_decls testdata/tint/
+cp -r ~/Development/dawn/test/tint/expressions tests/testdata/tint/
+cp -r ~/Development/dawn/test/tint/statements tests/testdata/tint/
+cp -r ~/Development/dawn/test/tint/bug/tint tests/testdata/tint/bug/
+cp -r ~/Development/dawn/test/tint/types tests/testdata/tint/
+cp -r ~/Development/dawn/test/tint/samples tests/testdata/tint/
+cp -r ~/Development/dawn/test/tint/benchmark tests/testdata/tint/
+cp -r ~/Development/dawn/test/tint/shadowing tests/testdata/tint/
+cp -r ~/Development/dawn/test/tint/loops tests/testdata/tint/
+cp -r ~/Development/dawn/test/tint/var tests/testdata/tint/
+cp -r ~/Development/dawn/test/tint/identifiers tests/testdata/tint/
+cp -r ~/Development/dawn/test/tint/out_of_order_decls tests/testdata/tint/
 ```
 
 ### 2. Run Tests

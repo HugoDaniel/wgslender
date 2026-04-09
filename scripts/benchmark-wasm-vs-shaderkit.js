@@ -23,7 +23,7 @@ const { minify: shaderkitMinify } = require('shaderkit');
 
 // Configuration
 const ITERATIONS = 100;
-const TESTDATA_DIR = process.env.TESTDATA_DIR || 'testdata';
+const TESTDATA_DIR = process.env.TESTDATA_DIR || 'tests/testdata';
 
 // Colors
 const GREEN = '\x1b[32m';

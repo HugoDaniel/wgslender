@@ -8,8 +8,8 @@ zig-out/
 *.test
 coverage.out
 coverage.html
-testdata/*.minified
-testdata/tint/
+tests/testdata/*.minified
+tests/testdata/tint/
 
 # IDE/Editor
 .idea/

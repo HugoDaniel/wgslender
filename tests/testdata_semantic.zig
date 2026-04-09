@@ -1,5 +1,5 @@
-// Generated bridge file for semantic test data.
-// This file lives at the project root so @embedFile can access testdata/.
+// Bridge file for semantic test data.
+// @embedFile resolves paths relative to this file's directory (tests/).
 
 // Top-level testdata shaders
 pub const example = @embedFile("testdata/example.wgsl");

@@ -1,14 +1,14 @@
 //! Tint semantic preservation tests.
 //!
-//! Walks testdata/tint/ recursively for .wgsl files and verifies that
+//! Walks tests/testdata/tint/ recursively for .wgsl files and verifies that
 //! minification preserves shader semantics:
 //!   parse -> validate -> minify -> re-parse -> re-validate ->
 //!   verify entry point count and binding count match.
 //!
-//! Since testdata/tint/ is 17MB+ (~1,445 files) we cannot use @embedFile.
+//! Since tests/testdata/tint/ is 17MB+ (~1,445 files) we cannot use @embedFile.
 //! Files are read at runtime via std.Io.Dir directory walking.
 //!
-//! The testdata/tint/ directory is OPTIONAL — if it does not exist the test
+//! The tests/testdata/tint/ directory is OPTIONAL — if it does not exist the test
 //! prints a skip message and exits successfully.
 //!
 //! Ported from Go's internal/minifier_tests/tint_test.go.
@@ -156,14 +156,14 @@ fn testOneShader(
 }
 
 test "tint semantic preservation" {
-    const tint_dir_rel = "testdata/tint";
+    const tint_dir_rel = "tests/testdata/tint";
 
     // std.Options.debug_io is available in all contexts, including tests.
     const io = std.Options.debug_io;
 
     var tint_dir = std.Io.Dir.cwd().openDir(io, tint_dir_rel, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound or err == error.NotFound) {
-            std.debug.print("testdata/tint not found — skipping tint tests\n", .{});
+            std.debug.print("tests/testdata/tint not found — skipping tint tests\n", .{});
             return;
         }
         return err;

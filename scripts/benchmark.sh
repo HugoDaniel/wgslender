@@ -16,7 +16,7 @@ NC='\033[0m' # No Color
 WGSLENDER_BIN="${WGSLENDER_BIN:-./build/wgslender}"
 RUST_BIN="${RUST_BIN:-wgsl-minifier}"
 ITERATIONS="${ITERATIONS:-10}"
-TESTDATA_DIR="${TESTDATA_DIR:-testdata}"
+TESTDATA_DIR="${TESTDATA_DIR:-tests/testdata}"
 
 # Temp files
 TMP_DIR=$(mktemp -d)

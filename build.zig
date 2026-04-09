@@ -83,9 +83,9 @@ pub fn build(b: *std.Build) void {
     });
     const run_snapshot_tests = b.addRunArtifact(snapshot_tests);
 
-    // Validation test data module (lives at project root to access testdata/)
+    // Validation test data module
     const validation_data_mod = b.addModule("validation_data", .{
-        .root_source_file = b.path("testdata_validation.zig"),
+        .root_source_file = b.path("tests/testdata_validation.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -156,9 +156,9 @@ pub fn build(b: *std.Build) void {
     });
     const run_reflect_tests = b.addRunArtifact(reflect_tests);
 
-    // Semantic test data module (lives at project root to access testdata/)
+    // Semantic test data module
     const semantic_data_mod = b.addModule("semantic_data", .{
-        .root_source_file = b.path("testdata_semantic.zig"),
+        .root_source_file = b.path("tests/testdata_semantic.zig"),
         .target = target,
         .optimize = optimize,
     });

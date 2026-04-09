@@ -20,7 +20,7 @@ deno run --unstable-webgpu --allow-read --allow-run scripts/test-compile.ts --co
 deno run --unstable-webgpu --allow-read --allow-run scripts/test-compile.ts --compare --config configs/compute.toys.json shader.wgsl
 
 # Multiple files
-deno run --unstable-webgpu --allow-read --allow-run scripts/test-compile.ts --minify testdata/*.wgsl
+deno run --unstable-webgpu --allow-read --allow-run scripts/test-compile.ts --minify tests/testdata/*.wgsl
 ```
 
 ### Options

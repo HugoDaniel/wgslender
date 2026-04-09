@@ -13,10 +13,10 @@ Repository includes sample shaders for testing:
 
 | File | Description |
 |------|-------------|
-| [bridge.wgsl](testdata/compute.toys/bridge.wgsl) | Complex compute shader |
-| [cubes_in_space.wgsl](testdata/compute.toys/cubes_in_space.wgsl) | 3D rendering shader |
-| [jitter_starfield.wgsl](testdata/compute.toys/jitter_starfield.wgsl) | Particle system |
-| [spaced.wgsl](testdata/compute.toys/spaced.wgsl) | Space visualization |
+| [bridge.wgsl](tests/testdata/compute.toys/bridge.wgsl) | Complex compute shader |
+| [cubes_in_space.wgsl](tests/testdata/compute.toys/cubes_in_space.wgsl) | 3D rendering shader |
+| [jitter_starfield.wgsl](tests/testdata/compute.toys/jitter_starfield.wgsl) | Particle system |
+| [spaced.wgsl](tests/testdata/compute.toys/spaced.wgsl) | Space visualization |
 
 ## Results
 

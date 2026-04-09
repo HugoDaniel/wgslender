@@ -12,7 +12,7 @@ const { minify: shaderkitMinify } = require('shaderkit');
 // Configuration
 const ITERATIONS = 10;
 const WGSLENDER_BIN = process.env.WGSLENDER_BIN || './build/wgslender';
-const TESTDATA_DIR = process.env.TESTDATA_DIR || 'testdata';
+const TESTDATA_DIR = process.env.TESTDATA_DIR || 'tests/testdata';
 
 // Colors
 const RED = '\x1b[31m';

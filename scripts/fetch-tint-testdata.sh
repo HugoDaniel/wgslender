@@ -4,19 +4,19 @@
 # Usage:
 #   ./scripts/fetch-tint-testdata.sh
 #
-# Downloads ~25k .wgsl files (~408 MB) into testdata/tint/ using a sparse
+# Downloads ~25k .wgsl files (~408 MB) into tests/testdata/tint/ using a sparse
 # checkout of the Dawn repository. Requires git.
 
 set -euo pipefail
 
 REPO_URL="https://dawn.googlesource.com/dawn"
 CLONE_DIR="$(mktemp -d)"
-DEST_DIR="$(cd "$(dirname "$0")/.." && pwd)/testdata/tint"
+DEST_DIR="$(cd "$(dirname "$0")/.." && pwd)/tests/testdata/tint"
 
 if [ -d "$DEST_DIR" ] && [ "$(find "$DEST_DIR" -name '*.wgsl' -maxdepth 1 -print -quit 2>/dev/null)" != "" ]; then
     count=$(find "$DEST_DIR" -name '*.wgsl' | wc -l | tr -d ' ')
-    echo "testdata/tint/ already exists with $count .wgsl files — skipping."
-    echo "To re-fetch, remove testdata/tint/ first."
+    echo "tests/testdata/tint/ already exists with $count .wgsl files — skipping."
+    echo "To re-fetch, remove tests/testdata/tint/ first."
     exit 0
 fi
 
@@ -27,7 +27,7 @@ echo "Checking out test/tint/ directory..."
 cd "$CLONE_DIR"
 git sparse-checkout set test/tint
 
-echo "Copying to testdata/tint/..."
+echo "Copying to tests/testdata/tint/..."
 mkdir -p "$DEST_DIR"
 cp -r "$CLONE_DIR/test/tint/"* "$DEST_DIR/"
 
@@ -35,4 +35,4 @@ echo "Cleaning up..."
 rm -rf "$CLONE_DIR"
 
 count=$(find "$DEST_DIR" -name '*.wgsl' | wc -l | tr -d ' ')
-echo "Done. $count .wgsl files in testdata/tint/"
+echo "Done. $count .wgsl files in tests/testdata/tint/"

@@ -1,6 +1,6 @@
 // Bridge file for validation test data.
-// This file lives at the project root so @embedFile can access testdata/.
-// Used by zig/tests/validation_test.zig via the "validation_data" module import.
+// @embedFile resolves paths relative to this file's directory (tests/).
+// Used by tests/validation_test.zig via the "validation_data" module import.
 
 // --- types/ ---
 pub const @"types/struct_basic" = @embedFile("testdata/validation/types/struct_basic.wgsl");

@@ -113,7 +113,7 @@ If types like `MyStruct` aren't being renamed:
 
 ## Test Data
 
-**compute.toys shaders** (`testdata/compute.toys/`):
+**compute.toys shaders** (`tests/testdata/compute.toys/`):
 - Real-world shaders verified working after minification
 - Use with `--config configs/compute.toys.json`
 - Size reductions: 55-71% typical
@@ -125,7 +125,7 @@ If types like `MyStruct` aren't being renamed:
 - Semantic validation test cases
 - Tests for type errors, symbol resolution, uniformity
 
-**Tint tests** (`testdata/tint/`):
+**Tint tests** (`tests/testdata/tint/`):
 - ~7,961 shaders from Google's Dawn Tint project
 - Optional — skipped if directory absent
 
