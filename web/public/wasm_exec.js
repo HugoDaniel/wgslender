@@ -1,1 +1,1 @@
-../../npm/miniray/wasm_exec.js
+../../npm/wgslender/wasm_exec.js
