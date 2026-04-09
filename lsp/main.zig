@@ -121,6 +121,25 @@ const NativeServer = struct {
         defer self.handler.allocator.free(lsp_diags);
 
         for (diags, 0..) |d, i| {
+            var related_info: ?[]const lsp.types.Diagnostic.RelatedInformation = null;
+            if (d.related.len > 0) {
+                const rel = self.handler.allocator.alloc(lsp.types.Diagnostic.RelatedInformation, d.related.len) catch null;
+                if (rel) |r| {
+                    for (d.related, 0..) |rel_item, ri| {
+                        r[ri] = .{
+                            .location = .{
+                                .uri = uri,
+                                .range = .{
+                                    .start = .{ .line = rel_item.range.start.line, .character = rel_item.range.start.character },
+                                    .end = .{ .line = rel_item.range.end.line, .character = rel_item.range.end.character },
+                                },
+                            },
+                            .message = rel_item.message,
+                        };
+                    }
+                    related_info = r;
+                }
+            }
             lsp_diags[i] = .{
                 .range = .{
                     .start = .{ .line = d.range.start.line, .character = d.range.start.character },
@@ -134,6 +153,7 @@ const NativeServer = struct {
                 },
                 .source = "wgslender",
                 .message = d.message,
+                .relatedInformation = related_info,
             };
         }
 

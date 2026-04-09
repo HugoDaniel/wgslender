@@ -21,6 +21,9 @@ const Allocator = std.mem.Allocator;
 
 const Validator = @This();
 
+/// Name and source location pair, used for duplicate-detection maps.
+const LocName = struct { name: []const u8, loc: u32 };
+
 // =========================================================================
 // Public Types
 // =========================================================================
@@ -97,9 +100,9 @@ struct_types: std.StringHashMapUnmanaged(*Types.Struct) = .{},
 alias_types: std.StringHashMapUnmanaged(?Types.Type) = .{},
 
 // Override ID tracking for uniqueness validation
-override_ids: std.AutoHashMapUnmanaged(u32, []const u8) = .{},
+override_ids: std.AutoHashMapUnmanaged(u32, LocName) = .{},
 // Binding pair tracking for uniqueness validation: key = (group << 32) | binding
-binding_pairs: std.AutoHashMapUnmanaged(u64, []const u8) = .{},
+binding_pairs: std.AutoHashMapUnmanaged(u64, LocName) = .{},
 
 // =========================================================================
 // Public API
@@ -200,14 +203,14 @@ fn resolveStructLayouts(v: *Validator) void {
 
                 // Build fields list, checking for duplicate member names
                 var fields: std.ArrayListUnmanaged(Types.StructField) = .empty;
-                var seen_members: std.StringHashMapUnmanaged(void) = .{};
+                var seen_members: std.StringHashMapUnmanaged(u32) = .{};
                 for (d.members.items) |member| {
                     const member_name = v.symbolName(member.name);
-                    if (seen_members.get(member_name) != null) {
-                        v.addErrorWithCode(v.symbolLoc(member.name), Diagnostic.Code.duplicate_symbol, v.fmtError("duplicate member '{s}' in struct '{s}'", .{ member_name, name }));
+                    if (seen_members.get(member_name)) |first_loc| {
+                        v.addErrorWithRelated(v.symbolLoc(member.name), Diagnostic.Code.duplicate_symbol, v.fmtError("duplicate member '{s}' in struct '{s}'", .{ member_name, name }), v.makeRelated(first_loc, "first declared here"));
                         continue;
                     }
-                    seen_members.put(v.allocator, member_name, {}) catch {};
+                    seen_members.put(v.allocator, member_name, v.symbolLoc(member.name)) catch {};
                     const member_type = v.resolveType(member.typ) orelse {
                         if (member.typ != .ident)
                             v.addError(v.symbolLoc(member.name), v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
@@ -419,7 +422,9 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) void {
         decl_type = v.resolveType(ast_type);
         if (decl_type) |dt| {
             if (!Types.canConvertTo(init_type, dt)) {
-                v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, init_type.string(), dt.string() }));
+                const type_loc = astTypeLoc(ast_type);
+                const related = if (type_loc != 0) v.makeRelated(type_loc, v.fmtError("type '{s}' declared here", .{dt.string()})) else &[_]Diagnostic.RelatedInfo{};
+                v.addErrorWithRelated(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, init_type.string(), dt.string() }), related);
                 return;
             }
         }
@@ -476,7 +481,16 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) void {
         const init_type = v.checkExpr(init);
         if (init_type) |it| {
             if (!Types.canConvertTo(it, dt)) {
-                v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
+                if (d.typ) |ast_type| {
+                    const type_loc = astTypeLoc(ast_type);
+                    if (type_loc != 0) {
+                        v.addErrorWithRelated(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }), v.makeRelated(type_loc, v.fmtError("type '{s}' declared here", .{dt.string()})));
+                    } else {
+                        v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
+                    }
+                } else {
+                    v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
+                }
             }
         }
     }
@@ -498,10 +512,10 @@ fn validateOverrideId(v: *Validator, d: *Ast.OverrideDecl, name: []const u8) voi
             return;
         }
         const id: u32 = @intCast(id_val);
-        if (v.override_ids.get(id)) |existing_name| {
-            v.addErrorWithCode(attr.loc, Diagnostic.Code.duplicate_override_id, v.fmtError("@id({d}) is already used by override '{s}'", .{ id, existing_name }));
+        if (v.override_ids.get(id)) |existing| {
+            v.addErrorWithRelated(attr.loc, Diagnostic.Code.duplicate_override_id, v.fmtError("@id({d}) is already used by override '{s}'", .{ id, existing.name }), v.makeRelated(existing.loc, v.fmtError("@id({d}) first used here", .{id})));
         } else {
-            v.override_ids.put(v.allocator, id, name) catch return;
+            v.override_ids.put(v.allocator, id, .{ .name = name, .loc = attr.loc }) catch return;
         }
         return;
     }
@@ -538,7 +552,16 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) void {
         const init_type = v.checkExpr(init);
         if (init_type) |it| {
             if (!Types.canConvertTo(it, dt)) {
-                v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
+                if (d.typ) |ast_type| {
+                    const type_loc = astTypeLoc(ast_type);
+                    if (type_loc != 0) {
+                        v.addErrorWithRelated(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }), v.makeRelated(type_loc, v.fmtError("type '{s}' declared here", .{dt.string()})));
+                    } else {
+                        v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
+                    }
+                } else {
+                    v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
+                }
             }
         }
     }
@@ -563,10 +586,10 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) void {
             v.addErrorWithCode(loc, Diagnostic.Code.missing_binding, v.fmtError("{s} var '{s}' requires @group and @binding attributes", .{ d.address_space.string(), name }));
         } else if (group_val != null and binding_val != null) {
             const key = (@as(u64, @intCast(group_val.?)) << 32) | @as(u64, @intCast(binding_val.?));
-            if (v.binding_pairs.get(key)) |existing_name| {
-                v.addErrorWithCode(loc, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}'", .{ group_val.?, binding_val.?, existing_name }));
+            if (v.binding_pairs.get(key)) |existing| {
+                v.addErrorWithRelated(loc, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}'", .{ group_val.?, binding_val.?, existing.name }), v.makeRelated(existing.loc, v.fmtError("'{s}' declared here", .{existing.name})));
             } else {
-                v.binding_pairs.put(v.allocator, key, name) catch {};
+                v.binding_pairs.put(v.allocator, key, .{ .name = name, .loc = loc }) catch {};
             }
         }
     }
@@ -596,7 +619,9 @@ fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) void {
         decl_type = v.resolveType(ast_type);
         if (decl_type) |dt| {
             if (!Types.canConvertTo(init_type, dt)) {
-                v.addErrorWithCode(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, init_type.string(), dt.string() }));
+                const type_loc = astTypeLoc(ast_type);
+                const related = if (type_loc != 0) v.makeRelated(type_loc, v.fmtError("type '{s}' declared here", .{dt.string()})) else &[_]Diagnostic.RelatedInfo{};
+                v.addErrorWithRelated(loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, init_type.string(), dt.string() }), related);
                 return;
             }
         }
@@ -851,14 +876,14 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
     const fn_loc = v.symbolLoc(fn_decl.name);
 
     // Check input locations (parameters)
-    var input_locations: std.AutoHashMapUnmanaged(i64, void) = .{};
+    var input_locations: std.AutoHashMapUnmanaged(i64, u32) = .{};
     for (fn_decl.parameters.items) |param| {
         // Direct @location on parameter
-        if (getLocationValue(param.attributes)) |loc_val| {
-            if (input_locations.get(loc_val) != null) {
-                v.addErrorWithCode(v.symbolLoc(param.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{loc_val}));
+        if (getLocationInfo(param.attributes)) |info| {
+            if (input_locations.get(info.value)) |first_loc| {
+                v.addErrorWithRelated(v.symbolLoc(param.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelated(first_loc, v.fmtError("@location({d}) first used here", .{info.value})));
             } else {
-                input_locations.put(v.allocator, loc_val, {}) catch {};
+                input_locations.put(v.allocator, info.value, info.loc) catch {};
             }
         }
         // If param type is a struct, check its members
@@ -869,11 +894,11 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
                     if (!hasLocationOrBuiltin(member.attributes)) {
                         v.addErrorWithCode(v.symbolLoc(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("entry point struct member '{s}' must have @builtin or @location", .{v.symbolName(member.name)}));
                     }
-                    if (getLocationValue(member.attributes)) |loc_val| {
-                        if (input_locations.get(loc_val) != null) {
-                            v.addErrorWithCode(v.symbolLoc(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{loc_val}));
+                    if (getLocationInfo(member.attributes)) |info| {
+                        if (input_locations.get(info.value)) |first_loc| {
+                            v.addErrorWithRelated(v.symbolLoc(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelated(first_loc, v.fmtError("@location({d}) first used here", .{info.value})));
                         } else {
-                            input_locations.put(v.allocator, loc_val, {}) catch {};
+                            input_locations.put(v.allocator, info.value, info.loc) catch {};
                         }
                     }
                 }
@@ -882,9 +907,9 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
     }
 
     // Check output locations (return type)
-    var output_locations: std.AutoHashMapUnmanaged(i64, void) = .{};
-    if (getLocationValue(fn_decl.return_attr)) |loc_val| {
-        output_locations.put(v.allocator, loc_val, {}) catch {};
+    var output_locations: std.AutoHashMapUnmanaged(i64, u32) = .{};
+    if (getLocationInfo(fn_decl.return_attr)) |info| {
+        output_locations.put(v.allocator, info.value, info.loc) catch {};
     }
     if (fn_decl.return_type) |rt| {
         const ret_type = v.resolveType(rt) orelse return;
@@ -894,11 +919,11 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
                     if (!hasLocationOrBuiltin(member.attributes)) {
                         v.addErrorWithCode(fn_loc, Diagnostic.Code.invalid_shader_io, v.fmtError("entry point struct member '{s}' must have @builtin or @location", .{v.symbolName(member.name)}));
                     }
-                    if (getLocationValue(member.attributes)) |loc_val| {
-                        if (output_locations.get(loc_val) != null) {
-                            v.addErrorWithCode(fn_loc, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{loc_val}));
+                    if (getLocationInfo(member.attributes)) |info| {
+                        if (output_locations.get(info.value)) |first_loc| {
+                            v.addErrorWithRelated(fn_loc, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{info.value}), v.makeRelated(first_loc, v.fmtError("@location({d}) first used here", .{info.value})));
                         } else {
-                            output_locations.put(v.allocator, loc_val, {}) catch {};
+                            output_locations.put(v.allocator, info.value, info.loc) catch {};
                         }
                     }
                 }
@@ -946,9 +971,16 @@ fn findStructDecl(v: *Validator, struct_name: []const u8) ?*Ast.StructDecl {
 }
 
 fn getLocationValue(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?i64 {
+    if (getLocationInfo(attrs)) |info| return info.value;
+    return null;
+}
+
+fn getLocationInfo(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?struct { value: i64, loc: u32 } {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, "location") and attr.args.items.len > 0) {
-            return tryExtractIntValue(attr.args.items[0]);
+            if (tryExtractIntValue(attr.args.items[0])) |val| {
+                return .{ .value = val, .loc = attr.loc };
+            }
         }
     }
     return null;
@@ -1119,7 +1151,14 @@ fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) void {
 
     if (v.return_type) |rt| {
         if (!Types.canConvertTo(expr_type, rt)) {
-            v.addErrorWithCode(s.loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot return '{s}' from function expecting '{s}'", .{ expr_type.string(), rt.string() }));
+            const related = if (v.current_func) |func| blk: {
+                if (func.return_type) |frt| {
+                    const rt_loc = astTypeLoc(frt);
+                    if (rt_loc != 0) break :blk v.makeRelated(rt_loc, v.fmtError("return type '{s}' declared here", .{rt.string()}));
+                }
+                break :blk &[_]Diagnostic.RelatedInfo{};
+            } else &[_]Diagnostic.RelatedInfo{};
+            v.addErrorWithRelated(s.loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot return '{s}' from function expecting '{s}'", .{ expr_type.string(), rt.string() }), related);
         }
     } else {
         const fn_name = if (v.current_func) |f| v.symbolName(f.name) else "";
@@ -1167,7 +1206,7 @@ fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) void {
             const sel_type = v.checkExpr(sel);
             if (sel_type != null and selector_type != null) {
                 if (!Types.canConvertTo(sel_type.?, selector_type.?)) {
-                    v.addErrorWithCode(exprLoc(sel), Diagnostic.Code.type_mismatch, v.fmtError("case selector '{s}' doesn't match switch type '{s}'", .{ sel_type.?.string(), selector_type.?.string() }));
+                    v.addErrorWithRelated(exprLoc(sel), Diagnostic.Code.type_mismatch, v.fmtError("case selector '{s}' doesn't match switch type '{s}'", .{ sel_type.?.string(), selector_type.?.string() }), v.makeRelated(exprLoc(s.expr), v.fmtError("switch expression has type '{s}'", .{selector_type.?.string()})));
                 }
             }
             // Check for duplicate case selector values
@@ -1276,7 +1315,7 @@ fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) void {
     if (s.op == .simple) {
         // Simple assignment: RHS must be convertible to LHS.
         if (!Types.canConvertTo(rhs_type, lhs_type)) {
-            v.addErrorWithCode(s.loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot assign '{s}' to '{s}'", .{ rhs_type.string(), lhs_type.string() }));
+            v.addErrorWithRelated(s.loc, Diagnostic.Code.type_mismatch, v.fmtError("cannot assign '{s}' to '{s}'", .{ rhs_type.string(), lhs_type.string() }), v.makeRelated(exprLoc(s.left), v.fmtError("left-hand side has type '{s}'", .{lhs_type.string()})));
         }
         return;
     }
@@ -1658,9 +1697,10 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) ?Types.Type {
                     if (v.symbol_types.get(idx)) |sym_type| {
                         switch (sym_type) {
                             .function => |fn_type| {
+                                const fn_related = v.makeRelated(v.symbolLoc(ident.ref), v.fmtError("'{s}' declared here", .{callee_name}));
                                 // Check argument count
                                 if (e.args.items.len != fn_type.parameters.len) {
-                                    v.addErrorWithCode(e.loc, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' expects {d} arguments, got {d}", .{ callee_name, fn_type.parameters.len, e.args.items.len }));
+                                    v.addErrorWithRelated(e.loc, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' expects {d} arguments, got {d}", .{ callee_name, fn_type.parameters.len, e.args.items.len }), fn_related);
                                     return null;
                                 }
                                 // Check argument types
@@ -1670,7 +1710,7 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) ?Types.Type {
                                         if (arg_type) |at| {
                                             const param_type = fn_type.parameters[ai];
                                             if (!at.eql(param_type) and !Types.canConvertTo(at, param_type)) {
-                                                v.addErrorWithCode(e.loc, Diagnostic.Code.invalid_arg_type, v.fmtError("argument {d} of '{s}' has type '{s}', expected '{s}'", .{ ai + 1, callee_name, at.string(), param_type.string() }));
+                                                v.addErrorWithRelated(e.loc, Diagnostic.Code.invalid_arg_type, v.fmtError("argument {d} of '{s}' has type '{s}', expected '{s}'", .{ ai + 1, callee_name, at.string(), param_type.string() }), fn_related);
                                                 return null;
                                             }
                                         }
@@ -1993,7 +2033,11 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) ?Types.Type {
             if (st.getField(e.member_name)) |field| {
                 return field.typ;
             }
-            v.addErrorWithCode(e.loc, Diagnostic.Code.no_such_member, v.fmtError("struct '{s}' has no member '{s}'", .{ st.name, e.member_name }));
+            const related = if (v.findStructDecl(st.name)) |sd|
+                v.makeRelated(v.symbolLoc(sd.name), v.fmtError("struct '{s}' defined here", .{st.name}))
+            else
+                &[_]Diagnostic.RelatedInfo{};
+            v.addErrorWithRelated(e.loc, Diagnostic.Code.no_such_member, v.fmtError("struct '{s}' has no member '{s}'", .{ st.name, e.member_name }), related);
             return null;
         },
         .vector => |ve| {
@@ -2852,6 +2896,35 @@ fn addError(v: *Validator, offset: u32, message: []const u8) void {
 
 fn addErrorWithCode(v: *Validator, offset: u32, code: []const u8, message: []const u8) void {
     v.diags.addErrorWithCode(v.allocator, offset, code, message);
+}
+
+fn addErrorWithRelated(v: *Validator, offset: u32, code: []const u8, message: []const u8, related: []const Diagnostic.RelatedInfo) void {
+    v.diags.add(v.allocator, .{
+        .severity = .@"error",
+        .code = code,
+        .message = message,
+        .range = v.diags.makeRange(offset, offset + 1),
+        .related = related,
+    });
+}
+
+fn makeRelated(v: *Validator, offset: u32, message: []const u8) []const Diagnostic.RelatedInfo {
+    const slice = v.allocator.alloc(Diagnostic.RelatedInfo, 1) catch return &.{};
+    slice[0] = .{
+        .range = v.diags.makeRange(offset, offset + 1),
+        .message = message,
+    };
+    return slice;
+}
+
+fn astTypeLoc(ast_type: Ast.Type) u32 {
+    return switch (ast_type) {
+        .ident => |t| t.loc,
+        .vec => |t| t.loc,
+        .mat => |t| t.loc,
+        .atomic => |t| t.loc,
+        .array, .ptr, .sampler, .texture => 0,
+    };
 }
 
 fn addWarning(v: *Validator, offset: u32, message: []const u8) void {

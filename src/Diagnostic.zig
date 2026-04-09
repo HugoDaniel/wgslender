@@ -121,6 +121,21 @@ pub fn entryToJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocato
         buf.append(allocator, '"') catch {};
     }
 
+    if (entry.related.len > 0) {
+        buf.appendSlice(allocator, ",\"related\":[") catch {};
+        for (entry.related, 0..) |rel, ri| {
+            if (ri > 0) buf.append(allocator, ',') catch {};
+            buf.appendSlice(allocator, "{\"line\":") catch {};
+            appendInt(buf, allocator, rel.range.start.line);
+            buf.appendSlice(allocator, ",\"column\":") catch {};
+            appendInt(buf, allocator, rel.range.start.column);
+            buf.appendSlice(allocator, ",\"message\":\"") catch {};
+            appendJsonEscaped(buf, allocator, rel.message);
+            buf.appendSlice(allocator, "\"}") catch {};
+        }
+        buf.append(allocator, ']') catch {};
+    }
+
     buf.append(allocator, '}') catch {};
 }
 

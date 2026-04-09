@@ -35,10 +35,16 @@ pub const DiagnosticSeverity = enum(u32) {
     hint = 4,
 };
 
+pub const LspRelatedInfo = struct {
+    range: Range,
+    message: []const u8,
+};
+
 pub const LspDiagnostic = struct {
     range: Range,
     severity: DiagnosticSeverity,
     message: []const u8,
+    related: []const LspRelatedInfo = &.{},
 };
 
 /// Server capabilities as a JSON string (shared by native and WASM).
@@ -114,13 +120,35 @@ pub fn validateDocument(self: *Handler, source: []const u8) ![]LspDiagnostic {
     const diags = try self.allocator.alloc(LspDiagnostic, entries.len);
 
     for (entries, 0..) |entry, i| {
-        diags[i] = convertDiagnostic(&entry);
+        diags[i] = convertDiagnostic(self.allocator, &entry);
     }
 
     return diags;
 }
 
-fn convertDiagnostic(entry: *const WgslDiagnostic.Entry) LspDiagnostic {
+fn convertDiagnostic(allocator: std.mem.Allocator, entry: *const WgslDiagnostic.Entry) LspDiagnostic {
+    var related: []const LspRelatedInfo = &.{};
+    if (entry.related.len > 0) {
+        const rel = allocator.alloc(LspRelatedInfo, entry.related.len) catch &.{};
+        if (rel.len > 0) {
+            for (entry.related, 0..) |r, ri| {
+                rel[ri] = .{
+                    .range = .{
+                        .start = .{
+                            .line = if (r.range.start.line > 0) r.range.start.line - 1 else 0,
+                            .character = if (r.range.start.column > 0) r.range.start.column - 1 else 0,
+                        },
+                        .end = .{
+                            .line = if (r.range.end.line > 0) r.range.end.line - 1 else 0,
+                            .character = if (r.range.end.column > 0) r.range.end.column - 1 else 0,
+                        },
+                    },
+                    .message = r.message,
+                };
+            }
+            related = rel;
+        }
+    }
     return .{
         .range = .{
             .start = .{
@@ -139,5 +167,6 @@ fn convertDiagnostic(entry: *const WgslDiagnostic.Entry) LspDiagnostic {
             else => .information,
         },
         .message = entry.message,
+        .related = related,
     };
 }

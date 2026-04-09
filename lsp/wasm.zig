@@ -179,7 +179,28 @@ fn emitDiagnostics(uri: []const u8) void {
         appendUint(&buf, @intFromEnum(diag.severity));
         appendStr(&buf, ",\"source\":\"wgslender\",\"message\":\"");
         Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.message);
-        appendStr(&buf, "\"}");
+        appendStr(&buf, "\"");
+        if (diag.related.len > 0) {
+            appendStr(&buf, ",\"relatedInformation\":[");
+            for (diag.related, 0..) |rel, ri| {
+                if (ri > 0) buf.append(wasm_allocator, ',') catch {};
+                appendStr(&buf, "{\"location\":{\"uri\":\"");
+                Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri);
+                appendStr(&buf, "\",\"range\":{\"start\":{\"line\":");
+                appendUint(&buf, rel.range.start.line);
+                appendStr(&buf, ",\"character\":");
+                appendUint(&buf, rel.range.start.character);
+                appendStr(&buf, "},\"end\":{\"line\":");
+                appendUint(&buf, rel.range.end.line);
+                appendStr(&buf, ",\"character\":");
+                appendUint(&buf, rel.range.end.character);
+                appendStr(&buf, "}}},\"message\":\"");
+                Diagnostic.appendJsonEscaped(&buf, wasm_allocator, rel.message);
+                appendStr(&buf, "\"}");
+            }
+            appendStr(&buf, "]");
+        }
+        appendStr(&buf, "}");
     }
 
     appendStr(&buf, "]}}");
