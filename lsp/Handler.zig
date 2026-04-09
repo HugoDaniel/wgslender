@@ -400,7 +400,7 @@ test "convertDiagnostic omits spec_url when code empty" {
     try std.testing.expectEqual(@as(usize, 0), result.spec_url.len);
 }
 
-fn freeDiagnostics(allocator: std.mem.Allocator, diags: []LspDiagnostic) void {
+pub fn freeDiagnostics(allocator: std.mem.Allocator, diags: []LspDiagnostic) void {
     for (diags) |d| {
         if (d.related.len > 0) {
             for (d.related) |r| {
@@ -414,8 +414,15 @@ fn freeDiagnostics(allocator: std.mem.Allocator, diags: []LspDiagnostic) void {
     allocator.free(diags);
 }
 
-pub fn freeDiagnosticsPublic(allocator: std.mem.Allocator, diags: []LspDiagnostic) void {
-    freeDiagnostics(allocator, diags);
+pub fn freeCodeActions(allocator: std.mem.Allocator, actions: []LspCodeAction) void {
+    for (actions) |a| {
+        allocator.free(a.title);
+        for (a.edits) |edit| {
+            allocator.free(edit.new_text);
+        }
+        allocator.free(a.edits);
+    }
+    allocator.free(actions);
 }
 
 test "code round-trips through validateDocument" {
@@ -525,17 +532,6 @@ test "extractDuplicateLocation: no match" {
 
 test "extractDuplicateLocation: empty" {
     try std.testing.expect(extractDuplicateLocation("") == null);
-}
-
-fn freeCodeActions(allocator: std.mem.Allocator, actions: []LspCodeAction) void {
-    for (actions) |a| {
-        allocator.free(a.title);
-        for (a.edits) |edit| {
-            allocator.free(edit.new_text);
-        }
-        allocator.free(a.edits);
-    }
-    allocator.free(actions);
 }
 
 test "computeCodeActions: did-you-mean produces rename action" {

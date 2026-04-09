@@ -206,11 +206,15 @@ const NativeServer = struct {
     fn publishDiagnostics(self: *NativeServer, uri: []const u8) void {
         const source = self.handler.getDocumentSource(uri) orelse return;
         const diags = self.handler.validateDocument(source) catch return;
-        defer self.handler.allocator.free(diags);
+        defer Handler.freeDiagnostics(self.handler.allocator, diags);
 
         // Convert Handler diagnostics to lsp-kit types.
         const lsp_diags = self.handler.allocator.alloc(lsp.types.Diagnostic, diags.len) catch return;
         defer self.handler.allocator.free(lsp_diags);
+
+        // Track related_info allocations so we can free them after serialization.
+        var related_allocs: [256]?[]const lsp.types.Diagnostic.RelatedInformation = undefined;
+        var related_count: usize = 0;
 
         for (diags, 0..) |d, i| {
             var related_info: ?[]const lsp.types.Diagnostic.RelatedInformation = null;
@@ -230,6 +234,10 @@ const NativeServer = struct {
                         };
                     }
                     related_info = r;
+                    if (related_count < related_allocs.len) {
+                        related_allocs[related_count] = r;
+                        related_count += 1;
+                    }
                 }
             }
             lsp_diags[i] = .{
@@ -258,5 +266,10 @@ const NativeServer = struct {
             .{ .uri = uri, .diagnostics = lsp_diags },
             .{ .emit_null_optional_fields = false },
         ) catch {};
+
+        // Free related_info arrays after serialization.
+        for (related_allocs[0..related_count]) |ri| {
+            if (ri) |r| self.handler.allocator.free(r);
+        }
     }
 };

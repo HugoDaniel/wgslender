@@ -44,7 +44,7 @@ fn cleanup(r: TestResult) void {
         std.testing.allocator.free(a.edits);
     }
     std.testing.allocator.free(r.actions);
-    Handler.freeDiagnosticsPublic(std.testing.allocator, r.diags);
+    Handler.freeDiagnostics(std.testing.allocator, r.diags);
     r.handler.deinit();
     std.testing.allocator.destroy(r.handler);
 }
@@ -280,7 +280,7 @@ test "applying unknown type fix produces fewer errors" {
     var handler2 = Handler.init(std.testing.allocator);
     defer handler2.deinit();
     const diags2 = try handler2.validateDocument(fixed);
-    defer Handler.freeDiagnosticsPublic(std.testing.allocator, diags2);
+    defer Handler.freeDiagnostics(std.testing.allocator, diags2);
 
     // Should have no E0200 errors for vec4ff
     for (diags2) |d| {

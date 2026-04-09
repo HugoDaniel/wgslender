@@ -207,7 +207,7 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
     }
 
     const actions = handler.computeCodeActions(handler_diags) catch return;
-    defer wasm_allocator.free(actions);
+    defer Handler.freeCodeActions(wasm_allocator, actions);
 
     // Build JSON-RPC response
     var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -292,7 +292,7 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
 fn emitDiagnostics(uri: []const u8) void {
     const source = handler.getDocumentSource(uri) orelse return;
     const diags = handler.validateDocument(source) catch return;
-    defer handler.allocator.free(diags);
+    defer Handler.freeDiagnostics(handler.allocator, diags);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
