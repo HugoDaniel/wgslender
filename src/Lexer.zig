@@ -1,8 +1,9 @@
 //! WGSL tokenizer.
 //!
 //! Converts WGSL source text into a sequence of tokens using a
-//! state-machine approach with comptime lookup tables for fast
-//! ASCII classification.
+//! labeled-switch state machine with comptime lookup tables for
+//! fast ASCII classification. Sentinel-terminated input ([:0]const u8)
+//! eliminates bounds checks in the hot path.
 
 const std = @import("std");
 const Ast = @import("Ast.zig");
@@ -363,266 +364,534 @@ pub fn tokenize(allocator: std.mem.Allocator, source: [:0]const u8) !std.MultiAr
 }
 
 // -------------------------------------------------------------------------
-// Core scanning
+// Core scanning — labeled switch state machine
 // -------------------------------------------------------------------------
 
 const TokenResult = struct { tag: Tag, start: u32 };
 
+const State = enum {
+    start,
+    // Comments
+    line_comment,
+    block_comment,
+    // Identifiers
+    identifier,
+    // Numbers — decimal
+    zero,
+    int,
+    int_dot,
+    decimal_frac,
+    decimal_exponent,
+    decimal_exp_digits,
+    // Numbers — hex
+    hex,
+    hex_frac,
+    hex_exponent,
+    hex_exp_digits,
+    // Dot
+    dot,
+    // Multi-char operators
+    saw_plus,
+    saw_minus,
+    saw_star,
+    saw_slash,
+    saw_percent,
+    saw_amp,
+    saw_pipe,
+    saw_caret,
+    saw_lt,
+    saw_lt_lt,
+    saw_gt,
+    saw_gt_gt,
+    saw_eq,
+    saw_bang,
+};
+
 fn next(self: *Lexer) TokenResult {
-    self.skipWhitespaceAndComments();
+    var start: u32 = self.pos;
+    var kind: Tag = .eof;
+    var block_depth: u32 = 0;
+    const src = self.source;
 
-    if (self.pos >= self.source.len) {
-        return .{ .tag = .eof, .start = self.pos };
-    }
-
-    const start = self.pos;
-    const ch = self.source[self.pos];
-
-    // Identifiers and keywords
-    if (isIdentStart(ch)) {
-        return self.scanIdentOrKeyword(start);
-    }
-
-    // Numbers
-    if (isDigit(ch) or (ch == '.' and self.pos + 1 < self.source.len and isDigit(self.source[self.pos + 1]))) {
-        return self.scanNumber(start);
-    }
-
-    // Operators and punctuation
-    return self.scanOperator(start);
-}
-
-fn skipWhitespaceAndComments(self: *Lexer) void {
-    while (self.pos < self.source.len) {
-        const ch = self.source[self.pos];
-
-        // Fast path: space and newline
-        if (ch == ' ' or ch == '\n') {
-            self.pos += 1;
-            continue;
-        }
-        if (ch == '\t' or ch == '\r') {
-            self.pos += 1;
-            continue;
-        }
-
-        // Line comment
-        if (ch == '/' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '/') {
-            self.pos += 2;
-            while (self.pos < self.source.len and self.source[self.pos] != '\n') {
+    state: switch (State.start) {
+        // =============================================================
+        // Start — dispatch on current character
+        // =============================================================
+        .start => switch (src[self.pos]) {
+            0 => {
+                if (self.pos >= src.len) return .{ .tag = .eof, .start = self.pos };
+                // Embedded null — treat as error
+                kind = .@"error";
                 self.pos += 1;
-            }
-            continue;
-        }
+            },
+            ' ', '\n', '\t', '\r' => {
+                self.pos += 1;
+                start = self.pos;
+                continue :state .start;
+            },
+            '/' => continue :state .saw_slash,
+            'a'...'z', 'A'...'Z', '_' => {
+                kind = .ident;
+                self.pos += 1;
+                continue :state .identifier;
+            },
+            '0' => {
+                kind = .int_literal;
+                self.pos += 1;
+                continue :state .zero;
+            },
+            '1'...'9' => {
+                kind = .int_literal;
+                self.pos += 1;
+                continue :state .int;
+            },
+            '.' => continue :state .dot,
+            // Multi-char operator starts
+            '+' => continue :state .saw_plus,
+            '-' => continue :state .saw_minus,
+            '*' => continue :state .saw_star,
+            '%' => continue :state .saw_percent,
+            '&' => continue :state .saw_amp,
+            '|' => continue :state .saw_pipe,
+            '^' => continue :state .saw_caret,
+            '<' => continue :state .saw_lt,
+            '>' => continue :state .saw_gt,
+            '=' => continue :state .saw_eq,
+            '!' => continue :state .saw_bang,
+            // Single-char tokens
+            '~' => { kind = .tilde; self.pos += 1; },
+            '@' => { kind = .at; self.pos += 1; },
+            '(' => { kind = .l_paren; self.pos += 1; },
+            ')' => { kind = .r_paren; self.pos += 1; },
+            '{' => { kind = .l_brace; self.pos += 1; },
+            '}' => { kind = .r_brace; self.pos += 1; },
+            '[' => { kind = .l_bracket; self.pos += 1; },
+            ']' => { kind = .r_bracket; self.pos += 1; },
+            ';' => { kind = .semicolon; self.pos += 1; },
+            ':' => { kind = .colon; self.pos += 1; },
+            ',' => { kind = .comma; self.pos += 1; },
+            else => { kind = .@"error"; self.pos += 1; },
+        },
 
-        // Block comment (nested)
-        if (ch == '/' and self.pos + 1 < self.source.len and self.source[self.pos + 1] == '*') {
-            self.pos += 2;
-            var depth: u32 = 1;
-            while (self.pos + 1 < self.source.len and depth > 0) {
-                const c = self.source[self.pos];
-                if (c == '/' and self.source[self.pos + 1] == '*') {
-                    depth += 1;
-                    self.pos += 2;
-                } else if (c == '*' and self.source[self.pos + 1] == '/') {
-                    depth -= 1;
+        // =============================================================
+        // Comments
+        // =============================================================
+        .line_comment => switch (src[self.pos]) {
+            0 => {
+                // EOF during line comment — return to start (produces eof on next call)
+                start = self.pos;
+                continue :state .start;
+            },
+            '\n' => {
+                self.pos += 1;
+                start = self.pos;
+                continue :state .start;
+            },
+            else => {
+                self.pos += 1;
+                continue :state .line_comment;
+            },
+        },
+        .block_comment => switch (src[self.pos]) {
+            0 => {
+                if (self.pos >= src.len) {
+                    // Unterminated block comment — match old behavior: return eof
+                    return .{ .tag = .eof, .start = self.pos };
+                }
+                // Embedded null in comment
+                self.pos += 1;
+                continue :state .block_comment;
+            },
+            '/' => {
+                if (src[self.pos + 1] == '*') {
+                    block_depth += 1;
                     self.pos += 2;
                 } else {
                     self.pos += 1;
                 }
-            }
-            continue;
-        }
+                continue :state .block_comment;
+            },
+            '*' => {
+                if (src[self.pos + 1] == '/') {
+                    block_depth -= 1;
+                    self.pos += 2;
+                    if (block_depth == 0) {
+                        start = self.pos;
+                        continue :state .start;
+                    }
+                } else {
+                    self.pos += 1;
+                }
+                continue :state .block_comment;
+            },
+            else => {
+                self.pos += 1;
+                continue :state .block_comment;
+            },
+        },
 
-        break;
-    }
-}
+        // =============================================================
+        // Identifiers
+        // =============================================================
+        .identifier => switch (src[self.pos]) {
+            'a'...'z', 'A'...'Z', '0'...'9', '_' => {
+                self.pos += 1;
+                continue :state .identifier;
+            },
+            else => {
+                const text = src[start..self.pos];
+                if (keywords_map.get(text)) |kw_tag| {
+                    kind = kw_tag;
+                } else if (text.len == 1 and text[0] == '_') {
+                    kind = .underscore;
+                } else if (reserved_words.has(text)) {
+                    kind = .reserved_ident;
+                } else if (text.len >= 2 and text[0] == '_' and text[1] == '_') {
+                    kind = .reserved_ident;
+                }
+                // else kind stays .ident (set in .start)
+            },
+        },
 
-fn scanIdentOrKeyword(self: *Lexer, start: u32) TokenResult {
-    // Scan ASCII identifier characters
-    while (self.pos < self.source.len and isIdentContinue(self.source[self.pos])) {
-        self.pos += 1;
-    }
+        // =============================================================
+        // Numbers — leading zero
+        // =============================================================
+        .zero => switch (src[self.pos]) {
+            'x', 'X' => {
+                self.pos += 1;
+                continue :state .hex;
+            },
+            '0'...'9' => {
+                self.pos += 1;
+                continue :state .int;
+            },
+            '.' => continue :state .int_dot,
+            'e', 'E' => {
+                kind = .float_literal;
+                self.pos += 1;
+                continue :state .decimal_exponent;
+            },
+            'i', 'u' => {
+                self.pos += 1;
+            },
+            'f', 'h' => {
+                kind = .float_literal;
+                self.pos += 1;
+            },
+            else => {},
+        },
 
-    const text = self.source[start..self.pos];
+        // =============================================================
+        // Numbers — decimal digits
+        // =============================================================
+        .int => switch (src[self.pos]) {
+            '0'...'9' => {
+                self.pos += 1;
+                continue :state .int;
+            },
+            '.' => continue :state .int_dot,
+            'e', 'E' => {
+                kind = .float_literal;
+                self.pos += 1;
+                continue :state .decimal_exponent;
+            },
+            'i', 'u' => {
+                self.pos += 1;
+            },
+            'f', 'h' => {
+                kind = .float_literal;
+                self.pos += 1;
+            },
+            else => {},
+        },
 
-    // Check keywords
-    if (keywords_map.get(text)) |kw_tag| {
-        return .{ .tag = kw_tag, .start = start };
-    }
-
-    // Single underscore
-    if (text.len == 1 and text[0] == '_') {
-        return .{ .tag = .underscore, .start = start };
-    }
-
-    // Reserved words
-    if (reserved_words.has(text)) {
-        return .{ .tag = .reserved_ident, .start = start };
-    }
-
-    // Double underscore prefix
-    if (text.len >= 2 and text[0] == '_' and text[1] == '_') {
-        return .{ .tag = .reserved_ident, .start = start };
-    }
-
-    return .{ .tag = .ident, .start = start };
-}
-
-fn scanNumber(self: *Lexer, start: u32) TokenResult {
-    var kind: Tag = .int_literal;
-
-    // Hex
-    if (self.pos + 1 < self.source.len and self.source[self.pos] == '0' and
-        (self.source[self.pos + 1] == 'x' or self.source[self.pos + 1] == 'X'))
-    {
-        self.pos += 2;
-        while (self.pos < self.source.len and isHexDigit(self.source[self.pos])) self.pos += 1;
-        // Hex float
-        if (self.pos < self.source.len and self.source[self.pos] == '.') {
-            kind = .float_literal;
-            self.pos += 1;
-            while (self.pos < self.source.len and isHexDigit(self.source[self.pos])) self.pos += 1;
-        }
-        // Hex exponent
-        if (self.pos < self.source.len and (self.source[self.pos] == 'p' or self.source[self.pos] == 'P')) {
-            kind = .float_literal;
-            self.pos += 1;
-            if (self.pos < self.source.len and (self.source[self.pos] == '+' or self.source[self.pos] == '-')) self.pos += 1;
-            while (self.pos < self.source.len and isDigit(self.source[self.pos])) self.pos += 1;
-        }
-    } else {
-        // Decimal integer part
-        while (self.pos < self.source.len and isDigit(self.source[self.pos])) self.pos += 1;
-        // Decimal point
-        if (self.pos < self.source.len and self.source[self.pos] == '.') {
-            const next_is_digit = self.pos + 1 < self.source.len and isDigit(self.source[self.pos + 1]);
-            const next_is_ident = self.pos + 1 < self.source.len and isIdentStart(self.source[self.pos + 1]);
-            const at_end = self.pos + 1 >= self.source.len;
+        // =============================================================
+        // Numbers — saw '.' after decimal digits, disambiguate
+        // =============================================================
+        .int_dot => {
+            const after_dot = src[self.pos + 1]; // safe: sentinel
+            const next_is_digit = after_dot >= '0' and after_dot <= '9';
+            const next_is_ident = isIdentStart(after_dot);
+            const at_end = self.pos + 1 >= src.len;
             // Accept 1.f and 1.h — float suffix after decimal point with no fractional digits
-            const next_is_float_suffix = self.pos + 1 < self.source.len and
-                (self.source[self.pos + 1] == 'f' or self.source[self.pos + 1] == 'h') and
-                (self.pos + 2 >= self.source.len or !isIdentContinue(self.source[self.pos + 2]));
+            const next_is_float_suffix = (after_dot == 'f' or after_dot == 'h') and
+                !isIdentContinue(src[self.pos + 2]); // safe: sentinel guarantees valid read
 
             if (next_is_digit or at_end or !next_is_ident or next_is_float_suffix) {
                 kind = .float_literal;
-                self.pos += 1;
-                while (self.pos < self.source.len and isDigit(self.source[self.pos])) self.pos += 1;
+                self.pos += 1; // consume the '.'
+                if (next_is_float_suffix) {
+                    self.pos += 1; // consume the suffix
+                    // Check for exponent after suffix? No — 1.f is complete.
+                    // But we still need to scan fractional digits if not a suffix.
+                } else {
+                    continue :state .decimal_frac;
+                }
             }
-        }
-        // Exponent
-        if (self.pos < self.source.len and (self.source[self.pos] == 'e' or self.source[self.pos] == 'E')) {
-            kind = .float_literal;
-            self.pos += 1;
-            if (self.pos < self.source.len and (self.source[self.pos] == '+' or self.source[self.pos] == '-')) self.pos += 1;
-            while (self.pos < self.source.len and isDigit(self.source[self.pos])) self.pos += 1;
-        }
-    }
+            // else: don't consume '.', leave for next token as dot operator
+            // kind stays .int_literal
+        },
 
-    // Type suffix
-    if (self.pos < self.source.len) {
-        const ch = self.source[self.pos];
-        if (ch == 'i' or ch == 'u') {
+        // =============================================================
+        // Numbers — fractional decimal digits after '.'
+        // =============================================================
+        .decimal_frac => switch (src[self.pos]) {
+            '0'...'9' => {
+                self.pos += 1;
+                continue :state .decimal_frac;
+            },
+            'e', 'E' => {
+                self.pos += 1;
+                continue :state .decimal_exponent;
+            },
+            'f', 'h' => {
+                self.pos += 1;
+            },
+            'i', 'u' => {
+                self.pos += 1;
+            },
+            else => {},
+        },
+
+        // =============================================================
+        // Numbers — saw 'e'/'E', check for optional sign
+        // =============================================================
+        .decimal_exponent => switch (src[self.pos]) {
+            '+', '-' => {
+                self.pos += 1;
+                continue :state .decimal_exp_digits;
+            },
+            '0'...'9' => {
+                self.pos += 1;
+                continue :state .decimal_exp_digits;
+            },
+            else => {},
+        },
+
+        // =============================================================
+        // Numbers — exponent digit run
+        // =============================================================
+        .decimal_exp_digits => switch (src[self.pos]) {
+            '0'...'9' => {
+                self.pos += 1;
+                continue :state .decimal_exp_digits;
+            },
+            'f', 'h' => {
+                self.pos += 1;
+            },
+            'i', 'u' => {
+                self.pos += 1;
+            },
+            else => {},
+        },
+
+        // =============================================================
+        // Numbers — hex digit run
+        // =============================================================
+        .hex => switch (src[self.pos]) {
+            '0'...'9', 'a'...'f', 'A'...'F' => {
+                self.pos += 1;
+                continue :state .hex;
+            },
+            '.' => {
+                kind = .float_literal;
+                self.pos += 1;
+                continue :state .hex_frac;
+            },
+            'p', 'P' => {
+                kind = .float_literal;
+                self.pos += 1;
+                continue :state .hex_exponent;
+            },
+            'i', 'u' => {
+                self.pos += 1;
+            },
+            else => {},
+        },
+
+        // =============================================================
+        // Numbers — hex fractional digits after '.'
+        // =============================================================
+        .hex_frac => switch (src[self.pos]) {
+            '0'...'9', 'a'...'f', 'A'...'F' => {
+                self.pos += 1;
+                continue :state .hex_frac;
+            },
+            'p', 'P' => {
+                self.pos += 1;
+                continue :state .hex_exponent;
+            },
+            'i', 'u' => {
+                self.pos += 1;
+            },
+            else => {},
+        },
+
+        // =============================================================
+        // Numbers — hex exponent, check for optional sign
+        // =============================================================
+        .hex_exponent => switch (src[self.pos]) {
+            '+', '-' => {
+                self.pos += 1;
+                continue :state .hex_exp_digits;
+            },
+            '0'...'9' => {
+                self.pos += 1;
+                continue :state .hex_exp_digits;
+            },
+            else => {},
+        },
+
+        // =============================================================
+        // Numbers — hex exponent digit run
+        // =============================================================
+        .hex_exp_digits => switch (src[self.pos]) {
+            '0'...'9' => {
+                self.pos += 1;
+                continue :state .hex_exp_digits;
+            },
+            'f', 'h' => {
+                self.pos += 1;
+            },
+            'i', 'u' => {
+                self.pos += 1;
+            },
+            else => {},
+        },
+
+        // =============================================================
+        // Dot — '.' as float start or operator
+        // =============================================================
+        .dot => {
             self.pos += 1;
-        } else if (ch == 'f' or ch == 'h') {
-            kind = .float_literal;
+            if (src[self.pos] >= '0' and src[self.pos] <= '9') {
+                kind = .float_literal;
+                self.pos += 1;
+                continue :state .decimal_frac;
+            }
+            kind = .dot;
+        },
+
+        // =============================================================
+        // Operators
+        // =============================================================
+        .saw_plus => {
             self.pos += 1;
-        }
+            switch (src[self.pos]) {
+                '+' => { kind = .plus_plus; self.pos += 1; },
+                '=' => { kind = .plus_eq; self.pos += 1; },
+                else => kind = .plus,
+            }
+        },
+        .saw_minus => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '-' => { kind = .minus_minus; self.pos += 1; },
+                '=' => { kind = .minus_eq; self.pos += 1; },
+                '>' => { kind = .arrow; self.pos += 1; },
+                else => kind = .minus,
+            }
+        },
+        .saw_star => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '=' => { kind = .star_eq; self.pos += 1; },
+                else => kind = .star,
+            }
+        },
+        .saw_slash => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '/' => {
+                    self.pos += 1;
+                    continue :state .line_comment;
+                },
+                '*' => {
+                    self.pos += 1;
+                    block_depth = 1;
+                    continue :state .block_comment;
+                },
+                '=' => { kind = .slash_eq; self.pos += 1; },
+                else => kind = .slash,
+            }
+        },
+        .saw_percent => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '=' => { kind = .percent_eq; self.pos += 1; },
+                else => kind = .percent,
+            }
+        },
+        .saw_amp => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '&' => { kind = .amp_amp; self.pos += 1; },
+                '=' => { kind = .amp_eq; self.pos += 1; },
+                else => kind = .amp,
+            }
+        },
+        .saw_pipe => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '|' => { kind = .pipe_pipe; self.pos += 1; },
+                '=' => { kind = .pipe_eq; self.pos += 1; },
+                else => kind = .pipe,
+            }
+        },
+        .saw_caret => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '=' => { kind = .caret_eq; self.pos += 1; },
+                else => kind = .caret,
+            }
+        },
+        .saw_lt => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '<' => continue :state .saw_lt_lt,
+                '=' => { kind = .lt_eq; self.pos += 1; },
+                else => kind = .lt,
+            }
+        },
+        .saw_lt_lt => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '=' => { kind = .lt_lt_eq; self.pos += 1; },
+                else => kind = .lt_lt,
+            }
+        },
+        .saw_gt => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '>' => continue :state .saw_gt_gt,
+                '=' => { kind = .gt_eq; self.pos += 1; },
+                else => kind = .gt,
+            }
+        },
+        .saw_gt_gt => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '=' => { kind = .gt_gt_eq; self.pos += 1; },
+                else => kind = .gt_gt,
+            }
+        },
+        .saw_eq => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '=' => { kind = .eq_eq; self.pos += 1; },
+                else => kind = .eq,
+            }
+        },
+        .saw_bang => {
+            self.pos += 1;
+            switch (src[self.pos]) {
+                '=' => { kind = .bang_eq; self.pos += 1; },
+                else => kind = .bang,
+            }
+        },
     }
 
     return .{ .tag = kind, .start = start };
-}
-
-fn scanOperator(self: *Lexer, start: u32) TokenResult {
-    const ch = self.source[self.pos];
-    self.pos += 1;
-
-    const next_ch: u8 = if (self.pos < self.source.len) self.source[self.pos] else 0;
-
-    switch (ch) {
-        '+' => {
-            if (next_ch == '+') { self.pos += 1; return .{ .tag = .plus_plus, .start = start }; }
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .plus_eq, .start = start }; }
-            return .{ .tag = .plus, .start = start };
-        },
-        '-' => {
-            if (next_ch == '-') { self.pos += 1; return .{ .tag = .minus_minus, .start = start }; }
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .minus_eq, .start = start }; }
-            if (next_ch == '>') { self.pos += 1; return .{ .tag = .arrow, .start = start }; }
-            return .{ .tag = .minus, .start = start };
-        },
-        '*' => {
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .star_eq, .start = start }; }
-            return .{ .tag = .star, .start = start };
-        },
-        '/' => {
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .slash_eq, .start = start }; }
-            return .{ .tag = .slash, .start = start };
-        },
-        '%' => {
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .percent_eq, .start = start }; }
-            return .{ .tag = .percent, .start = start };
-        },
-        '&' => {
-            if (next_ch == '&') { self.pos += 1; return .{ .tag = .amp_amp, .start = start }; }
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .amp_eq, .start = start }; }
-            return .{ .tag = .amp, .start = start };
-        },
-        '|' => {
-            if (next_ch == '|') { self.pos += 1; return .{ .tag = .pipe_pipe, .start = start }; }
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .pipe_eq, .start = start }; }
-            return .{ .tag = .pipe, .start = start };
-        },
-        '^' => {
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .caret_eq, .start = start }; }
-            return .{ .tag = .caret, .start = start };
-        },
-        '<' => {
-            if (next_ch == '<') {
-                self.pos += 1;
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return .{ .tag = .lt_lt_eq, .start = start };
-                }
-                return .{ .tag = .lt_lt, .start = start };
-            }
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .lt_eq, .start = start }; }
-            return .{ .tag = .lt, .start = start };
-        },
-        '>' => {
-            if (next_ch == '>') {
-                self.pos += 1;
-                if (self.pos < self.source.len and self.source[self.pos] == '=') {
-                    self.pos += 1;
-                    return .{ .tag = .gt_gt_eq, .start = start };
-                }
-                return .{ .tag = .gt_gt, .start = start };
-            }
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .gt_eq, .start = start }; }
-            return .{ .tag = .gt, .start = start };
-        },
-        '=' => {
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .eq_eq, .start = start }; }
-            return .{ .tag = .eq, .start = start };
-        },
-        '!' => {
-            if (next_ch == '=') { self.pos += 1; return .{ .tag = .bang_eq, .start = start }; }
-            return .{ .tag = .bang, .start = start };
-        },
-        '~' => return .{ .tag = .tilde, .start = start },
-        '.' => return .{ .tag = .dot, .start = start },
-        '@' => return .{ .tag = .at, .start = start },
-        '(' => return .{ .tag = .l_paren, .start = start },
-        ')' => return .{ .tag = .r_paren, .start = start },
-        '{' => return .{ .tag = .l_brace, .start = start },
-        '}' => return .{ .tag = .r_brace, .start = start },
-        '[' => return .{ .tag = .l_bracket, .start = start },
-        ']' => return .{ .tag = .r_bracket, .start = start },
-        ';' => return .{ .tag = .semicolon, .start = start },
-        ':' => return .{ .tag = .colon, .start = start },
-        ',' => return .{ .tag = .comma, .start = start },
-        else => return .{ .tag = .@"error", .start = start },
-    }
 }
 
 // -------------------------------------------------------------------------
@@ -1525,4 +1794,118 @@ test "lexer: isHexDigit" {
     try std.testing.expect(!isHexDigit('G'));
     try std.testing.expect(!isHexDigit(' '));
     try std.testing.expect(!isHexDigit('x'));
+}
+
+// -------------------------------------------------------------------------
+// State machine edge-case tests
+// -------------------------------------------------------------------------
+
+test "lexer: sentinel boundary — input ending mid-hex-prefix" {
+    try expectTokenSequence("0x", &.{ .int_literal, .eof });
+}
+
+test "lexer: sentinel boundary — input ending after decimal dot" {
+    try expectTokenSequence("1.", &.{ .float_literal, .eof });
+}
+
+test "lexer: sentinel boundary — unterminated block comment" {
+    try expectTokenSequence("/*", &.{ .eof });
+}
+
+test "lexer: sentinel boundary — unterminated nested block comment" {
+    try expectTokenSequence("/* /* */", &.{ .eof });
+}
+
+test "lexer: operator disambiguation at EOF — single lt" {
+    try expectTokenSequence("<", &.{ .lt, .eof });
+}
+
+test "lexer: operator disambiguation at EOF — single gt" {
+    try expectTokenSequence(">", &.{ .gt, .eof });
+}
+
+test "lexer: operator disambiguation at EOF — single eq" {
+    try expectTokenSequence("=", &.{ .eq, .eof });
+}
+
+test "lexer: operator disambiguation at EOF — single bang" {
+    try expectTokenSequence("!", &.{ .bang, .eof });
+}
+
+test "lexer: operator disambiguation at EOF — single slash" {
+    try expectTokenSequence("/", &.{ .slash, .eof });
+}
+
+test "lexer: number-dot-ident is int dot ident" {
+    try expectTokenSequence("1.xyz", &.{ .int_literal, .dot, .ident, .eof });
+}
+
+test "lexer: number-dot-float-suffix 1.f is float" {
+    try expectTokenSequence("1.f", &.{ .float_literal, .eof });
+}
+
+test "lexer: number-dot-float-suffix 1.h is float" {
+    try expectTokenSequence("1.h", &.{ .float_literal, .eof });
+}
+
+test "lexer: number-dot-ident-like 1.foo is int dot ident" {
+    try expectTokenSequence("1.foo", &.{ .int_literal, .dot, .ident, .eof });
+}
+
+test "lexer: deeply nested block comments" {
+    try expectTokenSequence("/* /* /* deep */ */ */ fn", &.{ .keyword_fn, .eof });
+}
+
+test "lexer: empty block comment" {
+    try expectTokenSequence("/**/fn", &.{ .keyword_fn, .eof });
+}
+
+test "lexer: three-char operator at EOF — left shift assign" {
+    try expectTokenSequence("<<=", &.{ .lt_lt_eq, .eof });
+}
+
+test "lexer: three-char operator at EOF — right shift assign" {
+    try expectTokenSequence(">>=", &.{ .gt_gt_eq, .eof });
+}
+
+test "lexer: slash disambiguation — div vs divassign vs comments" {
+    try expectTokenSequence("/ /= // comment\nfn /* block */ +", &.{
+        .slash,
+        .slash_eq,
+        .keyword_fn,
+        .plus,
+        .eof,
+    });
+}
+
+test "lexer: hex float with exponent" {
+    try expectTokenSequence("0x1.5p+3", &.{ .float_literal, .eof });
+}
+
+test "lexer: hex float with no fractional digits" {
+    try expectTokenSequence("0x1.p2", &.{ .float_literal, .eof });
+}
+
+test "lexer: decimal float with exponent and sign" {
+    try expectTokenSequence("1.5e-10", &.{ .float_literal, .eof });
+}
+
+test "lexer: zero is int literal" {
+    try expectTokenSequence("0", &.{ .int_literal, .eof });
+}
+
+test "lexer: zero with suffix" {
+    try expectTokenSequence("0u", &.{ .int_literal, .eof });
+    try expectTokenSequence("0i", &.{ .int_literal, .eof });
+    try expectTokenSequence("0f", &.{ .float_literal, .eof });
+    try expectTokenSequence("0h", &.{ .float_literal, .eof });
+}
+
+test "lexer: leading dot float" {
+    try expectTokenSequence(".5", &.{ .float_literal, .eof });
+    try expectTokenSequence(".123", &.{ .float_literal, .eof });
+}
+
+test "lexer: dot not followed by digit is dot operator" {
+    try expectTokenSequence(".x", &.{ .dot, .ident, .eof });
 }

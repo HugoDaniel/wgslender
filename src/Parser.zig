@@ -853,12 +853,14 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
     };
 
     // Check entry point
+    const entry_point_attrs = std.StaticStringMap(void).initComptime(.{
+        .{ "vertex", {} },
+        .{ "fragment", {} },
+        .{ "compute", {} },
+    });
     var is_entry_point = false;
     for (attrs.items) |attr| {
-        if (std.mem.eql(u8, attr.name, "vertex") or
-            std.mem.eql(u8, attr.name, "fragment") or
-            std.mem.eql(u8, attr.name, "compute"))
-        {
+        if (entry_point_attrs.has(attr.name)) {
             is_entry_point = true;
             break;
         }
@@ -1100,25 +1102,31 @@ fn parseTextureTypeInfo(name: []const u8) ?TextureInfo {
 }
 
 fn parseAddressSpace(self: *Parser) Ast.AddressSpace {
+    const map = std.StaticStringMap(Ast.AddressSpace).initComptime(.{
+        .{ "function", .function },
+        .{ "private", .private },
+        .{ "workgroup", .workgroup },
+        .{ "uniform", .uniform },
+        .{ "storage", .storage },
+    });
     if (self.currentTag() == .ident) {
         const text = self.currentText();
         self.advance();
-        if (std.mem.eql(u8, text, "function")) return .function;
-        if (std.mem.eql(u8, text, "private")) return .private;
-        if (std.mem.eql(u8, text, "workgroup")) return .workgroup;
-        if (std.mem.eql(u8, text, "uniform")) return .uniform;
-        if (std.mem.eql(u8, text, "storage")) return .storage;
+        return map.get(text) orelse .none;
     }
     return .none;
 }
 
 fn parseAccessMode(self: *Parser) Ast.AccessMode {
+    const map = std.StaticStringMap(Ast.AccessMode).initComptime(.{
+        .{ "read", .read },
+        .{ "write", .write },
+        .{ "read_write", .read_write },
+    });
     if (self.currentTag() == .ident) {
         const text = self.currentText();
         self.advance();
-        if (std.mem.eql(u8, text, "read")) return .read;
-        if (std.mem.eql(u8, text, "write")) return .write;
-        if (std.mem.eql(u8, text, "read_write")) return .read_write;
+        return map.get(text) orelse .none;
     }
     return .none;
 }
