@@ -353,11 +353,11 @@ pub fn tokenize(allocator: std.mem.Allocator, source: [:0]const u8) !std.MultiAr
     const estimated = @max(source.len / 8, 16);
     try lex.tokens.ensureTotalCapacity(allocator, estimated);
 
-    while (true) {
+    for (0..source.len + 1) |_| {
         const tag = lex.next();
         try lex.tokens.append(allocator, .{ .tag = tag.tag, .start = tag.start });
         if (tag.tag == .eof or tag.tag == .@"error") break;
-    }
+    } else unreachable;
 
     return lex.tokens;
 }

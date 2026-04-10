@@ -518,7 +518,7 @@ const LayoutComputer = struct {
     /// Iteratively computes type layout, unwrapping atomic wrappers.
     fn computeTypeLayout(self: *LayoutComputer, t: Ast.Type) TypeLayout {
         var current = t;
-        while (true) {
+        for (0..32) |_| {
             switch (current) {
                 .ident => |ident| {
                     if (primitive_layouts.get(ident.name)) |pl| {
@@ -540,7 +540,7 @@ const LayoutComputer = struct {
                 .atomic => |at| current = at.elem_type,
                 .sampler, .texture, .ptr => return .{},
             }
-        }
+        } else unreachable;
     }
 
     fn computeVecTypeLayout(self: *LayoutComputer, vec: *Ast.VecType) TypeLayout {

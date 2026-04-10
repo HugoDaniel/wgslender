@@ -49,7 +49,7 @@ pub fn encodeVlq(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator,
         @as(u32, @intCast(value)) << 1;
 
     // Emit base64 digits with continuation bits.
-    while (true) {
+    for (0..7) |_| { // ceil(33/5) = 7 digits max for i32 VLQ
         var digit = vlq & vlq_base_mask;
         vlq >>= vlq_base_shift;
 
@@ -60,7 +60,7 @@ pub fn encodeVlq(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator,
         try buf.append(allocator, base64_alphabet[digit]);
 
         if (vlq == 0) break;
-    }
+    } else unreachable;
 }
 
 pub const VlqSingleResult = struct { buf: [vlq_max_digits]u8, len: u8 };
@@ -74,7 +74,7 @@ pub fn encodeVlqSingle(value: i32) VlqSingleResult {
     else
         @as(u32, @intCast(value)) << 1;
 
-    while (true) {
+    for (0..7) |_| { // ceil(33/5) = 7 digits max for i32 VLQ
         var digit = vlq & vlq_base_mask;
         vlq >>= vlq_base_shift;
 
@@ -86,7 +86,7 @@ pub fn encodeVlqSingle(value: i32) VlqSingleResult {
         result.len += 1;
 
         if (vlq == 0) break;
-    }
+    } else unreachable;
 
     return result;
 }

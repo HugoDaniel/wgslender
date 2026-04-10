@@ -126,7 +126,7 @@ pub fn collectExprRefs(allocator: std.mem.Allocator, expr: Ast.Expr, refs: *std.
     defer stack.deinit(allocator);
     try stack.append(allocator, expr);
 
-    while (true) {
+    for (0..65536) |_| {
         const e = stack.pop() orelse break;
         switch (e) {
             .ident => |ie| {
@@ -153,13 +153,13 @@ pub fn collectExprRefs(allocator: std.mem.Allocator, expr: Ast.Expr, refs: *std.
             .paren => |pe| try stack.append(allocator, pe.expr),
             .literal => {},
         }
-    }
+    } else unreachable;
 }
 
 /// Iteratively collects symbol references from a type tree.
 fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
     var current = typ;
-    while (true) {
+    for (0..32) |_| {
         switch (current) {
             .ident => |t| {
                 if (t.ref.isValid()) try refs.append(allocator, t.ref.index());
@@ -186,7 +186,7 @@ fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.Array
             },
             .sampler => break,
         }
-    }
+    } else unreachable;
 }
 
 /// Iteratively collects symbol references from a statement tree using a worklist.
@@ -195,7 +195,7 @@ pub fn collectStmtRefs(allocator: std.mem.Allocator, stmt: Ast.Stmt, refs: *std.
     defer stack.deinit(allocator);
     try stack.append(allocator, stmt);
 
-    while (true) {
+    for (0..65536) |_| {
         const s = stack.pop() orelse break;
         switch (s) {
             .compound => |cs| {
@@ -259,7 +259,7 @@ pub fn collectStmtRefs(allocator: std.mem.Allocator, stmt: Ast.Stmt, refs: *std.
             },
             .@"break", .@"continue", .discard => {},
         }
-    }
+    } else unreachable;
 }
 
 /// Check if a declaration is live (for use by printer).

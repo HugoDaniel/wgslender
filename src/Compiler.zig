@@ -554,7 +554,7 @@ const OpEmitter = struct {
         var close_top: usize = 0;
         var current = t;
 
-        while (true) {
+        for (0..32) |_| {
             switch (current) {
                 .ident => |typ| {
                     if (typ.ref.isValid()) {
@@ -644,7 +644,7 @@ const OpEmitter = struct {
                     break;
                 },
             }
-        }
+        } else unreachable;
         // Emit closing tokens in reverse
         while (close_top > 0) {
             close_top -= 1;
@@ -710,7 +710,7 @@ const OpEmitter = struct {
         defer stack.deinit(self.alloc);
         try stack.append(self.alloc, .{ .expr = e });
 
-        while (true) {
+        for (0..65536) |_| {
             const work = stack.pop() orelse break;
             switch (work) {
                 .str => |s| try self.emitStr(s),
@@ -770,7 +770,7 @@ const OpEmitter = struct {
                     },
                 },
             }
-        }
+        } else unreachable;
     }
 
     // -- Statements --
@@ -797,7 +797,7 @@ const OpEmitter = struct {
         defer stack.deinit(self.alloc);
         try stack.append(self.alloc, .{ .stmt = root });
 
-        while (true) {
+        for (0..65536) |_| {
             const work = stack.pop() orelse break;
             switch (work) {
                 .compound => |body| {
@@ -814,22 +814,18 @@ const OpEmitter = struct {
                     try self.emitByte('}');
                 },
                 .else_chain => |ec| {
-                    var s = ec;
-                    while (true) {
-                        if (s == .@"if") {
-                            const if_stmt = s.@"if";
-                            try self.emitStr(" else if ");
-                            try self.emitExpr(if_stmt.condition);
-                            try self.emitSpace();
-                            if (if_stmt.else_branch) |eb| try stack.append(self.alloc, .{ .else_chain = eb });
-                            try stack.append(self.alloc, .{ .compound = if_stmt.body });
-                            break;
-                        } else {
-                            try self.emitStr(" else");
-                            try self.emitSpace();
-                            try stack.append(self.alloc, .{ .stmt = s });
-                            break;
-                        }
+                    const s = ec;
+                    if (s == .@"if") {
+                        const if_stmt = s.@"if";
+                        try self.emitStr(" else if ");
+                        try self.emitExpr(if_stmt.condition);
+                        try self.emitSpace();
+                        if (if_stmt.else_branch) |eb| try stack.append(self.alloc, .{ .else_chain = eb });
+                        try stack.append(self.alloc, .{ .compound = if_stmt.body });
+                    } else {
+                        try self.emitStr(" else");
+                        try self.emitSpace();
+                        try stack.append(self.alloc, .{ .stmt = s });
                     }
                 },
                 .continuing => |c| {
@@ -911,13 +907,13 @@ const OpEmitter = struct {
                     .decl => |stmt| try self.emitDeclStmt(stmt.decl),
                 },
             }
-        }
+        } else unreachable;
     }
 
     /// Iteratively emits an else/else-if chain.
     fn emitElseChain(self: *OpEmitter, s_init: Ast.Stmt) Allocator.Error!void {
         var s = s_init;
-        while (true) {
+        for (0..65536) |_| {
             if (s == .@"if") {
                 const if_stmt = s.@"if";
                 try self.emitStr(" else if ");
@@ -931,7 +927,7 @@ const OpEmitter = struct {
                 try self.emitStmt(s);
                 break;
             }
-        }
+        } else unreachable;
     }
 
     fn emitForStmt(self: *OpEmitter, stmt: *const Ast.ForStmt) Allocator.Error!void {

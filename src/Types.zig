@@ -50,7 +50,7 @@ pub const Type = union(enum) {
     pub fn eql(self: Type, other: Type) bool {
         var a = self;
         var b = other;
-        while (true) {
+        for (0..32) |_| {
             const a_tag = std.meta.activeTag(a);
             const b_tag = std.meta.activeTag(b);
             if (a_tag != b_tag) return false;
@@ -81,7 +81,7 @@ pub const Type = union(enum) {
                 .function => |f| return f.eqlFunction(b.function),
                 .void_type => return true,
             }
-        }
+        } else unreachable;
     }
 
     /// Returns true if this type is a runtime-sized array.
@@ -96,7 +96,7 @@ pub const Type = union(enum) {
     /// Follows array element chains iteratively.
     pub fn isConstructible(self: Type) bool {
         var current = self;
-        while (true) {
+        for (0..32) |_| {
             switch (current) {
                 .scalar => |s| return s.isConcrete(),
                 .vector => |v| return v.element.isConcrete(),
@@ -108,14 +108,14 @@ pub const Type = union(enum) {
                 .@"struct" => |s| return s.isConstructibleStruct(),
                 .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => return false,
             }
-        }
+        } else unreachable;
     }
 
     /// Returns true if this is not an abstract type.
     /// Follows array element chains iteratively.
     pub fn isConcrete(self: Type) bool {
         var current = self;
-        while (true) {
+        for (0..32) |_| {
             switch (current) {
                 .scalar => |s| return s.isConcrete(),
                 .vector => |v| return v.element.isConcrete(),
@@ -124,14 +124,14 @@ pub const Type = union(enum) {
                 .@"struct" => |s| return s.isConcreteStruct(),
                 .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => return true,
             }
-        }
+        } else unreachable;
     }
 
     /// Returns true if values can be stored in memory.
     /// Follows array element chains iteratively.
     pub fn isStorable(self: Type) bool {
         var current = self;
-        while (true) {
+        for (0..32) |_| {
             switch (current) {
                 .scalar => |s| return s.isConcrete(),
                 .vector => |v| return v.element.isConcrete(),
@@ -141,14 +141,14 @@ pub const Type = union(enum) {
                 .atomic => return true,
                 .pointer, .reference, .sampler, .texture, .function, .void_type => return false,
             }
-        }
+        } else unreachable;
     }
 
     /// Returns true if this type can cross the CPU/GPU boundary.
     /// Follows array element chains iteratively.
     pub fn isHostShareable(self: Type) bool {
         var current = self;
-        while (true) {
+        for (0..32) |_| {
             switch (current) {
                 .scalar => |s| return s.kind != .bool and s.isConcrete(),
                 .vector => |v| return v.element.kind != .bool and v.element.isConcrete(),
@@ -158,7 +158,7 @@ pub const Type = union(enum) {
                 .atomic => return true,
                 .pointer, .reference, .sampler, .texture, .function, .void_type => return false,
             }
-        }
+        } else unreachable;
     }
 
     /// Returns the size in bytes (0 for unsized types).
@@ -868,7 +868,7 @@ pub fn elementType(allocator: Allocator, t: Type) Allocator.Error!?Type {
 pub fn canConvertTo(src: Type, dst: Type) bool {
     var s = src;
     var d = dst;
-    while (true) {
+    for (0..32) |_| {
         if (s.eql(d)) return true;
 
         // Abstract scalar types can convert to concrete scalar types.
@@ -920,7 +920,7 @@ pub fn canConvertTo(src: Type, dst: Type) bool {
         }
 
         return false;
-    }
+    } else unreachable;
 }
 
 /// Returns the common type of two types for binary operations, or null.

@@ -53,7 +53,7 @@ pub const ExportKind = enum(u8) {
 
 pub fn writeUleb128(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: u32) Allocator.Error!void {
     var v = value;
-    while (true) {
+    for (0..5) |_| { // ceil(32/7) = 5 bytes max for u32 LEB128
         const byte: u8 = @truncate(v & 0x7F);
         v >>= 7;
         if (v == 0) {
@@ -61,12 +61,12 @@ pub fn writeUleb128(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, valu
             break;
         }
         try buf.append(allocator, byte | 0x80);
-    }
+    } else unreachable;
 }
 
 pub fn writeSleb128(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: i32) Allocator.Error!void {
     var v = value;
-    while (true) {
+    for (0..5) |_| { // ceil(32/7) = 5 bytes max for i32 SLEB128
         const byte: u8 = @truncate(@as(u32, @bitCast(v)) & 0x7F);
         v >>= 7;
         const done = (v == 0 and byte & 0x40 == 0) or (v == -1 and byte & 0x40 != 0);
@@ -75,7 +75,7 @@ pub fn writeSleb128(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, valu
             break;
         }
         try buf.append(allocator, byte | 0x80);
-    }
+    } else unreachable;
 }
 
 // =========================================================================

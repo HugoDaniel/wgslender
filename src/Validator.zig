@@ -386,7 +386,8 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
     color.put(v.allocator, start, 1) catch return; // gray
     stack.append(v.allocator, .{ .fn_idx = start, .callee_idx = 0 }) catch return;
 
-    while (true) {
+    const num_syms: usize = v.module.symbols.items.len;
+    for (0..num_syms * (num_syms + 1)) |_| {
         const frame = &(stack.items[stack.items.len - 1 ..][0]);
         const callees = call_graph.get(frame.fn_idx) orelse {
             // No callees — mark black and pop
@@ -418,7 +419,7 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
             try stack.append(v.allocator, .{ .fn_idx = callee, .callee_idx = 0 });
         }
         // black (2) = already fully processed, skip
-    }
+    } else unreachable;
 }
 
 // =========================================================================
@@ -1199,7 +1200,7 @@ fn stmtTerminates(root: Ast.Stmt) bool {
         top -= 1;
         var current = stack[top];
         // Follow compound→last and if→body+else chains
-        while (true) {
+        for (0..65536) |_| {
             switch (current) {
                 .@"return", .@"break", .@"continue" => break,
                 .compound => |s| {
@@ -1231,7 +1232,7 @@ fn stmtTerminates(root: Ast.Stmt) bool {
                 },
                 else => return false,
             }
-        }
+        } else unreachable;
     }
     return true;
 }
@@ -1292,7 +1293,7 @@ fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!void {
 /// Iteratively validates if/else-if/else chains without recursion.
 fn validateIfStmt(v: *Validator, s: *Ast.IfStmt) Allocator.Error!void {
     var current: *Ast.IfStmt = s;
-    while (true) {
+    for (0..65536) |_| {
         const cond_type = try v.checkExpr(current.condition);
         if (cond_type) |ct| {
             if (!ct.eql(Types.Bool)) {
@@ -1309,7 +1310,7 @@ fn validateIfStmt(v: *Validator, s: *Ast.IfStmt) Allocator.Error!void {
                 break;
             },
         }
-    }
+    } else unreachable;
 }
 
 fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!void {
@@ -2182,13 +2183,13 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!?Types.Type {
     const mr = exprRange(.{ .member = e }); // dot + member_name
 
     // Auto-dereference pointers/references
-    while (true) {
+    for (0..32) |_| {
         switch (base_type) {
             .pointer => |p| base_type = p.element,
             .reference => |r| base_type = r.element,
             else => break,
         }
-    }
+    } else unreachable;
 
     switch (base_type) {
         .@"struct" => |st| {

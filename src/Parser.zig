@@ -388,7 +388,7 @@ fn visitStmt(self: *Parser, root: Ast.Stmt) void {
     defer stack.deinit(self.allocator);
     stack.append(self.allocator, .{ .stmt = root }) catch return;
 
-    while (true) {
+    for (0..self.token_tags.len * 2) |_| {
         const work = stack.pop() orelse break;
         switch (work) {
             .exit_scope => self.exitScope(),
@@ -403,7 +403,7 @@ fn visitStmt(self: *Parser, root: Ast.Stmt) void {
             },
             .stmt => |s| self.processOneStmt(s, &stack),
         }
-    }
+    } else unreachable;
 }
 
 /// Process a single statement, pushing child work items onto the stack.
@@ -488,7 +488,7 @@ fn visitCompoundStmt(self: *Parser, stmt: *Ast.CompoundStmt) void {
     defer stack.deinit(self.allocator);
     stack.append(self.allocator, .{ .compound = stmt }) catch return;
 
-    while (true) {
+    for (0..self.token_tags.len * 2) |_| {
         const work = stack.pop() orelse break;
         switch (work) {
             .exit_scope => self.exitScope(),
@@ -503,7 +503,7 @@ fn visitCompoundStmt(self: *Parser, stmt: *Ast.CompoundStmt) void {
             },
             .stmt => |s| self.processOneStmt(s, &stack),
         }
-    }
+    } else unreachable;
 }
 
 /// Iteratively visits an expression tree using a two-phase worklist.
@@ -518,7 +518,7 @@ fn visitExpr(self: *Parser, e: Ast.Expr) Ast.Expr {
     defer stack.deinit(self.allocator);
     stack.append(self.allocator, .{ .visit = e }) catch return e;
 
-    while (true) {
+    for (0..self.token_tags.len * 2) |_| {
         const work = stack.pop() orelse break;
         switch (work) {
             .mark => |me| Ast.markExprPurity(me, self.symbols.items),
@@ -573,14 +573,14 @@ fn visitExpr(self: *Parser, e: Ast.Expr) Ast.Expr {
                 }
             },
         }
-    }
+    } else unreachable;
     return e;
 }
 
 /// Iteratively visits a type, following single-child chains.
 fn visitType(self: *Parser, t: Ast.Type) void {
     var current = t;
-    while (true) {
+    for (0..32) |_| {
         switch (current) {
             .ident => |typ| {
                 self.current_loc = 0; // Types don't have text-order restrictions at module scope
@@ -606,7 +606,7 @@ fn visitType(self: *Parser, t: Ast.Type) void {
             .sampler => break,
             .texture => |typ| current = typ.sampled_type orelse break,
         }
-    }
+    } else unreachable;
 }
 
 fn enterNextScope(self: *Parser) void {
@@ -626,7 +626,7 @@ fn exitScope(self: *Parser) void {
 
 fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
     // Parse directives
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         switch (self.currentTag()) {
             .keyword_enable => {
                 const dir = try self.parseEnableDirective();
@@ -642,7 +642,7 @@ fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
             },
             else => break,
         }
-    }
+    } else unreachable;
 
     // Parse declarations
     while (self.currentTag() != .eof) {
@@ -657,13 +657,13 @@ fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
 fn parseEnableDirective(self: *Parser) !Ast.Directive {
     _ = self.expect(.keyword_enable);
     var features: std.ArrayListUnmanaged([]const u8) = .empty;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         if (self.currentTag() == .ident) {
             try features.append(self.allocator, self.currentText());
             self.advance();
         }
         if (!self.eat(.comma)) break;
-    }
+    } else unreachable;
     _ = self.expect(.semicolon);
     return .{ .enable = .{ .features = features } };
 }
@@ -671,13 +671,13 @@ fn parseEnableDirective(self: *Parser) !Ast.Directive {
 fn parseRequiresDirective(self: *Parser) !Ast.Directive {
     _ = self.expect(.keyword_requires);
     var features: std.ArrayListUnmanaged([]const u8) = .empty;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         if (self.currentTag() == .ident) {
             try features.append(self.allocator, self.currentText());
             self.advance();
         }
         if (!self.eat(.comma)) break;
-    }
+    } else unreachable;
     _ = self.expect(.semicolon);
     return .{ .requires = .{ .features = features } };
 }
@@ -896,7 +896,7 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
 
 fn parseParameters(self: *Parser) !std.ArrayListUnmanaged(Ast.Parameter) {
     var params: std.ArrayListUnmanaged(Ast.Parameter) = .empty;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         const param_attrs = try self.parseAttributes();
         if (!self.isIdentLike()) break;
         const text = self.eatIdent().?;
@@ -908,7 +908,7 @@ fn parseParameters(self: *Parser) !std.ArrayListUnmanaged(Ast.Parameter) {
         try params.append(self.allocator, .{ .attributes = param_attrs, .name = name, .typ = typ });
         if (!self.eat(.comma)) break;
         if (self.currentTag() == .r_paren) break;
-    }
+    } else unreachable;
     return params;
 }
 
@@ -1198,7 +1198,7 @@ fn parseBitwiseAndExpr(self: *Parser) !?Ast.Expr {
 
 fn parseEqualityExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseRelationalExpr()) orelse return null;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .eq_eq => .eq,
             .bang_eq => .ne,
@@ -1210,12 +1210,12 @@ fn parseEqualityExpr(self: *Parser) !?Ast.Expr {
         const node = try self.allocator.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
-    }
+    } else unreachable;
 }
 
 fn parseRelationalExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseShiftExpr()) orelse return null;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .lt => .lt,
             .lt_eq => .le,
@@ -1229,12 +1229,12 @@ fn parseRelationalExpr(self: *Parser) !?Ast.Expr {
         const node = try self.allocator.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
-    }
+    } else unreachable;
 }
 
 fn parseShiftExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseAdditiveExpr()) orelse return null;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .lt_lt => .shl,
             .gt_gt => .shr,
@@ -1246,12 +1246,12 @@ fn parseShiftExpr(self: *Parser) !?Ast.Expr {
         const node = try self.allocator.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
-    }
+    } else unreachable;
 }
 
 fn parseAdditiveExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseMultiplicativeExpr()) orelse return null;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .plus => .add,
             .minus => .sub,
@@ -1263,12 +1263,12 @@ fn parseAdditiveExpr(self: *Parser) !?Ast.Expr {
         const node = try self.allocator.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
-    }
+    } else unreachable;
 }
 
 fn parseMultiplicativeExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseUnaryExpr()) orelse return null;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .star => .mul,
             .slash => .div,
@@ -1281,7 +1281,7 @@ fn parseMultiplicativeExpr(self: *Parser) !?Ast.Expr {
         const node = try self.allocator.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
-    }
+    } else unreachable;
 }
 
 fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
@@ -1309,7 +1309,7 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
 fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parsePrimaryExpr()) orelse return null;
 
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         switch (self.currentTag()) {
             .dot => {
                 const dot_loc = self.currentStart();
@@ -1345,7 +1345,7 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
             },
             else => return left,
         }
-    }
+    } else unreachable;
 }
 
 fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
@@ -1445,7 +1445,7 @@ fn parseTemplateArgExpr(self: *Parser) error{OutOfMemory, ParseFailed}!?Ast.Expr
 
 fn parseTemplateAdditiveExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseTemplateMultiplicativeExpr()) orelse return null;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .plus => .add,
             .minus => .sub,
@@ -1457,12 +1457,12 @@ fn parseTemplateAdditiveExpr(self: *Parser) !?Ast.Expr {
         const node = try self.allocator.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
-    }
+    } else unreachable;
 }
 
 fn parseTemplateMultiplicativeExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseTemplateUnaryExpr()) orelse return null;
-    while (true) {
+    for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .star => .mul,
             .slash => .div,
@@ -1475,7 +1475,7 @@ fn parseTemplateMultiplicativeExpr(self: *Parser) !?Ast.Expr {
         const node = try self.allocator.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
-    }
+    } else unreachable;
 }
 
 fn parseTemplateUnaryExpr(self: *Parser) !?Ast.Expr {

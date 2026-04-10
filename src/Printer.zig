@@ -377,7 +377,7 @@ fn printType(self: *Printer, t: Ast.Type) error{OutOfMemory}!void {
     var close_top: usize = 0;
     var current = t;
 
-    while (true) {
+    for (0..32) |_| {
         switch (current) {
             .ident => |typ| {
                 if (typ.ref.isValid()) {
@@ -464,7 +464,7 @@ fn printType(self: *Printer, t: Ast.Type) error{OutOfMemory}!void {
                 break;
             },
         }
-    }
+    } else unreachable;
     // Emit closing suffixes in reverse
     while (close_top > 0) {
         close_top -= 1;
@@ -680,7 +680,7 @@ fn printExpr(self: *Printer, e: Ast.Expr) !void {
     defer stack.deinit(self.allocator);
     try stack.append(self.allocator, .{ .expr = e });
 
-    while (true) {
+    for (0..65536) |_| {
         const work = stack.pop() orelse break;
         switch (work) {
             .literal => |s| try self.emit(s),
@@ -762,7 +762,7 @@ fn printExpr(self: *Printer, e: Ast.Expr) !void {
                 },
             },
         }
-    }
+    } else unreachable;
 }
 
 // =========================================================================
@@ -804,7 +804,7 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
     defer stack.deinit(self.allocator);
     try stack.append(self.allocator, .{ .stmt = root });
 
-    while (true) {
+    for (0..65536) |_| {
         const work = stack.pop() orelse break;
         switch (work) {
             .literal => |s| try self.emit(s),
@@ -833,22 +833,18 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
                 try stack.append(self.allocator, .{ .literal = "{" });
             },
             .else_chain => |ec| {
-                var s = ec;
-                while (true) {
-                    if (s == .@"if") {
-                        const if_stmt = s.@"if";
-                        try self.emit(" else if ");
-                        try self.printExpr(if_stmt.condition);
-                        try self.emitSpace();
-                        if (if_stmt.else_branch) |eb| try stack.append(self.allocator, .{ .else_chain = eb });
-                        try stack.append(self.allocator, .{ .compound = if_stmt.body });
-                        break;
-                    } else {
-                        try self.emit(" else");
-                        try self.emitSpace();
-                        try stack.append(self.allocator, .{ .stmt = s });
-                        break;
-                    }
+                const s = ec;
+                if (s == .@"if") {
+                    const if_stmt = s.@"if";
+                    try self.emit(" else if ");
+                    try self.printExpr(if_stmt.condition);
+                    try self.emitSpace();
+                    if (if_stmt.else_branch) |eb| try stack.append(self.allocator, .{ .else_chain = eb });
+                    try stack.append(self.allocator, .{ .compound = if_stmt.body });
+                } else {
+                    try self.emit(" else");
+                    try self.emitSpace();
+                    try stack.append(self.allocator, .{ .stmt = s });
                 }
             },
             .switch_case => |c| {
@@ -963,7 +959,7 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
                 .decl => |stmt| try self.printDeclStmt(stmt.decl),
             },
         }
-    }
+    } else unreachable;
 }
 
 fn printForInit(self: *Printer, s: Ast.Stmt) !void {

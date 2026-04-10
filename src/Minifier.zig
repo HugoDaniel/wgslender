@@ -399,7 +399,7 @@ fn countExprUsage(allocator: std.mem.Allocator, expr: Ast.Expr, uses: *std.AutoH
     defer stack.deinit(allocator);
     try stack.append(allocator, expr);
 
-    while (true) {
+    for (0..65536) |_| {
         const e = stack.pop() orelse break;
         switch (e) {
             .ident => |ie| {
@@ -429,7 +429,7 @@ fn countExprUsage(allocator: std.mem.Allocator, expr: Ast.Expr, uses: *std.AutoH
             .paren => |pe| try stack.append(allocator, pe.expr),
             .literal => {},
         }
-    }
+    } else unreachable;
 }
 
 /// Iteratively counts symbol usage in a statement tree using a worklist.
@@ -438,7 +438,7 @@ fn countStmtUsage(allocator: std.mem.Allocator, stmt: Ast.Stmt, uses: *std.AutoH
     defer stack.deinit(allocator);
     try stack.append(allocator, stmt);
 
-    while (true) {
+    for (0..65536) |_| {
         const s = stack.pop() orelse break;
         switch (s) {
             .compound => |cs| {
@@ -486,7 +486,7 @@ fn countStmtUsage(allocator: std.mem.Allocator, stmt: Ast.Stmt, uses: *std.AutoH
             .decl => |ds| try countDeclUsage(allocator, ds.decl, uses),
             .@"break", .@"continue", .discard => {},
         }
-    }
+    } else unreachable;
 }
 
 // =========================================================================
@@ -547,14 +547,14 @@ pub const ScopeLocalRenamer = struct {
     }
 
     fn allocCanonicalName(allocator: std.mem.Allocator, buf: *[16]u8, idx: *u32, reserved: *const std.StringHashMapUnmanaged(void)) ![]const u8 {
-        while (true) {
+        for (0..256) |_| {
             const name = RenamerMod.numberToMinifiedName(buf, idx.*);
             idx.* += 1;
             if (reserved.contains(name)) continue;
             const copy = try allocator.alloc(u8, name.len);
             @memcpy(copy, name);
             return copy;
-        }
+        } else unreachable;
     }
 
     /// Iteratively walks compound statements, assigning canonical names to local declarations.
@@ -572,7 +572,7 @@ pub const ScopeLocalRenamer = struct {
         defer bodies.deinit(allocator);
         try bodies.append(allocator, body);
 
-        while (true) {
+        for (0..65536) |_| {
             const current_body = bodies.pop() orelse break;
             for (current_body.stmts.items) |stmt| {
                 switch (stmt) {
@@ -617,7 +617,7 @@ pub const ScopeLocalRenamer = struct {
                     else => {},
                 }
             }
-        }
+        } else unreachable;
     }
 
     fn nameForSymbol(ptr: *const anyopaque, ref: Ast.SymbolIndex) []const u8 {

@@ -144,10 +144,11 @@ pub const MinifyRenamer = struct {
         defer indices.deinit(self.allocator);
         for (self.slots.items) |_| {
             var name = numberToMinifiedName(&buf, name_index);
-            while (self.reserved_names.contains(name)) {
+            for (0..256) |_| {
+                if (!self.reserved_names.contains(name)) break;
                 name_index += 1;
                 name = numberToMinifiedName(&buf, name_index);
-            }
+            } else unreachable;
             try indices.append(self.allocator, name_index);
             total_len += name.len;
             name_index += 1;
