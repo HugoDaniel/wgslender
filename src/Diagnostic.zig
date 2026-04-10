@@ -267,6 +267,8 @@ pub fn deinit(self: *Diagnostic, allocator: std.mem.Allocator) void {
 
 /// Add a diagnostic entry.
 pub fn add(self: *Diagnostic, allocator: std.mem.Allocator, entry: Entry) void {
+    // Diagnostics are best-effort: silently drop if OOM rather than
+    // propagating allocation failure through every parse/validate call site.
     self.diagnostics.append(allocator, entry) catch {};
     if (entry.severity == .@"error") {
         self.has_errors = true;

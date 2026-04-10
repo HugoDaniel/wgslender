@@ -37,6 +37,7 @@ needs_space: bool = false,
 output_line: u32 = 0,
 output_col: u32 = 0,
 
+/// Creates a printer with the given options and symbol table.
 pub fn init(allocator: std.mem.Allocator, options: Options, symbols: []const Ast.Symbol) Printer {
     return .{
         .options = options,
@@ -45,10 +46,12 @@ pub fn init(allocator: std.mem.Allocator, options: Options, symbols: []const Ast
     };
 }
 
+/// Frees the output buffer.
 pub fn deinit(self: *Printer) void {
     self.buf.deinit(self.allocator);
 }
 
+/// Prints the entire module and returns the generated WGSL text.
 pub fn print(self: *Printer, module: *const Ast.Module) ![]const u8 {
     self.buf.clearRetainingCapacity();
     try self.printModule(module);
@@ -206,6 +209,7 @@ fn printDirective(self: *Printer, d: Ast.Directive) !void {
 // Declarations
 // =========================================================================
 
+/// Prints a single top-level declaration.
 pub fn printDecl(self: *Printer, d: Ast.Decl) !void {
     switch (d) {
         .@"const" => |decl| {
@@ -373,6 +377,7 @@ fn printAttributes(self: *Printer, attrs: []const Ast.Attribute) !void {
 
 /// Iteratively prints a type, following single-child chains with a close-stack.
 fn printType(self: *Printer, t: Ast.Type) error{OutOfMemory}!void {
+    // 16 levels handles worst-case WGSL type nesting (e.g., ptr<storage, array<vec4<f32>>, read>).
     var close_stack: [16]struct { suffix: []const u8, needs_space: bool, access: ?[]const u8 } = undefined;
     var close_top: usize = 0;
     var current = t;
@@ -680,6 +685,8 @@ fn printExpr(self: *Printer, e: Ast.Expr) !void {
     defer stack.deinit(self.allocator);
     try stack.append(self.allocator, .{ .expr = e });
 
+    // Bounded worklist avoids unbounded recursion. 65536 handles any
+    // realistic expression tree (each node pushes at most a few items).
     for (0..65536) |_| {
         const work = stack.pop() orelse break;
         switch (work) {
@@ -804,6 +811,7 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
     defer stack.deinit(self.allocator);
     try stack.append(self.allocator, .{ .stmt = root });
 
+    // Bounded worklist — same rationale as printExpr.
     for (0..65536) |_| {
         const work = stack.pop() orelse break;
         switch (work) {

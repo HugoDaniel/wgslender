@@ -1,3 +1,8 @@
+//! CLI entry point for wgslender.
+//!
+//! Parses command-line arguments and dispatches to the minifier,
+//! validator, reflector, or binary shader compiler.
+
 const std = @import("std");
 const wgslender = @import("wgslender");
 

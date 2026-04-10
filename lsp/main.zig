@@ -40,6 +40,7 @@ const NativeServer = struct {
 
     // ----- LSP lifecycle -----
 
+    /// Handles the LSP initialize request; returns server capabilities.
     pub fn initialize(
         _: *NativeServer,
         _: std.mem.Allocator,
@@ -64,13 +65,18 @@ const NativeServer = struct {
         };
     }
 
+    /// No-op acknowledgement of the initialized notification.
     pub fn initialized(_: *NativeServer, _: std.mem.Allocator, _: lsp.types.InitializedParams) void {}
+    /// Handles LSP shutdown; returns null (no pending work).
     pub fn shutdown(_: *NativeServer, _: std.mem.Allocator, _: void) ?void { return null; }
+    /// No-op exit notification handler.
     pub fn exit(_: *NativeServer, _: std.mem.Allocator, _: void) void {}
+    /// No-op handler for server-to-client response messages.
     pub fn onResponse(_: *NativeServer, _: std.mem.Allocator, _: lsp.JsonRPCMessage.Response) void {}
 
     // ----- Document sync -----
 
+    /// Registers an opened document and publishes initial diagnostics.
     pub fn @"textDocument/didOpen"(
         self: *NativeServer,
         _: std.mem.Allocator,
@@ -81,6 +87,7 @@ const NativeServer = struct {
         self.publishDiagnostics(uri);
     }
 
+    /// Updates document source on change and re-publishes diagnostics.
     pub fn @"textDocument/didChange"(
         self: *NativeServer,
         _: std.mem.Allocator,
@@ -98,6 +105,7 @@ const NativeServer = struct {
         self.publishDiagnostics(uri);
     }
 
+    /// Removes a closed document and clears its published diagnostics.
     pub fn @"textDocument/didClose"(
         self: *NativeServer,
         _: std.mem.Allocator,
@@ -116,6 +124,7 @@ const NativeServer = struct {
 
     // ----- Code Actions -----
 
+    /// Returns quick-fix code actions for the requested diagnostic range.
     pub fn @"textDocument/codeAction"(
         self: *NativeServer,
         arena: std.mem.Allocator,

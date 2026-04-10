@@ -67,6 +67,7 @@ pub const capabilities_json =
     \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]}}
 ;
 
+/// Creates a handler with an empty document store.
 pub fn init(allocator: std.mem.Allocator) Handler {
     return .{
         .allocator = allocator,
@@ -74,6 +75,7 @@ pub fn init(allocator: std.mem.Allocator) Handler {
     };
 }
 
+/// Frees all tracked documents and their sources.
 pub fn deinit(self: *Handler) void {
     var it = self.documents.iterator();
     while (it.next()) |entry| {
@@ -87,6 +89,7 @@ pub fn deinit(self: *Handler) void {
 // Document management
 // =========================================================================
 
+/// Registers a new document (or replaces an existing one) with the given source text.
 pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: i32) !void {
     const new_source = try self.allocator.dupe(u8, text);
     errdefer self.allocator.free(new_source);
@@ -100,6 +103,7 @@ pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: 
     gop.value_ptr.* = .{ .source = new_source, .version = version };
 }
 
+/// Replaces the source text of an already-open document.
 pub fn changeDocument(self: *Handler, uri: []const u8, text: []const u8) !void {
     const doc = self.documents.getPtr(uri) orelse return;
     const new_source = try self.allocator.dupe(u8, text);
@@ -107,6 +111,7 @@ pub fn changeDocument(self: *Handler, uri: []const u8, text: []const u8) !void {
     doc.source = new_source;
 }
 
+/// Removes a document and frees its source and URI.
 pub fn closeDocument(self: *Handler, uri: []const u8) void {
     const entry = self.documents.fetchRemove(uri) orelse return;
     self.allocator.free(entry.key);
@@ -400,6 +405,7 @@ test "convertDiagnostic omits spec_url when code empty" {
     try std.testing.expectEqual(@as(usize, 0), result.spec_url.len);
 }
 
+/// Frees all allocations within a diagnostics slice (messages, related info, the slice itself).
 pub fn freeDiagnostics(allocator: std.mem.Allocator, diags: []LspDiagnostic) void {
     for (diags) |d| {
         if (d.related.len > 0) {
@@ -414,6 +420,7 @@ pub fn freeDiagnostics(allocator: std.mem.Allocator, diags: []LspDiagnostic) voi
     allocator.free(diags);
 }
 
+/// Frees all allocations within a code actions slice (titles, edits, the slice itself).
 pub fn freeCodeActions(allocator: std.mem.Allocator, actions: []LspCodeAction) void {
     for (actions) |a| {
         allocator.free(a.title);

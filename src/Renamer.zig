@@ -49,6 +49,8 @@ pub const MinifyRenamer = struct {
     symbols: []Ast.Symbol,
     reserved_names: std.StringHashMapUnmanaged(void),
     slots: std.ArrayListUnmanaged(SymbolSlot),
+    /// Maps symbol index → slot index. Only renameable symbols (use_count > 0,
+    /// !must_not_be_renamed) get entries. Populated by allocateSlots.
     top_level_slots: std.AutoHashMapUnmanaged(u32, u32),
     name_buf: std.ArrayListUnmanaged(u8), // storage for generated names
     name_offsets: std.ArrayListUnmanaged(NameSlice), // offset+len into name_buf
@@ -65,6 +67,7 @@ pub const MinifyRenamer = struct {
         len: u32,
     };
 
+    /// Creates a renamer for the given symbol table, skipping reserved names.
     pub fn init(allocator: std.mem.Allocator, symbols: []Ast.Symbol, reserved: std.StringHashMapUnmanaged(void)) MinifyRenamer {
         var self = MinifyRenamer{
             .symbols = symbols,
@@ -83,6 +86,7 @@ pub const MinifyRenamer = struct {
         return self;
     }
 
+    /// Merges per-scope use counts into each symbol's total use_count.
     pub fn accumulateSymbolUseCounts(self: *MinifyRenamer, uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) void {
         var it = uses.iterator();
         while (it.next()) |entry| {
@@ -96,6 +100,7 @@ pub const MinifyRenamer = struct {
         }
     }
 
+    /// Assigns rename slots sorted by frequency (most-used symbols get shortest names).
     pub fn allocateSlots(self: *MinifyRenamer) Allocator.Error!void {
         const SymWithCount = struct { idx: u32, count: u32 };
         var renameable: std.ArrayListUnmanaged(SymWithCount) = .empty;
@@ -134,6 +139,7 @@ pub const MinifyRenamer = struct {
         }
     }
 
+    /// Generates minified names for all allocated slots, skipping reserved words.
     pub fn assignNames(self: *MinifyRenamer) Allocator.Error!void {
         var name_index: u32 = 0;
         var buf: [16]u8 = undefined;
@@ -144,6 +150,8 @@ pub const MinifyRenamer = struct {
         defer indices.deinit(self.allocator);
         for (self.slots.items) |_| {
             var name = numberToMinifiedName(&buf, name_index);
+            // Skip reserved words/names. 256 attempts is safe: WGSL has ~120
+            // reserved words plus keywords, and consecutive names rarely collide.
             for (0..256) |_| {
                 if (!self.reserved_names.contains(name)) break;
                 name_index += 1;

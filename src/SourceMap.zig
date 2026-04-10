@@ -238,6 +238,8 @@ pub const LineIndex = struct {
 };
 
 /// Count UTF-16 code units for `byte_len` bytes of UTF-8 text.
+/// Source maps use UTF-16 column offsets (per the V3 spec), so we must
+/// convert from UTF-8 byte positions.
 fn utf8ToUtf16Column(text: []const u8, byte_len: u32) u32 {
     if (byte_len == 0) return 0;
     const end: usize = if (byte_len > text.len) text.len else byte_len;

@@ -56,12 +56,17 @@ pub const Symbol = struct {
         member,
     };
 
+    /// Bit-packed symbol flags (6 bools + padding = 2 bytes).
+    /// Layout is fixed — see comptime assertion at end of file.
     pub const Flags = packed struct(u16) {
         must_not_be_renamed: bool = false,
         is_entry_point: bool = false,
+        /// Set for @group/@binding vars and config-preserved names.
         is_api_facing: bool = false,
         is_builtin: bool = false,
+        /// Set for @group/@binding vars; enables alias generation in Printer.
         is_external_binding: bool = false,
+        /// Set by DCE; false means this symbol is dead and can be omitted.
         is_live: bool = false,
         _padding: u10 = 0,
     };
@@ -81,6 +86,7 @@ pub const Scope = struct {
     children: std.ArrayListUnmanaged(*Scope),
     members: std.StringHashMapUnmanaged(ScopeMember),
 
+    /// Creates a new scope with the given parent (null for the root scope).
     pub fn init(parent: ?*Scope) Scope {
         return .{
             .parent = parent,
@@ -103,6 +109,7 @@ pub const Module = struct {
     /// Root scope. All nested scopes are reachable via `scope.children`.
     scope: *Scope,
 
+    /// Creates an empty module bound to the given root scope and source text.
     pub fn init(scope: *Scope, source: [:0]const u8) Module {
         return .{
             .source = source,
@@ -496,6 +503,11 @@ pub const ParenExpr = struct {
     flags: ExprFlags = .{},
 };
 
+/// Flags that drive dead-code elimination for expressions.
+/// `can_be_removed_if_unused`: expression has no side effects (e.g., pure math).
+/// `call_can_be_unwrapped_if_unused`: call result is unused but the call itself
+///   may have side effects — remove the result binding, keep the call.
+/// `from_pure_function`: set when the enclosing function is pure (see `pure_builtins`).
 pub const ExprFlags = packed struct(u8) {
     can_be_removed_if_unused: bool = false,
     call_can_be_unwrapped_if_unused: bool = false,
@@ -639,6 +651,8 @@ pub const DeclStmt = struct {
 // Purity
 // =========================================================================
 
+/// WGSL builtin functions with no side effects. Used by DCE to determine
+/// which calls are safe to remove when their result is unused.
 pub const pure_builtins = std.StaticStringMap(void).initComptime(.{
     // Math functions
     .{ "abs", {} },          .{ "acos", {} },         .{ "acosh", {} },
@@ -876,6 +890,9 @@ pub fn markExprPurity(e: Expr, symbols: []const Symbol) void {
 // Comptime assertions
 // =========================================================================
 
+// These sizes are load-bearing: Symbol.Flags and ExprFlags are bit-packed
+// for memory efficiency, and SymbolIndex uses maxInt(u32) as sentinel.
+// Adding fields may break the packed layout or sentinel checks.
 comptime {
     std.debug.assert(@sizeOf(Symbol.Flags) == 2);
     std.debug.assert(@sizeOf(ExprFlags) == 1);

@@ -1,3 +1,8 @@
+//! Zig build script for wgslender.
+//!
+//! Produces native CLI, WASM binary, C static library, and LSP server.
+//! Requires Zig 0.16.x or newer.
+
 const std = @import("std");
 const builtin = @import("builtin");
 

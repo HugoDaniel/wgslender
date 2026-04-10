@@ -41,6 +41,7 @@ pub const ParseError = struct {
 // Initialization
 // =========================================================================
 
+/// Creates a parser for the given tokenized WGSL source. Allocates the root scope.
 pub fn init(allocator: std.mem.Allocator, source: [:0]const u8, tokens: std.MultiArrayList(Lexer.Token)) !Parser {
     const scope = try allocator.create(Ast.Scope);
     scope.* = Ast.Scope.init(null);
@@ -1899,6 +1900,7 @@ pub const isDigit = Lexer.isDigit;
 pub const isHexDigit = Lexer.isHexDigit;
 
 // Expose these for other modules
+/// Re-exports Lexer.isIdentStart for use by other modules.
 pub fn isIdentStartFn(c: u8) bool {
     return Lexer.isIdentStart(c);
 }

@@ -208,6 +208,9 @@ pub const Tag = enum(u8) {
 // Comptime lookup tables
 // -------------------------------------------------------------------------
 
+// Pre-computed ASCII character classification tables for the hot tokenization
+// loop. 128 entries (ASCII range only); the `c < 128` guard in isIdentStart/
+// isIdentContinue rejects non-ASCII bytes before indexing.
 const ident_start_table: [128]bool = blk: {
     var table = [_]bool{false} ** 128;
     for ('a'..('z' + 1)) |c| {
@@ -228,18 +231,22 @@ const ident_continue_table: [128]bool = blk: {
     break :blk table;
 };
 
+/// Returns true if `c` is a valid WGSL identifier start character (ASCII only).
 pub fn isIdentStart(c: u8) bool {
     return c < 128 and ident_start_table[c];
 }
 
+/// Returns true if `c` can continue a WGSL identifier (ASCII only).
 pub fn isIdentContinue(c: u8) bool {
     return c < 128 and ident_continue_table[c];
 }
 
+/// Returns true if `c` is an ASCII decimal digit.
 pub fn isDigit(c: u8) bool {
     return c >= '0' and c <= '9';
 }
 
+/// Returns true if `c` is an ASCII hexadecimal digit.
 pub fn isHexDigit(c: u8) bool {
     return isDigit(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
 }
@@ -277,6 +284,9 @@ pub const keywords_map = std.StaticStringMap(Tag).initComptime(.{
     .{ "while", .keyword_while },
 });
 
+/// Words reserved by the WGSL spec for future use (WGSL §14.5). The renamer
+/// must never generate these as minified names, and identifiers matching them
+/// are tokenized as `reserved_ident` instead of `ident`.
 pub const reserved_words = std.StaticStringMap(void).initComptime(.{
     .{ "NULL", {} },     .{ "Self", {} },          .{ "abstract", {} },
     .{ "active", {} },   .{ "alignas", {} },       .{ "alignof", {} },
@@ -333,6 +343,7 @@ pub const reserved_words = std.StaticStringMap(void).initComptime(.{
 // Initialization
 // -------------------------------------------------------------------------
 
+/// Creates a new lexer for the given sentinel-terminated WGSL source.
 pub fn init(source: [:0]const u8) Lexer {
     return .{
         .source = source,

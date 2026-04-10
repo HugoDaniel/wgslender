@@ -28,7 +28,8 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator
         }
     }
 
-    // Conservative: no entry points → mark all live
+    // No entry points means this is a shader library — we can't know what's
+    // used externally, so conservatively keep everything.
     if (entry_points.items.len == 0) {
         for (module.symbols.items) |*sym| {
             sym.flags.is_live = true;
@@ -126,6 +127,7 @@ pub fn collectExprRefs(allocator: std.mem.Allocator, expr: Ast.Expr, refs: *std.
     defer stack.deinit(allocator);
     try stack.append(allocator, expr);
 
+    // Bounded worklist: 65536 handles any realistic expression tree depth.
     for (0..65536) |_| {
         const e = stack.pop() orelse break;
         switch (e) {
