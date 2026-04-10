@@ -251,6 +251,7 @@ fn declareSymbol(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, flags: 
         const msg = std.fmt.allocPrint(self.allocator, "redeclaration of '{s}'", .{name}) catch "redeclaration of identifier";
         self.errors.append(self.allocator, .{ .message = msg, .pos = loc, .code = "E0101" }) catch {};
     }
+    std.debug.assert(self.symbols.items.len < std.math.maxInt(u32));
     const idx: u32 = @intCast(self.symbols.items.len);
     try self.symbols.append(self.allocator, .{
         .original_name = name,
@@ -269,6 +270,7 @@ fn declareSymbol(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, flags: 
 /// Creates a symbol without adding it to the scope lookup table.
 /// Used for struct members which should not shadow other identifiers.
 fn declareSymbolNoScope(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, flags: Ast.Symbol.Flags, loc: u32) !Ast.SymbolIndex {
+    std.debug.assert(self.symbols.items.len < std.math.maxInt(u32));
     const idx: u32 = @intCast(self.symbols.items.len);
     try self.symbols.append(self.allocator, .{
         .original_name = name,
@@ -318,6 +320,7 @@ fn pushScope(self: *Parser) !void {
 }
 
 fn popScope(self: *Parser) void {
+    std.debug.assert(self.scope.parent != null);
     if (self.scope.parent) |p| self.scope = p;
 }
 

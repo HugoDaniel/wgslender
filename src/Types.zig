@@ -654,6 +654,7 @@ pub const scalar_abstract_float_ptr: *const Scalar = &scalar_abstract_float;
 
 /// Creates a vector type. Caller must ensure the returned pointer lives long enough.
 pub fn vec(allocator: Allocator, width: u8, elem: *const Scalar) Allocator.Error!Type {
+    std.debug.assert(width >= 2 and width <= 4);
     const v = try allocator.create(Vector);
     v.* = .{ .width = width, .element = elem };
     return .{ .vector = v };
@@ -661,6 +662,8 @@ pub fn vec(allocator: Allocator, width: u8, elem: *const Scalar) Allocator.Error
 
 /// Creates a matrix type.
 pub fn mat(allocator: Allocator, cols: u8, rows: u8, elem: *const Scalar) Allocator.Error!Type {
+    std.debug.assert(cols >= 2 and cols <= 4);
+    std.debug.assert(rows >= 2 and rows <= 4);
     const m = try allocator.create(Matrix);
     m.* = .{ .cols = cols, .rows = rows, .element = elem };
     return .{ .matrix = m };
@@ -668,6 +671,7 @@ pub fn mat(allocator: Allocator, cols: u8, rows: u8, elem: *const Scalar) Alloca
 
 /// Creates a fixed-size array type.
 pub fn arr(allocator: Allocator, elem: Type, count: u32) Allocator.Error!Type {
+    std.debug.assert(count > 0);
     const a = try allocator.create(Array);
     a.* = .{ .element = elem, .count = count };
     return .{ .array = a };

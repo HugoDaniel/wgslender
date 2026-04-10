@@ -53,6 +53,7 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator
         if (visited.contains(idx)) continue;
         try visited.put(allocator, idx, {});
 
+        std.debug.assert(idx < module.symbols.items.len);
         if (idx < module.symbols.items.len) {
             module.symbols.items[idx].flags.is_live = true;
         }

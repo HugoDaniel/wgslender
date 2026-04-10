@@ -1320,6 +1320,8 @@ const BpeEncoder = struct {
 
     /// Scan data for the most frequent byte pair.
     fn findBestPair(data: []const u8, counts: []u32) BestPair {
+        std.debug.assert(data.len >= 2);
+        std.debug.assert(counts.len == 256 * 256);
         @memset(counts, 0);
         for (0..data.len - 1) |i| {
             counts[@as(usize, data[i]) * 256 + data[i + 1]] += 1;
@@ -1343,6 +1345,7 @@ const BpeEncoder = struct {
     /// Replace all non-overlapping occurrences of (byte_a, byte_b) with new_byte.
     /// Returns the new length.
     fn replacePair(buf: []u8, len: usize, byte_a: u8, byte_b: u8, new_byte: u8) usize {
+        std.debug.assert(len <= buf.len);
         var write: usize = 0;
         var read: usize = 0;
         while (read < len) {
@@ -1504,6 +1507,7 @@ const BpeVmGen = struct {
 /// Expand BPE-compressed data back to text using the rules table.
 /// Uses the same stack-based algorithm as the WASM decoder.
 fn decodeBpe(allocator: Allocator, data: []const u8, rules: []const [2]u8) ![]const u8 {
+    std.debug.assert(rules.len <= BpeEncoder.MAX_RULES);
     var out: std.ArrayListUnmanaged(u8) = .empty;
     var stack: [512]u8 = undefined;
     var sp: usize = 0;

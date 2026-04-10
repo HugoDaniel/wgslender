@@ -111,6 +111,7 @@ pub fn minify(allocator: std.mem.Allocator, source: [:0]const u8, options: Optio
     // 4. DCE
     if (options.tree_shaking) {
         result.symbols_dead = try Dce.mark(allocator, module);
+        std.debug.assert(result.symbols_dead <= module.symbols.items.len);
     } else {
         for (module.symbols.items) |*sym| {
             sym.flags.is_live = true;

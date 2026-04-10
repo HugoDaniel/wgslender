@@ -324,6 +324,7 @@ pub fn printDecl(self: *Printer, d: Ast.Decl) !void {
                 try self.printType(member.typ);
                 if (i < decl.members.items.len - 1) try self.emit(",");
             }
+            std.debug.assert(self.indent > 0);
             self.indent -= 1;
             try self.emitNewline();
             try self.emit("}");
@@ -775,6 +776,7 @@ fn printCompoundStmt(self: *Printer, stmt: *const Ast.CompoundStmt) !void {
         try self.emitNewline();
         try self.printStmt(s);
     }
+    std.debug.assert(self.indent > 0);
     self.indent -= 1;
     try self.emitNewline();
     try self.emit("}");
@@ -812,6 +814,7 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
                 self.indent += 1;
             },
             .indent_dec => {
+                std.debug.assert(self.indent > 0);
                 self.indent -= 1;
             },
             .compound => |body| {
