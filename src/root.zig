@@ -90,7 +90,7 @@ pub fn validateWithOptions(allocator: Allocator, source: [:0]const u8, options: 
     var parser = try Parser.init(alloc, source, tokens);
     const module = parser.parse() catch {
         const diags = try alloc.create(Diagnostic);
-        diags.* = Diagnostic.init(alloc, source);
+        diags.* = try Diagnostic.init(alloc, source);
         diags.line_offset = options.line_offset;
         for (parser.errors.items) |err| {
             const end = if (err.end > err.pos) err.end else err.pos + 1;
@@ -132,11 +132,11 @@ pub fn reflect(allocator: Allocator, source: [:0]const u8) !Reflect.ReflectResul
     var parser = try Parser.init(alloc, source, tokens);
     const module = parser.parse() catch {
         var result = Reflect.ReflectResult{};
-        result.errors.append(alloc, "parse error") catch {};
+        try result.errors.append(alloc, "parse error");
         result._arena = arena;
         return result;
     };
-    var result = Reflect.reflect(alloc, module);
+    var result = try Reflect.reflect(alloc, module);
     result._arena = arena;
     return result;
 }
@@ -210,6 +210,24 @@ test "minify: repeated calls no accumulation" {
         var result = try minify(a, source);
         result.deinit(a);
     }
+}
+
+test "minify: propagates OOM" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const result = minifyWithOptions(failing.allocator(), "fn main() { let x = 1; }", .{});
+    try std.testing.expect(result == error.OutOfMemory);
+}
+
+test "validate: propagates OOM" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const result = validateWithOptions(failing.allocator(), "@compute @workgroup_size(1) fn main() {}", .{});
+    try std.testing.expect(result == error.OutOfMemory);
+}
+
+test "reflect: propagates OOM" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const result = reflect(failing.allocator(), "@group(0) @binding(0) var<uniform> u: f32;");
+    try std.testing.expect(result == error.OutOfMemory);
 }
 
 // Re-export tests from all modules

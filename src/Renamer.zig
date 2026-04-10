@@ -8,6 +8,8 @@ const Ast = @import("Ast.zig");
 const Lexer = @import("Lexer.zig");
 const Printer = @import("Printer.zig");
 
+const Allocator = std.mem.Allocator;
+
 const Renamer = @This();
 
 // =========================================================================
@@ -94,7 +96,7 @@ pub const MinifyRenamer = struct {
         }
     }
 
-    pub fn allocateSlots(self: *MinifyRenamer) void {
+    pub fn allocateSlots(self: *MinifyRenamer) Allocator.Error!void {
         const SymWithCount = struct { idx: u32, count: u32 };
         var renameable: std.ArrayListUnmanaged(SymWithCount) = .empty;
         defer renameable.deinit(self.allocator);
@@ -102,10 +104,10 @@ pub const MinifyRenamer = struct {
         for (self.symbols, 0..) |*sym, i| {
             if (sym.flags.must_not_be_renamed) continue;
             if (sym.use_count > 0) {
-                renameable.append(self.allocator, .{
+                try renameable.append(self.allocator, .{
                     .idx = @intCast(i),
                     .count = sym.use_count,
-                }) catch {};
+                });
             }
         }
 
@@ -117,22 +119,22 @@ pub const MinifyRenamer = struct {
             }
         }.lessThan);
 
-        self.slots.ensureTotalCapacity(self.allocator, renameable.items.len) catch {};
+        try self.slots.ensureTotalCapacity(self.allocator, renameable.items.len);
         for (renameable.items, 0..) |item, i| {
-            self.top_level_slots.put(self.allocator, item.idx, @intCast(i)) catch {};
-            self.slots.append(self.allocator, .{ .name = "", .count = item.count }) catch {};
+            try self.top_level_slots.put(self.allocator, item.idx, @intCast(i));
+            try self.slots.append(self.allocator, .{ .name = "", .count = item.count });
         }
     }
 
-    pub fn reserveUnrenamedSymbolNames(self: *MinifyRenamer) void {
+    pub fn reserveUnrenamedSymbolNames(self: *MinifyRenamer) Allocator.Error!void {
         for (self.symbols, 0..) |*sym, i| {
             if (!self.top_level_slots.contains(@intCast(i))) {
-                self.reserved_names.put(self.allocator, sym.original_name, {}) catch {};
+                try self.reserved_names.put(self.allocator, sym.original_name, {});
             }
         }
     }
 
-    pub fn assignNames(self: *MinifyRenamer) void {
+    pub fn assignNames(self: *MinifyRenamer) Allocator.Error!void {
         var name_index: u32 = 0;
         var buf: [16]u8 = undefined;
 
@@ -146,21 +148,21 @@ pub const MinifyRenamer = struct {
                 name_index += 1;
                 name = numberToMinifiedName(&buf, name_index);
             }
-            indices.append(self.allocator, name_index) catch {};
+            try indices.append(self.allocator, name_index);
             total_len += name.len;
             name_index += 1;
         }
 
         // Pre-allocate name buffer to avoid reallocation
-        self.name_buf.ensureTotalCapacity(self.allocator, total_len) catch {};
+        try self.name_buf.ensureTotalCapacity(self.allocator, total_len);
 
         // Second pass: store names (no reallocation will occur)
         for (self.slots.items, 0..) |*slot, i| {
             const idx = indices.items[i];
             const name = numberToMinifiedName(&buf, idx);
             const offset: u32 = @intCast(self.name_buf.items.len);
-            self.name_buf.appendSlice(self.allocator, name) catch {};
-            self.name_offsets.append(self.allocator, .{ .offset = offset, .len = @intCast(name.len) }) catch {};
+            try self.name_buf.appendSlice(self.allocator, name);
+            try self.name_offsets.append(self.allocator, .{ .offset = offset, .len = @intCast(name.len) });
             slot.name = self.name_buf.items[offset .. offset + name.len];
         }
     }
@@ -316,7 +318,7 @@ pub const NameMinifier = struct {
 
 /// Build the set of names that must not be used for renamed symbols
 /// (keywords, reserved words, builtin types, etc.).
-pub fn computeReservedNames(allocator: std.mem.Allocator) std.StringHashMapUnmanaged(void) {
+pub fn computeReservedNames(allocator: std.mem.Allocator) Allocator.Error!std.StringHashMapUnmanaged(void) {
     var reserved = std.StringHashMapUnmanaged(void){};
 
     // Keywords
@@ -326,7 +328,7 @@ pub fn computeReservedNames(allocator: std.mem.Allocator) std.StringHashMapUnman
         "false", "fn", "for", "if", "let", "loop", "override", "requires",
         "return", "struct", "switch", "true", "var", "while",
     };
-    for (keywords) |kw| reserved.put(allocator, kw, {}) catch {};
+    for (keywords) |kw| try reserved.put(allocator, kw, {});
 
     // Reserved words
     const reserved_words = [_][]const u8{
@@ -356,10 +358,10 @@ pub fn computeReservedNames(allocator: std.mem.Allocator) std.StringHashMapUnman
         "unsized", "use", "using", "varying", "virtual", "volatile",
         "wgsl", "where", "with", "writeonly", "yield",
     };
-    for (reserved_words) |w| reserved.put(allocator, w, {}) catch {};
+    for (reserved_words) |w| try reserved.put(allocator, w, {});
 
     // Single underscore
-    reserved.put(allocator, "_", {}) catch {};
+    try reserved.put(allocator, "_", {});
 
     // Builtin types
     const builtin_types = [_][]const u8{
@@ -382,7 +384,7 @@ pub fn computeReservedNames(allocator: std.mem.Allocator) std.StringHashMapUnman
         "texture_depth_2d", "texture_depth_2d_array", "texture_depth_cube", "texture_depth_cube_array",
         "texture_depth_multisampled_2d", "texture_external",
     };
-    for (builtin_types) |t| reserved.put(allocator, t, {}) catch {};
+    for (builtin_types) |t| try reserved.put(allocator, t, {});
 
     // Builtin function names (must not be used as minified identifiers)
     const builtin_functions = [_][]const u8{
@@ -440,16 +442,16 @@ pub fn computeReservedNames(allocator: std.mem.Allocator) std.StringHashMapUnman
         "subgroupExclusiveAdd", "subgroupExclusiveMul",
         "subgroupAll",        "subgroupAny",         "subgroupElect",
     };
-    for (builtin_functions) |bf| reserved.put(allocator, bf, {}) catch {};
+    for (builtin_functions) |bf| try reserved.put(allocator, bf, {});
 
     // Address spaces
     for ([_][]const u8{ "function", "private", "workgroup", "uniform", "storage" }) |s| {
-        reserved.put(allocator, s, {}) catch {};
+        try reserved.put(allocator, s, {});
     }
 
     // Access modes
     for ([_][]const u8{ "read", "write", "read_write" }) |m| {
-        reserved.put(allocator, m, {}) catch {};
+        try reserved.put(allocator, m, {});
     }
 
     // Texel formats
@@ -467,7 +469,7 @@ pub fn computeReservedNames(allocator: std.mem.Allocator) std.StringHashMapUnman
         "rg16uint",    "rg16sint",    "rg16float",
         "rgb10a2uint", "rgb10a2unorm",
     };
-    for (texel_formats) |f| reserved.put(allocator, f, {}) catch {};
+    for (texel_formats) |f| try reserved.put(allocator, f, {});
 
     return reserved;
 }
@@ -526,7 +528,7 @@ test "numberToMinifiedName no duplicates in 10000 names" {
 }
 
 test "computeReservedNames includes keywords" {
-    var reserved = computeReservedNames(std.testing.allocator);
+    var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
     try std.testing.expect(reserved.contains("fn"));
@@ -537,7 +539,7 @@ test "computeReservedNames includes keywords" {
 }
 
 test "computeReservedNames has reasonable count" {
-    var reserved = computeReservedNames(std.testing.allocator);
+    var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
     // Should have at least 150 reserved names
@@ -545,7 +547,7 @@ test "computeReservedNames has reasonable count" {
 }
 
 test "generated names don't collide with reserved" {
-    var reserved = computeReservedNames(std.testing.allocator);
+    var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
     var buf: [16]u8 = undefined;
@@ -599,7 +601,7 @@ test "MinifyRenamer full workflow" {
         .{ .original_name = "otherFunc", .kind = .function, .flags = .{}, .use_count = 0 },
     };
 
-    var reserved = computeReservedNames(std.testing.allocator);
+    var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
     var renamer = MinifyRenamer.init(std.testing.allocator, &symbols, reserved);
@@ -614,13 +616,13 @@ test "MinifyRenamer full workflow" {
     // Simulate use counts
     var uses = std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32){};
     defer uses.deinit(std.testing.allocator);
-    uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(1)), 5) catch {};
-    uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(2)), 3) catch {};
+    try uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(1)), 5);
+    try uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(2)), 3);
 
     renamer.accumulateSymbolUseCounts(&uses);
-    renamer.allocateSlots();
-    renamer.reserveUnrenamedSymbolNames();
-    renamer.assignNames();
+    try renamer.allocateSlots();
+    try renamer.reserveUnrenamedSymbolNames();
+    try renamer.assignNames();
 
     // Entry point should keep its name
     try std.testing.expectEqualStrings("entryMain", renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
@@ -658,8 +660,8 @@ test "MinifyRenamer zero use count not renamed" {
         renamer.name_offsets.deinit(std.testing.allocator);
     }
 
-    renamer.allocateSlots();
-    renamer.assignNames();
+    try renamer.allocateSlots();
+    try renamer.assignNames();
 
     // Zero use count means no slot allocated, returns original name
     try std.testing.expectEqualStrings("unused", renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
@@ -681,11 +683,11 @@ test "MinifyRenamer must_not_be_renamed flag" {
 
     var uses = std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32){};
     defer uses.deinit(std.testing.allocator);
-    uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(0)), 10) catch {};
+    try uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(0)), 10);
 
     renamer.accumulateSymbolUseCounts(&uses);
-    renamer.allocateSlots();
-    renamer.assignNames();
+    try renamer.allocateSlots();
+    try renamer.assignNames();
 
     // must_not_be_renamed should keep original name
     try std.testing.expectEqualStrings("keepMe", renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
@@ -767,7 +769,7 @@ test "MinifyRenamer skips reserved names" {
         .{ .original_name = "myFunc", .kind = .function, .flags = .{}, .use_count = 5 },
     };
 
-    var reserved = computeReservedNames(std.testing.allocator);
+    var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
     var renamer = MinifyRenamer.init(std.testing.allocator, &symbols, reserved);
@@ -781,13 +783,19 @@ test "MinifyRenamer skips reserved names" {
 
     var uses = std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32){};
     defer uses.deinit(std.testing.allocator);
-    uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(0)), 5) catch {};
+    try uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(0)), 5);
 
     renamer.accumulateSymbolUseCounts(&uses);
-    renamer.allocateSlots();
-    renamer.assignNames();
+    try renamer.allocateSlots();
+    try renamer.assignNames();
 
     const name = renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0)));
     // Assigned name should not be a reserved name
     try std.testing.expect(!reserved.contains(name));
+}
+
+test "computeReservedNames: propagates OOM" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const result = computeReservedNames(failing.allocator());
+    try std.testing.expect(result == error.OutOfMemory);
 }

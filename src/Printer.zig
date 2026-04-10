@@ -123,7 +123,7 @@ fn emitName(self: *Printer, ref: Ast.SymbolIndex) !void {
                 }
             }
         }
-        gen.addMapping(self.output_line, self.output_col, sym.loc, original_name);
+        try gen.addMapping(self.output_line, self.output_col, sym.loc, original_name);
     }
 
     if (self.options.minify_identifiers) {

@@ -98,18 +98,14 @@ export fn wgslender_validate_c(
         return .{ .valid = false, .json_ptr = null, .json_len = 0, .error_count = 0 };
 
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-    json_buf.appendSlice(allocator, "{\"valid\":") catch {};
-    json_buf.appendSlice(allocator, if (result.valid) "true" else "false") catch {};
-    json_buf.appendSlice(allocator, ",\"diagnostics\":[") catch {};
-    for (result.diagnostics.diagnostics.items, 0..) |*entry, i| {
-        if (i > 0) json_buf.append(allocator, ',') catch {};
-        Diagnostic.entryToJson(&json_buf, allocator, entry);
-    }
-    json_buf.appendSlice(allocator, "],\"errorCount\":") catch {};
-    Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.errorCount());
-    json_buf.appendSlice(allocator, ",\"warningCount\":") catch {};
-    Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.warningCount());
-    json_buf.appendSlice(allocator, "}") catch {};
+    buildValidateJson(&json_buf, allocator, result) catch {
+        return .{
+            .valid = result.valid,
+            .json_ptr = null,
+            .json_len = 0,
+            .error_count = result.diagnostics.errorCount(),
+        };
+    };
 
     const json_out = copyToPageAllocator(json_buf.items) orelse {
         return .{
@@ -158,7 +154,8 @@ export fn wgslender_reflect_c(
         return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
 
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-    result.toJson(&json_buf, allocator);
+    result.toJson(&json_buf, allocator) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
 
     const json_out = copyToPageAllocator(json_buf.items) orelse
         return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
@@ -212,6 +209,25 @@ export fn wgslender_minify_json_c(
 // =========================================================================
 // Helpers
 // =========================================================================
+
+fn buildValidateJson(
+    json_buf: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
+    result: anytype,
+) std.mem.Allocator.Error!void {
+    try json_buf.appendSlice(allocator, "{\"valid\":");
+    try json_buf.appendSlice(allocator, if (result.valid) "true" else "false");
+    try json_buf.appendSlice(allocator, ",\"diagnostics\":[");
+    for (result.diagnostics.diagnostics.items, 0..) |*entry, i| {
+        if (i > 0) try json_buf.append(allocator, ',');
+        try Diagnostic.entryToJson(json_buf, allocator, entry);
+    }
+    try json_buf.appendSlice(allocator, "],\"errorCount\":");
+    try Diagnostic.appendInt(json_buf, allocator, result.diagnostics.errorCount());
+    try json_buf.appendSlice(allocator, ",\"warningCount\":");
+    try Diagnostic.appendInt(json_buf, allocator, result.diagnostics.warningCount());
+    try json_buf.appendSlice(allocator, "}");
+}
 
 fn makeSentinelSource(
     allocator: std.mem.Allocator,

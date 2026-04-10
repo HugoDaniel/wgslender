@@ -249,7 +249,7 @@ test "related info is serialized in JSON output" {
 
             // Serialize to JSON and verify related field is present
             var buf: std.ArrayListUnmanaged(u8) = .empty;
-            Diagnostic.entryToJson(&buf, std.testing.allocator, &d);
+            try Diagnostic.entryToJson(&buf, std.testing.allocator, &d);
             defer buf.deinit(std.testing.allocator);
 
             const json = buf.items;

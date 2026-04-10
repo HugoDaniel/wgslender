@@ -223,23 +223,23 @@ fn prepareRenamer(allocator: Allocator, module: *Ast.Module, options: CompileOpt
         }
 
         if (mopts.tree_shaking) {
-            _ = Dce.mark(allocator, module);
+            _ = try Dce.mark(allocator, module);
         } else {
             for (module.symbols.items) |*sym| sym.flags.is_live = true;
         }
 
-        var uses = Minifier.computeSymbolUsage(allocator, module);
+        var uses = try Minifier.computeSymbolUsage(allocator, module);
         defer uses.deinit(allocator);
-        var reserved = RenamerMod.computeReservedNames(allocator);
+        var reserved = try RenamerMod.computeReservedNames(allocator);
         for (mopts.keep_names) |name| try reserved.put(allocator, name, {});
 
         if (mopts.minify_identifiers) {
             const r = try allocator.create(RenamerMod.MinifyRenamer);
             r.* = RenamerMod.MinifyRenamer.init(allocator, module.symbols.items, reserved);
             r.accumulateSymbolUseCounts(&uses);
-            r.allocateSlots();
-            r.reserveUnrenamedSymbolNames();
-            r.assignNames();
+            try r.allocateSlots();
+            try r.reserveUnrenamedSymbolNames();
+            try r.assignNames();
             r.renamer.ptr = @ptrCast(r);
             return &r.renamer;
         }

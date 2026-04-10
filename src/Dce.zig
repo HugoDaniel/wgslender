@@ -7,7 +7,7 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 
 /// Perform dead code elimination. Returns the number of dead symbols.
-pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) u32 {
+pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator.Error!u32 {
     if (module.symbols.items.len == 0) return 0;
 
     // Build dependency graph
@@ -17,14 +17,14 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) u32 {
         while (it.next()) |list| list.deinit(allocator);
         deps.deinit(allocator);
     }
-    buildDependencyGraph(allocator, module, &deps);
+    try buildDependencyGraph(allocator, module, &deps);
 
     // Find entry points
     var entry_points: std.ArrayListUnmanaged(u32) = .empty;
     defer entry_points.deinit(allocator);
     for (module.symbols.items, 0..) |sym, i| {
         if (sym.flags.is_entry_point) {
-            entry_points.append(allocator, @intCast(i)) catch {};
+            try entry_points.append(allocator, @intCast(i));
         }
     }
 
@@ -43,7 +43,7 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) u32 {
     var queue: std.ArrayListUnmanaged(u32) = .empty;
     defer queue.deinit(allocator);
     for (entry_points.items) |ep| {
-        queue.append(allocator, ep) catch {};
+        try queue.append(allocator, ep);
     }
 
     var head: usize = 0;
@@ -51,7 +51,7 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) u32 {
         const idx = queue.items[head];
         head += 1;
         if (visited.contains(idx)) continue;
-        visited.put(allocator, idx, {}) catch {};
+        try visited.put(allocator, idx, {});
 
         if (idx < module.symbols.items.len) {
             module.symbols.items[idx].flags.is_live = true;
@@ -60,7 +60,7 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) u32 {
         if (deps.get(idx)) |dep_list| {
             for (dep_list.items) |dep_idx| {
                 if (!visited.contains(dep_idx)) {
-                    queue.append(allocator, dep_idx) catch {};
+                    try queue.append(allocator, dep_idx);
                 }
             }
         }
@@ -74,13 +74,13 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) u32 {
     return dead;
 }
 
-fn buildDependencyGraph(allocator: std.mem.Allocator, module: *const Ast.Module, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) void {
+fn buildDependencyGraph(allocator: std.mem.Allocator, module: *const Ast.Module, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) std.mem.Allocator.Error!void {
     for (module.declarations.items) |decl| {
-        collectDeclDeps(allocator, decl, deps);
+        try collectDeclDeps(allocator, decl, deps);
     }
 }
 
-fn collectDeclDeps(allocator: std.mem.Allocator, decl: Ast.Decl, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) void {
+fn collectDeclDeps(allocator: std.mem.Allocator, decl: Ast.Decl, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) std.mem.Allocator.Error!void {
     const name_ref = decl.nameRef();
     if (!name_ref.isValid()) return;
     const sym_idx = name_ref.index();
@@ -89,79 +89,79 @@ fn collectDeclDeps(allocator: std.mem.Allocator, decl: Ast.Decl, deps: *std.Auto
 
     switch (decl) {
         .@"const" => |d| {
-            if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, &refs);
-            if (d.typ) |t| collectTypeRefs(allocator, t, &refs);
+            if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, &refs);
+            if (d.typ) |t| try collectTypeRefs(allocator, t, &refs);
         },
         .override => |d| {
-            if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, &refs);
-            if (d.typ) |t| collectTypeRefs(allocator, t, &refs);
+            if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, &refs);
+            if (d.typ) |t| try collectTypeRefs(allocator, t, &refs);
         },
         .@"var" => |d| {
-            if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, &refs);
-            if (d.typ) |t| collectTypeRefs(allocator, t, &refs);
+            if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, &refs);
+            if (d.typ) |t| try collectTypeRefs(allocator, t, &refs);
         },
         .let => |d| {
-            if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, &refs);
-            if (d.typ) |t| collectTypeRefs(allocator, t, &refs);
+            if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, &refs);
+            if (d.typ) |t| try collectTypeRefs(allocator, t, &refs);
         },
         .function => |d| {
-            for (d.parameters.items) |param| collectTypeRefs(allocator, param.typ, &refs);
-            if (d.return_type) |rt| collectTypeRefs(allocator, rt, &refs);
-            if (d.body) |body| collectStmtRefs(allocator, .{ .compound = body }, &refs);
+            for (d.parameters.items) |param| try collectTypeRefs(allocator, param.typ, &refs);
+            if (d.return_type) |rt| try collectTypeRefs(allocator, rt, &refs);
+            if (d.body) |body| try collectStmtRefs(allocator, .{ .compound = body }, &refs);
         },
         .@"struct" => |d| {
-            for (d.members.items) |member| collectTypeRefs(allocator, member.typ, &refs);
+            for (d.members.items) |member| try collectTypeRefs(allocator, member.typ, &refs);
         },
-        .alias => |d| collectTypeRefs(allocator, d.typ, &refs),
+        .alias => |d| try collectTypeRefs(allocator, d.typ, &refs),
         .const_assert => {},
     }
 
-    deps.put(allocator, sym_idx, refs) catch {};
+    try deps.put(allocator, sym_idx, refs);
 }
 
 /// Iteratively collects symbol references from an expression tree using a worklist.
-pub fn collectExprRefs(allocator: std.mem.Allocator, expr: Ast.Expr, refs: *std.ArrayListUnmanaged(u32)) void {
+pub fn collectExprRefs(allocator: std.mem.Allocator, expr: Ast.Expr, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
     defer stack.deinit(allocator);
-    stack.append(allocator, expr) catch return;
+    try stack.append(allocator, expr);
 
     while (true) {
         const e = stack.pop() orelse break;
         switch (e) {
             .ident => |ie| {
-                if (ie.ref.isValid()) refs.append(allocator, ie.ref.index()) catch {};
+                if (ie.ref.isValid()) try refs.append(allocator, ie.ref.index());
             },
             .binary => |be| {
-                stack.append(allocator, be.right) catch {};
-                stack.append(allocator, be.left) catch {};
+                try stack.append(allocator, be.right);
+                try stack.append(allocator, be.left);
             },
-            .unary => |ue| stack.append(allocator, ue.operand) catch {},
+            .unary => |ue| try stack.append(allocator, ue.operand),
             .call => |ce| {
                 var i = ce.args.items.len;
                 while (i > 0) {
                     i -= 1;
-                    stack.append(allocator, ce.args.items[i]) catch {};
+                    try stack.append(allocator, ce.args.items[i]);
                 }
-                if (ce.func) |f| stack.append(allocator, f) catch {};
+                if (ce.func) |f| try stack.append(allocator, f);
             },
             .index => |ie| {
-                stack.append(allocator, ie.idx) catch {};
-                stack.append(allocator, ie.base) catch {};
+                try stack.append(allocator, ie.idx);
+                try stack.append(allocator, ie.base);
             },
-            .member => |me| stack.append(allocator, me.base) catch {},
-            .paren => |pe| stack.append(allocator, pe.expr) catch {},
+            .member => |me| try stack.append(allocator, me.base),
+            .paren => |pe| try stack.append(allocator, pe.expr),
             .literal => {},
         }
     }
 }
 
 /// Iteratively collects symbol references from a type tree.
-fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.ArrayListUnmanaged(u32)) void {
+fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
     var current = typ;
     while (true) {
         switch (current) {
             .ident => |t| {
-                if (t.ref.isValid()) refs.append(allocator, t.ref.index()) catch {};
+                if (t.ref.isValid()) try refs.append(allocator, t.ref.index());
                 break;
             },
             .vec => |t| {
@@ -171,7 +171,7 @@ fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.Array
                 current = t.elem_type orelse break;
             },
             .array => |t| {
-                if (t.size) |s| collectExprRefs(allocator, s, refs);
+                if (t.size) |s| try collectExprRefs(allocator, s, refs);
                 current = t.elem_type orelse break;
             },
             .ptr => |t| {
@@ -189,69 +189,69 @@ fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.Array
 }
 
 /// Iteratively collects symbol references from a statement tree using a worklist.
-pub fn collectStmtRefs(allocator: std.mem.Allocator, stmt: Ast.Stmt, refs: *std.ArrayListUnmanaged(u32)) void {
+pub fn collectStmtRefs(allocator: std.mem.Allocator, stmt: Ast.Stmt, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
     defer stack.deinit(allocator);
-    stack.append(allocator, stmt) catch return;
+    try stack.append(allocator, stmt);
 
     while (true) {
         const s = stack.pop() orelse break;
         switch (s) {
             .compound => |cs| {
-                for (cs.stmts.items) |inner| stack.append(allocator, inner) catch {};
+                for (cs.stmts.items) |inner| try stack.append(allocator, inner);
             },
             .@"return" => |rs| {
-                if (rs.value) |v| collectExprRefs(allocator, v, refs);
+                if (rs.value) |v| try collectExprRefs(allocator, v, refs);
             },
             .@"if" => |is| {
-                collectExprRefs(allocator, is.condition, refs);
-                stack.append(allocator, .{ .compound = is.body }) catch {};
-                if (is.else_branch) |eb| stack.append(allocator, eb) catch {};
+                try collectExprRefs(allocator, is.condition, refs);
+                try stack.append(allocator, .{ .compound = is.body });
+                if (is.else_branch) |eb| try stack.append(allocator, eb);
             },
             .@"switch" => |ss| {
-                collectExprRefs(allocator, ss.expr, refs);
+                try collectExprRefs(allocator, ss.expr, refs);
                 for (ss.cases.items) |c| {
-                    for (c.selectors.items) |sel| collectExprRefs(allocator, sel, refs);
-                    stack.append(allocator, .{ .compound = c.body }) catch {};
+                    for (c.selectors.items) |sel| try collectExprRefs(allocator, sel, refs);
+                    try stack.append(allocator, .{ .compound = c.body });
                 }
             },
             .@"for" => |fs| {
-                if (fs.init_stmt) |is| stack.append(allocator, is) catch {};
-                if (fs.condition) |c| collectExprRefs(allocator, c, refs);
-                if (fs.update) |u| stack.append(allocator, u) catch {};
-                stack.append(allocator, .{ .compound = fs.body }) catch {};
+                if (fs.init_stmt) |is| try stack.append(allocator, is);
+                if (fs.condition) |c| try collectExprRefs(allocator, c, refs);
+                if (fs.update) |u| try stack.append(allocator, u);
+                try stack.append(allocator, .{ .compound = fs.body });
             },
             .@"while" => |ws| {
-                collectExprRefs(allocator, ws.condition, refs);
-                stack.append(allocator, .{ .compound = ws.body }) catch {};
+                try collectExprRefs(allocator, ws.condition, refs);
+                try stack.append(allocator, .{ .compound = ws.body });
             },
             .loop => |ls| {
-                stack.append(allocator, .{ .compound = ls.body }) catch {};
-                if (ls.continuing) |c| stack.append(allocator, .{ .compound = c }) catch {};
+                try stack.append(allocator, .{ .compound = ls.body });
+                if (ls.continuing) |c| try stack.append(allocator, .{ .compound = c });
             },
-            .break_if => |bs| collectExprRefs(allocator, bs.condition, refs),
+            .break_if => |bs| try collectExprRefs(allocator, bs.condition, refs),
             .assign => |as_| {
-                collectExprRefs(allocator, as_.left, refs);
-                collectExprRefs(allocator, as_.right, refs);
+                try collectExprRefs(allocator, as_.left, refs);
+                try collectExprRefs(allocator, as_.right, refs);
             },
-            .incr_decr => |ids| collectExprRefs(allocator, ids.expr, refs),
+            .incr_decr => |ids| try collectExprRefs(allocator, ids.expr, refs),
             .call => |cs| {
-                if (cs.call.func) |f| collectExprRefs(allocator, f, refs);
-                for (cs.call.args.items) |arg| collectExprRefs(allocator, arg, refs);
+                if (cs.call.func) |f| try collectExprRefs(allocator, f, refs);
+                for (cs.call.args.items) |arg| try collectExprRefs(allocator, arg, refs);
             },
             .decl => |ds| {
                 switch (ds.decl) {
                     .@"const" => |d| {
-                        if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, refs);
-                        if (d.typ) |t| collectTypeRefs(allocator, t, refs);
+                        if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, refs);
+                        if (d.typ) |t| try collectTypeRefs(allocator, t, refs);
                     },
                     .let => |d| {
-                        if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, refs);
-                        if (d.typ) |t| collectTypeRefs(allocator, t, refs);
+                        if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, refs);
+                        if (d.typ) |t| try collectTypeRefs(allocator, t, refs);
                     },
                     .@"var" => |d| {
-                        if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, refs);
-                        if (d.typ) |t| collectTypeRefs(allocator, t, refs);
+                        if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, refs);
+                        if (d.typ) |t| try collectTypeRefs(allocator, t, refs);
                     },
                     else => {},
                 }
@@ -291,7 +291,7 @@ fn parseModule(allocator: std.mem.Allocator, source: [:0]const u8) ?*Ast.Module 
 test "mark: empty module" {
     var scope = Ast.Scope.init(null);
     var module = Ast.Module.init(&scope, "");
-    const dead = mark(std.testing.allocator, &module);
+    const dead = try mark(std.testing.allocator, &module);
     try std.testing.expectEqual(@as(u32, 0), dead);
 }
 
@@ -305,7 +305,7 @@ test "mark: no entry points keeps all live" {
         \\fn b() -> f32 { return 2.0; }
     ) orelse return error.TestParseFailed;
 
-    const dead = mark(alloc, module);
+    const dead = try mark(alloc, module);
     try std.testing.expectEqual(@as(u32, 0), dead);
 
     // All symbols should be live
@@ -328,7 +328,7 @@ test "mark: with entry point removes unused" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    const dead = mark(alloc, module);
+    const dead = try mark(alloc, module);
     try std.testing.expect(dead > 0);
 }
 
@@ -346,7 +346,7 @@ test "mark: transitive dependencies are kept" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    const dead = mark(alloc, module);
+    const dead = try mark(alloc, module);
     try std.testing.expectEqual(@as(u32, 0), dead);
 }
 
@@ -364,7 +364,7 @@ test "mark: complex with unused functions" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    const dead = mark(alloc, module);
+    const dead = try mark(alloc, module);
     // unused1 and unused2 should be dead
     try std.testing.expect(dead >= 2);
 }
@@ -381,7 +381,7 @@ test "isDeclarationLive: function decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = mark(alloc, module);
+    _ = try mark(alloc, module);
 
     // Check that main is live and unused is not
     for (module.declarations.items) |decl| {
@@ -414,7 +414,7 @@ test "isDeclarationLive: const decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = mark(alloc, module);
+    _ = try mark(alloc, module);
 
     var found_used = false;
     var found_unused = false;
@@ -451,7 +451,7 @@ test "isDeclarationLive: struct decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = mark(alloc, module);
+    _ = try mark(alloc, module);
 
     for (module.declarations.items) |decl| {
         const ref = decl.nameRef();
@@ -481,7 +481,7 @@ test "isDeclarationLive: alias decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = mark(alloc, module);
+    _ = try mark(alloc, module);
 
     for (module.declarations.items) |decl| {
         const ref = decl.nameRef();
@@ -510,7 +510,7 @@ test "isDeclarationLive: override decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = mark(alloc, module);
+    _ = try mark(alloc, module);
 
     for (module.declarations.items) |decl| {
         const ref = decl.nameRef();
@@ -539,7 +539,7 @@ test "isDeclarationLive: var decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = mark(alloc, module);
+    _ = try mark(alloc, module);
 
     for (module.declarations.items) |decl| {
         const ref = decl.nameRef();
@@ -560,7 +560,7 @@ test "collectExprRefs: ident expr" {
     defer refs.deinit(std.testing.allocator);
 
     var ident = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(5) };
-    collectExprRefs(std.testing.allocator, .{ .ident = &ident }, &refs);
+    try collectExprRefs(std.testing.allocator, .{ .ident = &ident }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
     try std.testing.expectEqual(@as(u32, 5), refs.items[0]);
@@ -571,7 +571,7 @@ test "collectExprRefs: invalid ref ignored" {
     defer refs.deinit(std.testing.allocator);
 
     var ident = Ast.IdentExpr{ .name = "x", .ref = .none };
-    collectExprRefs(std.testing.allocator, .{ .ident = &ident }, &refs);
+    try collectExprRefs(std.testing.allocator, .{ .ident = &ident }, &refs);
 
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 }
@@ -581,7 +581,7 @@ test "collectExprRefs: literal expr" {
     defer refs.deinit(std.testing.allocator);
 
     var lit = Ast.LiteralExpr{ .kind = .int_literal, .value = "42" };
-    collectExprRefs(std.testing.allocator, .{ .literal = &lit }, &refs);
+    try collectExprRefs(std.testing.allocator, .{ .literal = &lit }, &refs);
 
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 }
@@ -591,7 +591,7 @@ test "collectTypeRefs: ident type with ref" {
     defer refs.deinit(std.testing.allocator);
 
     var ident = Ast.IdentType{ .name = "MyStruct", .ref = @enumFromInt(3) };
-    collectTypeRefs(std.testing.allocator, .{ .ident = &ident }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .ident = &ident }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
     try std.testing.expectEqual(@as(u32, 3), refs.items[0]);
@@ -603,7 +603,7 @@ test "collectTypeRefs: vec type with elem" {
 
     var elem = Ast.IdentType{ .name = "f32" };
     var vec = Ast.VecType{ .size = 3, .elem_type = .{ .ident = &elem } };
-    collectTypeRefs(std.testing.allocator, .{ .vec = &vec }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .vec = &vec }, &refs);
 
     // f32 has no valid ref, so no refs collected
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
@@ -615,7 +615,7 @@ test "collectTypeRefs: array with struct element" {
 
     var elem_ident = Ast.IdentType{ .name = "Particle", .ref = @enumFromInt(7) };
     var arr = Ast.ArrayType{ .elem_type = .{ .ident = &elem_ident } };
-    collectTypeRefs(std.testing.allocator, .{ .array = &arr }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .array = &arr }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
     try std.testing.expectEqual(@as(u32, 7), refs.items[0]);
@@ -626,7 +626,7 @@ test "collectTypeRefs: sampler type" {
     defer refs.deinit(std.testing.allocator);
 
     var sampler = Ast.SamplerType{ .comparison = false };
-    collectTypeRefs(std.testing.allocator, .{ .sampler = &sampler }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .sampler = &sampler }, &refs);
 
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 }
@@ -642,7 +642,7 @@ test "collectExprRefs: binary expr" {
     var left = Ast.IdentExpr{ .name = "a", .ref = @enumFromInt(1) };
     var right = Ast.IdentExpr{ .name = "b", .ref = @enumFromInt(2) };
     var bin = Ast.BinaryExpr{ .op = .add, .left = .{ .ident = &left }, .right = .{ .ident = &right } };
-    collectExprRefs(std.testing.allocator, .{ .binary = &bin }, &refs);
+    try collectExprRefs(std.testing.allocator, .{ .binary = &bin }, &refs);
 
     try std.testing.expectEqual(@as(usize, 2), refs.items.len);
 }
@@ -653,7 +653,7 @@ test "collectExprRefs: unary expr" {
 
     var operand = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(1) };
     var un = Ast.UnaryExpr{ .op = .neg, .operand = .{ .ident = &operand } };
-    collectExprRefs(std.testing.allocator, .{ .unary = &un }, &refs);
+    try collectExprRefs(std.testing.allocator, .{ .unary = &un }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -667,7 +667,7 @@ test "collectExprRefs: call expr" {
     var arg2 = Ast.IdentExpr{ .name = "b", .ref = @enumFromInt(2) };
     var args_buf = [_]Ast.Expr{ .{ .ident = &arg1 }, .{ .ident = &arg2 } };
     var call = Ast.CallExpr{ .func = .{ .ident = &func_id }, .args = .{ .items = &args_buf, .capacity = 2 } };
-    collectExprRefs(std.testing.allocator, .{ .call = &call }, &refs);
+    try collectExprRefs(std.testing.allocator, .{ .call = &call }, &refs);
 
     try std.testing.expectEqual(@as(usize, 3), refs.items.len);
 }
@@ -679,7 +679,7 @@ test "collectExprRefs: index expr" {
     var base = Ast.IdentExpr{ .name = "arr", .ref = @enumFromInt(1) };
     var idx = Ast.IdentExpr{ .name = "i", .ref = @enumFromInt(2) };
     var index_expr = Ast.IndexExpr{ .base = .{ .ident = &base }, .idx = .{ .ident = &idx } };
-    collectExprRefs(std.testing.allocator, .{ .index = &index_expr }, &refs);
+    try collectExprRefs(std.testing.allocator, .{ .index = &index_expr }, &refs);
 
     try std.testing.expectEqual(@as(usize, 2), refs.items.len);
 }
@@ -690,7 +690,7 @@ test "collectExprRefs: member expr" {
 
     var base = Ast.IdentExpr{ .name = "s", .ref = @enumFromInt(1) };
     var mem = Ast.MemberExpr{ .base = .{ .ident = &base }, .member_name = "x" };
-    collectExprRefs(std.testing.allocator, .{ .member = &mem }, &refs);
+    try collectExprRefs(std.testing.allocator, .{ .member = &mem }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -701,7 +701,7 @@ test "collectExprRefs: paren expr" {
 
     var inner = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(1) };
     var paren = Ast.ParenExpr{ .expr = .{ .ident = &inner } };
-    collectExprRefs(std.testing.allocator, .{ .paren = &paren }, &refs);
+    try collectExprRefs(std.testing.allocator, .{ .paren = &paren }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -715,7 +715,7 @@ test "collectTypeRefs: ident type invalid ref" {
     defer refs.deinit(std.testing.allocator);
 
     var ident = Ast.IdentType{ .name = "f32" }; // builtin, no ref
-    collectTypeRefs(std.testing.allocator, .{ .ident = &ident }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .ident = &ident }, &refs);
 
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 }
@@ -726,7 +726,7 @@ test "collectTypeRefs: mat type with elem" {
 
     var elem = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
     var mat = Ast.MatType{ .cols = 4, .rows = 4, .elem_type = .{ .ident = &elem } };
-    collectTypeRefs(std.testing.allocator, .{ .mat = &mat }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .mat = &mat }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -737,7 +737,7 @@ test "collectTypeRefs: ptr type" {
 
     var elem = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
     var ptr_type = Ast.PtrType{ .address_space = .function, .elem_type = .{ .ident = &elem } };
-    collectTypeRefs(std.testing.allocator, .{ .ptr = &ptr_type }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .ptr = &ptr_type }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -748,7 +748,7 @@ test "collectTypeRefs: atomic type builtin" {
 
     var elem = Ast.IdentType{ .name = "u32" }; // builtin, no ref
     var atomic = Ast.AtomicType{ .elem_type = .{ .ident = &elem } };
-    collectTypeRefs(std.testing.allocator, .{ .atomic = &atomic }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .atomic = &atomic }, &refs);
 
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 }
@@ -759,7 +759,7 @@ test "collectTypeRefs: texture type with sampled type" {
 
     var sampled = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
     var tex = Ast.TextureType{ .kind = .sampled, .dimension = .@"2d", .sampled_type = .{ .ident = &sampled } };
-    collectTypeRefs(std.testing.allocator, .{ .texture = &tex }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .texture = &tex }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -771,7 +771,7 @@ test "collectTypeRefs: array with size expr" {
     var elem = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
     var size_expr = Ast.IdentExpr{ .name = "N", .ref = @enumFromInt(2) };
     var arr = Ast.ArrayType{ .elem_type = .{ .ident = &elem }, .size = .{ .ident = &size_expr } };
-    collectTypeRefs(std.testing.allocator, .{ .array = &arr }, &refs);
+    try collectTypeRefs(std.testing.allocator, .{ .array = &arr }, &refs);
 
     try std.testing.expectEqual(@as(usize, 2), refs.items.len);
 }
@@ -786,7 +786,7 @@ test "collectStmtRefs: return stmt with value" {
 
     var value = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(1) };
     var ret = Ast.ReturnStmt{ .value = .{ .ident = &value } };
-    collectStmtRefs(std.testing.allocator, .{ .@"return" = &ret }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .@"return" = &ret }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -798,7 +798,7 @@ test "collectStmtRefs: assign stmt" {
     var left = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(0) };
     var right = Ast.IdentExpr{ .name = "y", .ref = @enumFromInt(1) };
     var assign = Ast.AssignStmt{ .op = .simple, .left = .{ .ident = &left }, .right = .{ .ident = &right } };
-    collectStmtRefs(std.testing.allocator, .{ .assign = &assign }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .assign = &assign }, &refs);
 
     try std.testing.expectEqual(@as(usize, 2), refs.items.len);
 }
@@ -809,7 +809,7 @@ test "collectStmtRefs: incr_decr stmt" {
 
     var expr = Ast.IdentExpr{ .name = "i", .ref = @enumFromInt(0) };
     var incr = Ast.IncrDecrStmt{ .expr = .{ .ident = &expr }, .increment = true };
-    collectStmtRefs(std.testing.allocator, .{ .incr_decr = &incr }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .incr_decr = &incr }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -823,7 +823,7 @@ test "collectStmtRefs: call stmt" {
     var args_buf = [_]Ast.Expr{.{ .ident = &arg }};
     var call_expr = Ast.CallExpr{ .func = .{ .ident = &func_id }, .args = .{ .items = &args_buf, .capacity = 1 } };
     var call_stmt = Ast.CallStmt{ .call = &call_expr };
-    collectStmtRefs(std.testing.allocator, .{ .call = &call_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .call = &call_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 2), refs.items.len);
 }
@@ -834,7 +834,7 @@ test "collectStmtRefs: break_if stmt" {
 
     var cond = Ast.IdentExpr{ .name = "done", .ref = @enumFromInt(0) };
     var break_if = Ast.BreakIfStmt{ .condition = .{ .ident = &cond } };
-    collectStmtRefs(std.testing.allocator, .{ .break_if = &break_if }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .break_if = &break_if }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -844,15 +844,15 @@ test "collectStmtRefs: break and continue have no refs" {
     defer refs.deinit(std.testing.allocator);
 
     var brk = Ast.BreakStmt{};
-    collectStmtRefs(std.testing.allocator, .{ .@"break" = &brk }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .@"break" = &brk }, &refs);
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 
     var cont = Ast.ContinueStmt{};
-    collectStmtRefs(std.testing.allocator, .{ .@"continue" = &cont }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .@"continue" = &cont }, &refs);
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 
     var disc = Ast.DiscardStmt{};
-    collectStmtRefs(std.testing.allocator, .{ .discard = &disc }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .discard = &disc }, &refs);
     try std.testing.expectEqual(@as(usize, 0), refs.items.len);
 }
 
@@ -868,7 +868,7 @@ test "collectStmtRefs: compound stmt" {
     var ret = Ast.ReturnStmt{ .value = .{ .ident = &value } };
     var stmts_buf = [_]Ast.Stmt{.{ .@"return" = &ret }};
     var compound = Ast.CompoundStmt{ .stmts = .{ .items = &stmts_buf, .capacity = 1 } };
-    collectStmtRefs(std.testing.allocator, .{ .compound = &compound }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .compound = &compound }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -891,7 +891,7 @@ test "collectStmtRefs: if stmt with else" {
         .body = &body,
         .else_branch = .{ .compound = &else_body },
     };
-    collectStmtRefs(std.testing.allocator, .{ .@"if" = &if_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .@"if" = &if_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 3), refs.items.len);
 }
@@ -906,7 +906,7 @@ test "collectStmtRefs: while stmt" {
     var body_stmts = [_]Ast.Stmt{.{ .@"return" = &body_ret }};
     var body = Ast.CompoundStmt{ .stmts = .{ .items = &body_stmts, .capacity = 1 } };
     var while_stmt = Ast.WhileStmt{ .condition = .{ .ident = &cond }, .body = &body };
-    collectStmtRefs(std.testing.allocator, .{ .@"while" = &while_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .@"while" = &while_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 2), refs.items.len);
 }
@@ -927,7 +927,7 @@ test "collectStmtRefs: loop stmt with continuing" {
     var continuing = Ast.CompoundStmt{ .stmts = .{ .items = &cont_stmts, .capacity = 1 } };
 
     var loop_stmt = Ast.LoopStmt{ .body = &body, .continuing = &continuing };
-    collectStmtRefs(std.testing.allocator, .{ .loop = &loop_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .loop = &loop_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 2), refs.items.len);
 }
@@ -951,7 +951,7 @@ test "collectStmtRefs: switch stmt" {
         .expr = .{ .ident = &expr },
         .cases = .{ .items = &cases_buf, .capacity = 1 },
     };
-    collectStmtRefs(std.testing.allocator, .{ .@"switch" = &switch_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .@"switch" = &switch_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 3), refs.items.len);
 }
@@ -979,7 +979,7 @@ test "collectStmtRefs: for stmt" {
         .update = .{ .incr_decr = &update_stmt },
         .body = &body,
     };
-    collectStmtRefs(std.testing.allocator, .{ .@"for" = &for_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .@"for" = &for_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 3), refs.items.len);
 }
@@ -995,7 +995,7 @@ test "collectStmtRefs: decl stmt const" {
     var init_val = Ast.IdentExpr{ .name = "y", .ref = @enumFromInt(1) };
     var const_decl = Ast.ConstDecl{ .name = @enumFromInt(0), .initializer = .{ .ident = &init_val } };
     var decl_stmt = Ast.DeclStmt{ .decl = .{ .@"const" = &const_decl } };
-    collectStmtRefs(std.testing.allocator, .{ .decl = &decl_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .decl = &decl_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -1007,7 +1007,7 @@ test "collectStmtRefs: decl stmt let" {
     var init_val = Ast.IdentExpr{ .name = "y", .ref = @enumFromInt(1) };
     var let_decl = Ast.LetDecl{ .name = @enumFromInt(0), .initializer = .{ .ident = &init_val } };
     var decl_stmt = Ast.DeclStmt{ .decl = .{ .let = &let_decl } };
-    collectStmtRefs(std.testing.allocator, .{ .decl = &decl_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .decl = &decl_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -1025,7 +1025,7 @@ test "collectStmtRefs: decl stmt var with type and init" {
         .initializer = .{ .ident = &init_val },
     };
     var decl_stmt = Ast.DeclStmt{ .decl = .{ .@"var" = &var_decl } };
-    collectStmtRefs(std.testing.allocator, .{ .decl = &decl_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .decl = &decl_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 2), refs.items.len);
 }
@@ -1037,7 +1037,7 @@ test "collectStmtRefs: decl stmt var type only" {
     var type_id = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
     var var_decl = Ast.VarDecl{ .name = @enumFromInt(0), .attributes = .empty, .typ = .{ .ident = &type_id } };
     var decl_stmt = Ast.DeclStmt{ .decl = .{ .@"var" = &var_decl } };
-    collectStmtRefs(std.testing.allocator, .{ .decl = &decl_stmt }, &refs);
+    try collectStmtRefs(std.testing.allocator, .{ .decl = &decl_stmt }, &refs);
 
     try std.testing.expectEqual(@as(usize, 1), refs.items.len);
 }
@@ -1059,7 +1059,7 @@ test "collectDeclDeps: const depends on const" {
         while (it.next()) |list| list.deinit(alloc);
         deps.deinit(alloc);
     }
-    buildDependencyGraph(alloc, module, &deps);
+    try buildDependencyGraph(alloc, module, &deps);
 
     try std.testing.expect(deps.count() > 0);
 }
@@ -1077,7 +1077,7 @@ test "collectDeclDeps: override with init" {
         while (it.next()) |list| list.deinit(alloc);
         deps.deinit(alloc);
     }
-    buildDependencyGraph(alloc, module, &deps);
+    try buildDependencyGraph(alloc, module, &deps);
 
     try std.testing.expect(deps.count() > 0);
 }
@@ -1095,7 +1095,7 @@ test "collectDeclDeps: override without init" {
         while (it.next()) |list| list.deinit(alloc);
         deps.deinit(alloc);
     }
-    buildDependencyGraph(alloc, module, &deps);
+    try buildDependencyGraph(alloc, module, &deps);
     // Should not panic
 }
 
@@ -1112,7 +1112,7 @@ test "collectDeclDeps: var without init" {
         while (it.next()) |list| list.deinit(alloc);
         deps.deinit(alloc);
     }
-    buildDependencyGraph(alloc, module, &deps);
+    try buildDependencyGraph(alloc, module, &deps);
     // Should not panic
 }
 
@@ -1129,7 +1129,7 @@ test "collectDeclDeps: var with init" {
         while (it.next()) |list| list.deinit(alloc);
         deps.deinit(alloc);
     }
-    buildDependencyGraph(alloc, module, &deps);
+    try buildDependencyGraph(alloc, module, &deps);
 
     try std.testing.expect(deps.count() > 0);
 }
@@ -1150,7 +1150,7 @@ test "collectDeclDeps: function with body" {
         while (it.next()) |list| list.deinit(alloc);
         deps.deinit(alloc);
     }
-    buildDependencyGraph(alloc, module, &deps);
+    try buildDependencyGraph(alloc, module, &deps);
 
     try std.testing.expect(deps.count() > 0);
 }
@@ -1171,7 +1171,7 @@ test "collectDeclDeps: struct with nested type" {
         while (it.next()) |list| list.deinit(alloc);
         deps.deinit(alloc);
     }
-    buildDependencyGraph(alloc, module, &deps);
+    try buildDependencyGraph(alloc, module, &deps);
 
     try std.testing.expect(deps.count() > 0);
 }
@@ -1192,7 +1192,7 @@ test "collectDeclDeps: alias depends on struct" {
         while (it.next()) |list| list.deinit(alloc);
         deps.deinit(alloc);
     }
-    buildDependencyGraph(alloc, module, &deps);
+    try buildDependencyGraph(alloc, module, &deps);
 
     try std.testing.expect(deps.count() > 0);
 }
@@ -1235,7 +1235,7 @@ test "mark: entry point and dependencies are live, unused are dead" {
         \\@compute @workgroup_size(1) fn main() { let x = used; }
     ) orelse return error.TestParseFailed;
 
-    _ = mark(alloc, module);
+    _ = try mark(alloc, module);
 
     var found_dead = false;
     var found_used = false;
@@ -1270,7 +1270,7 @@ test "mark: transitive chain a -> b -> c" {
         \\@compute @workgroup_size(1) fn main() { let x = c; }
     ) orelse return error.TestParseFailed;
 
-    _ = mark(alloc, module);
+    _ = try mark(alloc, module);
 
     for (module.symbols.items) |sym| {
         if (std.mem.eql(u8, sym.original_name, "a") or
@@ -1300,7 +1300,7 @@ test "mark: complex dependencies" {
         \\@compute @workgroup_size(1) fn main() { var w: Wrapper; let r = helper(w); }
     ) orelse return error.TestParseFailed;
 
-    const dead = mark(alloc, module);
+    const dead = try mark(alloc, module);
 
     for (module.symbols.items) |sym| {
         if (std.mem.eql(u8, sym.original_name, "Data") or
@@ -1337,4 +1337,19 @@ test "mark: find entry points" {
         if (sym.flags.is_entry_point) entry_count += 1;
     }
     try std.testing.expectEqual(@as(u32, 3), entry_count);
+}
+
+test "mark: propagates OOM" {
+    // First parse with real allocator
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\@compute @workgroup_size(1) fn main() {}
+        \\fn helper() {}
+    ) orelse return error.TestParseFailed;
+
+    // Then try mark with failing allocator
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const result = mark(failing.allocator(), module);
+    try std.testing.expect(result == error.OutOfMemory);
 }

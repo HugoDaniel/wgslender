@@ -5,6 +5,7 @@
 //! for efficient byte-offset to line/column conversion.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 const Diagnostic = @This();
 
@@ -97,65 +98,65 @@ pub const Entry = struct {
 // =========================================================================
 
 /// Serialize a single diagnostic entry as a JSON object (no surrounding braces array).
-pub fn entryToJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, entry: *const Entry) void {
-    buf.appendSlice(allocator, "{\"severity\":\"") catch {};
-    buf.appendSlice(allocator, entry.severity.string()) catch {};
-    buf.appendSlice(allocator, "\",\"message\":\"") catch {};
-    appendJsonEscaped(buf, allocator, entry.message);
-    buf.append(allocator, '"') catch {};
+pub fn entryToJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, entry: *const Entry) Allocator.Error!void {
+    try buf.appendSlice(allocator, "{\"severity\":\"");
+    try buf.appendSlice(allocator, entry.severity.string());
+    try buf.appendSlice(allocator, "\",\"message\":\"");
+    try appendJsonEscaped(buf, allocator, entry.message);
+    try buf.append(allocator, '"');
 
     if (entry.code.len > 0) {
-        buf.appendSlice(allocator, ",\"code\":\"") catch {};
-        appendJsonEscaped(buf, allocator, entry.code);
-        buf.append(allocator, '"') catch {};
+        try buf.appendSlice(allocator, ",\"code\":\"");
+        try appendJsonEscaped(buf, allocator, entry.code);
+        try buf.append(allocator, '"');
     }
 
-    buf.appendSlice(allocator, ",\"line\":") catch {};
-    appendInt(buf, allocator, entry.range.start.line);
-    buf.appendSlice(allocator, ",\"column\":") catch {};
-    appendInt(buf, allocator, entry.range.start.column);
+    try buf.appendSlice(allocator, ",\"line\":");
+    try appendInt(buf, allocator, entry.range.start.line);
+    try buf.appendSlice(allocator, ",\"column\":");
+    try appendInt(buf, allocator, entry.range.start.column);
 
     if (entry.spec_ref.len > 0) {
-        buf.appendSlice(allocator, ",\"specRef\":\"") catch {};
-        appendJsonEscaped(buf, allocator, entry.spec_ref);
-        buf.append(allocator, '"') catch {};
+        try buf.appendSlice(allocator, ",\"specRef\":\"");
+        try appendJsonEscaped(buf, allocator, entry.spec_ref);
+        try buf.append(allocator, '"');
     }
 
     if (entry.related.len > 0) {
-        buf.appendSlice(allocator, ",\"related\":[") catch {};
+        try buf.appendSlice(allocator, ",\"related\":[");
         for (entry.related, 0..) |rel, ri| {
-            if (ri > 0) buf.append(allocator, ',') catch {};
-            buf.appendSlice(allocator, "{\"line\":") catch {};
-            appendInt(buf, allocator, rel.range.start.line);
-            buf.appendSlice(allocator, ",\"column\":") catch {};
-            appendInt(buf, allocator, rel.range.start.column);
-            buf.appendSlice(allocator, ",\"message\":\"") catch {};
-            appendJsonEscaped(buf, allocator, rel.message);
-            buf.appendSlice(allocator, "\"}") catch {};
+            if (ri > 0) try buf.append(allocator, ',');
+            try buf.appendSlice(allocator, "{\"line\":");
+            try appendInt(buf, allocator, rel.range.start.line);
+            try buf.appendSlice(allocator, ",\"column\":");
+            try appendInt(buf, allocator, rel.range.start.column);
+            try buf.appendSlice(allocator, ",\"message\":\"");
+            try appendJsonEscaped(buf, allocator, rel.message);
+            try buf.appendSlice(allocator, "\"}");
         }
-        buf.append(allocator, ']') catch {};
+        try buf.append(allocator, ']');
     }
 
-    buf.append(allocator, '}') catch {};
+    try buf.append(allocator, '}');
 }
 
-pub fn appendJsonEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) void {
+pub fn appendJsonEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) Allocator.Error!void {
     for (s) |c| {
         switch (c) {
-            '"' => buf.appendSlice(allocator, "\\\"") catch {},
-            '\\' => buf.appendSlice(allocator, "\\\\") catch {},
-            '\n' => buf.appendSlice(allocator, "\\n") catch {},
-            '\r' => buf.appendSlice(allocator, "\\r") catch {},
-            '\t' => buf.appendSlice(allocator, "\\t") catch {},
-            else => buf.append(allocator, c) catch {},
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            else => try buf.append(allocator, c),
         }
     }
 }
 
-pub fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: anytype) void {
+pub fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: anytype) Allocator.Error!void {
     var tmp: [20]u8 = undefined;
     const s = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return;
-    buf.appendSlice(allocator, s) catch {};
+    try buf.appendSlice(allocator, s);
 }
 
 // =========================================================================
@@ -167,9 +168,9 @@ pub const LineIndex = struct {
     line_starts: std.ArrayListUnmanaged(u32),
 
     /// Build a line index by scanning `source` for newlines.
-    pub fn init(allocator: std.mem.Allocator, source: []const u8) LineIndex {
+    pub fn init(allocator: std.mem.Allocator, source: []const u8) Allocator.Error!LineIndex {
         var starts: std.ArrayListUnmanaged(u32) = .empty;
-        starts.append(allocator, 0) catch {};
+        try starts.append(allocator, 0);
 
         var i: usize = 0;
         while (i < source.len) : (i += 1) {
@@ -177,20 +178,20 @@ pub const LineIndex = struct {
             if (c == '\n') {
                 const next: u32 = @intCast(i + 1);
                 if (next < source.len) {
-                    starts.append(allocator, next) catch {};
+                    try starts.append(allocator, next);
                 }
             } else if (c == '\r') {
                 // CR+LF pair
                 if (i + 1 < source.len and source[i + 1] == '\n') {
                     const next: u32 = @intCast(i + 2);
                     if (next < source.len) {
-                        starts.append(allocator, next) catch {};
+                        try starts.append(allocator, next);
                     }
                     i += 1; // skip LF
                 } else {
                     const next: u32 = @intCast(i + 1);
                     if (next < source.len) {
-                        starts.append(allocator, next) catch {};
+                        try starts.append(allocator, next);
                     }
                 }
             }
@@ -246,10 +247,10 @@ has_errors: bool,
 line_offset: i32 = 0,
 
 /// Create a new diagnostic list for the given source.
-pub fn init(allocator: std.mem.Allocator, source: []const u8) Diagnostic {
+pub fn init(allocator: std.mem.Allocator, source: []const u8) Allocator.Error!Diagnostic {
     return .{
         .diagnostics = .empty,
-        .line_index = LineIndex.init(allocator, source),
+        .line_index = try LineIndex.init(allocator, source),
         .source = source,
         .has_errors = false,
     };
@@ -399,22 +400,22 @@ pub fn warningCount(self: *const Diagnostic) u32 {
 // -------------------------------------------------------------------------
 
 /// Return only error-level diagnostics (caller owns returned slice).
-pub fn errors(self: *const Diagnostic, allocator: std.mem.Allocator) []const Entry {
+pub fn errors(self: *const Diagnostic, allocator: std.mem.Allocator) Allocator.Error![]const Entry {
     var result: std.ArrayListUnmanaged(Entry) = .empty;
     for (self.diagnostics.items) |d| {
         if (d.severity == .@"error") {
-            result.append(allocator, d) catch {};
+            try result.append(allocator, d);
         }
     }
     return result.items;
 }
 
 /// Return only warning-level diagnostics (caller owns returned slice).
-pub fn warnings(self: *const Diagnostic, allocator: std.mem.Allocator) []const Entry {
+pub fn warnings(self: *const Diagnostic, allocator: std.mem.Allocator) Allocator.Error![]const Entry {
     var result: std.ArrayListUnmanaged(Entry) = .empty;
     for (self.diagnostics.items) |d| {
         if (d.severity == .warning) {
-            result.append(allocator, d) catch {};
+            try result.append(allocator, d);
         }
     }
     return result.items;
@@ -425,59 +426,59 @@ pub fn warnings(self: *const Diagnostic, allocator: std.mem.Allocator) []const E
 // -------------------------------------------------------------------------
 
 /// Format all diagnostics as a human-readable string.
-pub fn format(self: *const Diagnostic, allocator: std.mem.Allocator) []const u8 {
+pub fn format(self: *const Diagnostic, allocator: std.mem.Allocator) Allocator.Error![]const u8 {
     if (self.diagnostics.items.len == 0) return "";
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     const writer = buf.writer(allocator);
     for (self.diagnostics.items) |*d| {
-        self.formatDiagnostic(d, writer);
-        writer.writeByte('\n') catch {};
+        try self.formatDiagnostic(d, writer);
+        try writer.writeByte('\n');
     }
     return buf.items;
 }
 
 /// Format a single diagnostic with source context.
-pub fn formatDiagnostic(self: *const Diagnostic, d: *const Entry, writer: anytype) void {
+pub fn formatDiagnostic(self: *const Diagnostic, d: *const Entry, writer: anytype) !void {
     // Main line: "line:col: severity: message"
-    writer.print("{d}:{d}: {s}: {s}\n", .{
+    try writer.print("{d}:{d}: {s}: {s}\n", .{
         d.range.start.line,
         d.range.start.column,
         d.severity.string(),
         d.message,
-    }) catch {};
+    });
 
     // Spec reference
     if (d.spec_ref.len > 0) {
-        writer.print("  [WGSL spec section {s}]\n", .{d.spec_ref}) catch {};
+        try writer.print("  [WGSL spec section {s}]\n", .{d.spec_ref});
     }
 
     // Source context line
     const source_line = self.getSourceLine(d.range.start.line);
     if (source_line.len > 0) {
-        writer.print("    {s}\n", .{source_line}) catch {};
+        try writer.print("    {s}\n", .{source_line});
 
         // Caret indicator
         const pad = d.range.start.column - 1 + 4;
         var i: u32 = 0;
-        while (i < pad) : (i += 1) writer.writeByte(' ') catch {};
-        writer.writeByte('^') catch {};
+        while (i < pad) : (i += 1) try writer.writeByte(' ');
+        try writer.writeByte('^');
 
         if (d.range.end.line == d.range.start.line and d.range.end.column > d.range.start.column) {
             var j: u32 = 1;
             const tildes = d.range.end.column - d.range.start.column;
-            while (j < tildes) : (j += 1) writer.writeByte('~') catch {};
+            while (j < tildes) : (j += 1) try writer.writeByte('~');
         }
-        writer.writeByte('\n') catch {};
+        try writer.writeByte('\n');
     }
 
     // Related info
     for (d.related) |rel| {
-        writer.print("  {d}:{d}: note: {s}\n", .{
+        try writer.print("  {d}:{d}: note: {s}\n", .{
             rel.range.start.line,
             rel.range.start.column,
             rel.message,
-        }) catch {};
+        });
     }
 }
 
@@ -702,7 +703,7 @@ test "Severity.string" {
 
 test "LineIndex basic" {
     const allocator = std.testing.allocator;
-    var li = LineIndex.init(allocator, "abc\ndef\nghi");
+    var li = try LineIndex.init(allocator, "abc\ndef\nghi");
     defer li.deinit(allocator);
 
     try std.testing.expectEqual(@as(u32, 3), li.lineCount());
@@ -724,7 +725,7 @@ test "LineIndex basic" {
 
 test "DiagnosticList add and query" {
     const allocator = std.testing.allocator;
-    var dl = Diagnostic.init(allocator, "fn main() {}");
+    var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
 
     try std.testing.expect(!dl.hasErrors());
@@ -741,7 +742,7 @@ test "DiagnosticList add and query" {
 
 test "DiagnosticList makePosition" {
     const allocator = std.testing.allocator;
-    var dl = Diagnostic.init(allocator, "line1\nline2\nline3");
+    var dl = try Diagnostic.init(allocator, "line1\nline2\nline3");
     defer dl.deinit(allocator);
 
     // Byte 0 -> line 1, col 1
@@ -757,7 +758,7 @@ test "DiagnosticList makePosition" {
 
 test "DiagnosticList clear" {
     const allocator = std.testing.allocator;
-    var dl = Diagnostic.init(allocator, "x");
+    var dl = try Diagnostic.init(allocator, "x");
     defer dl.deinit(allocator);
 
     dl.addError(allocator, 0, "err");
@@ -771,7 +772,7 @@ test "DiagnosticList clear" {
 
 test "deduplicate removes exact duplicates" {
     const allocator = std.testing.allocator;
-    var dl = Diagnostic.init(allocator, "fn main() {}");
+    var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
 
     dl.addError(allocator, 3, "unknown type 'Foo'");
@@ -790,7 +791,7 @@ test "deduplicate removes exact duplicates" {
 
 test "deduplicate preserves different messages at same offset" {
     const allocator = std.testing.allocator;
-    var dl = Diagnostic.init(allocator, "fn main() {}");
+    var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
 
     dl.addError(allocator, 3, "error A");
@@ -803,7 +804,7 @@ test "deduplicate preserves different messages at same offset" {
 
 test "deduplicate preserves same message at different offsets" {
     const allocator = std.testing.allocator;
-    var dl = Diagnostic.init(allocator, "fn main() {}");
+    var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
 
     dl.addError(allocator, 3, "unknown type 'Foo'");
@@ -816,7 +817,7 @@ test "deduplicate preserves same message at different offsets" {
 
 test "deduplicate recomputes has_errors" {
     const allocator = std.testing.allocator;
-    var dl = Diagnostic.init(allocator, "fn main() {}");
+    var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
 
     dl.addWarning(allocator, 0, "warning");
@@ -846,4 +847,18 @@ test "DiagnosticFilter" {
     try std.testing.expect(filter.isDisabled("subgroup_uniformity"));
     // Disabled rule returns default when queried (caller should check isDisabled)
     try std.testing.expectEqual(Severity.@"error", filter.getSeverity("subgroup_uniformity", .@"error"));
+}
+
+test "entryToJson: propagates OOM" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    const entry = Entry{ .severity = .@"error", .message = "test error" };
+    const result = entryToJson(&buf, failing.allocator(), &entry);
+    try std.testing.expect(result == error.OutOfMemory);
+}
+
+test "LineIndex.init: propagates OOM" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const result = LineIndex.init(failing.allocator(), "hello\nworld");
+    try std.testing.expect(result == error.OutOfMemory);
 }

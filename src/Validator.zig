@@ -112,7 +112,7 @@ binding_pairs: std.AutoHashMapUnmanaged(u64, LocName) = .{},
 /// Validate a parsed WGSL module.
 pub fn validate(allocator: Allocator, module: *Ast.Module, options: Options) !Result {
     const diags = try allocator.create(Diagnostic);
-    diags.* = Diagnostic.init(allocator, module.source);
+    diags.* = try Diagnostic.init(allocator, module.source);
     diags.line_offset = options.line_offset;
 
     var v = Validator{
@@ -123,25 +123,25 @@ pub fn validate(allocator: Allocator, module: *Ast.Module, options: Options) !Re
     };
 
     // Phase 1: Collect type declarations (structs, aliases)
-    v.collectTypeDeclarations();
+    try v.collectTypeDeclarations();
 
     // Phase 2: Resolve struct layouts
-    v.resolveStructLayouts();
+    try v.resolveStructLayouts();
 
     // Phase 2.5: Detect recursive struct definitions
     v.checkRecursiveStructs();
 
     // Phase 3: Validate declarations
-    v.validateDeclarations();
+    try v.validateDeclarations();
 
     // Phase 3.5: Register function signatures (enables forward references)
-    v.registerFunctionSignatures();
+    try v.registerFunctionSignatures();
 
     // Phase 3.75: Detect recursive function calls
-    v.checkRecursiveFunctions();
+    try v.checkRecursiveFunctions();
 
     // Phase 4: Validate functions and statements
-    v.validateFunctions();
+    try v.validateFunctions();
 
     // Phase 5: Uniformity analysis
     v.analyzeUniformity();
@@ -159,7 +159,7 @@ pub fn validate(allocator: Allocator, module: *Ast.Module, options: Options) !Re
 // Phase 1: Collect Type Declarations
 // =========================================================================
 
-fn collectTypeDeclarations(v: *Validator) void {
+fn collectTypeDeclarations(v: *Validator) Allocator.Error!void {
     for (v.module.declarations.items) |decl| {
         switch (decl) {
             .@"struct" => |d| {
@@ -174,13 +174,13 @@ fn collectTypeDeclarations(v: *Validator) void {
                     .align_bytes = 0,
                     .has_runtime_array = false,
                 };
-                v.struct_types.put(v.allocator, name, st) catch {};
+                try v.struct_types.put(v.allocator, name, st);
             },
             .alias => |d| {
                 const name = v.symbolName(d.name);
                 if (name.len == 0) continue;
                 // Placeholder — resolved in phase 2
-                v.alias_types.put(v.allocator, name, null) catch {};
+                try v.alias_types.put(v.allocator, name, null);
             },
             else => {},
         }
@@ -191,7 +191,7 @@ fn collectTypeDeclarations(v: *Validator) void {
 // Phase 2: Resolve Struct Layouts
 // =========================================================================
 
-fn resolveStructLayouts(v: *Validator) void {
+fn resolveStructLayouts(v: *Validator) Allocator.Error!void {
     for (v.module.declarations.items) |decl| {
         switch (decl) {
             .@"struct" => |d| {
@@ -215,7 +215,7 @@ fn resolveStructLayouts(v: *Validator) void {
                         v.addErrorWithRelatedR(member_range, Diagnostic.Code.duplicate_symbol, v.fmtError("duplicate member '{s}' in struct '{s}'", .{ member_name, name }), v.makeRelatedR(first_range, "first declared here"));
                         continue;
                     }
-                    seen_members.put(v.allocator, member_name, member_range) catch {};
+                    try seen_members.put(v.allocator, member_name, member_range);
                     const member_type = v.resolveType(member.typ) orelse {
                         if (member.typ != .ident)
                             v.addErrorR(member_range, v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
@@ -242,11 +242,11 @@ fn resolveStructLayouts(v: *Validator) void {
                             }
                         }
                     }
-                    fields.append(v.allocator, .{
+                    try fields.append(v.allocator, .{
                         .name = member_name,
                         .typ = member_type,
                         .offset = 0,
-                    }) catch {};
+                    });
                 }
 
                 st.fields = fields.items;
@@ -256,7 +256,7 @@ fn resolveStructLayouts(v: *Validator) void {
                 const name = v.symbolName(d.name);
                 const alias_type = v.resolveType(d.typ);
                 if (alias_type) |at| {
-                    v.alias_types.put(v.allocator, name, at) catch {};
+                    try v.alias_types.put(v.allocator, name, at);
                 } else {
                     v.addErrorR(v.symbolRange(d.name), v.fmtError("cannot resolve type alias '{s}'", .{name}));
                 }
@@ -333,7 +333,7 @@ fn findStructRange(v: *Validator, name: []const u8) LocRange {
 // Phase 3.75: Detect Recursive Functions
 // =========================================================================
 
-fn checkRecursiveFunctions(v: *Validator) void {
+fn checkRecursiveFunctions(v: *Validator) Allocator.Error!void {
     // Build call graph: for each function, collect which other functions it calls.
     // Key: function symbol index, Value: list of called function symbol indices.
     var call_graph: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .{};
@@ -347,7 +347,7 @@ fn checkRecursiveFunctions(v: *Validator) void {
                 // Collect all symbol refs from the function body
                 var all_refs: std.ArrayListUnmanaged(u32) = .empty;
                 if (fn_decl.body) |body| {
-                    Dce.collectStmtRefs(v.allocator, .{ .compound = body }, &all_refs);
+                    try Dce.collectStmtRefs(v.allocator, .{ .compound = body }, &all_refs);
                 }
 
                 // Filter to only function symbols
@@ -356,11 +356,11 @@ fn checkRecursiveFunctions(v: *Validator) void {
                     if (ref_idx < v.module.symbols.items.len and
                         v.module.symbols.items[ref_idx].kind == .function)
                     {
-                        fn_refs.append(v.allocator, ref_idx) catch {};
+                        try fn_refs.append(v.allocator, ref_idx);
                     }
                 }
 
-                call_graph.put(v.allocator, fn_idx, fn_refs) catch {};
+                try call_graph.put(v.allocator, fn_idx, fn_refs);
             },
             else => {},
         }
@@ -372,13 +372,13 @@ fn checkRecursiveFunctions(v: *Validator) void {
     while (iter.next()) |entry| {
         const fn_idx = entry.key_ptr.*;
         if ((color.get(fn_idx) orelse 0) == 0) {
-            v.dfsFunctionCycle(&call_graph, &color, fn_idx);
+            try v.dfsFunctionCycle(&call_graph, &color, fn_idx);
         }
     }
 }
 
 /// Iterative DFS cycle detection using an explicit stack.
-fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)), color: *std.AutoHashMapUnmanaged(u32, u2), start: u32) void {
+fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)), color: *std.AutoHashMapUnmanaged(u32, u2), start: u32) Allocator.Error!void {
     const Frame = struct { fn_idx: u32, callee_idx: usize };
     var stack: std.ArrayListUnmanaged(Frame) = .empty;
     defer stack.deinit(v.allocator);
@@ -390,7 +390,7 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
         const frame = &(stack.items[stack.items.len - 1 ..][0]);
         const callees = call_graph.get(frame.fn_idx) orelse {
             // No callees — mark black and pop
-            color.put(v.allocator, frame.fn_idx, 2) catch {};
+            try color.put(v.allocator, frame.fn_idx, 2);
             _ = stack.pop();
             if (stack.items.len == 0) break;
             continue;
@@ -398,7 +398,7 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
 
         if (frame.callee_idx >= callees.items.len) {
             // All callees processed — mark black and pop
-            color.put(v.allocator, frame.fn_idx, 2) catch {};
+            try color.put(v.allocator, frame.fn_idx, 2);
             _ = stack.pop();
             if (stack.items.len == 0) break;
             continue;
@@ -415,7 +415,7 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
         } else if (callee_color == 0) {
             // White → push new frame
             color.put(v.allocator, callee, 1) catch continue; // gray
-            stack.append(v.allocator, .{ .fn_idx = callee, .callee_idx = 0 }) catch {};
+            try stack.append(v.allocator, .{ .fn_idx = callee, .callee_idx = 0 });
         }
         // black (2) = already fully processed, skip
     }
@@ -425,20 +425,20 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
 // Phase 3: Validate Declarations
 // =========================================================================
 
-fn validateDeclarations(v: *Validator) void {
+fn validateDeclarations(v: *Validator) Allocator.Error!void {
     for (v.module.declarations.items) |decl| {
         switch (decl) {
-            .@"const" => |d| v.validateConstDecl(d),
-            .override => |d| v.validateOverrideDecl(d),
-            .@"var" => |d| v.validateVarDecl(d),
-            .let => |d| v.validateLetDecl(d),
-            .const_assert => |d| v.validateConstAssert(d),
+            .@"const" => |d| try v.validateConstDecl(d),
+            .override => |d| try v.validateOverrideDecl(d),
+            .@"var" => |d| try v.validateVarDecl(d),
+            .let => |d| try v.validateLetDecl(d),
+            .const_assert => |d| try v.validateConstAssert(d),
             else => {},
         }
     }
 }
 
-fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) void {
+fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) Allocator.Error!void {
     const name = v.symbolName(d.name);
     const r = v.symbolRange(d.name);
 
@@ -449,7 +449,7 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) void {
     }
 
     // Infer or check type
-    const init_type = v.checkExpr(d.initializer.?) orelse return;
+    const init_type = (try v.checkExpr(d.initializer.?)) orelse return;
 
     var decl_type: ?Types.Type = null;
     if (d.typ) |ast_type| {
@@ -475,10 +475,10 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) void {
         }
     }
 
-    v.setSymbolType(d.name, decl_type);
+    try v.setSymbolType(d.name, decl_type);
 }
 
-fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) void {
+fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error!void {
     const r = v.symbolRange(d.name);
     const name = v.symbolName(d.name);
 
@@ -487,7 +487,7 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) void {
     if (d.typ) |ast_type| {
         decl_type = v.resolveType(ast_type);
     } else if (d.initializer) |init| {
-        decl_type = v.checkExpr(init);
+        decl_type = try v.checkExpr(init);
     }
 
     if (decl_type == null) {
@@ -512,7 +512,7 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) void {
     }
 
     if (d.initializer) |init| {
-        const init_type = v.checkExpr(init);
+        const init_type = try v.checkExpr(init);
         if (init_type) |it| {
             if (!Types.canConvertTo(it, dt)) {
                 if (d.typ) |ast_type| {
@@ -530,12 +530,12 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) void {
     }
 
     // Validate @id attribute: must be 0..65535, unique
-    v.validateOverrideId(d, name);
+    try v.validateOverrideId(d, name);
 
-    v.setSymbolType(d.name, decl_type);
+    try v.setSymbolType(d.name, decl_type);
 }
 
-fn validateOverrideId(v: *Validator, d: *Ast.OverrideDecl, name: []const u8) void {
+fn validateOverrideId(v: *Validator, d: *Ast.OverrideDecl, name: []const u8) Allocator.Error!void {
     for (d.attributes.items) |attr| {
         if (!std.mem.eql(u8, attr.name, "id")) continue;
         if (attr.args.items.len == 0) continue;
@@ -550,13 +550,13 @@ fn validateOverrideId(v: *Validator, d: *Ast.OverrideDecl, name: []const u8) voi
         if (v.override_ids.get(id)) |existing| {
             v.addErrorWithRelatedR(ar, Diagnostic.Code.duplicate_override_id, v.fmtError("@id({d}) is already used by override '{s}'", .{ id, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("@id({d}) first used here", .{id})));
         } else {
-            v.override_ids.put(v.allocator, id, .{ .name = name, .loc = attr.loc }) catch return;
+            try v.override_ids.put(v.allocator, id, .{ .name = name, .loc = attr.loc });
         }
         return;
     }
 }
 
-fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) void {
+fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
     const r = v.symbolRange(d.name);
     const name = v.symbolName(d.name);
 
@@ -565,7 +565,7 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) void {
     if (d.typ) |ast_type| {
         decl_type = v.resolveType(ast_type);
     } else if (d.initializer) |init| {
-        decl_type = v.checkExpr(init);
+        decl_type = try v.checkExpr(init);
         // Convert abstract types to concrete for var declarations
         if (decl_type) |dt| decl_type = Types.concreteType(dt);
     }
@@ -584,7 +584,7 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) void {
 
     // Check initializer compatibility
     if (d.initializer) |init| {
-        const init_type = v.checkExpr(init);
+        const init_type = try v.checkExpr(init);
         if (init_type) |it| {
             if (!Types.canConvertTo(it, dt)) {
                 if (d.typ) |ast_type| {
@@ -624,15 +624,15 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) void {
             if (v.binding_pairs.get(key)) |existing| {
                 v.addErrorWithRelatedR(r, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}'", .{ group_val.?, binding_val.?, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("'{s}' declared here", .{existing.name})));
             } else {
-                v.binding_pairs.put(v.allocator, key, .{ .name = name, .loc = r.start }) catch {};
+                try v.binding_pairs.put(v.allocator, key, .{ .name = name, .loc = r.start });
             }
         }
     }
 
-    v.setSymbolType(d.name, decl_type);
+    try v.setSymbolType(d.name, decl_type);
 }
 
-fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) void {
+fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
     const r = v.symbolRange(d.name);
     const name = v.symbolName(d.name);
 
@@ -642,7 +642,7 @@ fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) void {
         return;
     }
 
-    const init_type = v.checkExpr(d.initializer.?) orelse return;
+    const init_type = (try v.checkExpr(d.initializer.?)) orelse return;
 
     if (!init_type.isConstructible() and init_type != .pointer and init_type.isConcrete()) {
         v.addErrorWithCodeR(r, Diagnostic.Code.type_mismatch, v.fmtError("'let {s}' requires a constructible or pointer type, got '{s}'", .{ name, init_type.string() }));
@@ -665,12 +665,12 @@ fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) void {
         decl_type = Types.concreteType(init_type);
     }
 
-    v.setSymbolType(d.name, decl_type);
+    try v.setSymbolType(d.name, decl_type);
 }
 
-fn validateConstAssert(v: *Validator, d: *Ast.ConstAssertDecl) void {
+fn validateConstAssert(v: *Validator, d: *Ast.ConstAssertDecl) Allocator.Error!void {
     // Spec: const_assert expression must be of type bool.
-    const expr_type = v.checkExpr(d.expr) orelse return;
+    const expr_type = (try v.checkExpr(d.expr)) orelse return;
     if (!expr_type.eql(Types.Bool)) {
         v.addErrorWithCodeR(exprSpan(d.expr), Diagnostic.Code.invalid_const_expr, v.fmtError("const_assert expression must be 'bool', got '{s}'", .{expr_type.string()}));
     }
@@ -740,14 +740,14 @@ fn checkUniformLayout(v: *Validator, typ: Types.Type, r: LocRange, var_name: []c
 /// Pre-registers all function types before validating bodies.
 /// This enables forward references — function A can call function B
 /// even if B is declared after A.
-fn registerFunctionSignatures(v: *Validator) void {
+fn registerFunctionSignatures(v: *Validator) Allocator.Error!void {
     for (v.module.declarations.items) |decl| {
         switch (decl) {
             .function => |fn_decl| {
                 var param_types: std.ArrayListUnmanaged(Types.Type) = .empty;
                 for (fn_decl.parameters.items) |param| {
                     if (v.resolveType(param.typ)) |pt| {
-                        param_types.append(v.allocator, pt) catch {};
+                        try param_types.append(v.allocator, pt);
                     }
                 }
 
@@ -759,7 +759,7 @@ fn registerFunctionSignatures(v: *Validator) void {
                 if (fn_decl.name.isValid()) {
                     const fn_type = Types.functionType(v.allocator, param_types.items, return_type) catch null;
                     if (fn_type) |ft| {
-                        v.setSymbolType(fn_decl.name, ft);
+                        try v.setSymbolType(fn_decl.name, ft);
                     }
                 }
             },
@@ -772,16 +772,16 @@ fn registerFunctionSignatures(v: *Validator) void {
 // Phase 4: Validate Functions
 // =========================================================================
 
-fn validateFunctions(v: *Validator) void {
+fn validateFunctions(v: *Validator) Allocator.Error!void {
     for (v.module.declarations.items) |decl| {
         switch (decl) {
-            .function => |fn_decl| v.validateFunction(fn_decl),
+            .function => |fn_decl| try v.validateFunction(fn_decl),
             else => {},
         }
     }
 }
 
-fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
+fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
     v.current_func = fn_decl;
     v.in_loop = false;
     v.in_switch = false;
@@ -816,8 +816,8 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
     for (fn_decl.parameters.items) |param| {
         const param_type = v.resolveType(param.typ);
         if (param_type) |pt| {
-            v.setSymbolType(param.name, pt);
-            param_types.append(v.allocator, pt) catch {};
+            try v.setSymbolType(param.name, pt);
+            try param_types.append(v.allocator, pt);
         }
         v.validateParameterAttributes(param);
     }
@@ -826,18 +826,18 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
     if (fn_decl.name.isValid()) {
         const fn_type = Types.functionType(v.allocator, param_types.items, v.return_type) catch null;
         if (fn_type) |ft| {
-            v.setSymbolType(fn_decl.name, ft);
+            try v.setSymbolType(fn_decl.name, ft);
         }
     }
 
     // Validate entry point requirements
     if (v.current_stage != .none) {
-        v.validateEntryPoint(fn_decl);
+        try v.validateEntryPoint(fn_decl);
     }
 
     // Validate function body
     if (fn_decl.body) |body| {
-        v.validateCompoundStmt(body);
+        try v.validateCompoundStmt(body);
     }
 
     // Check for missing return
@@ -868,7 +868,7 @@ fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) void {
     }
 }
 
-fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
+fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
     const fn_range = v.symbolRange(fn_decl.name);
     switch (v.current_stage) {
         .vertex => {
@@ -904,10 +904,10 @@ fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
     }
 
     // Validate entry point IO: duplicate @location and missing @builtin/@location on struct members
-    v.validateEntryPointIO(fn_decl);
+    try v.validateEntryPointIO(fn_decl);
 }
 
-fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
+fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
     const fn_range = v.symbolRange(fn_decl.name);
 
     // Check input locations (parameters)
@@ -918,7 +918,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
             if (input_locations.get(info.value)) |first_loc| {
                 v.addErrorWithRelatedR(v.symbolRange(param.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
             } else {
-                input_locations.put(v.allocator, info.value, info.loc) catch {};
+                try input_locations.put(v.allocator, info.value, info.loc);
             }
         }
         // If param type is a struct, check its members
@@ -933,7 +933,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
                         if (input_locations.get(info.value)) |first_loc| {
                             v.addErrorWithRelatedR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
                         } else {
-                            input_locations.put(v.allocator, info.value, info.loc) catch {};
+                            try input_locations.put(v.allocator, info.value, info.loc);
                         }
                     }
                 }
@@ -944,7 +944,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
     // Check output locations (return type)
     var output_locations: std.AutoHashMapUnmanaged(i64, u32) = .{};
     if (getLocationInfo(fn_decl.return_attr)) |info| {
-        output_locations.put(v.allocator, info.value, info.loc) catch {};
+        try output_locations.put(v.allocator, info.value, info.loc);
     }
     if (fn_decl.return_type) |rt| {
         const ret_type = v.resolveType(rt) orelse return;
@@ -958,7 +958,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
                         if (output_locations.get(info.value)) |first_loc| {
                             v.addErrorWithRelatedR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
                         } else {
-                            output_locations.put(v.allocator, info.value, info.loc) catch {};
+                            try output_locations.put(v.allocator, info.value, info.loc);
                         }
                     }
                 }
@@ -1156,34 +1156,34 @@ fn isComputeInput(name: []const u8) bool {
 // Statement Validation
 // =========================================================================
 
-fn validateStmt(v: *Validator, stmt: Ast.Stmt) void {
+fn validateStmt(v: *Validator, stmt: Ast.Stmt) Allocator.Error!void {
     switch (stmt) {
-        .compound => |s| v.validateCompoundStmt(s),
-        .@"return" => |s| v.validateReturnStmt(s),
-        .@"if" => |s| v.validateIfStmt(s),
-        .@"switch" => |s| v.validateSwitchStmt(s),
-        .loop => |s| v.validateLoopStmt(s),
-        .@"while" => |s| v.validateWhileStmt(s),
-        .@"for" => |s| v.validateForStmt(s),
+        .compound => |s| try v.validateCompoundStmt(s),
+        .@"return" => |s| try v.validateReturnStmt(s),
+        .@"if" => |s| try v.validateIfStmt(s),
+        .@"switch" => |s| try v.validateSwitchStmt(s),
+        .loop => |s| try v.validateLoopStmt(s),
+        .@"while" => |s| try v.validateWhileStmt(s),
+        .@"for" => |s| try v.validateForStmt(s),
         .@"break" => |s| v.validateBreakStmt(s),
-        .break_if => |s| v.validateBreakIfStmt(s),
+        .break_if => |s| try v.validateBreakIfStmt(s),
         .@"continue" => |s| v.validateContinueStmt(s),
         .discard => |s| v.validateDiscardStmt(s),
-        .assign => |s| v.validateAssignStmt(s),
-        .incr_decr => |s| v.validateIncrDecrStmt(s),
-        .call => |s| v.validateCallStmt(s),
-        .decl => |s| v.validateDeclStmt(s),
+        .assign => |s| try v.validateAssignStmt(s),
+        .incr_decr => |s| try v.validateIncrDecrStmt(s),
+        .call => |s| try v.validateCallStmt(s),
+        .decl => |s| try v.validateDeclStmt(s),
     }
 }
 
-fn validateCompoundStmt(v: *Validator, s: *Ast.CompoundStmt) void {
+fn validateCompoundStmt(v: *Validator, s: *Ast.CompoundStmt) Allocator.Error!void {
     var terminated = false;
     for (s.stmts.items) |stmt| {
         if (terminated) {
             v.addErrorWithCodeR(v.getStmtRange(stmt), Diagnostic.Code.unreachable_code, "code is unreachable");
             break; // report once per block
         }
-        v.validateStmt(stmt);
+        try v.validateStmt(stmt);
         if (stmtTerminates(stmt)) terminated = true;
     }
 }
@@ -1254,7 +1254,7 @@ fn getStmtRange(v: *Validator, stmt: Ast.Stmt) LocRange {
     };
 }
 
-fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) void {
+fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!void {
     v.has_return = true;
     const ret_range: LocRange = .{ .start = s.loc, .end = s.loc +| 6 }; // "return"
 
@@ -1265,7 +1265,7 @@ fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) void {
         return;
     }
 
-    const expr_type = v.checkExpr(s.value.?) orelse return;
+    const expr_type = (try v.checkExpr(s.value.?)) orelse return;
 
     if (expr_type.isRuntimeSizedArray()) {
         v.addErrorWithCodeR(exprSpan(s.value.?), Diagnostic.Code.type_mismatch, "cannot return a runtime-sized array");
@@ -1290,30 +1290,30 @@ fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) void {
 }
 
 /// Iteratively validates if/else-if/else chains without recursion.
-fn validateIfStmt(v: *Validator, s: *Ast.IfStmt) void {
+fn validateIfStmt(v: *Validator, s: *Ast.IfStmt) Allocator.Error!void {
     var current: *Ast.IfStmt = s;
     while (true) {
-        const cond_type = v.checkExpr(current.condition);
+        const cond_type = try v.checkExpr(current.condition);
         if (cond_type) |ct| {
             if (!ct.eql(Types.Bool)) {
                 v.addErrorWithCodeR(exprSpan(current.condition), Diagnostic.Code.type_mismatch, v.fmtError("if condition must be 'bool', got '{s}'", .{ct.string()}));
             }
         }
 
-        v.validateCompoundStmt(current.body);
+        try v.validateCompoundStmt(current.body);
         const eb = current.else_branch orelse break;
         switch (eb) {
             .@"if" => |next_if| current = next_if,
             else => {
-                v.validateStmt(eb);
+                try v.validateStmt(eb);
                 break;
             },
         }
     }
 }
 
-fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) void {
-    const selector_type = v.checkExpr(s.expr);
+fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!void {
+    const selector_type = try v.checkExpr(s.expr);
     if (selector_type) |st| {
         if (!Types.isInteger(st)) {
             v.addErrorWithCodeR(exprSpan(s.expr), Diagnostic.Code.type_mismatch, v.fmtError("switch selector must be integer, got '{s}'", .{st.string()}));
@@ -1335,7 +1335,7 @@ fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) void {
             }
         }
         for (case.selectors.items) |sel| {
-            const sel_type = v.checkExpr(sel);
+            const sel_type = try v.checkExpr(sel);
             if (sel_type != null and selector_type != null) {
                 if (!Types.canConvertTo(sel_type.?, selector_type.?)) {
                     v.addErrorWithRelatedR(exprRange(sel), Diagnostic.Code.type_mismatch, v.fmtError("case selector '{s}' doesn't match switch type '{s}'", .{ sel_type.?.string(), selector_type.?.string() }), v.makeRelatedR(exprRange(s.expr), v.fmtError("switch expression has type '{s}'", .{selector_type.?.string()})));
@@ -1346,11 +1346,11 @@ fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) void {
                 if (seen_values.get(val) != null) {
                     v.addErrorWithCodeR(exprRange(sel), Diagnostic.Code.duplicate_case_selector, v.fmtError("duplicate case selector value '{d}'", .{val}));
                 } else {
-                    seen_values.put(v.allocator, val, 1) catch {};
+                    try seen_values.put(v.allocator, val, 1);
                 }
             }
         }
-        v.validateCompoundStmt(case.body);
+        try v.validateCompoundStmt(case.body);
     }
 
     if (default_count == 0) {
@@ -1360,23 +1360,23 @@ fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) void {
     v.in_switch = prev_in_switch;
 }
 
-fn validateLoopStmt(v: *Validator, s: *Ast.LoopStmt) void {
+fn validateLoopStmt(v: *Validator, s: *Ast.LoopStmt) Allocator.Error!void {
     const prev_in_loop = v.in_loop;
     v.in_loop = true;
 
-    v.validateCompoundStmt(s.body);
+    try v.validateCompoundStmt(s.body);
     if (s.continuing) |cont| {
         const prev_in_continuing = v.in_continuing;
         v.in_continuing = true;
-        v.validateCompoundStmt(cont);
+        try v.validateCompoundStmt(cont);
         v.in_continuing = prev_in_continuing;
     }
 
     v.in_loop = prev_in_loop;
 }
 
-fn validateWhileStmt(v: *Validator, s: *Ast.WhileStmt) void {
-    const cond_type = v.checkExpr(s.condition);
+fn validateWhileStmt(v: *Validator, s: *Ast.WhileStmt) Allocator.Error!void {
+    const cond_type = try v.checkExpr(s.condition);
     if (cond_type) |ct| {
         if (!ct.eql(Types.Bool)) {
             v.addErrorWithCodeR(exprSpan(s.condition), Diagnostic.Code.type_mismatch, v.fmtError("while condition must be 'bool', got '{s}'", .{ct.string()}));
@@ -1385,16 +1385,16 @@ fn validateWhileStmt(v: *Validator, s: *Ast.WhileStmt) void {
 
     const prev_in_loop = v.in_loop;
     v.in_loop = true;
-    v.validateCompoundStmt(s.body);
+    try v.validateCompoundStmt(s.body);
     v.in_loop = prev_in_loop;
 }
 
-fn validateForStmt(v: *Validator, s: *Ast.ForStmt) void {
+fn validateForStmt(v: *Validator, s: *Ast.ForStmt) Allocator.Error!void {
     if (s.init_stmt) |init| {
-        v.validateStmt(init);
+        try v.validateStmt(init);
     }
     if (s.condition) |cond| {
-        const cond_type = v.checkExpr(cond);
+        const cond_type = try v.checkExpr(cond);
         if (cond_type) |ct| {
             if (!ct.eql(Types.Bool)) {
                 v.addErrorWithCodeR(exprSpan(cond), Diagnostic.Code.type_mismatch, v.fmtError("for condition must be 'bool', got '{s}'", .{ct.string()}));
@@ -1402,12 +1402,12 @@ fn validateForStmt(v: *Validator, s: *Ast.ForStmt) void {
         }
     }
     if (s.update) |update| {
-        v.validateStmt(update);
+        try v.validateStmt(update);
     }
 
     const prev_in_loop = v.in_loop;
     v.in_loop = true;
-    v.validateCompoundStmt(s.body);
+    try v.validateCompoundStmt(s.body);
     v.in_loop = prev_in_loop;
 }
 
@@ -1420,8 +1420,8 @@ fn validateBreakStmt(v: *Validator, s: *Ast.BreakStmt) void {
     }
 }
 
-fn validateBreakIfStmt(v: *Validator, s: *Ast.BreakIfStmt) void {
-    const cond_type = v.checkExpr(s.condition);
+fn validateBreakIfStmt(v: *Validator, s: *Ast.BreakIfStmt) Allocator.Error!void {
+    const cond_type = try v.checkExpr(s.condition);
     if (cond_type) |ct| {
         if (!ct.eql(Types.Bool)) {
             v.addErrorWithCodeR(exprSpan(s.condition), Diagnostic.Code.type_mismatch, v.fmtError("break if condition must be 'bool', got '{s}'", .{ct.string()}));
@@ -1441,9 +1441,9 @@ fn validateDiscardStmt(v: *Validator, s: *Ast.DiscardStmt) void {
     }
 }
 
-fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) void {
-    const lhs_type = v.checkExpr(s.left) orelse return;
-    const rhs_type = v.checkExpr(s.right) orelse return;
+fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
+    const lhs_type = (try v.checkExpr(s.left)) orelse return;
+    const rhs_type = (try v.checkExpr(s.right)) orelse return;
 
     if (s.op == .simple) {
         // Simple assignment: RHS must be convertible to LHS.
@@ -1488,8 +1488,8 @@ fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) void {
     }
 }
 
-fn validateIncrDecrStmt(v: *Validator, s: *Ast.IncrDecrStmt) void {
-    const expr_type = v.checkExpr(s.expr) orelse return;
+fn validateIncrDecrStmt(v: *Validator, s: *Ast.IncrDecrStmt) Allocator.Error!void {
+    const expr_type = (try v.checkExpr(s.expr)) orelse return;
     // Spec: operand must be a concrete integer scalar (i32 or u32 only).
     const is_concrete_int_scalar = switch (expr_type) {
         .scalar => |sc| sc.kind == .i32 or sc.kind == .u32,
@@ -1500,16 +1500,16 @@ fn validateIncrDecrStmt(v: *Validator, s: *Ast.IncrDecrStmt) void {
     }
 }
 
-fn validateCallStmt(v: *Validator, s: *Ast.CallStmt) void {
-    _ = v.checkCallExpr(s.call);
+fn validateCallStmt(v: *Validator, s: *Ast.CallStmt) Allocator.Error!void {
+    _ = try v.checkCallExpr(s.call);
 }
 
-fn validateDeclStmt(v: *Validator, s: *Ast.DeclStmt) void {
+fn validateDeclStmt(v: *Validator, s: *Ast.DeclStmt) Allocator.Error!void {
     switch (s.decl) {
-        .@"const" => |d| v.validateConstDecl(d),
-        .let => |d| v.validateLetDecl(d),
-        .@"var" => |d| v.validateVarDecl(d),
-        .const_assert => |d| v.validateConstAssert(d),
+        .@"const" => |d| try v.validateConstDecl(d),
+        .let => |d| try v.validateLetDecl(d),
+        .@"var" => |d| try v.validateVarDecl(d),
+        .const_assert => |d| try v.validateConstAssert(d),
         else => {},
     }
 }
@@ -1520,19 +1520,19 @@ fn validateDeclStmt(v: *Validator, s: *Ast.DeclStmt) void {
 
 const max_expr_depth: u32 = 256;
 
-fn checkExpr(v: *Validator, expr: Ast.Expr) ?Types.Type {
+fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!?Types.Type {
     if (v.expr_depth >= max_expr_depth) return null;
     v.expr_depth += 1;
     defer v.expr_depth -= 1;
     return switch (expr) {
         .literal => |e| v.checkLiteral(e),
         .ident => |e| v.checkIdent(e),
-        .binary => |e| v.checkBinary(e),
-        .unary => |e| v.checkUnary(e),
-        .call => |e| v.checkCallExpr(e),
-        .index => |e| v.checkIndex(e),
-        .member => |e| v.checkMember(e),
-        .paren => |e| v.checkExpr(e.expr),
+        .binary => |e| try v.checkBinary(e),
+        .unary => |e| try v.checkUnary(e),
+        .call => |e| try v.checkCallExpr(e),
+        .index => |e| try v.checkIndex(e),
+        .member => |e| try v.checkMember(e),
+        .paren => |e| try v.checkExpr(e.expr),
     };
 }
 
@@ -1602,9 +1602,9 @@ fn checkIdent(v: *Validator, e: *Ast.IdentExpr) ?Types.Type {
     return null;
 }
 
-fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) ?Types.Type {
-    const left_type = v.checkExpr(e.left) orelse return null;
-    const right_type = v.checkExpr(e.right) orelse return null;
+fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
+    const left_type = (try v.checkExpr(e.left)) orelse return null;
+    const right_type = (try v.checkExpr(e.right)) orelse return null;
 
     const er = exprRange(.{ .binary = e }); // operator range
     const op_str = e.op.string();
@@ -1701,8 +1701,8 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) ?Types.Type {
     }
 }
 
-fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) ?Types.Type {
-    const operand_type = v.checkExpr(e.operand) orelse return null;
+fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
+    const operand_type = (try v.checkExpr(e.operand)) orelse return null;
     const er = exprRange(.{ .unary = e });
 
     switch (e.op) {
@@ -1754,7 +1754,7 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) ?Types.Type {
     }
 }
 
-fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) ?Types.Type {
+fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
     // First check if it's a template type constructor
     if (e.template_type) |tt| {
         return v.resolveType(tt);
@@ -1791,7 +1791,7 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) ?Types.Type {
         var arg_types: [8]?Types.Type = .{null} ** 8;
         const max_check = @min(e.args.items.len, 8);
         for (0..max_check) |i| {
-            arg_types[i] = v.checkExpr(e.args.items[i]);
+            arg_types[i] = try v.checkExpr(e.args.items[i]);
         }
 
         // Type check arguments based on builtin kind
@@ -1826,7 +1826,7 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) ?Types.Type {
     // For non-builtin calls, validate all argument expressions and collect types
     var constructor_arg_types: std.ArrayListUnmanaged(?Types.Type) = .empty;
     for (e.args.items) |arg| {
-        constructor_arg_types.append(v.allocator, v.checkExpr(arg)) catch {};
+        try constructor_arg_types.append(v.allocator, try v.checkExpr(arg));
     }
 
     // Check if it's a type constructor
@@ -1853,7 +1853,7 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) ?Types.Type {
                                 // Check argument types
                                 for (e.args.items, 0..) |arg, ai| {
                                     if (ai < fn_type.parameters.len) {
-                                        const arg_type = v.checkExpr(arg);
+                                        const arg_type = try v.checkExpr(arg);
                                         if (arg_type) |at| {
                                             const param_type = fn_type.parameters[ai];
                                             if (!at.eql(param_type) and !Types.canConvertTo(at, param_type)) {
@@ -2106,9 +2106,9 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, t: Types.Type, arg_type
     return t;
 }
 
-fn checkIndex(v: *Validator, e: *Ast.IndexExpr) ?Types.Type {
-    const base_type = v.checkExpr(e.base) orelse return null;
-    const index_type = v.checkExpr(e.idx);
+fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!?Types.Type {
+    const base_type = (try v.checkExpr(e.base)) orelse return null;
+    const index_type = try v.checkExpr(e.idx);
 
     // Check index type
     if (index_type) |it| {
@@ -2177,8 +2177,8 @@ fn validateSwizzle(v: *Validator, name: []const u8, vec_width: u8, loc: u32, bas
     return true;
 }
 
-fn checkMember(v: *Validator, e: *Ast.MemberExpr) ?Types.Type {
-    var base_type = v.checkExpr(e.base) orelse return null;
+fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!?Types.Type {
+    var base_type = (try v.checkExpr(e.base)) orelse return null;
     const mr = exprRange(.{ .member = e }); // dot + member_name
 
     // Auto-dereference pointers/references
@@ -3152,10 +3152,10 @@ fn symbolName(v: *Validator, sym_idx: Ast.SymbolIndex) []const u8 {
     return "";
 }
 
-fn setSymbolType(v: *Validator, sym_idx: Ast.SymbolIndex, typ: ?Types.Type) void {
+fn setSymbolType(v: *Validator, sym_idx: Ast.SymbolIndex, typ: ?Types.Type) Allocator.Error!void {
     if (!sym_idx.isValid()) return;
     if (typ) |t| {
-        v.symbol_types.put(v.allocator, sym_idx.index(), t) catch {};
+        try v.symbol_types.put(v.allocator, sym_idx.index(), t);
     }
 }
 

@@ -161,7 +161,7 @@ test "SourceMap: JSON output format" {
     const sm = result.source_map orelse return error.TestExpectedSourceMap;
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    sm.toJson(&buf, alloc);
+    try sm.toJson(&buf, alloc);
     try std.testing.expect(contains(buf.items, "\"version\":3"));
     try std.testing.expect(contains(buf.items, "\"mappings\":"));
     try std.testing.expect(contains(buf.items, "\"sources\":"));
@@ -178,7 +178,7 @@ test "SourceMap: DataURI output format" {
     const sm = result.source_map orelse return error.TestExpectedSourceMap;
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    sm.toDataUri(&buf, alloc);
+    try sm.toDataUri(&buf, alloc);
     try std.testing.expect(contains(buf.items, "data:application/json;base64,"));
 }
 
@@ -203,7 +203,7 @@ test "SourceMap: sources content included" {
     try std.testing.expect(sm.sources_content.len > 0);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    sm.toJson(&buf, alloc);
+    try sm.toJson(&buf, alloc);
     try std.testing.expect(contains(buf.items, "\"sourcesContent\":"));
 }
 
@@ -227,7 +227,7 @@ test "SourceMap: file field" {
     try std.testing.expectEqualStrings("shader.wgsl", sm.file);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    sm.toJson(&buf, alloc);
+    try sm.toJson(&buf, alloc);
     try std.testing.expect(contains(buf.items, "\"file\":\"shader.wgsl\""));
 }
 

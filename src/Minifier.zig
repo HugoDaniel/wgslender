@@ -110,7 +110,7 @@ pub fn minify(allocator: std.mem.Allocator, source: [:0]const u8, options: Optio
 
     // 4. DCE
     if (options.tree_shaking) {
-        result.symbols_dead = Dce.mark(allocator, module);
+        result.symbols_dead = try Dce.mark(allocator, module);
     } else {
         for (module.symbols.items) |*sym| {
             sym.flags.is_live = true;
@@ -118,13 +118,13 @@ pub fn minify(allocator: std.mem.Allocator, source: [:0]const u8, options: Optio
     }
 
     // 5. Compute usage
-    var uses = computeSymbolUsage(allocator, module);
+    var uses = try computeSymbolUsage(allocator, module);
     defer uses.deinit(allocator);
 
     // 6. Build reserved names
-    var reserved = RenamerMod.computeReservedNames(allocator);
+    var reserved = try RenamerMod.computeReservedNames(allocator);
     for (options.keep_names) |name| {
-        reserved.put(allocator, name, {}) catch {};
+        try reserved.put(allocator, name, {});
     }
 
     // 7. Set up source map generator if requested
@@ -136,7 +136,7 @@ pub fn minify(allocator: std.mem.Allocator, source: [:0]const u8, options: Optio
 
     // 9. Finalize source map
     if (source_map_gen) |gen| {
-        result.source_map = gen.generate();
+        result.source_map = try gen.generate();
     }
 
     result.minified_size = result.code.len;
@@ -184,7 +184,7 @@ pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, opti
         result.minify.minified_size = source.len;
         result.minify.errors = parser.errors.items;
         for (parser.errors.items) |err| {
-            result.reflect.errors.append(allocator, err.message) catch {};
+            try result.reflect.errors.append(allocator, err.message);
         }
         return result;
     };
@@ -194,7 +194,7 @@ pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, opti
         result.minify.minified_size = source.len;
         result.minify.errors = parser.errors.items;
         for (parser.errors.items) |err| {
-            result.reflect.errors.append(allocator, err.message) catch {};
+            try result.reflect.errors.append(allocator, err.message);
         }
         return result;
     }
@@ -203,19 +203,19 @@ pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, opti
     markAPIFacingSymbols(module, options);
 
     if (options.tree_shaking) {
-        result.minify.symbols_dead = Dce.mark(allocator, module);
+        result.minify.symbols_dead = try Dce.mark(allocator, module);
     } else {
         for (module.symbols.items) |*sym| {
             sym.flags.is_live = true;
         }
     }
 
-    var uses = computeSymbolUsage(allocator, module);
+    var uses = try computeSymbolUsage(allocator, module);
     defer uses.deinit(allocator);
 
-    var reserved = RenamerMod.computeReservedNames(allocator);
+    var reserved = try RenamerMod.computeReservedNames(allocator);
     for (options.keep_names) |name| {
-        reserved.put(allocator, name, {}) catch {};
+        try reserved.put(allocator, name, {});
     }
 
     // 7. Source map
@@ -227,14 +227,14 @@ pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, opti
 
     // 9. Finalize source map
     if (source_map_gen) |gen| {
-        result.minify.source_map = gen.generate();
+        result.minify.source_map = try gen.generate();
     }
 
     result.minify.minified_size = result.minify.code.len;
     result.minify.symbols_total = module.symbols.items.len;
 
     // 10. Reflect using the same module and renamer
-    result.reflect = Reflect.reflectWithRenamer(allocator, module, print_result.renamer);
+    result.reflect = try Reflect.reflectWithRenamer(allocator, module, print_result.renamer);
 
     return result;
 }
@@ -242,7 +242,7 @@ pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, opti
 fn initSourceMapGen(allocator: std.mem.Allocator, source: [:0]const u8, options: Options) !?*SourceMap.Generator {
     if (!options.generate_source_map) return null;
     const gen = try allocator.create(SourceMap.Generator);
-    gen.* = SourceMap.Generator.init(allocator, source);
+    gen.* = try SourceMap.Generator.init(allocator, source);
     gen.setFile(options.source_map_options.file);
     gen.setSourceName(options.source_map_options.source_name);
     gen.setIncludeSource(options.source_map_options.include_source);
@@ -263,9 +263,9 @@ fn createMinifyRenamer(
     const r = try allocator.create(RenamerMod.MinifyRenamer);
     r.* = RenamerMod.MinifyRenamer.init(allocator, module.symbols.items, reserved);
     r.accumulateSymbolUseCounts(uses);
-    r.allocateSlots();
-    r.reserveUnrenamedSymbolNames();
-    r.assignNames();
+    try r.allocateSlots();
+    try r.reserveUnrenamedSymbolNames();
+    try r.assignNames();
     r.renamer.ptr = @ptrCast(r);
     return &r.renamer;
 }
@@ -358,131 +358,131 @@ fn markAPIFacingSymbols(module: *Ast.Module, options: Options) void {
     }
 }
 
-pub fn computeSymbolUsage(allocator: std.mem.Allocator, module: *const Ast.Module) std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32) {
+pub fn computeSymbolUsage(allocator: std.mem.Allocator, module: *const Ast.Module) !std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32) {
     var uses: std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32) = .empty;
     for (module.declarations.items) |decl| {
-        countDeclUsage(allocator, decl, &uses);
+        try countDeclUsage(allocator, decl, &uses);
     }
     return uses;
 }
 
-fn countDeclUsage(allocator: std.mem.Allocator, decl: Ast.Decl, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) void {
+fn countDeclUsage(allocator: std.mem.Allocator, decl: Ast.Decl, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
     switch (decl) {
         .@"const" => |d| {
-            if (d.initializer) |init_expr| countExprUsage(allocator, init_expr, uses);
+            if (d.initializer) |init_expr| try countExprUsage(allocator, init_expr, uses);
         },
         .override => |d| {
-            if (d.initializer) |init_expr| countExprUsage(allocator, init_expr, uses);
+            if (d.initializer) |init_expr| try countExprUsage(allocator, init_expr, uses);
         },
         .@"var" => |d| {
-            if (d.initializer) |init_expr| countExprUsage(allocator, init_expr, uses);
+            if (d.initializer) |init_expr| try countExprUsage(allocator, init_expr, uses);
         },
         .let => |d| {
-            if (d.initializer) |init_expr| countExprUsage(allocator, init_expr, uses);
+            if (d.initializer) |init_expr| try countExprUsage(allocator, init_expr, uses);
         },
         .function => |d| {
             // Count function name itself
             if (d.name.isValid()) {
-                const entry = uses.getOrPutValue(allocator, d.name, 0) catch return;
+                const entry = try uses.getOrPutValue(allocator, d.name, 0);
                 entry.value_ptr.* += 1;
             }
-            if (d.body) |body| countStmtUsage(allocator, .{ .compound = body }, uses);
+            if (d.body) |body| try countStmtUsage(allocator, .{ .compound = body }, uses);
         },
         .@"struct", .alias, .const_assert => {},
     }
 }
 
 /// Iteratively counts symbol usage in an expression tree using a worklist.
-fn countExprUsage(allocator: std.mem.Allocator, expr: Ast.Expr, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) void {
+fn countExprUsage(allocator: std.mem.Allocator, expr: Ast.Expr, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
     defer stack.deinit(allocator);
-    stack.append(allocator, expr) catch return;
+    try stack.append(allocator, expr);
 
     while (true) {
         const e = stack.pop() orelse break;
         switch (e) {
             .ident => |ie| {
                 if (ie.ref.isValid()) {
-                    const entry = uses.getOrPutValue(allocator, ie.ref, 0) catch continue;
+                    const entry = try uses.getOrPutValue(allocator, ie.ref, 0);
                     entry.value_ptr.* += 1;
                 }
             },
             .binary => |be| {
-                stack.append(allocator, be.right) catch {};
-                stack.append(allocator, be.left) catch {};
+                try stack.append(allocator, be.right);
+                try stack.append(allocator, be.left);
             },
-            .unary => |ue| stack.append(allocator, ue.operand) catch {},
+            .unary => |ue| try stack.append(allocator, ue.operand),
             .call => |ce| {
                 var i = ce.args.items.len;
                 while (i > 0) {
                     i -= 1;
-                    stack.append(allocator, ce.args.items[i]) catch {};
+                    try stack.append(allocator, ce.args.items[i]);
                 }
-                if (ce.func) |f| stack.append(allocator, f) catch {};
+                if (ce.func) |f| try stack.append(allocator, f);
             },
             .index => |ie| {
-                stack.append(allocator, ie.idx) catch {};
-                stack.append(allocator, ie.base) catch {};
+                try stack.append(allocator, ie.idx);
+                try stack.append(allocator, ie.base);
             },
-            .member => |me| stack.append(allocator, me.base) catch {},
-            .paren => |pe| stack.append(allocator, pe.expr) catch {},
+            .member => |me| try stack.append(allocator, me.base),
+            .paren => |pe| try stack.append(allocator, pe.expr),
             .literal => {},
         }
     }
 }
 
 /// Iteratively counts symbol usage in a statement tree using a worklist.
-fn countStmtUsage(allocator: std.mem.Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) void {
+fn countStmtUsage(allocator: std.mem.Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
     defer stack.deinit(allocator);
-    stack.append(allocator, stmt) catch return;
+    try stack.append(allocator, stmt);
 
     while (true) {
         const s = stack.pop() orelse break;
         switch (s) {
             .compound => |cs| {
-                for (cs.stmts.items) |inner| stack.append(allocator, inner) catch {};
+                for (cs.stmts.items) |inner| try stack.append(allocator, inner);
             },
             .@"return" => |rs| {
-                if (rs.value) |v| countExprUsage(allocator, v, uses);
+                if (rs.value) |v| try countExprUsage(allocator, v, uses);
             },
             .@"if" => |is| {
-                countExprUsage(allocator, is.condition, uses);
-                stack.append(allocator, .{ .compound = is.body }) catch {};
-                if (is.else_branch) |eb| stack.append(allocator, eb) catch {};
+                try countExprUsage(allocator, is.condition, uses);
+                try stack.append(allocator, .{ .compound = is.body });
+                if (is.else_branch) |eb| try stack.append(allocator, eb);
             },
             .@"switch" => |ss| {
-                countExprUsage(allocator, ss.expr, uses);
+                try countExprUsage(allocator, ss.expr, uses);
                 for (ss.cases.items) |c| {
-                    for (c.selectors.items) |sel| countExprUsage(allocator, sel, uses);
-                    stack.append(allocator, .{ .compound = c.body }) catch {};
+                    for (c.selectors.items) |sel| try countExprUsage(allocator, sel, uses);
+                    try stack.append(allocator, .{ .compound = c.body });
                 }
             },
             .@"for" => |fs| {
-                if (fs.init_stmt) |is| stack.append(allocator, is) catch {};
-                if (fs.condition) |c| countExprUsage(allocator, c, uses);
-                if (fs.update) |u| stack.append(allocator, u) catch {};
-                stack.append(allocator, .{ .compound = fs.body }) catch {};
+                if (fs.init_stmt) |is| try stack.append(allocator, is);
+                if (fs.condition) |c| try countExprUsage(allocator, c, uses);
+                if (fs.update) |u| try stack.append(allocator, u);
+                try stack.append(allocator, .{ .compound = fs.body });
             },
             .@"while" => |ws| {
-                countExprUsage(allocator, ws.condition, uses);
-                stack.append(allocator, .{ .compound = ws.body }) catch {};
+                try countExprUsage(allocator, ws.condition, uses);
+                try stack.append(allocator, .{ .compound = ws.body });
             },
             .loop => |ls| {
-                stack.append(allocator, .{ .compound = ls.body }) catch {};
-                if (ls.continuing) |c| stack.append(allocator, .{ .compound = c }) catch {};
+                try stack.append(allocator, .{ .compound = ls.body });
+                if (ls.continuing) |c| try stack.append(allocator, .{ .compound = c });
             },
-            .break_if => |bs| countExprUsage(allocator, bs.condition, uses),
+            .break_if => |bs| try countExprUsage(allocator, bs.condition, uses),
             .assign => |as_| {
-                countExprUsage(allocator, as_.left, uses);
-                countExprUsage(allocator, as_.right, uses);
+                try countExprUsage(allocator, as_.left, uses);
+                try countExprUsage(allocator, as_.right, uses);
             },
-            .incr_decr => |ids| countExprUsage(allocator, ids.expr, uses),
+            .incr_decr => |ids| try countExprUsage(allocator, ids.expr, uses),
             .call => |cs| {
-                if (cs.call.func) |f| countExprUsage(allocator, f, uses);
-                for (cs.call.args.items) |arg| countExprUsage(allocator, arg, uses);
+                if (cs.call.func) |f| try countExprUsage(allocator, f, uses);
+                for (cs.call.args.items) |arg| try countExprUsage(allocator, arg, uses);
             },
-            .decl => |ds| countDeclUsage(allocator, ds.decl, uses),
+            .decl => |ds| try countDeclUsage(allocator, ds.decl, uses),
             .@"break", .@"continue", .discard => {},
         }
     }

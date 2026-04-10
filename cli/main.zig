@@ -144,7 +144,7 @@ fn parseArgs(allocator: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliAr
         cli_no_mangle,
         cli_no_tree_shaking,
     );
-    if (keep_names_raw) |raw| args.options.keep_names = parseKeepNames(allocator, raw);
+    if (keep_names_raw) |raw| args.options.keep_names = parseKeepNames(allocator, raw) catch return null;
     configureSourceMap(&args, source_map_sources);
 
     return args;
@@ -207,13 +207,13 @@ fn applyMinifyOverrides(
     if (cli_no_tree_shaking) options.tree_shaking = false;
 }
 
-fn parseKeepNames(allocator: std.mem.Allocator, raw: []const u8) []const []const u8 {
+fn parseKeepNames(allocator: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]const []const u8 {
     var names: std.ArrayListUnmanaged([]const u8) = .empty;
     var it = std.mem.splitScalar(u8, raw, ',');
     while (it.next()) |name| {
         const trimmed = std.mem.trim(u8, name, " ");
         if (trimmed.len > 0) {
-            names.append(allocator, trimmed) catch {};
+            try names.append(allocator, trimmed);
         }
     }
     return names.items;
@@ -267,8 +267,8 @@ fn runMinify(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, opt
         if (source_map_inline) {
             if (result.source_map) |sm| {
                 var comment_buf: std.ArrayListUnmanaged(u8) = .empty;
-                comment_buf.append(allocator, '\n') catch {};
-                sm.toComment(&comment_buf, allocator, true);
+                try comment_buf.append(allocator, '\n');
+                try sm.toComment(&comment_buf, allocator, true);
                 try file.writeStreamingAll(io, comment_buf.items);
             }
         }
@@ -279,8 +279,8 @@ fn runMinify(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, opt
         if (source_map_inline) {
             if (result.source_map) |sm| {
                 var comment_buf: std.ArrayListUnmanaged(u8) = .empty;
-                comment_buf.append(allocator, '\n') catch {};
-                sm.toComment(&comment_buf, allocator, true);
+                try comment_buf.append(allocator, '\n');
+                try sm.toComment(&comment_buf, allocator, true);
                 try File.stdout().writeStreamingAll(io, comment_buf.items);
             }
         }
@@ -291,12 +291,12 @@ fn runMinify(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, opt
         if (result.source_map) |sm| {
             if (output_path) |path| {
                 var map_path_buf: std.ArrayListUnmanaged(u8) = .empty;
-                map_path_buf.appendSlice(allocator, path) catch {};
-                map_path_buf.appendSlice(allocator, ".map") catch {};
+                try map_path_buf.appendSlice(allocator, path);
+                try map_path_buf.appendSlice(allocator, ".map");
                 const map_path = map_path_buf.items;
 
                 var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-                sm.toJson(&json_buf, allocator);
+                try sm.toJson(&json_buf, allocator);
 
                 const map_file = try Dir.cwd().createFile(io, map_path, .{});
                 defer map_file.close(io);
@@ -343,18 +343,18 @@ fn runValidate(
     switch (format) {
         .json => {
             var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-            json_buf.appendSlice(allocator, "{\"valid\":") catch {};
-            json_buf.appendSlice(allocator, if (is_valid) "true" else "false") catch {};
-            json_buf.appendSlice(allocator, ",\"diagnostics\":[") catch {};
+            try json_buf.appendSlice(allocator, "{\"valid\":");
+            try json_buf.appendSlice(allocator, if (is_valid) "true" else "false");
+            try json_buf.appendSlice(allocator, ",\"diagnostics\":[");
             for (result.diagnostics.diagnostics.items, 0..) |*entry, i| {
-                if (i > 0) json_buf.append(allocator, ',') catch {};
-                Diagnostic.entryToJson(&json_buf, allocator, entry);
+                if (i > 0) try json_buf.append(allocator, ',');
+                try Diagnostic.entryToJson(&json_buf, allocator, entry);
             }
-            json_buf.appendSlice(allocator, "],\"errorCount\":") catch {};
-            Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.errorCount());
-            json_buf.appendSlice(allocator, ",\"warningCount\":") catch {};
-            Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.warningCount());
-            json_buf.appendSlice(allocator, "}\n") catch {};
+            try json_buf.appendSlice(allocator, "],\"errorCount\":");
+            try Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.errorCount());
+            try json_buf.appendSlice(allocator, ",\"warningCount\":");
+            try Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.warningCount());
+            try json_buf.appendSlice(allocator, "}\n");
             try File.stdout().writeStreamingAll(io, json_buf.items);
         },
         .text => {
@@ -410,14 +410,14 @@ fn runReflect(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, co
     };
 
     // Reflect
-    const result = wgslender.Reflect.reflect(allocator, module);
+    const result = try wgslender.Reflect.reflect(allocator, module);
 
     // Serialize to JSON
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
     if (compact) {
-        result.toJson(&json_buf, allocator);
+        try result.toJson(&json_buf, allocator);
     } else {
-        result.toJsonPretty(&json_buf, allocator);
+        try result.toJsonPretty(&json_buf, allocator);
     }
 
     try File.stdout().writeStreamingAll(io, json_buf.items);

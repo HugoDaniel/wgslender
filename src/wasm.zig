@@ -13,6 +13,7 @@
 //!   wasm.dealloc(result_ptr, json_len + 4);
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const wgslender = @import("root.zig");
 const Ast = @import("Ast.zig");
 const Lexer = @import("Lexer.zig");
@@ -84,6 +85,15 @@ export fn wgslender_minify_json(
     opts_ptr: [*]const u8,
     opts_len: u32,
 ) ?[*]u8 {
+    return minifyJsonImpl(source_ptr, source_len, opts_ptr, opts_len) catch return null;
+}
+
+fn minifyJsonImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    opts_ptr: [*]const u8,
+    opts_len: u32,
+) Allocator.Error!?[*]u8 {
     const source = makeSentinelSource(source_ptr, source_len) orelse return null;
     defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
 
@@ -107,30 +117,30 @@ export fn wgslender_minify_json(
 
     // Build JSON result
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-    json_buf.appendSlice(wasm_allocator, "{\"code\":\"") catch {};
-    Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, result.code);
-    json_buf.appendSlice(wasm_allocator, "\",\"errors\":[") catch {};
+    try json_buf.appendSlice(wasm_allocator, "{\"code\":\"");
+    try Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, result.code);
+    try json_buf.appendSlice(wasm_allocator, "\",\"errors\":[");
 
     // Serialize errors
     for (result.errors, 0..) |err, i| {
-        if (i > 0) json_buf.append(wasm_allocator, ',') catch {};
-        json_buf.appendSlice(wasm_allocator, "{\"message\":\"") catch {};
-        Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, err.message);
-        json_buf.appendSlice(wasm_allocator, "\"}") catch {};
+        if (i > 0) try json_buf.append(wasm_allocator, ',');
+        try json_buf.appendSlice(wasm_allocator, "{\"message\":\"");
+        try Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, err.message);
+        try json_buf.appendSlice(wasm_allocator, "\"}");
     }
 
-    json_buf.appendSlice(wasm_allocator, "],\"originalSize\":") catch {};
-    Diagnostic.appendInt(&json_buf, wasm_allocator, result.original_size);
-    json_buf.appendSlice(wasm_allocator, ",\"minifiedSize\":") catch {};
-    Diagnostic.appendInt(&json_buf, wasm_allocator, result.minified_size);
+    try json_buf.appendSlice(wasm_allocator, "],\"originalSize\":");
+    try Diagnostic.appendInt(&json_buf, wasm_allocator, result.original_size);
+    try json_buf.appendSlice(wasm_allocator, ",\"minifiedSize\":");
+    try Diagnostic.appendInt(&json_buf, wasm_allocator, result.minified_size);
 
     // Source map
     if (result.source_map) |sm| {
-        json_buf.appendSlice(wasm_allocator, ",\"sourceMap\":") catch {};
-        sm.toJson(&json_buf, wasm_allocator);
+        try json_buf.appendSlice(wasm_allocator, ",\"sourceMap\":");
+        try sm.toJson(&json_buf, wasm_allocator);
     }
 
-    json_buf.append(wasm_allocator, '}') catch {};
+    try json_buf.append(wasm_allocator, '}');
 
     return packJsonResult(json_buf.items);
 }
@@ -140,6 +150,10 @@ export fn wgslender_minify_json(
 /// Output: pointer to result buffer [u32 valid (1/0)][u32 error_count][u32 json_len][u8... json_diagnostics].
 ///         Returns null on allocation failure.
 export fn wgslender_validate(source_ptr: [*]const u8, source_len: u32) ?[*]u8 {
+    return validateImpl(source_ptr, source_len) catch return null;
+}
+
+fn validateImpl(source_ptr: [*]const u8, source_len: u32) Allocator.Error!?[*]u8 {
     const source = makeSentinelSource(source_ptr, source_len) orelse return null;
     defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
 
@@ -149,16 +163,16 @@ export fn wgslender_validate(source_ptr: [*]const u8, source_len: u32) ?[*]u8 {
     const module = parser.parse() catch {
         // Build diagnostics JSON from parse errors
         var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-        const diag = Diagnostic.init(wasm_allocator, source);
-        serializeParseErrors(&json_buf, parser.errors.items, &diag);
+        const diag = try Diagnostic.init(wasm_allocator, source);
+        try serializeParseErrors(&json_buf, parser.errors.items, &diag);
         return packValidateResultWithJson(false, parser.errors.items.len, json_buf.items);
     };
 
     // Check for parse errors (parser may recover without throwing)
     if (parser.errors.items.len > 0) {
         var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-        const diag = Diagnostic.init(wasm_allocator, source);
-        serializeParseErrors(&json_buf, parser.errors.items, &diag);
+        const diag = try Diagnostic.init(wasm_allocator, source);
+        try serializeParseErrors(&json_buf, parser.errors.items, &diag);
         return packValidateResultWithJson(false, parser.errors.items.len, json_buf.items);
     }
 
@@ -168,36 +182,36 @@ export fn wgslender_validate(source_ptr: [*]const u8, source_len: u32) ?[*]u8 {
 
     // Serialize diagnostics to JSON
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-    json_buf.append(wasm_allocator, '[') catch {};
+    try json_buf.append(wasm_allocator, '[');
     for (result.diagnostics.diagnostics.items, 0..) |entry, i| {
-        if (i > 0) json_buf.append(wasm_allocator, ',') catch {};
-        serializeDiagnosticEntry(&json_buf, &entry);
+        if (i > 0) try json_buf.append(wasm_allocator, ',');
+        try serializeDiagnosticEntry(&json_buf, &entry);
     }
-    json_buf.append(wasm_allocator, ']') catch {};
+    try json_buf.append(wasm_allocator, ']');
 
     return packValidateResultWithJson(result.valid, error_count, json_buf.items);
 }
 
 /// Serialize parse errors as a JSON array with position info.
-fn serializeParseErrors(json_buf: *std.ArrayListUnmanaged(u8), errors: []const Parser.ParseError, diag: *const Diagnostic) void {
-    json_buf.append(wasm_allocator, '[') catch {};
+fn serializeParseErrors(json_buf: *std.ArrayListUnmanaged(u8), errors: []const Parser.ParseError, diag: *const Diagnostic) Allocator.Error!void {
+    try json_buf.append(wasm_allocator, '[');
     for (errors, 0..) |err, i| {
-        if (i > 0) json_buf.append(wasm_allocator, ',') catch {};
+        if (i > 0) try json_buf.append(wasm_allocator, ',');
         const pos = diag.makePosition(err.pos);
-        json_buf.appendSlice(wasm_allocator, "{\"severity\":\"error\",\"message\":\"") catch {};
-        Diagnostic.appendJsonEscaped(json_buf, wasm_allocator, err.message);
-        json_buf.appendSlice(wasm_allocator, "\",\"line\":") catch {};
-        Diagnostic.appendInt(json_buf, wasm_allocator, pos.line);
-        json_buf.appendSlice(wasm_allocator, ",\"column\":") catch {};
-        Diagnostic.appendInt(json_buf, wasm_allocator, pos.column);
-        json_buf.append(wasm_allocator, '}') catch {};
+        try json_buf.appendSlice(wasm_allocator, "{\"severity\":\"error\",\"message\":\"");
+        try Diagnostic.appendJsonEscaped(json_buf, wasm_allocator, err.message);
+        try json_buf.appendSlice(wasm_allocator, "\",\"line\":");
+        try Diagnostic.appendInt(json_buf, wasm_allocator, pos.line);
+        try json_buf.appendSlice(wasm_allocator, ",\"column\":");
+        try Diagnostic.appendInt(json_buf, wasm_allocator, pos.column);
+        try json_buf.append(wasm_allocator, '}');
     }
-    json_buf.append(wasm_allocator, ']') catch {};
+    try json_buf.append(wasm_allocator, ']');
 }
 
 /// Serialize a single Diagnostic.Entry to JSON.
-fn serializeDiagnosticEntry(json_buf: *std.ArrayListUnmanaged(u8), entry: *const Diagnostic.Entry) void {
-    Diagnostic.entryToJson(json_buf, wasm_allocator, entry);
+fn serializeDiagnosticEntry(json_buf: *std.ArrayListUnmanaged(u8), entry: *const Diagnostic.Entry) Allocator.Error!void {
+    try Diagnostic.entryToJson(json_buf, wasm_allocator, entry);
 }
 
 fn packValidateResultWithJson(valid: bool, error_count: usize, json: []const u8) ?[*]u8 {
@@ -214,6 +228,10 @@ fn packValidateResultWithJson(valid: bool, error_count: usize, json: []const u8)
 /// Output: pointer to result buffer [u32 len][u8... json_result].
 ///         Returns null on allocation failure.
 export fn wgslender_reflect(source_ptr: [*]const u8, source_len: u32) ?[*]u8 {
+    return reflectImpl(source_ptr, source_len) catch return null;
+}
+
+fn reflectImpl(source_ptr: [*]const u8, source_len: u32) Allocator.Error!?[*]u8 {
     const source = makeSentinelSource(source_ptr, source_len) orelse return null;
     defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
 
@@ -222,23 +240,23 @@ export fn wgslender_reflect(source_ptr: [*]const u8, source_len: u32) ?[*]u8 {
     var parser = Parser.init(wasm_allocator, source, tokens) catch return null;
     const module = parser.parse() catch {
         // Return empty result with error
-        return packReflectError(parser.errors.items);
+        return try packReflectError(parser.errors.items);
     };
 
     // Check for parse errors (parser may recover without throwing)
     if (parser.errors.items.len > 0) {
-        return packReflectError(parser.errors.items);
+        return try packReflectError(parser.errors.items);
     }
 
     // Reflect
-    const result = Reflect.reflect(wasm_allocator, module);
+    const result = try Reflect.reflect(wasm_allocator, module);
 
     // Serialize to JSON
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-    result.toJson(&json_buf, wasm_allocator);
+    try result.toJson(&json_buf, wasm_allocator);
 
     const json = json_buf.items;
-    const out_buf = wasm_allocator.alloc(u8, 4 + json.len) catch return null;
+    const out_buf = try wasm_allocator.alloc(u8, 4 + json.len);
     std.mem.writeInt(u32, out_buf[0..4], @intCast(json.len), .little);
     @memcpy(out_buf[4..][0..json.len], json);
 
@@ -256,6 +274,15 @@ export fn wgslender_minify_and_reflect_json(
     opts_ptr: [*]const u8,
     opts_len: u32,
 ) ?[*]u8 {
+    return minifyAndReflectJsonImpl(source_ptr, source_len, opts_ptr, opts_len) catch return null;
+}
+
+fn minifyAndReflectJsonImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    opts_ptr: [*]const u8,
+    opts_len: u32,
+) Allocator.Error!?[*]u8 {
     const source = makeSentinelSource(source_ptr, source_len) orelse return null;
     defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
 
@@ -277,29 +304,29 @@ export fn wgslender_minify_and_reflect_json(
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
 
     // Minify part
-    json_buf.appendSlice(wasm_allocator, "{\"minify\":{\"code\":\"") catch {};
-    Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, result.minify.code);
-    json_buf.appendSlice(wasm_allocator, "\",\"errors\":[") catch {};
+    try json_buf.appendSlice(wasm_allocator, "{\"minify\":{\"code\":\"");
+    try Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, result.minify.code);
+    try json_buf.appendSlice(wasm_allocator, "\",\"errors\":[");
     for (result.minify.errors, 0..) |err, i| {
-        if (i > 0) json_buf.append(wasm_allocator, ',') catch {};
-        json_buf.appendSlice(wasm_allocator, "{\"message\":\"") catch {};
-        Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, err.message);
-        json_buf.appendSlice(wasm_allocator, "\"}") catch {};
+        if (i > 0) try json_buf.append(wasm_allocator, ',');
+        try json_buf.appendSlice(wasm_allocator, "{\"message\":\"");
+        try Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, err.message);
+        try json_buf.appendSlice(wasm_allocator, "\"}");
     }
-    json_buf.appendSlice(wasm_allocator, "],\"originalSize\":") catch {};
-    Diagnostic.appendInt(&json_buf, wasm_allocator, result.minify.original_size);
-    json_buf.appendSlice(wasm_allocator, ",\"minifiedSize\":") catch {};
-    Diagnostic.appendInt(&json_buf, wasm_allocator, result.minify.minified_size);
+    try json_buf.appendSlice(wasm_allocator, "],\"originalSize\":");
+    try Diagnostic.appendInt(&json_buf, wasm_allocator, result.minify.original_size);
+    try json_buf.appendSlice(wasm_allocator, ",\"minifiedSize\":");
+    try Diagnostic.appendInt(&json_buf, wasm_allocator, result.minify.minified_size);
     if (result.minify.source_map) |sm| {
-        json_buf.appendSlice(wasm_allocator, ",\"sourceMap\":") catch {};
-        sm.toJson(&json_buf, wasm_allocator);
+        try json_buf.appendSlice(wasm_allocator, ",\"sourceMap\":");
+        try sm.toJson(&json_buf, wasm_allocator);
     }
-    json_buf.appendSlice(wasm_allocator, "},\"reflect\":") catch {};
+    try json_buf.appendSlice(wasm_allocator, "},\"reflect\":");
 
     // Reflect part
-    result.reflect.toJson(&json_buf, wasm_allocator);
+    try result.reflect.toJson(&json_buf, wasm_allocator);
 
-    json_buf.append(wasm_allocator, '}') catch {};
+    try json_buf.append(wasm_allocator, '}');
 
     return packJsonResult(json_buf.items);
 }
@@ -314,16 +341,16 @@ export fn wgslender_version_len() u32 {
     return wgslender.version.len;
 }
 
-fn packReflectError(errors: []const Parser.ParseError) ?[*]u8 {
+fn packReflectError(errors: []const Parser.ParseError) Allocator.Error!?[*]u8 {
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-    json_buf.appendSlice(wasm_allocator, "{\"bindings\":[],\"structs\":{},\"entryPoints\":[],\"errors\":[") catch {};
+    try json_buf.appendSlice(wasm_allocator, "{\"bindings\":[],\"structs\":{},\"entryPoints\":[],\"errors\":[");
     for (errors, 0..) |err, i| {
-        if (i > 0) json_buf.append(wasm_allocator, ',') catch {};
-        json_buf.append(wasm_allocator, '"') catch {};
-        Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, err.message);
-        json_buf.append(wasm_allocator, '"') catch {};
+        if (i > 0) try json_buf.append(wasm_allocator, ',');
+        try json_buf.append(wasm_allocator, '"');
+        try Diagnostic.appendJsonEscaped(&json_buf, wasm_allocator, err.message);
+        try json_buf.append(wasm_allocator, '"');
     }
-    json_buf.appendSlice(wasm_allocator, "]}") catch {};
+    try json_buf.appendSlice(wasm_allocator, "]}");
     return packJsonResult(json_buf.items);
 }
 

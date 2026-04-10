@@ -331,7 +331,7 @@ fn findLocationAttrRange(self: *Handler, diag_range: Range) ?Range {
                 if (std.mem.indexOfPos(u8, source, abs_start, ")")) |close_paren| {
                     const abs_end = close_paren + 1; // include the )
                     // Convert back to LSP positions
-                    var line_index = WgslDiagnostic.LineIndex.init(self.allocator, source);
+                    var line_index = WgslDiagnostic.LineIndex.init(self.allocator, source) catch return null;
                     // LineIndex is 0-based; LSP is also 0-based
                     const s = line_index.byteOffsetToLineColumn(@intCast(abs_start));
                     const e = line_index.byteOffsetToLineColumn(@intCast(abs_end));

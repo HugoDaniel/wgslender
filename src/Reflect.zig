@@ -5,6 +5,7 @@
 //! for alignment and size rules.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Printer = @import("Printer.zig");
 
@@ -36,48 +37,48 @@ pub const ReflectResult = struct {
     }
 
     /// Serialize the reflect result to JSON.
-    pub fn toJson(self: *const ReflectResult, buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) void {
-        appendStr(buf, allocator, "{\"bindings\":[");
+    pub fn toJson(self: *const ReflectResult, buf: *std.ArrayListUnmanaged(u8), allocator: Allocator) Allocator.Error!void {
+        try appendStr(buf, allocator, "{\"bindings\":[");
         for (self.bindings.items, 0..) |*b, i| {
-            if (i > 0) appendStr(buf, allocator, ",");
-            writeBindingJson(buf, allocator, b);
+            if (i > 0) try appendStr(buf, allocator, ",");
+            try writeBindingJson(buf, allocator, b);
         }
-        appendStr(buf, allocator, "],\"structs\":{");
+        try appendStr(buf, allocator, "],\"structs\":{");
         var struct_iter = self.structs.iterator();
         var first_struct = true;
         while (struct_iter.next()) |entry| {
-            if (!first_struct) appendStr(buf, allocator, ",");
+            if (!first_struct) try appendStr(buf, allocator, ",");
             first_struct = false;
-            appendJsonStr(buf, allocator, entry.key_ptr.*);
-            appendStr(buf, allocator, ":");
-            writeStructLayoutJson(buf, allocator, &entry.value_ptr.*);
+            try appendJsonStr(buf, allocator, entry.key_ptr.*);
+            try appendStr(buf, allocator, ":");
+            try writeStructLayoutJson(buf, allocator, &entry.value_ptr.*);
         }
-        appendStr(buf, allocator, "},\"entryPoints\":[");
+        try appendStr(buf, allocator, "},\"entryPoints\":[");
         for (self.entry_points.items, 0..) |*ep, i| {
-            if (i > 0) appendStr(buf, allocator, ",");
-            writeEntryPointJson(buf, allocator, ep);
+            if (i > 0) try appendStr(buf, allocator, ",");
+            try writeEntryPointJson(buf, allocator, ep);
         }
-        appendStr(buf, allocator, "]");
+        try appendStr(buf, allocator, "]");
         if (self.errors.items.len > 0) {
-            appendStr(buf, allocator, ",\"errors\":[");
+            try appendStr(buf, allocator, ",\"errors\":[");
             for (self.errors.items, 0..) |err, i| {
-                if (i > 0) appendStr(buf, allocator, ",");
-                appendJsonStr(buf, allocator, err);
+                if (i > 0) try appendStr(buf, allocator, ",");
+                try appendJsonStr(buf, allocator, err);
             }
-            appendStr(buf, allocator, "]");
+            try appendStr(buf, allocator, "]");
         }
-        appendStr(buf, allocator, "}");
+        try appendStr(buf, allocator, "}");
     }
 
     /// Serialize the reflect result to pretty-printed JSON (2-space indent).
-    pub fn toJsonPretty(self: *const ReflectResult, buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) void {
+    pub fn toJsonPretty(self: *const ReflectResult, buf: *std.ArrayListUnmanaged(u8), allocator: Allocator) Allocator.Error!void {
         var compact: std.ArrayListUnmanaged(u8) = .empty;
-        self.toJson(&compact, allocator);
-        prettyPrintJson(buf, allocator, compact.items);
+        try self.toJson(&compact, allocator);
+        try prettyPrintJson(buf, allocator, compact.items);
     }
 };
 
-fn prettyPrintJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, json: []const u8) void {
+fn prettyPrintJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, json: []const u8) Allocator.Error!void {
     var depth: u32 = 0;
     var in_string = false;
     var i: usize = 0;
@@ -85,10 +86,10 @@ fn prettyPrintJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocato
     while (i < json.len) {
         const c = json[i];
         if (in_string) {
-            buf.append(allocator, c) catch {};
+            try buf.append(allocator, c);
             if (c == '\\' and i + 1 < json.len) {
                 i += 1;
-                buf.append(allocator, json[i]) catch {};
+                try buf.append(allocator, json[i]);
             } else if (c == '"') {
                 in_string = false;
             }
@@ -98,43 +99,43 @@ fn prettyPrintJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocato
         switch (c) {
             '"' => {
                 in_string = true;
-                buf.append(allocator, c) catch {};
+                try buf.append(allocator, c);
             },
             '{', '[' => {
-                buf.append(allocator, c) catch {};
+                try buf.append(allocator, c);
                 // Collapse empty containers ({} / []) onto one line.
                 if (i + 1 < json.len and (json[i + 1] == '}' or json[i + 1] == ']')) {
                     i += 1;
-                    buf.append(allocator, json[i]) catch {};
+                    try buf.append(allocator, json[i]);
                 } else {
                     depth += 1;
-                    buf.append(allocator, '\n') catch {};
-                    writeIndent(buf, allocator, depth);
+                    try buf.append(allocator, '\n');
+                    try writeIndent(buf, allocator, depth);
                 }
             },
             '}', ']' => {
                 if (depth > 0) depth -= 1;
-                buf.append(allocator, '\n') catch {};
-                writeIndent(buf, allocator, depth);
-                buf.append(allocator, c) catch {};
+                try buf.append(allocator, '\n');
+                try writeIndent(buf, allocator, depth);
+                try buf.append(allocator, c);
             },
             ',' => {
-                buf.append(allocator, ',') catch {};
-                buf.append(allocator, '\n') catch {};
-                writeIndent(buf, allocator, depth);
+                try buf.append(allocator, ',');
+                try buf.append(allocator, '\n');
+                try writeIndent(buf, allocator, depth);
             },
             ':' => {
-                buf.appendSlice(allocator, ": ") catch {};
+                try buf.appendSlice(allocator, ": ");
             },
-            else => buf.append(allocator, c) catch {},
+            else => try buf.append(allocator, c),
         }
         i += 1;
     }
 }
 
-fn writeIndent(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, depth: u32) void {
+fn writeIndent(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, depth: u32) Allocator.Error!void {
     for (0..depth) |_| {
-        buf.appendSlice(allocator, "  ") catch {};
+        try buf.appendSlice(allocator, "  ");
     }
 }
 
@@ -201,17 +202,17 @@ const TypeLayout = struct {
 // =========================================================================
 
 /// Extract reflection information from a parsed module.
-pub fn reflect(allocator: std.mem.Allocator, module: *Ast.Module) ReflectResult {
-    return reflectWithRenamer(allocator, module, null);
+pub fn reflect(allocator: Allocator, module: *Ast.Module) Allocator.Error!ReflectResult {
+    return try reflectWithRenamer(allocator, module, null);
 }
 
 /// Extract reflection information from a parsed module, using an optional
 /// renamer for mapped (minified) names.
 pub fn reflectWithRenamer(
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     module: *Ast.Module,
     renamer: ?*const Printer.Renamer,
-) ReflectResult {
+) Allocator.Error!ReflectResult {
     var result = ReflectResult{};
 
     var lc = LayoutComputer.init(allocator, module, renamer);
@@ -222,8 +223,8 @@ pub fn reflectWithRenamer(
             .@"struct" => |struct_decl| {
                 const name = lc.getSymbolName(struct_decl.name);
                 if (name.len > 0) {
-                    const layout = lc.computeStructLayout(struct_decl);
-                    result.structs.put(allocator, name, layout) catch {};
+                    const layout = try lc.computeStructLayout(struct_decl);
+                    try result.structs.put(allocator, name, layout);
                 }
             },
             else => {},
@@ -235,12 +236,12 @@ pub fn reflectWithRenamer(
         switch (decl) {
             .@"var" => |var_decl| {
                 if (extractBinding(var_decl, module.symbols.items, &lc)) |b| {
-                    result.bindings.append(allocator, b) catch {};
+                    try result.bindings.append(allocator, b);
                 }
             },
             .function => |fn_decl| {
                 if (extractEntryPoint(fn_decl, module.symbols.items)) |ep| {
-                    result.entry_points.append(allocator, ep) catch {};
+                    try result.entry_points.append(allocator, ep);
                 }
             },
             else => {},
@@ -628,7 +629,7 @@ const LayoutComputer = struct {
             switch (decl) {
                 .@"struct" => |struct_decl| {
                     if (struct_decl.name == ref) {
-                        return self.computeStructLayout(struct_decl);
+                        return self.computeStructLayout(struct_decl) catch return null;
                     }
                 },
                 else => {},
@@ -637,14 +638,14 @@ const LayoutComputer = struct {
         return null;
     }
 
-    fn computeStructLayout(self: *LayoutComputer, decl: *Ast.StructDecl) StructLayout {
+    fn computeStructLayout(self: *LayoutComputer, decl: *Ast.StructDecl) Allocator.Error!StructLayout {
         const name = self.getSymbolName(decl.name);
 
         if (self.struct_cache.get(name)) |cached| return cached;
 
         // Pre-allocate fields with expected capacity.
         var fields: std.ArrayListUnmanaged(FieldInfo) = .empty;
-        fields.ensureTotalCapacity(self.allocator, decl.members.items.len) catch {};
+        try fields.ensureTotalCapacity(self.allocator, decl.members.items.len);
 
         var layout = StructLayout{
             .size = 0,
@@ -652,7 +653,7 @@ const LayoutComputer = struct {
             .fields = fields,
         };
         // Insert placeholder to handle recursive types.
-        self.struct_cache.put(self.allocator, name, layout) catch {};
+        try self.struct_cache.put(self.allocator, name, layout);
 
         var offset: u32 = 0;
         var max_align: u32 = 1;
@@ -701,7 +702,7 @@ const LayoutComputer = struct {
                 else => {},
             }
 
-            layout.fields.append(self.allocator, field) catch {};
+            try layout.fields.append(self.allocator, field);
 
             offset += member_layout.size;
             if (member_layout.alignment > max_align) max_align = member_layout.alignment;
@@ -711,7 +712,7 @@ const LayoutComputer = struct {
         layout.size = roundUp(offset, max_align);
 
         // Update cache with final layout.
-        self.struct_cache.put(self.allocator, name, layout) catch {};
+        try self.struct_cache.put(self.allocator, name, layout);
 
         return layout;
     }
@@ -925,153 +926,153 @@ pub fn roundUp(x: u32, alignment: u32) u32 {
 // JSON serialization helpers
 // =========================================================================
 
-fn appendStr(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) void {
-    buf.appendSlice(allocator, s) catch {};
+fn appendStr(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
+    try buf.appendSlice(allocator, s);
 }
 
-fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: anytype) void {
+fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: anytype) Allocator.Error!void {
     var tmp: [20]u8 = undefined;
     const s = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return;
-    appendStr(buf, allocator, s);
+    try appendStr(buf, allocator, s);
 }
 
-fn appendJsonStr(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) void {
-    buf.append(allocator, '"') catch {};
+fn appendJsonStr(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
+    try buf.append(allocator, '"');
     for (s) |c| {
         switch (c) {
-            '"' => appendStr(buf, allocator, "\\\""),
-            '\\' => appendStr(buf, allocator, "\\\\"),
-            '\n' => appendStr(buf, allocator, "\\n"),
-            '\r' => appendStr(buf, allocator, "\\r"),
-            '\t' => appendStr(buf, allocator, "\\t"),
+            '"' => try appendStr(buf, allocator, "\\\""),
+            '\\' => try appendStr(buf, allocator, "\\\\"),
+            '\n' => try appendStr(buf, allocator, "\\n"),
+            '\r' => try appendStr(buf, allocator, "\\r"),
+            '\t' => try appendStr(buf, allocator, "\\t"),
             else => {
                 if (c < 0x20) {
                     var tmp: [6]u8 = undefined;
                     const hex = std.fmt.bufPrint(&tmp, "\\u{x:0>4}", .{c}) catch continue;
-                    appendStr(buf, allocator, hex);
+                    try appendStr(buf, allocator, hex);
                 } else {
-                    buf.append(allocator, c) catch {};
+                    try buf.append(allocator, c);
                 }
             },
         }
     }
-    buf.append(allocator, '"') catch {};
+    try buf.append(allocator, '"');
 }
 
-fn writeBindingJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, b: *const BindingInfo) void {
-    appendStr(buf, allocator, "{\"group\":");
-    appendInt(buf, allocator, b.group);
-    appendStr(buf, allocator, ",\"binding\":");
-    appendInt(buf, allocator, b.binding);
-    appendStr(buf, allocator, ",\"name\":");
-    appendJsonStr(buf, allocator, b.name);
-    appendStr(buf, allocator, ",\"nameMapped\":");
-    appendJsonStr(buf, allocator, b.name_mapped);
-    appendStr(buf, allocator, ",\"addressSpace\":");
-    appendJsonStr(buf, allocator, b.address_space);
+fn writeBindingJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, b: *const BindingInfo) Allocator.Error!void {
+    try appendStr(buf, allocator, "{\"group\":");
+    try appendInt(buf, allocator, b.group);
+    try appendStr(buf, allocator, ",\"binding\":");
+    try appendInt(buf, allocator, b.binding);
+    try appendStr(buf, allocator, ",\"name\":");
+    try appendJsonStr(buf, allocator, b.name);
+    try appendStr(buf, allocator, ",\"nameMapped\":");
+    try appendJsonStr(buf, allocator, b.name_mapped);
+    try appendStr(buf, allocator, ",\"addressSpace\":");
+    try appendJsonStr(buf, allocator, b.address_space);
     if (b.access_mode.len > 0) {
-        appendStr(buf, allocator, ",\"accessMode\":");
-        appendJsonStr(buf, allocator, b.access_mode);
+        try appendStr(buf, allocator, ",\"accessMode\":");
+        try appendJsonStr(buf, allocator, b.access_mode);
     }
-    appendStr(buf, allocator, ",\"type\":");
-    appendJsonStr(buf, allocator, b.typ);
-    appendStr(buf, allocator, ",\"typeMapped\":");
-    appendJsonStr(buf, allocator, b.type_mapped);
+    try appendStr(buf, allocator, ",\"type\":");
+    try appendJsonStr(buf, allocator, b.typ);
+    try appendStr(buf, allocator, ",\"typeMapped\":");
+    try appendJsonStr(buf, allocator, b.type_mapped);
     if (b.layout) |*layout| {
-        appendStr(buf, allocator, ",\"layout\":");
-        writeStructLayoutJson(buf, allocator, layout);
+        try appendStr(buf, allocator, ",\"layout\":");
+        try writeStructLayoutJson(buf, allocator, layout);
     }
     if (b.array) |*arr| {
-        appendStr(buf, allocator, ",\"array\":");
-        writeArrayInfoJson(buf, allocator, arr);
+        try appendStr(buf, allocator, ",\"array\":");
+        try writeArrayInfoJson(buf, allocator, arr);
     }
-    appendStr(buf, allocator, "}");
+    try appendStr(buf, allocator, "}");
 }
 
-fn writeStructLayoutJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, layout: *const StructLayout) void {
-    appendStr(buf, allocator, "{\"size\":");
-    appendInt(buf, allocator, layout.size);
-    appendStr(buf, allocator, ",\"alignment\":");
-    appendInt(buf, allocator, layout.alignment);
-    appendStr(buf, allocator, ",\"fields\":[");
+fn writeStructLayoutJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, layout: *const StructLayout) Allocator.Error!void {
+    try appendStr(buf, allocator, "{\"size\":");
+    try appendInt(buf, allocator, layout.size);
+    try appendStr(buf, allocator, ",\"alignment\":");
+    try appendInt(buf, allocator, layout.alignment);
+    try appendStr(buf, allocator, ",\"fields\":[");
     for (layout.fields.items, 0..) |*f, i| {
-        if (i > 0) appendStr(buf, allocator, ",");
-        writeFieldInfoJson(buf, allocator, f);
+        if (i > 0) try appendStr(buf, allocator, ",");
+        try writeFieldInfoJson(buf, allocator, f);
     }
-    appendStr(buf, allocator, "]}");
+    try appendStr(buf, allocator, "]}");
 }
 
-fn writeFieldInfoJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, f: *const FieldInfo) void {
-    appendStr(buf, allocator, "{\"name\":");
-    appendJsonStr(buf, allocator, f.name);
-    appendStr(buf, allocator, ",\"nameMapped\":");
-    appendJsonStr(buf, allocator, f.name_mapped);
-    appendStr(buf, allocator, ",\"type\":");
-    appendJsonStr(buf, allocator, f.typ);
-    appendStr(buf, allocator, ",\"typeMapped\":");
-    appendJsonStr(buf, allocator, f.type_mapped);
-    appendStr(buf, allocator, ",\"offset\":");
-    appendInt(buf, allocator, f.offset);
-    appendStr(buf, allocator, ",\"size\":");
-    appendInt(buf, allocator, f.size);
-    appendStr(buf, allocator, ",\"alignment\":");
-    appendInt(buf, allocator, f.alignment);
+fn writeFieldInfoJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, f: *const FieldInfo) Allocator.Error!void {
+    try appendStr(buf, allocator, "{\"name\":");
+    try appendJsonStr(buf, allocator, f.name);
+    try appendStr(buf, allocator, ",\"nameMapped\":");
+    try appendJsonStr(buf, allocator, f.name_mapped);
+    try appendStr(buf, allocator, ",\"type\":");
+    try appendJsonStr(buf, allocator, f.typ);
+    try appendStr(buf, allocator, ",\"typeMapped\":");
+    try appendJsonStr(buf, allocator, f.type_mapped);
+    try appendStr(buf, allocator, ",\"offset\":");
+    try appendInt(buf, allocator, f.offset);
+    try appendStr(buf, allocator, ",\"size\":");
+    try appendInt(buf, allocator, f.size);
+    try appendStr(buf, allocator, ",\"alignment\":");
+    try appendInt(buf, allocator, f.alignment);
     if (f.layout) |*layout| {
-        appendStr(buf, allocator, ",\"layout\":");
-        writeStructLayoutJson(buf, allocator, layout);
+        try appendStr(buf, allocator, ",\"layout\":");
+        try writeStructLayoutJson(buf, allocator, layout);
     }
-    appendStr(buf, allocator, "}");
+    try appendStr(buf, allocator, "}");
 }
 
-fn writeArrayInfoJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, arr: *const ArrayInfo) void {
-    appendStr(buf, allocator, "{\"depth\":");
-    appendInt(buf, allocator, arr.depth);
-    appendStr(buf, allocator, ",\"elementCount\":");
+fn writeArrayInfoJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, arr: *const ArrayInfo) Allocator.Error!void {
+    try appendStr(buf, allocator, "{\"depth\":");
+    try appendInt(buf, allocator, arr.depth);
+    try appendStr(buf, allocator, ",\"elementCount\":");
     if (arr.element_count) |count| {
-        appendInt(buf, allocator, count);
+        try appendInt(buf, allocator, count);
     } else {
-        appendStr(buf, allocator, "null");
+        try appendStr(buf, allocator, "null");
     }
-    appendStr(buf, allocator, ",\"elementStride\":");
-    appendInt(buf, allocator, arr.element_stride);
-    appendStr(buf, allocator, ",\"totalSize\":");
+    try appendStr(buf, allocator, ",\"elementStride\":");
+    try appendInt(buf, allocator, arr.element_stride);
+    try appendStr(buf, allocator, ",\"totalSize\":");
     if (arr.total_size) |size| {
-        appendInt(buf, allocator, size);
+        try appendInt(buf, allocator, size);
     } else {
-        appendStr(buf, allocator, "null");
+        try appendStr(buf, allocator, "null");
     }
-    appendStr(buf, allocator, ",\"elementType\":");
-    appendJsonStr(buf, allocator, arr.element_type);
-    appendStr(buf, allocator, ",\"elementTypeMapped\":");
-    appendJsonStr(buf, allocator, arr.element_type_mapped);
+    try appendStr(buf, allocator, ",\"elementType\":");
+    try appendJsonStr(buf, allocator, arr.element_type);
+    try appendStr(buf, allocator, ",\"elementTypeMapped\":");
+    try appendJsonStr(buf, allocator, arr.element_type_mapped);
     if (arr.element_layout) |*layout| {
-        appendStr(buf, allocator, ",\"elementLayout\":");
-        writeStructLayoutJson(buf, allocator, layout);
+        try appendStr(buf, allocator, ",\"elementLayout\":");
+        try writeStructLayoutJson(buf, allocator, layout);
     }
     if (arr.nested) |nested| {
-        appendStr(buf, allocator, ",\"array\":");
-        writeArrayInfoJson(buf, allocator, nested);
+        try appendStr(buf, allocator, ",\"array\":");
+        try writeArrayInfoJson(buf, allocator, nested);
     }
-    appendStr(buf, allocator, "}");
+    try appendStr(buf, allocator, "}");
 }
 
-fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, ep: *const EntryPointInfo) void {
-    appendStr(buf, allocator, "{\"name\":");
-    appendJsonStr(buf, allocator, ep.name);
-    appendStr(buf, allocator, ",\"stage\":");
-    appendJsonStr(buf, allocator, ep.stage);
+fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, ep: *const EntryPointInfo) Allocator.Error!void {
+    try appendStr(buf, allocator, "{\"name\":");
+    try appendJsonStr(buf, allocator, ep.name);
+    try appendStr(buf, allocator, ",\"stage\":");
+    try appendJsonStr(buf, allocator, ep.stage);
     if (ep.has_workgroup_size) {
-        appendStr(buf, allocator, ",\"workgroupSize\":[");
-        appendInt(buf, allocator, ep.workgroup_size[0]);
-        appendStr(buf, allocator, ",");
-        appendInt(buf, allocator, ep.workgroup_size[1]);
-        appendStr(buf, allocator, ",");
-        appendInt(buf, allocator, ep.workgroup_size[2]);
-        appendStr(buf, allocator, "]");
+        try appendStr(buf, allocator, ",\"workgroupSize\":[");
+        try appendInt(buf, allocator, ep.workgroup_size[0]);
+        try appendStr(buf, allocator, ",");
+        try appendInt(buf, allocator, ep.workgroup_size[1]);
+        try appendStr(buf, allocator, ",");
+        try appendInt(buf, allocator, ep.workgroup_size[2]);
+        try appendStr(buf, allocator, "]");
     } else {
-        appendStr(buf, allocator, ",\"workgroupSize\":null");
+        try appendStr(buf, allocator, ",\"workgroupSize\":null");
     }
-    appendStr(buf, allocator, "}");
+    try appendStr(buf, allocator, "}");
 }
 
 // =========================================================================
