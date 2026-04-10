@@ -32,9 +32,9 @@ export fn wgslender_minify_c(
     flags: u32,
 ) WgslenderResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const allocator = arena.allocator();
+    const alloc = arena.allocator();
 
-    const source = makeSentinelSource(allocator, source_ptr, source_len) orelse
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
         return .{ .code_ptr = null, .code_len = 0, .@"error" = true };
 
     const options = Minifier.Options{
@@ -46,7 +46,7 @@ export fn wgslender_minify_c(
         .preserve_uniform_struct_types = flags & OPT_PRESERVE_UNIFORM_STRUCTS != 0,
     };
 
-    const result = Minifier.minify(allocator, source, options) catch
+    const result = Minifier.minify(alloc, source, options) catch
         return .{ .code_ptr = null, .code_len = 0, .@"error" = true };
 
     const out = copyToPageAllocator(result.code) orelse
@@ -88,17 +88,17 @@ export fn wgslender_validate_c(
     flags: u32,
 ) WgslenderValidateResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const allocator = arena.allocator();
+    const alloc = arena.allocator();
 
-    const source = makeSentinelSource(allocator, source_ptr, source_len) orelse
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
         return .{ .valid = false, .json_ptr = null, .json_len = 0, .error_count = 0 };
 
     const strict = flags & OPT_STRICT != 0;
-    const result = wgslender.validateWithOptions(allocator, source, .{ .strict_mode = strict }) catch
+    const result = wgslender.validateWithOptions(alloc, source, .{ .strict_mode = strict }) catch
         return .{ .valid = false, .json_ptr = null, .json_len = 0, .error_count = 0 };
 
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-    buildValidateJson(&json_buf, allocator, result) catch {
+    buildValidateJson(&json_buf, alloc, result) catch {
         return .{
             .valid = result.valid,
             .json_ptr = null,
@@ -145,16 +145,16 @@ export fn wgslender_reflect_c(
     source_len: u32,
 ) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const allocator = arena.allocator();
+    const alloc = arena.allocator();
 
-    const source = makeSentinelSource(allocator, source_ptr, source_len) orelse
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
         return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
 
-    var result = wgslender.reflect(allocator, source) catch
+    var result = wgslender.reflect(alloc, source) catch
         return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
 
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-    result.toJson(&json_buf, allocator) catch
+    result.toJson(&json_buf, alloc) catch
         return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
 
     const json_out = copyToPageAllocator(json_buf.items) orelse
@@ -182,16 +182,16 @@ export fn wgslender_minify_json_c(
     opts_len: u32,
 ) WgslenderResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-    const allocator = arena.allocator();
+    const alloc = arena.allocator();
 
-    const source = makeSentinelSource(allocator, source_ptr, source_len) orelse
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
         return .{ .code_ptr = null, .code_len = 0, .@"error" = true };
 
     const opts_slice = opts_ptr[0..opts_len];
-    const config = Config.parseJson(allocator, opts_slice) catch Config{};
+    const config = Config.parseJson(alloc, opts_slice) catch Config{};
     const options = config.toOptions();
 
-    const result = Minifier.minify(allocator, source, options) catch
+    const result = Minifier.minify(alloc, source, options) catch
         return .{ .code_ptr = null, .code_len = 0, .@"error" = true };
 
     const out = copyToPageAllocator(result.code) orelse
@@ -212,36 +212,36 @@ export fn wgslender_minify_json_c(
 
 fn buildValidateJson(
     json_buf: *std.ArrayListUnmanaged(u8),
-    allocator: std.mem.Allocator,
+    alloc: std.mem.Allocator,
     result: anytype,
 ) std.mem.Allocator.Error!void {
-    try json_buf.appendSlice(allocator, "{\"valid\":");
-    try json_buf.appendSlice(allocator, if (result.valid) "true" else "false");
-    try json_buf.appendSlice(allocator, ",\"diagnostics\":[");
+    try json_buf.appendSlice(alloc, "{\"valid\":");
+    try json_buf.appendSlice(alloc, if (result.valid) "true" else "false");
+    try json_buf.appendSlice(alloc, ",\"diagnostics\":[");
     for (result.diagnostics.diagnostics.items, 0..) |*entry, i| {
-        if (i > 0) try json_buf.append(allocator, ',');
-        try Diagnostic.entryToJson(json_buf, allocator, entry);
+        if (i > 0) try json_buf.append(alloc, ',');
+        try Diagnostic.entryToJson(json_buf, alloc, entry);
     }
-    try json_buf.appendSlice(allocator, "],\"errorCount\":");
-    try Diagnostic.appendInt(json_buf, allocator, result.diagnostics.errorCount());
-    try json_buf.appendSlice(allocator, ",\"warningCount\":");
-    try Diagnostic.appendInt(json_buf, allocator, result.diagnostics.warningCount());
-    try json_buf.appendSlice(allocator, "}");
+    try json_buf.appendSlice(alloc, "],\"errorCount\":");
+    try Diagnostic.appendInt(json_buf, alloc, result.diagnostics.errorCount());
+    try json_buf.appendSlice(alloc, ",\"warningCount\":");
+    try Diagnostic.appendInt(json_buf, alloc, result.diagnostics.warningCount());
+    try json_buf.appendSlice(alloc, "}");
 }
 
 fn makeSentinelSource(
-    allocator: std.mem.Allocator,
+    alloc: std.mem.Allocator,
     source_ptr: [*]const u8,
     source_len: u32,
 ) ?[:0]const u8 {
-    const buf = allocator.alloc(u8, source_len + 1) catch return null;
+    const buf = alloc.alloc(u8, source_len + 1) catch return null;
     @memcpy(buf[0..source_len], source_ptr[0..source_len]);
     buf[source_len] = 0;
     return buf[0..source_len :0];
 }
 
 fn copyToPageAllocator(data: []const u8) ?[]u8 {
-    const out = std.heap.page_allocator.alloc(u8, data.len) catch return null;
+    const out = std.heap.page_alloc.alloc(u8, data.len) catch return null;
     @memcpy(out, data);
     return out;
 }

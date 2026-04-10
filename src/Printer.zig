@@ -30,7 +30,7 @@ pub const Renamer = struct {
 
 options: Options,
 symbols: []const Ast.Symbol,
-allocator: std.mem.Allocator,
+arena: std.mem.Allocator,
 buf: std.ArrayListUnmanaged(u8) = .empty,
 indent: u32 = 0,
 needs_space: bool = false,
@@ -38,17 +38,17 @@ output_line: u32 = 0,
 output_col: u32 = 0,
 
 /// Creates a printer with the given options and symbol table.
-pub fn init(allocator: std.mem.Allocator, options: Options, symbols: []const Ast.Symbol) Printer {
+pub fn init(arena: std.mem.Allocator, options: Options, symbols: []const Ast.Symbol) Printer {
     return .{
         .options = options,
         .symbols = symbols,
-        .allocator = allocator,
+        .arena = arena,
     };
 }
 
 /// Frees the output buffer.
 pub fn deinit(self: *Printer) void {
-    self.buf.deinit(self.allocator);
+    self.buf.deinit(self.arena);
 }
 
 /// Prints the entire module and returns the generated WGSL text.
@@ -63,13 +63,13 @@ pub fn print(self: *Printer, module: *const Ast.Module) ![]const u8 {
 // =========================================================================
 
 fn emit(self: *Printer, s: []const u8) !void {
-    try self.buf.appendSlice(self.allocator, s);
+    try self.buf.appendSlice(self.arena, s);
     self.updatePosition(s);
     self.needs_space = false;
 }
 
 fn emitByte(self: *Printer, c: u8) !void {
-    try self.buf.append(self.allocator, c);
+    try self.buf.append(self.arena, c);
     if (c == '\n') {
         self.output_line += 1;
         self.output_col = 0;
@@ -81,10 +81,10 @@ fn emitByte(self: *Printer, c: u8) !void {
 
 fn emitSpace(self: *Printer) !void {
     if (!self.options.minify_whitespace) {
-        try self.buf.append(self.allocator, ' ');
+        try self.buf.append(self.arena, ' ');
         self.output_col += 1;
     } else if (self.needs_space) {
-        try self.buf.append(self.allocator, ' ');
+        try self.buf.append(self.arena, ' ');
         self.output_col += 1;
     }
     self.needs_space = false;
@@ -92,12 +92,12 @@ fn emitSpace(self: *Printer) !void {
 
 fn emitNewline(self: *Printer) !void {
     if (!self.options.minify_whitespace) {
-        try self.buf.append(self.allocator, '\n');
+        try self.buf.append(self.arena, '\n');
         self.output_line += 1;
         self.output_col = 0;
         var i: u32 = 0;
         while (i < self.indent) : (i += 1) {
-            try self.buf.appendSlice(self.allocator, "    ");
+            try self.buf.appendSlice(self.arena, "    ");
             self.output_col += 4;
         }
     }
@@ -682,8 +682,8 @@ fn printExpr(self: *Printer, e: Ast.Expr) !void {
     };
 
     var stack: std.ArrayListUnmanaged(PrintWork) = .empty;
-    defer stack.deinit(self.allocator);
-    try stack.append(self.allocator, .{ .expr = e });
+    defer stack.deinit(self.arena);
+    try stack.append(self.arena, .{ .expr = e });
 
     // Bounded worklist avoids unbounded recursion. 65536 handles any
     // realistic expression tree (each node pushes at most a few items).
@@ -718,54 +718,54 @@ fn printExpr(self: *Printer, e: Ast.Expr) !void {
                 },
                 .binary => |expr| {
                     // Execution order: left, space, op, space, right
-                    try stack.append(self.allocator, .{ .expr = expr.right });
-                    try stack.append(self.allocator, .space);
-                    try stack.append(self.allocator, .{ .literal = expr.op.string() });
-                    try stack.append(self.allocator, .space);
-                    try stack.append(self.allocator, .{ .expr = expr.left });
+                    try stack.append(self.arena, .{ .expr = expr.right });
+                    try stack.append(self.arena, .space);
+                    try stack.append(self.arena, .{ .literal = expr.op.string() });
+                    try stack.append(self.arena, .space);
+                    try stack.append(self.arena, .{ .expr = expr.left });
                 },
                 .unary => |expr| {
                     // Execution order: op, operand
-                    try stack.append(self.allocator, .{ .expr = expr.operand });
-                    try stack.append(self.allocator, .{ .literal = expr.op.string() });
+                    try stack.append(self.arena, .{ .expr = expr.operand });
+                    try stack.append(self.arena, .{ .literal = expr.op.string() });
                 },
                 .call => |expr| {
                     // Execution order: func/type "(" arg0 "," arg1 ... ")"
-                    try stack.append(self.allocator, .{ .literal = ")" });
+                    try stack.append(self.arena, .{ .literal = ")" });
                     var i = expr.args.items.len;
                     while (i > 0) {
                         i -= 1;
-                        try stack.append(self.allocator, .{ .expr = expr.args.items[i] });
+                        try stack.append(self.arena, .{ .expr = expr.args.items[i] });
                         if (i > 0) {
-                            try stack.append(self.allocator, .space);
-                            try stack.append(self.allocator, .{ .literal = "," });
+                            try stack.append(self.arena, .space);
+                            try stack.append(self.arena, .{ .literal = "," });
                         }
                     }
-                    try stack.append(self.allocator, .{ .literal = "(" });
+                    try stack.append(self.arena, .{ .literal = "(" });
                     if (expr.template_type) |tt| {
-                        try stack.append(self.allocator, .{ .print_type = tt });
+                        try stack.append(self.arena, .{ .print_type = tt });
                     } else if (expr.func) |f| {
-                        try stack.append(self.allocator, .{ .expr = f });
+                        try stack.append(self.arena, .{ .expr = f });
                     }
                 },
                 .index => |expr| {
                     // Execution order: base "[" idx "]"
-                    try stack.append(self.allocator, .{ .literal = "]" });
-                    try stack.append(self.allocator, .{ .expr = expr.idx });
-                    try stack.append(self.allocator, .{ .literal = "[" });
-                    try stack.append(self.allocator, .{ .expr = expr.base });
+                    try stack.append(self.arena, .{ .literal = "]" });
+                    try stack.append(self.arena, .{ .expr = expr.idx });
+                    try stack.append(self.arena, .{ .literal = "[" });
+                    try stack.append(self.arena, .{ .expr = expr.base });
                 },
                 .member => |expr| {
                     // Execution order: base "." member_name
-                    try stack.append(self.allocator, .{ .literal = expr.member_name });
-                    try stack.append(self.allocator, .{ .literal = "." });
-                    try stack.append(self.allocator, .{ .expr = expr.base });
+                    try stack.append(self.arena, .{ .literal = expr.member_name });
+                    try stack.append(self.arena, .{ .literal = "." });
+                    try stack.append(self.arena, .{ .expr = expr.base });
                 },
                 .paren => |expr| {
                     // Execution order: "(" expr ")"
-                    try stack.append(self.allocator, .{ .literal = ")" });
-                    try stack.append(self.allocator, .{ .expr = expr.expr });
-                    try stack.append(self.allocator, .{ .literal = "(" });
+                    try stack.append(self.arena, .{ .literal = ")" });
+                    try stack.append(self.arena, .{ .expr = expr.expr });
+                    try stack.append(self.arena, .{ .literal = "(" });
                 },
             },
         }
@@ -808,8 +808,8 @@ const StmtWork = union(enum) {
 /// and else-if chains are already iterative.
 fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
     var stack: std.ArrayListUnmanaged(StmtWork) = .empty;
-    defer stack.deinit(self.allocator);
-    try stack.append(self.allocator, .{ .stmt = root });
+    defer stack.deinit(self.arena);
+    try stack.append(self.arena, .{ .stmt = root });
 
     // Bounded worklist — same rationale as printExpr.
     for (0..65536) |_| {
@@ -828,17 +828,17 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
             .compound => |body| {
                 // Execution order: "{" indent++ (newline stmt)* indent-- newline "}"
                 // Push in reverse:
-                try stack.append(self.allocator, .{ .literal = "}" });
-                try stack.append(self.allocator, .newline);
-                try stack.append(self.allocator, .indent_dec);
+                try stack.append(self.arena, .{ .literal = "}" });
+                try stack.append(self.arena, .newline);
+                try stack.append(self.arena, .indent_dec);
                 var i = body.stmts.items.len;
                 while (i > 0) {
                     i -= 1;
-                    try stack.append(self.allocator, .{ .stmt = body.stmts.items[i] });
-                    try stack.append(self.allocator, .newline);
+                    try stack.append(self.arena, .{ .stmt = body.stmts.items[i] });
+                    try stack.append(self.arena, .newline);
                 }
-                try stack.append(self.allocator, .indent_inc);
-                try stack.append(self.allocator, .{ .literal = "{" });
+                try stack.append(self.arena, .indent_inc);
+                try stack.append(self.arena, .{ .literal = "{" });
             },
             .else_chain => |ec| {
                 const s = ec;
@@ -847,12 +847,12 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
                     try self.emit(" else if ");
                     try self.printExpr(if_stmt.condition);
                     try self.emitSpace();
-                    if (if_stmt.else_branch) |eb| try stack.append(self.allocator, .{ .else_chain = eb });
-                    try stack.append(self.allocator, .{ .compound = if_stmt.body });
+                    if (if_stmt.else_branch) |eb| try stack.append(self.arena, .{ .else_chain = eb });
+                    try stack.append(self.arena, .{ .compound = if_stmt.body });
                 } else {
                     try self.emit(" else");
                     try self.emitSpace();
-                    try stack.append(self.allocator, .{ .stmt = s });
+                    try stack.append(self.arena, .{ .stmt = s });
                 }
             },
             .switch_case => |c| {
@@ -871,7 +871,7 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
                 }
                 try self.emit(":");
                 try self.emitSpace();
-                try stack.append(self.allocator, .{ .compound = c.body });
+                try stack.append(self.arena, .{ .compound = c.body });
             },
             .for_stmt => |stmt| {
                 try self.emit("for");
@@ -886,15 +886,15 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
                 if (stmt.update) |u| try self.printForUpdate(u);
                 try self.emit(")");
                 try self.emitSpace();
-                try stack.append(self.allocator, .{ .compound = stmt.body });
+                try stack.append(self.arena, .{ .compound = stmt.body });
             },
             .continuing => |c| {
                 try self.emit(" continuing");
                 try self.emitSpace();
-                try stack.append(self.allocator, .{ .compound = c });
+                try stack.append(self.arena, .{ .compound = c });
             },
             .stmt => |s| switch (s) {
-                .compound => |stmt| try stack.append(self.allocator, .{ .compound = stmt }),
+                .compound => |stmt| try stack.append(self.arena, .{ .compound = stmt }),
                 .@"return" => |stmt| {
                     try self.emit("return");
                     if (stmt.value) |v| {
@@ -907,37 +907,37 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
                     try self.emit("if ");
                     try self.printExpr(stmt.condition);
                     try self.emitSpace();
-                    if (stmt.else_branch) |eb| try stack.append(self.allocator, .{ .else_chain = eb });
-                    try stack.append(self.allocator, .{ .compound = stmt.body });
+                    if (stmt.else_branch) |eb| try stack.append(self.arena, .{ .else_chain = eb });
+                    try stack.append(self.arena, .{ .compound = stmt.body });
                 },
                 .@"switch" => |stmt| {
                     try self.emit("switch ");
                     try self.printExpr(stmt.expr);
                     try self.emitSpace();
                     // Execution order: "{" indent++ (newline case)* indent-- newline "}"
-                    try stack.append(self.allocator, .{ .literal = "}" });
-                    try stack.append(self.allocator, .newline);
-                    try stack.append(self.allocator, .indent_dec);
+                    try stack.append(self.arena, .{ .literal = "}" });
+                    try stack.append(self.arena, .newline);
+                    try stack.append(self.arena, .indent_dec);
                     var i = stmt.cases.items.len;
                     while (i > 0) {
                         i -= 1;
-                        try stack.append(self.allocator, .{ .switch_case = &stmt.cases.items[i] });
+                        try stack.append(self.arena, .{ .switch_case = &stmt.cases.items[i] });
                     }
-                    try stack.append(self.allocator, .indent_inc);
-                    try stack.append(self.allocator, .{ .literal = "{" });
+                    try stack.append(self.arena, .indent_inc);
+                    try stack.append(self.arena, .{ .literal = "{" });
                 },
-                .@"for" => |stmt| try stack.append(self.allocator, .{ .for_stmt = stmt }),
+                .@"for" => |stmt| try stack.append(self.arena, .{ .for_stmt = stmt }),
                 .@"while" => |stmt| {
                     try self.emit("while ");
                     try self.printExpr(stmt.condition);
                     try self.emitSpace();
-                    try stack.append(self.allocator, .{ .compound = stmt.body });
+                    try stack.append(self.arena, .{ .compound = stmt.body });
                 },
                 .loop => |stmt| {
                     try self.emit("loop");
                     try self.emitSpace();
-                    if (stmt.continuing) |c| try stack.append(self.allocator, .{ .continuing = c });
-                    try stack.append(self.allocator, .{ .compound = stmt.body });
+                    if (stmt.continuing) |c| try stack.append(self.arena, .{ .continuing = c });
+                    try stack.append(self.arena, .{ .compound = stmt.body });
                 },
                 .@"break" => try self.emit("break;"),
                 .break_if => |stmt| {

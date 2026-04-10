@@ -11,7 +11,7 @@ const Parser = @This();
 
 const Tag = Lexer.Tag;
 
-allocator: std.mem.Allocator,
+arena: std.mem.Allocator,
 source: [:0]const u8,
 token_tags: []const Tag,
 token_starts: []const u32,
@@ -42,12 +42,12 @@ pub const ParseError = struct {
 // =========================================================================
 
 /// Creates a parser for the given tokenized WGSL source. Allocates the root scope.
-pub fn init(allocator: std.mem.Allocator, source: [:0]const u8, tokens: std.MultiArrayList(Lexer.Token)) !Parser {
-    const scope = try allocator.create(Ast.Scope);
+pub fn init(arena: std.mem.Allocator, source: [:0]const u8, tokens: std.MultiArrayList(Lexer.Token)) !Parser {
+    const scope = try arena.create(Ast.Scope);
     scope.* = Ast.Scope.init(null);
 
     return .{
-        .allocator = allocator,
+        .arena = arena,
         .source = source,
         .token_tags = tokens.items(.tag),
         .token_starts = tokens.items(.start),
@@ -63,7 +63,7 @@ pub fn init(allocator: std.mem.Allocator, source: [:0]const u8, tokens: std.Mult
 
 /// Parse source into a Module. Caller owns the returned module via the arena.
 pub fn parse(self: *Parser) !*Ast.Module {
-    const module = try self.allocator.create(Ast.Module);
+    const module = try self.arena.create(Ast.Module);
     module.* = Ast.Module.init(self.scope, self.source);
 
     // Pass 1: Parse
@@ -107,7 +107,7 @@ fn eat(self: *Parser, tag: Tag) bool {
 
 fn expect(self: *Parser, tag: Tag) bool {
     if (self.currentTag() != tag) {
-        const msg = std.fmt.allocPrint(self.allocator, "expected '{s}'", .{tag.symbol()}) catch "expected token";
+        const msg = std.fmt.allocPrint(self.arena, "expected '{s}'", .{tag.symbol()}) catch "expected token";
         self.addError(msg);
         return false;
     }
@@ -136,12 +136,24 @@ fn tokenText(self: *const Parser, pos: u32) []const u8 {
         if (end < src.len) {
             const nc = src[end];
             switch (ch) {
-                '+' => if (nc == '+' or nc == '=') { end += 1; },
-                '-' => if (nc == '-' or nc == '=' or nc == '>') { end += 1; },
-                '*', '/', '%' => if (nc == '=') { end += 1; },
-                '&' => if (nc == '&' or nc == '=') { end += 1; },
-                '|' => if (nc == '|' or nc == '=') { end += 1; },
-                '^' => if (nc == '=') { end += 1; },
+                '+' => if (nc == '+' or nc == '=') {
+                    end += 1;
+                },
+                '-' => if (nc == '-' or nc == '=' or nc == '>') {
+                    end += 1;
+                },
+                '*', '/', '%' => if (nc == '=') {
+                    end += 1;
+                },
+                '&' => if (nc == '&' or nc == '=') {
+                    end += 1;
+                },
+                '|' => if (nc == '|' or nc == '=') {
+                    end += 1;
+                },
+                '^' => if (nc == '=') {
+                    end += 1;
+                },
                 '<' => {
                     if (nc == '<') {
                         end += 1;
@@ -154,7 +166,9 @@ fn tokenText(self: *const Parser, pos: u32) []const u8 {
                         if (end < src.len and src[end] == '=') end += 1;
                     } else if (nc == '=') end += 1;
                 },
-                '=', '!' => if (nc == '=') { end += 1; },
+                '=', '!' => if (nc == '=') {
+                    end += 1;
+                },
                 else => {},
             }
         }
@@ -211,7 +225,7 @@ fn currentStart(self: *const Parser) u32 {
 fn addError(self: *Parser, message: []const u8) void {
     const start = self.currentStart();
     const text = self.currentText();
-    self.errors.append(self.allocator, .{ .message = message, .pos = start, .end = start +| @as(u32, @intCast(text.len)) }) catch {};
+    self.errors.append(self.arena, .{ .message = message, .pos = start, .end = start +| @as(u32, @intCast(text.len)) }) catch {};
 }
 
 fn isIdentLike(self: *const Parser) bool {
@@ -230,10 +244,10 @@ fn eatIdent(self: *Parser) ?[]const u8 {
     if (self.currentTag() == .reserved_ident) {
         const text = self.currentText();
         const msg = if (text.len >= 2 and text[0] == '_' and text[1] == '_')
-            std.fmt.allocPrint(self.allocator, "identifier '{s}' must not start with '__'", .{text}) catch "identifier must not start with '__'"
+            std.fmt.allocPrint(self.arena, "identifier '{s}' must not start with '__'", .{text}) catch "identifier must not start with '__'"
         else
-            std.fmt.allocPrint(self.allocator, "'{s}' is a reserved word and cannot be used as an identifier", .{text}) catch "use of reserved word";
-        self.errors.append(self.allocator, .{ .message = msg, .pos = self.currentStart(), .code = "E0004" }) catch {};
+            std.fmt.allocPrint(self.arena, "'{s}' is a reserved word and cannot be used as an identifier", .{text}) catch "use of reserved word";
+        self.errors.append(self.arena, .{ .message = msg, .pos = self.currentStart(), .code = "E0004" }) catch {};
         return text;
     }
     if (self.currentTag() == .ident) {
@@ -249,19 +263,19 @@ fn eatIdent(self: *Parser) ?[]const u8 {
 fn declareSymbol(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, flags: Ast.Symbol.Flags, loc: u32) !Ast.SymbolIndex {
     // Check for duplicate declaration in the same scope
     if (self.scope.members.get(name) != null) {
-        const msg = std.fmt.allocPrint(self.allocator, "redeclaration of '{s}'", .{name}) catch "redeclaration of identifier";
-        self.errors.append(self.allocator, .{ .message = msg, .pos = loc, .code = "E0101" }) catch {};
+        const msg = std.fmt.allocPrint(self.arena, "redeclaration of '{s}'", .{name}) catch "redeclaration of identifier";
+        self.errors.append(self.arena, .{ .message = msg, .pos = loc, .code = "E0101" }) catch {};
     }
     std.debug.assert(self.symbols.items.len < std.math.maxInt(u32));
     const idx: u32 = @intCast(self.symbols.items.len);
-    try self.symbols.append(self.allocator, .{
+    try self.symbols.append(self.arena, .{
         .original_name = name,
         .kind = kind,
         .flags = flags,
         .use_count = 0,
         .loc = loc,
     });
-    try self.scope.members.put(self.allocator, name, .{
+    try self.scope.members.put(self.arena, name, .{
         .ref = @enumFromInt(idx),
         .loc = loc,
     });
@@ -273,7 +287,7 @@ fn declareSymbol(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, flags: 
 fn declareSymbolNoScope(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, flags: Ast.Symbol.Flags, loc: u32) !Ast.SymbolIndex {
     std.debug.assert(self.symbols.items.len < std.math.maxInt(u32));
     const idx: u32 = @intCast(self.symbols.items.len);
-    try self.symbols.append(self.allocator, .{
+    try self.symbols.append(self.arena, .{
         .original_name = name,
         .kind = kind,
         .flags = flags,
@@ -313,11 +327,11 @@ fn lookupSymbolAnyLoc(self: *const Parser, name: []const u8) ?Ast.SymbolIndex {
 }
 
 fn pushScope(self: *Parser) !void {
-    const new_scope = try self.allocator.create(Ast.Scope);
+    const new_scope = try self.arena.create(Ast.Scope);
     new_scope.* = Ast.Scope.init(self.scope);
-    try self.scope.children.append(self.allocator, new_scope);
+    try self.scope.children.append(self.arena, new_scope);
     self.scope = new_scope;
-    try self.scopes_in_order.append(self.allocator, new_scope);
+    try self.scopes_in_order.append(self.arena, new_scope);
 }
 
 fn popScope(self: *Parser) void {
@@ -386,8 +400,8 @@ fn visitStmt(self: *Parser, root: Ast.Stmt) void {
     };
 
     var stack: std.ArrayListUnmanaged(Work) = .empty;
-    defer stack.deinit(self.allocator);
-    stack.append(self.allocator, .{ .stmt = root }) catch return;
+    defer stack.deinit(self.arena);
+    stack.append(self.arena, .{ .stmt = root }) catch return;
 
     for (0..self.token_tags.len * 2) |_| {
         const work = stack.pop() orelse break;
@@ -395,11 +409,11 @@ fn visitStmt(self: *Parser, root: Ast.Stmt) void {
             .exit_scope => self.exitScope(),
             .compound => |body| {
                 self.enterNextScope();
-                stack.append(self.allocator, .exit_scope) catch {};
+                stack.append(self.arena, .exit_scope) catch {};
                 var i = body.stmts.items.len;
                 while (i > 0) {
                     i -= 1;
-                    stack.append(self.allocator, .{ .stmt = body.stmts.items[i] }) catch {};
+                    stack.append(self.arena, .{ .stmt = body.stmts.items[i] }) catch {};
                 }
             },
             .stmt => |s| self.processOneStmt(s, &stack),
@@ -412,15 +426,15 @@ fn visitStmt(self: *Parser, root: Ast.Stmt) void {
 fn processOneStmt(self: *Parser, s: Ast.Stmt, stack: anytype) void {
     const Work = std.meta.Child(@TypeOf(stack.items));
     switch (s) {
-        .compound => |stmt| stack.append(self.allocator, .{ .compound = stmt }) catch {},
+        .compound => |stmt| stack.append(self.arena, .{ .compound = stmt }) catch {},
         .@"return" => |stmt| {
             if (stmt.value) |v| stmt.value = self.visitExpr(v);
         },
         .@"if" => |stmt| {
             stmt.condition = self.visitExpr(stmt.condition);
             // Push else branch first (processed after body), then body
-            if (stmt.else_branch) |eb| stack.append(self.allocator, @as(Work, .{ .stmt = eb })) catch {};
-            stack.append(self.allocator, @as(Work, .{ .compound = stmt.body })) catch {};
+            if (stmt.else_branch) |eb| stack.append(self.arena, @as(Work, .{ .stmt = eb })) catch {};
+            stack.append(self.arena, @as(Work, .{ .compound = stmt.body })) catch {};
         },
         .@"switch" => |stmt| {
             stmt.expr = self.visitExpr(stmt.expr);
@@ -429,7 +443,7 @@ fn processOneStmt(self: *Parser, s: Ast.Stmt, stack: anytype) void {
             while (i > 0) {
                 i -= 1;
                 const c = &stmt.cases.items[i];
-                stack.append(self.allocator, @as(Work, .{ .compound = c.body })) catch {};
+                stack.append(self.arena, @as(Work, .{ .compound = c.body })) catch {};
             }
             // Visit selectors inline
             for (stmt.cases.items) |*c| {
@@ -445,16 +459,16 @@ fn processOneStmt(self: *Parser, s: Ast.Stmt, stack: anytype) void {
             if (stmt.condition) |cond| stmt.condition = self.visitExpr(cond);
             if (stmt.update) |upd| self.processOneStmt(upd, stack);
             // Push exit_scope (for-scope), then body (which adds its own scope)
-            stack.append(self.allocator, @as(Work, .exit_scope)) catch {};
-            stack.append(self.allocator, @as(Work, .{ .compound = stmt.body })) catch {};
+            stack.append(self.arena, @as(Work, .exit_scope)) catch {};
+            stack.append(self.arena, @as(Work, .{ .compound = stmt.body })) catch {};
         },
         .@"while" => |stmt| {
             stmt.condition = self.visitExpr(stmt.condition);
-            stack.append(self.allocator, @as(Work, .{ .compound = stmt.body })) catch {};
+            stack.append(self.arena, @as(Work, .{ .compound = stmt.body })) catch {};
         },
         .loop => |stmt| {
-            if (stmt.continuing) |c| stack.append(self.allocator, @as(Work, .{ .compound = c })) catch {};
-            stack.append(self.allocator, @as(Work, .{ .compound = stmt.body })) catch {};
+            if (stmt.continuing) |c| stack.append(self.arena, @as(Work, .{ .compound = c })) catch {};
+            stack.append(self.arena, @as(Work, .{ .compound = stmt.body })) catch {};
         },
         .break_if => |stmt| {
             stmt.condition = self.visitExpr(stmt.condition);
@@ -486,8 +500,8 @@ fn visitCompoundStmt(self: *Parser, stmt: *Ast.CompoundStmt) void {
     };
 
     var stack: std.ArrayListUnmanaged(Work) = .empty;
-    defer stack.deinit(self.allocator);
-    stack.append(self.allocator, .{ .compound = stmt }) catch return;
+    defer stack.deinit(self.arena);
+    stack.append(self.arena, .{ .compound = stmt }) catch return;
 
     for (0..self.token_tags.len * 2) |_| {
         const work = stack.pop() orelse break;
@@ -495,11 +509,11 @@ fn visitCompoundStmt(self: *Parser, stmt: *Ast.CompoundStmt) void {
             .exit_scope => self.exitScope(),
             .compound => |body| {
                 self.enterNextScope();
-                stack.append(self.allocator, .exit_scope) catch {};
+                stack.append(self.arena, .exit_scope) catch {};
                 var i = body.stmts.items.len;
                 while (i > 0) {
                     i -= 1;
-                    stack.append(self.allocator, .{ .stmt = body.stmts.items[i] }) catch {};
+                    stack.append(self.arena, .{ .stmt = body.stmts.items[i] }) catch {};
                 }
             },
             .stmt => |s| self.processOneStmt(s, &stack),
@@ -516,8 +530,8 @@ fn visitExpr(self: *Parser, e: Ast.Expr) Ast.Expr {
     };
 
     var stack: std.ArrayListUnmanaged(Work) = .empty;
-    defer stack.deinit(self.allocator);
-    stack.append(self.allocator, .{ .visit = e }) catch return e;
+    defer stack.deinit(self.arena);
+    stack.append(self.arena, .{ .visit = e }) catch return e;
 
     for (0..self.token_tags.len * 2) |_| {
         const work = stack.pop() orelse break;
@@ -525,7 +539,7 @@ fn visitExpr(self: *Parser, e: Ast.Expr) Ast.Expr {
             .mark => |me| Ast.markExprPurity(me, self.symbols.items),
             .visit => |ve| {
                 // Push mark first (popped last = post-order)
-                stack.append(self.allocator, .{ .mark = ve }) catch {};
+                stack.append(self.arena, .{ .mark = ve }) catch {};
 
                 switch (ve) {
                     .ident => |expr| {
@@ -539,37 +553,37 @@ fn visitExpr(self: *Parser, e: Ast.Expr) Ast.Expr {
                                 }
                             }
                         } else if (self.lookupSymbolAnyLoc(expr.name)) |ref| {
-                            const msg = std.fmt.allocPrint(self.allocator, "'{s}' is used before its declaration", .{expr.name}) catch "identifier used before declaration";
-                            self.errors.append(self.allocator, .{ .message = msg, .pos = expr.loc, .code = "E0102" }) catch {};
+                            const msg = std.fmt.allocPrint(self.arena, "'{s}' is used before its declaration", .{expr.name}) catch "identifier used before declaration";
+                            self.errors.append(self.arena, .{ .message = msg, .pos = expr.loc, .code = "E0102" }) catch {};
                             expr.ref = ref;
                         }
                     },
                     .literal => {},
                     .binary => |expr| {
-                        stack.append(self.allocator, .{ .visit = expr.right }) catch {};
-                        stack.append(self.allocator, .{ .visit = expr.left }) catch {};
+                        stack.append(self.arena, .{ .visit = expr.right }) catch {};
+                        stack.append(self.arena, .{ .visit = expr.left }) catch {};
                     },
                     .unary => |expr| {
-                        stack.append(self.allocator, .{ .visit = expr.operand }) catch {};
+                        stack.append(self.arena, .{ .visit = expr.operand }) catch {};
                     },
                     .call => |expr| {
                         var i = expr.args.items.len;
                         while (i > 0) {
                             i -= 1;
-                            stack.append(self.allocator, .{ .visit = expr.args.items[i] }) catch {};
+                            stack.append(self.arena, .{ .visit = expr.args.items[i] }) catch {};
                         }
                         if (expr.template_type) |tt| self.visitType(tt);
-                        if (expr.func) |f| stack.append(self.allocator, .{ .visit = f }) catch {};
+                        if (expr.func) |f| stack.append(self.arena, .{ .visit = f }) catch {};
                     },
                     .index => |expr| {
-                        stack.append(self.allocator, .{ .visit = expr.idx }) catch {};
-                        stack.append(self.allocator, .{ .visit = expr.base }) catch {};
+                        stack.append(self.arena, .{ .visit = expr.idx }) catch {};
+                        stack.append(self.arena, .{ .visit = expr.base }) catch {};
                     },
                     .member => |expr| {
-                        stack.append(self.allocator, .{ .visit = expr.base }) catch {};
+                        stack.append(self.arena, .{ .visit = expr.base }) catch {};
                     },
                     .paren => |expr| {
-                        stack.append(self.allocator, .{ .visit = expr.expr }) catch {};
+                        stack.append(self.arena, .{ .visit = expr.expr }) catch {};
                     },
                 }
             },
@@ -631,15 +645,15 @@ fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
         switch (self.currentTag()) {
             .keyword_enable => {
                 const dir = try self.parseEnableDirective();
-                try module.directives.append(self.allocator, dir);
+                try module.directives.append(self.arena, dir);
             },
             .keyword_requires => {
                 const dir = try self.parseRequiresDirective();
-                try module.directives.append(self.allocator, dir);
+                try module.directives.append(self.arena, dir);
             },
             .keyword_diagnostic => {
                 const dir = try self.parseDiagnosticDirective();
-                try module.directives.append(self.allocator, dir);
+                try module.directives.append(self.arena, dir);
             },
             else => break,
         }
@@ -648,7 +662,7 @@ fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
     // Parse declarations
     while (self.currentTag() != .eof) {
         if (try self.parseDeclaration()) |decl| {
-            try module.declarations.append(self.allocator, decl);
+            try module.declarations.append(self.arena, decl);
         } else {
             self.advance();
         }
@@ -660,7 +674,7 @@ fn parseEnableDirective(self: *Parser) !Ast.Directive {
     var features: std.ArrayListUnmanaged([]const u8) = .empty;
     for (0..self.token_tags.len) |_| {
         if (self.currentTag() == .ident) {
-            try features.append(self.allocator, self.currentText());
+            try features.append(self.arena, self.currentText());
             self.advance();
         }
         if (!self.eat(.comma)) break;
@@ -674,7 +688,7 @@ fn parseRequiresDirective(self: *Parser) !Ast.Directive {
     var features: std.ArrayListUnmanaged([]const u8) = .empty;
     for (0..self.token_tags.len) |_| {
         if (self.currentTag() == .ident) {
-            try features.append(self.allocator, self.currentText());
+            try features.append(self.arena, self.currentText());
             self.advance();
         }
         if (!self.eat(.comma)) break;
@@ -742,20 +756,20 @@ fn parseAttributes(self: *Parser) !std.ArrayListUnmanaged(Ast.Attribute) {
         if (attr.name.len > 0) {
             for (attrs.items) |existing| {
                 if (std.mem.eql(u8, existing.name, attr.name)) {
-                    const msg = std.fmt.allocPrint(self.allocator, "duplicate attribute '@{s}'", .{attr.name}) catch "duplicate attribute";
-                    self.errors.append(self.allocator, .{ .message = msg, .pos = attr_loc, .code = "E0401" }) catch {};
+                    const msg = std.fmt.allocPrint(self.arena, "duplicate attribute '@{s}'", .{attr.name}) catch "duplicate attribute";
+                    self.errors.append(self.arena, .{ .message = msg, .pos = attr_loc, .code = "E0401" }) catch {};
                     break;
                 }
             }
         }
-        try attrs.append(self.allocator, attr);
+        try attrs.append(self.arena, attr);
     }
     return attrs;
 }
 
 fn parseConstDecl(self: *Parser) !*Ast.ConstDecl {
     _ = self.expect(.keyword_const);
-    const decl = try self.allocator.create(Ast.ConstDecl);
+    const decl = try self.arena.create(Ast.ConstDecl);
     decl.* = .{ .name = .none };
 
     if (self.eatIdent()) |text| {
@@ -774,7 +788,7 @@ fn parseConstDecl(self: *Parser) !*Ast.ConstDecl {
 
 fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute)) !*Ast.OverrideDecl {
     _ = self.expect(.keyword_override);
-    const decl = try self.allocator.create(Ast.OverrideDecl);
+    const decl = try self.arena.create(Ast.OverrideDecl);
     decl.* = .{ .attributes = attrs.*, .name = .none };
 
     if (self.eatIdent()) |text| {
@@ -794,7 +808,7 @@ fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
 
 fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute)) !*Ast.VarDecl {
     _ = self.expect(.keyword_var);
-    const decl = try self.allocator.create(Ast.VarDecl);
+    const decl = try self.arena.create(Ast.VarDecl);
     decl.* = .{ .attributes = attrs.*, .name = .none };
 
     // Optional <address_space, access_mode>
@@ -826,7 +840,7 @@ fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute)) !*
 
 fn parseLetDecl(self: *Parser) !*Ast.LetDecl {
     _ = self.expect(.keyword_let);
-    const decl = try self.allocator.create(Ast.LetDecl);
+    const decl = try self.arena.create(Ast.LetDecl);
     decl.* = .{ .name = .none };
 
     if (self.eatIdent()) |text| {
@@ -845,7 +859,7 @@ fn parseLetDecl(self: *Parser) !*Ast.LetDecl {
 
 fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute)) !*Ast.FunctionDecl {
     _ = self.expect(.keyword_fn);
-    const decl = try self.allocator.create(Ast.FunctionDecl);
+    const decl = try self.arena.create(Ast.FunctionDecl);
     decl.* = .{
         .attributes = attrs.*,
         .name = .none,
@@ -908,7 +922,7 @@ fn parseParameters(self: *Parser) !std.ArrayListUnmanaged(Ast.Parameter) {
         const name = try self.declareSymbol(text, .parameter, .{}, loc);
         _ = self.expect(.colon);
         const typ = try self.parseType("after ':' in function parameter");
-        try params.append(self.allocator, .{ .attributes = param_attrs, .name = name, .typ = typ });
+        try params.append(self.arena, .{ .attributes = param_attrs, .name = name, .typ = typ });
         if (!self.eat(.comma)) break;
         if (self.currentTag() == .r_paren) break;
     } else unreachable;
@@ -917,7 +931,7 @@ fn parseParameters(self: *Parser) !std.ArrayListUnmanaged(Ast.Parameter) {
 
 fn parseStructDecl(self: *Parser) !*Ast.StructDecl {
     _ = self.expect(.keyword_struct);
-    const decl = try self.allocator.create(Ast.StructDecl);
+    const decl = try self.arena.create(Ast.StructDecl);
     decl.* = .{ .name = .none, .members = .empty };
 
     if (self.eatIdent()) |text| {
@@ -936,7 +950,7 @@ fn parseStructDecl(self: *Parser) !*Ast.StructDecl {
         const name = try self.declareSymbolNoScope(text, .member, .{}, member_loc);
         _ = self.expect(.colon);
         const typ = try self.parseType("after ':' in struct member");
-        try decl.members.append(self.allocator, .{ .attributes = member_attrs, .name = name, .typ = typ });
+        try decl.members.append(self.arena, .{ .attributes = member_attrs, .name = name, .typ = typ });
         _ = self.eat(.comma);
     }
     _ = self.expect(.r_brace);
@@ -945,7 +959,7 @@ fn parseStructDecl(self: *Parser) !*Ast.StructDecl {
 
 fn parseAliasDecl(self: *Parser) !*Ast.AliasDecl {
     _ = self.expect(.keyword_alias);
-    const decl = try self.allocator.create(Ast.AliasDecl);
+    const decl = try self.arena.create(Ast.AliasDecl);
     var name: Ast.SymbolIndex = .none;
     if (self.eatIdent()) |text| {
         const loc = self.currentStart();
@@ -962,7 +976,7 @@ fn parseAliasDecl(self: *Parser) !*Ast.AliasDecl {
 fn parseConstAssert(self: *Parser) !*Ast.ConstAssertDecl {
     if (self.currentTag() == .keyword_const) self.advance();
     _ = self.expect(.keyword_const_assert);
-    const decl = try self.allocator.create(Ast.ConstAssertDecl);
+    const decl = try self.arena.create(Ast.ConstAssertDecl);
     self.expr_context = "in const_assert";
     decl.* = .{ .expr = (try self.parseExpression()) orelse return error.ParseFailed };
     _ = self.expect(.semicolon);
@@ -973,26 +987,26 @@ fn parseConstAssert(self: *Parser) !*Ast.ConstAssertDecl {
 // Types
 // =========================================================================
 
-fn parseType(self: *Parser, context: []const u8) error{OutOfMemory, ParseFailed}!Ast.Type {
+fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed }!Ast.Type {
     if (self.eatIdent()) |name| {
         const name_loc = self.currentStart();
         self.advance();
         if (self.currentTag() == .lt) {
             return self.parseTemplatedType(name, name_loc);
         }
-        const typ = try self.allocator.create(Ast.IdentType);
+        const typ = try self.arena.create(Ast.IdentType);
         typ.* = .{ .name = name, .ref = .none, .loc = name_loc };
         return .{ .ident = typ };
     }
 
     const msg = if (context.len > 0)
-        std.fmt.allocPrint(self.allocator, "expected type {s}", .{context}) catch "expected type"
+        std.fmt.allocPrint(self.arena, "expected type {s}", .{context}) catch "expected type"
     else
         @as([]const u8, "expected type");
     self.addError(msg);
     const err_loc = self.currentStart();
     self.advance();
-    const typ = try self.allocator.create(Ast.IdentType);
+    const typ = try self.arena.create(Ast.IdentType);
     typ.* = .{ .name = "error", .ref = .none, .loc = err_loc };
     return .{ .ident = typ };
 }
@@ -1004,7 +1018,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
         const size = name[3] - '0';
         const elem = try self.parseType("in vector type");
         _ = self.expect(.gt);
-        const typ = try self.allocator.create(Ast.VecType);
+        const typ = try self.arena.create(Ast.VecType);
         typ.* = .{ .size = size, .elem_type = elem, .loc = name_loc };
         return .{ .vec = typ };
     }
@@ -1014,7 +1028,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
         const rows = name[5] - '0';
         const elem = try self.parseType("in matrix type");
         _ = self.expect(.gt);
-        const typ = try self.allocator.create(Ast.MatType);
+        const typ = try self.arena.create(Ast.MatType);
         typ.* = .{ .cols = cols, .rows = rows, .elem_type = elem, .loc = name_loc };
         return .{ .mat = typ };
     }
@@ -1027,7 +1041,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
             size = try self.parseTemplateArgExpr();
         }
         _ = self.expect(.gt);
-        const typ = try self.allocator.create(Ast.ArrayType);
+        const typ = try self.arena.create(Ast.ArrayType);
         typ.* = .{ .elem_type = elem, .size = size };
         return .{ .array = typ };
     }
@@ -1039,7 +1053,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
         var access: Ast.AccessMode = .none;
         if (self.eat(.comma)) access = self.parseAccessMode();
         _ = self.expect(.gt);
-        const typ = try self.allocator.create(Ast.PtrType);
+        const typ = try self.arena.create(Ast.PtrType);
         typ.* = .{ .address_space = addr, .elem_type = elem, .access_mode = access };
         return .{ .ptr = typ };
     }
@@ -1047,14 +1061,14 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
     if (std.mem.eql(u8, name, "atomic")) {
         const elem = try self.parseType("in atomic type");
         _ = self.expect(.gt);
-        const typ = try self.allocator.create(Ast.AtomicType);
+        const typ = try self.arena.create(Ast.AtomicType);
         typ.* = .{ .elem_type = elem, .loc = name_loc };
         return .{ .atomic = typ };
     }
 
     // Texture types
     if (parseTextureTypeInfo(name)) |info| {
-        const typ = try self.allocator.create(Ast.TextureType);
+        const typ = try self.arena.create(Ast.TextureType);
         typ.* = .{ .kind = info.kind, .dimension = info.dim };
         if (info.kind == .storage) {
             if (self.eatIdent()) |texel_name| {
@@ -1073,7 +1087,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
     _ = try self.parseType("in template arguments");
     while (self.eat(.comma)) _ = try self.parseType("in template arguments");
     _ = self.expect(.gt);
-    const typ = try self.allocator.create(Ast.IdentType);
+    const typ = try self.arena.create(Ast.IdentType);
     typ.* = .{ .name = name, .ref = .none, .loc = name_loc };
     return .{ .ident = typ };
 }
@@ -1136,7 +1150,7 @@ fn parseAccessMode(self: *Parser) Ast.AccessMode {
 // Expressions
 // =========================================================================
 
-fn parseExpression(self: *Parser) error{OutOfMemory, ParseFailed}!?Ast.Expr {
+fn parseExpression(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Expr {
     return self.parseLogicalOrExpr();
 }
 
@@ -1146,7 +1160,7 @@ fn parseLogicalOrExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseLogicalAndExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .logical_or, .left = left, .right = right };
         left = .{ .binary = node };
     }
@@ -1159,7 +1173,7 @@ fn parseLogicalAndExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseBitwiseOrExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .logical_and, .left = left, .right = right };
         left = .{ .binary = node };
     }
@@ -1172,7 +1186,7 @@ fn parseBitwiseOrExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseBitwiseXorExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .@"or", .left = left, .right = right };
         left = .{ .binary = node };
     }
@@ -1185,7 +1199,7 @@ fn parseBitwiseXorExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseBitwiseAndExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .xor, .left = left, .right = right };
         left = .{ .binary = node };
     }
@@ -1198,7 +1212,7 @@ fn parseBitwiseAndExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseEqualityExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .@"and", .left = left, .right = right };
         left = .{ .binary = node };
     }
@@ -1216,7 +1230,7 @@ fn parseEqualityExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseRelationalExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
     } else unreachable;
@@ -1235,7 +1249,7 @@ fn parseRelationalExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseShiftExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
     } else unreachable;
@@ -1252,7 +1266,7 @@ fn parseShiftExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseAdditiveExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
     } else unreachable;
@@ -1269,7 +1283,7 @@ fn parseAdditiveExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseMultiplicativeExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
     } else unreachable;
@@ -1287,7 +1301,7 @@ fn parseMultiplicativeExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseUnaryExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
     } else unreachable;
@@ -1307,7 +1321,7 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const operand = (try self.parseUnaryExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.UnaryExpr);
+        const node = try self.arena.create(Ast.UnaryExpr);
         node.* = .{ .loc = loc, .op = unary_op, .operand = operand };
         return .{ .unary = node };
     }
@@ -1326,7 +1340,7 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
                 if (self.isIdentLike()) {
                     const member = self.currentText();
                     self.advance();
-                    const node = try self.allocator.create(Ast.MemberExpr);
+                    const node = try self.arena.create(Ast.MemberExpr);
                     node.* = .{ .loc = dot_loc, .base = left, .member_name = member };
                     left = .{ .member = node };
                 } else {
@@ -1339,7 +1353,7 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
                 self.expr_context = "in array index";
                 const idx = (try self.parseExpression()) orelse return null;
                 _ = self.expect(.r_bracket);
-                const node = try self.allocator.create(Ast.IndexExpr);
+                const node = try self.arena.create(Ast.IndexExpr);
                 node.* = .{ .loc = bracket_loc, .base = left, .idx = idx };
                 left = .{ .index = node };
             },
@@ -1348,7 +1362,7 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
                 self.advance();
                 const args = try self.parseExpressionList();
                 _ = self.expect(.r_paren);
-                const node = try self.allocator.create(Ast.CallExpr);
+                const node = try self.arena.create(Ast.CallExpr);
                 node.* = .{ .loc = paren_loc, .func = left, .args = args };
                 left = .{ .call = node };
             },
@@ -1364,7 +1378,7 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
             const kind = self.currentTag();
             const loc = self.currentStart();
             self.advance();
-            const node = try self.allocator.create(Ast.LiteralExpr);
+            const node = try self.arena.create(Ast.LiteralExpr);
             node.* = .{ .loc = loc, .kind = kind, .value = text };
             return .{ .literal = node };
         },
@@ -1373,7 +1387,7 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
             const kind = self.currentTag();
             const loc = self.currentStart();
             self.advance();
-            const node = try self.allocator.create(Ast.LiteralExpr);
+            const node = try self.arena.create(Ast.LiteralExpr);
             node.* = .{ .loc = loc, .kind = kind, .value = text };
             return .{ .literal = node };
         },
@@ -1390,7 +1404,7 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
                 return self.parseTemplatedConstructor(text, loc);
             }
 
-            const node = try self.allocator.create(Ast.IdentExpr);
+            const node = try self.arena.create(Ast.IdentExpr);
             node.* = .{ .loc = loc, .name = text, .ref = .none };
             return .{ .ident = node };
         },
@@ -1399,13 +1413,13 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
             self.expr_context = "after '('";
             const expr = (try self.parseExpression()) orelse return null;
             _ = self.expect(.r_paren);
-            const node = try self.allocator.create(Ast.ParenExpr);
+            const node = try self.arena.create(Ast.ParenExpr);
             node.* = .{ .expr = expr };
             return .{ .paren = node };
         },
         else => {
             const msg = if (self.expr_context.len > 0)
-                std.fmt.allocPrint(self.allocator, "expected expression {s}", .{self.expr_context}) catch "expected expression"
+                std.fmt.allocPrint(self.arena, "expected expression {s}", .{self.expr_context}) catch "expected expression"
             else
                 @as([]const u8, "expected expression");
             self.addError(msg);
@@ -1418,7 +1432,7 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
 fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
     const template_type = try self.parseTemplatedType(name, name_loc);
     if (self.currentTag() != .l_paren) {
-        const node = try self.allocator.create(Ast.IdentExpr);
+        const node = try self.arena.create(Ast.IdentExpr);
         node.* = .{ .name = name, .ref = .none };
         return .{ .ident = node };
     }
@@ -1426,7 +1440,7 @@ fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?A
     self.advance();
     const args = try self.parseExpressionList();
     _ = self.expect(.r_paren);
-    const node = try self.allocator.create(Ast.CallExpr);
+    const node = try self.arena.create(Ast.CallExpr);
     node.* = .{ .loc = paren_loc, .template_type = template_type, .args = args };
     return .{ .call = node };
 }
@@ -1436,19 +1450,19 @@ fn parseExpressionList(self: *Parser) !std.ArrayListUnmanaged(Ast.Expr) {
     if (self.currentTag() == .r_paren) return exprs;
     self.expr_context = "in arguments";
     if (try self.parseExpression()) |first| {
-        try exprs.append(self.allocator, first);
+        try exprs.append(self.arena, first);
     }
     while (self.eat(.comma)) {
         if (self.currentTag() == .r_paren) break;
         if (try self.parseExpression()) |expr| {
-            try exprs.append(self.allocator, expr);
+            try exprs.append(self.arena, expr);
         }
     }
     return exprs;
 }
 
 // Template argument expression (restricted: no > or >= operators)
-fn parseTemplateArgExpr(self: *Parser) error{OutOfMemory, ParseFailed}!?Ast.Expr {
+fn parseTemplateArgExpr(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Expr {
     return self.parseTemplateAdditiveExpr();
 }
 
@@ -1463,7 +1477,7 @@ fn parseTemplateAdditiveExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseTemplateMultiplicativeExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
     } else unreachable;
@@ -1481,7 +1495,7 @@ fn parseTemplateMultiplicativeExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const right = (try self.parseTemplateUnaryExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.BinaryExpr);
+        const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
     } else unreachable;
@@ -1498,7 +1512,7 @@ fn parseTemplateUnaryExpr(self: *Parser) !?Ast.Expr {
         const loc = self.currentStart();
         self.advance();
         const operand = (try self.parseTemplateUnaryExpr()) orelse return null;
-        const node = try self.allocator.create(Ast.UnaryExpr);
+        const node = try self.arena.create(Ast.UnaryExpr);
         node.* = .{ .loc = loc, .op = unary_op, .operand = operand };
         return .{ .unary = node };
     }
@@ -1512,7 +1526,7 @@ fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
             const kind = self.currentTag();
             const loc = self.currentStart();
             self.advance();
-            const node = try self.allocator.create(Ast.LiteralExpr);
+            const node = try self.arena.create(Ast.LiteralExpr);
             node.* = .{ .loc = loc, .kind = kind, .value = text };
             return .{ .literal = node };
         },
@@ -1523,7 +1537,7 @@ fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
             const text = self.currentText();
             const loc = self.currentStart();
             self.advance();
-            const node = try self.allocator.create(Ast.IdentExpr);
+            const node = try self.arena.create(Ast.IdentExpr);
             node.* = .{ .loc = loc, .name = text, .ref = .none };
             return .{ .ident = node };
         },
@@ -1532,13 +1546,13 @@ fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
             self.expr_context = "after '('";
             const expr = (try self.parseTemplateArgExpr()) orelse return null;
             _ = self.expect(.r_paren);
-            const node = try self.allocator.create(Ast.ParenExpr);
+            const node = try self.arena.create(Ast.ParenExpr);
             node.* = .{ .expr = expr };
             return .{ .paren = node };
         },
         else => {
             const msg = if (self.expr_context.len > 0)
-                std.fmt.allocPrint(self.allocator, "expected expression {s}", .{self.expr_context}) catch "expected expression"
+                std.fmt.allocPrint(self.arena, "expected expression {s}", .{self.expr_context}) catch "expected expression"
             else
                 @as([]const u8, "expected expression");
             self.addError(msg);
@@ -1552,7 +1566,7 @@ fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
 // Statements
 // =========================================================================
 
-fn parseStatement(self: *Parser) error{OutOfMemory, ParseFailed}!?Ast.Stmt {
+fn parseStatement(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
     switch (self.currentTag()) {
         .l_brace => return .{ .compound = try self.parseCompoundStmt() },
         .keyword_return => return .{ .@"return" = try self.parseReturnStmt() },
@@ -1568,12 +1582,12 @@ fn parseStatement(self: *Parser) error{OutOfMemory, ParseFailed}!?Ast.Stmt {
                 self.expr_context = "after 'if' in break";
                 const cond = (try self.parseExpression()) orelse return null;
                 _ = self.expect(.semicolon);
-                const node = try self.allocator.create(Ast.BreakIfStmt);
+                const node = try self.arena.create(Ast.BreakIfStmt);
                 node.* = .{ .condition = cond };
                 return .{ .break_if = node };
             }
             _ = self.expect(.semicolon);
-            const node = try self.allocator.create(Ast.BreakStmt);
+            const node = try self.arena.create(Ast.BreakStmt);
             node.* = .{ .loc = loc };
             return .{ .@"break" = node };
         },
@@ -1581,7 +1595,7 @@ fn parseStatement(self: *Parser) error{OutOfMemory, ParseFailed}!?Ast.Stmt {
             const loc = self.currentStart();
             self.advance();
             _ = self.expect(.semicolon);
-            const node = try self.allocator.create(Ast.ContinueStmt);
+            const node = try self.arena.create(Ast.ContinueStmt);
             node.* = .{ .loc = loc };
             return .{ .@"continue" = node };
         },
@@ -1589,13 +1603,13 @@ fn parseStatement(self: *Parser) error{OutOfMemory, ParseFailed}!?Ast.Stmt {
             const loc = self.currentStart();
             self.advance();
             _ = self.expect(.semicolon);
-            const node = try self.allocator.create(Ast.DiscardStmt);
+            const node = try self.arena.create(Ast.DiscardStmt);
             node.* = .{ .loc = loc };
             return .{ .discard = node };
         },
         .keyword_const, .keyword_const_assert, .keyword_let, .keyword_var => {
             if (try self.parseDeclaration()) |decl| {
-                const node = try self.allocator.create(Ast.DeclStmt);
+                const node = try self.arena.create(Ast.DeclStmt);
                 node.* = .{ .decl = decl };
                 return .{ .decl = node };
             }
@@ -1608,11 +1622,11 @@ fn parseStatement(self: *Parser) error{OutOfMemory, ParseFailed}!?Ast.Stmt {
 fn parseCompoundStmt(self: *Parser) !*Ast.CompoundStmt {
     _ = self.expect(.l_brace);
     try self.pushScope();
-    const stmt = try self.allocator.create(Ast.CompoundStmt);
+    const stmt = try self.arena.create(Ast.CompoundStmt);
     stmt.* = .{ .stmts = .empty };
     while (self.currentTag() != .r_brace and self.currentTag() != .eof) {
         if (try self.parseStatement()) |s| {
-            try stmt.stmts.append(self.allocator, s);
+            try stmt.stmts.append(self.arena, s);
         }
     }
     self.popScope();
@@ -1623,7 +1637,7 @@ fn parseCompoundStmt(self: *Parser) !*Ast.CompoundStmt {
 fn parseReturnStmt(self: *Parser) !*Ast.ReturnStmt {
     const loc = self.currentStart();
     _ = self.expect(.keyword_return);
-    const node = try self.allocator.create(Ast.ReturnStmt);
+    const node = try self.arena.create(Ast.ReturnStmt);
     node.* = .{ .loc = loc };
     if (self.currentTag() != .semicolon) {
         self.expr_context = "after 'return'";
@@ -1637,7 +1651,7 @@ fn parseReturnStmt(self: *Parser) !*Ast.ReturnStmt {
 fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
     _ = self.expect(.keyword_if);
     self.expr_context = "in if condition";
-    const root = try self.allocator.create(Ast.IfStmt);
+    const root = try self.arena.create(Ast.IfStmt);
     root.* = .{
         .condition = (try self.parseExpression()) orelse return error.ParseFailed,
         .body = try self.parseCompoundStmt(),
@@ -1647,7 +1661,7 @@ fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
         if (self.currentTag() == .keyword_if) {
             _ = self.expect(.keyword_if);
             self.expr_context = "in if condition";
-            const next = try self.allocator.create(Ast.IfStmt);
+            const next = try self.arena.create(Ast.IfStmt);
             next.* = .{
                 .condition = (try self.parseExpression()) orelse return error.ParseFailed,
                 .body = try self.parseCompoundStmt(),
@@ -1665,7 +1679,7 @@ fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
 fn parseSwitchStmt(self: *Parser) !*Ast.SwitchStmt {
     _ = self.expect(.keyword_switch);
     self.expr_context = "in switch expression";
-    const node = try self.allocator.create(Ast.SwitchStmt);
+    const node = try self.arena.create(Ast.SwitchStmt);
     node.* = .{
         .expr = (try self.parseExpression()) orelse return error.ParseFailed,
         .cases = .empty,
@@ -1678,14 +1692,14 @@ fn parseSwitchStmt(self: *Parser) !*Ast.SwitchStmt {
         } else {
             _ = self.expect(.keyword_case);
             self.expr_context = "in case selector";
-            if (try self.parseExpression()) |sel| try c.selectors.append(self.allocator, sel);
+            if (try self.parseExpression()) |sel| try c.selectors.append(self.arena, sel);
             while (self.eat(.comma)) {
-                if (try self.parseExpression()) |sel| try c.selectors.append(self.allocator, sel);
+                if (try self.parseExpression()) |sel| try c.selectors.append(self.arena, sel);
             }
         }
         _ = self.expect(.colon);
         c.body = try self.parseCompoundStmt();
-        try node.cases.append(self.allocator, c);
+        try node.cases.append(self.arena, c);
     }
     _ = self.expect(.r_brace);
     return node;
@@ -1695,7 +1709,7 @@ fn parseForStmt(self: *Parser) !*Ast.ForStmt {
     _ = self.expect(.keyword_for);
     _ = self.expect(.l_paren);
     try self.pushScope();
-    const node = try self.allocator.create(Ast.ForStmt);
+    const node = try self.arena.create(Ast.ForStmt);
     node.* = .{ .body = undefined };
 
     // Init
@@ -1703,7 +1717,7 @@ fn parseForStmt(self: *Parser) !*Ast.ForStmt {
         switch (self.currentTag()) {
             .keyword_var, .keyword_let => {
                 if (try self.parseDeclaration()) |decl| {
-                    const ds = try self.allocator.create(Ast.DeclStmt);
+                    const ds = try self.arena.create(Ast.DeclStmt);
                     ds.* = .{ .decl = decl };
                     node.init_stmt = .{ .decl = ds };
                 }
@@ -1741,14 +1755,14 @@ fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
         .plus_plus => {
             const loc = self.currentStart();
             self.advance();
-            const node = try self.allocator.create(Ast.IncrDecrStmt);
+            const node = try self.arena.create(Ast.IncrDecrStmt);
             node.* = .{ .loc = loc, .expr = left, .increment = true };
             return .{ .incr_decr = node };
         },
         .minus_minus => {
             const loc = self.currentStart();
             self.advance();
-            const node = try self.allocator.create(Ast.IncrDecrStmt);
+            const node = try self.arena.create(Ast.IncrDecrStmt);
             node.* = .{ .loc = loc, .expr = left, .increment = false };
             return .{ .incr_decr = node };
         },
@@ -1760,14 +1774,14 @@ fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
         self.advance();
         self.expr_context = "in for update assignment";
         const right = (try self.parseExpression()) orelse return null;
-        const node = try self.allocator.create(Ast.AssignStmt);
+        const node = try self.arena.create(Ast.AssignStmt);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         return .{ .assign = node };
     }
 
     // Call expression
     if (left == .call) {
-        const node = try self.allocator.create(Ast.CallStmt);
+        const node = try self.arena.create(Ast.CallStmt);
         node.* = .{ .call = left.call };
         return .{ .call = node };
     }
@@ -1779,7 +1793,7 @@ fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
 fn parseWhileStmt(self: *Parser) !*Ast.WhileStmt {
     _ = self.expect(.keyword_while);
     self.expr_context = "in while condition";
-    const node = try self.allocator.create(Ast.WhileStmt);
+    const node = try self.arena.create(Ast.WhileStmt);
     node.* = .{
         .condition = (try self.parseExpression()) orelse return error.ParseFailed,
         .body = try self.parseCompoundStmt(),
@@ -1789,7 +1803,7 @@ fn parseWhileStmt(self: *Parser) !*Ast.WhileStmt {
 
 fn parseLoopStmt(self: *Parser) !*Ast.LoopStmt {
     _ = self.expect(.keyword_loop);
-    const node = try self.allocator.create(Ast.LoopStmt);
+    const node = try self.arena.create(Ast.LoopStmt);
     node.* = .{ .body = try self.parseCompoundStmt() };
     if (self.eat(.keyword_continuing)) {
         node.continuing = try self.parseCompoundStmt();
@@ -1806,7 +1820,7 @@ fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
             const loc = self.currentStart();
             self.advance();
             _ = self.expect(.semicolon);
-            const node = try self.allocator.create(Ast.IncrDecrStmt);
+            const node = try self.arena.create(Ast.IncrDecrStmt);
             node.* = .{ .loc = loc, .expr = left, .increment = true };
             return .{ .incr_decr = node };
         },
@@ -1814,7 +1828,7 @@ fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
             const loc = self.currentStart();
             self.advance();
             _ = self.expect(.semicolon);
-            const node = try self.allocator.create(Ast.IncrDecrStmt);
+            const node = try self.arena.create(Ast.IncrDecrStmt);
             node.* = .{ .loc = loc, .expr = left, .increment = false };
             return .{ .incr_decr = node };
         },
@@ -1827,14 +1841,14 @@ fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
         self.expr_context = "in assignment";
         const right = (try self.parseExpression()) orelse return null;
         _ = self.expect(.semicolon);
-        const node = try self.allocator.create(Ast.AssignStmt);
+        const node = try self.arena.create(Ast.AssignStmt);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         return .{ .assign = node };
     }
 
     _ = self.expect(.semicolon);
     if (left == .call) {
-        const node = try self.allocator.create(Ast.CallStmt);
+        const node = try self.arena.create(Ast.CallStmt);
         node.* = .{ .call = left.call };
         return .{ .call = node };
     }
@@ -1874,21 +1888,17 @@ fn isMatName(name: []const u8) bool {
 
 fn isTemplatedTypeName(name: []const u8) bool {
     const map = std.StaticStringMap(void).initComptime(.{
-        .{ "array", {} },       .{ "vec2", {} },        .{ "vec3", {} },
-        .{ "vec4", {} },        .{ "mat2x2", {} },      .{ "mat2x3", {} },
-        .{ "mat2x4", {} },      .{ "mat3x2", {} },      .{ "mat3x3", {} },
-        .{ "mat3x4", {} },      .{ "mat4x2", {} },      .{ "mat4x3", {} },
-        .{ "mat4x4", {} },      .{ "ptr", {} },          .{ "atomic", {} },
-        .{ "texture_1d", {} },   .{ "texture_2d", {} },
-        .{ "texture_2d_array", {} }, .{ "texture_3d", {} },
-        .{ "texture_cube", {} }, .{ "texture_cube_array", {} },
-        .{ "texture_multisampled_2d", {} },
-        .{ "texture_storage_1d", {} }, .{ "texture_storage_2d", {} },
-        .{ "texture_storage_2d_array", {} }, .{ "texture_storage_3d", {} },
-        .{ "sampler", {} },      .{ "sampler_comparison", {} },
-        .{ "texture_depth_2d", {} }, .{ "texture_depth_2d_array", {} },
-        .{ "texture_depth_cube", {} }, .{ "texture_depth_cube_array", {} },
-        .{ "texture_depth_multisampled_2d", {} },
+        .{ "array", {} },                    .{ "vec2", {} },                     .{ "vec3", {} },
+        .{ "vec4", {} },                     .{ "mat2x2", {} },                   .{ "mat2x3", {} },
+        .{ "mat2x4", {} },                   .{ "mat3x2", {} },                   .{ "mat3x3", {} },
+        .{ "mat3x4", {} },                   .{ "mat4x2", {} },                   .{ "mat4x3", {} },
+        .{ "mat4x4", {} },                   .{ "ptr", {} },                      .{ "atomic", {} },
+        .{ "texture_1d", {} },               .{ "texture_2d", {} },               .{ "texture_2d_array", {} },
+        .{ "texture_3d", {} },               .{ "texture_cube", {} },             .{ "texture_cube_array", {} },
+        .{ "texture_multisampled_2d", {} },  .{ "texture_storage_1d", {} },       .{ "texture_storage_2d", {} },
+        .{ "texture_storage_2d_array", {} }, .{ "texture_storage_3d", {} },       .{ "sampler", {} },
+        .{ "sampler_comparison", {} },       .{ "texture_depth_2d", {} },         .{ "texture_depth_2d_array", {} },
+        .{ "texture_depth_cube", {} },       .{ "texture_depth_cube_array", {} }, .{ "texture_depth_multisampled_2d", {} },
     });
     return map.has(name);
 }

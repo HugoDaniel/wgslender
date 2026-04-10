@@ -85,8 +85,8 @@ pub const CompileResult = struct {
 };
 
 /// Compile WGSL source to a `.wasm` binary shader.
-pub fn compile(allocator: Allocator, source: [:0]const u8, options: CompileOptions) !CompileResult {
-    var arena = std.heap.ArenaAllocator.init(allocator);
+pub fn compile(gpa: Allocator, source: [:0]const u8, options: CompileOptions) !CompileResult {
+    var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
     const alloc = arena.allocator();
 
@@ -95,41 +95,41 @@ pub fn compile(allocator: Allocator, source: [:0]const u8, options: CompileOptio
     return result;
 }
 
-fn compileInner(allocator: Allocator, source: [:0]const u8, options: CompileOptions) !CompileResult {
+fn compileInner(arena: Allocator, source: [:0]const u8, options: CompileOptions) !CompileResult {
     const original_size = source.len;
 
     // 1. Parse
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var tokens = try Lexer.tokenize(arena, source);
+    defer tokens.deinit(arena);
 
-    var parser = try Parser.init(allocator, source, tokens);
+    var parser = try Parser.init(arena, source, tokens);
     const module = parser.parse() catch return error.OutOfMemory;
     if (parser.errors.items.len > 0) return error.OutOfMemory;
 
     // 2. Prepare renamer (global frequency-based)
-    const base_renamer = try prepareRenamer(allocator, module, options);
+    const base_renamer = try prepareRenamer(arena, module, options);
 
     // 3. Apply scope-local renaming for better compression
     //    Within each function, reassign params/locals to a,b,c,... per function.
     //    This makes similar functions produce identical text patterns.
-    const scope_renamer = try ScopeLocalRenamer.init(allocator, module, base_renamer);
+    const scope_renamer = try ScopeLocalRenamer.init(arena, module, base_renamer);
     const renamer = &scope_renamer.ren;
 
     // 4. Sort declarations by kind + size for better compression
-    const sorted_decls = try Minifier.sortDeclarations(allocator, module);
+    const sorted_decls = try Minifier.sortDeclarations(arena, module);
 
     // 5. Print sorted minified text
-    var printer = Printer.init(allocator, .{
+    var printer = Printer.init(arena, .{
         .minify_whitespace = true,
         .minify_identifiers = true,
         .tree_shaking = false, // already filtered by sortDeclarations
         .renamer = renamer,
     }, module.symbols.items);
     defer printer.deinit();
-    const minified = try printSortedModule(allocator, &printer, module, sorted_decls);
+    const minified = try printSortedModule(arena, &printer, module, sorted_decls);
 
     // 6. BPE compress
-    var bpe = try BpeEncoder.compress(allocator, minified);
+    var bpe = try BpeEncoder.compress(arena, minified);
 
     // 7. Compute memory layout
     const output_len: u32 = @intCast(minified.len);
@@ -143,7 +143,7 @@ fn compileInner(allocator: Allocator, source: [:0]const u8, options: CompileOpti
 
     // 8. Generate BPE decoder WASM
     var vm_body: std.ArrayListUnmanaged(u8) = .empty;
-    try BpeVmGen.generate(&vm_body, allocator, .{
+    try BpeVmGen.generate(&vm_body, arena, .{
         .data_start = data_start,
         .data_end = data_end,
         .rules_base = rules_base,
@@ -152,16 +152,16 @@ fn compileInner(allocator: Allocator, source: [:0]const u8, options: CompileOpti
 
     // 9. Build code section
     var code_section: std.ArrayListUnmanaged(u8) = .empty;
-    try WasmBinary.writeUleb128(&code_section, allocator, 1);
-    try WasmBinary.writeUleb128(&code_section, allocator, @intCast(vm_body.items.len));
-    try code_section.appendSlice(allocator, vm_body.items);
+    try WasmBinary.writeUleb128(&code_section, arena, 1);
+    try WasmBinary.writeUleb128(&code_section, arena, @intCast(vm_body.items.len));
+    try code_section.appendSlice(arena, vm_body.items);
 
     // 10. Assemble WASM module
     const total_size = data_end;
     const min_pages = @max(1, (total_size + 65535) / 65536);
 
     const wasm = try WasmBinary.writeModule(
-        allocator,
+        arena,
         null,
         null,
         min_pages,
@@ -184,13 +184,13 @@ fn compileInner(allocator: Allocator, source: [:0]const u8, options: CompileOpti
 }
 
 /// Print a module with pre-sorted declarations (bypasses Printer's own module printing).
-fn printSortedModule(allocator: Allocator, printer: *Printer, module: *const Ast.Module, sorted_decls: []const Ast.Decl) ![]const u8 {
+fn printSortedModule(arena: Allocator, printer: *Printer, module: *const Ast.Module, sorted_decls: []const Ast.Decl) ![]const u8 {
     _ = module;
     printer.buf.clearRetainingCapacity();
     for (sorted_decls) |decl| {
         try printer.printDecl(decl);
     }
-    const result = try allocator.alloc(u8, printer.buf.items.len);
+    const result = try arena.alloc(u8, printer.buf.items.len);
     @memcpy(result, printer.buf.items);
     return result;
 }
@@ -203,7 +203,7 @@ fn alignUp(value: u32, alignment: u32) u32 {
 /// Set up the global frequency-based renamer. Marks API-facing symbols
 /// as must-not-rename, runs DCE if configured, then assigns short names
 /// to the most-used symbols.
-fn prepareRenamer(allocator: Allocator, module: *Ast.Module, options: CompileOptions) !*const Printer.Renamer {
+fn prepareRenamer(arena: Allocator, module: *Ast.Module, options: CompileOptions) !*const Printer.Renamer {
     if (options.minify) {
         const mopts = options.minify_options;
 
@@ -223,19 +223,19 @@ fn prepareRenamer(allocator: Allocator, module: *Ast.Module, options: CompileOpt
         }
 
         if (mopts.tree_shaking) {
-            _ = try Dce.mark(allocator, module);
+            _ = try Dce.mark(arena, module);
         } else {
             for (module.symbols.items) |*sym| sym.flags.is_live = true;
         }
 
-        var uses = try Minifier.computeSymbolUsage(allocator, module);
-        defer uses.deinit(allocator);
-        var reserved = try RenamerMod.computeReservedNames(allocator);
-        for (mopts.keep_names) |name| try reserved.put(allocator, name, {});
+        var uses = try Minifier.computeSymbolUsage(arena, module);
+        defer uses.deinit(arena);
+        var reserved = try RenamerMod.computeReservedNames(arena);
+        for (mopts.keep_names) |name| try reserved.put(arena, name, {});
 
         if (mopts.minify_identifiers) {
-            const r = try allocator.create(RenamerMod.MinifyRenamer);
-            r.* = RenamerMod.MinifyRenamer.init(allocator, module.symbols.items, reserved);
+            const r = try arena.create(RenamerMod.MinifyRenamer);
+            r.* = RenamerMod.MinifyRenamer.init(arena, module.symbols.items, reserved);
             r.accumulateSymbolUseCounts(&uses);
             try r.allocateSlots();
             try r.reserveUnrenamedSymbolNames();
@@ -247,7 +247,7 @@ fn prepareRenamer(allocator: Allocator, module: *Ast.Module, options: CompileOpt
         for (module.symbols.items) |*sym| sym.flags.is_live = true;
     }
 
-    const noop = try allocator.create(RenamerMod.NoOpRenamer);
+    const noop = try arena.create(RenamerMod.NoOpRenamer);
     noop.* = RenamerMod.NoOpRenamer.init(module.symbols.items);
     noop.renamer.ptr = @ptrCast(noop);
     return &noop.renamer;
@@ -317,12 +317,12 @@ const OpEmitter = struct {
     needs_space: bool,
     output_size: u32,
 
-    fn init(allocator: Allocator, module: *const Ast.Module, renamer: *const Printer.Renamer) OpEmitter {
+    fn init(arena: Allocator, module: *const Ast.Module, renamer: *const Printer.Renamer) OpEmitter {
         return .{
             .ops = .empty,
             .str_table = StringTable.init(),
             .sym_table = SymbolTable.init(),
-            .alloc = allocator,
+            .alloc = arena,
             .module = module,
             .renamer = renamer,
             .needs_space = false,
@@ -400,7 +400,10 @@ const OpEmitter = struct {
             .enable => |dir| {
                 try self.emitStr("enable ");
                 for (dir.features.items, 0..) |feat, i| {
-                    if (i > 0) { try self.emitByte(','); try self.emitSpace(); }
+                    if (i > 0) {
+                        try self.emitByte(',');
+                        try self.emitSpace();
+                    }
                     try self.emitStr(feat);
                 }
                 try self.emitByte(';');
@@ -408,7 +411,10 @@ const OpEmitter = struct {
             .requires => |dir| {
                 try self.emitStr("requires ");
                 for (dir.features.items, 0..) |feat, i| {
-                    if (i > 0) { try self.emitByte(','); try self.emitSpace(); }
+                    if (i > 0) {
+                        try self.emitByte(',');
+                        try self.emitSpace();
+                    }
                     try self.emitStr(feat);
                 }
                 try self.emitByte(';');
@@ -416,7 +422,8 @@ const OpEmitter = struct {
             .diagnostic => |dir| {
                 try self.emitStr("diagnostic(");
                 try self.emitStr(dir.severity);
-                try self.emitByte(','); try self.emitSpace();
+                try self.emitByte(',');
+                try self.emitSpace();
                 try self.emitStr(dir.rule);
                 try self.emitByte(')');
                 try self.emitByte(';');
@@ -431,8 +438,14 @@ const OpEmitter = struct {
             .@"const" => |decl| {
                 try self.emitStr("const ");
                 try self.emitName(decl.name);
-                if (decl.typ) |t| { try self.emitByte(':'); try self.emitSpace(); try self.emitType(t); }
-                try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                if (decl.typ) |t| {
+                    try self.emitByte(':');
+                    try self.emitSpace();
+                    try self.emitType(t);
+                }
+                try self.emitSpace();
+                try self.emitByte('=');
+                try self.emitSpace();
                 if (decl.initializer) |init_expr| try self.emitExpr(init_expr);
                 try self.emitByte(';');
             },
@@ -440,9 +453,15 @@ const OpEmitter = struct {
                 try self.emitAttributes(decl.attributes.items);
                 try self.emitStr("override ");
                 try self.emitName(decl.name);
-                if (decl.typ) |t| { try self.emitByte(':'); try self.emitSpace(); try self.emitType(t); }
+                if (decl.typ) |t| {
+                    try self.emitByte(':');
+                    try self.emitSpace();
+                    try self.emitType(t);
+                }
                 if (decl.initializer) |init_expr| {
-                    try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                    try self.emitSpace();
+                    try self.emitByte('=');
+                    try self.emitSpace();
                     try self.emitExpr(init_expr);
                 }
                 try self.emitByte(';');
@@ -454,16 +473,23 @@ const OpEmitter = struct {
                     try self.emitByte('<');
                     try self.emitStr(decl.address_space.string());
                     if (decl.access_mode != .none) {
-                        try self.emitByte(','); try self.emitSpace();
+                        try self.emitByte(',');
+                        try self.emitSpace();
                         try self.emitStr(decl.access_mode.string());
                     }
                     try self.emitByte('>');
                 }
                 try self.emitByte(' ');
                 try self.emitName(decl.name);
-                if (decl.typ) |t| { try self.emitByte(':'); try self.emitSpace(); try self.emitType(t); }
+                if (decl.typ) |t| {
+                    try self.emitByte(':');
+                    try self.emitSpace();
+                    try self.emitType(t);
+                }
                 if (decl.initializer) |init_expr| {
-                    try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                    try self.emitSpace();
+                    try self.emitByte('=');
+                    try self.emitSpace();
                     try self.emitExpr(init_expr);
                 }
                 try self.emitByte(';');
@@ -471,8 +497,14 @@ const OpEmitter = struct {
             .let => |decl| {
                 try self.emitStr("let ");
                 try self.emitName(decl.name);
-                if (decl.typ) |t| { try self.emitByte(':'); try self.emitSpace(); try self.emitType(t); }
-                try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                if (decl.typ) |t| {
+                    try self.emitByte(':');
+                    try self.emitSpace();
+                    try self.emitType(t);
+                }
+                try self.emitSpace();
+                try self.emitByte('=');
+                try self.emitSpace();
                 if (decl.initializer) |init_expr| try self.emitExpr(init_expr);
                 try self.emitByte(';');
             },
@@ -482,15 +514,21 @@ const OpEmitter = struct {
                 try self.emitName(decl.name);
                 try self.emitByte('(');
                 for (decl.parameters.items, 0..) |param, i| {
-                    if (i > 0) { try self.emitByte(','); try self.emitSpace(); }
+                    if (i > 0) {
+                        try self.emitByte(',');
+                        try self.emitSpace();
+                    }
                     try self.emitAttributes(param.attributes.items);
                     try self.emitName(param.name);
-                    try self.emitByte(':'); try self.emitSpace();
+                    try self.emitByte(':');
+                    try self.emitSpace();
                     try self.emitType(param.typ);
                 }
                 try self.emitByte(')');
                 if (decl.return_type) |rt| {
-                    try self.emitSpace(); try self.emitStr("->"); try self.emitSpace();
+                    try self.emitSpace();
+                    try self.emitStr("->");
+                    try self.emitSpace();
                     try self.emitAttributes(decl.return_attr.items);
                     try self.emitType(rt);
                 }
@@ -505,7 +543,8 @@ const OpEmitter = struct {
                 for (decl.members.items, 0..) |member, i| {
                     try self.emitAttributes(member.attributes.items);
                     try self.emitName(member.name);
-                    try self.emitByte(':'); try self.emitSpace();
+                    try self.emitByte(':');
+                    try self.emitSpace();
                     try self.emitType(member.typ);
                     if (i < decl.members.items.len - 1) try self.emitByte(',');
                 }
@@ -514,7 +553,9 @@ const OpEmitter = struct {
             .alias => |decl| {
                 try self.emitStr("alias ");
                 try self.emitName(decl.name);
-                try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                try self.emitSpace();
+                try self.emitByte('=');
+                try self.emitSpace();
                 try self.emitType(decl.typ);
                 try self.emitByte(';');
             },
@@ -533,7 +574,10 @@ const OpEmitter = struct {
             if (attr.args.items.len > 0) {
                 try self.emitByte('(');
                 for (attr.args.items, 0..) |arg, i| {
-                    if (i > 0) { try self.emitByte(','); try self.emitSpace(); }
+                    if (i > 0) {
+                        try self.emitByte(',');
+                        try self.emitSpace();
+                    }
                     try self.emitExpr(arg);
                 }
                 try self.emitByte(')');
@@ -604,7 +648,9 @@ const OpEmitter = struct {
                             // and handle the rest in close_stack... but close_stack doesn't support expr.
                             // Fallback: emit the rest inline since depth is shallow.
                             try self.emitType(et); // bounded: types are max 3-4 deep
-                            try self.emitByte(','); try self.emitSpace(); try self.emitExpr(s);
+                            try self.emitByte(',');
+                            try self.emitSpace();
+                            try self.emitExpr(s);
                         } else {
                             try self.emitType(et);
                         }
@@ -616,7 +662,8 @@ const OpEmitter = struct {
                 .ptr => |typ| {
                     try self.emitStr("ptr<");
                     try self.emitStr(typ.address_space.string());
-                    try self.emitByte(','); try self.emitSpace();
+                    try self.emitByte(',');
+                    try self.emitSpace();
                     if (close_top < close_stack.len) {
                         close_stack[close_top] = .{ .close = '>', .needs_space = true, .access = if (typ.access_mode != .none) typ.access_mode.string() else null };
                         close_top += 1;
@@ -650,7 +697,8 @@ const OpEmitter = struct {
             close_top -= 1;
             const entry = close_stack[close_top];
             if (entry.access) |acc| {
-                try self.emitByte(','); try self.emitSpace();
+                try self.emitByte(',');
+                try self.emitSpace();
                 try self.emitStr(acc);
             }
             try self.emitByte(entry.close);
@@ -687,7 +735,8 @@ const OpEmitter = struct {
         } else if (t.texel_format.len > 0) {
             try self.emitByte('<');
             try self.emitStr(t.texel_format);
-            try self.emitByte(','); try self.emitSpace();
+            try self.emitByte(',');
+            try self.emitSpace();
             try self.emitStr(t.access_mode.string());
             try self.emitByte('>');
             self.needs_space = true;
@@ -743,7 +792,10 @@ const OpEmitter = struct {
                         while (i > 0) {
                             i -= 1;
                             try stack.append(self.alloc, .{ .expr = expr.args.items[i] });
-                            if (i > 0) { try stack.append(self.alloc, .space); try stack.append(self.alloc, .{ .byte = ',' }); }
+                            if (i > 0) {
+                                try stack.append(self.alloc, .space);
+                                try stack.append(self.alloc, .{ .byte = ',' });
+                            }
                         }
                         try stack.append(self.alloc, .{ .byte = '(' });
                         if (expr.template_type) |tt| {
@@ -837,7 +889,10 @@ const OpEmitter = struct {
                     .compound => |stmt| try stack.append(self.alloc, .{ .compound = stmt }),
                     .@"return" => |stmt| {
                         try self.emitStr("return");
-                        if (stmt.value) |v| { try self.emitByte(' '); try self.emitExpr(v); }
+                        if (stmt.value) |v| {
+                            try self.emitByte(' ');
+                            try self.emitExpr(v);
+                        }
                         try self.emitByte(';');
                     },
                     .@"if" => |stmt| {
@@ -858,7 +913,10 @@ const OpEmitter = struct {
                             } else {
                                 try self.emitStr("case ");
                                 for (c.selectors.items, 0..) |sel, i| {
-                                    if (i > 0) { try self.emitByte(','); try self.emitSpace(); }
+                                    if (i > 0) {
+                                        try self.emitByte(',');
+                                        try self.emitSpace();
+                                    }
                                     try self.emitExpr(sel);
                                 }
                             }
@@ -891,7 +949,9 @@ const OpEmitter = struct {
                     .discard => try self.emitStr("discard;"),
                     .assign => |stmt| {
                         try self.emitExpr(stmt.left);
-                        try self.emitSpace(); try self.emitStr(stmt.op.string()); try self.emitSpace();
+                        try self.emitSpace();
+                        try self.emitStr(stmt.op.string());
+                        try self.emitSpace();
                         try self.emitExpr(stmt.right);
                         try self.emitByte(';');
                     },
@@ -949,17 +1009,29 @@ const OpEmitter = struct {
                     .@"var" => |decl| {
                         try self.emitStr("var ");
                         try self.emitName(decl.name);
-                        if (decl.typ) |t| { try self.emitByte(':'); try self.emitSpace(); try self.emitType(t); }
+                        if (decl.typ) |t| {
+                            try self.emitByte(':');
+                            try self.emitSpace();
+                            try self.emitType(t);
+                        }
                         if (decl.initializer) |init_expr| {
-                            try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                            try self.emitSpace();
+                            try self.emitByte('=');
+                            try self.emitSpace();
                             try self.emitExpr(init_expr);
                         }
                     },
                     .let => |decl| {
                         try self.emitStr("let ");
                         try self.emitName(decl.name);
-                        if (decl.typ) |t| { try self.emitByte(':'); try self.emitSpace(); try self.emitType(t); }
-                        try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                        if (decl.typ) |t| {
+                            try self.emitByte(':');
+                            try self.emitSpace();
+                            try self.emitType(t);
+                        }
+                        try self.emitSpace();
+                        try self.emitByte('=');
+                        try self.emitSpace();
                         if (decl.initializer) |init_expr| try self.emitExpr(init_expr);
                     },
                     else => {},
@@ -967,7 +1039,9 @@ const OpEmitter = struct {
             },
             .assign => |stmt| {
                 try self.emitExpr(stmt.left);
-                try self.emitSpace(); try self.emitStr(stmt.op.string()); try self.emitSpace();
+                try self.emitSpace();
+                try self.emitStr(stmt.op.string());
+                try self.emitSpace();
                 try self.emitExpr(stmt.right);
             },
             else => {},
@@ -982,7 +1056,9 @@ const OpEmitter = struct {
             },
             .assign => |stmt| {
                 try self.emitExpr(stmt.left);
-                try self.emitSpace(); try self.emitStr(stmt.op.string()); try self.emitSpace();
+                try self.emitSpace();
+                try self.emitStr(stmt.op.string());
+                try self.emitSpace();
                 try self.emitExpr(stmt.right);
             },
             .call => |stmt| try self.emitExpr(.{ .call = stmt.call }),
@@ -995,16 +1071,28 @@ const OpEmitter = struct {
             .@"const" => |decl| {
                 try self.emitStr("const ");
                 try self.emitName(decl.name);
-                if (decl.typ) |t| { try self.emitByte(':'); try self.emitSpace(); try self.emitType(t); }
-                try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                if (decl.typ) |t| {
+                    try self.emitByte(':');
+                    try self.emitSpace();
+                    try self.emitType(t);
+                }
+                try self.emitSpace();
+                try self.emitByte('=');
+                try self.emitSpace();
                 if (decl.initializer) |init_expr| try self.emitExpr(init_expr);
                 try self.emitByte(';');
             },
             .let => |decl| {
                 try self.emitStr("let ");
                 try self.emitName(decl.name);
-                if (decl.typ) |t| { try self.emitByte(':'); try self.emitSpace(); try self.emitType(t); }
-                try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                if (decl.typ) |t| {
+                    try self.emitByte(':');
+                    try self.emitSpace();
+                    try self.emitType(t);
+                }
+                try self.emitSpace();
+                try self.emitByte('=');
+                try self.emitSpace();
                 if (decl.initializer) |init_expr| try self.emitExpr(init_expr);
                 try self.emitByte(';');
             },
@@ -1015,16 +1103,23 @@ const OpEmitter = struct {
                     try self.emitByte('<');
                     try self.emitStr(decl.address_space.string());
                     if (decl.access_mode != .none) {
-                        try self.emitByte(','); try self.emitSpace();
+                        try self.emitByte(',');
+                        try self.emitSpace();
                         try self.emitStr(decl.access_mode.string());
                     }
                     try self.emitByte('>');
                 }
                 try self.emitByte(' ');
                 try self.emitName(decl.name);
-                if (decl.typ) |t| { try self.emitByte(':'); try self.emitSpace(); try self.emitType(t); }
+                if (decl.typ) |t| {
+                    try self.emitByte(':');
+                    try self.emitSpace();
+                    try self.emitType(t);
+                }
                 if (decl.initializer) |init_expr| {
-                    try self.emitSpace(); try self.emitByte('='); try self.emitSpace();
+                    try self.emitSpace();
+                    try self.emitByte('=');
+                    try self.emitSpace();
                     try self.emitExpr(init_expr);
                 }
                 try self.emitByte(';');
@@ -1259,16 +1354,16 @@ const BpeEncoder = struct {
 
     /// Compress input using iterative byte-pair encoding.
     /// Caller owns returned `.data` via the provided allocator.
-    fn compress(allocator: Allocator, input: []const u8) !BpeEncoder {
+    fn compress(arena: Allocator, input: []const u8) !BpeEncoder {
         var result: BpeEncoder = .{ .rules = undefined, .num_rules = 0, .data = input };
         if (input.len < 2) return result;
 
-        var buf = try allocator.alloc(u8, input.len);
+        var buf = try arena.alloc(u8, input.len);
         @memcpy(buf, input);
         var len = input.len;
 
         // Heap-allocated pair frequency table (256*256*4 = 256KB, too large for stack)
-        const counts = try allocator.alloc(u32, 256 * 256);
+        const counts = try arena.alloc(u32, 256 * 256);
 
         var next_byte: u16 = 0x80;
         for (0..MAX_RULES) |_| {
@@ -1477,7 +1572,7 @@ const BpeVmGen = struct {
 
 /// Expand BPE-compressed data back to text using the rules table.
 /// Uses the same stack-based algorithm as the WASM decoder.
-fn decodeBpe(allocator: Allocator, data: []const u8, rules: []const [2]u8) ![]const u8 {
+fn decodeBpe(arena: Allocator, data: []const u8, rules: []const [2]u8) ![]const u8 {
     std.debug.assert(rules.len <= BpeEncoder.MAX_RULES);
     var out: std.ArrayListUnmanaged(u8) = .empty;
     var stack: [512]u8 = undefined;
@@ -1495,7 +1590,7 @@ fn decodeBpe(allocator: Allocator, data: []const u8, rules: []const [2]u8) ![]co
         };
 
         if (byte < 0x80) {
-            try out.append(allocator, byte);
+            try out.append(arena, byte);
         } else {
             const idx = byte - 0x80;
             if (idx < rules.len) {

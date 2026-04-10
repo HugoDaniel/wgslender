@@ -23,17 +23,17 @@ const CliArgs = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.arena.allocator();
+    const arena = init.arena.allocator();
     const io = init.io;
 
-    var args = parseArgs(allocator, init.minimal.args, io) orelse return;
+    var args = parseArgs(arena, init.minimal.args, io) orelse return;
 
     // Read input
-    const source = try readSource(allocator, io, args.input_path);
+    const source = try readSource(arena, io, args.input_path);
 
     switch (args.subcommand) {
         .validate => try runValidate(
-            allocator,
+            arena,
             io,
             source,
             args.validate_format,
@@ -41,10 +41,10 @@ pub fn main(init: std.process.Init) !void {
             args.line_offset,
             args.input_path,
         ),
-        .reflect => try runReflect(allocator, io, source, args.compact),
-        .compile => try runCompile(allocator, io, source, args.output_path, args.options),
+        .reflect => try runReflect(arena, io, source, args.compact),
+        .compile => try runCompile(arena, io, source, args.output_path, args.options),
         .minify => try runMinify(
-            allocator,
+            arena,
             io,
             source,
             args.options,
@@ -55,7 +55,7 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn parseArgs(allocator: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
+fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     const File = std.Io.File;
     var args = CliArgs{};
     var config_path: ?[]const u8 = null;
@@ -139,7 +139,7 @@ fn parseArgs(allocator: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliAr
         }
     }
 
-    if (!loadConfig(&args, allocator, io, config_path, no_config)) return null;
+    if (!loadConfig(&args, arena, io, config_path, no_config)) return null;
     applyMinifyOverrides(
         &args.options,
         cli_minify_all,
@@ -149,7 +149,7 @@ fn parseArgs(allocator: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliAr
         cli_no_mangle,
         cli_no_tree_shaking,
     );
-    if (keep_names_raw) |raw| args.options.keep_names = parseKeepNames(allocator, raw) catch return null;
+    if (keep_names_raw) |raw| args.options.keep_names = parseKeepNames(arena, raw) catch return null;
     configureSourceMap(&args, source_map_sources);
 
     return args;
@@ -158,7 +158,7 @@ fn parseArgs(allocator: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliAr
 /// Load config from explicit path or auto-discover from parent directories.
 fn loadConfig(
     args: *CliArgs,
-    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
     io: std.Io,
     config_path: ?[]const u8,
     no_config: bool,
@@ -167,18 +167,18 @@ fn loadConfig(
     const Dir = std.Io.Dir;
 
     if (config_path) |path| {
-        const content = Dir.cwd().readFileAlloc(io, path, allocator, .unlimited) catch {
+        const content = Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch {
             File.stderr().writeStreamingAll(io, "error: could not read config file\n") catch {};
             return false;
         };
-        const config = wgslender.Config.parseJson(allocator, content) catch {
+        const config = wgslender.Config.parseJson(arena, content) catch {
             File.stderr().writeStreamingAll(io, "error: invalid config JSON\n") catch {};
             return false;
         };
         args.options = config.toOptions();
     } else if (!no_config) {
         const start = if (args.input_path) |p| std.fs.path.dirname(p) else null;
-        if (wgslender.Config.discover(allocator, io, start)) |config| {
+        if (wgslender.Config.discover(arena, io, start)) |config| {
             args.options = config.toOptions();
         }
     }
@@ -212,13 +212,13 @@ fn applyMinifyOverrides(
     if (cli_no_tree_shaking) options.tree_shaking = false;
 }
 
-fn parseKeepNames(allocator: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]const []const u8 {
+fn parseKeepNames(arena: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]const []const u8 {
     var names: std.ArrayListUnmanaged([]const u8) = .empty;
     var it = std.mem.splitScalar(u8, raw, ',');
     while (it.next()) |name| {
         const trimmed = std.mem.trim(u8, name, " ");
         if (trimmed.len > 0) {
-            try names.append(allocator, trimmed);
+            try names.append(arena, trimmed);
         }
     }
     return names.items;
@@ -238,28 +238,28 @@ fn configureSourceMap(args: *CliArgs, source_map_sources: bool) void {
     }
 }
 
-fn readSource(allocator: std.mem.Allocator, io: std.Io, input_path: ?[]const u8) ![:0]const u8 {
+fn readSource(arena: std.mem.Allocator, io: std.Io, input_path: ?[]const u8) ![:0]const u8 {
     var source_bytes: []u8 = undefined;
     if (input_path) |path| {
-        source_bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .unlimited);
+        source_bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
     } else {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         var tmp: [4096]u8 = undefined;
         while (true) {
             const n = std.Io.File.stdin().readStreaming(io, &.{&tmp}) catch break;
             if (n == 0) break;
-            try buf.appendSlice(allocator, tmp[0..n]);
+            try buf.appendSlice(arena, tmp[0..n]);
         }
         source_bytes = buf.items;
     }
-    const sb = try allocator.alloc(u8, source_bytes.len + 1);
+    const sb = try arena.alloc(u8, source_bytes.len + 1);
     @memcpy(sb[0..source_bytes.len], source_bytes);
     sb[source_bytes.len] = 0;
     return sb[0..source_bytes.len :0];
 }
 
-fn runMinify(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, options: wgslender.Minifier.Options, output_path: ?[]const u8, ext_source_map: bool, source_map_inline: bool) !void {
-    const result = try wgslender.minifyWithOptions(allocator, source, options);
+fn runMinify(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, options: wgslender.Minifier.Options, output_path: ?[]const u8, ext_source_map: bool, source_map_inline: bool) !void {
+    const result = try wgslender.minifyWithOptions(arena, source, options);
     const File = std.Io.File;
     const Dir = std.Io.Dir;
 
@@ -272,8 +272,8 @@ fn runMinify(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, opt
         if (source_map_inline) {
             if (result.source_map) |sm| {
                 var comment_buf: std.ArrayListUnmanaged(u8) = .empty;
-                try comment_buf.append(allocator, '\n');
-                try sm.toComment(&comment_buf, allocator, true);
+                try comment_buf.append(arena, '\n');
+                try sm.toComment(&comment_buf, arena, true);
                 try file.writeStreamingAll(io, comment_buf.items);
             }
         }
@@ -284,8 +284,8 @@ fn runMinify(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, opt
         if (source_map_inline) {
             if (result.source_map) |sm| {
                 var comment_buf: std.ArrayListUnmanaged(u8) = .empty;
-                try comment_buf.append(allocator, '\n');
-                try sm.toComment(&comment_buf, allocator, true);
+                try comment_buf.append(arena, '\n');
+                try sm.toComment(&comment_buf, arena, true);
                 try File.stdout().writeStreamingAll(io, comment_buf.items);
             }
         }
@@ -296,12 +296,12 @@ fn runMinify(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, opt
         if (result.source_map) |sm| {
             if (output_path) |path| {
                 var map_path_buf: std.ArrayListUnmanaged(u8) = .empty;
-                try map_path_buf.appendSlice(allocator, path);
-                try map_path_buf.appendSlice(allocator, ".map");
+                try map_path_buf.appendSlice(arena, path);
+                try map_path_buf.appendSlice(arena, ".map");
                 const map_path = map_path_buf.items;
 
                 var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-                try sm.toJson(&json_buf, allocator);
+                try sm.toJson(&json_buf, arena);
 
                 const map_file = try Dir.cwd().createFile(io, map_path, .{});
                 defer map_file.close(io);
@@ -324,7 +324,7 @@ fn runMinify(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, opt
 }
 
 fn runValidate(
-    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
     io: std.Io,
     source: [:0]const u8,
     format: CliArgs.ValidateFormat,
@@ -335,7 +335,7 @@ fn runValidate(
     const File = std.Io.File;
     const Diagnostic = wgslender.Diagnostic;
 
-    var result = try wgslender.validateWithOptions(allocator, source, .{
+    var result = try wgslender.validateWithOptions(arena, source, .{
         .strict_mode = strict,
         .line_offset = line_offset,
     });
@@ -348,18 +348,18 @@ fn runValidate(
     switch (format) {
         .json => {
             var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-            try json_buf.appendSlice(allocator, "{\"valid\":");
-            try json_buf.appendSlice(allocator, if (is_valid) "true" else "false");
-            try json_buf.appendSlice(allocator, ",\"diagnostics\":[");
+            try json_buf.appendSlice(arena, "{\"valid\":");
+            try json_buf.appendSlice(arena, if (is_valid) "true" else "false");
+            try json_buf.appendSlice(arena, ",\"diagnostics\":[");
             for (result.diagnostics.diagnostics.items, 0..) |*entry, i| {
-                if (i > 0) try json_buf.append(allocator, ',');
-                try Diagnostic.entryToJson(&json_buf, allocator, entry);
+                if (i > 0) try json_buf.append(arena, ',');
+                try Diagnostic.entryToJson(&json_buf, arena, entry);
             }
-            try json_buf.appendSlice(allocator, "],\"errorCount\":");
-            try Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.errorCount());
-            try json_buf.appendSlice(allocator, ",\"warningCount\":");
-            try Diagnostic.appendInt(&json_buf, allocator, result.diagnostics.warningCount());
-            try json_buf.appendSlice(allocator, "}\n");
+            try json_buf.appendSlice(arena, "],\"errorCount\":");
+            try Diagnostic.appendInt(&json_buf, arena, result.diagnostics.errorCount());
+            try json_buf.appendSlice(arena, ",\"warningCount\":");
+            try Diagnostic.appendInt(&json_buf, arena, result.diagnostics.warningCount());
+            try json_buf.appendSlice(arena, "}\n");
             try File.stdout().writeStreamingAll(io, json_buf.items);
         },
         .text => {
@@ -398,12 +398,12 @@ fn runValidate(
     }
 }
 
-fn runReflect(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, compact: bool) !void {
+fn runReflect(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, compact: bool) !void {
     const File = std.Io.File;
 
     // Tokenize + parse
-    const tokens = try wgslender.Lexer.tokenize(allocator, source);
-    var parser = try wgslender.Parser.init(allocator, source, tokens);
+    const tokens = try wgslender.Lexer.tokenize(arena, source);
+    var parser = try wgslender.Parser.init(arena, source, tokens);
     const module = parser.parse() catch {
         try File.stderr().writeStreamingAll(io, "error: parse failed\n");
         for (parser.errors.items) |err| {
@@ -415,29 +415,29 @@ fn runReflect(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, co
     };
 
     // Reflect
-    const result = try wgslender.Reflect.reflect(allocator, module);
+    const result = try wgslender.Reflect.reflect(arena, module);
 
     // Serialize to JSON
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
     if (compact) {
-        try result.toJson(&json_buf, allocator);
+        try result.toJson(&json_buf, arena);
     } else {
-        try result.toJsonPretty(&json_buf, allocator);
+        try result.toJsonPretty(&json_buf, arena);
     }
 
     try File.stdout().writeStreamingAll(io, json_buf.items);
     try File.stdout().writeStreamingAll(io, "\n");
 }
 
-fn runCompile(allocator: std.mem.Allocator, io: std.Io, source: [:0]const u8, output_path: ?[]const u8, minify_options: wgslender.Minifier.Options) !void {
+fn runCompile(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, output_path: ?[]const u8, minify_options: wgslender.Minifier.Options) !void {
     const File = std.Io.File;
     const Dir = std.Io.Dir;
 
-    var result = try wgslender.compile(allocator, source, .{
+    var result = try wgslender.compile(arena, source, .{
         .minify = true,
         .minify_options = minify_options,
     });
-    defer result.deinit(allocator);
+    defer result.deinit(arena);
 
     if (output_path) |path| {
         const file = try Dir.cwd().createFile(io, path, .{});

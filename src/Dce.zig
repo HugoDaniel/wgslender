@@ -7,24 +7,24 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 
 /// Perform dead code elimination. Returns the number of dead symbols.
-pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator.Error!u32 {
+pub fn mark(arena: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator.Error!u32 {
     if (module.symbols.items.len == 0) return 0;
 
     // Build dependency graph
     var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
-        while (it.next()) |list| list.deinit(allocator);
-        deps.deinit(allocator);
+        while (it.next()) |list| list.deinit(arena);
+        deps.deinit(arena);
     }
-    try buildDependencyGraph(allocator, module, &deps);
+    try buildDependencyGraph(arena, module, &deps);
 
     // Find entry points
     var entry_points: std.ArrayListUnmanaged(u32) = .empty;
-    defer entry_points.deinit(allocator);
+    defer entry_points.deinit(arena);
     for (module.symbols.items, 0..) |sym, i| {
         if (sym.flags.is_entry_point) {
-            try entry_points.append(allocator, @intCast(i));
+            try entry_points.append(arena, @intCast(i));
         }
     }
 
@@ -39,12 +39,12 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator
 
     // BFS from entry points
     var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
-    defer visited.deinit(allocator);
+    defer visited.deinit(arena);
 
     var queue: std.ArrayListUnmanaged(u32) = .empty;
-    defer queue.deinit(allocator);
+    defer queue.deinit(arena);
     for (entry_points.items) |ep| {
-        try queue.append(allocator, ep);
+        try queue.append(arena, ep);
     }
 
     var head: usize = 0;
@@ -52,7 +52,7 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator
         const idx = queue.items[head];
         head += 1;
         if (visited.contains(idx)) continue;
-        try visited.put(allocator, idx, {});
+        try visited.put(arena, idx, {});
 
         std.debug.assert(idx < module.symbols.items.len);
         if (idx < module.symbols.items.len) {
@@ -62,7 +62,7 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator
         if (deps.get(idx)) |dep_list| {
             for (dep_list.items) |dep_idx| {
                 if (!visited.contains(dep_idx)) {
-                    try queue.append(allocator, dep_idx);
+                    try queue.append(arena, dep_idx);
                 }
             }
         }
@@ -76,13 +76,13 @@ pub fn mark(allocator: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator
     return dead;
 }
 
-fn buildDependencyGraph(allocator: std.mem.Allocator, module: *const Ast.Module, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) std.mem.Allocator.Error!void {
+fn buildDependencyGraph(arena: std.mem.Allocator, module: *const Ast.Module, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) std.mem.Allocator.Error!void {
     for (module.declarations.items) |decl| {
-        try collectDeclDeps(allocator, decl, deps);
+        try collectDeclDeps(arena, decl, deps);
     }
 }
 
-fn collectDeclDeps(allocator: std.mem.Allocator, decl: Ast.Decl, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) std.mem.Allocator.Error!void {
+fn collectDeclDeps(arena: std.mem.Allocator, decl: Ast.Decl, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) std.mem.Allocator.Error!void {
     const name_ref = decl.nameRef();
     if (!name_ref.isValid()) return;
     const sym_idx = name_ref.index();
@@ -91,80 +91,80 @@ fn collectDeclDeps(allocator: std.mem.Allocator, decl: Ast.Decl, deps: *std.Auto
 
     switch (decl) {
         .@"const" => |d| {
-            if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, &refs);
-            if (d.typ) |t| try collectTypeRefs(allocator, t, &refs);
+            if (d.initializer) |init_expr| try collectExprRefs(arena, init_expr, &refs);
+            if (d.typ) |t| try collectTypeRefs(arena, t, &refs);
         },
         .override => |d| {
-            if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, &refs);
-            if (d.typ) |t| try collectTypeRefs(allocator, t, &refs);
+            if (d.initializer) |init_expr| try collectExprRefs(arena, init_expr, &refs);
+            if (d.typ) |t| try collectTypeRefs(arena, t, &refs);
         },
         .@"var" => |d| {
-            if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, &refs);
-            if (d.typ) |t| try collectTypeRefs(allocator, t, &refs);
+            if (d.initializer) |init_expr| try collectExprRefs(arena, init_expr, &refs);
+            if (d.typ) |t| try collectTypeRefs(arena, t, &refs);
         },
         .let => |d| {
-            if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, &refs);
-            if (d.typ) |t| try collectTypeRefs(allocator, t, &refs);
+            if (d.initializer) |init_expr| try collectExprRefs(arena, init_expr, &refs);
+            if (d.typ) |t| try collectTypeRefs(arena, t, &refs);
         },
         .function => |d| {
-            for (d.parameters.items) |param| try collectTypeRefs(allocator, param.typ, &refs);
-            if (d.return_type) |rt| try collectTypeRefs(allocator, rt, &refs);
-            if (d.body) |body| try collectStmtRefs(allocator, .{ .compound = body }, &refs);
+            for (d.parameters.items) |param| try collectTypeRefs(arena, param.typ, &refs);
+            if (d.return_type) |rt| try collectTypeRefs(arena, rt, &refs);
+            if (d.body) |body| try collectStmtRefs(arena, .{ .compound = body }, &refs);
         },
         .@"struct" => |d| {
-            for (d.members.items) |member| try collectTypeRefs(allocator, member.typ, &refs);
+            for (d.members.items) |member| try collectTypeRefs(arena, member.typ, &refs);
         },
-        .alias => |d| try collectTypeRefs(allocator, d.typ, &refs),
+        .alias => |d| try collectTypeRefs(arena, d.typ, &refs),
         .const_assert => {},
     }
 
-    try deps.put(allocator, sym_idx, refs);
+    try deps.put(arena, sym_idx, refs);
 }
 
 /// Iteratively collects symbol references from an expression tree using a worklist.
-pub fn collectExprRefs(allocator: std.mem.Allocator, expr: Ast.Expr, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
+pub fn collectExprRefs(arena: std.mem.Allocator, expr: Ast.Expr, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
-    defer stack.deinit(allocator);
-    try stack.append(allocator, expr);
+    defer stack.deinit(arena);
+    try stack.append(arena, expr);
 
     // Bounded worklist: 65536 handles any realistic expression tree depth.
     for (0..65536) |_| {
         const e = stack.pop() orelse break;
         switch (e) {
             .ident => |ie| {
-                if (ie.ref.isValid()) try refs.append(allocator, ie.ref.index());
+                if (ie.ref.isValid()) try refs.append(arena, ie.ref.index());
             },
             .binary => |be| {
-                try stack.append(allocator, be.right);
-                try stack.append(allocator, be.left);
+                try stack.append(arena, be.right);
+                try stack.append(arena, be.left);
             },
-            .unary => |ue| try stack.append(allocator, ue.operand),
+            .unary => |ue| try stack.append(arena, ue.operand),
             .call => |ce| {
                 var i = ce.args.items.len;
                 while (i > 0) {
                     i -= 1;
-                    try stack.append(allocator, ce.args.items[i]);
+                    try stack.append(arena, ce.args.items[i]);
                 }
-                if (ce.func) |f| try stack.append(allocator, f);
+                if (ce.func) |f| try stack.append(arena, f);
             },
             .index => |ie| {
-                try stack.append(allocator, ie.idx);
-                try stack.append(allocator, ie.base);
+                try stack.append(arena, ie.idx);
+                try stack.append(arena, ie.base);
             },
-            .member => |me| try stack.append(allocator, me.base),
-            .paren => |pe| try stack.append(allocator, pe.expr),
+            .member => |me| try stack.append(arena, me.base),
+            .paren => |pe| try stack.append(arena, pe.expr),
             .literal => {},
         }
     } else unreachable;
 }
 
 /// Iteratively collects symbol references from a type tree.
-fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
+fn collectTypeRefs(arena: std.mem.Allocator, typ: Ast.Type, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
     var current = typ;
     for (0..32) |_| {
         switch (current) {
             .ident => |t| {
-                if (t.ref.isValid()) try refs.append(allocator, t.ref.index());
+                if (t.ref.isValid()) try refs.append(arena, t.ref.index());
                 break;
             },
             .vec => |t| {
@@ -174,7 +174,7 @@ fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.Array
                 current = t.elem_type orelse break;
             },
             .array => |t| {
-                if (t.size) |s| try collectExprRefs(allocator, s, refs);
+                if (t.size) |s| try collectExprRefs(arena, s, refs);
                 current = t.elem_type orelse break;
             },
             .ptr => |t| {
@@ -192,69 +192,69 @@ fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.Array
 }
 
 /// Iteratively collects symbol references from a statement tree using a worklist.
-pub fn collectStmtRefs(allocator: std.mem.Allocator, stmt: Ast.Stmt, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
+pub fn collectStmtRefs(arena: std.mem.Allocator, stmt: Ast.Stmt, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
-    defer stack.deinit(allocator);
-    try stack.append(allocator, stmt);
+    defer stack.deinit(arena);
+    try stack.append(arena, stmt);
 
     for (0..65536) |_| {
         const s = stack.pop() orelse break;
         switch (s) {
             .compound => |cs| {
-                for (cs.stmts.items) |inner| try stack.append(allocator, inner);
+                for (cs.stmts.items) |inner| try stack.append(arena, inner);
             },
             .@"return" => |rs| {
-                if (rs.value) |v| try collectExprRefs(allocator, v, refs);
+                if (rs.value) |v| try collectExprRefs(arena, v, refs);
             },
             .@"if" => |is| {
-                try collectExprRefs(allocator, is.condition, refs);
-                try stack.append(allocator, .{ .compound = is.body });
-                if (is.else_branch) |eb| try stack.append(allocator, eb);
+                try collectExprRefs(arena, is.condition, refs);
+                try stack.append(arena, .{ .compound = is.body });
+                if (is.else_branch) |eb| try stack.append(arena, eb);
             },
             .@"switch" => |ss| {
-                try collectExprRefs(allocator, ss.expr, refs);
+                try collectExprRefs(arena, ss.expr, refs);
                 for (ss.cases.items) |c| {
-                    for (c.selectors.items) |sel| try collectExprRefs(allocator, sel, refs);
-                    try stack.append(allocator, .{ .compound = c.body });
+                    for (c.selectors.items) |sel| try collectExprRefs(arena, sel, refs);
+                    try stack.append(arena, .{ .compound = c.body });
                 }
             },
             .@"for" => |fs| {
-                if (fs.init_stmt) |is| try stack.append(allocator, is);
-                if (fs.condition) |c| try collectExprRefs(allocator, c, refs);
-                if (fs.update) |u| try stack.append(allocator, u);
-                try stack.append(allocator, .{ .compound = fs.body });
+                if (fs.init_stmt) |is| try stack.append(arena, is);
+                if (fs.condition) |c| try collectExprRefs(arena, c, refs);
+                if (fs.update) |u| try stack.append(arena, u);
+                try stack.append(arena, .{ .compound = fs.body });
             },
             .@"while" => |ws| {
-                try collectExprRefs(allocator, ws.condition, refs);
-                try stack.append(allocator, .{ .compound = ws.body });
+                try collectExprRefs(arena, ws.condition, refs);
+                try stack.append(arena, .{ .compound = ws.body });
             },
             .loop => |ls| {
-                try stack.append(allocator, .{ .compound = ls.body });
-                if (ls.continuing) |c| try stack.append(allocator, .{ .compound = c });
+                try stack.append(arena, .{ .compound = ls.body });
+                if (ls.continuing) |c| try stack.append(arena, .{ .compound = c });
             },
-            .break_if => |bs| try collectExprRefs(allocator, bs.condition, refs),
+            .break_if => |bs| try collectExprRefs(arena, bs.condition, refs),
             .assign => |as_| {
-                try collectExprRefs(allocator, as_.left, refs);
-                try collectExprRefs(allocator, as_.right, refs);
+                try collectExprRefs(arena, as_.left, refs);
+                try collectExprRefs(arena, as_.right, refs);
             },
-            .incr_decr => |ids| try collectExprRefs(allocator, ids.expr, refs),
+            .incr_decr => |ids| try collectExprRefs(arena, ids.expr, refs),
             .call => |cs| {
-                if (cs.call.func) |f| try collectExprRefs(allocator, f, refs);
-                for (cs.call.args.items) |arg| try collectExprRefs(allocator, arg, refs);
+                if (cs.call.func) |f| try collectExprRefs(arena, f, refs);
+                for (cs.call.args.items) |arg| try collectExprRefs(arena, arg, refs);
             },
             .decl => |ds| {
                 switch (ds.decl) {
                     .@"const" => |d| {
-                        if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, refs);
-                        if (d.typ) |t| try collectTypeRefs(allocator, t, refs);
+                        if (d.initializer) |init_expr| try collectExprRefs(arena, init_expr, refs);
+                        if (d.typ) |t| try collectTypeRefs(arena, t, refs);
                     },
                     .let => |d| {
-                        if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, refs);
-                        if (d.typ) |t| try collectTypeRefs(allocator, t, refs);
+                        if (d.initializer) |init_expr| try collectExprRefs(arena, init_expr, refs);
+                        if (d.typ) |t| try collectTypeRefs(arena, t, refs);
                     },
                     .@"var" => |d| {
-                        if (d.initializer) |init_expr| try collectExprRefs(allocator, init_expr, refs);
-                        if (d.typ) |t| try collectTypeRefs(allocator, t, refs);
+                        if (d.initializer) |init_expr| try collectExprRefs(arena, init_expr, refs);
+                        if (d.typ) |t| try collectTypeRefs(arena, t, refs);
                     },
                     else => {},
                 }
@@ -284,10 +284,10 @@ pub fn isDeclarationLive(decl: Ast.Decl, symbols: []const Ast.Symbol) bool {
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 
-fn parseModule(allocator: std.mem.Allocator, source: [:0]const u8) ?*Ast.Module {
-    var tokens = Lexer.tokenize(allocator, source) catch return null;
-    defer tokens.deinit(allocator);
-    var parser = Parser.init(allocator, source, tokens) catch return null;
+fn parseModule(arena: std.mem.Allocator, source: [:0]const u8) ?*Ast.Module {
+    var tokens = Lexer.tokenize(arena, source) catch return null;
+    defer tokens.deinit(arena);
+    var parser = Parser.init(arena, source, tokens) catch return null;
     return parser.parse() catch null;
 }
 

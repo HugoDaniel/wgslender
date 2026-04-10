@@ -32,15 +32,15 @@ pub const WasmBinary = @import("WasmBinary.zig");
 // =========================================================================
 
 /// Minify WGSL source with default options.
-/// Call `result.deinit(allocator)` to free all memory.
-pub fn minify(allocator: Allocator, source: [:0]const u8) !Minifier.Result {
-    return minifyWithOptions(allocator, source, Minifier.defaultOptions());
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn minify(gpa: Allocator, source: [:0]const u8) !Minifier.Result {
+    return minifyWithOptions(gpa, source, Minifier.defaultOptions());
 }
 
 /// Minify WGSL source with custom options.
-/// Call `result.deinit(allocator)` to free all memory.
-pub fn minifyWithOptions(allocator: Allocator, source: [:0]const u8, options: Minifier.Options) !Minifier.Result {
-    var arena = std.heap.ArenaAllocator.init(allocator);
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn minifyWithOptions(gpa: Allocator, source: [:0]const u8, options: Minifier.Options) !Minifier.Result {
+    var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
 
     var result = try Minifier.minify(arena.allocator(), source, options);
@@ -49,9 +49,9 @@ pub fn minifyWithOptions(allocator: Allocator, source: [:0]const u8, options: Mi
 }
 
 /// Minify and reflect in a single pass.
-/// Call `result.deinit(allocator)` to free all memory.
-pub fn minifyAndReflect(allocator: Allocator, source: [:0]const u8, options: Minifier.Options) !Minifier.MinifyAndReflectResult {
-    var arena = std.heap.ArenaAllocator.init(allocator);
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn minifyAndReflect(gpa: Allocator, source: [:0]const u8, options: Minifier.Options) !Minifier.MinifyAndReflectResult {
+    var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
 
     var result = try Minifier.minifyAndReflect(arena.allocator(), source, options);
@@ -64,9 +64,9 @@ pub fn minifyAndReflect(allocator: Allocator, source: [:0]const u8, options: Min
 // =========================================================================
 
 /// Compile WGSL source to a .wasm binary that generates the shader at runtime.
-/// Call `result.deinit(allocator)` to free all memory.
-pub fn compile(allocator: Allocator, source: [:0]const u8, options: Compiler.CompileOptions) !Compiler.CompileResult {
-    return Compiler.compile(allocator, source, options);
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn compile(gpa: Allocator, source: [:0]const u8, options: Compiler.CompileOptions) !Compiler.CompileResult {
+    return Compiler.compile(gpa, source, options);
 }
 
 // =========================================================================
@@ -74,15 +74,15 @@ pub fn compile(allocator: Allocator, source: [:0]const u8, options: Compiler.Com
 // =========================================================================
 
 /// Validate WGSL source with default options.
-/// Call `result.deinit(allocator)` to free all memory.
-pub fn validate(allocator: Allocator, source: [:0]const u8) !Validator.Result {
-    return validateWithOptions(allocator, source, .{});
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn validate(gpa: Allocator, source: [:0]const u8) !Validator.Result {
+    return validateWithOptions(gpa, source, .{});
 }
 
 /// Validate WGSL source with custom options.
-/// Call `result.deinit(allocator)` to free all memory.
-pub fn validateWithOptions(allocator: Allocator, source: [:0]const u8, options: Validator.Options) !Validator.Result {
-    var arena = std.heap.ArenaAllocator.init(allocator);
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn validateWithOptions(gpa: Allocator, source: [:0]const u8, options: Validator.Options) !Validator.Result {
+    var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
 
     const alloc = arena.allocator();
@@ -122,9 +122,9 @@ pub fn validateWithOptions(allocator: Allocator, source: [:0]const u8, options: 
 // =========================================================================
 
 /// Reflect WGSL source (extract bindings, layouts, entry points).
-/// Call `result.deinit(allocator)` to free all memory.
-pub fn reflect(allocator: Allocator, source: [:0]const u8) !Reflect.ReflectResult {
-    var arena = std.heap.ArenaAllocator.init(allocator);
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn reflect(gpa: Allocator, source: [:0]const u8) !Reflect.ReflectResult {
+    var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
 
     const alloc = arena.allocator();

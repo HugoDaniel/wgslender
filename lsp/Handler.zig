@@ -13,7 +13,7 @@ const WgslDiagnostic = wgslender.Diagnostic;
 
 const Handler = @This();
 
-allocator: std.mem.Allocator,
+gpa: std.mem.Allocator,
 documents: std.StringHashMapUnmanaged(Document),
 
 pub const Document = struct {
@@ -68,9 +68,9 @@ pub const capabilities_json =
 ;
 
 /// Creates a handler with an empty document store.
-pub fn init(allocator: std.mem.Allocator) Handler {
+pub fn init(gpa: std.mem.Allocator) Handler {
     return .{
-        .allocator = allocator,
+        .gpa = gpa,
         .documents = .empty,
     };
 }
@@ -79,10 +79,10 @@ pub fn init(allocator: std.mem.Allocator) Handler {
 pub fn deinit(self: *Handler) void {
     var it = self.documents.iterator();
     while (it.next()) |entry| {
-        self.allocator.free(entry.key_ptr.*);
-        self.allocator.free(entry.value_ptr.source);
+        self.gpa.free(entry.key_ptr.*);
+        self.gpa.free(entry.value_ptr.source);
     }
-    self.documents.deinit(self.allocator);
+    self.documents.deinit(self.gpa);
 }
 
 // =========================================================================
@@ -91,14 +91,14 @@ pub fn deinit(self: *Handler) void {
 
 /// Registers a new document (or replaces an existing one) with the given source text.
 pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: i32) !void {
-    const new_source = try self.allocator.dupe(u8, text);
-    errdefer self.allocator.free(new_source);
+    const new_source = try self.gpa.dupe(u8, text);
+    errdefer self.gpa.free(new_source);
 
-    const gop = try self.documents.getOrPut(self.allocator, uri);
+    const gop = try self.documents.getOrPut(self.gpa, uri);
     if (gop.found_existing) {
-        self.allocator.free(gop.value_ptr.source);
+        self.gpa.free(gop.value_ptr.source);
     } else {
-        gop.key_ptr.* = try self.allocator.dupe(u8, uri);
+        gop.key_ptr.* = try self.gpa.dupe(u8, uri);
     }
     gop.value_ptr.* = .{ .source = new_source, .version = version };
 }
@@ -106,16 +106,16 @@ pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: 
 /// Replaces the source text of an already-open document.
 pub fn changeDocument(self: *Handler, uri: []const u8, text: []const u8) !void {
     const doc = self.documents.getPtr(uri) orelse return;
-    const new_source = try self.allocator.dupe(u8, text);
-    self.allocator.free(doc.source);
+    const new_source = try self.gpa.dupe(u8, text);
+    self.gpa.free(doc.source);
     doc.source = new_source;
 }
 
 /// Removes a document and frees its source and URI.
 pub fn closeDocument(self: *Handler, uri: []const u8) void {
     const entry = self.documents.fetchRemove(uri) orelse return;
-    self.allocator.free(entry.key);
-    self.allocator.free(entry.value.source);
+    self.gpa.free(entry.key);
+    self.gpa.free(entry.value.source);
 }
 
 pub fn getDocumentSource(self: *const Handler, uri: []const u8) ?[]const u8 {
@@ -130,17 +130,17 @@ pub fn getDocumentSource(self: *const Handler, uri: []const u8) ?[]const u8 {
 /// Run wgslender validation and return LSP diagnostics.
 /// Caller owns the returned slice — free with the same allocator.
 pub fn validateDocument(self: *Handler, source: []const u8) ![]LspDiagnostic {
-    const source_z = try self.allocator.dupeZ(u8, source);
-    defer self.allocator.free(source_z);
+    const source_z = try self.gpa.dupeZ(u8, source);
+    defer self.gpa.free(source_z);
 
-    var result = try wgslender.validateWithOptions(self.allocator, source_z, .{});
-    defer result.deinit(self.allocator);
+    var result = try wgslender.validateWithOptions(self.gpa, source_z, .{});
+    defer result.deinit(self.gpa);
 
     const entries = result.diagnostics.diagnostics.items;
-    const diags = try self.allocator.alloc(LspDiagnostic, entries.len);
+    const diags = try self.gpa.alloc(LspDiagnostic, entries.len);
 
     for (entries, 0..) |entry, i| {
-        diags[i] = convertDiagnostic(self.allocator, &entry);
+        diags[i] = convertDiagnostic(self.gpa, &entry);
     }
 
     return diags;
@@ -148,10 +148,10 @@ pub fn validateDocument(self: *Handler, source: []const u8) ![]LspDiagnostic {
 
 const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
 
-fn convertDiagnostic(allocator: std.mem.Allocator, entry: *const WgslDiagnostic.Entry) LspDiagnostic {
+fn convertDiagnostic(gpa: std.mem.Allocator, entry: *const WgslDiagnostic.Entry) LspDiagnostic {
     var related: []const LspRelatedInfo = &.{};
     if (entry.related.len > 0) {
-        if (allocator.alloc(LspRelatedInfo, entry.related.len)) |rel| {
+        if (gpa.alloc(LspRelatedInfo, entry.related.len)) |rel| {
             for (entry.related, 0..) |r, ri| {
                 rel[ri] = .{
                     .range = .{
@@ -164,7 +164,7 @@ fn convertDiagnostic(allocator: std.mem.Allocator, entry: *const WgslDiagnostic.
                             .character = if (r.range.end.column > 0) r.range.end.column - 1 else 0,
                         },
                     },
-                    .message = allocator.dupe(u8, r.message) catch "",
+                    .message = gpa.dupe(u8, r.message) catch "",
                 };
             }
             related = rel;
@@ -187,10 +187,10 @@ fn convertDiagnostic(allocator: std.mem.Allocator, entry: *const WgslDiagnostic.
             .note => .information,
             else => .information,
         },
-        .message = allocator.dupe(u8, entry.message) catch "",
+        .message = gpa.dupe(u8, entry.message) catch "",
         .code = entry.code,
         .spec_url = if (entry.code.len > 0 and entry.spec_ref.len > 0) blk: {
-            const url = allocator.alloc(u8, wgsl_spec_base.len + entry.spec_ref.len) catch break :blk "";
+            const url = gpa.alloc(u8, wgsl_spec_base.len + entry.spec_ref.len) catch break :blk "";
             @memcpy(url[0..wgsl_spec_base.len], wgsl_spec_base);
             @memcpy(url[wgsl_spec_base.len..], entry.spec_ref);
             break :blk url;
@@ -242,27 +242,27 @@ pub fn computeCodeActions(
         // "Did you mean?" rename fix
         if (isDidYouMeanCode(diag.code)) {
             if (extractDidYouMean(diag.message)) |suggestion| {
-                const title = std.fmt.allocPrint(self.allocator, "Replace with '{s}'", .{suggestion}) catch continue;
-                const new_text = self.allocator.dupe(u8, suggestion) catch {
-                    self.allocator.free(title);
+                const title = std.fmt.allocPrint(self.gpa, "Replace with '{s}'", .{suggestion}) catch continue;
+                const new_text = self.gpa.dupe(u8, suggestion) catch {
+                    self.gpa.free(title);
                     continue;
                 };
-                const edit = self.allocator.alloc(LspTextEdit, 1) catch {
-                    self.allocator.free(new_text);
-                    self.allocator.free(title);
+                const edit = self.gpa.alloc(LspTextEdit, 1) catch {
+                    self.gpa.free(new_text);
+                    self.gpa.free(title);
                     continue;
                 };
                 edit[0] = .{ .range = diag.range, .new_text = new_text };
-                actions.append(self.allocator, .{
+                actions.append(self.gpa, .{
                     .title = title,
                     .kind = "quickfix",
                     .is_preferred = true,
                     .diagnostic = diag,
                     .edits = edit,
                 }) catch {
-                    self.allocator.free(edit);
-                    self.allocator.free(new_text);
-                    self.allocator.free(title);
+                    self.gpa.free(edit);
+                    self.gpa.free(new_text);
+                    self.gpa.free(title);
                 };
             }
         }
@@ -271,39 +271,39 @@ pub fn computeCodeActions(
         if (std.mem.eql(u8, diag.code, "E0602")) {
             if (extractDuplicateLocation(diag.message)) |loc_val| {
                 const new_val = loc_val + 1;
-                const title = std.fmt.allocPrint(self.allocator, "Change to @location({d})", .{new_val}) catch continue;
-                const new_text = std.fmt.allocPrint(self.allocator, "@location({d})", .{new_val}) catch {
-                    self.allocator.free(title);
+                const title = std.fmt.allocPrint(self.gpa, "Change to @location({d})", .{new_val}) catch continue;
+                const new_text = std.fmt.allocPrint(self.gpa, "@location({d})", .{new_val}) catch {
+                    self.gpa.free(title);
                     continue;
                 };
                 // Find @location(...) within the source at the diagnostic range
                 const attr_range = self.findLocationAttrRange(diag.range) orelse {
-                    self.allocator.free(new_text);
-                    self.allocator.free(title);
+                    self.gpa.free(new_text);
+                    self.gpa.free(title);
                     continue;
                 };
-                const edit = self.allocator.alloc(LspTextEdit, 1) catch {
-                    self.allocator.free(new_text);
-                    self.allocator.free(title);
+                const edit = self.gpa.alloc(LspTextEdit, 1) catch {
+                    self.gpa.free(new_text);
+                    self.gpa.free(title);
                     continue;
                 };
                 edit[0] = .{ .range = attr_range, .new_text = new_text };
-                actions.append(self.allocator, .{
+                actions.append(self.gpa, .{
                     .title = title,
                     .kind = "quickfix",
                     .is_preferred = false,
                     .diagnostic = diag,
                     .edits = edit,
                 }) catch {
-                    self.allocator.free(edit);
-                    self.allocator.free(new_text);
-                    self.allocator.free(title);
+                    self.gpa.free(edit);
+                    self.gpa.free(new_text);
+                    self.gpa.free(title);
                 };
             }
         }
     }
 
-    return actions.toOwnedSlice(self.allocator) catch &.{};
+    return actions.toOwnedSlice(self.gpa) catch &.{};
 }
 
 fn isDidYouMeanCode(code: []const u8) bool {
@@ -336,11 +336,11 @@ fn findLocationAttrRange(self: *Handler, diag_range: Range) ?Range {
                 if (std.mem.indexOfPos(u8, source, abs_start, ")")) |close_paren| {
                     const abs_end = close_paren + 1; // include the )
                     // Convert back to LSP positions
-                    var line_index = WgslDiagnostic.LineIndex.init(self.allocator, source) catch return null;
+                    var line_index = WgslDiagnostic.LineIndex.init(self.gpa, source) catch return null;
                     // LineIndex is 0-based; LSP is also 0-based
                     const s = line_index.byteOffsetToLineColumn(@intCast(abs_start));
                     const e = line_index.byteOffsetToLineColumn(@intCast(abs_end));
-                    line_index.deinit(self.allocator);
+                    line_index.deinit(self.gpa);
                     return .{
                         .start = .{ .line = s.line, .character = s.col },
                         .end = .{ .line = e.line, .character = e.col },
@@ -406,30 +406,30 @@ test "convertDiagnostic omits spec_url when code empty" {
 }
 
 /// Frees all allocations within a diagnostics slice (messages, related info, the slice itself).
-pub fn freeDiagnostics(allocator: std.mem.Allocator, diags: []LspDiagnostic) void {
+pub fn freeDiagnostics(gpa: std.mem.Allocator, diags: []LspDiagnostic) void {
     for (diags) |d| {
         if (d.related.len > 0) {
             for (d.related) |r| {
-                if (r.message.len > 0) allocator.free(r.message);
+                if (r.message.len > 0) gpa.free(r.message);
             }
-            allocator.free(d.related);
+            gpa.free(d.related);
         }
-        if (d.message.len > 0) allocator.free(d.message);
-        if (d.spec_url.len > 0) allocator.free(d.spec_url);
+        if (d.message.len > 0) gpa.free(d.message);
+        if (d.spec_url.len > 0) gpa.free(d.spec_url);
     }
-    allocator.free(diags);
+    gpa.free(diags);
 }
 
 /// Frees all allocations within a code actions slice (titles, edits, the slice itself).
-pub fn freeCodeActions(allocator: std.mem.Allocator, actions: []LspCodeAction) void {
+pub fn freeCodeActions(gpa: std.mem.Allocator, actions: []LspCodeAction) void {
     for (actions) |a| {
-        allocator.free(a.title);
+        gpa.free(a.title);
         for (a.edits) |edit| {
-            allocator.free(edit.new_text);
+            gpa.free(edit.new_text);
         }
-        allocator.free(a.edits);
+        gpa.free(a.edits);
     }
-    allocator.free(actions);
+    gpa.free(actions);
 }
 
 test "code round-trips through validateDocument" {

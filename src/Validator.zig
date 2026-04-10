@@ -76,7 +76,7 @@ pub const Result = struct {
 // Validator State
 // =========================================================================
 
-allocator: Allocator,
+arena: Allocator,
 module: *Ast.Module,
 diags: *Diagnostic,
 options: Options,
@@ -110,13 +110,13 @@ binding_pairs: std.AutoHashMapUnmanaged(u64, LocName) = .{},
 // =========================================================================
 
 /// Validate a parsed WGSL module.
-pub fn validate(allocator: Allocator, module: *Ast.Module, options: Options) !Result {
-    const diags = try allocator.create(Diagnostic);
-    diags.* = try Diagnostic.init(allocator, module.source);
+pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result {
+    const diags = try arena.create(Diagnostic);
+    diags.* = try Diagnostic.init(arena, module.source);
     diags.line_offset = options.line_offset;
 
     var v = Validator{
-        .allocator = allocator,
+        .arena = arena,
         .module = module,
         .diags = diags,
         .options = options,
@@ -166,7 +166,7 @@ fn collectTypeDeclarations(v: *Validator) Allocator.Error!void {
                 const name = v.symbolName(d.name);
                 if (name.len == 0) continue;
                 // Create struct type placeholder
-                const st = v.allocator.create(Types.Struct) catch continue;
+                const st = v.arena.create(Types.Struct) catch continue;
                 st.* = .{
                     .name = name,
                     .fields = &.{},
@@ -174,13 +174,13 @@ fn collectTypeDeclarations(v: *Validator) Allocator.Error!void {
                     .align_bytes = 0,
                     .has_runtime_array = false,
                 };
-                try v.struct_types.put(v.allocator, name, st);
+                try v.struct_types.put(v.arena, name, st);
             },
             .alias => |d| {
                 const name = v.symbolName(d.name);
                 if (name.len == 0) continue;
                 // Placeholder — resolved in phase 2
-                try v.alias_types.put(v.allocator, name, null);
+                try v.alias_types.put(v.arena, name, null);
             },
             else => {},
         }
@@ -199,7 +199,7 @@ fn resolveStructLayouts(v: *Validator) Allocator.Error!void {
                 const name = v.symbolName(d.name);
                 const alias_type = v.resolveType(d.typ);
                 if (alias_type) |at| {
-                    try v.alias_types.put(v.allocator, name, at);
+                    try v.alias_types.put(v.arena, name, at);
                 } else {
                     v.addErrorR(v.symbolRange(d.name), v.fmtError("cannot resolve type alias '{s}'", .{name}));
                 }
@@ -230,7 +230,7 @@ fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!voi
             v.addErrorWithRelatedR(member_range, Diagnostic.Code.duplicate_symbol, v.fmtError("duplicate member '{s}' in struct '{s}'", .{ member_name, name }), v.makeRelatedR(first_range, "first declared here"));
             continue;
         }
-        try seen_members.put(v.allocator, member_name, member_range);
+        try seen_members.put(v.arena, member_name, member_range);
         const member_type = v.resolveType(member.typ) orelse {
             if (member.typ != .ident)
                 v.addErrorR(member_range, v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
@@ -257,7 +257,7 @@ fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!voi
                 }
             }
         }
-        try fields.append(v.allocator, .{
+        try fields.append(v.arena, .{
             .name = member_name,
             .typ = member_type,
             .offset = 0,
@@ -286,7 +286,7 @@ fn checkRecursiveStructs(v: *Validator) void {
 fn structContainsCycle(v: *Validator, root_name: []const u8, start: *Types.Struct) bool {
     var visited: std.StringHashMapUnmanaged(void) = .{};
     var worklist: std.ArrayListUnmanaged(*Types.Struct) = .empty;
-    worklist.append(v.allocator, start) catch return false;
+    worklist.append(v.arena, start) catch return false;
 
     // Bounded iteration — struct count is finite and small.
     const max_iterations = v.struct_types.count() + 1;
@@ -296,8 +296,8 @@ fn structContainsCycle(v: *Validator, root_name: []const u8, start: *Types.Struc
             const nested = extractNestedStruct(field.typ) orelse continue;
             if (std.mem.eql(u8, nested.name, root_name)) return true;
             if (visited.get(nested.name) != null) continue;
-            visited.put(v.allocator, nested.name, {}) catch continue;
-            worklist.append(v.allocator, nested) catch continue;
+            visited.put(v.arena, nested.name, {}) catch continue;
+            worklist.append(v.arena, nested) catch continue;
         }
     }
     return false;
@@ -349,7 +349,7 @@ fn checkRecursiveFunctions(v: *Validator) Allocator.Error!void {
                 // Collect all symbol refs from the function body
                 var all_refs: std.ArrayListUnmanaged(u32) = .empty;
                 if (fn_decl.body) |body| {
-                    try Dce.collectStmtRefs(v.allocator, .{ .compound = body }, &all_refs);
+                    try Dce.collectStmtRefs(v.arena, .{ .compound = body }, &all_refs);
                 }
 
                 // Filter to only function symbols
@@ -358,11 +358,11 @@ fn checkRecursiveFunctions(v: *Validator) Allocator.Error!void {
                     if (ref_idx < v.module.symbols.items.len and
                         v.module.symbols.items[ref_idx].kind == .function)
                     {
-                        try fn_refs.append(v.allocator, ref_idx);
+                        try fn_refs.append(v.arena, ref_idx);
                     }
                 }
 
-                try call_graph.put(v.allocator, fn_idx, fn_refs);
+                try call_graph.put(v.arena, fn_idx, fn_refs);
             },
             else => {},
         }
@@ -383,17 +383,17 @@ fn checkRecursiveFunctions(v: *Validator) Allocator.Error!void {
 fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)), color: *std.AutoHashMapUnmanaged(u32, u2), start: u32) Allocator.Error!void {
     const Frame = struct { fn_idx: u32, callee_idx: usize };
     var stack: std.ArrayListUnmanaged(Frame) = .empty;
-    defer stack.deinit(v.allocator);
+    defer stack.deinit(v.arena);
 
-    color.put(v.allocator, start, 1) catch return; // gray
-    stack.append(v.allocator, .{ .fn_idx = start, .callee_idx = 0 }) catch return;
+    color.put(v.arena, start, 1) catch return; // gray
+    stack.append(v.arena, .{ .fn_idx = start, .callee_idx = 0 }) catch return;
 
     const num_syms: usize = v.module.symbols.items.len;
     for (0..num_syms * (num_syms + 1)) |_| {
         const frame = &(stack.items[stack.items.len - 1 ..][0]);
         const callees = call_graph.get(frame.fn_idx) orelse {
             // No callees — mark black and pop
-            try color.put(v.allocator, frame.fn_idx, 2);
+            try color.put(v.arena, frame.fn_idx, 2);
             _ = stack.pop();
             if (stack.items.len == 0) break;
             continue;
@@ -401,7 +401,7 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
 
         if (frame.callee_idx >= callees.items.len) {
             // All callees processed — mark black and pop
-            try color.put(v.allocator, frame.fn_idx, 2);
+            try color.put(v.arena, frame.fn_idx, 2);
             _ = stack.pop();
             if (stack.items.len == 0) break;
             continue;
@@ -417,8 +417,8 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
             v.addErrorWithCodeR(v.symbolRange(sym_idx), Diagnostic.Code.recursive_function, v.fmtError("function '{s}' is recursive", .{v.symbolName(sym_idx)}));
         } else if (callee_color == 0) {
             // White → push new frame
-            color.put(v.allocator, callee, 1) catch continue; // gray
-            try stack.append(v.allocator, .{ .fn_idx = callee, .callee_idx = 0 });
+            color.put(v.arena, callee, 1) catch continue; // gray
+            try stack.append(v.arena, .{ .fn_idx = callee, .callee_idx = 0 });
         }
         // black (2) = already fully processed, skip
     } else unreachable;
@@ -553,7 +553,7 @@ fn validateOverrideId(v: *Validator, d: *Ast.OverrideDecl, name: []const u8) All
         if (v.override_ids.get(id)) |existing| {
             v.addErrorWithRelatedR(ar, Diagnostic.Code.duplicate_override_id, v.fmtError("@id({d}) is already used by override '{s}'", .{ id, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("@id({d}) first used here", .{id})));
         } else {
-            try v.override_ids.put(v.allocator, id, .{ .name = name, .loc = attr.loc });
+            try v.override_ids.put(v.arena, id, .{ .name = name, .loc = attr.loc });
         }
         return;
     }
@@ -633,7 +633,7 @@ fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u8, r
         if (v.binding_pairs.get(key)) |existing| {
             v.addErrorWithRelatedR(r, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}'", .{ group_val.?, binding_val.?, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("'{s}' declared here", .{existing.name})));
         } else {
-            try v.binding_pairs.put(v.allocator, key, .{ .name = name, .loc = r.start });
+            try v.binding_pairs.put(v.arena, key, .{ .name = name, .loc = r.start });
         }
     }
 }
@@ -753,7 +753,7 @@ fn registerFunctionSignatures(v: *Validator) Allocator.Error!void {
                 var param_types: std.ArrayListUnmanaged(Types.Type) = .empty;
                 for (fn_decl.parameters.items) |param| {
                     if (v.resolveType(param.typ)) |pt| {
-                        try param_types.append(v.allocator, pt);
+                        try param_types.append(v.arena, pt);
                     }
                 }
 
@@ -763,7 +763,7 @@ fn registerFunctionSignatures(v: *Validator) Allocator.Error!void {
                 }
 
                 if (fn_decl.name.isValid()) {
-                    const fn_type = Types.functionType(v.allocator, param_types.items, return_type) catch null;
+                    const fn_type = Types.functionType(v.arena, param_types.items, return_type) catch null;
                     if (fn_type) |ft| {
                         try v.setSymbolType(fn_decl.name, ft);
                     }
@@ -823,14 +823,14 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
         const param_type = v.resolveType(param.typ);
         if (param_type) |pt| {
             try v.setSymbolType(param.name, pt);
-            try param_types.append(v.allocator, pt);
+            try param_types.append(v.arena, pt);
         }
         v.validateParameterAttributes(param);
     }
 
     // Register function type in symbol_types so calls can resolve it
     if (fn_decl.name.isValid()) {
-        const fn_type = Types.functionType(v.allocator, param_types.items, v.return_type) catch null;
+        const fn_type = Types.functionType(v.arena, param_types.items, v.return_type) catch null;
         if (fn_type) |ft| {
             try v.setSymbolType(fn_decl.name, ft);
         }
@@ -924,7 +924,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
             if (input_locations.get(info.value)) |first_loc| {
                 v.addErrorWithRelatedR(v.symbolRange(param.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
             } else {
-                try input_locations.put(v.allocator, info.value, info.loc);
+                try input_locations.put(v.arena, info.value, info.loc);
             }
         }
         // If param type is a struct, check its members
@@ -939,7 +939,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                         if (input_locations.get(info.value)) |first_loc| {
                             v.addErrorWithRelatedR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
                         } else {
-                            try input_locations.put(v.allocator, info.value, info.loc);
+                            try input_locations.put(v.arena, info.value, info.loc);
                         }
                     }
                 }
@@ -950,7 +950,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
     // Check output locations (return type)
     var output_locations: std.AutoHashMapUnmanaged(i64, u32) = .{};
     if (getLocationInfo(fn_decl.return_attr)) |info| {
-        try output_locations.put(v.allocator, info.value, info.loc);
+        try output_locations.put(v.arena, info.value, info.loc);
     }
     if (fn_decl.return_type) |rt| {
         const ret_type = v.resolveType(rt) orelse return;
@@ -964,7 +964,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                         if (output_locations.get(info.value)) |first_loc| {
                             v.addErrorWithRelatedR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
                         } else {
-                            try output_locations.put(v.allocator, info.value, info.loc);
+                            try output_locations.put(v.arena, info.value, info.loc);
                         }
                     }
                 }
@@ -1352,7 +1352,7 @@ fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!void {
                 if (seen_values.get(val) != null) {
                     v.addErrorWithCodeR(exprRange(sel), Diagnostic.Code.duplicate_case_selector, v.fmtError("duplicate case selector value '{d}'", .{val}));
                 } else {
-                    try seen_values.put(v.allocator, val, 1);
+                    try seen_values.put(v.arena, val, 1);
                 }
             }
         }
@@ -1462,9 +1462,9 @@ fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
     // Compound assignment (+=, -=, *=, etc.): v op= e is defined as v = v op e.
     // Compute the result type of the binary operation, then verify assignability.
     const result_type: ?Types.Type = switch (s.op) {
-        .add, .sub => Types.addSubResultType(v.allocator, lhs_type, rhs_type) catch null,
-        .mul => Types.multiplyResultType(v.allocator, lhs_type, rhs_type) catch null,
-        .div => Types.divResultType(v.allocator, lhs_type, rhs_type) catch null,
+        .add, .sub => Types.addSubResultType(v.arena, lhs_type, rhs_type) catch null,
+        .mul => Types.multiplyResultType(v.arena, lhs_type, rhs_type) catch null,
+        .div => Types.divResultType(v.arena, lhs_type, rhs_type) catch null,
         .mod => if (Types.isNumeric(lhs_type) and Types.isNumeric(rhs_type))
             Types.commonType(lhs_type, rhs_type)
         else
@@ -1632,7 +1632,7 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
             }
             // Vector comparisons return vec<N, bool>
             if (left_type == .vector) {
-                const bvec = v.allocator.create(Types.Vector) catch return Types.Bool;
+                const bvec = v.arena.create(Types.Vector) catch return Types.Bool;
                 bvec.* = .{ .width = left_type.vector.width, .element = Types.scalar_bool_ptr };
                 return .{ .vector = bvec };
             }
@@ -1645,14 +1645,14 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
             }
             // Vector comparisons return vec<N, bool>
             if (left_type == .vector) {
-                const bvec = v.allocator.create(Types.Vector) catch return Types.Bool;
+                const bvec = v.arena.create(Types.Vector) catch return Types.Bool;
                 bvec.* = .{ .width = left_type.vector.width, .element = Types.scalar_bool_ptr };
                 return .{ .vector = bvec };
             }
             return Types.Bool;
         },
         .add, .sub => {
-            const result = Types.addSubResultType(v.allocator, left_type, right_type) catch return null;
+            const result = Types.addSubResultType(v.arena, left_type, right_type) catch return null;
             if (result) |r| {
                 return r;
             }
@@ -1660,7 +1660,7 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
             return null;
         },
         .mul => {
-            const result = Types.multiplyResultType(v.allocator, left_type, right_type) catch return null;
+            const result = Types.multiplyResultType(v.arena, left_type, right_type) catch return null;
             if (result) |r| {
                 return r;
             }
@@ -1668,7 +1668,7 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
             return null;
         },
         .div => {
-            const result = Types.divResultType(v.allocator, left_type, right_type) catch return null;
+            const result = Types.divResultType(v.arena, left_type, right_type) catch return null;
             if (result) |r| {
                 return r;
             }
@@ -1749,7 +1749,7 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
         },
         .addr => {
             // Creates a pointer to the operand (simplified — actual address space detection is complex)
-            const p = v.allocator.create(Types.Pointer) catch return null;
+            const p = v.arena.create(Types.Pointer) catch return null;
             p.* = .{
                 .address_space = .function,
                 .element = operand_type,
@@ -1792,7 +1792,7 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
     // For non-builtin calls, validate all argument expressions and collect types
     var constructor_arg_types: std.ArrayListUnmanaged(?Types.Type) = .empty;
     for (e.args.items) |arg| {
-        try constructor_arg_types.append(v.allocator, try v.checkExpr(arg));
+        try constructor_arg_types.append(v.arena, try v.checkExpr(arg));
     }
 
     // Check if it's a type constructor
@@ -1969,7 +1969,7 @@ fn inferTextureReturnType(v: *Validator, name: []const u8, arg_types: [8]?Types.
             if (elem_scalar == Types.scalar_f32_ptr) {
                 return .{ .vector = &vec4_f32_singleton };
             }
-            const result = v.allocator.create(Types.Vector) catch return null;
+            const result = v.arena.create(Types.Vector) catch return null;
             result.* = .{ .width = 4, .element = elem_scalar };
             return .{ .vector = result };
         },
@@ -1991,7 +1991,7 @@ fn inferTextureDimsType(v: *Validator, arg_types: [8]?Types.Type) ?Types.Type {
 
     if (width == 1) return Types.U32;
 
-    const result = v.allocator.create(Types.Vector) catch return null;
+    const result = v.arena.create(Types.Vector) catch return null;
     result.* = .{ .width = width, .element = Types.scalar_u32_ptr };
     return .{ .vector = result };
 }
@@ -2002,7 +2002,7 @@ fn inferCustomBuiltin(v: *Validator, name: []const u8, arg_types: [8]?Types.Type
         if (arg_types[0]) |at| {
             if (at == .matrix) {
                 const m = at.matrix;
-                const result = v.allocator.create(Types.Matrix) catch return null;
+                const result = v.arena.create(Types.Matrix) catch return null;
                 result.* = .{ .cols = m.rows, .rows = m.cols, .element = m.element };
                 return .{ .matrix = result };
             }
@@ -2132,7 +2132,7 @@ fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!?Types.Type {
         .vector => |ve| return .{ .scalar = ve.element },
         .matrix => |m| {
             // Indexing a matrix gives a column vector
-            const col_vec = v.allocator.create(Types.Vector) catch return null;
+            const col_vec = v.arena.create(Types.Vector) catch return null;
             col_vec.* = .{ .width = m.rows, .element = m.element };
             return .{ .vector = col_vec };
         },
@@ -2232,7 +2232,7 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!?Types.Type {
                 return .{ .scalar = ve.element };
             }
             // Multi-component swizzle: returns vector
-            const swiz_vec = v.allocator.create(Types.Vector) catch return null;
+            const swiz_vec = v.arena.create(Types.Vector) catch return null;
             swiz_vec.* = .{
                 .width = @intCast(e.member_name.len),
                 .element = ve.element,
@@ -2254,7 +2254,7 @@ fn analyzeUniformity(v: *Validator) void {
     var ua = UniformityAnalyzer{
         .module = v.module,
         .diags = v.diags,
-        .allocator = v.allocator,
+        .arena = v.arena,
         .filters = if (v.options.diagnostic_filters) |f| f else null,
     };
     ua.analyze();
@@ -2265,7 +2265,7 @@ fn analyzeUniformity(v: *Validator) void {
 const UniformityAnalyzer = struct {
     module: *Ast.Module,
     diags: *Diagnostic,
-    allocator: Allocator,
+    arena: Allocator,
     filters: ?*Diagnostic.DiagnosticFilter,
 
     // Current function context
@@ -2334,7 +2334,7 @@ const UniformityAnalyzer = struct {
                     switch (attr.args.items[0]) {
                         .ident => |ident| {
                             if (isNonUniformBuiltin(ident.name)) {
-                                ua.non_uniform_sources.append(ua.allocator, .{
+                                ua.non_uniform_sources.append(ua.arena, .{
                                     .loc = ident.loc,
                                     .reason = "builtin input is non-uniform",
                                     .builtin_name = ident.name,
@@ -2614,7 +2614,7 @@ const UniformityAnalyzer = struct {
 
         _ = func_name;
 
-        ua.diags.add(ua.allocator, .{
+        ua.diags.add(ua.arena, .{
             .severity = severity,
             .code = code,
             .message = message,
@@ -2668,7 +2668,7 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
             } else if (t.shorthand.len > 0) {
                 elem_scalar = shorthandElement(t.shorthand);
             }
-            const result = v.allocator.create(Types.Vector) catch return null;
+            const result = v.arena.create(Types.Vector) catch return null;
             result.* = .{ .width = t.size, .element = elem_scalar };
             return .{ .vector = result };
         },
@@ -2694,7 +2694,7 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
             } else if (t.shorthand.len > 0) {
                 elem_scalar = shorthandElement(t.shorthand);
             }
-            const result = v.allocator.create(Types.Matrix) catch return null;
+            const result = v.arena.create(Types.Matrix) catch return null;
             result.* = .{ .cols = t.cols, .rows = t.rows, .element = elem_scalar };
             return .{ .matrix = result };
         },
@@ -2713,13 +2713,13 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
                 }
                 // If we couldn't extract the value (identifier, complex expr), leave count=0
             }
-            const result = v.allocator.create(Types.Array) catch return null;
+            const result = v.arena.create(Types.Array) catch return null;
             result.* = .{ .element = elem_type, .count = count };
             return .{ .array = result };
         },
         .ptr => |t| {
             const elem_type = v.resolveType(t.elem_type) orelse return null;
-            const result = v.allocator.create(Types.Pointer) catch return null;
+            const result = v.arena.create(Types.Pointer) catch return null;
             result.* = .{
                 .address_space = t.address_space,
                 .element = elem_type,
@@ -2736,7 +2736,7 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
                         v.addErrorWithCodeR(astTypeRange(.{ .atomic = t }), Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires i32 or u32, got '{s}'", .{elem_type.string()}));
                         return null;
                     }
-                    const result = v.allocator.create(Types.Atomic) catch return null;
+                    const result = v.arena.create(Types.Atomic) catch return null;
                     result.* = .{ .element = s };
                     return .{ .atomic = result };
                 },
@@ -2747,7 +2747,7 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
             }
         },
         .sampler => |t| {
-            const result = v.allocator.create(Types.Sampler) catch return null;
+            const result = v.arena.create(Types.Sampler) catch return null;
             result.* = .{ .comparison = t.comparison };
             return .{ .sampler = result };
         },
@@ -2761,7 +2761,7 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
                     }
                 }
             }
-            const result = v.allocator.create(Types.Texture) catch return null;
+            const result = v.arena.create(Types.Texture) catch return null;
             result.* = .{
                 .kind = astTextureKindToType(t.kind),
                 .dimension = astTextureDimToType(t.dimension),
@@ -2782,12 +2782,12 @@ fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
     if (std.mem.eql(u8, name, "f32")) return Types.F32;
     if (std.mem.eql(u8, name, "f16")) return Types.F16;
     if (std.mem.eql(u8, name, "sampler")) {
-        const s = v.allocator.create(Types.Sampler) catch return null;
+        const s = v.arena.create(Types.Sampler) catch return null;
         s.* = .{ .comparison = false };
         return .{ .sampler = s };
     }
     if (std.mem.eql(u8, name, "sampler_comparison")) {
-        const s = v.allocator.create(Types.Sampler) catch return null;
+        const s = v.arena.create(Types.Sampler) catch return null;
         s.* = .{ .comparison = true };
         return .{ .sampler = s };
     }
@@ -2820,21 +2820,21 @@ fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
             .depth_multisampled
         else
             .depth;
-        const t = v.allocator.create(Types.Texture) catch return null;
+        const t = v.arena.create(Types.Texture) catch return null;
         t.* = .{ .kind = kind, .dimension = dim, .sampled_type = null, .texel_format = "", .access_mode = .read };
         return .{ .texture = t };
     }
 
     // External texture type
     if (std.mem.eql(u8, name, "texture_external")) {
-        const t = v.allocator.create(Types.Texture) catch return null;
+        const t = v.arena.create(Types.Texture) catch return null;
         t.* = .{ .kind = .external, .dimension = .@"2d", .sampled_type = null, .texel_format = "", .access_mode = .read };
         return .{ .texture = t };
     }
 
     // Bare array constructor
     if (std.mem.eql(u8, name, "array")) {
-        const arr = v.allocator.create(Types.Array) catch return null;
+        const arr = v.arena.create(Types.Array) catch return null;
         arr.* = .{ .element = Types.F32, .count = 0 };
         return .{ .array = arr };
     }
@@ -2857,24 +2857,18 @@ fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
 fn suggestType(v: *Validator, name: []const u8) ?[]const u8 {
     // Suffixed variants first — they're more commonly intended than bare constructors.
     const builtins = [_][]const u8{
-        "bool",  "i32",   "u32",   "f32",   "f16",
-        "sampler",        "sampler_comparison",
-        "vec2f", "vec2i", "vec2u", "vec2h", "vec2",
-        "vec3f", "vec3i", "vec3u", "vec3h", "vec3",
-        "vec4f", "vec4i", "vec4u", "vec4h", "vec4",
-        "mat2x2f",  "mat2x2h",  "mat2x2",
-        "mat2x3f",  "mat2x3h",  "mat2x3",
-        "mat2x4f",  "mat2x4h",  "mat2x4",
-        "mat3x2f",  "mat3x2h",  "mat3x2",
-        "mat3x3f",  "mat3x3h",  "mat3x3",
-        "mat3x4f",  "mat3x4h",  "mat3x4",
-        "mat4x2f",  "mat4x2h",  "mat4x2",
-        "mat4x3f",  "mat4x3h",  "mat4x3",
-        "mat4x4f",  "mat4x4h",  "mat4x4",
-        "array",
-        "texture_depth_2d",             "texture_depth_2d_array",
-        "texture_depth_cube",           "texture_depth_cube_array",
-        "texture_depth_multisampled_2d", "texture_external",
+        "bool",             "i32",                    "u32",                "f32",                      "f16",
+        "sampler",          "sampler_comparison",     "vec2f",              "vec2i",                    "vec2u",
+        "vec2h",            "vec2",                   "vec3f",              "vec3i",                    "vec3u",
+        "vec3h",            "vec3",                   "vec4f",              "vec4i",                    "vec4u",
+        "vec4h",            "vec4",                   "mat2x2f",            "mat2x2h",                  "mat2x2",
+        "mat2x3f",          "mat2x3h",                "mat2x3",             "mat2x4f",                  "mat2x4h",
+        "mat2x4",           "mat3x2f",                "mat3x2h",            "mat3x2",                   "mat3x3f",
+        "mat3x3h",          "mat3x3",                 "mat3x4f",            "mat3x4h",                  "mat3x4",
+        "mat4x2f",          "mat4x2h",                "mat4x2",             "mat4x3f",                  "mat4x3h",
+        "mat4x3",           "mat4x4f",                "mat4x4h",            "mat4x4",                   "array",
+        "texture_depth_2d", "texture_depth_2d_array", "texture_depth_cube", "texture_depth_cube_array", "texture_depth_multisampled_2d",
+        "texture_external",
     };
     var best: ?[]const u8 = null;
     var best_dist: usize = 3; // only suggest if distance <= 2
@@ -3028,7 +3022,7 @@ fn parseVectorShorthand(v: *Validator, name: []const u8) ?Types.Type {
         return null;
     }
 
-    const result = v.allocator.create(Types.Vector) catch return null;
+    const result = v.arena.create(Types.Vector) catch return null;
     result.* = .{ .width = size, .element = elem };
     return .{ .vector = result };
 }
@@ -3051,7 +3045,7 @@ fn parseMatrixShorthand(v: *Validator, name: []const u8) ?Types.Type {
         };
     }
 
-    const result = v.allocator.create(Types.Matrix) catch return null;
+    const result = v.arena.create(Types.Matrix) catch return null;
     result.* = .{ .cols = @intCast(cols), .rows = @intCast(rows), .element = elem };
     return .{ .matrix = result };
 }
@@ -3164,44 +3158,44 @@ fn symbolName(v: *Validator, sym_idx: Ast.SymbolIndex) []const u8 {
 fn setSymbolType(v: *Validator, sym_idx: Ast.SymbolIndex, typ: ?Types.Type) Allocator.Error!void {
     if (!sym_idx.isValid()) return;
     if (typ) |t| {
-        try v.symbol_types.put(v.allocator, sym_idx.index(), t);
+        try v.symbol_types.put(v.arena, sym_idx.index(), t);
     }
 }
 
 fn fmtError(v: *Validator, comptime fmt: []const u8, args: anytype) []const u8 {
-    return std.fmt.allocPrint(v.allocator, fmt, args) catch fmt;
+    return std.fmt.allocPrint(v.arena, fmt, args) catch fmt;
 }
 
 // -- Single-offset helpers (kept for backward compat / simple cases) ------
 
 fn addError(v: *Validator, offset: u32, message: []const u8) void {
-    v.diags.addError(v.allocator, offset, message);
+    v.diags.addError(v.arena, offset, message);
 }
 
 fn addErrorWithCode(v: *Validator, offset: u32, code: []const u8, message: []const u8) void {
-    v.diags.addErrorWithCode(v.allocator, offset, code, message);
+    v.diags.addErrorWithCode(v.arena, offset, code, message);
 }
 
 fn addWarning(v: *Validator, offset: u32, message: []const u8) void {
     if (v.options.strict_mode) {
-        v.diags.addError(v.allocator, offset, message);
+        v.diags.addError(v.arena, offset, message);
     } else {
-        v.diags.addWarning(v.allocator, offset, message);
+        v.diags.addWarning(v.arena, offset, message);
     }
 }
 
 // -- Range-aware helpers --------------------------------------------------
 
 fn addErrorR(v: *Validator, r: LocRange, message: []const u8) void {
-    v.diags.addErrorRange(v.allocator, r.start, r.end, message);
+    v.diags.addErrorRange(v.arena, r.start, r.end, message);
 }
 
 fn addErrorWithCodeR(v: *Validator, r: LocRange, code: []const u8, message: []const u8) void {
-    v.diags.addErrorWithCodeRange(v.allocator, r.start, r.end, code, message);
+    v.diags.addErrorWithCodeRange(v.arena, r.start, r.end, code, message);
 }
 
 fn addErrorWithRelatedR(v: *Validator, r: LocRange, code: []const u8, message: []const u8, related: []const Diagnostic.RelatedInfo) void {
-    v.diags.add(v.allocator, .{
+    v.diags.add(v.arena, .{
         .severity = .@"error",
         .code = code,
         .message = message,
@@ -3212,14 +3206,14 @@ fn addErrorWithRelatedR(v: *Validator, r: LocRange, code: []const u8, message: [
 
 fn addWarningR(v: *Validator, r: LocRange, message: []const u8) void {
     if (v.options.strict_mode) {
-        v.diags.addErrorRange(v.allocator, r.start, r.end, message);
+        v.diags.addErrorRange(v.arena, r.start, r.end, message);
     } else {
-        v.diags.addWarningRange(v.allocator, r.start, r.end, message);
+        v.diags.addWarningRange(v.arena, r.start, r.end, message);
     }
 }
 
 fn makeRelatedR(v: *Validator, r: LocRange, message: []const u8) []const Diagnostic.RelatedInfo {
-    const slice = v.allocator.alloc(Diagnostic.RelatedInfo, 1) catch return &.{};
+    const slice = v.arena.alloc(Diagnostic.RelatedInfo, 1) catch return &.{};
     slice[0] = .{
         .range = v.diags.makeRange(r.start, r.end),
         .message = message,

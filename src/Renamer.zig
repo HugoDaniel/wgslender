@@ -54,7 +54,7 @@ pub const MinifyRenamer = struct {
     top_level_slots: std.AutoHashMapUnmanaged(u32, u32),
     name_buf: std.ArrayListUnmanaged(u8), // storage for generated names
     name_offsets: std.ArrayListUnmanaged(NameSlice), // offset+len into name_buf
-    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
     renamer: Printer.Renamer,
 
     const SymbolSlot = struct {
@@ -68,7 +68,7 @@ pub const MinifyRenamer = struct {
     };
 
     /// Creates a renamer for the given symbol table, skipping reserved names.
-    pub fn init(allocator: std.mem.Allocator, symbols: []Ast.Symbol, reserved: std.StringHashMapUnmanaged(void)) MinifyRenamer {
+    pub fn init(arena: std.mem.Allocator, symbols: []Ast.Symbol, reserved: std.StringHashMapUnmanaged(void)) MinifyRenamer {
         var self = MinifyRenamer{
             .symbols = symbols,
             .reserved_names = reserved,
@@ -76,7 +76,7 @@ pub const MinifyRenamer = struct {
             .top_level_slots = .empty,
             .name_buf = .empty,
             .name_offsets = .empty,
-            .allocator = allocator,
+            .arena = arena,
             .renamer = undefined,
         };
         self.renamer = .{
@@ -104,12 +104,12 @@ pub const MinifyRenamer = struct {
     pub fn allocateSlots(self: *MinifyRenamer) Allocator.Error!void {
         const SymWithCount = struct { idx: u32, count: u32 };
         var renameable: std.ArrayListUnmanaged(SymWithCount) = .empty;
-        defer renameable.deinit(self.allocator);
+        defer renameable.deinit(self.arena);
 
         for (self.symbols, 0..) |*sym, i| {
             if (sym.flags.must_not_be_renamed) continue;
             if (sym.use_count > 0) {
-                try renameable.append(self.allocator, .{
+                try renameable.append(self.arena, .{
                     .idx = @intCast(i),
                     .count = sym.use_count,
                 });
@@ -124,17 +124,17 @@ pub const MinifyRenamer = struct {
             }
         }.lessThan);
 
-        try self.slots.ensureTotalCapacity(self.allocator, renameable.items.len);
+        try self.slots.ensureTotalCapacity(self.arena, renameable.items.len);
         for (renameable.items, 0..) |item, i| {
-            try self.top_level_slots.put(self.allocator, item.idx, @intCast(i));
-            try self.slots.append(self.allocator, .{ .name = "", .count = item.count });
+            try self.top_level_slots.put(self.arena, item.idx, @intCast(i));
+            try self.slots.append(self.arena, .{ .name = "", .count = item.count });
         }
     }
 
     pub fn reserveUnrenamedSymbolNames(self: *MinifyRenamer) Allocator.Error!void {
         for (self.symbols, 0..) |*sym, i| {
             if (!self.top_level_slots.contains(@intCast(i))) {
-                try self.reserved_names.put(self.allocator, sym.original_name, {});
+                try self.reserved_names.put(self.arena, sym.original_name, {});
             }
         }
     }
@@ -147,7 +147,7 @@ pub const MinifyRenamer = struct {
         // First pass: compute total name storage needed
         var total_len: usize = 0;
         var indices: std.ArrayListUnmanaged(u32) = .empty;
-        defer indices.deinit(self.allocator);
+        defer indices.deinit(self.arena);
         for (self.slots.items) |_| {
             var name = numberToMinifiedName(&buf, name_index);
             // Skip reserved words/names. 256 attempts is safe: WGSL has ~120
@@ -157,21 +157,21 @@ pub const MinifyRenamer = struct {
                 name_index += 1;
                 name = numberToMinifiedName(&buf, name_index);
             } else unreachable;
-            try indices.append(self.allocator, name_index);
+            try indices.append(self.arena, name_index);
             total_len += name.len;
             name_index += 1;
         }
 
         // Pre-allocate name buffer to avoid reallocation
-        try self.name_buf.ensureTotalCapacity(self.allocator, total_len);
+        try self.name_buf.ensureTotalCapacity(self.arena, total_len);
 
         // Second pass: store names (no reallocation will occur)
         for (self.slots.items, 0..) |*slot, i| {
             const idx = indices.items[i];
             const name = numberToMinifiedName(&buf, idx);
             const offset: u32 = @intCast(self.name_buf.items.len);
-            try self.name_buf.appendSlice(self.allocator, name);
-            try self.name_offsets.append(self.allocator, .{ .offset = offset, .len = @intCast(name.len) });
+            try self.name_buf.appendSlice(self.arena, name);
+            try self.name_offsets.append(self.arena, .{ .offset = offset, .len = @intCast(name.len) });
             slot.name = self.name_buf.items[offset .. offset + name.len];
         }
     }
@@ -326,115 +326,106 @@ pub const NameMinifier = struct {
 // =========================================================================
 
 const reserved_keywords = [_][]const u8{
-    "alias", "break", "case", "const", "const_assert", "continue",
-    "continuing", "default", "diagnostic", "discard", "else", "enable",
-    "false", "fn", "for", "if", "let", "loop", "override", "requires",
-    "return", "struct", "switch", "true", "var", "while",
+    "alias",      "break",    "case",       "const",   "const_assert", "continue",
+    "continuing", "default",  "diagnostic", "discard", "else",         "enable",
+    "false",      "fn",       "for",        "if",      "let",          "loop",
+    "override",   "requires", "return",     "struct",  "switch",       "true",
+    "var",        "while",
 };
 
 const reserved_words = [_][]const u8{
-    "NULL",  "Self",   "abstract",     "active",    "alignas",         "alignof",
-    "as",    "asm",    "asm_fragment",  "async",     "attribute",       "auto",
-    "await", "become", "cast",          "catch",     "class",           "co_await",
-    "co_return", "co_yield", "coherent", "column_major", "common",     "compile",
-    "compile_fragment", "concept", "const_cast", "consteval", "constexpr", "constinit",
-    "crate", "debugger", "decltype", "delete", "demote", "demote_to_helper",
-    "do", "dynamic_cast", "enum", "explicit", "export", "extends",
-    "extern", "external", "fallthrough", "filter", "final", "finally",
-    "friend", "from", "fxgroup", "get", "goto", "groupshared",
-    "highp", "impl", "implements", "import", "inline", "instanceof",
-    "interface", "layout", "lowp", "macro", "macro_rules", "match",
-    "mediump", "meta", "mod", "module", "move", "mut",
-    "mutable", "namespace", "new", "nil", "noexcept", "noinline",
-    "nointerpolation", "non_coherent", "noncoherent", "noperspective",
-    "null", "nullptr", "of", "operator", "package", "packoffset",
-    "partition", "pass", "patch", "pixelfragment", "precise", "precision",
-    "premerge", "priv", "protected", "pub", "public", "readonly",
-    "ref", "regardless", "register", "reinterpret_cast", "require",
-    "resource", "restrict", "self", "set", "shared", "sizeof",
-    "smooth", "snorm", "static", "static_assert", "static_cast", "std",
-    "subroutine", "super", "target", "template", "this", "thread_local",
-    "throw", "trait", "try", "type", "typedef", "typeid",
-    "typename", "typeof", "union", "unless", "unorm", "unsafe",
-    "unsized", "use", "using", "varying", "virtual", "volatile",
-    "wgsl", "where", "with", "writeonly", "yield",
+    "NULL",             "Self",             "abstract",     "active",        "alignas",     "alignof",
+    "as",               "asm",              "asm_fragment", "async",         "attribute",   "auto",
+    "await",            "become",           "cast",         "catch",         "class",       "co_await",
+    "co_return",        "co_yield",         "coherent",     "column_major",  "common",      "compile",
+    "compile_fragment", "concept",          "const_cast",   "consteval",     "constexpr",   "constinit",
+    "crate",            "debugger",         "decltype",     "delete",        "demote",      "demote_to_helper",
+    "do",               "dynamic_cast",     "enum",         "explicit",      "export",      "extends",
+    "extern",           "external",         "fallthrough",  "filter",        "final",       "finally",
+    "friend",           "from",             "fxgroup",      "get",           "goto",        "groupshared",
+    "highp",            "impl",             "implements",   "import",        "inline",      "instanceof",
+    "interface",        "layout",           "lowp",         "macro",         "macro_rules", "match",
+    "mediump",          "meta",             "mod",          "module",        "move",        "mut",
+    "mutable",          "namespace",        "new",          "nil",           "noexcept",    "noinline",
+    "nointerpolation",  "non_coherent",     "noncoherent",  "noperspective", "null",        "nullptr",
+    "of",               "operator",         "package",      "packoffset",    "partition",   "pass",
+    "patch",            "pixelfragment",    "precise",      "precision",     "premerge",    "priv",
+    "protected",        "pub",              "public",       "readonly",      "ref",         "regardless",
+    "register",         "reinterpret_cast", "require",      "resource",      "restrict",    "self",
+    "set",              "shared",           "sizeof",       "smooth",        "snorm",       "static",
+    "static_assert",    "static_cast",      "std",          "subroutine",    "super",       "target",
+    "template",         "this",             "thread_local", "throw",         "trait",       "try",
+    "type",             "typedef",          "typeid",       "typename",      "typeof",      "union",
+    "unless",           "unorm",            "unsafe",       "unsized",       "use",         "using",
+    "varying",          "virtual",          "volatile",     "wgsl",          "where",       "with",
+    "writeonly",        "yield",
 };
 
 const reserved_builtin_types = [_][]const u8{
-    "bool", "i32", "u32", "f32", "f16",
-    "vec2", "vec3", "vec4",
-    "vec2i", "vec3i", "vec4i", "vec2u", "vec3u", "vec4u",
-    "vec2f", "vec3f", "vec4f", "vec2h", "vec3h", "vec4h",
-    "mat2x2", "mat2x3", "mat2x4", "mat3x2", "mat3x3", "mat3x4",
-    "mat4x2", "mat4x3", "mat4x4",
-    "mat2x2f", "mat2x3f", "mat2x4f", "mat3x2f", "mat3x3f", "mat3x4f",
-    "mat4x2f", "mat4x3f", "mat4x4f",
-    "mat2x2h", "mat2x3h", "mat2x4h", "mat3x2h", "mat3x3h", "mat3x4h",
-    "mat4x2h", "mat4x3h", "mat4x4h",
-    "array", "ptr", "atomic",
-    "sampler", "sampler_comparison",
-    "texture_1d", "texture_2d", "texture_2d_array",
-    "texture_3d", "texture_cube", "texture_cube_array",
-    "texture_multisampled_2d",
-    "texture_storage_1d", "texture_storage_2d", "texture_storage_2d_array", "texture_storage_3d",
-    "texture_depth_2d", "texture_depth_2d_array", "texture_depth_cube", "texture_depth_cube_array",
-    "texture_depth_multisampled_2d", "texture_external",
+    "bool",               "i32",                      "u32",                           "f32",                     "f16",
+    "vec2",               "vec3",                     "vec4",                          "vec2i",                   "vec3i",
+    "vec4i",              "vec2u",                    "vec3u",                         "vec4u",                   "vec2f",
+    "vec3f",              "vec4f",                    "vec2h",                         "vec3h",                   "vec4h",
+    "mat2x2",             "mat2x3",                   "mat2x4",                        "mat3x2",                  "mat3x3",
+    "mat3x4",             "mat4x2",                   "mat4x3",                        "mat4x4",                  "mat2x2f",
+    "mat2x3f",            "mat2x4f",                  "mat3x2f",                       "mat3x3f",                 "mat3x4f",
+    "mat4x2f",            "mat4x3f",                  "mat4x4f",                       "mat2x2h",                 "mat2x3h",
+    "mat2x4h",            "mat3x2h",                  "mat3x3h",                       "mat3x4h",                 "mat4x2h",
+    "mat4x3h",            "mat4x4h",                  "array",                         "ptr",                     "atomic",
+    "sampler",            "sampler_comparison",       "texture_1d",                    "texture_2d",              "texture_2d_array",
+    "texture_3d",         "texture_cube",             "texture_cube_array",            "texture_multisampled_2d", "texture_storage_1d",
+    "texture_storage_2d", "texture_storage_2d_array", "texture_storage_3d",            "texture_depth_2d",        "texture_depth_2d_array",
+    "texture_depth_cube", "texture_depth_cube_array", "texture_depth_multisampled_2d", "texture_external",
 };
 
 const reserved_builtin_functions = [_][]const u8{
-    "all",                "any",                 "select",
-    "arrayLength",        "bitcast",
-    "sin",                "cos",                 "tan",
-    "asin",               "acos",                "atan",
-    "sinh",               "cosh",                "tanh",
-    "asinh",              "acosh",               "atanh",
-    "atan2",
-    "exp",                "exp2",                "log",
-    "log2",               "pow",                 "sqrt",
-    "inverseSqrt",
-    "abs",                "sign",                "floor",
-    "ceil",               "round",               "trunc",
-    "fract",              "min",                 "max",
-    "clamp",              "saturate",            "mix",
-    "step",               "smoothstep",          "fma",
-    "degrees",            "radians",
-    "dot",                "cross",               "length",
-    "distance",           "normalize",           "reflect",
-    "refract",            "faceForward",
-    "countOneBits",       "countLeadingZeros",   "countTrailingZeros",
-    "reverseBits",        "firstLeadingBit",     "firstTrailingBit",
-    "extractBits",        "insertBits",
-    "transpose",          "determinant",
-    "ldexp",              "frexp",               "modf",
-    "quantizeToF16",
-    "dpdx",               "dpdy",                "fwidth",
-    "dpdxCoarse",         "dpdyCoarse",          "fwidthCoarse",
-    "dpdxFine",           "dpdyFine",            "fwidthFine",
-    "textureSample",      "textureSampleBias",   "textureSampleCompare",
-    "textureSampleCompareLevel", "textureSampleLevel", "textureSampleGrad",
-    "textureLoad",        "textureStore",        "textureDimensions",
-    "textureNumLayers",   "textureNumLevels",    "textureNumSamples",
-    "textureGather",      "textureGatherCompare",
-    "atomicLoad",         "atomicStore",         "atomicAdd",
-    "atomicSub",          "atomicMax",           "atomicMin",
-    "atomicAnd",          "atomicOr",            "atomicXor",
-    "atomicExchange",     "atomicCompareExchangeWeak",
-    "pack4x8snorm",       "pack4x8unorm",        "pack2x16snorm",
-    "pack2x16unorm",      "pack2x16float",       "pack4xI8",
-    "pack4xU8",           "pack4xI8Clamp",       "pack4xU8Clamp",
-    "unpack4x8snorm",     "unpack4x8unorm",      "unpack2x16snorm",
-    "unpack2x16unorm",    "unpack2x16float",     "unpack4xI8",
-    "unpack4xU8",
-    "workgroupBarrier",   "storageBarrier",      "textureBarrier",
-    "workgroupUniformLoad",
-    "subgroupBallot",     "subgroupBroadcast",   "subgroupBroadcastFirst",
-    "subgroupShuffle",    "subgroupShuffleDown",  "subgroupShuffleUp",
-    "subgroupShuffleXor", "subgroupAdd",         "subgroupMul",
-    "subgroupAnd",        "subgroupOr",          "subgroupXor",
-    "subgroupMin",        "subgroupMax",
-    "subgroupInclusiveAdd", "subgroupInclusiveMul",
-    "subgroupExclusiveAdd", "subgroupExclusiveMul",
-    "subgroupAll",        "subgroupAny",         "subgroupElect",
+    "all",                    "any",                       "select",
+    "arrayLength",            "bitcast",                   "sin",
+    "cos",                    "tan",                       "asin",
+    "acos",                   "atan",                      "sinh",
+    "cosh",                   "tanh",                      "asinh",
+    "acosh",                  "atanh",                     "atan2",
+    "exp",                    "exp2",                      "log",
+    "log2",                   "pow",                       "sqrt",
+    "inverseSqrt",            "abs",                       "sign",
+    "floor",                  "ceil",                      "round",
+    "trunc",                  "fract",                     "min",
+    "max",                    "clamp",                     "saturate",
+    "mix",                    "step",                      "smoothstep",
+    "fma",                    "degrees",                   "radians",
+    "dot",                    "cross",                     "length",
+    "distance",               "normalize",                 "reflect",
+    "refract",                "faceForward",               "countOneBits",
+    "countLeadingZeros",      "countTrailingZeros",        "reverseBits",
+    "firstLeadingBit",        "firstTrailingBit",          "extractBits",
+    "insertBits",             "transpose",                 "determinant",
+    "ldexp",                  "frexp",                     "modf",
+    "quantizeToF16",          "dpdx",                      "dpdy",
+    "fwidth",                 "dpdxCoarse",                "dpdyCoarse",
+    "fwidthCoarse",           "dpdxFine",                  "dpdyFine",
+    "fwidthFine",             "textureSample",             "textureSampleBias",
+    "textureSampleCompare",   "textureSampleCompareLevel", "textureSampleLevel",
+    "textureSampleGrad",      "textureLoad",               "textureStore",
+    "textureDimensions",      "textureNumLayers",          "textureNumLevels",
+    "textureNumSamples",      "textureGather",             "textureGatherCompare",
+    "atomicLoad",             "atomicStore",               "atomicAdd",
+    "atomicSub",              "atomicMax",                 "atomicMin",
+    "atomicAnd",              "atomicOr",                  "atomicXor",
+    "atomicExchange",         "atomicCompareExchangeWeak", "pack4x8snorm",
+    "pack4x8unorm",           "pack2x16snorm",             "pack2x16unorm",
+    "pack2x16float",          "pack4xI8",                  "pack4xU8",
+    "pack4xI8Clamp",          "pack4xU8Clamp",             "unpack4x8snorm",
+    "unpack4x8unorm",         "unpack2x16snorm",           "unpack2x16unorm",
+    "unpack2x16float",        "unpack4xI8",                "unpack4xU8",
+    "workgroupBarrier",       "storageBarrier",            "textureBarrier",
+    "workgroupUniformLoad",   "subgroupBallot",            "subgroupBroadcast",
+    "subgroupBroadcastFirst", "subgroupShuffle",           "subgroupShuffleDown",
+    "subgroupShuffleUp",      "subgroupShuffleXor",        "subgroupAdd",
+    "subgroupMul",            "subgroupAnd",               "subgroupOr",
+    "subgroupXor",            "subgroupMin",               "subgroupMax",
+    "subgroupInclusiveAdd",   "subgroupInclusiveMul",      "subgroupExclusiveAdd",
+    "subgroupExclusiveMul",   "subgroupAll",               "subgroupAny",
+    "subgroupElect",
 };
 
 const reserved_address_spaces = [_][]const u8{ "function", "private", "workgroup", "uniform", "storage" };
@@ -442,36 +433,34 @@ const reserved_address_spaces = [_][]const u8{ "function", "private", "workgroup
 const reserved_access_modes = [_][]const u8{ "read", "write", "read_write" };
 
 const reserved_texel_formats = [_][]const u8{
-    "rgba8unorm",  "rgba8snorm",  "rgba8uint",   "rgba8sint",
-    "rgba16uint",  "rgba16sint",  "rgba16float",
-    "r32uint",     "r32sint",     "r32float",
-    "rg32uint",    "rg32sint",    "rg32float",
-    "rgba32uint",  "rgba32sint",  "rgba32float",
+    "rgba8unorm",   "rgba8snorm", "rgba8uint",   "rgba8sint",
+    "rgba16uint",   "rgba16sint", "rgba16float", "r32uint",
+    "r32sint",      "r32float",   "rg32uint",    "rg32sint",
+    "rg32float",    "rgba32uint", "rgba32sint",  "rgba32float",
     "bgra8unorm",
     // Extended formats (Dawn/Tint)
-    "r8unorm",     "r8snorm",
-    "rg8unorm",    "rg8snorm",
-    "r16uint",     "r16sint",     "r16float",
-    "rg16uint",    "rg16sint",    "rg16float",
-    "rgb10a2uint", "rgb10a2unorm",
+      "r8unorm",    "r8snorm",     "rg8unorm",
+    "rg8snorm",     "r16uint",    "r16sint",     "r16float",
+    "rg16uint",     "rg16sint",   "rg16float",   "rgb10a2uint",
+    "rgb10a2unorm",
 };
 
-fn addAllToMap(map: *std.StringHashMapUnmanaged(void), allocator: std.mem.Allocator, names: []const []const u8) Allocator.Error!void {
-    for (names) |name| try map.put(allocator, name, {});
+fn addAllToMap(map: *std.StringHashMapUnmanaged(void), arena: std.mem.Allocator, names: []const []const u8) Allocator.Error!void {
+    for (names) |name| try map.put(arena, name, {});
 }
 
 /// Build the set of names that must not be used for renamed symbols
 /// (keywords, reserved words, builtin types, etc.).
-pub fn computeReservedNames(allocator: std.mem.Allocator) Allocator.Error!std.StringHashMapUnmanaged(void) {
+pub fn computeReservedNames(arena: std.mem.Allocator) Allocator.Error!std.StringHashMapUnmanaged(void) {
     var reserved = std.StringHashMapUnmanaged(void){};
-    try addAllToMap(&reserved, allocator, &reserved_keywords);
-    try addAllToMap(&reserved, allocator, &reserved_words);
-    try reserved.put(allocator, "_", {});
-    try addAllToMap(&reserved, allocator, &reserved_builtin_types);
-    try addAllToMap(&reserved, allocator, &reserved_builtin_functions);
-    try addAllToMap(&reserved, allocator, &reserved_address_spaces);
-    try addAllToMap(&reserved, allocator, &reserved_access_modes);
-    try addAllToMap(&reserved, allocator, &reserved_texel_formats);
+    try addAllToMap(&reserved, arena, &reserved_keywords);
+    try addAllToMap(&reserved, arena, &reserved_words);
+    try reserved.put(arena, "_", {});
+    try addAllToMap(&reserved, arena, &reserved_builtin_types);
+    try addAllToMap(&reserved, arena, &reserved_builtin_functions);
+    try addAllToMap(&reserved, arena, &reserved_address_spaces);
+    try addAllToMap(&reserved, arena, &reserved_access_modes);
+    try addAllToMap(&reserved, arena, &reserved_texel_formats);
     return reserved;
 }
 

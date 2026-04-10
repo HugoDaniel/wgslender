@@ -75,7 +75,7 @@ pub fn defaultOptions() Options {
 
 /// Minify WGSL source code. Returns the minified code and statistics.
 /// The returned code is owned by the arena allocator.
-pub fn minify(allocator: std.mem.Allocator, source: [:0]const u8, options: Options) !Result {
+pub fn minify(arena: std.mem.Allocator, source: [:0]const u8, options: Options) !Result {
     var result = Result{
         .code = "",
         .errors = &.{},
@@ -86,11 +86,11 @@ pub fn minify(allocator: std.mem.Allocator, source: [:0]const u8, options: Optio
     };
 
     // 1. Tokenize
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var tokens = try Lexer.tokenize(arena, source);
+    defer tokens.deinit(arena);
 
     // 2. Parse
-    var parser = try Parser.init(allocator, source, tokens);
+    var parser = try Parser.init(arena, source, tokens);
     const module = parser.parse() catch {
         result.code = source;
         result.minified_size = source.len;
@@ -110,7 +110,7 @@ pub fn minify(allocator: std.mem.Allocator, source: [:0]const u8, options: Optio
 
     // 4. DCE
     if (options.tree_shaking) {
-        result.symbols_dead = try Dce.mark(allocator, module);
+        result.symbols_dead = try Dce.mark(arena, module);
         std.debug.assert(result.symbols_dead <= module.symbols.items.len);
     } else {
         for (module.symbols.items) |*sym| {
@@ -119,20 +119,20 @@ pub fn minify(allocator: std.mem.Allocator, source: [:0]const u8, options: Optio
     }
 
     // 5. Compute usage
-    var uses = try computeSymbolUsage(allocator, module);
-    defer uses.deinit(allocator);
+    var uses = try computeSymbolUsage(arena, module);
+    defer uses.deinit(arena);
 
     // 6. Build reserved names
-    var reserved = try RenamerMod.computeReservedNames(allocator);
+    var reserved = try RenamerMod.computeReservedNames(arena);
     for (options.keep_names) |name| {
-        try reserved.put(allocator, name, {});
+        try reserved.put(arena, name, {});
     }
 
     // 7. Set up source map generator if requested
-    const source_map_gen = try initSourceMapGen(allocator, source, options);
+    const source_map_gen = try initSourceMapGen(arena, source, options);
 
     // 8. Create renamer and print
-    const print_result = try printWithRenamer(allocator, module, options, &uses, reserved, source_map_gen);
+    const print_result = try printWithRenamer(arena, module, options, &uses, reserved, source_map_gen);
     result.code = print_result.code;
 
     // 9. Finalize source map
@@ -161,7 +161,7 @@ pub const MinifyAndReflectResult = struct {
 /// Minify and reflect in a single pass, sharing the parsed module and renamer.
 /// Reflection uses the minified names so callers can map bindings to the
 /// minified output.
-pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, options: Options) !MinifyAndReflectResult {
+pub fn minifyAndReflect(arena: std.mem.Allocator, source: [:0]const u8, options: Options) !MinifyAndReflectResult {
     var result = MinifyAndReflectResult{
         .minify = .{
             .code = "",
@@ -175,17 +175,17 @@ pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, opti
     };
 
     // 1. Tokenize
-    var tokens = try Lexer.tokenize(allocator, source);
-    defer tokens.deinit(allocator);
+    var tokens = try Lexer.tokenize(arena, source);
+    defer tokens.deinit(arena);
 
     // 2. Parse
-    var parser = try Parser.init(allocator, source, tokens);
+    var parser = try Parser.init(arena, source, tokens);
     const module = parser.parse() catch {
         result.minify.code = source;
         result.minify.minified_size = source.len;
         result.minify.errors = parser.errors.items;
         for (parser.errors.items) |err| {
-            try result.reflect.errors.append(allocator, err.message);
+            try result.reflect.errors.append(arena, err.message);
         }
         return result;
     };
@@ -195,7 +195,7 @@ pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, opti
         result.minify.minified_size = source.len;
         result.minify.errors = parser.errors.items;
         for (parser.errors.items) |err| {
-            try result.reflect.errors.append(allocator, err.message);
+            try result.reflect.errors.append(arena, err.message);
         }
         return result;
     }
@@ -204,26 +204,26 @@ pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, opti
     markAPIFacingSymbols(module, options);
 
     if (options.tree_shaking) {
-        result.minify.symbols_dead = try Dce.mark(allocator, module);
+        result.minify.symbols_dead = try Dce.mark(arena, module);
     } else {
         for (module.symbols.items) |*sym| {
             sym.flags.is_live = true;
         }
     }
 
-    var uses = try computeSymbolUsage(allocator, module);
-    defer uses.deinit(allocator);
+    var uses = try computeSymbolUsage(arena, module);
+    defer uses.deinit(arena);
 
-    var reserved = try RenamerMod.computeReservedNames(allocator);
+    var reserved = try RenamerMod.computeReservedNames(arena);
     for (options.keep_names) |name| {
-        try reserved.put(allocator, name, {});
+        try reserved.put(arena, name, {});
     }
 
     // 7. Source map
-    const source_map_gen = try initSourceMapGen(allocator, source, options);
+    const source_map_gen = try initSourceMapGen(arena, source, options);
 
     // 8. Create renamer and print
-    const print_result = try printWithRenamer(allocator, module, options, &uses, reserved, source_map_gen);
+    const print_result = try printWithRenamer(arena, module, options, &uses, reserved, source_map_gen);
     result.minify.code = print_result.code;
 
     // 9. Finalize source map
@@ -235,15 +235,15 @@ pub fn minifyAndReflect(allocator: std.mem.Allocator, source: [:0]const u8, opti
     result.minify.symbols_total = module.symbols.items.len;
 
     // 10. Reflect using the same module and renamer
-    result.reflect = try Reflect.reflectWithRenamer(allocator, module, print_result.renamer);
+    result.reflect = try Reflect.reflectWithRenamer(arena, module, print_result.renamer);
 
     return result;
 }
 
-fn initSourceMapGen(allocator: std.mem.Allocator, source: [:0]const u8, options: Options) !?*SourceMap.Generator {
+fn initSourceMapGen(arena: std.mem.Allocator, source: [:0]const u8, options: Options) !?*SourceMap.Generator {
     if (!options.generate_source_map) return null;
-    const gen = try allocator.create(SourceMap.Generator);
-    gen.* = try SourceMap.Generator.init(allocator, source);
+    const gen = try arena.create(SourceMap.Generator);
+    gen.* = try SourceMap.Generator.init(arena, source);
     gen.setFile(options.source_map_options.file);
     gen.setSourceName(options.source_map_options.source_name);
     gen.setIncludeSource(options.source_map_options.include_source);
@@ -256,13 +256,13 @@ const PrintResult = struct {
 };
 
 fn createMinifyRenamer(
-    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
     module: *Ast.Module,
     uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
     reserved: std.StringHashMapUnmanaged(void),
 ) !*const Printer.Renamer {
-    const r = try allocator.create(RenamerMod.MinifyRenamer);
-    r.* = RenamerMod.MinifyRenamer.init(allocator, module.symbols.items, reserved);
+    const r = try arena.create(RenamerMod.MinifyRenamer);
+    r.* = RenamerMod.MinifyRenamer.init(arena, module.symbols.items, reserved);
     r.accumulateSymbolUseCounts(uses);
     try r.allocateSlots();
     try r.reserveUnrenamedSymbolNames();
@@ -271,15 +271,15 @@ fn createMinifyRenamer(
     return &r.renamer;
 }
 
-fn createNoOpRenamer(allocator: std.mem.Allocator, module: *Ast.Module) !*const Printer.Renamer {
-    const r = try allocator.create(RenamerMod.NoOpRenamer);
+fn createNoOpRenamer(arena: std.mem.Allocator, module: *Ast.Module) !*const Printer.Renamer {
+    const r = try arena.create(RenamerMod.NoOpRenamer);
     r.* = RenamerMod.NoOpRenamer.init(module.symbols.items);
     r.renamer.ptr = @ptrCast(r);
     return &r.renamer;
 }
 
 fn printWithRenamer(
-    allocator: std.mem.Allocator,
+    arena: std.mem.Allocator,
     module: *Ast.Module,
     options: Options,
     uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
@@ -288,20 +288,20 @@ fn printWithRenamer(
 ) !PrintResult {
     // Build base renamer (frequency-based or no-op)
     const renamer_base = if (options.minify_identifiers)
-        try createMinifyRenamer(allocator, module, uses, reserved)
+        try createMinifyRenamer(arena, module, uses, reserved)
     else
-        try createNoOpRenamer(allocator, module);
+        try createNoOpRenamer(arena, module);
 
     var renamer: *const Printer.Renamer = renamer_base;
 
     // Optionally wrap with scope-local renaming
     if (options.scope_local_rename and options.minify_identifiers) {
-        const scope = try ScopeLocalRenamer.init(allocator, module, renamer);
+        const scope = try ScopeLocalRenamer.init(arena, module, renamer);
         renamer = &scope.ren;
     }
 
     // Print — either sorted or in original order
-    var printer = Printer.init(allocator, .{
+    var printer = Printer.init(arena, .{
         .minify_whitespace = options.minify_whitespace,
         .minify_identifiers = options.minify_identifiers,
         .minify_syntax = options.minify_syntax,
@@ -311,7 +311,7 @@ fn printWithRenamer(
     }, module.symbols.items);
 
     if (options.sort_declarations) {
-        const sorted = try sortDeclarations(allocator, module);
+        const sorted = try sortDeclarations(arena, module);
         printer.buf.clearRetainingCapacity();
         for (sorted) |decl| {
             try printer.printDecl(decl);
@@ -359,131 +359,131 @@ fn markAPIFacingSymbols(module: *Ast.Module, options: Options) void {
     }
 }
 
-pub fn computeSymbolUsage(allocator: std.mem.Allocator, module: *const Ast.Module) !std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32) {
+pub fn computeSymbolUsage(arena: std.mem.Allocator, module: *const Ast.Module) !std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32) {
     var uses: std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32) = .empty;
     for (module.declarations.items) |decl| {
-        try countDeclUsage(allocator, decl, &uses);
+        try countDeclUsage(arena, decl, &uses);
     }
     return uses;
 }
 
-fn countDeclUsage(allocator: std.mem.Allocator, decl: Ast.Decl, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
+fn countDeclUsage(arena: std.mem.Allocator, decl: Ast.Decl, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
     switch (decl) {
         .@"const" => |d| {
-            if (d.initializer) |init_expr| try countExprUsage(allocator, init_expr, uses);
+            if (d.initializer) |init_expr| try countExprUsage(arena, init_expr, uses);
         },
         .override => |d| {
-            if (d.initializer) |init_expr| try countExprUsage(allocator, init_expr, uses);
+            if (d.initializer) |init_expr| try countExprUsage(arena, init_expr, uses);
         },
         .@"var" => |d| {
-            if (d.initializer) |init_expr| try countExprUsage(allocator, init_expr, uses);
+            if (d.initializer) |init_expr| try countExprUsage(arena, init_expr, uses);
         },
         .let => |d| {
-            if (d.initializer) |init_expr| try countExprUsage(allocator, init_expr, uses);
+            if (d.initializer) |init_expr| try countExprUsage(arena, init_expr, uses);
         },
         .function => |d| {
             // Count function name itself
             if (d.name.isValid()) {
-                const entry = try uses.getOrPutValue(allocator, d.name, 0);
+                const entry = try uses.getOrPutValue(arena, d.name, 0);
                 entry.value_ptr.* += 1;
             }
-            if (d.body) |body| try countStmtUsage(allocator, .{ .compound = body }, uses);
+            if (d.body) |body| try countStmtUsage(arena, .{ .compound = body }, uses);
         },
         .@"struct", .alias, .const_assert => {},
     }
 }
 
 /// Iteratively counts symbol usage in an expression tree using a worklist.
-fn countExprUsage(allocator: std.mem.Allocator, expr: Ast.Expr, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
+fn countExprUsage(arena: std.mem.Allocator, expr: Ast.Expr, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
-    defer stack.deinit(allocator);
-    try stack.append(allocator, expr);
+    defer stack.deinit(arena);
+    try stack.append(arena, expr);
 
     for (0..65536) |_| {
         const e = stack.pop() orelse break;
         switch (e) {
             .ident => |ie| {
                 if (ie.ref.isValid()) {
-                    const entry = try uses.getOrPutValue(allocator, ie.ref, 0);
+                    const entry = try uses.getOrPutValue(arena, ie.ref, 0);
                     entry.value_ptr.* += 1;
                 }
             },
             .binary => |be| {
-                try stack.append(allocator, be.right);
-                try stack.append(allocator, be.left);
+                try stack.append(arena, be.right);
+                try stack.append(arena, be.left);
             },
-            .unary => |ue| try stack.append(allocator, ue.operand),
+            .unary => |ue| try stack.append(arena, ue.operand),
             .call => |ce| {
                 var i = ce.args.items.len;
                 while (i > 0) {
                     i -= 1;
-                    try stack.append(allocator, ce.args.items[i]);
+                    try stack.append(arena, ce.args.items[i]);
                 }
-                if (ce.func) |f| try stack.append(allocator, f);
+                if (ce.func) |f| try stack.append(arena, f);
             },
             .index => |ie| {
-                try stack.append(allocator, ie.idx);
-                try stack.append(allocator, ie.base);
+                try stack.append(arena, ie.idx);
+                try stack.append(arena, ie.base);
             },
-            .member => |me| try stack.append(allocator, me.base),
-            .paren => |pe| try stack.append(allocator, pe.expr),
+            .member => |me| try stack.append(arena, me.base),
+            .paren => |pe| try stack.append(arena, pe.expr),
             .literal => {},
         }
     } else unreachable;
 }
 
 /// Iteratively counts symbol usage in a statement tree using a worklist.
-fn countStmtUsage(allocator: std.mem.Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
+fn countStmtUsage(arena: std.mem.Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
-    defer stack.deinit(allocator);
-    try stack.append(allocator, stmt);
+    defer stack.deinit(arena);
+    try stack.append(arena, stmt);
 
     for (0..65536) |_| {
         const s = stack.pop() orelse break;
         switch (s) {
             .compound => |cs| {
-                for (cs.stmts.items) |inner| try stack.append(allocator, inner);
+                for (cs.stmts.items) |inner| try stack.append(arena, inner);
             },
             .@"return" => |rs| {
-                if (rs.value) |v| try countExprUsage(allocator, v, uses);
+                if (rs.value) |v| try countExprUsage(arena, v, uses);
             },
             .@"if" => |is| {
-                try countExprUsage(allocator, is.condition, uses);
-                try stack.append(allocator, .{ .compound = is.body });
-                if (is.else_branch) |eb| try stack.append(allocator, eb);
+                try countExprUsage(arena, is.condition, uses);
+                try stack.append(arena, .{ .compound = is.body });
+                if (is.else_branch) |eb| try stack.append(arena, eb);
             },
             .@"switch" => |ss| {
-                try countExprUsage(allocator, ss.expr, uses);
+                try countExprUsage(arena, ss.expr, uses);
                 for (ss.cases.items) |c| {
-                    for (c.selectors.items) |sel| try countExprUsage(allocator, sel, uses);
-                    try stack.append(allocator, .{ .compound = c.body });
+                    for (c.selectors.items) |sel| try countExprUsage(arena, sel, uses);
+                    try stack.append(arena, .{ .compound = c.body });
                 }
             },
             .@"for" => |fs| {
-                if (fs.init_stmt) |is| try stack.append(allocator, is);
-                if (fs.condition) |c| try countExprUsage(allocator, c, uses);
-                if (fs.update) |u| try stack.append(allocator, u);
-                try stack.append(allocator, .{ .compound = fs.body });
+                if (fs.init_stmt) |is| try stack.append(arena, is);
+                if (fs.condition) |c| try countExprUsage(arena, c, uses);
+                if (fs.update) |u| try stack.append(arena, u);
+                try stack.append(arena, .{ .compound = fs.body });
             },
             .@"while" => |ws| {
-                try countExprUsage(allocator, ws.condition, uses);
-                try stack.append(allocator, .{ .compound = ws.body });
+                try countExprUsage(arena, ws.condition, uses);
+                try stack.append(arena, .{ .compound = ws.body });
             },
             .loop => |ls| {
-                try stack.append(allocator, .{ .compound = ls.body });
-                if (ls.continuing) |c| try stack.append(allocator, .{ .compound = c });
+                try stack.append(arena, .{ .compound = ls.body });
+                if (ls.continuing) |c| try stack.append(arena, .{ .compound = c });
             },
-            .break_if => |bs| try countExprUsage(allocator, bs.condition, uses),
+            .break_if => |bs| try countExprUsage(arena, bs.condition, uses),
             .assign => |as_| {
-                try countExprUsage(allocator, as_.left, uses);
-                try countExprUsage(allocator, as_.right, uses);
+                try countExprUsage(arena, as_.left, uses);
+                try countExprUsage(arena, as_.right, uses);
             },
-            .incr_decr => |ids| try countExprUsage(allocator, ids.expr, uses),
+            .incr_decr => |ids| try countExprUsage(arena, ids.expr, uses),
             .call => |cs| {
-                if (cs.call.func) |f| try countExprUsage(allocator, f, uses);
-                for (cs.call.args.items) |arg| try countExprUsage(allocator, arg, uses);
+                if (cs.call.func) |f| try countExprUsage(arena, f, uses);
+                for (cs.call.args.items) |arg| try countExprUsage(arena, arg, uses);
             },
-            .decl => |ds| try countDeclUsage(allocator, ds.decl, uses),
+            .decl => |ds| try countDeclUsage(arena, ds.decl, uses),
             .@"break", .@"continue", .discard => {},
         }
     } else unreachable;
@@ -500,15 +500,15 @@ pub const ScopeLocalRenamer = struct {
     base: *const Printer.Renamer,
     ren: Printer.Renamer,
 
-    pub fn init(allocator: std.mem.Allocator, module: *const Ast.Module, base: *const Printer.Renamer) !*ScopeLocalRenamer {
-        const self = try allocator.create(ScopeLocalRenamer);
+    pub fn init(arena: std.mem.Allocator, module: *const Ast.Module, base: *const Printer.Renamer) !*ScopeLocalRenamer {
+        const self = try arena.create(ScopeLocalRenamer);
         self.* = .{ .overrides = .{}, .base = base, .ren = undefined };
 
         // Collect global symbol indices (should NOT be overridden)
         var globals: std.AutoHashMapUnmanaged(u32, void) = .{};
         for (module.declarations.items) |decl| {
             const ref = decl.nameRef();
-            if (ref.isValid()) try globals.put(allocator, ref.index(), {});
+            if (ref.isValid()) try globals.put(arena, ref.index(), {});
         }
 
         // Collect renamed names of all globals so locals don't shadow them.
@@ -519,7 +519,7 @@ pub const ScopeLocalRenamer = struct {
         while (globals_iter.next()) |key_ptr| {
             const sym_ref: Ast.SymbolIndex = @enumFromInt(key_ptr.*);
             const name = base.nameForSymbol(sym_ref);
-            try reserved_names.put(allocator, name, {});
+            try reserved_names.put(arena, name, {});
         }
 
         var name_buf: [16]u8 = undefined;
@@ -533,12 +533,12 @@ pub const ScopeLocalRenamer = struct {
                 const sym_idx = param.name.index();
                 if (globals.contains(sym_idx)) continue;
                 if (module.symbols.items[sym_idx].flags.must_not_be_renamed) continue;
-                const name = try allocCanonicalName(allocator, &name_buf, &name_idx, &reserved_names);
-                try self.overrides.put(allocator, sym_idx, name);
+                const name = try allocCanonicalName(arena, &name_buf, &name_idx, &reserved_names);
+                try self.overrides.put(arena, sym_idx, name);
             }
 
             if (func.body) |body| {
-                try collectBodyLocals(allocator, body, module, &globals, &self.overrides, &name_buf, &name_idx, &reserved_names);
+                try collectBodyLocals(arena, body, module, &globals, &self.overrides, &name_buf, &name_idx, &reserved_names);
             }
         }
 
@@ -546,12 +546,12 @@ pub const ScopeLocalRenamer = struct {
         return self;
     }
 
-    fn allocCanonicalName(allocator: std.mem.Allocator, buf: *[16]u8, idx: *u32, reserved: *const std.StringHashMapUnmanaged(void)) ![]const u8 {
+    fn allocCanonicalName(arena: std.mem.Allocator, buf: *[16]u8, idx: *u32, reserved: *const std.StringHashMapUnmanaged(void)) ![]const u8 {
         for (0..256) |_| {
             const name = RenamerMod.numberToMinifiedName(buf, idx.*);
             idx.* += 1;
             if (reserved.contains(name)) continue;
-            const copy = try allocator.alloc(u8, name.len);
+            const copy = try arena.alloc(u8, name.len);
             @memcpy(copy, name);
             return copy;
         } else unreachable;
@@ -559,7 +559,7 @@ pub const ScopeLocalRenamer = struct {
 
     /// Iteratively walks compound statements, assigning canonical names to local declarations.
     fn collectBodyLocals(
-        allocator: std.mem.Allocator,
+        arena: std.mem.Allocator,
         body: *const Ast.CompoundStmt,
         module: *const Ast.Module,
         globals: *const std.AutoHashMapUnmanaged(u32, void),
@@ -569,8 +569,8 @@ pub const ScopeLocalRenamer = struct {
         reserved: *const std.StringHashMapUnmanaged(void),
     ) std.mem.Allocator.Error!void {
         var bodies: std.ArrayListUnmanaged(*const Ast.CompoundStmt) = .empty;
-        defer bodies.deinit(allocator);
-        try bodies.append(allocator, body);
+        defer bodies.deinit(arena);
+        try bodies.append(arena, body);
 
         for (0..65536) |_| {
             const current_body = bodies.pop() orelse break;
@@ -581,39 +581,39 @@ pub const ScopeLocalRenamer = struct {
                         if (ref.isValid()) {
                             const sym_idx = ref.index();
                             if (!globals.contains(sym_idx) and !module.symbols.items[sym_idx].flags.must_not_be_renamed) {
-                                const name = try allocCanonicalName(allocator, name_buf, name_idx, reserved);
-                                try overrides.put(allocator, sym_idx, name);
+                                const name = try allocCanonicalName(arena, name_buf, name_idx, reserved);
+                                try overrides.put(arena, sym_idx, name);
                             }
                         }
                     },
                     .@"if" => |s| {
-                        try bodies.append(allocator, s.body);
+                        try bodies.append(arena, s.body);
                         // Walk else-if chain iteratively
                         var eb_opt = s.else_branch;
                         while (eb_opt) |eb| {
                             switch (eb) {
                                 .@"if" => |eif| {
-                                    try bodies.append(allocator, eif.body);
+                                    try bodies.append(arena, eif.body);
                                     eb_opt = eif.else_branch;
                                 },
                                 .compound => |cs| {
-                                    try bodies.append(allocator, cs);
+                                    try bodies.append(arena, cs);
                                     break;
                                 },
                                 else => break,
                             }
                         }
                     },
-                    .@"for" => |s| try bodies.append(allocator, s.body),
-                    .@"while" => |s| try bodies.append(allocator, s.body),
+                    .@"for" => |s| try bodies.append(arena, s.body),
+                    .@"while" => |s| try bodies.append(arena, s.body),
                     .loop => |s| {
-                        try bodies.append(allocator, s.body);
-                        if (s.continuing) |c| try bodies.append(allocator, c);
+                        try bodies.append(arena, s.body);
+                        if (s.continuing) |c| try bodies.append(arena, c);
                     },
                     .@"switch" => |s| {
-                        for (s.cases.items) |case| try bodies.append(allocator, case.body);
+                        for (s.cases.items) |case| try bodies.append(arena, case.body);
                     },
-                    .compound => |s| try bodies.append(allocator, s),
+                    .compound => |s| try bodies.append(arena, s),
                     else => {},
                 }
             }
@@ -634,11 +634,11 @@ pub const ScopeLocalRenamer = struct {
 
 /// Sort module-level declarations by kind (struct→alias→const→var→fn) then
 /// by estimated size. Filters to live declarations.
-pub fn sortDeclarations(allocator: std.mem.Allocator, module: *const Ast.Module) ![]Ast.Decl {
+pub fn sortDeclarations(arena: std.mem.Allocator, module: *const Ast.Module) ![]Ast.Decl {
     var live: std.ArrayListUnmanaged(Ast.Decl) = .empty;
     for (module.declarations.items) |decl| {
         if (Dce.isDeclarationLive(decl, module.symbols.items)) {
-            try live.append(allocator, decl);
+            try live.append(arena, decl);
         }
     }
 

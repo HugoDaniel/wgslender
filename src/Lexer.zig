@@ -288,55 +288,55 @@ pub const keywords_map = std.StaticStringMap(Tag).initComptime(.{
 /// must never generate these as minified names, and identifiers matching them
 /// are tokenized as `reserved_ident` instead of `ident`.
 pub const reserved_words = std.StaticStringMap(void).initComptime(.{
-    .{ "NULL", {} },     .{ "Self", {} },          .{ "abstract", {} },
-    .{ "active", {} },   .{ "alignas", {} },       .{ "alignof", {} },
-    .{ "as", {} },       .{ "asm", {} },            .{ "asm_fragment", {} },
-    .{ "async", {} },    .{ "attribute", {} },      .{ "auto", {} },
-    .{ "await", {} },    .{ "become", {} },         .{ "cast", {} },
-    .{ "catch", {} },    .{ "class", {} },          .{ "co_await", {} },
-    .{ "co_return", {} }, .{ "co_yield", {} },      .{ "coherent", {} },
-    .{ "column_major", {} }, .{ "common", {} },     .{ "compile", {} },
-    .{ "compile_fragment", {} }, .{ "concept", {} }, .{ "const_cast", {} },
-    .{ "consteval", {} }, .{ "constexpr", {} },     .{ "constinit", {} },
-    .{ "crate", {} },    .{ "debugger", {} },       .{ "decltype", {} },
-    .{ "delete", {} },   .{ "demote", {} },         .{ "demote_to_helper", {} },
-    .{ "do", {} },       .{ "dynamic_cast", {} },   .{ "enum", {} },
-    .{ "explicit", {} }, .{ "export", {} },         .{ "extends", {} },
-    .{ "extern", {} },   .{ "external", {} },       .{ "fallthrough", {} },
-    .{ "filter", {} },   .{ "final", {} },          .{ "finally", {} },
-    .{ "friend", {} },   .{ "from", {} },           .{ "fxgroup", {} },
-    .{ "get", {} },      .{ "goto", {} },           .{ "groupshared", {} },
-    .{ "highp", {} },    .{ "impl", {} },           .{ "implements", {} },
-    .{ "import", {} },   .{ "inline", {} },         .{ "instanceof", {} },
-    .{ "interface", {} }, .{ "layout", {} },         .{ "lowp", {} },
-    .{ "macro", {} },    .{ "macro_rules", {} },    .{ "match", {} },
-    .{ "mediump", {} },  .{ "meta", {} },           .{ "mod", {} },
-    .{ "module", {} },   .{ "move", {} },           .{ "mut", {} },
-    .{ "mutable", {} },  .{ "namespace", {} },      .{ "new", {} },
-    .{ "nil", {} },      .{ "noexcept", {} },       .{ "noinline", {} },
-    .{ "nointerpolation", {} }, .{ "non_coherent", {} }, .{ "noncoherent", {} },
-    .{ "noperspective", {} }, .{ "null", {} },      .{ "nullptr", {} },
-    .{ "of", {} },       .{ "operator", {} },       .{ "package", {} },
-    .{ "packoffset", {} }, .{ "partition", {} },    .{ "pass", {} },
-    .{ "patch", {} },    .{ "pixelfragment", {} },  .{ "precise", {} },
-    .{ "precision", {} }, .{ "premerge", {} },      .{ "priv", {} },
-    .{ "protected", {} }, .{ "pub", {} },           .{ "public", {} },
-    .{ "readonly", {} }, .{ "ref", {} },            .{ "regardless", {} },
-    .{ "register", {} }, .{ "reinterpret_cast", {} }, .{ "require", {} },
-    .{ "resource", {} }, .{ "restrict", {} },       .{ "self", {} },
-    .{ "set", {} },      .{ "shared", {} },         .{ "sizeof", {} },
-    .{ "smooth", {} },   .{ "snorm", {} },          .{ "static", {} },
-    .{ "static_assert", {} }, .{ "static_cast", {} }, .{ "std", {} },
-    .{ "subroutine", {} }, .{ "super", {} },        .{ "target", {} },
-    .{ "template", {} }, .{ "this", {} },           .{ "thread_local", {} },
-    .{ "throw", {} },    .{ "trait", {} },          .{ "try", {} },
-    .{ "type", {} },     .{ "typedef", {} },        .{ "typeid", {} },
-    .{ "typename", {} }, .{ "typeof", {} },         .{ "union", {} },
-    .{ "unless", {} },   .{ "unorm", {} },          .{ "unsafe", {} },
-    .{ "unsized", {} },  .{ "use", {} },            .{ "using", {} },
-    .{ "varying", {} },  .{ "virtual", {} },        .{ "volatile", {} },
-    .{ "wgsl", {} },     .{ "where", {} },          .{ "with", {} },
-    .{ "writeonly", {} }, .{ "yield", {} },
+    .{ "NULL", {} },             .{ "Self", {} },             .{ "abstract", {} },
+    .{ "active", {} },           .{ "alignas", {} },          .{ "alignof", {} },
+    .{ "as", {} },               .{ "asm", {} },              .{ "asm_fragment", {} },
+    .{ "async", {} },            .{ "attribute", {} },        .{ "auto", {} },
+    .{ "await", {} },            .{ "become", {} },           .{ "cast", {} },
+    .{ "catch", {} },            .{ "class", {} },            .{ "co_await", {} },
+    .{ "co_return", {} },        .{ "co_yield", {} },         .{ "coherent", {} },
+    .{ "column_major", {} },     .{ "common", {} },           .{ "compile", {} },
+    .{ "compile_fragment", {} }, .{ "concept", {} },          .{ "const_cast", {} },
+    .{ "consteval", {} },        .{ "constexpr", {} },        .{ "constinit", {} },
+    .{ "crate", {} },            .{ "debugger", {} },         .{ "decltype", {} },
+    .{ "delete", {} },           .{ "demote", {} },           .{ "demote_to_helper", {} },
+    .{ "do", {} },               .{ "dynamic_cast", {} },     .{ "enum", {} },
+    .{ "explicit", {} },         .{ "export", {} },           .{ "extends", {} },
+    .{ "extern", {} },           .{ "external", {} },         .{ "fallthrough", {} },
+    .{ "filter", {} },           .{ "final", {} },            .{ "finally", {} },
+    .{ "friend", {} },           .{ "from", {} },             .{ "fxgroup", {} },
+    .{ "get", {} },              .{ "goto", {} },             .{ "groupshared", {} },
+    .{ "highp", {} },            .{ "impl", {} },             .{ "implements", {} },
+    .{ "import", {} },           .{ "inline", {} },           .{ "instanceof", {} },
+    .{ "interface", {} },        .{ "layout", {} },           .{ "lowp", {} },
+    .{ "macro", {} },            .{ "macro_rules", {} },      .{ "match", {} },
+    .{ "mediump", {} },          .{ "meta", {} },             .{ "mod", {} },
+    .{ "module", {} },           .{ "move", {} },             .{ "mut", {} },
+    .{ "mutable", {} },          .{ "namespace", {} },        .{ "new", {} },
+    .{ "nil", {} },              .{ "noexcept", {} },         .{ "noinline", {} },
+    .{ "nointerpolation", {} },  .{ "non_coherent", {} },     .{ "noncoherent", {} },
+    .{ "noperspective", {} },    .{ "null", {} },             .{ "nullptr", {} },
+    .{ "of", {} },               .{ "operator", {} },         .{ "package", {} },
+    .{ "packoffset", {} },       .{ "partition", {} },        .{ "pass", {} },
+    .{ "patch", {} },            .{ "pixelfragment", {} },    .{ "precise", {} },
+    .{ "precision", {} },        .{ "premerge", {} },         .{ "priv", {} },
+    .{ "protected", {} },        .{ "pub", {} },              .{ "public", {} },
+    .{ "readonly", {} },         .{ "ref", {} },              .{ "regardless", {} },
+    .{ "register", {} },         .{ "reinterpret_cast", {} }, .{ "require", {} },
+    .{ "resource", {} },         .{ "restrict", {} },         .{ "self", {} },
+    .{ "set", {} },              .{ "shared", {} },           .{ "sizeof", {} },
+    .{ "smooth", {} },           .{ "snorm", {} },            .{ "static", {} },
+    .{ "static_assert", {} },    .{ "static_cast", {} },      .{ "std", {} },
+    .{ "subroutine", {} },       .{ "super", {} },            .{ "target", {} },
+    .{ "template", {} },         .{ "this", {} },             .{ "thread_local", {} },
+    .{ "throw", {} },            .{ "trait", {} },            .{ "try", {} },
+    .{ "type", {} },             .{ "typedef", {} },          .{ "typeid", {} },
+    .{ "typename", {} },         .{ "typeof", {} },           .{ "union", {} },
+    .{ "unless", {} },           .{ "unorm", {} },            .{ "unsafe", {} },
+    .{ "unsized", {} },          .{ "use", {} },              .{ "using", {} },
+    .{ "varying", {} },          .{ "virtual", {} },          .{ "volatile", {} },
+    .{ "wgsl", {} },             .{ "where", {} },            .{ "with", {} },
+    .{ "writeonly", {} },        .{ "yield", {} },
 });
 
 // -------------------------------------------------------------------------
@@ -354,7 +354,7 @@ pub fn init(source: [:0]const u8) Lexer {
 
 /// Tokenize the entire source, returning owned token storage.
 /// Caller must call `deinit` on the returned Lexer to free memory.
-pub fn tokenize(allocator: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayList(Token) {
+pub fn tokenize(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayList(Token) {
     var lex = Lexer{
         .source = source,
         .pos = 0,
@@ -363,11 +363,11 @@ pub fn tokenize(allocator: std.mem.Allocator, source: [:0]const u8) !std.MultiAr
 
     // Pre-estimate capacity: ~1 token per 8 source bytes
     const estimated = @max(source.len / 8, 16);
-    try lex.tokens.ensureTotalCapacity(allocator, estimated);
+    try lex.tokens.ensureTotalCapacity(arena, estimated);
 
     for (0..source.len + 1) |_| {
         const tag = lex.next();
-        try lex.tokens.append(allocator, .{ .tag = tag.tag, .start = tag.start });
+        try lex.tokens.append(arena, .{ .tag = tag.tag, .start = tag.start });
         if (tag.tag == .eof or tag.tag == .@"error") break;
     } else unreachable;
 
@@ -470,18 +470,54 @@ fn next(self: *Lexer) TokenResult {
             '=' => continue :state .saw_eq,
             '!' => continue :state .saw_bang,
             // Single-char tokens
-            '~' => { kind = .tilde; self.pos += 1; },
-            '@' => { kind = .at; self.pos += 1; },
-            '(' => { kind = .l_paren; self.pos += 1; },
-            ')' => { kind = .r_paren; self.pos += 1; },
-            '{' => { kind = .l_brace; self.pos += 1; },
-            '}' => { kind = .r_brace; self.pos += 1; },
-            '[' => { kind = .l_bracket; self.pos += 1; },
-            ']' => { kind = .r_bracket; self.pos += 1; },
-            ';' => { kind = .semicolon; self.pos += 1; },
-            ':' => { kind = .colon; self.pos += 1; },
-            ',' => { kind = .comma; self.pos += 1; },
-            else => { kind = .@"error"; self.pos += 1; },
+            '~' => {
+                kind = .tilde;
+                self.pos += 1;
+            },
+            '@' => {
+                kind = .at;
+                self.pos += 1;
+            },
+            '(' => {
+                kind = .l_paren;
+                self.pos += 1;
+            },
+            ')' => {
+                kind = .r_paren;
+                self.pos += 1;
+            },
+            '{' => {
+                kind = .l_brace;
+                self.pos += 1;
+            },
+            '}' => {
+                kind = .r_brace;
+                self.pos += 1;
+            },
+            '[' => {
+                kind = .l_bracket;
+                self.pos += 1;
+            },
+            ']' => {
+                kind = .r_bracket;
+                self.pos += 1;
+            },
+            ';' => {
+                kind = .semicolon;
+                self.pos += 1;
+            },
+            ':' => {
+                kind = .colon;
+                self.pos += 1;
+            },
+            ',' => {
+                kind = .comma;
+                self.pos += 1;
+            },
+            else => {
+                kind = .@"error";
+                self.pos += 1;
+            },
         },
 
         // =============================================================
@@ -789,24 +825,42 @@ fn next(self: *Lexer) TokenResult {
         .saw_plus => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '+' => { kind = .plus_plus; self.pos += 1; },
-                '=' => { kind = .plus_eq; self.pos += 1; },
+                '+' => {
+                    kind = .plus_plus;
+                    self.pos += 1;
+                },
+                '=' => {
+                    kind = .plus_eq;
+                    self.pos += 1;
+                },
                 else => kind = .plus,
             }
         },
         .saw_minus => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '-' => { kind = .minus_minus; self.pos += 1; },
-                '=' => { kind = .minus_eq; self.pos += 1; },
-                '>' => { kind = .arrow; self.pos += 1; },
+                '-' => {
+                    kind = .minus_minus;
+                    self.pos += 1;
+                },
+                '=' => {
+                    kind = .minus_eq;
+                    self.pos += 1;
+                },
+                '>' => {
+                    kind = .arrow;
+                    self.pos += 1;
+                },
                 else => kind = .minus,
             }
         },
         .saw_star => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '=' => { kind = .star_eq; self.pos += 1; },
+                '=' => {
+                    kind = .star_eq;
+                    self.pos += 1;
+                },
                 else => kind = .star,
             }
         },
@@ -822,37 +876,58 @@ fn next(self: *Lexer) TokenResult {
                     block_depth = 1;
                     continue :state .block_comment;
                 },
-                '=' => { kind = .slash_eq; self.pos += 1; },
+                '=' => {
+                    kind = .slash_eq;
+                    self.pos += 1;
+                },
                 else => kind = .slash,
             }
         },
         .saw_percent => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '=' => { kind = .percent_eq; self.pos += 1; },
+                '=' => {
+                    kind = .percent_eq;
+                    self.pos += 1;
+                },
                 else => kind = .percent,
             }
         },
         .saw_amp => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '&' => { kind = .amp_amp; self.pos += 1; },
-                '=' => { kind = .amp_eq; self.pos += 1; },
+                '&' => {
+                    kind = .amp_amp;
+                    self.pos += 1;
+                },
+                '=' => {
+                    kind = .amp_eq;
+                    self.pos += 1;
+                },
                 else => kind = .amp,
             }
         },
         .saw_pipe => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '|' => { kind = .pipe_pipe; self.pos += 1; },
-                '=' => { kind = .pipe_eq; self.pos += 1; },
+                '|' => {
+                    kind = .pipe_pipe;
+                    self.pos += 1;
+                },
+                '=' => {
+                    kind = .pipe_eq;
+                    self.pos += 1;
+                },
                 else => kind = .pipe,
             }
         },
         .saw_caret => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '=' => { kind = .caret_eq; self.pos += 1; },
+                '=' => {
+                    kind = .caret_eq;
+                    self.pos += 1;
+                },
                 else => kind = .caret,
             }
         },
@@ -860,14 +935,20 @@ fn next(self: *Lexer) TokenResult {
             self.pos += 1;
             switch (src[self.pos]) {
                 '<' => continue :state .saw_lt_lt,
-                '=' => { kind = .lt_eq; self.pos += 1; },
+                '=' => {
+                    kind = .lt_eq;
+                    self.pos += 1;
+                },
                 else => kind = .lt,
             }
         },
         .saw_lt_lt => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '=' => { kind = .lt_lt_eq; self.pos += 1; },
+                '=' => {
+                    kind = .lt_lt_eq;
+                    self.pos += 1;
+                },
                 else => kind = .lt_lt,
             }
         },
@@ -875,28 +956,40 @@ fn next(self: *Lexer) TokenResult {
             self.pos += 1;
             switch (src[self.pos]) {
                 '>' => continue :state .saw_gt_gt,
-                '=' => { kind = .gt_eq; self.pos += 1; },
+                '=' => {
+                    kind = .gt_eq;
+                    self.pos += 1;
+                },
                 else => kind = .gt,
             }
         },
         .saw_gt_gt => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '=' => { kind = .gt_gt_eq; self.pos += 1; },
+                '=' => {
+                    kind = .gt_gt_eq;
+                    self.pos += 1;
+                },
                 else => kind = .gt_gt,
             }
         },
         .saw_eq => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '=' => { kind = .eq_eq; self.pos += 1; },
+                '=' => {
+                    kind = .eq_eq;
+                    self.pos += 1;
+                },
                 else => kind = .eq,
             }
         },
         .saw_bang => {
             self.pos += 1;
             switch (src[self.pos]) {
-                '=' => { kind = .bang_eq; self.pos += 1; },
+                '=' => {
+                    kind = .bang_eq;
+                    self.pos += 1;
+                },
                 else => kind = .bang,
             }
         },
@@ -988,19 +1081,43 @@ fn retokenizeEnd(self: *const Lexer, start: u32, tag: Tag, bound: u32) []const u
     pos += 1;
     const nc: u8 = if (pos < src.len) src[pos] else 0;
     switch (ch) {
-        '+' => if (nc == '+' or nc == '=') { pos += 1; },
-        '-' => if (nc == '-' or nc == '=' or nc == '>') { pos += 1; },
-        '*', '/', '%' => if (nc == '=') { pos += 1; },
-        '&' => if (nc == '&' or nc == '=') { pos += 1; },
-        '|' => if (nc == '|' or nc == '=') { pos += 1; },
-        '^' => if (nc == '=') { pos += 1; },
+        '+' => if (nc == '+' or nc == '=') {
+            pos += 1;
+        },
+        '-' => if (nc == '-' or nc == '=' or nc == '>') {
+            pos += 1;
+        },
+        '*', '/', '%' => if (nc == '=') {
+            pos += 1;
+        },
+        '&' => if (nc == '&' or nc == '=') {
+            pos += 1;
+        },
+        '|' => if (nc == '|' or nc == '=') {
+            pos += 1;
+        },
+        '^' => if (nc == '=') {
+            pos += 1;
+        },
         '<' => {
-            if (nc == '<') { pos += 1; if (pos < src.len and src[pos] == '=') pos += 1; } else if (nc == '=') { pos += 1; }
+            if (nc == '<') {
+                pos += 1;
+                if (pos < src.len and src[pos] == '=') pos += 1;
+            } else if (nc == '=') {
+                pos += 1;
+            }
         },
         '>' => {
-            if (nc == '>') { pos += 1; if (pos < src.len and src[pos] == '=') pos += 1; } else if (nc == '=') { pos += 1; }
+            if (nc == '>') {
+                pos += 1;
+                if (pos < src.len and src[pos] == '=') pos += 1;
+            } else if (nc == '=') {
+                pos += 1;
+            }
         },
-        '=', '!' => if (nc == '=') { pos += 1; },
+        '=', '!' => if (nc == '=') {
+            pos += 1;
+        },
         else => {},
     }
     return src[start..pos];
@@ -1141,9 +1258,9 @@ fn expectTokenValue(input: [:0]const u8, expected_tag: Tag, expected_value: []co
     var tok_end = raw_end;
     while (tok_end > tok_start and
         (input[tok_end - 1] == ' ' or
-        input[tok_end - 1] == '\n' or
-        input[tok_end - 1] == '\t' or
-        input[tok_end - 1] == '\r'))
+            input[tok_end - 1] == '\n' or
+            input[tok_end - 1] == '\t' or
+            input[tok_end - 1] == '\r'))
     {
         tok_end -= 1;
     }
@@ -1820,11 +1937,11 @@ test "lexer: sentinel boundary — input ending after decimal dot" {
 }
 
 test "lexer: sentinel boundary — unterminated block comment" {
-    try expectTokenSequence("/*", &.{ .eof });
+    try expectTokenSequence("/*", &.{.eof});
 }
 
 test "lexer: sentinel boundary — unterminated nested block comment" {
-    try expectTokenSequence("/* /* */", &.{ .eof });
+    try expectTokenSequence("/* /* */", &.{.eof});
 }
 
 test "lexer: operator disambiguation at EOF — single lt" {
