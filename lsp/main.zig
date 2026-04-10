@@ -121,11 +121,15 @@ const NativeServer = struct {
         arena: std.mem.Allocator,
         params: lsp.types.CodeAction.Params,
     ) ?[]const lsp.types.CodeAction.Result {
-        const uri = params.textDocument.uri;
+        const handler_diags = convertClientDiagnostics(arena, params.context.diagnostics) orelse return null;
+        const actions = self.handler.computeCodeActions(handler_diags) catch return null;
+        if (actions.len == 0) return null;
+        return convertToLspCodeActions(arena, params.textDocument.uri, actions);
+    }
 
-        // Convert client diagnostics to Handler's LspDiagnostic format.
-        const handler_diags = arena.alloc(Handler.LspDiagnostic, params.context.diagnostics.len) catch return null;
-        for (params.context.diagnostics, 0..) |d, i| {
+    fn convertClientDiagnostics(arena: std.mem.Allocator, diagnostics: []const lsp.types.Diagnostic) ?[]Handler.LspDiagnostic {
+        const handler_diags = arena.alloc(Handler.LspDiagnostic, diagnostics.len) catch return null;
+        for (diagnostics, 0..) |d, i| {
             handler_diags[i] = .{
                 .range = .{
                     .start = .{ .line = d.range.start.line, .character = d.range.start.character },
@@ -145,14 +149,12 @@ const NativeServer = struct {
                 } else "",
             };
         }
+        return handler_diags;
+    }
 
-        const actions = self.handler.computeCodeActions(handler_diags) catch return null;
-        if (actions.len == 0) return null;
-
-        // Convert Handler actions to lsp-kit types.
+    fn convertToLspCodeActions(arena: std.mem.Allocator, uri: []const u8, actions: []const Handler.LspCodeAction) ?[]const lsp.types.CodeAction.Result {
         const results = arena.alloc(lsp.types.CodeAction.Result, actions.len) catch return null;
         for (actions, 0..) |action, i| {
-            // Build TextEdit array
             const text_edits = arena.alloc(lsp.types.TextEdit, action.edits.len) catch continue;
             for (action.edits, 0..) |edit, ei| {
                 text_edits[ei] = .{
@@ -164,7 +166,6 @@ const NativeServer = struct {
                 };
             }
 
-            // Build the original diagnostic in lsp-kit format
             const lsp_diag = lsp.types.Diagnostic{
                 .range = .{
                     .start = .{ .line = action.diagnostic.range.start.line, .character = action.diagnostic.range.start.character },
@@ -183,7 +184,6 @@ const NativeServer = struct {
             const diag_slice = arena.alloc(lsp.types.Diagnostic, 1) catch continue;
             diag_slice[0] = lsp_diag;
 
-            // Build WorkspaceEdit with changes map
             var changes = std.json.ArrayHashMap([]const lsp.types.TextEdit){};
             changes.map.put(arena, uri, text_edits) catch continue;
 
@@ -197,7 +197,6 @@ const NativeServer = struct {
                 },
             };
         }
-
         return results;
     }
 

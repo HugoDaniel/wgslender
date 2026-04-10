@@ -161,7 +161,6 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
     const params = root.getPtr("params") orelse return;
     const td = objGet(params, "textDocument") orelse return;
     const uri = strVal(objGet(td, "uri")) orelse return;
-    _ = uri;
 
     // Extract diagnostics from context
     const context = objGet(params, "context") orelse return;
@@ -170,9 +169,17 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
         else => return,
     };
 
-    // Convert JSON diagnostics to Handler.LspDiagnostic
-    const handler_diags = wasm_allocator.alloc(Handler.LspDiagnostic, diag_array.len) catch return;
+    const handler_diags = convertJsonDiagnostics(diag_array) orelse return;
     defer wasm_allocator.free(handler_diags);
+
+    const actions = handler.computeCodeActions(handler_diags) catch return;
+    defer Handler.freeCodeActions(wasm_allocator, actions);
+
+    buildCodeActionJsonResponse(id, uri, actions);
+}
+
+fn convertJsonDiagnostics(diag_array: []std.json.Value) ?[]Handler.LspDiagnostic {
+    const handler_diags = wasm_allocator.alloc(Handler.LspDiagnostic, diag_array.len) catch return null;
 
     for (diag_array, 0..) |*diag_val, i| {
         const diag_obj = objGet(diag_val, "range") orelse continue;
@@ -184,7 +191,6 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
         const end_line: u32 = if (intVal(if (end_obj) |e| objGet(e, "line") else null)) |v| @intCast(v) else 0;
         const end_char: u32 = if (intVal(if (end_obj) |e| objGet(e, "character") else null)) |v| @intCast(v) else 0;
 
-        // Extract code (may be string or number)
         const code_val = objGet(diag_val, "code");
         const code: []const u8 = if (code_val) |cv| (strVal(cv) orelse "") else "";
 
@@ -206,10 +212,10 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
         };
     }
 
-    const actions = handler.computeCodeActions(handler_diags) catch return;
-    defer Handler.freeCodeActions(wasm_allocator, actions);
+    return handler_diags;
+}
 
-    // Build JSON-RPC response
+fn buildCodeActionJsonResponse(id: ?std.json.Value, uri: []const u8, actions: []const Handler.LspCodeAction) void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"id\":");
     if (id) |id_val| switch (id_val) {
@@ -258,11 +264,7 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
 
         // Edit (WorkspaceEdit with changes)
         appendStr(&buf, ",\"edit\":{\"changes\":{\"");
-        // URI: use the document URI from the request
-        const req_params = root.getPtr("params") orelse continue;
-        const req_td = objGet(req_params, "textDocument") orelse continue;
-        const req_uri = strVal(objGet(req_td, "uri")) orelse continue;
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, req_uri);
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri);
         appendStr(&buf, "\":[");
         for (action.edits, 0..) |edit, ei| {
             if (ei > 0) buf.append(wasm_allocator, ',') catch {};

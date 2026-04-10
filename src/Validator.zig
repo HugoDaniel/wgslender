@@ -194,64 +194,7 @@ fn collectTypeDeclarations(v: *Validator) Allocator.Error!void {
 fn resolveStructLayouts(v: *Validator) Allocator.Error!void {
     for (v.module.declarations.items) |decl| {
         switch (decl) {
-            .@"struct" => |d| {
-                const name = v.symbolName(d.name);
-                const st = v.struct_types.get(name) orelse continue;
-                const name_range = v.symbolRange(d.name);
-
-                // Spec: struct must have at least 1 member.
-                if (d.members.items.len == 0) {
-                    v.addErrorWithCodeR(name_range, Diagnostic.Code.empty_struct, v.fmtError("struct '{s}' must have at least one member", .{name}));
-                    continue;
-                }
-
-                // Build fields list, checking for duplicate member names
-                var fields: std.ArrayListUnmanaged(Types.StructField) = .empty;
-                var seen_members: std.StringHashMapUnmanaged(LocRange) = .{};
-                for (d.members.items) |member| {
-                    const member_name = v.symbolName(member.name);
-                    const member_range = v.symbolRange(member.name);
-                    if (seen_members.get(member_name)) |first_range| {
-                        v.addErrorWithRelatedR(member_range, Diagnostic.Code.duplicate_symbol, v.fmtError("duplicate member '{s}' in struct '{s}'", .{ member_name, name }), v.makeRelatedR(first_range, "first declared here"));
-                        continue;
-                    }
-                    try seen_members.put(v.allocator, member_name, member_range);
-                    const member_type = v.resolveType(member.typ) orelse {
-                        if (member.typ != .ident)
-                            v.addErrorR(member_range, v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
-                        continue;
-                    };
-                    // Validate @align and @size attributes
-                    for (member.attributes.items) |attr| {
-                        const ar = attrRange(&attr);
-                        if (std.mem.eql(u8, attr.name, "align") and attr.args.items.len > 0) {
-                            if (tryExtractIntValue(attr.args.items[0])) |val| {
-                                if (val <= 0 or (@as(u64, @intCast(val)) & (@as(u64, @intCast(val)) - 1)) != 0) {
-                                    v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@align value must be a positive power of 2, got {d}", .{val}));
-                                }
-                            }
-                        }
-                        if (std.mem.eql(u8, attr.name, "size") and attr.args.items.len > 0) {
-                            if (tryExtractIntValue(attr.args.items[0])) |val| {
-                                const type_size = member_type.size();
-                                if (val <= 0) {
-                                    v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@size value must be positive, got {d}", .{val}));
-                                } else if (type_size > 0 and @as(u32, @intCast(val)) < type_size) {
-                                    v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@size({d}) is less than the byte size of the type ({d})", .{ val, type_size }));
-                                }
-                            }
-                        }
-                    }
-                    try fields.append(v.allocator, .{
-                        .name = member_name,
-                        .typ = member_type,
-                        .offset = 0,
-                    });
-                }
-
-                st.fields = fields.items;
-                st.computeLayout();
-            },
+            .@"struct" => |d| try v.resolveOneStructLayout(d),
             .alias => |d| {
                 const name = v.symbolName(d.name);
                 const alias_type = v.resolveType(d.typ);
@@ -264,6 +207,65 @@ fn resolveStructLayouts(v: *Validator) Allocator.Error!void {
             else => {},
         }
     }
+}
+
+fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!void {
+    const name = v.symbolName(d.name);
+    const st = v.struct_types.get(name) orelse return;
+    const name_range = v.symbolRange(d.name);
+
+    // Spec: struct must have at least 1 member.
+    if (d.members.items.len == 0) {
+        v.addErrorWithCodeR(name_range, Diagnostic.Code.empty_struct, v.fmtError("struct '{s}' must have at least one member", .{name}));
+        return;
+    }
+
+    // Build fields list, checking for duplicate member names
+    var fields: std.ArrayListUnmanaged(Types.StructField) = .empty;
+    var seen_members: std.StringHashMapUnmanaged(LocRange) = .{};
+    for (d.members.items) |member| {
+        const member_name = v.symbolName(member.name);
+        const member_range = v.symbolRange(member.name);
+        if (seen_members.get(member_name)) |first_range| {
+            v.addErrorWithRelatedR(member_range, Diagnostic.Code.duplicate_symbol, v.fmtError("duplicate member '{s}' in struct '{s}'", .{ member_name, name }), v.makeRelatedR(first_range, "first declared here"));
+            continue;
+        }
+        try seen_members.put(v.allocator, member_name, member_range);
+        const member_type = v.resolveType(member.typ) orelse {
+            if (member.typ != .ident)
+                v.addErrorR(member_range, v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
+            continue;
+        };
+        // Validate @align and @size attributes
+        for (member.attributes.items) |attr| {
+            const ar = attrRange(&attr);
+            if (std.mem.eql(u8, attr.name, "align") and attr.args.items.len > 0) {
+                if (tryExtractIntValue(attr.args.items[0])) |val| {
+                    if (val <= 0 or (@as(u64, @intCast(val)) & (@as(u64, @intCast(val)) - 1)) != 0) {
+                        v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@align value must be a positive power of 2, got {d}", .{val}));
+                    }
+                }
+            }
+            if (std.mem.eql(u8, attr.name, "size") and attr.args.items.len > 0) {
+                if (tryExtractIntValue(attr.args.items[0])) |val| {
+                    const type_size = member_type.size();
+                    if (val <= 0) {
+                        v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@size value must be positive, got {d}", .{val}));
+                    } else if (type_size > 0 and @as(u32, @intCast(val)) < type_size) {
+                        v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@size({d}) is less than the byte size of the type ({d})", .{ val, type_size }));
+                    }
+                }
+            }
+        }
+        try fields.append(v.allocator, .{
+            .name = member_name,
+            .typ = member_type,
+            .offset = 0,
+        });
+    }
+
+    st.fields = fields.items;
+    st.computeLayout();
 }
 
 // =========================================================================
@@ -602,35 +604,38 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
         }
     }
 
-    // Check for required @group/@binding on uniform/storage vars
-    if (d.address_space == .uniform or d.address_space == .storage) {
-        var has_group = false;
-        var has_binding = false;
-        var group_val: ?i64 = null;
-        var binding_val: ?i64 = null;
-        for (d.attributes.items) |attr| {
-            if (std.mem.eql(u8, attr.name, "group")) {
-                has_group = true;
-                if (attr.args.items.len > 0) group_val = tryExtractIntValue(attr.args.items[0]);
-            }
-            if (std.mem.eql(u8, attr.name, "binding")) {
-                has_binding = true;
-                if (attr.args.items.len > 0) binding_val = tryExtractIntValue(attr.args.items[0]);
-            }
-        }
-        if (!has_group or !has_binding) {
-            v.addErrorWithCodeR(r, Diagnostic.Code.missing_binding, v.fmtError("{s} var '{s}' requires @group and @binding attributes", .{ d.address_space.string(), name }));
-        } else if (group_val != null and binding_val != null) {
-            const key = (@as(u64, @intCast(group_val.?)) << 32) | @as(u64, @intCast(binding_val.?));
-            if (v.binding_pairs.get(key)) |existing| {
-                v.addErrorWithRelatedR(r, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}'", .{ group_val.?, binding_val.?, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("'{s}' declared here", .{existing.name})));
-            } else {
-                try v.binding_pairs.put(v.allocator, key, .{ .name = name, .loc = r.start });
-            }
-        }
-    }
+    try v.validateBindingAttributes(d, name, r);
 
     try v.setSymbolType(d.name, decl_type);
+}
+
+fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u8, r: LocRange) Allocator.Error!void {
+    if (d.address_space != .uniform and d.address_space != .storage) return;
+
+    var has_group = false;
+    var has_binding = false;
+    var group_val: ?i64 = null;
+    var binding_val: ?i64 = null;
+    for (d.attributes.items) |attr| {
+        if (std.mem.eql(u8, attr.name, "group")) {
+            has_group = true;
+            if (attr.args.items.len > 0) group_val = tryExtractIntValue(attr.args.items[0]);
+        }
+        if (std.mem.eql(u8, attr.name, "binding")) {
+            has_binding = true;
+            if (attr.args.items.len > 0) binding_val = tryExtractIntValue(attr.args.items[0]);
+        }
+    }
+    if (!has_group or !has_binding) {
+        v.addErrorWithCodeR(r, Diagnostic.Code.missing_binding, v.fmtError("{s} var '{s}' requires @group and @binding attributes", .{ d.address_space.string(), name }));
+    } else if (group_val != null and binding_val != null) {
+        const key = (@as(u64, @intCast(group_val.?)) << 32) | @as(u64, @intCast(binding_val.?));
+        if (v.binding_pairs.get(key)) |existing| {
+            v.addErrorWithRelatedR(r, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}'", .{ group_val.?, binding_val.?, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("'{s}' declared here", .{existing.name})));
+        } else {
+            try v.binding_pairs.put(v.allocator, key, .{ .name = name, .loc = r.start });
+        }
+    }
 }
 
 fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
@@ -1780,48 +1785,8 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
     }
 
     // Check if it's a builtin function
-    if (Builtins.lookup(callee_name)) |builtin| {
-        // Check argument count
-        const arg_count: u32 = @intCast(e.args.items.len);
-        if (!builtin.checkArgCount(arg_count)) {
-            v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' expects {d} to {d} arguments, got {d}", .{ callee_name, builtin.min_args, builtin.max_args, arg_count }));
-            return null;
-        }
-
-        // Collect argument types (single pass — no double evaluation)
-        var arg_types: [8]?Types.Type = .{null} ** 8;
-        const max_check = @min(e.args.items.len, 8);
-        for (0..max_check) |i| {
-            arg_types[i] = try v.checkExpr(e.args.items[i]);
-        }
-
-        // Type check arguments based on builtin kind
-        switch (builtin.kind) {
-            .numeric, .derivative => {
-                for (0..max_check) |i| {
-                    if (arg_types[i]) |at| {
-                        if (!Types.isNumeric(at) and !Types.isFloat(at) and !Types.isMatrix(at)) {
-                            v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires numeric argument, got '{s}'", .{ callee_name, at.string() }));
-                            return null;
-                        }
-                    }
-                }
-            },
-            .logical => {
-                // all/any require bool args; select has (T, T, bool) signature
-                if (!std.mem.eql(u8, callee_name, "select")) {
-                    if (arg_types[0]) |at| {
-                        if (!at.eql(Types.Bool) and !Types.isVector(at)) {
-                            v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires 'bool' argument, got '{s}'", .{ callee_name, at.string() }));
-                            return null;
-                        }
-                    }
-                }
-            },
-            else => {},
-        }
-
-        return v.inferBuiltinReturnType(builtin, callee_name, arg_types);
+    if (Builtins.lookup(callee_name)) |builtin_fn| {
+        return v.checkBuiltinCall(e, callee_name, builtin_fn);
     }
 
     // For non-builtin calls, validate all argument expressions and collect types
@@ -1838,77 +1803,120 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
     // Check if it's a user-defined function
     if (e.func) |func| {
         switch (func) {
-            .ident => |ident| {
-                if (ident.ref.isValid()) {
-                    const idx = ident.ref.index();
-                    if (v.symbol_types.get(idx)) |sym_type| {
-                        switch (sym_type) {
-                            .function => |fn_type| {
-                                const call_range = exprRange(.{ .call = e });
-                                const fn_related = v.makeRelatedR(v.symbolRange(ident.ref), v.fmtError("'{s}' declared here", .{callee_name}));
-                                // Check argument count
-                                if (e.args.items.len != fn_type.parameters.len) {
-                                    v.addErrorWithRelatedR(call_range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' expects {d} arguments, got {d}", .{ callee_name, fn_type.parameters.len, e.args.items.len }), fn_related);
-                                    return null;
-                                }
-                                // Check argument types
-                                for (e.args.items, 0..) |arg, ai| {
-                                    if (ai < fn_type.parameters.len) {
-                                        const arg_type = try v.checkExpr(arg);
-                                        if (arg_type) |at| {
-                                            const param_type = fn_type.parameters[ai];
-                                            if (!at.eql(param_type) and !Types.canConvertTo(at, param_type)) {
-                                                v.addErrorWithRelatedR(call_range, Diagnostic.Code.invalid_arg_type, v.fmtError("argument {d} of '{s}' has type '{s}', expected '{s}'", .{ ai + 1, callee_name, at.string(), param_type.string() }), fn_related);
-                                                return null;
-                                            }
-                                        }
-                                    }
-                                }
-                                return fn_type.return_type;
-                            },
-                            else => {
-                                // Symbol exists but is not a function
-                                if (v.suggestCallable(callee_name)) |s| {
-                                    v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
-                                } else {
-                                    v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
-                                }
-                                return null;
-                            },
-                        }
-                    }
-                    // Symbol exists but no type — check if it's a function symbol
-                    if (idx < v.module.symbols.items.len and
-                        v.module.symbols.items[idx].kind == .function)
-                    {
-                        // User function — check argument count against parameters
-                        return null; // Can't fully type-check without function type
-                    }
-                }
-
-                // Not resolvable — report error
-                if (callee_name.len > 0 and !Builtins.isBuiltin(callee_name)) {
-                    if (v.suggestCallable(callee_name)) |s| {
-                        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
-                    } else {
-                        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
-                    }
-                    return null;
-                }
-            },
+            .ident => |ident| return v.checkUserFunctionCall(e, ident, callee_name),
             else => {},
         }
     }
 
     // Unresolved call — if we have a name and it's not a builtin, error
     if (callee_name.len > 0) {
-        if (v.suggestCallable(callee_name)) |s| {
-            v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
-        } else {
-            v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
-        }
+        v.reportNotCallable(e, callee_name);
     }
     return null;
+}
+
+fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, builtin_fn: Builtins.Builtin) Allocator.Error!?Types.Type {
+    // Check argument count
+    const arg_count: u32 = @intCast(e.args.items.len);
+    if (!builtin_fn.checkArgCount(arg_count)) {
+        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' expects {d} to {d} arguments, got {d}", .{ callee_name, builtin_fn.min_args, builtin_fn.max_args, arg_count }));
+        return null;
+    }
+
+    // Collect argument types (single pass — no double evaluation)
+    var arg_types: [8]?Types.Type = .{null} ** 8;
+    const max_check = @min(e.args.items.len, 8);
+    for (0..max_check) |i| {
+        arg_types[i] = try v.checkExpr(e.args.items[i]);
+    }
+
+    // Type check arguments based on builtin kind
+    switch (builtin_fn.kind) {
+        .numeric, .derivative => {
+            for (0..max_check) |i| {
+                if (arg_types[i]) |at| {
+                    if (!Types.isNumeric(at) and !Types.isFloat(at) and !Types.isMatrix(at)) {
+                        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires numeric argument, got '{s}'", .{ callee_name, at.string() }));
+                        return null;
+                    }
+                }
+            }
+        },
+        .logical => {
+            // all/any require bool args; select has (T, T, bool) signature
+            if (!std.mem.eql(u8, callee_name, "select")) {
+                if (arg_types[0]) |at| {
+                    if (!at.eql(Types.Bool) and !Types.isVector(at)) {
+                        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires 'bool' argument, got '{s}'", .{ callee_name, at.string() }));
+                        return null;
+                    }
+                }
+            }
+        },
+        else => {},
+    }
+
+    return v.inferBuiltinReturnType(builtin_fn, callee_name, arg_types);
+}
+
+fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr, callee_name: []const u8) Allocator.Error!?Types.Type {
+    if (ident.ref.isValid()) {
+        const idx = ident.ref.index();
+        if (v.symbol_types.get(idx)) |sym_type| {
+            switch (sym_type) {
+                .function => |fn_type| {
+                    const call_range = exprRange(.{ .call = e });
+                    const fn_related = v.makeRelatedR(v.symbolRange(ident.ref), v.fmtError("'{s}' declared here", .{callee_name}));
+                    // Check argument count
+                    if (e.args.items.len != fn_type.parameters.len) {
+                        v.addErrorWithRelatedR(call_range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' expects {d} arguments, got {d}", .{ callee_name, fn_type.parameters.len, e.args.items.len }), fn_related);
+                        return null;
+                    }
+                    // Check argument types
+                    for (e.args.items, 0..) |arg, ai| {
+                        if (ai < fn_type.parameters.len) {
+                            const arg_type = try v.checkExpr(arg);
+                            if (arg_type) |at| {
+                                const param_type = fn_type.parameters[ai];
+                                if (!at.eql(param_type) and !Types.canConvertTo(at, param_type)) {
+                                    v.addErrorWithRelatedR(call_range, Diagnostic.Code.invalid_arg_type, v.fmtError("argument {d} of '{s}' has type '{s}', expected '{s}'", .{ ai + 1, callee_name, at.string(), param_type.string() }), fn_related);
+                                    return null;
+                                }
+                            }
+                        }
+                    }
+                    return fn_type.return_type;
+                },
+                else => {
+                    // Symbol exists but is not a function
+                    v.reportNotCallable(e, callee_name);
+                    return null;
+                },
+            }
+        }
+        // Symbol exists but no type — check if it's a function symbol
+        if (idx < v.module.symbols.items.len and
+            v.module.symbols.items[idx].kind == .function)
+        {
+            // User function — check argument count against parameters
+            return null; // Can't fully type-check without function type
+        }
+    }
+
+    // Not resolvable — report error
+    if (callee_name.len > 0 and !Builtins.isBuiltin(callee_name)) {
+        v.reportNotCallable(e, callee_name);
+        return null;
+    }
+    return null;
+}
+
+fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8) void {
+    if (v.suggestCallable(callee_name)) |s| {
+        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
+    } else {
+        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
+    }
 }
 
 fn inferBuiltinReturnType(v: *Validator, builtin: Builtins.Builtin, name: []const u8, arg_types: [8]?Types.Type) ?Types.Type {

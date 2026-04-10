@@ -1094,47 +1094,8 @@ const VmGen = struct {
             try e.i32_const(0x80);
             try e.i32_sub();
             try e.local_set(3);
-            // src = str_offsets[idx] (u16 LE)
-            try e.local_get(3);
-            try e.i32_const(2);
-            try e.i32_mul();
-            try e.i32_const(@intCast(layout.str_offsets_base));
-            try e.i32_add();
-            try e.i32_load16_u();
-            try e.local_set(5);
-            // len = str_lens[idx]
-            try e.local_get(3);
-            try e.i32_const(@intCast(layout.str_lens_base));
-            try e.i32_add();
-            try e.i32_load8_u();
-            try e.local_set(4);
-            // copy loop: while len > 0
-            try e.block();
-            try e.loop_();
-            try e.local_get(4);
-            try e.i32_eqz();
-            try e.br_if(1); // break copy loop
-            // output[wp] = mem[src]
-            try e.local_get(1);
-            try e.local_get(5);
-            try e.i32_load8_u();
-            try e.i32_store8();
-            // wp++, src++, len--
-            try e.local_get(1);
-            try e.i32_const(1);
-            try e.i32_add();
-            try e.local_set(1);
-            try e.local_get(5);
-            try e.i32_const(1);
-            try e.i32_add();
-            try e.local_set(5);
-            try e.local_get(4);
-            try e.i32_const(1);
-            try e.i32_sub();
-            try e.local_set(4);
-            try e.br(0); // continue copy loop
-            try e.end(); // end copy loop
-            try e.end(); // end copy block
+            try emitRefLookup(e, @intCast(layout.str_offsets_base), @intCast(layout.str_lens_base));
+            try emitCopyLoop(e);
             try e.br(1); // continue main loop (depth: if→loop)
         }
         try e.end(); // end if (string ref)
@@ -1172,45 +1133,8 @@ const VmGen = struct {
             try e.i32_const(1);
             try e.i32_add();
             try e.local_set(0);
-            // src = sym_offsets[idx] (u16 LE)
-            try e.local_get(3);
-            try e.i32_const(2);
-            try e.i32_mul();
-            try e.i32_const(@intCast(layout.sym_offsets_base));
-            try e.i32_add();
-            try e.i32_load16_u();
-            try e.local_set(5);
-            // len = sym_lens[idx]
-            try e.local_get(3);
-            try e.i32_const(@intCast(layout.sym_lens_base));
-            try e.i32_add();
-            try e.i32_load8_u();
-            try e.local_set(4);
-            // copy loop
-            try e.block();
-            try e.loop_();
-            try e.local_get(4);
-            try e.i32_eqz();
-            try e.br_if(1);
-            try e.local_get(1);
-            try e.local_get(5);
-            try e.i32_load8_u();
-            try e.i32_store8();
-            try e.local_get(1);
-            try e.i32_const(1);
-            try e.i32_add();
-            try e.local_set(1);
-            try e.local_get(5);
-            try e.i32_const(1);
-            try e.i32_add();
-            try e.local_set(5);
-            try e.local_get(4);
-            try e.i32_const(1);
-            try e.i32_sub();
-            try e.local_set(4);
-            try e.br(0);
-            try e.end();
-            try e.end();
+            try emitRefLookup(e, @intCast(layout.sym_offsets_base), @intCast(layout.sym_lens_base));
+            try emitCopyLoop(e);
             try e.br(1); // continue main loop (depth: if→loop)
         }
         try e.end(); // end if (symbol ref)
@@ -1223,6 +1147,57 @@ const VmGen = struct {
         // return wp
         try e.local_get(1);
         try e.end(); // end function
+    }
+
+    /// Emit WASM instructions to look up src (local 5) and len (local 4)
+    /// from offset/length tables using idx (local 3).
+    fn emitRefLookup(e: WasmBinary.Emit, offsets_base: u32, lens_base: u32) !void {
+        // src = offsets[idx] (u16 LE)
+        try e.local_get(3);
+        try e.i32_const(2);
+        try e.i32_mul();
+        try e.i32_const(offsets_base);
+        try e.i32_add();
+        try e.i32_load16_u();
+        try e.local_set(5);
+        // len = lens[idx]
+        try e.local_get(3);
+        try e.i32_const(lens_base);
+        try e.i32_add();
+        try e.i32_load8_u();
+        try e.local_set(4);
+    }
+
+    /// Emit WASM instructions for the copy loop: copies len bytes from src to
+    /// output[wp]. Uses locals 1 (wp), 4 (len), 5 (src). Branch depths are
+    /// self-contained within the emitted block/loop structure.
+    fn emitCopyLoop(e: WasmBinary.Emit) !void {
+        try e.block();
+        try e.loop_();
+        try e.local_get(4);
+        try e.i32_eqz();
+        try e.br_if(1); // break copy loop
+        // output[wp] = mem[src]
+        try e.local_get(1);
+        try e.local_get(5);
+        try e.i32_load8_u();
+        try e.i32_store8();
+        // wp++, src++, len--
+        try e.local_get(1);
+        try e.i32_const(1);
+        try e.i32_add();
+        try e.local_set(1);
+        try e.local_get(5);
+        try e.i32_const(1);
+        try e.i32_add();
+        try e.local_set(5);
+        try e.local_get(4);
+        try e.i32_const(1);
+        try e.i32_sub();
+        try e.local_set(4);
+        try e.br(0); // continue copy loop
+        try e.end(); // end loop
+        try e.end(); // end block
     }
 };
 
