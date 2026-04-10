@@ -373,41 +373,84 @@ fn visitFunctionDecl(self: *Parser, decl: *Ast.FunctionDecl) void {
     self.exitScope();
 }
 
-fn visitStmt(self: *Parser, s: Ast.Stmt) void {
+/// Iteratively visits statements using a worklist with scope markers.
+fn visitStmt(self: *Parser, root: Ast.Stmt) void {
+    const Work = union(enum) {
+        stmt: Ast.Stmt,
+        compound: *Ast.CompoundStmt,
+        exit_scope,
+    };
+
+    var stack: std.ArrayListUnmanaged(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    stack.append(self.allocator, .{ .stmt = root }) catch return;
+
+    while (true) {
+        const work = stack.pop() orelse break;
+        switch (work) {
+            .exit_scope => self.exitScope(),
+            .compound => |body| {
+                self.enterNextScope();
+                stack.append(self.allocator, .exit_scope) catch {};
+                var i = body.stmts.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    stack.append(self.allocator, .{ .stmt = body.stmts.items[i] }) catch {};
+                }
+            },
+            .stmt => |s| self.processOneStmt(s, &stack),
+        }
+    }
+}
+
+/// Process a single statement, pushing child work items onto the stack.
+/// Expression visits are done inline (already iterative).
+fn processOneStmt(self: *Parser, s: Ast.Stmt, stack: anytype) void {
+    const Work = std.meta.Child(@TypeOf(stack.items));
     switch (s) {
-        .compound => |stmt| self.visitCompoundStmt(stmt),
+        .compound => |stmt| stack.append(self.allocator, .{ .compound = stmt }) catch {},
         .@"return" => |stmt| {
             if (stmt.value) |v| stmt.value = self.visitExpr(v);
         },
         .@"if" => |stmt| {
             stmt.condition = self.visitExpr(stmt.condition);
-            self.visitCompoundStmt(stmt.body);
-            if (stmt.else_branch) |eb| self.visitStmt(eb);
+            // Push else branch first (processed after body), then body
+            if (stmt.else_branch) |eb| stack.append(self.allocator, @as(Work, .{ .stmt = eb })) catch {};
+            stack.append(self.allocator, @as(Work, .{ .compound = stmt.body })) catch {};
         },
         .@"switch" => |stmt| {
             stmt.expr = self.visitExpr(stmt.expr);
+            // Push case bodies in reverse order
+            var i = stmt.cases.items.len;
+            while (i > 0) {
+                i -= 1;
+                const c = &stmt.cases.items[i];
+                stack.append(self.allocator, @as(Work, .{ .compound = c.body })) catch {};
+            }
+            // Visit selectors inline
             for (stmt.cases.items) |*c| {
                 for (c.selectors.items, 0..) |sel, j| {
                     c.selectors.items[j] = self.visitExpr(sel);
                 }
-                self.visitCompoundStmt(c.body);
             }
         },
         .@"for" => |stmt| {
+            // For has its own scope wrapping init/condition/update/body
             self.enterNextScope();
-            if (stmt.init_stmt) |is| self.visitStmt(is);
+            if (stmt.init_stmt) |is| self.processOneStmt(is, stack);
             if (stmt.condition) |cond| stmt.condition = self.visitExpr(cond);
-            if (stmt.update) |upd| self.visitStmt(upd);
-            self.visitCompoundStmt(stmt.body);
-            self.exitScope();
+            if (stmt.update) |upd| self.processOneStmt(upd, stack);
+            // Push exit_scope (for-scope), then body (which adds its own scope)
+            stack.append(self.allocator, @as(Work, .exit_scope)) catch {};
+            stack.append(self.allocator, @as(Work, .{ .compound = stmt.body })) catch {};
         },
         .@"while" => |stmt| {
             stmt.condition = self.visitExpr(stmt.condition);
-            self.visitCompoundStmt(stmt.body);
+            stack.append(self.allocator, @as(Work, .{ .compound = stmt.body })) catch {};
         },
         .loop => |stmt| {
-            self.visitCompoundStmt(stmt.body);
-            if (stmt.continuing) |c| self.visitCompoundStmt(c);
+            if (stmt.continuing) |c| stack.append(self.allocator, @as(Work, .{ .compound = c })) catch {};
+            stack.append(self.allocator, @as(Work, .{ .compound = stmt.body })) catch {};
         },
         .break_if => |stmt| {
             stmt.condition = self.visitExpr(stmt.condition);
@@ -420,7 +463,6 @@ fn visitStmt(self: *Parser, s: Ast.Stmt) void {
             stmt.expr = self.visitExpr(stmt.expr);
         },
         .call => |stmt| {
-            // Visit the inner CallExpr's func and args
             if (stmt.call.func) |f| stmt.call.func = self.visitExpr(f);
             if (stmt.call.template_type) |tt| self.visitType(tt);
             for (stmt.call.args.items, 0..) |arg, j| {
@@ -433,92 +475,134 @@ fn visitStmt(self: *Parser, s: Ast.Stmt) void {
 }
 
 fn visitCompoundStmt(self: *Parser, stmt: *Ast.CompoundStmt) void {
-    self.enterNextScope();
-    for (stmt.stmts.items) |s| {
-        self.visitStmt(s);
+    const Work = union(enum) {
+        stmt: Ast.Stmt,
+        compound: *Ast.CompoundStmt,
+        exit_scope,
+    };
+
+    var stack: std.ArrayListUnmanaged(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    stack.append(self.allocator, .{ .compound = stmt }) catch return;
+
+    while (true) {
+        const work = stack.pop() orelse break;
+        switch (work) {
+            .exit_scope => self.exitScope(),
+            .compound => |body| {
+                self.enterNextScope();
+                stack.append(self.allocator, .exit_scope) catch {};
+                var i = body.stmts.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    stack.append(self.allocator, .{ .stmt = body.stmts.items[i] }) catch {};
+                }
+            },
+            .stmt => |s| self.processOneStmt(s, &stack),
+        }
     }
-    self.exitScope();
 }
 
+/// Iteratively visits an expression tree using a two-phase worklist.
+/// Pushes mark(e) before children so purity marking happens in post-order.
 fn visitExpr(self: *Parser, e: Ast.Expr) Ast.Expr {
-    switch (e) {
-        .ident => |expr| {
-            self.current_loc = expr.loc;
-            if (self.lookupSymbol(expr.name)) |ref| {
-                expr.ref = ref;
-                if (ref.isValid()) {
-                    const idx = ref.index();
-                    if (idx < self.symbols.items.len) {
-                        self.symbols.items[idx].use_count += 1;
-                    }
+    const Work = union(enum) {
+        visit: Ast.Expr,
+        mark: Ast.Expr,
+    };
+
+    var stack: std.ArrayListUnmanaged(Work) = .empty;
+    defer stack.deinit(self.allocator);
+    stack.append(self.allocator, .{ .visit = e }) catch return e;
+
+    while (true) {
+        const work = stack.pop() orelse break;
+        switch (work) {
+            .mark => |me| Ast.markExprPurity(me, self.symbols.items),
+            .visit => |ve| {
+                // Push mark first (popped last = post-order)
+                stack.append(self.allocator, .{ .mark = ve }) catch {};
+
+                switch (ve) {
+                    .ident => |expr| {
+                        self.current_loc = expr.loc;
+                        if (self.lookupSymbol(expr.name)) |ref| {
+                            expr.ref = ref;
+                            if (ref.isValid()) {
+                                const idx = ref.index();
+                                if (idx < self.symbols.items.len) {
+                                    self.symbols.items[idx].use_count += 1;
+                                }
+                            }
+                        } else if (self.lookupSymbolAnyLoc(expr.name)) |ref| {
+                            const msg = std.fmt.allocPrint(self.allocator, "'{s}' is used before its declaration", .{expr.name}) catch "identifier used before declaration";
+                            self.errors.append(self.allocator, .{ .message = msg, .pos = expr.loc, .code = "E0102" }) catch {};
+                            expr.ref = ref;
+                        }
+                    },
+                    .literal => {},
+                    .binary => |expr| {
+                        stack.append(self.allocator, .{ .visit = expr.right }) catch {};
+                        stack.append(self.allocator, .{ .visit = expr.left }) catch {};
+                    },
+                    .unary => |expr| {
+                        stack.append(self.allocator, .{ .visit = expr.operand }) catch {};
+                    },
+                    .call => |expr| {
+                        var i = expr.args.items.len;
+                        while (i > 0) {
+                            i -= 1;
+                            stack.append(self.allocator, .{ .visit = expr.args.items[i] }) catch {};
+                        }
+                        if (expr.template_type) |tt| self.visitType(tt);
+                        if (expr.func) |f| stack.append(self.allocator, .{ .visit = f }) catch {};
+                    },
+                    .index => |expr| {
+                        stack.append(self.allocator, .{ .visit = expr.idx }) catch {};
+                        stack.append(self.allocator, .{ .visit = expr.base }) catch {};
+                    },
+                    .member => |expr| {
+                        stack.append(self.allocator, .{ .visit = expr.base }) catch {};
+                    },
+                    .paren => |expr| {
+                        stack.append(self.allocator, .{ .visit = expr.expr }) catch {};
+                    },
                 }
-            } else if (self.lookupSymbolAnyLoc(expr.name)) |ref| {
-                const msg = std.fmt.allocPrint(self.allocator, "'{s}' is used before its declaration", .{expr.name}) catch "identifier used before declaration";
-                self.errors.append(self.allocator, .{ .message = msg, .pos = expr.loc, .code = "E0102" }) catch {};
-                // Bind the ref for error recovery so the validator doesn't also report E0100
-                expr.ref = ref;
-            }
-        },
-        .literal => {},
-        .binary => |expr| {
-            expr.left = self.visitExpr(expr.left);
-            expr.right = self.visitExpr(expr.right);
-        },
-        .unary => |expr| {
-            expr.operand = self.visitExpr(expr.operand);
-        },
-        .call => |expr| {
-            if (expr.func) |f| expr.func = self.visitExpr(f);
-            if (expr.template_type) |tt| self.visitType(tt);
-            for (expr.args.items, 0..) |arg, j| {
-                expr.args.items[j] = self.visitExpr(arg);
-            }
-        },
-        .index => |expr| {
-            expr.base = self.visitExpr(expr.base);
-            expr.idx = self.visitExpr(expr.idx);
-        },
-        .member => |expr| {
-            expr.base = self.visitExpr(expr.base);
-        },
-        .paren => |expr| {
-            expr.expr = self.visitExpr(expr.expr);
-        },
+            },
+        }
     }
-    Ast.markExprPurity(e, self.symbols.items);
     return e;
 }
 
+/// Iteratively visits a type, following single-child chains.
 fn visitType(self: *Parser, t: Ast.Type) void {
-    switch (t) {
-        .ident => |typ| {
-            self.current_loc = 0; // Types don't have text-order restrictions at module scope
-            if (self.lookupSymbol(typ.name)) |ref| {
-                typ.ref = ref;
-                if (ref.isValid()) {
-                    const idx = ref.index();
-                    if (idx < self.symbols.items.len) {
-                        self.symbols.items[idx].use_count += 1;
+    var current = t;
+    while (true) {
+        switch (current) {
+            .ident => |typ| {
+                self.current_loc = 0; // Types don't have text-order restrictions at module scope
+                if (self.lookupSymbol(typ.name)) |ref| {
+                    typ.ref = ref;
+                    if (ref.isValid()) {
+                        const idx = ref.index();
+                        if (idx < self.symbols.items.len) {
+                            self.symbols.items[idx].use_count += 1;
+                        }
                     }
                 }
-            }
-        },
-        .vec => |typ| {
-            if (typ.elem_type) |et| self.visitType(et);
-        },
-        .mat => |typ| {
-            if (typ.elem_type) |et| self.visitType(et);
-        },
-        .array => |typ| {
-            if (typ.elem_type) |et| self.visitType(et);
-            if (typ.size) |s| _ = self.visitExpr(s);
-        },
-        .ptr => |typ| self.visitType(typ.elem_type),
-        .atomic => |typ| self.visitType(typ.elem_type),
-        .sampler => {},
-        .texture => |typ| {
-            if (typ.sampled_type) |st| self.visitType(st);
-        },
+                break;
+            },
+            .vec => |typ| current = typ.elem_type orelse break,
+            .mat => |typ| current = typ.elem_type orelse break,
+            .array => |typ| {
+                if (typ.size) |s| _ = self.visitExpr(s);
+                current = typ.elem_type orelse break;
+            },
+            .ptr => |typ| current = typ.elem_type,
+            .atomic => |typ| current = typ.elem_type,
+            .sampler => break,
+            .texture => |typ| current = typ.sampled_type orelse break,
+        }
     }
 }
 
@@ -1537,22 +1621,33 @@ fn parseReturnStmt(self: *Parser) !*Ast.ReturnStmt {
     return node;
 }
 
+/// Iteratively parses an if/else-if/else chain without recursion.
 fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
     _ = self.expect(.keyword_if);
     self.expr_context = "in if condition";
-    const node = try self.allocator.create(Ast.IfStmt);
-    node.* = .{
+    const root = try self.allocator.create(Ast.IfStmt);
+    root.* = .{
         .condition = (try self.parseExpression()) orelse return error.ParseFailed,
         .body = try self.parseCompoundStmt(),
     };
-    if (self.eat(.keyword_else)) {
+    var current = root;
+    while (self.eat(.keyword_else)) {
         if (self.currentTag() == .keyword_if) {
-            node.else_branch = .{ .@"if" = try self.parseIfStmt() };
+            _ = self.expect(.keyword_if);
+            self.expr_context = "in if condition";
+            const next = try self.allocator.create(Ast.IfStmt);
+            next.* = .{
+                .condition = (try self.parseExpression()) orelse return error.ParseFailed,
+                .body = try self.parseCompoundStmt(),
+            };
+            current.else_branch = .{ .@"if" = next };
+            current = next;
         } else {
-            node.else_branch = .{ .compound = try self.parseCompoundStmt() };
+            current.else_branch = .{ .compound = try self.parseCompoundStmt() };
+            break;
         }
     }
-    return node;
+    return root;
 }
 
 fn parseSwitchStmt(self: *Parser) !*Ast.SwitchStmt {

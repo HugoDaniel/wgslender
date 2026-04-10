@@ -89,6 +89,7 @@ in_switch: bool = false,
 in_continuing: bool = false,
 return_type: ?Types.Type = null,
 has_return: bool = false,
+expr_depth: u32 = 0,
 
 // Symbol type cache: maps SymbolIndex -> resolved Types.Type
 symbol_types: std.AutoHashMapUnmanaged(u32, Types.Type) = .{},
@@ -376,22 +377,48 @@ fn checkRecursiveFunctions(v: *Validator) void {
     }
 }
 
-fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)), color: *std.AutoHashMapUnmanaged(u32, u2), fn_idx: u32) void {
-    color.put(v.allocator, fn_idx, 1) catch return; // gray
-    if (call_graph.get(fn_idx)) |callees| {
-        for (callees.items) |callee| {
-            const callee_color = color.get(callee) orelse 0;
-            if (callee_color == 1) {
-                // Gray → cycle found. Report on the callee (the function being called recursively).
-                const sym_idx: Ast.SymbolIndex = @enumFromInt(callee);
-                v.addErrorWithCodeR(v.symbolRange(sym_idx), Diagnostic.Code.recursive_function, v.fmtError("function '{s}' is recursive", .{v.symbolName(sym_idx)}));
-            } else if (callee_color == 0) {
-                v.dfsFunctionCycle(call_graph, color, callee);
-            }
-            // black (2) = already fully processed, skip
+/// Iterative DFS cycle detection using an explicit stack.
+fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)), color: *std.AutoHashMapUnmanaged(u32, u2), start: u32) void {
+    const Frame = struct { fn_idx: u32, callee_idx: usize };
+    var stack: std.ArrayListUnmanaged(Frame) = .empty;
+    defer stack.deinit(v.allocator);
+
+    color.put(v.allocator, start, 1) catch return; // gray
+    stack.append(v.allocator, .{ .fn_idx = start, .callee_idx = 0 }) catch return;
+
+    while (true) {
+        const frame = &(stack.items[stack.items.len - 1 ..][0]);
+        const callees = call_graph.get(frame.fn_idx) orelse {
+            // No callees — mark black and pop
+            color.put(v.allocator, frame.fn_idx, 2) catch {};
+            _ = stack.pop();
+            if (stack.items.len == 0) break;
+            continue;
+        };
+
+        if (frame.callee_idx >= callees.items.len) {
+            // All callees processed — mark black and pop
+            color.put(v.allocator, frame.fn_idx, 2) catch {};
+            _ = stack.pop();
+            if (stack.items.len == 0) break;
+            continue;
         }
+
+        const callee = callees.items[frame.callee_idx];
+        frame.callee_idx += 1;
+
+        const callee_color = color.get(callee) orelse 0;
+        if (callee_color == 1) {
+            // Gray → cycle found
+            const sym_idx: Ast.SymbolIndex = @enumFromInt(callee);
+            v.addErrorWithCodeR(v.symbolRange(sym_idx), Diagnostic.Code.recursive_function, v.fmtError("function '{s}' is recursive", .{v.symbolName(sym_idx)}));
+        } else if (callee_color == 0) {
+            // White → push new frame
+            color.put(v.allocator, callee, 1) catch continue; // gray
+            stack.append(v.allocator, .{ .fn_idx = callee, .callee_idx = 0 }) catch {};
+        }
+        // black (2) = already fully processed, skip
     }
-    color.put(v.allocator, fn_idx, 2) catch return; // black
 }
 
 // =========================================================================
@@ -1161,24 +1188,52 @@ fn validateCompoundStmt(v: *Validator, s: *Ast.CompoundStmt) void {
     }
 }
 
-fn stmtTerminates(stmt: Ast.Stmt) bool {
-    return switch (stmt) {
-        .@"return", .@"break", .@"continue" => true,
-        .compound => |s| s.stmts.items.len > 0 and stmtTerminates(s.stmts.items[s.stmts.items.len - 1]),
-        .@"if" => |s| blk: {
-            const body_terminates = s.body.stmts.items.len > 0 and stmtTerminates(s.body.stmts.items[s.body.stmts.items.len - 1]);
-            break :blk if (s.else_branch) |eb| body_terminates and stmtTerminates(eb) else false;
-        },
-        .@"switch" => |s| blk: {
-            var has_default = false;
-            for (s.cases.items) |c| {
-                if (c.selectors.items.len == 0) has_default = true;
-                if (c.body.stmts.items.len == 0 or !stmtTerminates(c.body.stmts.items[c.body.stmts.items.len - 1])) break :blk false;
+/// Iteratively checks whether a statement always terminates (return/break/continue).
+/// Uses a fixed-size stack: all pushed statements must terminate for the result to be true.
+fn stmtTerminates(root: Ast.Stmt) bool {
+    var stack: [64]Ast.Stmt = undefined;
+    var top: usize = 1;
+    stack[0] = root;
+
+    while (top > 0) {
+        top -= 1;
+        var current = stack[top];
+        // Follow compound→last and if→body+else chains
+        while (true) {
+            switch (current) {
+                .@"return", .@"break", .@"continue" => break,
+                .compound => |s| {
+                    if (s.stmts.items.len == 0) return false;
+                    current = s.stmts.items[s.stmts.items.len - 1];
+                },
+                .@"if" => |s| {
+                    if (s.body.stmts.items.len == 0) return false;
+                    // Push else branch — it must also terminate
+                    const eb = s.else_branch orelse return false;
+                    if (top >= stack.len) return false;
+                    stack[top] = eb;
+                    top += 1;
+                    // Continue checking body's last statement
+                    current = s.body.stmts.items[s.body.stmts.items.len - 1];
+                },
+                .@"switch" => |s| {
+                    var has_default = false;
+                    for (s.cases.items) |c| {
+                        if (c.selectors.items.len == 0) has_default = true;
+                        if (c.body.stmts.items.len == 0) return false;
+                        // Push each case's last statement — all must terminate
+                        if (top >= stack.len) return false;
+                        stack[top] = c.body.stmts.items[c.body.stmts.items.len - 1];
+                        top += 1;
+                    }
+                    if (!has_default) return false;
+                    break;
+                },
+                else => return false,
             }
-            break :blk has_default;
-        },
-        else => false,
-    };
+        }
+    }
+    return true;
 }
 
 fn getStmtLoc(v: *Validator, stmt: Ast.Stmt) u32 {
@@ -1234,17 +1289,26 @@ fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) void {
     }
 }
 
+/// Iteratively validates if/else-if/else chains without recursion.
 fn validateIfStmt(v: *Validator, s: *Ast.IfStmt) void {
-    const cond_type = v.checkExpr(s.condition);
-    if (cond_type) |ct| {
-        if (!ct.eql(Types.Bool)) {
-            v.addErrorWithCodeR(exprSpan(s.condition), Diagnostic.Code.type_mismatch, v.fmtError("if condition must be 'bool', got '{s}'", .{ct.string()}));
+    var current: *Ast.IfStmt = s;
+    while (true) {
+        const cond_type = v.checkExpr(current.condition);
+        if (cond_type) |ct| {
+            if (!ct.eql(Types.Bool)) {
+                v.addErrorWithCodeR(exprSpan(current.condition), Diagnostic.Code.type_mismatch, v.fmtError("if condition must be 'bool', got '{s}'", .{ct.string()}));
+            }
         }
-    }
 
-    v.validateCompoundStmt(s.body);
-    if (s.else_branch) |else_stmt| {
-        v.validateStmt(else_stmt);
+        v.validateCompoundStmt(current.body);
+        const eb = current.else_branch orelse break;
+        switch (eb) {
+            .@"if" => |next_if| current = next_if,
+            else => {
+                v.validateStmt(eb);
+                break;
+            },
+        }
     }
 }
 
@@ -1454,7 +1518,12 @@ fn validateDeclStmt(v: *Validator, s: *Ast.DeclStmt) void {
 // Expression Type Checking
 // =========================================================================
 
+const max_expr_depth: u32 = 256;
+
 fn checkExpr(v: *Validator, expr: Ast.Expr) ?Types.Type {
+    if (v.expr_depth >= max_expr_depth) return null;
+    v.expr_depth += 1;
+    defer v.expr_depth -= 1;
     return switch (expr) {
         .literal => |e| v.checkLiteral(e),
         .ident => |e| v.checkIdent(e),

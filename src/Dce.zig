@@ -119,110 +119,145 @@ fn collectDeclDeps(allocator: std.mem.Allocator, decl: Ast.Decl, deps: *std.Auto
     deps.put(allocator, sym_idx, refs) catch {};
 }
 
+/// Iteratively collects symbol references from an expression tree using a worklist.
 pub fn collectExprRefs(allocator: std.mem.Allocator, expr: Ast.Expr, refs: *std.ArrayListUnmanaged(u32)) void {
-    switch (expr) {
-        .ident => |e| {
-            if (e.ref.isValid()) refs.append(allocator, e.ref.index()) catch {};
-        },
-        .binary => |e| {
-            collectExprRefs(allocator, e.left, refs);
-            collectExprRefs(allocator, e.right, refs);
-        },
-        .unary => |e| collectExprRefs(allocator, e.operand, refs),
-        .call => |e| {
-            if (e.func) |f| collectExprRefs(allocator, f, refs);
-            for (e.args.items) |arg| collectExprRefs(allocator, arg, refs);
-        },
-        .index => |e| {
-            collectExprRefs(allocator, e.base, refs);
-            collectExprRefs(allocator, e.idx, refs);
-        },
-        .member => |e| collectExprRefs(allocator, e.base, refs),
-        .paren => |e| collectExprRefs(allocator, e.expr, refs),
-        .literal => {},
+    var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+    defer stack.deinit(allocator);
+    stack.append(allocator, expr) catch return;
+
+    while (true) {
+        const e = stack.pop() orelse break;
+        switch (e) {
+            .ident => |ie| {
+                if (ie.ref.isValid()) refs.append(allocator, ie.ref.index()) catch {};
+            },
+            .binary => |be| {
+                stack.append(allocator, be.right) catch {};
+                stack.append(allocator, be.left) catch {};
+            },
+            .unary => |ue| stack.append(allocator, ue.operand) catch {},
+            .call => |ce| {
+                var i = ce.args.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    stack.append(allocator, ce.args.items[i]) catch {};
+                }
+                if (ce.func) |f| stack.append(allocator, f) catch {};
+            },
+            .index => |ie| {
+                stack.append(allocator, ie.idx) catch {};
+                stack.append(allocator, ie.base) catch {};
+            },
+            .member => |me| stack.append(allocator, me.base) catch {},
+            .paren => |pe| stack.append(allocator, pe.expr) catch {},
+            .literal => {},
+        }
     }
 }
 
+/// Iteratively collects symbol references from a type tree.
 fn collectTypeRefs(allocator: std.mem.Allocator, typ: Ast.Type, refs: *std.ArrayListUnmanaged(u32)) void {
-    switch (typ) {
-        .ident => |t| {
-            if (t.ref.isValid()) refs.append(allocator, t.ref.index()) catch {};
-        },
-        .vec => |t| { if (t.elem_type) |et| collectTypeRefs(allocator, et, refs); },
-        .mat => |t| { if (t.elem_type) |et| collectTypeRefs(allocator, et, refs); },
-        .array => |t| {
-            if (t.elem_type) |et| collectTypeRefs(allocator, et, refs);
-            if (t.size) |s| collectExprRefs(allocator, s, refs);
-        },
-        .ptr => |t| collectTypeRefs(allocator, t.elem_type, refs),
-        .atomic => |t| collectTypeRefs(allocator, t.elem_type, refs),
-        .texture => |t| { if (t.sampled_type) |st| collectTypeRefs(allocator, st, refs); },
-        .sampler => {},
+    var current = typ;
+    while (true) {
+        switch (current) {
+            .ident => |t| {
+                if (t.ref.isValid()) refs.append(allocator, t.ref.index()) catch {};
+                break;
+            },
+            .vec => |t| {
+                current = t.elem_type orelse break;
+            },
+            .mat => |t| {
+                current = t.elem_type orelse break;
+            },
+            .array => |t| {
+                if (t.size) |s| collectExprRefs(allocator, s, refs);
+                current = t.elem_type orelse break;
+            },
+            .ptr => |t| {
+                current = t.elem_type;
+            },
+            .atomic => |t| {
+                current = t.elem_type;
+            },
+            .texture => |t| {
+                current = t.sampled_type orelse break;
+            },
+            .sampler => break,
+        }
     }
 }
 
+/// Iteratively collects symbol references from a statement tree using a worklist.
 pub fn collectStmtRefs(allocator: std.mem.Allocator, stmt: Ast.Stmt, refs: *std.ArrayListUnmanaged(u32)) void {
-    switch (stmt) {
-        .compound => |s| {
-            for (s.stmts.items) |inner| collectStmtRefs(allocator, inner, refs);
-        },
-        .@"return" => |s| {
-            if (s.value) |v| collectExprRefs(allocator, v, refs);
-        },
-        .@"if" => |s| {
-            collectExprRefs(allocator, s.condition, refs);
-            collectStmtRefs(allocator, .{ .compound = s.body }, refs);
-            if (s.else_branch) |eb| collectStmtRefs(allocator, eb, refs);
-        },
-        .@"switch" => |s| {
-            collectExprRefs(allocator, s.expr, refs);
-            for (s.cases.items) |c| {
-                for (c.selectors.items) |sel| collectExprRefs(allocator, sel, refs);
-                collectStmtRefs(allocator, .{ .compound = c.body }, refs);
-            }
-        },
-        .@"for" => |s| {
-            if (s.init_stmt) |is| collectStmtRefs(allocator, is, refs);
-            if (s.condition) |c| collectExprRefs(allocator, c, refs);
-            if (s.update) |u| collectStmtRefs(allocator, u, refs);
-            collectStmtRefs(allocator, .{ .compound = s.body }, refs);
-        },
-        .@"while" => |s| {
-            collectExprRefs(allocator, s.condition, refs);
-            collectStmtRefs(allocator, .{ .compound = s.body }, refs);
-        },
-        .loop => |s| {
-            collectStmtRefs(allocator, .{ .compound = s.body }, refs);
-            if (s.continuing) |c| collectStmtRefs(allocator, .{ .compound = c }, refs);
-        },
-        .break_if => |s| collectExprRefs(allocator, s.condition, refs),
-        .assign => |s| {
-            collectExprRefs(allocator, s.left, refs);
-            collectExprRefs(allocator, s.right, refs);
-        },
-        .incr_decr => |s| collectExprRefs(allocator, s.expr, refs),
-        .call => |s| {
-            if (s.call.func) |f| collectExprRefs(allocator, f, refs);
-            for (s.call.args.items) |arg| collectExprRefs(allocator, arg, refs);
-        },
-        .decl => |s| {
-            switch (s.decl) {
-                .@"const" => |d| {
-                    if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, refs);
-                    if (d.typ) |t| collectTypeRefs(allocator, t, refs);
-                },
-                .let => |d| {
-                    if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, refs);
-                    if (d.typ) |t| collectTypeRefs(allocator, t, refs);
-                },
-                .@"var" => |d| {
-                    if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, refs);
-                    if (d.typ) |t| collectTypeRefs(allocator, t, refs);
-                },
-                else => {},
-            }
-        },
-        .@"break", .@"continue", .discard => {},
+    var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
+    defer stack.deinit(allocator);
+    stack.append(allocator, stmt) catch return;
+
+    while (true) {
+        const s = stack.pop() orelse break;
+        switch (s) {
+            .compound => |cs| {
+                for (cs.stmts.items) |inner| stack.append(allocator, inner) catch {};
+            },
+            .@"return" => |rs| {
+                if (rs.value) |v| collectExprRefs(allocator, v, refs);
+            },
+            .@"if" => |is| {
+                collectExprRefs(allocator, is.condition, refs);
+                stack.append(allocator, .{ .compound = is.body }) catch {};
+                if (is.else_branch) |eb| stack.append(allocator, eb) catch {};
+            },
+            .@"switch" => |ss| {
+                collectExprRefs(allocator, ss.expr, refs);
+                for (ss.cases.items) |c| {
+                    for (c.selectors.items) |sel| collectExprRefs(allocator, sel, refs);
+                    stack.append(allocator, .{ .compound = c.body }) catch {};
+                }
+            },
+            .@"for" => |fs| {
+                if (fs.init_stmt) |is| stack.append(allocator, is) catch {};
+                if (fs.condition) |c| collectExprRefs(allocator, c, refs);
+                if (fs.update) |u| stack.append(allocator, u) catch {};
+                stack.append(allocator, .{ .compound = fs.body }) catch {};
+            },
+            .@"while" => |ws| {
+                collectExprRefs(allocator, ws.condition, refs);
+                stack.append(allocator, .{ .compound = ws.body }) catch {};
+            },
+            .loop => |ls| {
+                stack.append(allocator, .{ .compound = ls.body }) catch {};
+                if (ls.continuing) |c| stack.append(allocator, .{ .compound = c }) catch {};
+            },
+            .break_if => |bs| collectExprRefs(allocator, bs.condition, refs),
+            .assign => |as_| {
+                collectExprRefs(allocator, as_.left, refs);
+                collectExprRefs(allocator, as_.right, refs);
+            },
+            .incr_decr => |ids| collectExprRefs(allocator, ids.expr, refs),
+            .call => |cs| {
+                if (cs.call.func) |f| collectExprRefs(allocator, f, refs);
+                for (cs.call.args.items) |arg| collectExprRefs(allocator, arg, refs);
+            },
+            .decl => |ds| {
+                switch (ds.decl) {
+                    .@"const" => |d| {
+                        if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, refs);
+                        if (d.typ) |t| collectTypeRefs(allocator, t, refs);
+                    },
+                    .let => |d| {
+                        if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, refs);
+                        if (d.typ) |t| collectTypeRefs(allocator, t, refs);
+                    },
+                    .@"var" => |d| {
+                        if (d.initializer) |init_expr| collectExprRefs(allocator, init_expr, refs);
+                        if (d.typ) |t| collectTypeRefs(allocator, t, refs);
+                    },
+                    else => {},
+                }
+            },
+            .@"break", .@"continue", .discard => {},
+        }
     }
 }
 

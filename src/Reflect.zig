@@ -514,30 +514,31 @@ const LayoutComputer = struct {
     // Type layout computation
     // -----------------------------------------------------------------
 
+    /// Iteratively computes type layout, unwrapping atomic wrappers.
     fn computeTypeLayout(self: *LayoutComputer, t: Ast.Type) TypeLayout {
-        switch (t) {
-            .ident => |ident| {
-                // Primitive type?
-                if (primitive_layouts.get(ident.name)) |pl| {
-                    return .{ .size = pl.size, .alignment = pl.alignment };
-                }
-                // Struct by name (handles shadowed types).
-                if (self.struct_cache.get(ident.name)) |cached| {
-                    return .{ .size = cached.size, .alignment = cached.alignment };
-                }
-                // Struct by ref.
-                if (ident.ref.isValid()) {
-                    if (self.getStructLayout(ident.ref)) |sl| {
-                        return .{ .size = sl.size, .alignment = sl.alignment };
+        var current = t;
+        while (true) {
+            switch (current) {
+                .ident => |ident| {
+                    if (primitive_layouts.get(ident.name)) |pl| {
+                        return .{ .size = pl.size, .alignment = pl.alignment };
                     }
-                }
-                return .{};
-            },
-            .vec => |vec| return self.computeVecTypeLayout(vec),
-            .mat => |mat| return self.computeMatTypeLayout(mat),
-            .array => |arr| return self.computeArrayTypeLayout(arr),
-            .atomic => |at| return self.computeTypeLayout(at.elem_type),
-            .sampler, .texture, .ptr => return .{},
+                    if (self.struct_cache.get(ident.name)) |cached| {
+                        return .{ .size = cached.size, .alignment = cached.alignment };
+                    }
+                    if (ident.ref.isValid()) {
+                        if (self.getStructLayout(ident.ref)) |sl| {
+                            return .{ .size = sl.size, .alignment = sl.alignment };
+                        }
+                    }
+                    return .{};
+                },
+                .vec => |vec| return self.computeVecTypeLayout(vec),
+                .mat => |mat| return self.computeMatTypeLayout(mat),
+                .array => |arr| return self.computeArrayTypeLayout(arr),
+                .atomic => |at| current = at.elem_type,
+                .sampler, .texture, .ptr => return .{},
+            }
         }
     }
 

@@ -707,35 +707,69 @@ pub fn isSymbolPure(ref: SymbolIndex, symbols: []const Symbol) bool {
 }
 
 /// Returns true if the expression can be safely removed when its result is unused.
+/// Uses a fixed-size iterative stack instead of recursion.
 pub fn exprCanBeRemovedIfUnused(e: Expr, symbols: []const Symbol) bool {
-    return switch (e) {
-        .literal => true,
-        .ident => |expr| expr.flags.can_be_removed_if_unused or !expr.ref.isValid() or isSymbolPure(expr.ref, symbols),
-        .binary => |expr| exprCanBeRemovedIfUnused(expr.left, symbols) and exprCanBeRemovedIfUnused(expr.right, symbols),
-        .unary => |expr| exprCanBeRemovedIfUnused(expr.operand, symbols),
-        .call => |expr| callCanBeRemovedIfUnused(expr, symbols),
-        .index => |expr| exprCanBeRemovedIfUnused(expr.base, symbols) and exprCanBeRemovedIfUnused(expr.idx, symbols),
-        .member => |expr| exprCanBeRemovedIfUnused(expr.base, symbols),
-        .paren => |expr| exprCanBeRemovedIfUnused(expr.expr, symbols),
-    };
-}
+    var stack: [128]Expr = undefined;
+    var top: usize = 1;
+    stack[0] = e;
 
-fn callCanBeRemovedIfUnused(expr: *const CallExpr, symbols: []const Symbol) bool {
-    if (expr.flags.can_be_removed_if_unused or expr.flags.from_pure_function) return true;
-    if (expr.func) |f| {
-        switch (f) {
-            .ident => |ident| {
-                if (pure_builtins.has(ident.name)) {
-                    for (expr.args.items) |arg| {
-                        if (!exprCanBeRemovedIfUnused(arg, symbols)) return false;
-                    }
-                    return true;
+    while (top > 0) {
+        top -= 1;
+        const expr = stack[top];
+        switch (expr) {
+            .literal => {},
+            .ident => |ie| {
+                if (!(ie.flags.can_be_removed_if_unused or !ie.ref.isValid() or isSymbolPure(ie.ref, symbols)))
+                    return false;
+            },
+            .binary => |be| {
+                if (top + 2 > stack.len) return false;
+                stack[top] = be.left;
+                top += 1;
+                stack[top] = be.right;
+                top += 1;
+            },
+            .unary => |ue| {
+                if (top + 1 > stack.len) return false;
+                stack[top] = ue.operand;
+                top += 1;
+            },
+            .call => |ce| {
+                if (!(ce.flags.can_be_removed_if_unused or ce.flags.from_pure_function)) {
+                    // Check if it's a pure builtin call whose args are all removable
+                    const is_pure_builtin = if (ce.func) |f| switch (f) {
+                        .ident => |ident| pure_builtins.has(ident.name),
+                        else => false,
+                    } else false;
+                    if (!is_pure_builtin) return false;
+                }
+                // Push all args for purity checking
+                if (top + ce.args.items.len > stack.len) return false;
+                for (ce.args.items) |arg| {
+                    stack[top] = arg;
+                    top += 1;
                 }
             },
-            else => {},
+            .index => |ie| {
+                if (top + 2 > stack.len) return false;
+                stack[top] = ie.base;
+                top += 1;
+                stack[top] = ie.idx;
+                top += 1;
+            },
+            .member => |me| {
+                if (top + 1 > stack.len) return false;
+                stack[top] = me.base;
+                top += 1;
+            },
+            .paren => |pe| {
+                if (top + 1 > stack.len) return false;
+                stack[top] = pe.expr;
+                top += 1;
+            },
         }
     }
-    return false;
+    return true;
 }
 
 /// Returns true if the statement can be removed when none of its declared symbols are used.

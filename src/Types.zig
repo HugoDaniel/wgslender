@@ -46,30 +46,42 @@ pub const Type = union(enum) {
     }
 
     /// Returns true if this type equals another type.
+    /// Iteratively compares two types for equality, following element chains.
     pub fn eql(self: Type, other: Type) bool {
-        // Tags must match.
-        const self_tag = std.meta.activeTag(self);
-        const other_tag = std.meta.activeTag(other);
-        if (self_tag != other_tag) return false;
+        var a = self;
+        var b = other;
+        while (true) {
+            const a_tag = std.meta.activeTag(a);
+            const b_tag = std.meta.activeTag(b);
+            if (a_tag != b_tag) return false;
 
-        return switch (self) {
-            .scalar => |s| s.kind == other.scalar.kind,
-            .vector => |v| v.width == other.vector.width and v.element.kind == other.vector.element.kind,
-            .matrix => |m| m.cols == other.matrix.cols and m.rows == other.matrix.rows and m.element.kind == other.matrix.element.kind,
-            .array => |a| a.count == other.array.count and a.element.eql(other.array.element),
-            .@"struct" => |s| std.mem.eql(u8, s.name, other.@"struct".name),
-            .pointer => |p| p.address_space == other.pointer.address_space and
-                p.access_mode == other.pointer.access_mode and
-                p.element.eql(other.pointer.element),
-            .reference => |r| r.address_space == other.reference.address_space and
-                r.access_mode == other.reference.access_mode and
-                r.element.eql(other.reference.element),
-            .atomic => |a| a.element.kind == other.atomic.element.kind,
-            .sampler => |s| s.comparison == other.sampler.comparison,
-            .texture => |t| t.eqlTexture(other.texture),
-            .function => |f| f.eqlFunction(other.function),
-            .void_type => true,
-        };
+            switch (a) {
+                .scalar => |s| return s.kind == b.scalar.kind,
+                .vector => |v| return v.width == b.vector.width and v.element.kind == b.vector.element.kind,
+                .matrix => |m| return m.cols == b.matrix.cols and m.rows == b.matrix.rows and m.element.kind == b.matrix.element.kind,
+                .array => |ar| {
+                    if (ar.count != b.array.count) return false;
+                    a = ar.element;
+                    b = b.array.element;
+                },
+                .@"struct" => |s| return std.mem.eql(u8, s.name, b.@"struct".name),
+                .pointer => |p| {
+                    if (p.address_space != b.pointer.address_space or p.access_mode != b.pointer.access_mode) return false;
+                    a = p.element;
+                    b = b.pointer.element;
+                },
+                .reference => |r| {
+                    if (r.address_space != b.reference.address_space or r.access_mode != b.reference.access_mode) return false;
+                    a = r.element;
+                    b = b.reference.element;
+                },
+                .atomic => |at| return at.element.kind == b.atomic.element.kind,
+                .sampler => |s| return s.comparison == b.sampler.comparison,
+                .texture => |t| return t.eqlTexture(b.texture),
+                .function => |f| return f.eqlFunction(b.function),
+                .void_type => return true,
+            }
+        }
     }
 
     /// Returns true if this type is a runtime-sized array.
@@ -81,53 +93,72 @@ pub const Type = union(enum) {
     }
 
     /// Returns true if values of this type can be constructed.
+    /// Follows array element chains iteratively.
     pub fn isConstructible(self: Type) bool {
-        return switch (self) {
-            .scalar => |s| s.isConcrete(),
-            .vector => |v| v.element.isConcrete(),
-            .matrix => |m| m.element.isConcrete(),
-            .array => |a| a.count > 0 and a.element.isConstructible(),
-            .@"struct" => |s| s.isConstructibleStruct(),
-            .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => false,
-        };
+        var current = self;
+        while (true) {
+            switch (current) {
+                .scalar => |s| return s.isConcrete(),
+                .vector => |v| return v.element.isConcrete(),
+                .matrix => |m| return m.element.isConcrete(),
+                .array => |a| {
+                    if (a.count == 0) return false;
+                    current = a.element;
+                },
+                .@"struct" => |s| return s.isConstructibleStruct(),
+                .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => return false,
+            }
+        }
     }
 
     /// Returns true if this is not an abstract type.
+    /// Follows array element chains iteratively.
     pub fn isConcrete(self: Type) bool {
-        return switch (self) {
-            .scalar => |s| s.isConcrete(),
-            .vector => |v| v.element.isConcrete(),
-            .matrix => |m| m.element.isConcrete(),
-            .array => |a| a.element.isConcrete(),
-            .@"struct" => |s| s.isConcreteStruct(),
-            .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => true,
-        };
+        var current = self;
+        while (true) {
+            switch (current) {
+                .scalar => |s| return s.isConcrete(),
+                .vector => |v| return v.element.isConcrete(),
+                .matrix => |m| return m.element.isConcrete(),
+                .array => |a| current = a.element,
+                .@"struct" => |s| return s.isConcreteStruct(),
+                .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => return true,
+            }
+        }
     }
 
     /// Returns true if values can be stored in memory.
+    /// Follows array element chains iteratively.
     pub fn isStorable(self: Type) bool {
-        return switch (self) {
-            .scalar => |s| s.isConcrete(),
-            .vector => |v| v.element.isConcrete(),
-            .matrix => |m| m.element.isConcrete(),
-            .array => |a| a.element.isStorable(),
-            .@"struct" => |s| s.isStorableStruct(),
-            .atomic => true,
-            .pointer, .reference, .sampler, .texture, .function, .void_type => false,
-        };
+        var current = self;
+        while (true) {
+            switch (current) {
+                .scalar => |s| return s.isConcrete(),
+                .vector => |v| return v.element.isConcrete(),
+                .matrix => |m| return m.element.isConcrete(),
+                .array => |a| current = a.element,
+                .@"struct" => |s| return s.isStorableStruct(),
+                .atomic => return true,
+                .pointer, .reference, .sampler, .texture, .function, .void_type => return false,
+            }
+        }
     }
 
     /// Returns true if this type can cross the CPU/GPU boundary.
+    /// Follows array element chains iteratively.
     pub fn isHostShareable(self: Type) bool {
-        return switch (self) {
-            .scalar => |s| s.kind != .bool and s.isConcrete(),
-            .vector => |v| v.element.kind != .bool and v.element.isConcrete(),
-            .matrix => |m| m.element.isConcrete(),
-            .array => |a| a.element.isHostShareable(),
-            .@"struct" => |s| s.isHostShareableStruct(),
-            .atomic => true,
-            .pointer, .reference, .sampler, .texture, .function, .void_type => false,
-        };
+        var current = self;
+        while (true) {
+            switch (current) {
+                .scalar => |s| return s.kind != .bool and s.isConcrete(),
+                .vector => |v| return v.element.kind != .bool and v.element.isConcrete(),
+                .matrix => |m| return m.element.isConcrete(),
+                .array => |a| current = a.element,
+                .@"struct" => |s| return s.isHostShareableStruct(),
+                .atomic => return true,
+                .pointer, .reference, .sampler, .texture, .function, .void_type => return false,
+            }
+        }
     }
 
     /// Returns the size in bytes (0 for unsized types).
@@ -829,61 +860,63 @@ pub fn elementType(allocator: Allocator, t: Type) Allocator.Error!?Type {
 // =========================================================================
 
 /// Returns true if src can be implicitly converted to dst.
+/// Iteratively follows type element chains.
 pub fn canConvertTo(src: Type, dst: Type) bool {
-    // Same type is always ok.
-    if (src.eql(dst)) return true;
+    var s = src;
+    var d = dst;
+    while (true) {
+        if (s.eql(d)) return true;
 
-    // Abstract scalar types can convert to concrete scalar types.
-    if (src == .scalar and dst == .scalar) {
-        const src_s = src.scalar;
-        const dst_s = dst.scalar;
-        // AbstractInt -> i32, u32, f32, f16, AbstractFloat
-        if (src_s.kind == .abstract_int) {
-            return dst_s.kind == .i32 or
-                dst_s.kind == .u32 or
-                dst_s.kind == .f32 or
-                dst_s.kind == .f16 or
-                dst_s.kind == .abstract_float;
+        // Abstract scalar types can convert to concrete scalar types.
+        if (s == .scalar and d == .scalar) {
+            const src_s = s.scalar;
+            const dst_s = d.scalar;
+            if (src_s.kind == .abstract_int) {
+                return dst_s.kind == .i32 or
+                    dst_s.kind == .u32 or
+                    dst_s.kind == .f32 or
+                    dst_s.kind == .f16 or
+                    dst_s.kind == .abstract_float;
+            }
+            if (src_s.kind == .abstract_float) {
+                return dst_s.kind == .f32 or dst_s.kind == .f16;
+            }
+            return false;
         }
-        // AbstractFloat -> f32, f16
-        if (src_s.kind == .abstract_float) {
-            return dst_s.kind == .f32 or dst_s.kind == .f16;
+
+        // Vector of abstract can convert to vector of concrete.
+        if (s == .vector and d == .vector) {
+            const sv = s.vector;
+            const dv = d.vector;
+            if (sv.width != dv.width) return false;
+            s = .{ .scalar = sv.element };
+            d = .{ .scalar = dv.element };
+            continue;
         }
+
+        // Pointer compatibility: same address space and compatible element type.
+        if (s == .pointer and d == .pointer) {
+            const sp = s.pointer;
+            const dp = d.pointer;
+            if (sp.address_space != dp.address_space) return false;
+            if (sp.element.eql(dp.element)) return true;
+            s = sp.element;
+            d = dp.element;
+            continue;
+        }
+
+        // Matrix of abstract can convert to matrix of concrete.
+        if (s == .matrix and d == .matrix) {
+            const sm = s.matrix;
+            const dm = d.matrix;
+            if (sm.cols != dm.cols or sm.rows != dm.rows) return false;
+            s = .{ .scalar = sm.element };
+            d = .{ .scalar = dm.element };
+            continue;
+        }
+
+        return false;
     }
-
-    // Vector of abstract can convert to vector of concrete.
-    if (src == .vector and dst == .vector) {
-        const src_v = src.vector;
-        const dst_v = dst.vector;
-        if (src_v.width == dst_v.width) {
-            return canConvertTo(
-                .{ .scalar = src_v.element },
-                .{ .scalar = dst_v.element },
-            );
-        }
-    }
-
-    // Pointer compatibility: same address space and compatible element type.
-    if (src == .pointer and dst == .pointer) {
-        if (src.pointer.address_space == dst.pointer.address_space) {
-            return src.pointer.element.eql(dst.pointer.element) or
-                canConvertTo(src.pointer.element, dst.pointer.element);
-        }
-    }
-
-    // Matrix of abstract can convert to matrix of concrete.
-    if (src == .matrix and dst == .matrix) {
-        const src_m = src.matrix;
-        const dst_m = dst.matrix;
-        if (src_m.cols == dst_m.cols and src_m.rows == dst_m.rows) {
-            return canConvertTo(
-                .{ .scalar = src_m.element },
-                .{ .scalar = dst_m.element },
-            );
-        }
-    }
-
-    return false;
 }
 
 /// Returns the common type of two types for binary operations, or null.

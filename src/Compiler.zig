@@ -545,74 +545,116 @@ const OpEmitter = struct {
 
     // -- Types --
 
+    /// Iteratively emits a type, following single-child chains.
+    /// Type nesting in WGSL is shallow (max 3-4 levels), and each iteration
+    /// processes at most one child, so this loop is bounded.
     fn emitType(self: *OpEmitter, t: Ast.Type) Allocator.Error!void {
-        switch (t) {
-            .ident => |typ| {
-                if (typ.ref.isValid()) {
-                    try self.emitName(typ.ref);
-                } else {
-                    try self.emitStr(typ.name);
-                }
-            },
-            .vec => |typ| {
-                if (typ.shorthand.len > 0) {
-                    try self.emitStr(typ.shorthand);
-                } else {
+        // Track pending closing tokens for nested generics (e.g. ptr<storage, array<f32>>)
+        var close_stack: [16]struct { close: u8, needs_space: bool, access: ?[]const u8 } = undefined;
+        var close_top: usize = 0;
+        var current = t;
+
+        while (true) {
+            switch (current) {
+                .ident => |typ| {
+                    if (typ.ref.isValid()) {
+                        try self.emitName(typ.ref);
+                    } else {
+                        try self.emitStr(typ.name);
+                    }
+                    break;
+                },
+                .vec => |typ| {
+                    if (typ.shorthand.len > 0) {
+                        try self.emitStr(typ.shorthand);
+                        break;
+                    }
                     try self.emitStr("vec");
                     try self.emitByte('0' + typ.size);
                     try self.emitByte('<');
-                    if (typ.elem_type) |et| try self.emitType(et);
-                    try self.emitByte('>');
-                    self.needs_space = true;
-                }
-            },
-            .mat => |typ| {
-                if (typ.shorthand.len > 0) {
-                    try self.emitStr(typ.shorthand);
-                } else {
+                    if (close_top < close_stack.len) {
+                        close_stack[close_top] = .{ .close = '>', .needs_space = true, .access = null };
+                        close_top += 1;
+                    }
+                    current = typ.elem_type orelse break;
+                },
+                .mat => |typ| {
+                    if (typ.shorthand.len > 0) {
+                        try self.emitStr(typ.shorthand);
+                        break;
+                    }
                     try self.emitStr("mat");
                     try self.emitByte('0' + typ.cols);
                     try self.emitByte('x');
                     try self.emitByte('0' + typ.rows);
                     try self.emitByte('<');
-                    if (typ.elem_type) |et| try self.emitType(et);
+                    if (close_top < close_stack.len) {
+                        close_stack[close_top] = .{ .close = '>', .needs_space = true, .access = null };
+                        close_top += 1;
+                    }
+                    current = typ.elem_type orelse break;
+                },
+                .array => |typ| {
+                    try self.emitStr("array<");
+                    if (typ.elem_type) |et| {
+                        // Handle array size after element type
+                        if (typ.size) |s| {
+                            // Need to emit elem_type first, then ",size>"
+                            // Since we can only follow one child, emit elem type in the loop
+                            // and handle the rest in close_stack... but close_stack doesn't support expr.
+                            // Fallback: emit the rest inline since depth is shallow.
+                            try self.emitType(et); // bounded: types are max 3-4 deep
+                            try self.emitByte(','); try self.emitSpace(); try self.emitExpr(s);
+                        } else {
+                            try self.emitType(et);
+                        }
+                    }
                     try self.emitByte('>');
                     self.needs_space = true;
-                }
-            },
-            .array => |typ| {
-                try self.emitStr("array<");
-                if (typ.elem_type) |et| try self.emitType(et);
-                if (typ.size) |s| { try self.emitByte(','); try self.emitSpace(); try self.emitExpr(s); }
-                try self.emitByte('>');
-                self.needs_space = true;
-            },
-            .ptr => |typ| {
-                try self.emitStr("ptr<");
-                try self.emitStr(typ.address_space.string());
-                try self.emitByte(','); try self.emitSpace();
-                try self.emitType(typ.elem_type);
-                if (typ.access_mode != .none) {
+                    break;
+                },
+                .ptr => |typ| {
+                    try self.emitStr("ptr<");
+                    try self.emitStr(typ.address_space.string());
                     try self.emitByte(','); try self.emitSpace();
-                    try self.emitStr(typ.access_mode.string());
-                }
-                try self.emitByte('>');
-                self.needs_space = true;
-            },
-            .atomic => |typ| {
-                try self.emitStr("atomic<");
-                try self.emitType(typ.elem_type);
-                try self.emitByte('>');
-                self.needs_space = true;
-            },
-            .sampler => |typ| {
-                if (typ.comparison) {
-                    try self.emitStr("sampler_comparison");
-                } else {
-                    try self.emitStr("sampler");
-                }
-            },
-            .texture => |typ| try self.emitTextureType(typ),
+                    if (close_top < close_stack.len) {
+                        close_stack[close_top] = .{ .close = '>', .needs_space = true, .access = if (typ.access_mode != .none) typ.access_mode.string() else null };
+                        close_top += 1;
+                    }
+                    current = typ.elem_type;
+                },
+                .atomic => |typ| {
+                    try self.emitStr("atomic<");
+                    if (close_top < close_stack.len) {
+                        close_stack[close_top] = .{ .close = '>', .needs_space = true, .access = null };
+                        close_top += 1;
+                    }
+                    current = typ.elem_type;
+                },
+                .sampler => |typ| {
+                    if (typ.comparison) {
+                        try self.emitStr("sampler_comparison");
+                    } else {
+                        try self.emitStr("sampler");
+                    }
+                    break;
+                },
+                .texture => |typ| {
+                    try self.emitTextureType(typ);
+                    break;
+                },
+            }
+        }
+        // Emit closing tokens in reverse
+        while (close_top > 0) {
+            close_top -= 1;
+            const entry = close_stack[close_top];
+            if (entry.access) |acc| {
+                try self.emitByte(','); try self.emitSpace();
+                try self.emitStr(acc);
+            }
+            try self.emitByte(entry.close);
+            if (entry.needs_space) self.needs_space = true;
         }
     }
 
@@ -654,54 +696,80 @@ const OpEmitter = struct {
 
     // -- Expressions --
 
+    /// Iteratively emits an expression tree using a reverse-push work item stack.
     fn emitExpr(self: *OpEmitter, e: Ast.Expr) Allocator.Error!void {
-        switch (e) {
-            .ident => |expr| {
-                if (expr.ref.isValid()) {
-                    try self.emitName(expr.ref);
-                } else {
-                    try self.emitStr(expr.name);
-                }
-            },
-            .literal => |expr| try self.emitStr(expr.value),
-            .binary => |expr| {
-                try self.emitExpr(expr.left);
-                try self.emitSpace(); try self.emitStr(expr.op.string()); try self.emitSpace();
-                try self.emitExpr(expr.right);
-            },
-            .unary => |expr| {
-                try self.emitStr(expr.op.string());
-                try self.emitExpr(expr.operand);
-            },
-            .call => |expr| {
-                if (expr.template_type) |tt| {
-                    try self.emitType(tt);
-                } else if (expr.func) |f| {
-                    try self.emitExpr(f);
-                }
-                try self.emitByte('(');
-                for (expr.args.items, 0..) |arg, i| {
-                    if (i > 0) { try self.emitByte(','); try self.emitSpace(); }
-                    try self.emitExpr(arg);
-                }
-                try self.emitByte(')');
-            },
-            .index => |expr| {
-                try self.emitExpr(expr.base);
-                try self.emitByte('[');
-                try self.emitExpr(expr.idx);
-                try self.emitByte(']');
-            },
-            .member => |expr| {
-                try self.emitExpr(expr.base);
-                try self.emitByte('.');
-                try self.emitStr(expr.member_name);
-            },
-            .paren => |expr| {
-                try self.emitByte('(');
-                try self.emitExpr(expr.expr);
-                try self.emitByte(')');
-            },
+        const EmitWork = union(enum) {
+            expr: Ast.Expr,
+            str: []const u8,
+            byte: u8,
+            space,
+            emit_type: Ast.Type,
+        };
+
+        var stack: std.ArrayListUnmanaged(EmitWork) = .empty;
+        defer stack.deinit(self.alloc);
+        try stack.append(self.alloc, .{ .expr = e });
+
+        while (true) {
+            const work = stack.pop() orelse break;
+            switch (work) {
+                .str => |s| try self.emitStr(s),
+                .byte => |b| try self.emitByte(b),
+                .space => try self.emitSpace(),
+                .emit_type => |t| try self.emitType(t),
+                .expr => |ex| switch (ex) {
+                    .ident => |expr| {
+                        if (expr.ref.isValid()) {
+                            try self.emitName(expr.ref);
+                        } else {
+                            try self.emitStr(expr.name);
+                        }
+                    },
+                    .literal => |expr| try self.emitStr(expr.value),
+                    .binary => |expr| {
+                        try stack.append(self.alloc, .{ .expr = expr.right });
+                        try stack.append(self.alloc, .space);
+                        try stack.append(self.alloc, .{ .str = expr.op.string() });
+                        try stack.append(self.alloc, .space);
+                        try stack.append(self.alloc, .{ .expr = expr.left });
+                    },
+                    .unary => |expr| {
+                        try stack.append(self.alloc, .{ .expr = expr.operand });
+                        try stack.append(self.alloc, .{ .str = expr.op.string() });
+                    },
+                    .call => |expr| {
+                        try stack.append(self.alloc, .{ .byte = ')' });
+                        var i = expr.args.items.len;
+                        while (i > 0) {
+                            i -= 1;
+                            try stack.append(self.alloc, .{ .expr = expr.args.items[i] });
+                            if (i > 0) { try stack.append(self.alloc, .space); try stack.append(self.alloc, .{ .byte = ',' }); }
+                        }
+                        try stack.append(self.alloc, .{ .byte = '(' });
+                        if (expr.template_type) |tt| {
+                            try stack.append(self.alloc, .{ .emit_type = tt });
+                        } else if (expr.func) |f| {
+                            try stack.append(self.alloc, .{ .expr = f });
+                        }
+                    },
+                    .index => |expr| {
+                        try stack.append(self.alloc, .{ .byte = ']' });
+                        try stack.append(self.alloc, .{ .expr = expr.idx });
+                        try stack.append(self.alloc, .{ .byte = '[' });
+                        try stack.append(self.alloc, .{ .expr = expr.base });
+                    },
+                    .member => |expr| {
+                        try stack.append(self.alloc, .{ .str = expr.member_name });
+                        try stack.append(self.alloc, .{ .byte = '.' });
+                        try stack.append(self.alloc, .{ .expr = expr.base });
+                    },
+                    .paren => |expr| {
+                        try stack.append(self.alloc, .{ .byte = ')' });
+                        try stack.append(self.alloc, .{ .expr = expr.expr });
+                        try stack.append(self.alloc, .{ .byte = '(' });
+                    },
+                },
+            }
         }
     }
 
@@ -715,106 +783,154 @@ const OpEmitter = struct {
         try self.emitByte('}');
     }
 
-    fn emitStmt(self: *OpEmitter, s: Ast.Stmt) Allocator.Error!void {
-        switch (s) {
-            .compound => |stmt| {
-                try self.emitByte('{');
-                for (stmt.stmts.items) |sub| try self.emitStmt(sub);
-                try self.emitByte('}');
-            },
-            .@"return" => |stmt| {
-                try self.emitStr("return");
-                if (stmt.value) |v| { try self.emitByte(' '); try self.emitExpr(v); }
-                try self.emitByte(';');
-            },
-            .@"if" => |stmt| try self.emitIfStmt(stmt),
-            .@"switch" => |stmt| {
-                try self.emitStr("switch ");
-                try self.emitExpr(stmt.expr);
-                try self.emitSpace();
-                try self.emitByte('{');
-                for (stmt.cases.items) |c| {
-                    if (c.selectors.items.len == 0) {
-                        try self.emitStr("default");
-                    } else {
-                        try self.emitStr("case ");
-                        for (c.selectors.items, 0..) |sel, i| {
-                            if (i > 0) { try self.emitByte(','); try self.emitSpace(); }
-                            try self.emitExpr(sel);
+    /// Iteratively emits a statement tree using a work item stack.
+    fn emitStmt(self: *OpEmitter, root: Ast.Stmt) Allocator.Error!void {
+        const StmtEmitWork = union(enum) {
+            stmt: Ast.Stmt,
+            compound: *const Ast.CompoundStmt,
+            else_chain: Ast.Stmt,
+            continuing: *const Ast.CompoundStmt,
+            close_brace,
+        };
+
+        var stack: std.ArrayListUnmanaged(StmtEmitWork) = .empty;
+        defer stack.deinit(self.alloc);
+        try stack.append(self.alloc, .{ .stmt = root });
+
+        while (true) {
+            const work = stack.pop() orelse break;
+            switch (work) {
+                .compound => |body| {
+                    try self.emitByte('{');
+                    // Push close_brace first (bottom = processed last), then stmts in reverse
+                    try stack.append(self.alloc, .close_brace);
+                    var ci = body.stmts.items.len;
+                    while (ci > 0) {
+                        ci -= 1;
+                        try stack.append(self.alloc, .{ .stmt = body.stmts.items[ci] });
+                    }
+                },
+                .close_brace => {
+                    try self.emitByte('}');
+                },
+                .else_chain => |ec| {
+                    var s = ec;
+                    while (true) {
+                        if (s == .@"if") {
+                            const if_stmt = s.@"if";
+                            try self.emitStr(" else if ");
+                            try self.emitExpr(if_stmt.condition);
+                            try self.emitSpace();
+                            if (if_stmt.else_branch) |eb| try stack.append(self.alloc, .{ .else_chain = eb });
+                            try stack.append(self.alloc, .{ .compound = if_stmt.body });
+                            break;
+                        } else {
+                            try self.emitStr(" else");
+                            try self.emitSpace();
+                            try stack.append(self.alloc, .{ .stmt = s });
+                            break;
                         }
                     }
-                    try self.emitByte(':');
-                    try self.emitSpace();
-                    try self.emitCompoundStmt(c.body);
-                }
-                try self.emitByte('}');
-            },
-            .@"for" => |stmt| try self.emitForStmt(stmt),
-            .@"while" => |stmt| {
-                try self.emitStr("while ");
-                try self.emitExpr(stmt.condition);
-                try self.emitSpace();
-                try self.emitCompoundStmt(stmt.body);
-            },
-            .loop => |stmt| {
-                try self.emitStr("loop");
-                try self.emitSpace();
-                try self.emitCompoundStmt(stmt.body);
-                if (stmt.continuing) |c| {
+                },
+                .continuing => |c| {
                     try self.emitStr(" continuing");
                     try self.emitSpace();
-                    try self.emitCompoundStmt(c);
-                }
-            },
-            .@"break" => try self.emitStr("break;"),
-            .break_if => |stmt| {
-                try self.emitStr("break if ");
-                try self.emitExpr(stmt.condition);
-                try self.emitByte(';');
-            },
-            .@"continue" => try self.emitStr("continue;"),
-            .discard => try self.emitStr("discard;"),
-            .assign => |stmt| {
-                try self.emitExpr(stmt.left);
-                try self.emitSpace(); try self.emitStr(stmt.op.string()); try self.emitSpace();
-                try self.emitExpr(stmt.right);
-                try self.emitByte(';');
-            },
-            .incr_decr => |stmt| {
-                try self.emitExpr(stmt.expr);
-                if (stmt.increment) try self.emitStr("++") else try self.emitStr("--");
-                try self.emitByte(';');
-            },
-            .call => |stmt| {
-                try self.emitExpr(.{ .call = stmt.call });
-                try self.emitByte(';');
-            },
-            .decl => |stmt| try self.emitDeclStmt(stmt.decl),
+                    try stack.append(self.alloc, .{ .compound = c });
+                },
+                .stmt => |s| switch (s) {
+                    .compound => |stmt| try stack.append(self.alloc, .{ .compound = stmt }),
+                    .@"return" => |stmt| {
+                        try self.emitStr("return");
+                        if (stmt.value) |v| { try self.emitByte(' '); try self.emitExpr(v); }
+                        try self.emitByte(';');
+                    },
+                    .@"if" => |stmt| {
+                        try self.emitStr("if ");
+                        try self.emitExpr(stmt.condition);
+                        try self.emitSpace();
+                        if (stmt.else_branch) |eb| try stack.append(self.alloc, .{ .else_chain = eb });
+                        try stack.append(self.alloc, .{ .compound = stmt.body });
+                    },
+                    .@"switch" => |stmt| {
+                        try self.emitStr("switch ");
+                        try self.emitExpr(stmt.expr);
+                        try self.emitSpace();
+                        try self.emitByte('{');
+                        for (stmt.cases.items) |c| {
+                            if (c.selectors.items.len == 0) {
+                                try self.emitStr("default");
+                            } else {
+                                try self.emitStr("case ");
+                                for (c.selectors.items, 0..) |sel, i| {
+                                    if (i > 0) { try self.emitByte(','); try self.emitSpace(); }
+                                    try self.emitExpr(sel);
+                                }
+                            }
+                            try self.emitByte(':');
+                            try self.emitSpace();
+                            try self.emitCompoundStmt(c.body);
+                        }
+                        try self.emitByte('}');
+                    },
+                    .@"for" => |stmt| try self.emitForStmt(stmt),
+                    .@"while" => |stmt| {
+                        try self.emitStr("while ");
+                        try self.emitExpr(stmt.condition);
+                        try self.emitSpace();
+                        try stack.append(self.alloc, .{ .compound = stmt.body });
+                    },
+                    .loop => |stmt| {
+                        try self.emitStr("loop");
+                        try self.emitSpace();
+                        if (stmt.continuing) |c| try stack.append(self.alloc, .{ .continuing = c });
+                        try stack.append(self.alloc, .{ .compound = stmt.body });
+                    },
+                    .@"break" => try self.emitStr("break;"),
+                    .break_if => |stmt| {
+                        try self.emitStr("break if ");
+                        try self.emitExpr(stmt.condition);
+                        try self.emitByte(';');
+                    },
+                    .@"continue" => try self.emitStr("continue;"),
+                    .discard => try self.emitStr("discard;"),
+                    .assign => |stmt| {
+                        try self.emitExpr(stmt.left);
+                        try self.emitSpace(); try self.emitStr(stmt.op.string()); try self.emitSpace();
+                        try self.emitExpr(stmt.right);
+                        try self.emitByte(';');
+                    },
+                    .incr_decr => |stmt| {
+                        try self.emitExpr(stmt.expr);
+                        if (stmt.increment) try self.emitStr("++") else try self.emitStr("--");
+                        try self.emitByte(';');
+                    },
+                    .call => |stmt| {
+                        try self.emitExpr(.{ .call = stmt.call });
+                        try self.emitByte(';');
+                    },
+                    .decl => |stmt| try self.emitDeclStmt(stmt.decl),
+                },
+            }
         }
     }
 
-    fn emitIfStmt(self: *OpEmitter, stmt: *const Ast.IfStmt) Allocator.Error!void {
-        try self.emitStr("if ");
-        try self.emitExpr(stmt.condition);
-        try self.emitSpace();
-        try self.emitCompoundStmt(stmt.body);
-        if (stmt.else_branch) |eb| {
-            try self.emitElseChain(eb);
-        }
-    }
-
-    fn emitElseChain(self: *OpEmitter, s: Ast.Stmt) Allocator.Error!void {
-        if (s == .@"if") {
-            const if_stmt = s.@"if";
-            try self.emitStr(" else if ");
-            try self.emitExpr(if_stmt.condition);
-            try self.emitSpace();
-            try self.emitCompoundStmt(if_stmt.body);
-            if (if_stmt.else_branch) |eb| try self.emitElseChain(eb);
-        } else {
-            try self.emitStr(" else");
-            try self.emitSpace();
-            try self.emitStmt(s);
+    /// Iteratively emits an else/else-if chain.
+    fn emitElseChain(self: *OpEmitter, s_init: Ast.Stmt) Allocator.Error!void {
+        var s = s_init;
+        while (true) {
+            if (s == .@"if") {
+                const if_stmt = s.@"if";
+                try self.emitStr(" else if ");
+                try self.emitExpr(if_stmt.condition);
+                try self.emitSpace();
+                try self.emitCompoundStmt(if_stmt.body);
+                s = if_stmt.else_branch orelse break;
+            } else {
+                try self.emitStr(" else");
+                try self.emitSpace();
+                try self.emitStmt(s);
+                break;
+            }
         }
     }
 

@@ -370,80 +370,111 @@ fn printAttributes(self: *Printer, attrs: []const Ast.Attribute) !void {
 // Types
 // =========================================================================
 
+/// Iteratively prints a type, following single-child chains with a close-stack.
 fn printType(self: *Printer, t: Ast.Type) error{OutOfMemory}!void {
-    switch (t) {
-        .ident => |typ| {
-            if (typ.ref.isValid()) {
-                try self.emitName(typ.ref);
-            } else {
-                try self.emit(typ.name);
-            }
-        },
-        .vec => |typ| {
-            if (typ.shorthand.len > 0) {
-                try self.emit(typ.shorthand);
-            } else {
+    var close_stack: [16]struct { suffix: []const u8, needs_space: bool, access: ?[]const u8 } = undefined;
+    var close_top: usize = 0;
+    var current = t;
+
+    while (true) {
+        switch (current) {
+            .ident => |typ| {
+                if (typ.ref.isValid()) {
+                    try self.emitName(typ.ref);
+                } else {
+                    try self.emit(typ.name);
+                }
+                break;
+            },
+            .vec => |typ| {
+                if (typ.shorthand.len > 0) {
+                    try self.emit(typ.shorthand);
+                    break;
+                }
                 try self.emit("vec");
                 try self.emitByte('0' + typ.size);
                 try self.emit("<");
-                if (typ.elem_type) |et| try self.printType(et);
-                try self.emit(">");
-                self.needs_space = true;
-            }
-        },
-        .mat => |typ| {
-            if (typ.shorthand.len > 0) {
-                try self.emit(typ.shorthand);
-            } else {
+                if (close_top < close_stack.len) {
+                    close_stack[close_top] = .{ .suffix = ">", .needs_space = true, .access = null };
+                    close_top += 1;
+                }
+                current = typ.elem_type orelse break;
+            },
+            .mat => |typ| {
+                if (typ.shorthand.len > 0) {
+                    try self.emit(typ.shorthand);
+                    break;
+                }
                 try self.emit("mat");
                 try self.emitByte('0' + typ.cols);
                 try self.emit("x");
                 try self.emitByte('0' + typ.rows);
                 try self.emit("<");
-                if (typ.elem_type) |et| try self.printType(et);
+                if (close_top < close_stack.len) {
+                    close_stack[close_top] = .{ .suffix = ">", .needs_space = true, .access = null };
+                    close_top += 1;
+                }
+                current = typ.elem_type orelse break;
+            },
+            .array => |typ| {
+                try self.emit("array<");
+                if (typ.elem_type) |et| {
+                    // Handle array size after element type
+                    try self.printType(et); // bounded: types max 3-4 deep
+                }
+                if (typ.size) |s| {
+                    try self.emit(",");
+                    try self.emitSpace();
+                    try self.printExpr(s);
+                }
                 try self.emit(">");
                 self.needs_space = true;
-            }
-        },
-        .array => |typ| {
-            try self.emit("array<");
-            if (typ.elem_type) |et| try self.printType(et);
-            if (typ.size) |s| {
+                break;
+            },
+            .ptr => |typ| {
+                try self.emit("ptr<");
+                try self.emit(typ.address_space.string());
                 try self.emit(",");
                 try self.emitSpace();
-                try self.printExpr(s);
-            }
-            try self.emit(">");
-            self.needs_space = true;
-        },
-        .ptr => |typ| {
-            try self.emit("ptr<");
-            try self.emit(typ.address_space.string());
+                if (close_top < close_stack.len) {
+                    close_stack[close_top] = .{ .suffix = ">", .needs_space = true, .access = if (typ.access_mode != .none) typ.access_mode.string() else null };
+                    close_top += 1;
+                }
+                current = typ.elem_type;
+            },
+            .atomic => |typ| {
+                try self.emit("atomic<");
+                if (close_top < close_stack.len) {
+                    close_stack[close_top] = .{ .suffix = ">", .needs_space = true, .access = null };
+                    close_top += 1;
+                }
+                current = typ.elem_type;
+            },
+            .sampler => |typ| {
+                if (typ.comparison) {
+                    try self.emit("sampler_comparison");
+                } else {
+                    try self.emit("sampler");
+                }
+                break;
+            },
+            .texture => |typ| {
+                try self.printTextureType(typ);
+                break;
+            },
+        }
+    }
+    // Emit closing suffixes in reverse
+    while (close_top > 0) {
+        close_top -= 1;
+        const entry = close_stack[close_top];
+        if (entry.access) |acc| {
             try self.emit(",");
             try self.emitSpace();
-            try self.printType(typ.elem_type);
-            if (typ.access_mode != .none) {
-                try self.emit(",");
-                try self.emitSpace();
-                try self.emit(typ.access_mode.string());
-            }
-            try self.emit(">");
-            self.needs_space = true;
-        },
-        .atomic => |typ| {
-            try self.emit("atomic<");
-            try self.printType(typ.elem_type);
-            try self.emit(">");
-            self.needs_space = true;
-        },
-        .sampler => |typ| {
-            if (typ.comparison) {
-                try self.emit("sampler_comparison");
-            } else {
-                try self.emit("sampler");
-            }
-        },
-        .texture => |typ| try self.printTextureType(typ),
+            try self.emit(acc);
+        }
+        try self.emit(entry.suffix);
+        if (entry.needs_space) self.needs_space = true;
     }
 }
 
@@ -633,73 +664,103 @@ fn trySciNotation(
 // Expressions
 // =========================================================================
 
+/// Iteratively prints an expression tree using a reverse-push work item stack.
+/// Items are pushed in reverse execution order so LIFO processing yields
+/// correct left-to-right output.
 fn printExpr(self: *Printer, e: Ast.Expr) !void {
-    switch (e) {
-        .ident => |expr| {
-            if (expr.ref.isValid()) {
-                try self.emitName(expr.ref);
-            } else {
-                try self.emit(expr.name);
-            }
-        },
-        .literal => |expr| {
-            if (self.options.minify_syntax and
-                (expr.kind == .float_literal or
-                    expr.kind == .int_literal))
-            {
-                var buf: [64]u8 = undefined;
-                const opt = optimizeNumericLiteral(
-                    expr.value,
-                    &buf,
-                );
-                try self.emit(opt);
-            } else {
-                try self.emit(expr.value);
-            }
-        },
-        .binary => |expr| {
-            try self.printExpr(expr.left);
-            try self.emitSpace();
-            try self.emit(expr.op.string());
-            try self.emitSpace();
-            try self.printExpr(expr.right);
-        },
-        .unary => |expr| {
-            try self.emit(expr.op.string());
-            try self.printExpr(expr.operand);
-        },
-        .call => |expr| {
-            if (expr.template_type) |tt| {
-                try self.printType(tt);
-            } else if (expr.func) |f| {
-                try self.printExpr(f);
-            }
-            try self.emit("(");
-            for (expr.args.items, 0..) |arg, i| {
-                if (i > 0) {
-                    try self.emit(",");
-                    try self.emitSpace();
-                }
-                try self.printExpr(arg);
-            }
-            try self.emit(")");
-        },
-        .index => |expr| {
-            try self.printExpr(expr.base);
-            try self.emit("[");
-            try self.printExpr(expr.idx);
-            try self.emit("]");
-        },
-        .member => |expr| {
-            try self.printExpr(expr.base);
-            try self.emit(".");
-            try self.emit(expr.member_name);
-        },
-        .paren => |expr| {
-            try self.emit("(");
-            try self.printExpr(expr.expr);
-            try self.emit(")");
-        },
+    const PrintWork = union(enum) {
+        expr: Ast.Expr,
+        literal: []const u8,
+        space,
+        print_type: Ast.Type,
+    };
+
+    var stack: std.ArrayListUnmanaged(PrintWork) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, .{ .expr = e });
+
+    while (true) {
+        const work = stack.pop() orelse break;
+        switch (work) {
+            .literal => |s| try self.emit(s),
+            .space => try self.emitSpace(),
+            .print_type => |t| try self.printType(t),
+            .expr => |ex| switch (ex) {
+                .ident => |expr| {
+                    if (expr.ref.isValid()) {
+                        try self.emitName(expr.ref);
+                    } else {
+                        try self.emit(expr.name);
+                    }
+                },
+                .literal => |expr| {
+                    if (self.options.minify_syntax and
+                        (expr.kind == .float_literal or
+                            expr.kind == .int_literal))
+                    {
+                        var buf: [64]u8 = undefined;
+                        const opt = optimizeNumericLiteral(
+                            expr.value,
+                            &buf,
+                        );
+                        try self.emit(opt);
+                    } else {
+                        try self.emit(expr.value);
+                    }
+                },
+                .binary => |expr| {
+                    // Execution order: left, space, op, space, right
+                    try stack.append(self.allocator, .{ .expr = expr.right });
+                    try stack.append(self.allocator, .space);
+                    try stack.append(self.allocator, .{ .literal = expr.op.string() });
+                    try stack.append(self.allocator, .space);
+                    try stack.append(self.allocator, .{ .expr = expr.left });
+                },
+                .unary => |expr| {
+                    // Execution order: op, operand
+                    try stack.append(self.allocator, .{ .expr = expr.operand });
+                    try stack.append(self.allocator, .{ .literal = expr.op.string() });
+                },
+                .call => |expr| {
+                    // Execution order: func/type "(" arg0 "," arg1 ... ")"
+                    try stack.append(self.allocator, .{ .literal = ")" });
+                    var i = expr.args.items.len;
+                    while (i > 0) {
+                        i -= 1;
+                        try stack.append(self.allocator, .{ .expr = expr.args.items[i] });
+                        if (i > 0) {
+                            try stack.append(self.allocator, .space);
+                            try stack.append(self.allocator, .{ .literal = "," });
+                        }
+                    }
+                    try stack.append(self.allocator, .{ .literal = "(" });
+                    if (expr.template_type) |tt| {
+                        try stack.append(self.allocator, .{ .print_type = tt });
+                    } else if (expr.func) |f| {
+                        try stack.append(self.allocator, .{ .expr = f });
+                    }
+                },
+                .index => |expr| {
+                    // Execution order: base "[" idx "]"
+                    try stack.append(self.allocator, .{ .literal = "]" });
+                    try stack.append(self.allocator, .{ .expr = expr.idx });
+                    try stack.append(self.allocator, .{ .literal = "[" });
+                    try stack.append(self.allocator, .{ .expr = expr.base });
+                },
+                .member => |expr| {
+                    // Execution order: base "." member_name
+                    try stack.append(self.allocator, .{ .literal = expr.member_name });
+                    try stack.append(self.allocator, .{ .literal = "." });
+                    try stack.append(self.allocator, .{ .expr = expr.base });
+                },
+                .paren => |expr| {
+                    // Execution order: "(" expr ")"
+                    try stack.append(self.allocator, .{ .literal = ")" });
+                    try stack.append(self.allocator, .{ .expr = expr.expr });
+                    try stack.append(self.allocator, .{ .literal = "(" });
+                },
+            },
+        }
     }
 }
 
@@ -719,35 +780,75 @@ fn printCompoundStmt(self: *Printer, stmt: *const Ast.CompoundStmt) !void {
     try self.emit("}");
 }
 
-fn printStmt(self: *Printer, s: Ast.Stmt) error{OutOfMemory}!void {
-    switch (s) {
-        .compound => |stmt| {
-            try self.emit("{");
-            self.indent += 1;
-            for (stmt.stmts.items) |sub| {
-                try self.emitNewline();
-                try self.printStmt(sub);
-            }
-            self.indent -= 1;
-            try self.emitNewline();
-            try self.emit("}");
-        },
-        .@"return" => |stmt| {
-            try self.emit("return");
-            if (stmt.value) |v| {
-                try self.emit(" ");
-                try self.printExpr(v);
-            }
-            try self.emit(";");
-        },
-        .@"if" => |stmt| try self.printIfStmt(stmt),
-        .@"switch" => |stmt| {
-            try self.emit("switch ");
-            try self.printExpr(stmt.expr);
-            try self.emitSpace();
-            try self.emit("{");
-            self.indent += 1;
-            for (stmt.cases.items) |c| {
+/// Work item for the iterative statement printer.
+const StmtWork = union(enum) {
+    stmt: Ast.Stmt,
+    compound: *const Ast.CompoundStmt,
+    literal: []const u8,
+    space,
+    newline,
+    indent_inc,
+    indent_dec,
+    else_chain: Ast.Stmt,
+    switch_case: *const Ast.SwitchCase,
+    for_stmt: *const Ast.ForStmt,
+    continuing: *const Ast.CompoundStmt,
+};
+
+/// Iteratively prints a statement tree. Expression printing (printExpr)
+/// and else-if chains are already iterative.
+fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
+    var stack: std.ArrayListUnmanaged(StmtWork) = .empty;
+    defer stack.deinit(self.allocator);
+    try stack.append(self.allocator, .{ .stmt = root });
+
+    while (true) {
+        const work = stack.pop() orelse break;
+        switch (work) {
+            .literal => |s| try self.emit(s),
+            .space => try self.emitSpace(),
+            .newline => try self.emitNewline(),
+            .indent_inc => {
+                self.indent += 1;
+            },
+            .indent_dec => {
+                self.indent -= 1;
+            },
+            .compound => |body| {
+                // Execution order: "{" indent++ (newline stmt)* indent-- newline "}"
+                // Push in reverse:
+                try stack.append(self.allocator, .{ .literal = "}" });
+                try stack.append(self.allocator, .newline);
+                try stack.append(self.allocator, .indent_dec);
+                var i = body.stmts.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    try stack.append(self.allocator, .{ .stmt = body.stmts.items[i] });
+                    try stack.append(self.allocator, .newline);
+                }
+                try stack.append(self.allocator, .indent_inc);
+                try stack.append(self.allocator, .{ .literal = "{" });
+            },
+            .else_chain => |ec| {
+                var s = ec;
+                while (true) {
+                    if (s == .@"if") {
+                        const if_stmt = s.@"if";
+                        try self.emit(" else if ");
+                        try self.printExpr(if_stmt.condition);
+                        try self.emitSpace();
+                        if (if_stmt.else_branch) |eb| try stack.append(self.allocator, .{ .else_chain = eb });
+                        try stack.append(self.allocator, .{ .compound = if_stmt.body });
+                        break;
+                    } else {
+                        try self.emit(" else");
+                        try self.emitSpace();
+                        try stack.append(self.allocator, .{ .stmt = s });
+                        break;
+                    }
+                }
+            },
+            .switch_case => |c| {
                 try self.emitNewline();
                 if (c.selectors.items.len == 0) {
                     try self.emit("default");
@@ -763,112 +864,103 @@ fn printStmt(self: *Printer, s: Ast.Stmt) error{OutOfMemory}!void {
                 }
                 try self.emit(":");
                 try self.emitSpace();
-                try self.printCompoundStmt(c.body);
-            }
-            self.indent -= 1;
-            try self.emitNewline();
-            try self.emit("}");
-        },
-        .@"for" => |stmt| try self.printForStmt(stmt),
-        .@"while" => |stmt| {
-            try self.emit("while ");
-            try self.printExpr(stmt.condition);
-            try self.emitSpace();
-            try self.printCompoundStmt(stmt.body);
-        },
-        .loop => |stmt| {
-            try self.emit("loop");
-            try self.emitSpace();
-            try self.printCompoundStmt(stmt.body);
-            if (stmt.continuing) |c| {
+                try stack.append(self.allocator, .{ .compound = c.body });
+            },
+            .for_stmt => |stmt| {
+                try self.emit("for");
+                try self.emitSpace();
+                try self.emit("(");
+                if (stmt.init_stmt) |is| try self.printForInit(is);
+                try self.emit(";");
+                try self.emitSpace();
+                if (stmt.condition) |c| try self.printExpr(c);
+                try self.emit(";");
+                try self.emitSpace();
+                if (stmt.update) |u| try self.printForUpdate(u);
+                try self.emit(")");
+                try self.emitSpace();
+                try stack.append(self.allocator, .{ .compound = stmt.body });
+            },
+            .continuing => |c| {
                 try self.emit(" continuing");
                 try self.emitSpace();
-                try self.printCompoundStmt(c);
-            }
-        },
-        .@"break" => try self.emit("break;"),
-        .break_if => |stmt| {
-            try self.emit("break if ");
-            try self.printExpr(stmt.condition);
-            try self.emit(";");
-        },
-        .@"continue" => try self.emit("continue;"),
-        .discard => try self.emit("discard;"),
-        .assign => |stmt| {
-            try self.printExpr(stmt.left);
-            try self.emitSpace();
-            try self.emit(stmt.op.string());
-            try self.emitSpace();
-            try self.printExpr(stmt.right);
-            try self.emit(";");
-        },
-        .incr_decr => |stmt| {
-            try self.printExpr(stmt.expr);
-            if (stmt.increment) try self.emit("++") else try self.emit("--");
-            try self.emit(";");
-        },
-        .call => |stmt| {
-            try self.printExpr(.{ .call = stmt.call });
-            try self.emit(";");
-        },
-        .decl => |stmt| try self.printDeclStmt(stmt.decl),
-    }
-}
-
-fn printIfStmt(self: *Printer, stmt: *const Ast.IfStmt) !void {
-    try self.emit("if ");
-    try self.printExpr(stmt.condition);
-    try self.emitSpace();
-    try self.printCompoundStmt(stmt.body);
-    if (stmt.else_branch) |eb| {
-        switch (eb) {
-            .@"if" => |else_if| {
-                try self.emit(" else if ");
-                try self.printExpr(else_if.condition);
-                try self.emitSpace();
-                try self.printCompoundStmt(else_if.body);
-                if (else_if.else_branch) |eb2| {
-                    try self.printElseChain(eb2);
-                }
+                try stack.append(self.allocator, .{ .compound = c });
             },
-            else => {
-                try self.emit(" else");
-                try self.emitSpace();
-                try self.printStmt(eb);
+            .stmt => |s| switch (s) {
+                .compound => |stmt| try stack.append(self.allocator, .{ .compound = stmt }),
+                .@"return" => |stmt| {
+                    try self.emit("return");
+                    if (stmt.value) |v| {
+                        try self.emit(" ");
+                        try self.printExpr(v);
+                    }
+                    try self.emit(";");
+                },
+                .@"if" => |stmt| {
+                    try self.emit("if ");
+                    try self.printExpr(stmt.condition);
+                    try self.emitSpace();
+                    if (stmt.else_branch) |eb| try stack.append(self.allocator, .{ .else_chain = eb });
+                    try stack.append(self.allocator, .{ .compound = stmt.body });
+                },
+                .@"switch" => |stmt| {
+                    try self.emit("switch ");
+                    try self.printExpr(stmt.expr);
+                    try self.emitSpace();
+                    // Execution order: "{" indent++ (newline case)* indent-- newline "}"
+                    try stack.append(self.allocator, .{ .literal = "}" });
+                    try stack.append(self.allocator, .newline);
+                    try stack.append(self.allocator, .indent_dec);
+                    var i = stmt.cases.items.len;
+                    while (i > 0) {
+                        i -= 1;
+                        try stack.append(self.allocator, .{ .switch_case = &stmt.cases.items[i] });
+                    }
+                    try stack.append(self.allocator, .indent_inc);
+                    try stack.append(self.allocator, .{ .literal = "{" });
+                },
+                .@"for" => |stmt| try stack.append(self.allocator, .{ .for_stmt = stmt }),
+                .@"while" => |stmt| {
+                    try self.emit("while ");
+                    try self.printExpr(stmt.condition);
+                    try self.emitSpace();
+                    try stack.append(self.allocator, .{ .compound = stmt.body });
+                },
+                .loop => |stmt| {
+                    try self.emit("loop");
+                    try self.emitSpace();
+                    if (stmt.continuing) |c| try stack.append(self.allocator, .{ .continuing = c });
+                    try stack.append(self.allocator, .{ .compound = stmt.body });
+                },
+                .@"break" => try self.emit("break;"),
+                .break_if => |stmt| {
+                    try self.emit("break if ");
+                    try self.printExpr(stmt.condition);
+                    try self.emit(";");
+                },
+                .@"continue" => try self.emit("continue;"),
+                .discard => try self.emit("discard;"),
+                .assign => |stmt| {
+                    try self.printExpr(stmt.left);
+                    try self.emitSpace();
+                    try self.emit(stmt.op.string());
+                    try self.emitSpace();
+                    try self.printExpr(stmt.right);
+                    try self.emit(";");
+                },
+                .incr_decr => |stmt| {
+                    try self.printExpr(stmt.expr);
+                    if (stmt.increment) try self.emit("++") else try self.emit("--");
+                    try self.emit(";");
+                },
+                .call => |stmt| {
+                    try self.printExpr(.{ .call = stmt.call });
+                    try self.emit(";");
+                },
+                .decl => |stmt| try self.printDeclStmt(stmt.decl),
             },
         }
     }
-}
-
-fn printElseChain(self: *Printer, s: Ast.Stmt) !void {
-    if (s == .@"if") {
-        const if_stmt = s.@"if";
-        try self.emit(" else if ");
-        try self.printExpr(if_stmt.condition);
-        try self.emitSpace();
-        try self.printCompoundStmt(if_stmt.body);
-        if (if_stmt.else_branch) |eb| try self.printElseChain(eb);
-    } else {
-        try self.emit(" else");
-        try self.emitSpace();
-        try self.printStmt(s);
-    }
-}
-
-fn printForStmt(self: *Printer, stmt: *const Ast.ForStmt) !void {
-    try self.emit("for");
-    try self.emitSpace();
-    try self.emit("(");
-    if (stmt.init_stmt) |is| try self.printForInit(is);
-    try self.emit(";");
-    try self.emitSpace();
-    if (stmt.condition) |c| try self.printExpr(c);
-    try self.emit(";");
-    try self.emitSpace();
-    if (stmt.update) |u| try self.printForUpdate(u);
-    try self.emit(")");
-    try self.emitSpace();
-    try self.printCompoundStmt(stmt.body);
 }
 
 fn printForInit(self: *Printer, s: Ast.Stmt) !void {

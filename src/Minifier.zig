@@ -392,79 +392,99 @@ fn countDeclUsage(allocator: std.mem.Allocator, decl: Ast.Decl, uses: *std.AutoH
     }
 }
 
+/// Iteratively counts symbol usage in an expression tree using a worklist.
 fn countExprUsage(allocator: std.mem.Allocator, expr: Ast.Expr, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) void {
-    switch (expr) {
-        .ident => |e| {
-            if (e.ref.isValid()) {
-                const entry = uses.getOrPutValue(allocator, e.ref, 0) catch return;
-                entry.value_ptr.* += 1;
-            }
-        },
-        .binary => |e| {
-            countExprUsage(allocator, e.left, uses);
-            countExprUsage(allocator, e.right, uses);
-        },
-        .unary => |e| countExprUsage(allocator, e.operand, uses),
-        .call => |e| {
-            if (e.func) |f| countExprUsage(allocator, f, uses);
-            for (e.args.items) |arg| countExprUsage(allocator, arg, uses);
-        },
-        .index => |e| {
-            countExprUsage(allocator, e.base, uses);
-            countExprUsage(allocator, e.idx, uses);
-        },
-        .member => |e| countExprUsage(allocator, e.base, uses),
-        .paren => |e| countExprUsage(allocator, e.expr, uses),
-        .literal => {},
+    var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+    defer stack.deinit(allocator);
+    stack.append(allocator, expr) catch return;
+
+    while (true) {
+        const e = stack.pop() orelse break;
+        switch (e) {
+            .ident => |ie| {
+                if (ie.ref.isValid()) {
+                    const entry = uses.getOrPutValue(allocator, ie.ref, 0) catch continue;
+                    entry.value_ptr.* += 1;
+                }
+            },
+            .binary => |be| {
+                stack.append(allocator, be.right) catch {};
+                stack.append(allocator, be.left) catch {};
+            },
+            .unary => |ue| stack.append(allocator, ue.operand) catch {},
+            .call => |ce| {
+                var i = ce.args.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    stack.append(allocator, ce.args.items[i]) catch {};
+                }
+                if (ce.func) |f| stack.append(allocator, f) catch {};
+            },
+            .index => |ie| {
+                stack.append(allocator, ie.idx) catch {};
+                stack.append(allocator, ie.base) catch {};
+            },
+            .member => |me| stack.append(allocator, me.base) catch {},
+            .paren => |pe| stack.append(allocator, pe.expr) catch {},
+            .literal => {},
+        }
     }
 }
 
+/// Iteratively counts symbol usage in a statement tree using a worklist.
 fn countStmtUsage(allocator: std.mem.Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) void {
-    switch (stmt) {
-        .compound => |s| {
-            for (s.stmts.items) |inner| countStmtUsage(allocator, inner, uses);
-        },
-        .@"return" => |s| {
-            if (s.value) |v| countExprUsage(allocator, v, uses);
-        },
-        .@"if" => |s| {
-            countExprUsage(allocator, s.condition, uses);
-            countStmtUsage(allocator, .{ .compound = s.body }, uses);
-            if (s.else_branch) |eb| countStmtUsage(allocator, eb, uses);
-        },
-        .@"switch" => |s| {
-            countExprUsage(allocator, s.expr, uses);
-            for (s.cases.items) |c| {
-                for (c.selectors.items) |sel| countExprUsage(allocator, sel, uses);
-                countStmtUsage(allocator, .{ .compound = c.body }, uses);
-            }
-        },
-        .@"for" => |s| {
-            if (s.init_stmt) |is| countStmtUsage(allocator, is, uses);
-            if (s.condition) |c| countExprUsage(allocator, c, uses);
-            if (s.update) |u| countStmtUsage(allocator, u, uses);
-            countStmtUsage(allocator, .{ .compound = s.body }, uses);
-        },
-        .@"while" => |s| {
-            countExprUsage(allocator, s.condition, uses);
-            countStmtUsage(allocator, .{ .compound = s.body }, uses);
-        },
-        .loop => |s| {
-            countStmtUsage(allocator, .{ .compound = s.body }, uses);
-            if (s.continuing) |c| countStmtUsage(allocator, .{ .compound = c }, uses);
-        },
-        .break_if => |s| countExprUsage(allocator, s.condition, uses),
-        .assign => |s| {
-            countExprUsage(allocator, s.left, uses);
-            countExprUsage(allocator, s.right, uses);
-        },
-        .incr_decr => |s| countExprUsage(allocator, s.expr, uses),
-        .call => |s| {
-            if (s.call.func) |f| countExprUsage(allocator, f, uses);
-            for (s.call.args.items) |arg| countExprUsage(allocator, arg, uses);
-        },
-        .decl => |s| countDeclUsage(allocator, s.decl, uses),
-        .@"break", .@"continue", .discard => {},
+    var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
+    defer stack.deinit(allocator);
+    stack.append(allocator, stmt) catch return;
+
+    while (true) {
+        const s = stack.pop() orelse break;
+        switch (s) {
+            .compound => |cs| {
+                for (cs.stmts.items) |inner| stack.append(allocator, inner) catch {};
+            },
+            .@"return" => |rs| {
+                if (rs.value) |v| countExprUsage(allocator, v, uses);
+            },
+            .@"if" => |is| {
+                countExprUsage(allocator, is.condition, uses);
+                stack.append(allocator, .{ .compound = is.body }) catch {};
+                if (is.else_branch) |eb| stack.append(allocator, eb) catch {};
+            },
+            .@"switch" => |ss| {
+                countExprUsage(allocator, ss.expr, uses);
+                for (ss.cases.items) |c| {
+                    for (c.selectors.items) |sel| countExprUsage(allocator, sel, uses);
+                    stack.append(allocator, .{ .compound = c.body }) catch {};
+                }
+            },
+            .@"for" => |fs| {
+                if (fs.init_stmt) |is| stack.append(allocator, is) catch {};
+                if (fs.condition) |c| countExprUsage(allocator, c, uses);
+                if (fs.update) |u| stack.append(allocator, u) catch {};
+                stack.append(allocator, .{ .compound = fs.body }) catch {};
+            },
+            .@"while" => |ws| {
+                countExprUsage(allocator, ws.condition, uses);
+                stack.append(allocator, .{ .compound = ws.body }) catch {};
+            },
+            .loop => |ls| {
+                stack.append(allocator, .{ .compound = ls.body }) catch {};
+                if (ls.continuing) |c| stack.append(allocator, .{ .compound = c }) catch {};
+            },
+            .break_if => |bs| countExprUsage(allocator, bs.condition, uses),
+            .assign => |as_| {
+                countExprUsage(allocator, as_.left, uses);
+                countExprUsage(allocator, as_.right, uses);
+            },
+            .incr_decr => |ids| countExprUsage(allocator, ids.expr, uses),
+            .call => |cs| {
+                if (cs.call.func) |f| countExprUsage(allocator, f, uses);
+                for (cs.call.args.items) |arg| countExprUsage(allocator, arg, uses);
+            },
+            .decl => |ds| countDeclUsage(allocator, ds.decl, uses),
+            .@"break", .@"continue", .discard => {},
+        }
     }
 }
 
@@ -536,8 +556,7 @@ pub const ScopeLocalRenamer = struct {
         }
     }
 
-    /// Walk a compound statement, assigning canonical names to local declarations.
-    /// Recursion depth bounded by AST nesting depth (WGSL forbids infinite nesting).
+    /// Iteratively walks compound statements, assigning canonical names to local declarations.
     fn collectBodyLocals(
         allocator: std.mem.Allocator,
         body: *const Ast.CompoundStmt,
@@ -548,55 +567,55 @@ pub const ScopeLocalRenamer = struct {
         name_idx: *u32,
         reserved: *const std.StringHashMapUnmanaged(void),
     ) std.mem.Allocator.Error!void {
-        for (body.stmts.items) |stmt| {
-            switch (stmt) {
-                .decl => |ds| {
-                    const ref = ds.decl.nameRef();
-                    if (ref.isValid()) {
-                        const sym_idx = ref.index();
-                        if (!globals.contains(sym_idx) and !module.symbols.items[sym_idx].flags.must_not_be_renamed) {
-                            const name = try allocCanonicalName(allocator, name_buf, name_idx, reserved);
-                            try overrides.put(allocator, sym_idx, name);
-                        }
-                    }
-                },
-                .@"if" => |s| {
-                    try collectBodyLocals(allocator, s.body, module, globals, overrides, name_buf, name_idx, reserved);
-                    if (s.else_branch) |eb| try collectElseLocals(allocator, eb, module, globals, overrides, name_buf, name_idx, reserved);
-                },
-                .@"for" => |s| try collectBodyLocals(allocator, s.body, module, globals, overrides, name_buf, name_idx, reserved),
-                .@"while" => |s| try collectBodyLocals(allocator, s.body, module, globals, overrides, name_buf, name_idx, reserved),
-                .loop => |s| {
-                    try collectBodyLocals(allocator, s.body, module, globals, overrides, name_buf, name_idx, reserved);
-                    if (s.continuing) |c| try collectBodyLocals(allocator, c, module, globals, overrides, name_buf, name_idx, reserved);
-                },
-                .@"switch" => |s| {
-                    for (s.cases.items) |case| try collectBodyLocals(allocator, case.body, module, globals, overrides, name_buf, name_idx, reserved);
-                },
-                .compound => |s| try collectBodyLocals(allocator, s, module, globals, overrides, name_buf, name_idx, reserved),
-                else => {},
-            }
-        }
-    }
+        var bodies: std.ArrayListUnmanaged(*const Ast.CompoundStmt) = .empty;
+        defer bodies.deinit(allocator);
+        try bodies.append(allocator, body);
 
-    /// Follow an else branch (if-chain or compound block) collecting local declarations.
-    fn collectElseLocals(
-        allocator: std.mem.Allocator,
-        branch: Ast.Stmt,
-        module: *const Ast.Module,
-        globals: *const std.AutoHashMapUnmanaged(u32, void),
-        overrides: *std.AutoHashMapUnmanaged(u32, []const u8),
-        name_buf: *[16]u8,
-        name_idx: *u32,
-        reserved: *const std.StringHashMapUnmanaged(void),
-    ) std.mem.Allocator.Error!void {
-        switch (branch) {
-            .@"if" => |s| {
-                try collectBodyLocals(allocator, s.body, module, globals, overrides, name_buf, name_idx, reserved);
-                if (s.else_branch) |eb| try collectElseLocals(allocator, eb, module, globals, overrides, name_buf, name_idx, reserved);
-            },
-            .compound => |s| try collectBodyLocals(allocator, s, module, globals, overrides, name_buf, name_idx, reserved),
-            else => {},
+        while (true) {
+            const current_body = bodies.pop() orelse break;
+            for (current_body.stmts.items) |stmt| {
+                switch (stmt) {
+                    .decl => |ds| {
+                        const ref = ds.decl.nameRef();
+                        if (ref.isValid()) {
+                            const sym_idx = ref.index();
+                            if (!globals.contains(sym_idx) and !module.symbols.items[sym_idx].flags.must_not_be_renamed) {
+                                const name = try allocCanonicalName(allocator, name_buf, name_idx, reserved);
+                                try overrides.put(allocator, sym_idx, name);
+                            }
+                        }
+                    },
+                    .@"if" => |s| {
+                        try bodies.append(allocator, s.body);
+                        // Walk else-if chain iteratively
+                        var eb_opt = s.else_branch;
+                        while (eb_opt) |eb| {
+                            switch (eb) {
+                                .@"if" => |eif| {
+                                    try bodies.append(allocator, eif.body);
+                                    eb_opt = eif.else_branch;
+                                },
+                                .compound => |cs| {
+                                    try bodies.append(allocator, cs);
+                                    break;
+                                },
+                                else => break,
+                            }
+                        }
+                    },
+                    .@"for" => |s| try bodies.append(allocator, s.body),
+                    .@"while" => |s| try bodies.append(allocator, s.body),
+                    .loop => |s| {
+                        try bodies.append(allocator, s.body);
+                        if (s.continuing) |c| try bodies.append(allocator, c);
+                    },
+                    .@"switch" => |s| {
+                        for (s.cases.items) |case| try bodies.append(allocator, case.body);
+                    },
+                    .compound => |s| try bodies.append(allocator, s),
+                    else => {},
+                }
+            }
         }
     }
 
