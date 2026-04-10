@@ -1408,6 +1408,7 @@ fn decodeBpe(allocator: Allocator, data: []const u8, rules: []const [2]u8) ![]co
         } else {
             const idx = byte - 0x80;
             if (idx < rules.len) {
+                std.debug.assert(sp + 2 <= stack.len);
                 stack[sp] = rules[idx][1];
                 sp += 1;
                 stack[sp] = rules[idx][0];
@@ -1724,4 +1725,94 @@ test "round-trip: complex shader" {
         \\  return vec4f(vec3f(d),1.0);
         \\}
     );
+}
+
+test "decodeBpe: no rules, passthrough" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const result = try decodeBpe(arena.allocator(), "hello", &.{});
+    try std.testing.expectEqualStrings("hello", result);
+}
+
+test "decodeBpe: single rule expansion" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    // Rule 0: byte 0x80 expands to 'A', 'B'
+    const rules = [_][2]u8{.{ 'A', 'B' }};
+    // Input: 0x80 should decode to "AB"
+    const result = try decodeBpe(arena.allocator(), &.{0x80}, &rules);
+    try std.testing.expectEqualStrings("AB", result);
+}
+
+test "decodeBpe: chained rules" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    // Rule 0 (0x80): 'x', 'y'  -> expands to "xy"
+    // Rule 1 (0x81): 0x80, 'z' -> expands to "xyz"
+    const rules = [_][2]u8{ .{ 'x', 'y' }, .{ 0x80, 'z' } };
+    const result = try decodeBpe(arena.allocator(), &.{0x81}, &rules);
+    try std.testing.expectEqualStrings("xyz", result);
+}
+
+test "decodeBpe: mixed literal and rule bytes" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    // Rule 0 (0x80): 'l', 'l'
+    const rules = [_][2]u8{.{ 'l', 'l' }};
+    // "he" + rule0 + "o" -> "hello"
+    const result = try decodeBpe(arena.allocator(), &.{ 'h', 'e', 0x80, 'o' }, &rules);
+    try std.testing.expectEqualStrings("hello", result);
+}
+
+test "decodeBpe: deeply chained rules stay within stack bounds" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    // Build a chain of 64 rules where each rule references the previous.
+    // Rule 0: 'a', 'b'
+    // Rule 1: 0x80, 'c'  -> "abc"
+    // Rule 2: 0x81, 'd'  -> "abcd"
+    // ...
+    // Rule 63: 0xBE, char -> "ab...z..."
+    var rules: [64][2]u8 = undefined;
+    rules[0] = .{ 'a', 'b' };
+    for (1..64) |i| {
+        const char_offset: u8 = @intCast(@min(i - 1, 20));
+        rules[i] = .{ @as(u8, 0x80) + @as(u8, @intCast(i - 1)), 'c' + char_offset };
+    }
+
+    // Decode the last rule — triggers maximum chain depth.
+    // The assertion (sp + 2 <= 512) must hold throughout.
+    const result = try decodeBpe(arena.allocator(), &.{0xBF}, &rules);
+    try std.testing.expect(result.len == 65); // 2 + 63 expansion chars
+}
+
+test "decodeBpe: empty input" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    const result = try decodeBpe(arena.allocator(), &.{}, &.{});
+    try std.testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "decodeBpe: rule index out of range is ignored" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+
+    // Only 1 rule, but input byte 0x81 references rule index 1 (out of range).
+    const rules = [_][2]u8{.{ 'A', 'B' }};
+    const result = try decodeBpe(arena.allocator(), &.{ 'x', 0x81, 'y' }, &rules);
+    // 0x81 is silently skipped (idx >= rules.len), so only "xy".
+    try std.testing.expectEqualStrings("xy", result);
 }

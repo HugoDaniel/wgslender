@@ -38,7 +38,8 @@ pub fn loadFile(allocator: std.mem.Allocator, path: []const u8) !Config {
 pub fn parseJson(allocator: std.mem.Allocator, content: []const u8) !Config {
     var config = Config{};
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
     const root = parsed.value;
 
     if (root != .object) return config;
@@ -66,7 +67,7 @@ pub fn parseJson(allocator: std.mem.Allocator, content: []const u8) !Config {
             var names: std.ArrayListUnmanaged([]const u8) = .empty;
             for (v.array.items) |item| {
                 if (item == .string) {
-                    try names.append(allocator, item.string);
+                    try names.append(allocator, try allocator.dupe(u8, item.string));
                 }
             }
             config.keep_names = names.items;
@@ -312,6 +313,32 @@ test "config: toOptions keep_names passthrough" {
     const opts = cfg.toOptions();
     try std.testing.expectEqual(@as(usize, 1), opts.keep_names.len);
     try std.testing.expectEqualStrings("keep1", opts.keep_names[0]);
+}
+
+test "config: parseJson keepNames strings are independent copies" {
+    // Verify that keep_names strings are owned copies, not borrowed
+    // from the JSON parse tree (which is freed inside parseJson).
+    // Use an ArenaAllocator so all memory is cleanly freed — no leaks.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const content =
+        \\{
+        \\  "keepNames": ["myUniform", "lightPos"]
+        \\}
+    ;
+    const cfg = try parseJson(alloc, content);
+
+    // Strings must be valid and readable after parseJson returns
+    // (the JSON parse tree was freed by defer parsed.deinit() inside parseJson).
+    try std.testing.expectEqual(@as(usize, 2), cfg.keep_names.len);
+    try std.testing.expectEqualStrings("myUniform", cfg.keep_names[0]);
+    try std.testing.expectEqualStrings("lightPos", cfg.keep_names[1]);
+
+    // Verify strings are not zero-length (would indicate a broken dupe)
+    try std.testing.expect(cfg.keep_names[0].len == 9);
+    try std.testing.expect(cfg.keep_names[1].len == 8);
 }
 
 test "config: parseJson source map fields" {

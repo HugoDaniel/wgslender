@@ -159,7 +159,7 @@ fn convertDiagnostic(allocator: std.mem.Allocator, entry: *const WgslDiagnostic.
                             .character = if (r.range.end.column > 0) r.range.end.column - 1 else 0,
                         },
                     },
-                    .message = allocator.dupe(u8, r.message) catch r.message,
+                    .message = allocator.dupe(u8, r.message) catch "",
                 };
             }
             related = rel;
@@ -182,7 +182,7 @@ fn convertDiagnostic(allocator: std.mem.Allocator, entry: *const WgslDiagnostic.
             .note => .information,
             else => .information,
         },
-        .message = allocator.dupe(u8, entry.message) catch entry.message,
+        .message = allocator.dupe(u8, entry.message) catch "",
         .code = entry.code,
         .spec_url = if (entry.code.len > 0 and entry.spec_ref.len > 0) blk: {
             const url = allocator.alloc(u8, wgsl_spec_base.len + entry.spec_ref.len) catch break :blk "";
@@ -943,4 +943,71 @@ test "isDidYouMeanCode: non-matching codes" {
     try std.testing.expect(!isDidYouMeanCode("E0602"));
     try std.testing.expect(!isDidYouMeanCode(""));
     try std.testing.expect(!isDidYouMeanCode("E0101"));
+}
+
+test "convertDiagnostic OOM on message dupe yields empty message" {
+    // FailingAllocator that fails on the first allocation (the message dupe).
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const alloc = failing.allocator();
+
+    const entry = WgslDiagnostic.Entry{ .message = "some error" };
+    const result = convertDiagnostic(alloc, &entry);
+
+    // OOM fallback: message should be empty, not a dangling borrowed slice.
+    try std.testing.expectEqual(@as(usize, 0), result.message.len);
+
+    // freeDiagnostics must not crash — the empty message is skipped by the len > 0 guard.
+    const diags = try std.testing.allocator.alloc(LspDiagnostic, 1);
+    diags[0] = result;
+    freeDiagnostics(std.testing.allocator, diags);
+}
+
+test "convertDiagnostic OOM on related message dupe yields empty message" {
+    // Allocator that succeeds for the related[] alloc but fails on the string dupe.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    const alloc = failing.allocator();
+
+    const related = [_]WgslDiagnostic.RelatedInfo{
+        .{ .message = "related note" },
+    };
+    const entry = WgslDiagnostic.Entry{
+        .message = "main error",
+        .related = &related,
+    };
+    const result = convertDiagnostic(alloc, &entry);
+
+    // The related array was allocated (alloc #0), but the dupe (#1) failed.
+    if (result.related.len > 0) {
+        try std.testing.expectEqual(@as(usize, 0), result.related[0].message.len);
+    }
+
+    // Clean up: freeDiagnostics must handle this without crashing.
+    const diags = try std.testing.allocator.alloc(LspDiagnostic, 1);
+    diags[0] = result;
+    freeDiagnostics(std.testing.allocator, diags);
+}
+
+test "convertDiagnostic with message and related round-trips through freeDiagnostics" {
+    const related = [_]WgslDiagnostic.RelatedInfo{
+        .{ .message = "see declaration here" },
+        .{ .message = "first used here" },
+    };
+    const entry = WgslDiagnostic.Entry{
+        .message = "duplicate definition",
+        .code = "E0100",
+        .related = &related,
+    };
+    const result = convertDiagnostic(std.testing.allocator, &entry);
+
+    // Verify all strings were duped (owned, not borrowed).
+    try std.testing.expectEqualStrings("duplicate definition", result.message);
+    try std.testing.expectEqual(@as(usize, 2), result.related.len);
+    try std.testing.expectEqualStrings("see declaration here", result.related[0].message);
+    try std.testing.expectEqualStrings("first used here", result.related[1].message);
+
+    // freeDiagnostics must free all owned memory without leaking.
+    // std.testing.allocator detects leaks.
+    const diags = try std.testing.allocator.alloc(LspDiagnostic, 1);
+    diags[0] = result;
+    freeDiagnostics(std.testing.allocator, diags);
 }

@@ -100,36 +100,18 @@ fn runValidationTest(allocator: std.mem.Allocator, source_bytes: []const u8) !vo
     }
 }
 
-/// Case-insensitive substring search.
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (needle.len > haystack.len) return false;
-    const end = haystack.len - needle.len + 1;
-    for (0..end) |i| {
-        var match = true;
-        for (0..needle.len) |j| {
-            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) {
-                match = false;
-                break;
-            }
-        }
-        if (match) return true;
-    }
-    return false;
-}
-
-fn runValidation(allocator: std.mem.Allocator, source_bytes: []const u8) wgslender.Validator.Result {
-    const sb = allocator.alloc(u8, source_bytes.len + 1) catch return .{ .valid = false, .diagnostics = undefined };
+fn runValidation(allocator: std.mem.Allocator, source_bytes: []const u8) !wgslender.Validator.Result {
+    const sb = try allocator.alloc(u8, source_bytes.len + 1);
     @memcpy(sb[0..source_bytes.len], source_bytes);
     sb[source_bytes.len] = 0;
     const source: [:0]const u8 = sb[0..source_bytes.len :0];
 
-    var tokens = wgslender.Lexer.tokenize(allocator, source) catch return .{ .valid = false, .diagnostics = undefined };
+    var tokens = try wgslender.Lexer.tokenize(allocator, source);
     _ = &tokens;
-    var parser = wgslender.Parser.init(allocator, source, tokens) catch return .{ .valid = false, .diagnostics = undefined };
-    const module = parser.parse() catch return .{ .valid = false, .diagnostics = undefined };
+    var parser = try wgslender.Parser.init(allocator, source, tokens);
+    const module = try parser.parse();
 
-    return wgslender.Validator.validate(allocator, module, .{}) catch return .{ .valid = false, .diagnostics = undefined };
+    return wgslender.Validator.validate(allocator, module, .{});
 }
 
 // =========================================================================
@@ -139,49 +121,49 @@ fn runValidation(allocator: std.mem.Allocator, source_bytes: []const u8) wgslend
 test "validate: valid simple shader" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const result = runValidation(arena.allocator(), "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }");
+    const result = try runValidation(arena.allocator(), "@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }");
     try std.testing.expect(result.valid);
 }
 
 test "validate: valid compute shader" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const result = runValidation(arena.allocator(), "@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3u) {}");
+    const result = try runValidation(arena.allocator(), "@compute @workgroup_size(64) fn main(@builtin(global_invocation_id) id: vec3u) {}");
     try std.testing.expect(result.valid);
 }
 
 test "validate: valid vertex shader" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const result = runValidation(arena.allocator(), "@vertex fn main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4f { return vec4f(0.0); }");
+    const result = try runValidation(arena.allocator(), "@vertex fn main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4f { return vec4f(0.0); }");
     try std.testing.expect(result.valid);
 }
 
 test "validate: valid multiple functions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const result = runValidation(arena.allocator(), "fn helper() -> f32 { return 1.0; }\n@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }");
+    const result = try runValidation(arena.allocator(), "fn helper() -> f32 { return 1.0; }\n@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }");
     try std.testing.expect(result.valid);
 }
 
 test "validate: valid struct usage" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const result = runValidation(arena.allocator(), "struct V { @builtin(position) pos: vec4f }\n@vertex fn main() -> V { var o: V; o.pos = vec4f(0.0); return o; }");
+    const result = try runValidation(arena.allocator(), "struct V { @builtin(position) pos: vec4f }\n@vertex fn main() -> V { var o: V; o.pos = vec4f(0.0); return o; }");
     try std.testing.expect(result.valid);
 }
 
 test "validate: valid uniform binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const result = runValidation(arena.allocator(), "@group(0) @binding(0) var<uniform> u: f32;\n@fragment fn main() -> @location(0) vec4f { return vec4f(u); }");
+    const result = try runValidation(arena.allocator(), "@group(0) @binding(0) var<uniform> u: f32;\n@fragment fn main() -> @location(0) vec4f { return vec4f(u); }");
     try std.testing.expect(result.valid);
 }
 
 test "validate: valid control flow" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const result = runValidation(arena.allocator(),
+    const result = try runValidation(arena.allocator(),
         \\@fragment fn main() -> @location(0) vec4f {
         \\  var x = 0;
         \\  if x > 0 { x = 1; } else { x = 2; }
@@ -198,8 +180,27 @@ test "validate: discard only in fragment" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     // Valid: discard in fragment shader
-    const result1 = runValidation(arena.allocator(), "@fragment fn main() -> @location(0) vec4f { discard; return vec4f(0.0); }");
+    const result1 = try runValidation(arena.allocator(), "@fragment fn main() -> @location(0) vec4f { discard; return vec4f(0.0); }");
     try std.testing.expect(result1.valid);
+}
+
+test "validate: invalid shader returns valid result, not undefined" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // This shader has a type error — validation should succeed (not OOM)
+    // and return a well-formed Result with valid=false and accessible diagnostics.
+    const result = try runValidation(arena.allocator(), "@fragment fn main() -> @location(0) vec4f { return 42; }");
+    try std.testing.expect(!result.valid);
+    // The diagnostics pointer must be valid (not undefined) — accessing it must not crash.
+    try std.testing.expect(result.diagnostics.diagnostics.items.len > 0);
+}
+
+test "validate: runValidation propagates errors on OOM" {
+    // FailingAllocator that fails on the very first allocation.
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const result = runValidation(failing.allocator(), "fn main() {}");
+    // Should return an error, not a Result with undefined diagnostics.
+    try std.testing.expect(result == error.OutOfMemory);
 }
 
 // =========================================================================
