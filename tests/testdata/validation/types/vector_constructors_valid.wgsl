@@ -36,10 +36,20 @@ fn main() -> @location(0) vec4f {
     let m4e = vec4f(1.0, c2, 4.0);    // scalar + vec2 + scalar
     let m4f = vec4f(1.0, 2.0, c2);    // 2 scalars + vec2
 
-    // Integer and unsigned vector constructors
+    // Integer and unsigned vector constructors (AbstractInt → any numeric)
     let i2 = vec2i(1, 2);
     let i3 = vec3i(1, 2, 3);
     let u4 = vec4u(1, 2, 3, 4);
+
+    // AbstractInt converts to f32 in vec constructor
+    let ai_f = vec3f(1, 2, 3);
+
+    // AbstractInt splat in integer vectors
+    let si = vec3i(0);
+    let su = vec3u(0);
+
+    // Explicit scalar conversion then vector construction
+    let ex = vec4f(f32(1i), f32(2i), 0.0, 1.0);
 
     return c4;
 }

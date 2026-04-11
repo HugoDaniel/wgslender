@@ -57,6 +57,7 @@ pub const @"errors/calls/not_callable" = @embedFile("testdata/validation/errors/
 pub const @"errors/calls/vec_constructor_wrong_count" = @embedFile("testdata/validation/errors/calls/vec_constructor_wrong_count.wgsl");
 pub const @"errors/calls/mat_constructor_wrong_count" = @embedFile("testdata/validation/errors/calls/mat_constructor_wrong_count.wgsl");
 pub const @"errors/calls/scalar_constructor_too_many" = @embedFile("testdata/validation/errors/calls/scalar_constructor_too_many.wgsl");
+pub const @"errors/calls/vec_constructor_type_mismatch" = @embedFile("testdata/validation/errors/calls/vec_constructor_type_mismatch.wgsl");
 
 // --- errors/types/ ---
 pub const @"errors/types/let_initializer_mismatch" = @embedFile("testdata/validation/errors/types/let_initializer_mismatch.wgsl");

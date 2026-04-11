@@ -1357,6 +1357,138 @@ test "struct constructor rejects wrong arg count" {
 }
 
 // =========================================================================
+// Type constructor element type validation
+// =========================================================================
+
+test "vec3i rejects AbstractFloat args" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec3i(0.9, 0.8, 0.7);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'i32'");
+}
+
+test "vec2u rejects AbstractFloat args" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec2u(0.5, 0.5);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'u32'");
+}
+
+test "vec3i rejects AbstractFloat splat" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec3i(0.9);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'i32'");
+}
+
+test "vec3i rejects vec3f copy" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let v = vec3f(1.0, 2.0, 3.0);
+        \\    let a = vec3i(v);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'vec3<f32>' to 'vec3<i32>'");
+}
+
+test "vec3f rejects concrete i32 args" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec3f(1i, 2i, 3i);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'i32' to 'f32'");
+}
+
+test "vec3i rejects concrete f32 args" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec3i(1.0f, 2.0f, 3.0f);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'f32' to 'i32'");
+}
+
+test "vec3i rejects mixed vec2f arg" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let v = vec2f(1.0, 2.0);
+        \\    let a = vec3i(v, 3);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'f32' to 'i32'");
+}
+
+test "vec3f accepts AbstractInt args" {
+    const source =
+        \\@fragment
+        \\fn main() -> @location(0) vec4f {
+        \\    let a = vec3f(1, 2, 3);
+        \\    return vec4f(a, 1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.valid);
+}
+
+test "vec3i accepts AbstractInt args" {
+    const source =
+        \\@fragment
+        \\fn main() -> @location(0) vec4f {
+        \\    let a = vec3i(1, 2, 3);
+        \\    return vec4f(f32(a.x), f32(a.y), f32(a.z), 1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.valid);
+}
+
+test "scalar constructor allows explicit cross-type conversion" {
+    const source =
+        \\@fragment
+        \\fn main() -> @location(0) vec4f {
+        \\    var x : i32 = 5;
+        \\    let a = f32(x);
+        \\    let b = i32(0.9);
+        \\    let c = u32(3i);
+        \\    return vec4f(a, 0.0, 0.0, 1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.valid);
+}
+
+// =========================================================================
 // "Did you mean?" — Swizzle component hints
 // =========================================================================
 

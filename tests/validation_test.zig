@@ -475,6 +475,12 @@ test "validation: errors/calls/scalar_constructor_too_many" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/calls/scalar_constructor_too_many");
 }
 
+test "validation: errors/calls/vec_constructor_type_mismatch" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/calls/vec_constructor_type_mismatch");
+}
+
 // --- errors/types/ (7 files) ---
 
 test "validation: errors/types/let_initializer_mismatch" {
