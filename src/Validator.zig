@@ -338,11 +338,25 @@ fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!voi
                 }
             }
         }
+        // Opaque types (texture, sampler) cannot appear in structs (WGSL spec section 6.2.10).
+        if (member_type == .texture or member_type == .sampler) {
+            v.addErrorWithCodeR(member_range, Diagnostic.Code.opaque_in_struct, v.fmtError("struct member '{s}' has opaque type '{s}' which cannot appear in a struct", .{ member_name, member_type.string() }));
+        }
+
         try fields.append(v.arena, .{
             .name = member_name,
             .typ = member_type,
             .offset = 0,
         });
+    }
+
+    // Runtime-sized array must be the last member (WGSL spec section 6.2.10).
+    for (fields.items, 0..) |field, i| {
+        if (field.typ == .array and field.typ.array.count == 0) {
+            if (i != fields.items.len - 1) {
+                v.addErrorWithCodeR(name_range, Diagnostic.Code.runtime_array_not_last, v.fmtError("runtime-sized array member '{s}' must be the last member of struct '{s}'", .{ field.name, name }));
+            }
+        }
     }
 
     st.fields = fields.items;
@@ -972,6 +986,8 @@ fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) void {
         if (std.mem.eql(u8, attr.name, "location")) {
             if (v.current_stage == .none) {
                 v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@location is only valid on entry point parameters");
+            } else if (v.current_stage == .compute) {
+                v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "compute shaders cannot have user-defined inputs (@location)");
             }
         } else if (std.mem.eql(u8, attr.name, "builtin")) {
             if (attr.args.items.len > 0) {
@@ -1007,11 +1023,17 @@ fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error
                     if (attr.args.items.len == 0) {
                         v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@workgroup_size requires at least one argument");
                     }
-                    // Each @workgroup_size arg must be a const or override expression
+                    // Each @workgroup_size arg must be a const or override expression,
+                    // and must evaluate to a positive integer (WGSL spec section 9.5).
                     for (attr.args.items) |arg| {
                         const stage = v.classifyExprStage(arg);
                         if (stage == .runtime_expr) {
                             v.addErrorWithCodeR(exprRange(arg), Diagnostic.Code.expression_not_const, "@workgroup_size arguments must be const-expressions or override-expressions");
+                        }
+                        if (v.tryExtractIntValue(arg)) |val| {
+                            if (val <= 0) {
+                                v.addErrorWithCodeR(exprRange(arg), Diagnostic.Code.invalid_attribute, v.fmtError("@workgroup_size dimension must be at least 1, got {d}", .{val}));
+                            }
                         }
                     }
                 }
@@ -1066,6 +1088,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                         const mt = v.resolveType(member.typ);
                         v.validateInterpolation(member.attributes, mt, v.symbolLoc(member.name));
                     }
+                    v.validateInvariantAttr(member.attributes, v.symbolLoc(member.name));
                 }
             }
         }
@@ -1096,6 +1119,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                         const mt = v.resolveType(member.typ);
                         v.validateInterpolation(member.attributes, mt, v.symbolLoc(member.name));
                     }
+                    v.validateInvariantAttr(member.attributes, v.symbolLoc(member.name));
                 }
             }
         }
@@ -1106,6 +1130,13 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
 /// Called from validateEntryPointIO for fragment inputs and vertex outputs.
 fn validateInterpolation(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attribute), member_type: ?Types.Type, member_loc: u32) void {
     const has_location = hasAttr(attrs, "location");
+    const has_interpolate = hasAttr(attrs, "interpolate");
+
+    // @interpolate only applies to user-defined I/O with @location (WGSL spec section 10.3).
+    if (has_interpolate and !has_location) {
+        v.addErrorWithCodeR(.{ .start = member_loc, .end = member_loc +| 1 }, Diagnostic.Code.invalid_interpolation, "@interpolate can only be used with @location, not @builtin");
+        return;
+    }
     if (!has_location) return;
 
     const is_integer = if (member_type) |mt| Types.isInteger(mt) or isIntegerVector(mt) else false;
@@ -1163,6 +1194,30 @@ fn validateInterpolation(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attrib
                 }
             }
         }
+    }
+}
+
+/// Detect duplicate characters in a swizzle string (e.g., "xx", "xyxy").
+fn hasDuplicateSwizzleChars(name: []const u8) bool {
+    if (name.len < 2 or name.len > 4) return false;
+    // Only check if it looks like a swizzle (all chars are xyzw or rgba).
+    const xyzw = "xyzwrgba";
+    for (name) |c| {
+        if (std.mem.indexOfScalar(u8, xyzw, c) == null) return false;
+    }
+    for (name, 0..) |c, i| {
+        for (name[i + 1 ..]) |d| {
+            if (c == d) return true;
+        }
+    }
+    return false;
+}
+
+/// @invariant can only apply to @builtin(position) (WGSL spec section 9.3.3).
+fn validateInvariantAttr(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attribute), member_loc: u32) void {
+    if (!hasAttr(attrs, "invariant")) return;
+    if (!hasBuiltinAttr(attrs, "position")) {
+        v.addErrorWithCodeR(.{ .start = member_loc, .end = member_loc +| 1 }, Diagnostic.Code.invalid_attribute, "@invariant can only be applied to @builtin(position)");
     }
 }
 
@@ -1490,6 +1545,11 @@ fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!void {
     v.has_return = true;
     const ret_range: LocRange = .{ .start = s.loc, .end = s.loc +| 6 }; // "return"
 
+    // WGSL spec section 9.5.2: continuing block must not contain a return statement.
+    if (v.in_continuing) {
+        v.addErrorWithCodeR(ret_range, Diagnostic.Code.return_in_continuing, "'return' is not allowed inside a continuing block");
+    }
+
     if (s.value == null) {
         if (v.return_type) |rt| {
             v.addErrorWithCodeR(ret_range, Diagnostic.Code.missing_return, v.fmtError("return must provide a value of type '{s}'", .{rt.string()}));
@@ -1687,6 +1747,34 @@ fn validateDiscardStmt(v: *Validator, s: *Ast.DiscardStmt) void {
 fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
     const lhs_type = (try v.checkExpr(s.left)) orelse return;
     const rhs_type = (try v.checkExpr(s.right)) orelse return;
+
+    // Check for assignment to immutable bindings (WGSL spec section 9.4).
+    if (s.left == .ident) {
+        const ident = s.left.ident;
+        if (ident.ref.isValid()) {
+            const idx = ident.ref.index();
+            if (idx < v.module.symbols.items.len) {
+                const kind = v.module.symbols.items[idx].kind;
+                switch (kind) {
+                    .let => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to 'let' variable '{s}'", .{ident.name})),
+                    .@"const" => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to 'const' '{s}'", .{ident.name})),
+                    .override => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to 'override' '{s}'", .{ident.name})),
+                    .parameter => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to parameter '{s}'", .{ident.name})),
+                    else => {},
+                }
+            }
+        }
+    }
+
+    // Duplicate swizzle components in write target are invalid (WGSL spec section 9.4).
+    if (s.left == .member) {
+        const member = s.left.member;
+        if (member.base == .ident or member.base == .member) {
+            if (hasDuplicateSwizzleChars(member.member_name)) {
+                v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("swizzle assignment target '{s}' has duplicate components", .{member.member_name}));
+            }
+        }
+    }
 
     if (s.op == .simple) {
         // Simple assignment: RHS must be convertible to LHS.
@@ -2022,6 +2110,13 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
             if (!right_type.eql(Types.U32) and !Types.canConvertTo(right_type, Types.U32)) {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'u32', got '{s}'", .{right_type.string()}));
                 return null;
+            }
+            // Shift amount must be less than the bit width of the LHS type (WGSL spec section 8.7).
+            if (v.tryExtractIntValue(e.right)) |shift_val| {
+                const bit_width: i64 = if (left_type == .scalar) @as(i64, left_type.scalar.size()) * 8 else 32;
+                if (shift_val < 0 or shift_val >= bit_width) {
+                    v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.invalid_operand, v.fmtError("shift amount {d} exceeds bit width of {d}", .{ shift_val, bit_width }));
+                }
             }
             return left_type;
         },

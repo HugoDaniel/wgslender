@@ -148,6 +148,19 @@ pub const @"errors/declarations/float_literal_overflow" = @embedFile("testdata/v
 pub const @"errors/declarations/float_literal_overflow_h" = @embedFile("testdata/validation/errors/declarations/float_literal_overflow_h.wgsl");
 pub const @"errors/declarations/diagnostic_invalid_severity" = @embedFile("testdata/validation/errors/declarations/diagnostic_invalid_severity.wgsl");
 pub const @"errors/declarations/pointer_param_storage" = @embedFile("testdata/validation/errors/declarations/pointer_param_storage.wgsl");
+pub const @"errors/declarations/runtime_array_not_last" = @embedFile("testdata/validation/errors/declarations/runtime_array_not_last.wgsl");
+pub const @"errors/declarations/opaque_in_struct" = @embedFile("testdata/validation/errors/declarations/opaque_in_struct.wgsl");
+pub const @"errors/declarations/workgroup_size_zero" = @embedFile("testdata/validation/errors/declarations/workgroup_size_zero.wgsl");
+pub const @"errors/declarations/invariant_not_position" = @embedFile("testdata/validation/errors/declarations/invariant_not_position.wgsl");
+pub const @"errors/declarations/location_on_compute" = @embedFile("testdata/validation/errors/declarations/location_on_compute.wgsl");
+
+// --- errors/types/ (new batch) ---
+pub const @"errors/types/assign_to_let" = @embedFile("testdata/validation/errors/types/assign_to_let.wgsl");
+pub const @"errors/types/assign_to_param" = @embedFile("testdata/validation/errors/types/assign_to_param.wgsl");
+pub const @"errors/types/swizzle_duplicate_assign" = @embedFile("testdata/validation/errors/types/swizzle_duplicate_assign.wgsl");
+
+// --- errors/operations/ (new batch) ---
+pub const @"errors/operations/shift_exceeds_width" = @embedFile("testdata/validation/errors/operations/shift_exceeds_width.wgsl");
 
 // --- errors/operations/ ---
 pub const @"errors/operations/mul_incompatible_types" = @embedFile("testdata/validation/errors/operations/mul_incompatible_types.wgsl");

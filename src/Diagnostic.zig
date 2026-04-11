@@ -628,6 +628,7 @@ pub const Code = struct {
     pub const unreachable_code: []const u8 = "E0503";
     pub const nesting_too_deep: []const u8 = "E0504";
     pub const infinite_loop: []const u8 = "E0505";
+    pub const return_in_continuing: []const u8 = "E0506";
 
     // Entry point errors (E06xx)
     pub const invalid_entry_point: []const u8 = "E0600";
@@ -647,6 +648,9 @@ pub const Code = struct {
     pub const invalid_uniform_var: []const u8 = "E0802";
     pub const missing_binding: []const u8 = "E0803";
     pub const duplicate_binding: []const u8 = "E0804";
+    pub const opaque_in_struct: []const u8 = "E0805";
+    pub const runtime_array_not_last: []const u8 = "E0806";
+    pub const const_assert_failed: []const u8 = "E0807";
 
     // Feature / directive errors (E09xx)
     pub const feature_not_enabled: []const u8 = "E0900";
