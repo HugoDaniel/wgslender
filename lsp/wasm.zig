@@ -116,6 +116,10 @@ fn handleMessage(json: []const u8) void {
         handleCompletion(root, id);
     } else if (eql(method, "textDocument/signatureHelp")) {
         handleSignatureHelp(root, id);
+    } else if (eql(method, "textDocument/documentSymbol")) {
+        handleDocumentSymbol(root, id);
+    } else if (eql(method, "textDocument/foldingRange")) {
+        handleFoldingRange(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -491,6 +495,77 @@ fn handleSignatureHelp(root: std.json.ObjectMap, id: ?std.json.Value) void {
     appendStr(&buf, "}],\"activeSignature\":0,\"activeParameter\":");
     appendUint(&buf, r.active_parameter);
     appendStr(&buf, "}");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleDocumentSymbol(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
+    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const symbols = handler.computeDocumentSymbols(uri) catch return sendResult(id, "null");
+    defer handler.gpa.free(symbols);
+    if (symbols.len == 0) return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (symbols, 0..) |sym, i| {
+        if (i > 0) appendStr(&buf, ",");
+        emitDocSymbol(&buf, sym);
+    }
+    appendStr(&buf, "]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn emitDocSymbol(buf: *std.ArrayListUnmanaged(u8), sym: Handler.DocumentSymbolInfo) void {
+    appendStr(buf, "{\"name\":\"");
+    Diagnostic.appendJsonEscaped(buf, wasm_allocator, sym.name) catch return;
+    appendStr(buf, "\",\"kind\":");
+    const kind_num: u32 = switch (sym.kind) {
+        .function => 12,
+        .struct_type => 23,
+        .variable => 13,
+        .constant => 14,
+        .field => 8,
+        .type_alias => 5,
+        .override => 14,
+    };
+    appendUint(buf, kind_num);
+    appendStr(buf, ",\"range\":");
+    formatRange(buf, sym.range);
+    appendStr(buf, ",\"selectionRange\":");
+    formatRange(buf, sym.selection_range);
+    if (sym.children.len > 0) {
+        appendStr(buf, ",\"children\":[");
+        for (sym.children, 0..) |child, ci| {
+            if (ci > 0) appendStr(buf, ",");
+            emitDocSymbol(buf, child);
+        }
+        appendStr(buf, "]");
+    }
+    appendStr(buf, "}");
+}
+
+fn handleFoldingRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
+    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const ranges = handler.computeFoldingRanges(uri) catch return sendResult(id, "null");
+    defer handler.gpa.free(ranges);
+    if (ranges.len == 0) return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (ranges, 0..) |r, i| {
+        if (i > 0) appendStr(&buf, ",");
+        appendStr(&buf, "{\"startLine\":");
+        appendUint(&buf, r.start_line);
+        appendStr(&buf, ",\"endLine\":");
+        appendUint(&buf, r.end_line);
+        appendStr(&buf, ",\"kind\":\"");
+        appendStr(&buf, if (r.kind == .comment) "comment" else "region");
+        appendStr(&buf, "\"}");
+    }
+    appendStr(&buf, "]");
     sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
 }
 

@@ -73,6 +73,8 @@ const NativeServer = struct {
                 .signatureHelpProvider = .{
                     .triggerCharacters = &.{ "(", "," },
                 },
+                .documentSymbolProvider = .{ .bool = true },
+                .foldingRangeProvider = .{ .bool = true },
             },
         };
     }
@@ -410,6 +412,81 @@ const NativeServer = struct {
             .activeSignature = 0,
             .activeParameter = r.active_parameter,
         };
+    }
+
+    // ----- Document Symbols -----
+
+    pub fn @"textDocument/documentSymbol"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.DocumentSymbol.Params,
+    ) ?lsp.types.DocumentSymbol.Result {
+        const symbols = self.handler.computeDocumentSymbols(params.textDocument.uri) catch return null;
+        defer self.handler.gpa.free(symbols);
+        if (symbols.len == 0) return null;
+        const lsp_symbols = arena.alloc(lsp.types.DocumentSymbol, symbols.len) catch return null;
+        for (symbols, 0..) |sym, i| {
+            lsp_symbols[i] = convertDocSymbol(arena, sym);
+        }
+        return .{ .document_symbols = lsp_symbols };
+    }
+
+    fn convertDocSymbol(arena: std.mem.Allocator, sym: Handler.DocumentSymbolInfo) lsp.types.DocumentSymbol {
+        var children: ?[]const lsp.types.DocumentSymbol = null;
+        if (sym.children.len > 0) {
+            const ch = arena.alloc(lsp.types.DocumentSymbol, sym.children.len) catch null;
+            if (ch) |c| {
+                for (sym.children, 0..) |child, ci| {
+                    c[ci] = convertDocSymbol(arena, child);
+                }
+                children = c;
+            }
+        }
+        return .{
+            .name = sym.name,
+            .kind = switch (sym.kind) {
+                .function => .Function,
+                .struct_type => .Struct,
+                .variable => .Variable,
+                .constant => .Constant,
+                .field => .Field,
+                .type_alias => .Class,
+                .override => .Constant,
+            },
+            .range = .{
+                .start = .{ .line = sym.range.start.line, .character = sym.range.start.character },
+                .end = .{ .line = sym.range.end.line, .character = sym.range.end.character },
+            },
+            .selectionRange = .{
+                .start = .{ .line = sym.selection_range.start.line, .character = sym.selection_range.start.character },
+                .end = .{ .line = sym.selection_range.end.line, .character = sym.selection_range.end.character },
+            },
+            .children = children,
+        };
+    }
+
+    // ----- Folding Ranges -----
+
+    pub fn @"textDocument/foldingRange"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.FoldingRange.Params,
+    ) ?[]const lsp.types.FoldingRange {
+        const ranges = self.handler.computeFoldingRanges(params.textDocument.uri) catch return null;
+        defer self.handler.gpa.free(ranges);
+        if (ranges.len == 0) return null;
+        const lsp_ranges = arena.alloc(lsp.types.FoldingRange, ranges.len) catch return null;
+        for (ranges, 0..) |r, i| {
+            lsp_ranges[i] = .{
+                .startLine = r.start_line,
+                .endLine = r.end_line,
+                .kind = switch (r.kind) {
+                    .comment => .comment,
+                    .region => .region,
+                },
+            };
+        }
+        return lsp_ranges;
     }
 
     // ----- Helpers -----
