@@ -120,6 +120,10 @@ fn handleMessage(json: []const u8) void {
         handleDocumentSymbol(root, id);
     } else if (eql(method, "textDocument/foldingRange")) {
         handleFoldingRange(root, id);
+    } else if (eql(method, "textDocument/typeDefinition")) {
+        handleTypeDefinition(root, id);
+    } else if (eql(method, "textDocument/inlayHint")) {
+        handleInlayHint(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -564,6 +568,57 @@ fn handleFoldingRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
         appendStr(&buf, ",\"kind\":\"");
         appendStr(&buf, if (r.kind == .comment) "comment" else "region");
         appendStr(&buf, "\"}");
+    }
+    appendStr(&buf, "]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleTypeDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const range = handler.computeTypeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
+    const r = range orelse return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"uri\":\"");
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
+    appendStr(&buf, "\",\"range\":");
+    formatRange(&buf, r);
+    appendStr(&buf, "}");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleInlayHint(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
+    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const range_obj = objGet(params, "range") orelse return sendResult(id, "null");
+    const start_obj = objGet(range_obj, "start") orelse return sendResult(id, "null");
+    const end_obj = objGet(range_obj, "end") orelse return sendResult(id, "null");
+    const start_line: u32 = if (intVal(objGet(start_obj, "line"))) |v| @intCast(v) else 0;
+    const start_char: u32 = if (intVal(objGet(start_obj, "character"))) |v| @intCast(v) else 0;
+    const end_line: u32 = if (intVal(objGet(end_obj, "line"))) |v| @intCast(v) else 0;
+    const end_char: u32 = if (intVal(objGet(end_obj, "character"))) |v| @intCast(v) else 0;
+
+    const hints = handler.computeInlayHints(uri, .{
+        .start = .{ .line = start_line, .character = start_char },
+        .end = .{ .line = end_line, .character = end_char },
+    }) catch return sendResult(id, "null");
+    defer handler.gpa.free(hints);
+    if (hints.len == 0) return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (hints, 0..) |h, i| {
+        if (i > 0) appendStr(&buf, ",");
+        appendStr(&buf, "{\"position\":{\"line\":");
+        appendUint(&buf, h.position.line);
+        appendStr(&buf, ",\"character\":");
+        appendUint(&buf, h.position.character);
+        appendStr(&buf, "},\"label\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, h.label) catch return;
+        appendStr(&buf, "\",\"kind\":");
+        appendUint(&buf, if (h.kind == .type_hint) @as(u32, 1) else @as(u32, 2));
+        appendStr(&buf, "}");
     }
     appendStr(&buf, "]");
     sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);

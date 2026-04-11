@@ -75,6 +75,8 @@ const NativeServer = struct {
                 },
                 .documentSymbolProvider = .{ .bool = true },
                 .foldingRangeProvider = .{ .bool = true },
+                .typeDefinitionProvider = .{ .bool = true },
+                .inlayHintProvider = .{ .bool = true },
             },
         };
     }
@@ -487,6 +489,61 @@ const NativeServer = struct {
             };
         }
         return lsp_ranges;
+    }
+
+    // ----- Go-to-Type-Definition -----
+
+    pub fn @"textDocument/typeDefinition"(
+        self: *NativeServer,
+        _: std.mem.Allocator,
+        params: lsp.types.type_definition.Params,
+    ) ?lsp.types.Definition.Result {
+        const range = self.handler.computeTypeDefinition(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+        ) catch return null;
+        const r = range orelse return null;
+        return .{
+            .definition = .{
+                .location = .{
+                    .uri = params.textDocument.uri,
+                    .range = .{
+                        .start = .{ .line = r.start.line, .character = r.start.character },
+                        .end = .{ .line = r.end.line, .character = r.end.character },
+                    },
+                },
+            },
+        };
+    }
+
+    // ----- Inlay Hints -----
+
+    pub fn @"textDocument/inlayHint"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.InlayHint.Params,
+    ) ?[]const lsp.types.InlayHint {
+        const hints = self.handler.computeInlayHints(
+            params.textDocument.uri,
+            .{
+                .start = .{ .line = params.range.start.line, .character = params.range.start.character },
+                .end = .{ .line = params.range.end.line, .character = params.range.end.character },
+            },
+        ) catch return null;
+        defer self.handler.gpa.free(hints);
+        if (hints.len == 0) return null;
+        const lsp_hints = arena.alloc(lsp.types.InlayHint, hints.len) catch return null;
+        for (hints, 0..) |h, i| {
+            lsp_hints[i] = .{
+                .position = .{ .line = h.position.line, .character = h.position.character },
+                .label = .{ .string = h.label },
+                .kind = switch (h.kind) {
+                    .type_hint => .Type,
+                    .parameter_hint => .Parameter,
+                },
+            };
+        }
+        return lsp_hints;
     }
 
     // ----- Helpers -----

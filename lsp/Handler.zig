@@ -69,7 +69,7 @@ pub const LspCodeAction = struct {
 
 /// Server capabilities as a JSON string (shared by native and WASM).
 pub const capabilities_json =
-    \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true}
+    \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true}
 ;
 
 /// Creates a handler with an empty document store.
@@ -1498,6 +1498,150 @@ fn findClosingBrace(source: []const u8, start: u32) ?u32 {
         }
     }
     return null;
+}
+
+// =========================================================================
+// LSP Feature: Go-to-Type-Definition
+// =========================================================================
+
+pub fn computeTypeDefinition(self: *Handler, uri: []const u8, position: Position) !?Range {
+    const doc = self.documents.getPtr(uri) orelse return null;
+    const source = doc.source;
+    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
+    const analysis = try self.analyzeDocument(uri);
+    const module = analysis.module orelse return null;
+
+    const node = findNodeAtOffset(module, offset);
+    const sym_idx: Ast.SymbolIndex = switch (node) {
+        .ident => |id| id.ref,
+        .decl_name => |dn| dn.sym_idx,
+        else => return null,
+    };
+    if (!sym_idx.isValid()) return null;
+
+    // Get the resolved type of this symbol
+    const typ = analysis.symbol_types.get(sym_idx.index()) orelse return null;
+    switch (typ) {
+        .@"struct" => |st| {
+            // Find the struct declaration in module
+            for (module.declarations.items) |decl| {
+                switch (decl) {
+                    .@"struct" => |sd| {
+                        if (!sd.name.isValid()) continue;
+                        const sym = module.symbols.items[sd.name.index()];
+                        if (std.mem.eql(u8, sym.original_name, st.name)) {
+                            return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
+                        }
+                    },
+                    else => {},
+                }
+            }
+        },
+        else => {},
+    }
+    return null;
+}
+
+// =========================================================================
+// LSP Feature: Inlay Hints
+// =========================================================================
+
+pub const InlayHintInfo = struct {
+    position: Position,
+    label: []const u8,
+    kind: enum { type_hint, parameter_hint },
+};
+
+pub fn computeInlayHints(self: *Handler, uri: []const u8, range: Range) ![]InlayHintInfo {
+    const analysis = self.analyzeDocument(uri) catch return &.{};
+    const module = analysis.module orelse return &.{};
+    const source = module.source;
+
+    const range_start = lspPositionToOffset(source, range.start) orelse 0;
+    const range_end = lspPositionToOffset(source, range.end) orelse source.len;
+
+    var hints: std.ArrayListUnmanaged(InlayHintInfo) = .empty;
+    defer hints.deinit(self.gpa);
+
+    // Walk declarations looking for let/var without explicit type annotations
+    for (module.declarations.items) |decl| {
+        try self.collectInlayHintsFromDecl(module, &analysis.symbol_types, source, decl, range_start, range_end, &hints);
+    }
+
+    return try self.gpa.dupe(InlayHintInfo, hints.items);
+}
+
+fn collectInlayHintsFromDecl(
+    self: *Handler,
+    module: *const Ast.Module,
+    symbol_types: *const std.AutoHashMapUnmanaged(u32, wgslender.Types.Type),
+    source: [:0]const u8,
+    decl: Ast.Decl,
+    range_start: usize,
+    range_end: usize,
+    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+) std.mem.Allocator.Error!void {
+    switch (decl) {
+        .let => |l| {
+            if (l.typ == null) { // No explicit type annotation
+                if (l.name.isValid()) {
+                    const sym = module.symbols.items[l.name.index()];
+                    if (sym.loc >= range_start and sym.loc < range_end) {
+                        if (symbol_types.get(l.name.index())) |typ| {
+                            const pos = offsetToLspPosition(source, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse return;
+                            try hints.append(self.gpa, .{
+                                .position = pos,
+                                .label = typ.string(),
+                                .kind = .type_hint,
+                            });
+                        }
+                    }
+                }
+            }
+        },
+        .function => |f| {
+            if (f.body) |body| {
+                for (body.stmts.items) |stmt| {
+                    try self.collectInlayHintsFromStmt(module, symbol_types, source, stmt, range_start, range_end, hints);
+                }
+            }
+        },
+        else => {},
+    }
+}
+
+fn collectInlayHintsFromStmt(
+    self: *Handler,
+    module: *const Ast.Module,
+    symbol_types: *const std.AutoHashMapUnmanaged(u32, wgslender.Types.Type),
+    source: [:0]const u8,
+    stmt: Ast.Stmt,
+    range_start: usize,
+    range_end: usize,
+    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+) std.mem.Allocator.Error!void {
+    switch (stmt) {
+        .decl => |d| try self.collectInlayHintsFromDecl(module, symbol_types, source, d.decl, range_start, range_end, hints),
+        .compound => |c| {
+            for (c.stmts.items) |s| {
+                try self.collectInlayHintsFromStmt(module, symbol_types, source, s, range_start, range_end, hints);
+            }
+        },
+        .@"if" => |i| {
+            try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = i.body }, range_start, range_end, hints);
+            if (i.else_branch) |eb| try self.collectInlayHintsFromStmt(module, symbol_types, source, eb, range_start, range_end, hints);
+        },
+        .@"for" => |f| {
+            if (f.init_stmt) |init_s| try self.collectInlayHintsFromStmt(module, symbol_types, source, init_s, range_start, range_end, hints);
+            try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = f.body }, range_start, range_end, hints);
+        },
+        .@"while" => |w| try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = w.body }, range_start, range_end, hints),
+        .loop => |l| {
+            try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = l.body }, range_start, range_end, hints);
+            if (l.continuing) |cont| try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = cont }, range_start, range_end, hints);
+        },
+        else => {},
+    }
 }
 
 // =========================================================================
