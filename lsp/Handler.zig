@@ -69,7 +69,7 @@ pub const LspCodeAction = struct {
 
 /// Server capabilities as a JSON string (shared by native and WASM).
 pub const capabilities_json =
-    \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true}
+    \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{}}
 ;
 
 /// Creates a handler with an empty document store.
@@ -1688,6 +1688,50 @@ pub fn appendUnusedWarnings(
             .code = "W0001",
         }) catch continue;
     }
+}
+
+// =========================================================================
+// LSP Feature: Code Lens (reference counts)
+// =========================================================================
+
+pub const CodeLensInfo = struct {
+    range: Range,
+    title: []const u8,
+};
+
+pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
+    const analysis = self.analyzeDocument(uri) catch return &.{};
+    const module = analysis.module orelse return &.{};
+    const source = module.source;
+
+    var lenses: std.ArrayListUnmanaged(CodeLensInfo) = .empty;
+    defer lenses.deinit(self.gpa);
+
+    for (module.declarations.items) |decl| {
+        const name_ref = decl.nameRef();
+        if (!name_ref.isValid()) continue;
+        const sym = module.symbols.items[name_ref.index()];
+
+        // Only show code lens for functions and structs
+        switch (decl) {
+            .function, .@"struct" => {},
+            else => continue,
+        }
+
+        // Count references (use the existing reference collector)
+        const refs = collectReferences(self.gpa, module, name_ref, false) catch continue;
+        defer self.gpa.free(refs);
+
+        const range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
+        var buf: [64]u8 = undefined;
+        const title = std.fmt.bufPrint(&buf, "{d} reference{s}", .{ refs.len, if (refs.len == 1) "" else "s" }) catch continue;
+        try lenses.append(self.gpa, .{
+            .range = range,
+            .title = try self.gpa.dupe(u8, title),
+        });
+    }
+
+    return try self.gpa.dupe(CodeLensInfo, lenses.items);
 }
 
 // =========================================================================

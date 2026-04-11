@@ -124,6 +124,8 @@ fn handleMessage(json: []const u8) void {
         handleTypeDefinition(root, id);
     } else if (eql(method, "textDocument/inlayHint")) {
         handleInlayHint(root, id);
+    } else if (eql(method, "textDocument/codeLens")) {
+        handleCodeLens(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -619,6 +621,31 @@ fn handleInlayHint(root: std.json.ObjectMap, id: ?std.json.Value) void {
         appendStr(&buf, "\",\"kind\":");
         appendUint(&buf, if (h.kind == .type_hint) @as(u32, 1) else @as(u32, 2));
         appendStr(&buf, "}");
+    }
+    appendStr(&buf, "]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleCodeLens(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
+    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const lenses = handler.computeCodeLens(uri) catch return sendResult(id, "null");
+    defer {
+        for (lenses) |l| handler.gpa.free(l.title);
+        handler.gpa.free(lenses);
+    }
+    if (lenses.len == 0) return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (lenses, 0..) |l, i| {
+        if (i > 0) appendStr(&buf, ",");
+        appendStr(&buf, "{\"range\":");
+        formatRange(&buf, l.range);
+        appendStr(&buf, ",\"command\":{\"title\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, l.title) catch return;
+        appendStr(&buf, "\",\"command\":\"\"}}");
     }
     appendStr(&buf, "]");
     sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);

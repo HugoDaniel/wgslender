@@ -77,6 +77,7 @@ const NativeServer = struct {
                 .foldingRangeProvider = .{ .bool = true },
                 .typeDefinitionProvider = .{ .bool = true },
                 .inlayHintProvider = .{ .bool = true },
+                .codeLensProvider = .{},
             },
         };
     }
@@ -544,6 +545,35 @@ const NativeServer = struct {
             };
         }
         return lsp_hints;
+    }
+
+    // ----- Code Lens -----
+
+    pub fn @"textDocument/codeLens"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.code_lens.Params,
+    ) ?[]const lsp.types.code_lens.Response {
+        const lenses = self.handler.computeCodeLens(params.textDocument.uri) catch return null;
+        defer {
+            for (lenses) |l| self.handler.gpa.free(l.title);
+            self.handler.gpa.free(lenses);
+        }
+        if (lenses.len == 0) return null;
+        const lsp_lenses = arena.alloc(lsp.types.code_lens.Response, lenses.len) catch return null;
+        for (lenses, 0..) |l, i| {
+            lsp_lenses[i] = .{
+                .range = .{
+                    .start = .{ .line = l.range.start.line, .character = l.range.start.character },
+                    .end = .{ .line = l.range.end.line, .character = l.range.end.character },
+                },
+                .command = .{
+                    .title = arena.dupe(u8, l.title) catch "",
+                    .command = "",
+                },
+            };
+        }
+        return lsp_lenses;
     }
 
     // ----- Helpers -----
