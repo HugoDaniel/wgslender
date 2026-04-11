@@ -1,6 +1,6 @@
 {
   "name": "wgslender",
-  "version": "0.4.0",
+  "version": "1.0.0",
   "description": "WGSL minifier for WebGPU shaders - WebAssembly build",
   "main": "lib/main.js",
   "module": "esm/browser.js",
@@ -46,7 +46,7 @@
     "url": "https://github.com/HugoDaniel/wgslender"
   },
   "homepage": "https://github.com/HugoDaniel/wgslender",
-  "license": "MIT",
+  "license": "CC0-1.0",
   "engines": {
     "node": ">=16"
   }

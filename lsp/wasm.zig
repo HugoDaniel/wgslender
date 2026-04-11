@@ -89,7 +89,7 @@ fn handleMessage(json: []const u8) void {
     const id = root.get("id");
 
     if (eql(method, "initialize")) {
-        sendResult(id, "{\"capabilities\":" ++ Handler.capabilities_json ++ ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"0.1.0\"}}");
+        sendResult(id, "{\"capabilities\":" ++ Handler.capabilities_json ++ ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"1.0.0\"}}");
     } else if (eql(method, "initialized") or eql(method, "exit")) {
         // No-op.
     } else if (eql(method, "shutdown")) {

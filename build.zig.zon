@@ -1,8 +1,8 @@
 .{
     .name = .wgslender,
-    .version = "0.1.0",
+    .version = "1.0.0",
     .fingerprint = 0x69278284534a33a0,
-    .minimum_zig_version = "0.14.0",
+    .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",

@@ -1,6 +1,6 @@
 # WGSL Minifier Benchmark
 
-Comparison of **wgslender** (Go) vs **[wgsl-minifier](https://crates.io/crates/wgsl-minifier)** (Rust).
+Comparison of **wgslender** (Zig) vs **[wgsl-minifier](https://crates.io/crates/wgsl-minifier)** (Rust).
 
 ## Test Files
 
@@ -51,7 +51,7 @@ Repository includes sample shaders for testing:
 
 ## Summary
 
-### wgslender (Go)
+### wgslender (Zig)
 
 - **Success rate**: 17/17 (100%)
 - **Average reduction**: 67%
@@ -81,7 +81,7 @@ Repository includes sample shaders for testing:
 
 ## Key Differences
 
-| Feature | wgslender (Go) | wgsl-minifier (Rust) |
+| Feature | wgslender (Zig) | wgsl-minifier (Rust) |
 |---------|--------------|----------------------|
 | Type aliases | Uses short forms (`vec4f`) | Keeps explicit (`vec4<f32>`) |
 | External bindings | Preserves names by default | Renames aggressively |
@@ -136,5 +136,5 @@ wgslender:
 
 ## Links
 
-- **wgslender (Go)**: This repository
+- **wgslender (Zig)**: This repository
 - **wgsl-minifier (Rust)**: [crates.io](https://crates.io/crates/wgsl-minifier) | [GitHub](https://github.com/pjoe/wgsl-minifier)

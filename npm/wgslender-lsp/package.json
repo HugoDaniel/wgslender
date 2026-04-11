@@ -1,6 +1,6 @@
 {
   "name": "wgslender-lsp",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "WGSL Language Server powered by wgslender (WASM build)",
   "main": "index.js",
   "module": "index.mjs",
@@ -19,5 +19,5 @@
     "wgslender-lsp.wasm"
   ],
   "keywords": ["wgsl", "lsp", "language-server", "webgpu", "wasm", "codemirror"],
-  "license": "MIT"
+  "license": "CC0-1.0"
 }

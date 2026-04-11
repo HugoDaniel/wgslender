@@ -47,7 +47,7 @@ const NativeServer = struct {
         _: lsp.types.InitializeParams,
     ) lsp.types.InitializeResult {
         return .{
-            .serverInfo = .{ .name = "wgslender-lsp", .version = "0.1.0" },
+            .serverInfo = .{ .name = "wgslender-lsp", .version = "1.0.0" },
             .capabilities = .{
                 .positionEncoding = .@"utf-16",
                 .textDocumentSync = .{
