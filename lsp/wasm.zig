@@ -112,6 +112,10 @@ fn handleMessage(json: []const u8) void {
         handleRename(root, id);
     } else if (eql(method, "textDocument/prepareRename")) {
         handlePrepareRename(root, id);
+    } else if (eql(method, "textDocument/completion")) {
+        handleCompletion(root, id);
+    } else if (eql(method, "textDocument/signatureHelp")) {
+        handleSignatureHelp(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -425,6 +429,68 @@ fn handlePrepareRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
     appendStr(&buf, "{\"range\":");
     formatRange(&buf, r);
     appendStr(&buf, ",\"placeholder\":\"\"}");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleCompletion(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const items = handler.computeCompletion(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
+    defer handler.gpa.free(items);
+    if (items.len == 0) return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (items, 0..) |item, i| {
+        if (i > 0) appendStr(&buf, ",");
+        appendStr(&buf, "{\"label\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, item.label) catch return;
+        appendStr(&buf, "\",\"kind\":");
+        const kind_num: u32 = switch (item.kind) {
+            .variable => 6,
+            .function => 3,
+            .struct_type => 22,
+            .field => 5,
+            .keyword => 14,
+            .builtin => 3,
+            .type_name => 7,
+            .attribute => 10,
+        };
+        appendUint(&buf, kind_num);
+        if (item.detail.len > 0) {
+            appendStr(&buf, ",\"detail\":\"");
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, item.detail) catch return;
+            appendStr(&buf, "\"");
+        }
+        appendStr(&buf, "}");
+    }
+    appendStr(&buf, "]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleSignatureHelp(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const result = handler.computeSignatureHelp(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
+    const r = result orelse return sendResult(id, "null");
+    defer handler.gpa.free(r.label);
+    if (r.parameters.len > 0) handler.gpa.free(r.parameters);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"signatures\":[{\"label\":\"");
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, r.label) catch return;
+    appendStr(&buf, "\"");
+    if (r.parameters.len > 0) {
+        appendStr(&buf, ",\"parameters\":[");
+        for (r.parameters, 0..) |param, i| {
+            if (i > 0) appendStr(&buf, ",");
+            appendStr(&buf, "{\"label\":\"");
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, param) catch return;
+            appendStr(&buf, "\"}");
+        }
+        appendStr(&buf, "]");
+    }
+    appendStr(&buf, "}],\"activeSignature\":0,\"activeParameter\":");
+    appendUint(&buf, r.active_parameter);
+    appendStr(&buf, "}");
     sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
 }
 

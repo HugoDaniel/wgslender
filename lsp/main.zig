@@ -67,6 +67,12 @@ const NativeServer = struct {
                 .renameProvider = .{
                     .rename_options = .{ .prepareProvider = true },
                 },
+                .completionProvider = .{
+                    .triggerCharacters = &.{ ".", "@" },
+                },
+                .signatureHelpProvider = .{
+                    .triggerCharacters = &.{ "(", "," },
+                },
             },
         };
     }
@@ -335,6 +341,74 @@ const NativeServer = struct {
                 },
                 .placeholder = "",
             },
+        };
+    }
+
+    // ----- Completion -----
+
+    pub fn @"textDocument/completion"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.completion.Params,
+    ) ?lsp.types.completion.Result {
+        const items = self.handler.computeCompletion(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+        ) catch return null;
+        defer self.handler.gpa.free(items);
+        if (items.len == 0) return null;
+        const lsp_items = arena.alloc(lsp.types.completion.Item, items.len) catch return null;
+        for (items, 0..) |item, i| {
+            lsp_items[i] = .{
+                .label = item.label,
+                .kind = switch (item.kind) {
+                    .variable => .Variable,
+                    .function => .Function,
+                    .struct_type => .Struct,
+                    .field => .Field,
+                    .keyword => .Keyword,
+                    .builtin => .Function,
+                    .type_name => .Class,
+                    .attribute => .Property,
+                },
+                .detail = if (item.detail.len > 0) item.detail else null,
+            };
+        }
+        return .{ .completion_items = lsp_items };
+    }
+
+    // ----- Signature Help -----
+
+    pub fn @"textDocument/signatureHelp"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.SignatureHelp.Params,
+    ) ?lsp.types.SignatureHelp {
+        const result = self.handler.computeSignatureHelp(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+        ) catch return null;
+        const r = result orelse return null;
+
+        const lsp_params = if (r.parameters.len > 0) blk: {
+            const ps = arena.alloc(lsp.types.SignatureHelp.Signature.Parameter, r.parameters.len) catch break :blk null;
+            for (r.parameters, 0..) |p, i| {
+                ps[i] = .{ .label = .{ .string = p } };
+            }
+            break :blk ps;
+        } else null;
+
+        const sig = arena.alloc(lsp.types.SignatureHelp.Signature, 1) catch return null;
+        sig[0] = .{
+            .label = r.label,
+            .parameters = lsp_params,
+            .activeParameter = r.active_parameter,
+        };
+
+        return .{
+            .signatures = sig,
+            .activeSignature = 0,
+            .activeParameter = r.active_parameter,
         };
     }
 

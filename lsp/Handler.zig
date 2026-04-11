@@ -69,7 +69,7 @@ pub const LspCodeAction = struct {
 
 /// Server capabilities as a JSON string (shared by native and WASM).
 pub const capabilities_json =
-    \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true}}
+    \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]}}
 ;
 
 /// Creates a handler with an empty document store.
@@ -1062,6 +1062,288 @@ pub fn computeRename(self: *Handler, uri: []const u8, position: Position, new_na
         };
     }
     return edits;
+}
+
+// =========================================================================
+// LSP Feature: Completion
+// =========================================================================
+
+const Builtins = wgslender.Builtins;
+
+pub const CompletionItem = struct {
+    label: []const u8,
+    kind: CompletionKind,
+    detail: []const u8 = "",
+};
+
+pub const CompletionKind = enum(u8) {
+    variable,
+    function,
+    struct_type,
+    field,
+    keyword,
+    builtin,
+    type_name,
+    attribute,
+};
+
+const wgsl_type_names = [_][]const u8{
+    "bool", "i32", "u32", "f32", "f16",
+    "vec2", "vec3", "vec4",
+    "vec2i", "vec3i", "vec4i",
+    "vec2u", "vec3u", "vec4u",
+    "vec2f", "vec3f", "vec4f",
+    "vec2h", "vec3h", "vec4h",
+    "mat2x2", "mat2x3", "mat2x4",
+    "mat3x2", "mat3x3", "mat3x4",
+    "mat4x2", "mat4x3", "mat4x4",
+    "mat2x2f", "mat2x3f", "mat2x4f",
+    "mat3x2f", "mat3x3f", "mat3x4f",
+    "mat4x2f", "mat4x3f", "mat4x4f",
+    "mat2x2h", "mat2x3h", "mat2x4h",
+    "mat3x2h", "mat3x3h", "mat3x4h",
+    "mat4x2h", "mat4x3h", "mat4x4h",
+    "array",   "atomic",  "ptr",
+    "sampler", "sampler_comparison",
+    "texture_1d",          "texture_2d",          "texture_2d_array",
+    "texture_3d",          "texture_cube",        "texture_cube_array",
+    "texture_multisampled_2d",
+    "texture_storage_1d",  "texture_storage_2d",  "texture_storage_2d_array",
+    "texture_storage_3d",  "texture_depth_2d",    "texture_depth_2d_array",
+    "texture_depth_cube",  "texture_depth_cube_array", "texture_depth_multisampled_2d",
+};
+
+const wgsl_attributes = [_][]const u8{
+    "align",   "binding",   "builtin",     "compute",
+    "const",   "diagnostic", "fragment",   "group",
+    "id",      "interpolate", "invariant", "location",
+    "must_use", "size",      "vertex",     "workgroup_size",
+};
+
+pub fn computeCompletion(self: *Handler, uri: []const u8, position: Position) ![]CompletionItem {
+    const doc = self.documents.getPtr(uri) orelse return &.{};
+    const source = doc.source;
+    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return &.{});
+
+    // Check trigger context
+    if (offset > 0 and source[offset - 1] == '@') {
+        return self.attributeCompletion();
+    }
+
+    if (offset > 0 and source[offset - 1] == '.') {
+        return self.memberCompletion(uri, source, offset);
+    }
+
+    return self.generalCompletion(uri);
+}
+
+fn attributeCompletion(self: *Handler) ![]CompletionItem {
+    const items = try self.gpa.alloc(CompletionItem, wgsl_attributes.len);
+    for (wgsl_attributes, 0..) |attr, i| {
+        items[i] = .{ .label = attr, .kind = .attribute };
+    }
+    return items;
+}
+
+fn memberCompletion(self: *Handler, uri: []const u8, source: []const u8, dot_offset: u32) ![]CompletionItem {
+    // Find the identifier before the dot
+    var start = dot_offset - 1;
+    if (start > 0 and source[start] == '.') start -= 1; // skip the dot
+    while (start > 0 and (std.ascii.isAlphanumeric(source[start - 1]) or source[start - 1] == '_')) start -= 1;
+    const base_name = source[start .. dot_offset - 1];
+    if (base_name.len == 0) return &.{};
+
+    // Try to resolve the base type via analysis
+    const analysis = self.analyzeDocument(uri) catch return &.{};
+    const module = analysis.module orelse return &.{};
+
+    // Find the symbol for base_name and its type
+    var base_type: ?wgslender.Types.Type = null;
+    for (module.symbols.items, 0..) |sym, idx| {
+        if (std.mem.eql(u8, sym.original_name, base_name)) {
+            base_type = analysis.symbol_types.get(@intCast(idx));
+            break;
+        }
+    }
+
+    if (base_type) |bt| {
+        switch (bt) {
+            .@"struct" => |st| {
+                const items = try self.gpa.alloc(CompletionItem, st.fields.len);
+                for (st.fields, 0..) |field, i| {
+                    items[i] = .{ .label = field.name, .kind = .field, .detail = field.typ.string() };
+                }
+                return items;
+            },
+            .vector => {
+                // Vector swizzle components
+                const swizzles = [_][]const u8{ "x", "y", "z", "w", "r", "g", "b", "a" };
+                const items = try self.gpa.alloc(CompletionItem, swizzles.len);
+                for (swizzles, 0..) |s, i| {
+                    items[i] = .{ .label = s, .kind = .field };
+                }
+                return items;
+            },
+            else => {},
+        }
+    }
+
+    return &.{};
+}
+
+fn generalCompletion(self: *Handler, uri: []const u8) ![]CompletionItem {
+    var items: std.ArrayListUnmanaged(CompletionItem) = .empty;
+    defer items.deinit(self.gpa);
+
+    // Module-level symbols from analysis
+    if (self.analyzeDocument(uri)) |analysis| {
+        if (analysis.module) |module| {
+            for (module.symbols.items, 0..) |sym, idx| {
+                if (sym.original_name.len == 0) continue;
+                const kind: CompletionKind = switch (sym.kind) {
+                    .function => .function,
+                    .@"struct" => .struct_type,
+                    .parameter, .let, .@"var" => .variable,
+                    .@"const", .override => .variable,
+                    else => continue,
+                };
+                const detail = if (analysis.symbol_types.get(@intCast(idx))) |t| t.string() else "";
+                try items.append(self.gpa, .{ .label = sym.original_name, .kind = kind, .detail = detail });
+            }
+        }
+    } else |_| {}
+
+    // Builtin functions
+    for (Builtins.names()) |name| {
+        try items.append(self.gpa, .{ .label = name, .kind = .builtin });
+    }
+
+    // Keywords
+    for (Lexer.keywords_map.keys()) |kw| {
+        try items.append(self.gpa, .{ .label = kw, .kind = .keyword });
+    }
+
+    // Built-in type names
+    for (&wgsl_type_names) |tn| {
+        try items.append(self.gpa, .{ .label = tn, .kind = .type_name });
+    }
+
+    return try self.gpa.dupe(CompletionItem, items.items);
+}
+
+// =========================================================================
+// LSP Feature: Signature Help
+// =========================================================================
+
+pub const SignatureInfo = struct {
+    label: []const u8,
+    parameters: []const []const u8,
+    active_parameter: u32,
+};
+
+pub fn computeSignatureHelp(self: *Handler, uri: []const u8, position: Position) !?SignatureInfo {
+    const doc = self.documents.getPtr(uri) orelse return null;
+    const source = doc.source;
+    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
+
+    // Scan backward to find enclosing '(' and the function name before it
+    var paren_depth: i32 = 0;
+    var comma_count: u32 = 0;
+    var i: u32 = offset;
+    while (i > 0) {
+        i -= 1;
+        const c = source[i];
+        if (c == ')') {
+            paren_depth += 1;
+        } else if (c == '(') {
+            if (paren_depth == 0) break; // found the enclosing '('
+            paren_depth -= 1;
+        } else if (c == ',' and paren_depth == 0) {
+            comma_count += 1;
+        }
+    } else {
+        return null; // no enclosing '('
+    }
+
+    // i now points to '('. Find the function name before it.
+    if (i == 0) return null;
+    var name_end = i;
+    // Skip whitespace between name and '('
+    while (name_end > 0 and source[name_end - 1] == ' ') name_end -= 1;
+    if (name_end == 0) return null;
+    var name_start = name_end;
+    while (name_start > 0 and (std.ascii.isAlphanumeric(source[name_start - 1]) or source[name_start - 1] == '_')) name_start -= 1;
+    const func_name = source[name_start..name_end];
+    if (func_name.len == 0) return null;
+
+    // Check if it's a builtin
+    if (Builtins.lookup(func_name)) |builtin| {
+        var buf: [256]u8 = undefined;
+        const label = std.fmt.bufPrint(&buf, "{s}({d}..{d} args)", .{ func_name, builtin.min_args, builtin.max_args }) catch return null;
+        return .{
+            .label = try self.gpa.dupe(u8, label),
+            .parameters = &.{},
+            .active_parameter = comma_count,
+        };
+    }
+
+    // Check if it's a user-defined function
+    const analysis = try self.analyzeDocument(uri);
+    const module = analysis.module orelse return null;
+    for (module.declarations.items) |decl| {
+        switch (decl) {
+            .function => |f| {
+                if (!f.name.isValid()) continue;
+                const sym = module.symbols.items[f.name.index()];
+                if (!std.mem.eql(u8, sym.original_name, func_name)) continue;
+
+                // Build signature label and parameter names
+                var buf: [512]u8 = undefined;
+                var pos_in_buf: usize = 0;
+                const header = std.fmt.bufPrint(&buf, "fn {s}(", .{func_name}) catch return null;
+                pos_in_buf = header.len;
+
+                const param_names = try self.gpa.alloc([]const u8, f.parameters.items.len);
+                for (f.parameters.items, 0..) |param, pi| {
+                    if (pi > 0) {
+                        const sep = std.fmt.bufPrint(buf[pos_in_buf..], ", ", .{}) catch return null;
+                        pos_in_buf += sep.len;
+                    }
+                    const p_sym = module.symbols.items[param.name.index()];
+                    const p_type = param.typ;
+                    const p_str = switch (p_type) {
+                        .ident => |t| t.name,
+                        .vec => |t| t.shorthand,
+                        .mat => |t| t.shorthand,
+                        else => "?",
+                    };
+                    param_names[pi] = p_sym.original_name;
+                    const fld = std.fmt.bufPrint(buf[pos_in_buf..], "{s}: {s}", .{ p_sym.original_name, p_str }) catch return null;
+                    pos_in_buf += fld.len;
+                }
+
+                const tail_str = if (f.return_type) |rt| blk: {
+                    const rt_str = switch (rt) {
+                        .ident => |t| t.name,
+                        .vec => |t| t.shorthand,
+                        .mat => |t| t.shorthand,
+                        else => "?",
+                    };
+                    break :blk std.fmt.bufPrint(buf[pos_in_buf..], ") -> {s}", .{rt_str}) catch return null;
+                } else std.fmt.bufPrint(buf[pos_in_buf..], ")", .{}) catch return null;
+                pos_in_buf += tail_str.len;
+
+                return .{
+                    .label = try self.gpa.dupe(u8, buf[0..pos_in_buf]),
+                    .parameters = param_names,
+                    .active_parameter = comma_count,
+                };
+            },
+            else => {},
+        }
+    }
+
+    return null;
 }
 
 // =========================================================================
