@@ -343,6 +343,23 @@ fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!voi
             v.addErrorWithCodeR(member_range, Diagnostic.Code.opaque_in_struct, v.fmtError("struct member '{s}' has opaque type '{s}' which cannot appear in a struct", .{ member_name, member_type.string() }));
         }
 
+        // Array members in structs must have const counts, not override-expression counts.
+        if (member.typ == .array) {
+            if (member.typ.array.size) |size_expr| {
+                const stage = v.classifyExprStage(size_expr);
+                if (stage == .override_expr) {
+                    v.addErrorWithCodeR(member_range, Diagnostic.Code.invalid_array_count, v.fmtError("struct member '{s}' has override-expression array count; must be const", .{member_name}));
+                }
+            }
+        }
+
+        // A struct containing a runtime-sized array cannot be used as a member of another struct.
+        if (member_type == .@"struct") {
+            if (member_type.@"struct".has_runtime_array) {
+                v.addErrorWithCodeR(member_range, Diagnostic.Code.runtime_array_not_last, v.fmtError("struct member '{s}' contains a runtime-sized array and cannot be nested in struct '{s}'", .{ member_name, name }));
+            }
+        }
+
         try fields.append(v.arena, .{
             .name = member_name,
             .typ = member_type,
@@ -1085,6 +1102,10 @@ fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error
 fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
     const fn_range = v.symbolRange(fn_decl.name);
 
+    // Track duplicate builtins across all I/O members.
+    var input_builtins: std.StringHashMapUnmanaged(u32) = .{};
+    var output_builtins: std.StringHashMapUnmanaged(u32) = .{};
+
     // Check input locations (parameters)
     var input_locations: std.AutoHashMapUnmanaged(i64, u32) = .{};
     for (fn_decl.parameters.items) |param| {
@@ -1121,6 +1142,18 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                         v.validateInterpolation(member.attributes, mt, v.symbolLoc(member.name));
                     }
                     v.validateInvariantAttr(member.attributes, v.symbolLoc(member.name));
+                    // @location and @builtin on same member is invalid (WGSL spec section 10.1).
+                    if (hasAttr(member.attributes, "location") and hasAttr(member.attributes, "builtin")) {
+                        v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.duplicate_attribute, v.fmtError("member '{s}' cannot have both @location and @builtin", .{v.symbolName(member.name)}));
+                    }
+                    // Duplicate @builtin in entry point input.
+                    if (getBuiltinAttrName(member.attributes)) |bn| {
+                        if (input_builtins.get(bn)) |_| {
+                            v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate @builtin({s}) in entry point input", .{bn}));
+                        } else {
+                            input_builtins.put(v.arena, bn, v.symbolLoc(member.name)) catch {};
+                        }
+                    }
                 }
             }
         }
@@ -1156,6 +1189,16 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                         v.validateInterpolation(member.attributes, out_mt, v.symbolLoc(member.name));
                     }
                     v.validateInvariantAttr(member.attributes, v.symbolLoc(member.name));
+                    if (hasAttr(member.attributes, "location") and hasAttr(member.attributes, "builtin")) {
+                        v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.duplicate_attribute, v.fmtError("member '{s}' cannot have both @location and @builtin", .{v.symbolName(member.name)}));
+                    }
+                    if (getBuiltinAttrName(member.attributes)) |bn| {
+                        if (output_builtins.get(bn)) |_| {
+                            v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate @builtin({s}) in entry point output", .{bn}));
+                        } else {
+                            output_builtins.put(v.arena, bn, v.symbolLoc(member.name)) catch {};
+                        }
+                    }
                 }
             }
         }
@@ -1345,6 +1388,19 @@ fn getLocationInfo(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?struct { value
         if (std.mem.eql(u8, attr.name, "location") and attr.args.items.len > 0) {
             if (extractLiteralIntValue(attr.args.items[0])) |val| {
                 return .{ .value = val, .loc = attr.loc };
+            }
+        }
+    }
+    return null;
+}
+
+/// Extract @builtin name from attributes, or null.
+fn getBuiltinAttrName(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?[]const u8 {
+    for (attrs.items) |attr| {
+        if (std.mem.eql(u8, attr.name, "builtin") and attr.args.items.len > 0) {
+            switch (attr.args.items[0]) {
+                .ident => |ident| return ident.name,
+                else => {},
             }
         }
     }

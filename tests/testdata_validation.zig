@@ -158,6 +158,9 @@ pub const @"errors/declarations/const_assert_false" = @embedFile("testdata/valid
 pub const @"errors/declarations/atomic_wrong_space" = @embedFile("testdata/validation/errors/declarations/atomic_wrong_space.wgsl");
 pub const @"errors/declarations/nested_struct_io" = @embedFile("testdata/validation/errors/declarations/nested_struct_io.wgsl");
 pub const @"errors/declarations/non_constructible_param" = @embedFile("testdata/validation/errors/declarations/non_constructible_param.wgsl");
+pub const @"errors/declarations/duplicate_builtin_io" = @embedFile("testdata/validation/errors/declarations/duplicate_builtin_io.wgsl");
+pub const @"errors/declarations/location_and_builtin" = @embedFile("testdata/validation/errors/declarations/location_and_builtin.wgsl");
+pub const @"errors/declarations/nested_runtime_array_struct" = @embedFile("testdata/validation/errors/declarations/nested_runtime_array_struct.wgsl");
 
 // --- errors/types/ (new batch) ---
 pub const @"errors/types/assign_to_let" = @embedFile("testdata/validation/errors/types/assign_to_let.wgsl");
