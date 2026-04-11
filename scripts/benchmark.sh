@@ -121,6 +121,10 @@ main() {
         for f in "$TESTDATA_DIR"/*.wgsl; do
             [ -f "$f" ] && files+=("$f")
         done
+        # Also include large shaders from testdata root
+        for f in tests/testdata/sceneW.wgsl tests/testdata/sceneE.wgsl tests/testdata/sceneY.wgsl tests/testdata/starsParticlesModule.wgsl; do
+            [ -f "$f" ] && files+=("$f")
+        done
     else
         echo -e "${RED}No test files found.${NC}"
         echo "Usage: $0 [file1.wgsl file2.wgsl ...]"
