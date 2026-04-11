@@ -94,21 +94,74 @@ Best when the output will be gzip/brotli compressed for network transfer of smal
 wgslender shader.wgsl -o shader.min.wgsl
 ```
 
-### wgslender compile (BPE)
+### wgslender compile (BPE binary shader)
 
-Produces a `.wasm` binary that reconstructs the WGSL at runtime via byte-pair encoding.
-The .wasm file is self-contained (~110 byte decoder + compressed data). Best for large
-shaders or when you want the smallest possible transfer size.
+Produces a `.wasm` binary that reconstructs the WGSL source at runtime. The idea is
+to exploit the fact that every WebGPU environment already has a WASM runtime available —
+so instead of shipping compressed text that needs a separate decompressor, you ship a
+tiny self-contained program that *is* the decompressor and the data in one file.
 
 ```bash
 wgslender compile shader.wgsl -o shader.wasm
 ```
 
 ```javascript
+// Load and decompress in one step — no decompression library needed
 const { instance } = await WebAssembly.instantiate(shaderWasm);
 const len = instance.exports.generate();
 const wgsl = new TextDecoder().decode(new Uint8Array(instance.exports.memory.buffer, 0, len));
+device.createShaderModule({ code: wgsl });
 ```
+
+#### How it works
+
+The compiler first minifies the shader (renaming, DCE, syntax optimization, declaration
+sorting), then compresses the minified text using **byte-pair encoding** (BPE). BPE
+iteratively finds the most frequent pair of adjacent bytes and replaces it with a new
+symbol (0x80–0xBF), storing each rule as 2 bytes. Up to 64 rules are generated, each
+one eliminating every occurrence of a common pair.
+
+The output `.wasm` module contains:
+
+1. **A ~110 byte decoder** — a single WASM function that walks the compressed data,
+   expanding BPE rules via a stack. The decoder has zero knowledge of WGSL; it is a
+   generic byte-pair expander.
+2. **The BPE rule table** — 64 rules × 2 bytes = 128 bytes max.
+3. **The compressed shader text** — the minified WGSL after BPE substitution.
+4. **Linear memory** laid out as: output buffer, rule table, expansion stack, compressed data.
+
+The module exports one function (`generate`) that returns the byte length of the
+reconstructed WGSL, written to the start of linear memory. Instantiation + generation
+takes under 1ms for any shader size.
+
+#### Rationale
+
+Standard compression (gzip, brotli) is applied at the transport layer by the web server
+and is transparent to application code. BPE binary shaders are useful when:
+
+- **Transport compression is unavailable** — static file hosting without server-side gzip,
+  embedded/offline apps, or environments where you control the file format but not the
+  transport.
+- **You want the smallest possible single-file artifact** — the `.wasm` is completely
+  self-contained. No runtime library, no decompression code, no WASM glue. Just
+  `WebAssembly.instantiate` and read the memory.
+- **You're already loading WASM modules** — if your app loads other WASM (e.g. a physics
+  engine), adding a shader `.wasm` has zero marginal dependency cost.
+
+#### Tradeoffs
+
+- **Pro: Smallest raw size** — 86% reduction vs 76% for minified text. BPE captures
+  WGSL-specific repetition (common tokens, repeated struct patterns) that generic
+  minification cannot eliminate.
+- **Pro: No decompression dependency** — the decoder is embedded in the file. No need to
+  bundle or load a decompression library.
+- **Con: Gzip narrows the gap** — when transport compression is available, gzipped
+  minified text is competitive (and wins on small shaders <5KB). The BPE advantage after
+  gzip is ~4% on the full benchmark suite.
+- **Con: Extra runtime step** — you must instantiate the WASM module and call `generate()`
+  before you have WGSL text. This adds ~1ms of latency and a few lines of code.
+- **Con: Not human-readable** — the output is a binary `.wasm` file. You cannot inspect
+  or edit the shader without decompiling it first.
 
 ## Running the Benchmark
 
