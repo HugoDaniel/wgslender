@@ -1596,6 +1596,87 @@ test "vec2f rejects concrete u32 args" {
 }
 
 // =========================================================================
+// Array constructor validation
+// =========================================================================
+
+test "array<vec3f,3> rejects vec2f element" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = array<vec3f,3>(vec2f(1.0,2.0), vec3f(1.0,2.0,3.0), vec3f(1.0,2.0,3.0));
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    //                  array<vec3f,3>( → col 27
+    try expectErrorAtWithMessage(result, 3, 27, "cannot convert 'vec2<f32>' to 'vec3<f32>' for element 0");
+}
+
+test "array<vec3f,2> rejects wrong element count" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = array<vec3f,2>(vec3f(1.0,2.0,3.0));
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 27, "constructor expects 2 elements, got 1");
+}
+
+test "array<f32,3> rejects i32 element" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = array<f32,3>(1.0, 2i, 3.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    //                  array<f32,3>( → col 25
+    try expectErrorAtWithMessage(result, 3, 25, "cannot convert 'i32' to 'f32' for element 1");
+}
+
+test "array<vec3f,2> accepts valid elements" {
+    const source =
+        \\@fragment
+        \\fn main() -> @location(0) vec4f {
+        \\    let a = array<vec3f,2>(vec3f(1.0,2.0,3.0), vec3f(4.0,5.0,6.0));
+        \\    return vec4f(a[0], 1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.valid);
+}
+
+test "template vec3<i32> rejects AbstractFloat" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec3<i32>(0.9, 0.8, 0.7);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    //                  vec3<i32>( → col 22
+    try expectErrorAtWithMessage(result, 3, 22, "cannot convert 'abstract-float' to 'i32'");
+}
+
+test "template vec3<f32> accepts AbstractInt" {
+    const source =
+        \\@fragment
+        \\fn main() -> @location(0) vec4f {
+        \\    let a = vec3<f32>(1, 2, 3);
+        \\    return vec4f(a, 1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expect(result.valid);
+}
+
+// =========================================================================
 // "Did you mean?" — Swizzle component hints
 // =========================================================================
 

@@ -1761,11 +1761,6 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
 }
 
 fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
-    // First check if it's a template type constructor
-    if (e.template_type) |tt| {
-        return v.resolveType(tt);
-    }
-
     // Get callee name
     var callee_name: []const u8 = "";
     if (e.func) |func| {
@@ -1782,6 +1777,19 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
                 return null;
             },
         }
+    }
+
+    // Template type constructor (e.g. array<vec3f, 7>(...), vec3<f32>(...))
+    if (e.template_type) |tt| {
+        const resolved = v.resolveType(tt) orelse return null;
+        // Use type string as callee_name when the parser doesn't set func
+        const name = if (callee_name.len > 0) callee_name else resolved.string();
+        // Validate constructor arguments against the resolved type
+        var constructor_arg_types: std.ArrayListUnmanaged(?Types.Type) = .empty;
+        for (e.args.items) |arg| {
+            try constructor_arg_types.append(v.arena, try v.checkExpr(arg));
+        }
+        return v.checkTypeConstructor(e, name, resolved, constructor_arg_types.items);
     }
 
     // Check if it's a builtin function
@@ -2241,6 +2249,26 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8
                                 return null;
                             }
                         }
+                    }
+                }
+            }
+        },
+        .array => |arr| {
+            // 0 args: zero-value constructor
+            if (arg_count == 0) return t;
+
+            // Check element count if the array has a fixed size
+            if (arr.count > 0 and arg_count != arr.count) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor expects {d} elements, got {d}", .{ callee_name, arr.count, arg_count }));
+                return null;
+            }
+
+            // Check each element type
+            for (arg_types, 0..) |at_opt, i| {
+                if (at_opt) |at| {
+                    if (!at.eql(arr.element) and !Types.canConvertTo(at, arr.element)) {
+                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' for element {d}", .{ at.string(), arr.element.string(), i }));
+                        return null;
                     }
                 }
             }
