@@ -75,6 +75,14 @@ Key findings:
 - **BPE crossover point** is around 5KB — above that, the BPE `.wasm` binary gzips smaller than minified text.
 - **Zig rewrite beats Go** across the board — 76% vs 75% raw, 22,632 vs 22,906 gzip.
 
+### Conclusion
+
+For **large shaders** (>5KB) — which represent most real-world WebGPU projects — **use `wgslender compile`**. The BPE `.wasm` output is the smallest both raw and gzipped, and reconstructs the original WGSL at runtime with a ~110 byte decoder. On a 70KB shader, BPE delivers a 6.2KB gzipped file vs 7.7KB for minified text — a 20% further saving.
+
+For **small shaders** (<5KB) or when you need the output to remain readable WGSL, **use `wgslender` (default minify)**. Gzipped minified text is slightly smaller at this scale, and the output is standard WGSL that can be inspected or further processed.
+
+In both cases, wgslender reduces shader transfer size by **61–63%** compared to gzipping the original source alone.
+
 ## Output Modes
 
 ### wgslender minify (default)
