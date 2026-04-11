@@ -22,6 +22,14 @@ pub const @"declarations/var_basic" = @embedFile("testdata/validation/declaratio
 pub const @"declarations/const_assert_valid" = @embedFile("testdata/validation/declarations/const_assert_valid.wgsl");
 pub const @"declarations/override_valid" = @embedFile("testdata/validation/declarations/override_valid.wgsl");
 pub const @"declarations/atomic_valid" = @embedFile("testdata/validation/declarations/atomic_valid.wgsl");
+pub const @"declarations/const_propagation" = @embedFile("testdata/validation/declarations/const_propagation.wgsl");
+pub const @"declarations/const_propagation_chain" = @embedFile("testdata/validation/declarations/const_propagation_chain.wgsl");
+pub const @"declarations/const_propagation_negated" = @embedFile("testdata/validation/declarations/const_propagation_negated.wgsl");
+pub const @"declarations/const_propagation_workgroup_size" = @embedFile("testdata/validation/declarations/const_propagation_workgroup_size.wgsl");
+pub const @"declarations/const_switch_cases" = @embedFile("testdata/validation/declarations/const_switch_cases.wgsl");
+pub const @"declarations/diagnostic_valid" = @embedFile("testdata/validation/declarations/diagnostic_valid.wgsl");
+pub const @"declarations/f16_with_enable" = @embedFile("testdata/validation/declarations/f16_with_enable.wgsl");
+pub const @"declarations/override_workgroup_size" = @embedFile("testdata/validation/declarations/override_workgroup_size.wgsl");
 
 // --- uniformity/ ---
 pub const @"uniformity/barrier_uniform" = @embedFile("testdata/validation/uniformity/barrier_uniform.wgsl");
@@ -32,6 +40,22 @@ pub const @"builtins/vector_math" = @embedFile("testdata/validation/builtins/vec
 pub const @"builtins/math_basic" = @embedFile("testdata/validation/builtins/math_basic.wgsl");
 pub const @"builtins/atomic_ops" = @embedFile("testdata/validation/builtins/atomic_ops.wgsl");
 pub const @"builtins/texture_sample" = @embedFile("testdata/validation/builtins/texture_sample.wgsl");
+pub const @"builtins/must_use_consumed" = @embedFile("testdata/validation/builtins/must_use_consumed.wgsl");
+
+// --- types/ (new) ---
+pub const @"types/index_bounds_valid" = @embedFile("testdata/validation/types/index_bounds_valid.wgsl");
+pub const @"types/interpolate_valid" = @embedFile("testdata/validation/types/interpolate_valid.wgsl");
+pub const @"types/float_literals_valid" = @embedFile("testdata/validation/types/float_literals_valid.wgsl");
+pub const @"types/nesting_deep_valid" = @embedFile("testdata/validation/types/nesting_deep_valid.wgsl");
+pub const @"types/shadowing_none" = @embedFile("testdata/validation/types/shadowing_none.wgsl");
+pub const @"types/shadowing_param" = @embedFile("testdata/validation/types/shadowing_param.wgsl");
+pub const @"types/shadowing_let" = @embedFile("testdata/validation/types/shadowing_let.wgsl");
+pub const @"types/loop_with_break" = @embedFile("testdata/validation/types/loop_with_break.wgsl");
+pub const @"types/loop_with_break_if" = @embedFile("testdata/validation/types/loop_with_break_if.wgsl");
+pub const @"types/loop_infinite_warning" = @embedFile("testdata/validation/types/loop_infinite_warning.wgsl");
+pub const @"types/division_valid" = @embedFile("testdata/validation/types/division_valid.wgsl");
+pub const @"types/pointer_param_valid" = @embedFile("testdata/validation/types/pointer_param_valid.wgsl");
+pub const @"types/entry_point_no_call" = @embedFile("testdata/validation/types/entry_point_no_call.wgsl");
 
 // --- expressions/binary/mul/ ---
 pub const @"expressions/binary/mul/vec3_mat3x3_f32" = @embedFile("testdata/validation/expressions/binary/mul/vec3_mat3x3_f32.wgsl");
@@ -58,6 +82,11 @@ pub const @"errors/calls/vec_constructor_wrong_count" = @embedFile("testdata/val
 pub const @"errors/calls/mat_constructor_wrong_count" = @embedFile("testdata/validation/errors/calls/mat_constructor_wrong_count.wgsl");
 pub const @"errors/calls/scalar_constructor_too_many" = @embedFile("testdata/validation/errors/calls/scalar_constructor_too_many.wgsl");
 pub const @"errors/calls/vec_constructor_type_mismatch" = @embedFile("testdata/validation/errors/calls/vec_constructor_type_mismatch.wgsl");
+pub const @"errors/calls/must_use_ignored" = @embedFile("testdata/validation/errors/calls/must_use_ignored.wgsl");
+pub const @"errors/calls/must_use_sin" = @embedFile("testdata/validation/errors/calls/must_use_sin.wgsl");
+pub const @"errors/calls/must_use_dot" = @embedFile("testdata/validation/errors/calls/must_use_dot.wgsl");
+pub const @"errors/calls/must_use_max" = @embedFile("testdata/validation/errors/calls/must_use_max.wgsl");
+pub const @"errors/calls/entry_point_called" = @embedFile("testdata/validation/errors/calls/entry_point_called.wgsl");
 
 // --- errors/types/ ---
 pub const @"errors/types/let_initializer_mismatch" = @embedFile("testdata/validation/errors/types/let_initializer_mismatch.wgsl");
@@ -70,6 +99,20 @@ pub const @"errors/types/var_initializer_mismatch" = @embedFile("testdata/valida
 pub const @"errors/types/switch_duplicate_case" = @embedFile("testdata/validation/errors/types/switch_duplicate_case.wgsl");
 pub const @"errors/types/switch_missing_default" = @embedFile("testdata/validation/errors/types/switch_missing_default.wgsl");
 pub const @"errors/types/incr_decr_non_concrete" = @embedFile("testdata/validation/errors/types/incr_decr_non_concrete.wgsl");
+pub const @"errors/types/index_out_of_bounds" = @embedFile("testdata/validation/errors/types/index_out_of_bounds.wgsl");
+pub const @"errors/types/index_out_of_bounds_const" = @embedFile("testdata/validation/errors/types/index_out_of_bounds_const.wgsl");
+pub const @"errors/types/index_out_of_bounds_vector" = @embedFile("testdata/validation/errors/types/index_out_of_bounds_vector.wgsl");
+pub const @"errors/types/index_negative" = @embedFile("testdata/validation/errors/types/index_negative.wgsl");
+pub const @"errors/types/index_out_of_bounds_matrix" = @embedFile("testdata/validation/errors/types/index_out_of_bounds_matrix.wgsl");
+pub const @"errors/types/index_out_of_bounds_zero" = @embedFile("testdata/validation/errors/types/index_out_of_bounds_zero.wgsl");
+pub const @"errors/types/index_out_of_bounds_const_idx" = @embedFile("testdata/validation/errors/types/index_out_of_bounds_const_idx.wgsl");
+pub const @"errors/types/index_out_of_bounds_vec4" = @embedFile("testdata/validation/errors/types/index_out_of_bounds_vec4.wgsl");
+pub const @"errors/types/missing_interpolation" = @embedFile("testdata/validation/errors/types/missing_interpolation.wgsl");
+pub const @"errors/types/interpolate_integer_linear" = @embedFile("testdata/validation/errors/types/interpolate_integer_linear.wgsl");
+pub const @"errors/types/interpolate_flat_sample" = @embedFile("testdata/validation/errors/types/interpolate_flat_sample.wgsl");
+pub const @"errors/types/interpolate_perspective_first" = @embedFile("testdata/validation/errors/types/interpolate_perspective_first.wgsl");
+pub const @"errors/types/interpolate_invalid_type" = @embedFile("testdata/validation/errors/types/interpolate_invalid_type.wgsl");
+pub const @"errors/types/switch_duplicate_const_case" = @embedFile("testdata/validation/errors/types/switch_duplicate_const_case.wgsl");
 
 // --- errors/declarations/ ---
 pub const @"errors/declarations/const_without_init" = @embedFile("testdata/validation/errors/declarations/const_without_init.wgsl");
@@ -94,6 +137,17 @@ pub const @"errors/declarations/size_too_small" = @embedFile("testdata/validatio
 pub const @"errors/declarations/duplicate_location" = @embedFile("testdata/validation/errors/declarations/duplicate_location.wgsl");
 pub const @"errors/declarations/missing_io_attr" = @embedFile("testdata/validation/errors/declarations/missing_io_attr.wgsl");
 pub const @"errors/declarations/const_assert_non_bool" = @embedFile("testdata/validation/errors/declarations/const_assert_non_bool.wgsl");
+pub const @"errors/declarations/f16_without_enable" = @embedFile("testdata/validation/errors/declarations/f16_without_enable.wgsl");
+pub const @"errors/declarations/f16_literal_without_enable" = @embedFile("testdata/validation/errors/declarations/f16_literal_without_enable.wgsl");
+pub const @"errors/declarations/f16_vec_without_enable" = @embedFile("testdata/validation/errors/declarations/f16_vec_without_enable.wgsl");
+pub const @"errors/declarations/unknown_enable_feature" = @embedFile("testdata/validation/errors/declarations/unknown_enable_feature.wgsl");
+pub const @"errors/declarations/runtime_workgroup_size" = @embedFile("testdata/validation/errors/declarations/runtime_workgroup_size.wgsl");
+pub const @"errors/declarations/var_in_workgroup_size" = @embedFile("testdata/validation/errors/declarations/var_in_workgroup_size.wgsl");
+pub const @"errors/declarations/runtime_array_size" = @embedFile("testdata/validation/errors/declarations/runtime_array_size.wgsl");
+pub const @"errors/declarations/float_literal_overflow" = @embedFile("testdata/validation/errors/declarations/float_literal_overflow.wgsl");
+pub const @"errors/declarations/float_literal_overflow_h" = @embedFile("testdata/validation/errors/declarations/float_literal_overflow_h.wgsl");
+pub const @"errors/declarations/diagnostic_invalid_severity" = @embedFile("testdata/validation/errors/declarations/diagnostic_invalid_severity.wgsl");
+pub const @"errors/declarations/pointer_param_storage" = @embedFile("testdata/validation/errors/declarations/pointer_param_storage.wgsl");
 
 // --- errors/operations/ ---
 pub const @"errors/operations/mul_incompatible_types" = @embedFile("testdata/validation/errors/operations/mul_incompatible_types.wgsl");
@@ -111,6 +165,9 @@ pub const @"errors/types/runtime_array_value" = @embedFile("testdata/validation/
 pub const @"errors/types/invalid_conversion" = @embedFile("testdata/validation/errors/types/invalid_conversion.wgsl");
 pub const @"errors/operations/swizzle_mixed_groups" = @embedFile("testdata/validation/errors/operations/swizzle_mixed_groups.wgsl");
 pub const @"errors/operations/swizzle_out_of_bounds" = @embedFile("testdata/validation/errors/operations/swizzle_out_of_bounds.wgsl");
+pub const @"errors/operations/division_by_zero" = @embedFile("testdata/validation/errors/operations/division_by_zero.wgsl");
+pub const @"errors/operations/division_by_zero_const" = @embedFile("testdata/validation/errors/operations/division_by_zero_const.wgsl");
+pub const @"errors/operations/modulo_by_zero" = @embedFile("testdata/validation/errors/operations/modulo_by_zero.wgsl");
 
 // --- errors/symbols/ ---
 pub const @"errors/symbols/undefined_variable" = @embedFile("testdata/validation/errors/symbols/undefined_variable.wgsl");

@@ -589,6 +589,8 @@ pub const Code = struct {
     pub const missing_return: []const u8 = "E0208";
     pub const invalid_conversion: []const u8 = "E0209";
     pub const invalid_assignment: []const u8 = "E0210";
+    pub const index_out_of_bounds: []const u8 = "E0211";
+    pub const must_use_ignored: []const u8 = "E0212";
 
     // Declaration errors (E03xx)
     pub const missing_initializer: []const u8 = "E0300";
@@ -605,6 +607,10 @@ pub const Code = struct {
     pub const invalid_override_id: []const u8 = "E0311";
     pub const duplicate_override_id: []const u8 = "E0312";
     pub const invalid_array_count: []const u8 = "E0313";
+    pub const invalid_float_literal: []const u8 = "E0314";
+    pub const expression_not_const: []const u8 = "E0315";
+    pub const division_by_zero: []const u8 = "E0316";
+    pub const integer_overflow: []const u8 = "E0317";
 
     // Attribute errors (E04xx)
     pub const invalid_attribute: []const u8 = "E0400";
@@ -612,17 +618,22 @@ pub const Code = struct {
     pub const missing_attribute: []const u8 = "E0402";
     pub const invalid_builtin: []const u8 = "E0403";
     pub const invalid_location: []const u8 = "E0404";
+    pub const invalid_interpolation: []const u8 = "E0405";
+    pub const missing_interpolation: []const u8 = "E0406";
 
     // Control flow errors (E05xx)
     pub const break_outside_loop: []const u8 = "E0500";
     pub const continue_outside_loop: []const u8 = "E0501";
     pub const discard_outside_fragment: []const u8 = "E0502";
     pub const unreachable_code: []const u8 = "E0503";
+    pub const nesting_too_deep: []const u8 = "E0504";
+    pub const infinite_loop: []const u8 = "E0505";
 
     // Entry point errors (E06xx)
     pub const invalid_entry_point: []const u8 = "E0600";
     pub const missing_entry_point: []const u8 = "E0601";
     pub const invalid_shader_io: []const u8 = "E0602";
+    pub const entry_point_called: []const u8 = "E0603";
 
     // Uniformity errors (E07xx)
     pub const non_uniform_derivative: []const u8 = "E0700";
@@ -636,6 +647,15 @@ pub const Code = struct {
     pub const invalid_uniform_var: []const u8 = "E0802";
     pub const missing_binding: []const u8 = "E0803";
     pub const duplicate_binding: []const u8 = "E0804";
+
+    // Feature / directive errors (E09xx)
+    pub const feature_not_enabled: []const u8 = "E0900";
+    pub const unknown_feature: []const u8 = "E0901";
+    pub const invalid_diagnostic_rule: []const u8 = "E0902";
+    pub const invalid_diagnostic_severity: []const u8 = "E0903";
+
+    // Warnings (W01xx)
+    pub const shadowing: []const u8 = "W0100";
 };
 
 // =========================================================================

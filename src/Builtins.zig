@@ -66,6 +66,7 @@ pub const Builtin = struct {
     min_args: u8, // Minimum argument count for overload resolution stub
     max_args: u8, // Maximum argument count for overload resolution stub
     return_pattern: ReturnPattern,
+    must_use: bool, // Return value must be consumed (not called as statement)
 
     /// Returns true if this builtin requires uniform control flow.
     pub fn requiresUniform(self: *const Builtin) bool {
@@ -413,6 +414,8 @@ fn entry(
             .min_args = min_args,
             .max_args = max_args,
             .return_pattern = return_pattern,
+            // Per WGSL spec, all builtin functions with a return value are @must_use.
+            .must_use = return_pattern != .void_type,
         },
     };
 }

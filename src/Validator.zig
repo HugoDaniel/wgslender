@@ -90,6 +90,7 @@ in_continuing: bool = false,
 return_type: ?Types.Type = null,
 has_return: bool = false,
 expr_depth: u32 = 0,
+stmt_depth: u32 = 0,
 
 // Symbol type cache: maps SymbolIndex -> resolved Types.Type
 symbol_types: std.AutoHashMapUnmanaged(u32, Types.Type) = .{},
@@ -104,6 +105,12 @@ alias_types: std.StringHashMapUnmanaged(?Types.Type) = .{},
 override_ids: std.AutoHashMapUnmanaged(u32, LocName) = .{},
 // Binding pair tracking for uniqueness validation: key = (group << 32) | binding
 binding_pairs: std.AutoHashMapUnmanaged(u64, LocName) = .{},
+
+// Const value propagation: maps SymbolIndex raw u32 -> evaluated integer value
+const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
+
+// Enabled features from 'enable' directives
+enabled_features: std.StringHashMapUnmanaged(void) = .{},
 
 // =========================================================================
 // Public API
@@ -121,6 +128,9 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
         .diags = diags,
         .options = options,
     };
+
+    // Phase 0: Process directives (enable, diagnostic)
+    v.processDirectives();
 
     // Phase 1: Collect type declarations (structs, aliases)
     try v.collectTypeDeclarations();
@@ -153,6 +163,73 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
         .valid = !diags.hasErrors(),
         .diagnostics = diags,
     };
+}
+
+// =========================================================================
+// Phase 0: Process Directives
+// =========================================================================
+
+const known_enable_features = [_][]const u8{
+    "f16",
+    "subgroups",
+    "subgroups_f16",
+    "dual_source_blending",
+    "clip_distances",
+    "chromium_experimental_framebuffer_fetch",
+};
+
+const known_diagnostic_rules = [_][]const u8{
+    "derivative_uniformity",
+};
+
+fn processDirectives(v: *Validator) void {
+    for (v.module.directives.items) |directive| {
+        switch (directive) {
+            .enable => |d| {
+                for (d.features.items) |feature| {
+                    var is_known = false;
+                    for (known_enable_features) |kf| {
+                        if (std.mem.eql(u8, feature, kf)) {
+                            is_known = true;
+                            break;
+                        }
+                    }
+                    if (!is_known) {
+                        v.addErrorWithCodeR(.{ .start = 0, .end = 1 }, Diagnostic.Code.unknown_feature, v.fmtError("unknown enable feature '{s}'", .{feature}));
+                    }
+                    v.enabled_features.put(v.arena, feature, {}) catch {};
+                }
+            },
+            .diagnostic => |d| {
+                // Validate severity
+                const valid_severities = [_][]const u8{ "error", "warning", "info", "off" };
+                var severity_valid = false;
+                for (valid_severities) |vs| {
+                    if (std.mem.eql(u8, d.severity, vs)) {
+                        severity_valid = true;
+                        break;
+                    }
+                }
+                if (!severity_valid) {
+                    v.addErrorWithCodeR(.{ .start = 0, .end = 1 }, Diagnostic.Code.invalid_diagnostic_severity, v.fmtError("invalid diagnostic severity '{s}'; expected 'error', 'warning', 'info', or 'off'", .{d.severity}));
+                }
+                // Validate rule name (only warn for unknown standard rules)
+                if (d.rule.len > 0 and std.mem.indexOfScalar(u8, d.rule, '.') == null) {
+                    var rule_known = false;
+                    for (known_diagnostic_rules) |kr| {
+                        if (std.mem.eql(u8, d.rule, kr)) {
+                            rule_known = true;
+                            break;
+                        }
+                    }
+                    if (!rule_known) {
+                        v.addWarningR(.{ .start = 0, .end = 1 }, v.fmtError("unknown diagnostic rule '{s}'", .{d.rule}));
+                    }
+                }
+            },
+            .requires => {},
+        }
+    }
 }
 
 // =========================================================================
@@ -240,14 +317,18 @@ fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!voi
         for (member.attributes.items) |attr| {
             const ar = attrRange(&attr);
             if (std.mem.eql(u8, attr.name, "align") and attr.args.items.len > 0) {
-                if (tryExtractIntValue(attr.args.items[0])) |val| {
+                if (v.classifyExprStage(attr.args.items[0]) != .const_expr) {
+                    v.addErrorWithCodeR(ar, Diagnostic.Code.expression_not_const, "@align value must be a const-expression");
+                } else if (v.tryExtractIntValue(attr.args.items[0])) |val| {
                     if (val <= 0 or (@as(u64, @intCast(val)) & (@as(u64, @intCast(val)) - 1)) != 0) {
                         v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@align value must be a positive power of 2, got {d}", .{val}));
                     }
                 }
             }
             if (std.mem.eql(u8, attr.name, "size") and attr.args.items.len > 0) {
-                if (tryExtractIntValue(attr.args.items[0])) |val| {
+                if (v.classifyExprStage(attr.args.items[0]) != .const_expr) {
+                    v.addErrorWithCodeR(ar, Diagnostic.Code.expression_not_const, "@size value must be a const-expression");
+                } else if (v.tryExtractIntValue(attr.args.items[0])) |val| {
                     const type_size = member_type.size();
                     if (val <= 0) {
                         v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@size value must be positive, got {d}", .{val}));
@@ -478,6 +559,17 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) Allocator.Error!void {
         }
     }
 
+    // Propagate known integer values for const-expression resolution.
+    // This enables array sizes, @workgroup_size, @id, @align, @size,
+    // and switch case selectors to reference const declarations.
+    if (d.name.isValid()) {
+        if (d.initializer) |init| {
+            if (v.tryExtractIntValue(init)) |val| {
+                try v.const_values.put(v.arena, d.name.index(), val);
+            }
+        }
+    }
+
     try v.setSymbolType(d.name, decl_type);
 }
 
@@ -543,7 +635,14 @@ fn validateOverrideId(v: *Validator, d: *Ast.OverrideDecl, name: []const u8) All
         if (!std.mem.eql(u8, attr.name, "id")) continue;
         if (attr.args.items.len == 0) continue;
 
-        const id_val = tryExtractIntValue(attr.args.items[0]) orelse continue;
+        // @id must be a const-expression
+        const id_stage = v.classifyExprStage(attr.args.items[0]);
+        if (id_stage != .const_expr) {
+            v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.expression_not_const, "@id value must be a const-expression");
+            continue;
+        }
+
+        const id_val = v.tryExtractIntValue(attr.args.items[0]) orelse continue;
         const ar = attrRange(&attr);
         if (id_val < 0 or id_val > 65535) {
             v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_override_id, v.fmtError("@id value {d} is out of range [0, 65535]", .{id_val}));
@@ -619,11 +718,11 @@ fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u8, r
     for (d.attributes.items) |attr| {
         if (std.mem.eql(u8, attr.name, "group")) {
             has_group = true;
-            if (attr.args.items.len > 0) group_val = tryExtractIntValue(attr.args.items[0]);
+            if (attr.args.items.len > 0) group_val = v.tryExtractIntValue(attr.args.items[0]);
         }
         if (std.mem.eql(u8, attr.name, "binding")) {
             has_binding = true;
-            if (attr.args.items.len > 0) binding_val = tryExtractIntValue(attr.args.items[0]);
+            if (attr.args.items.len > 0) binding_val = v.tryExtractIntValue(attr.args.items[0]);
         }
     }
     if (!has_group or !has_binding) {
@@ -805,6 +904,11 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
         }
     }
 
+    // WGSL spec: function parameter count must not exceed 255
+    if (fn_decl.parameters.items.len > 255) {
+        v.addErrorWithCodeR(v.symbolRange(fn_decl.name), Diagnostic.Code.invalid_entry_point, v.fmtError("function '{s}' has {d} parameters, exceeding the maximum of 255", .{ v.symbolName(fn_decl.name), fn_decl.parameters.items.len }));
+    }
+
     // Resolve return type
     if (fn_decl.return_type) |rt| {
         v.return_type = v.resolveType(rt);
@@ -824,8 +928,16 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
         if (param_type) |pt| {
             try v.setSymbolType(param.name, pt);
             try param_types.append(v.arena, pt);
+            // Pointer parameters: address space must be function or private by default
+            if (pt == .pointer) {
+                const space = pt.pointer.address_space;
+                if (space != .function and space != .private and space != .none) {
+                    v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_address_space, v.fmtError("pointer parameter '{s}' must use 'function' or 'private' address space, got '{s}'", .{ v.symbolName(param.name), space.string() }));
+                }
+            }
         }
         v.validateParameterAttributes(param);
+        v.checkShadowing(param.name);
     }
 
     // Register function type in symbol_types so calls can resolve it
@@ -895,6 +1007,13 @@ fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error
                     if (attr.args.items.len == 0) {
                         v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@workgroup_size requires at least one argument");
                     }
+                    // Each @workgroup_size arg must be a const or override expression
+                    for (attr.args.items) |arg| {
+                        const stage = v.classifyExprStage(arg);
+                        if (stage == .runtime_expr) {
+                            v.addErrorWithCodeR(exprRange(arg), Diagnostic.Code.expression_not_const, "@workgroup_size arguments must be const-expressions or override-expressions");
+                        }
+                    }
                 }
             }
             if (!has_workgroup_size) {
@@ -942,6 +1061,11 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                             try input_locations.put(v.arena, info.value, info.loc);
                         }
                     }
+                    // Validate @interpolate on fragment inputs
+                    if (v.current_stage == .fragment) {
+                        const mt = v.resolveType(member.typ);
+                        v.validateInterpolation(member.attributes, mt, v.symbolLoc(member.name));
+                    }
                 }
             }
         }
@@ -967,10 +1091,101 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                             try output_locations.put(v.arena, info.value, info.loc);
                         }
                     }
+                    // Validate @interpolate on vertex outputs
+                    if (v.current_stage == .vertex) {
+                        const mt = v.resolveType(member.typ);
+                        v.validateInterpolation(member.attributes, mt, v.symbolLoc(member.name));
+                    }
                 }
             }
         }
     }
+}
+
+/// Validate @interpolate attributes on entry point I/O members.
+/// Called from validateEntryPointIO for fragment inputs and vertex outputs.
+fn validateInterpolation(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attribute), member_type: ?Types.Type, member_loc: u32) void {
+    const has_location = hasAttr(attrs, "location");
+    if (!has_location) return;
+
+    const is_integer = if (member_type) |mt| Types.isInteger(mt) or isIntegerVector(mt) else false;
+
+    // Find @interpolate attribute
+    var interpolate_attr: ?*const Ast.Attribute = null;
+    for (attrs.items) |*attr| {
+        if (std.mem.eql(u8, attr.name, "interpolate")) {
+            interpolate_attr = attr;
+            break;
+        }
+    }
+
+    // Integer types at @location must have @interpolate(flat)
+    if (is_integer) {
+        if (interpolate_attr) |attr| {
+            if (attr.args.items.len > 0) {
+                const interp_type = exprIdent(attr.args.items[0]);
+                if (interp_type.len > 0 and !std.mem.eql(u8, interp_type, "flat")) {
+                    v.addErrorWithCodeR(attrRange(attr), Diagnostic.Code.invalid_interpolation, v.fmtError("integer-typed @location must use @interpolate(flat), got @interpolate({s})", .{interp_type}));
+                }
+            }
+        } else {
+            v.addErrorWithCodeR(.{ .start = member_loc, .end = member_loc +| 1 }, Diagnostic.Code.missing_interpolation, "integer-typed @location requires @interpolate(flat)");
+        }
+    }
+
+    // Validate interpolation type and sampling combinations
+    if (interpolate_attr) |attr| {
+        if (attr.args.items.len > 0) {
+            const interp_type = exprIdent(attr.args.items[0]);
+
+            // Validate interpolation type name
+            if (interp_type.len > 0 and !std.mem.eql(u8, interp_type, "flat") and
+                !std.mem.eql(u8, interp_type, "perspective") and
+                !std.mem.eql(u8, interp_type, "linear"))
+            {
+                v.addErrorWithCodeR(attrRange(attr), Diagnostic.Code.invalid_interpolation, v.fmtError("invalid interpolation type '{s}'; expected 'flat', 'perspective', or 'linear'", .{interp_type}));
+            }
+
+            // Validate sampling parameter
+            if (attr.args.items.len > 1) {
+                const sampling = exprIdent(attr.args.items[1]);
+                if (sampling.len > 0) {
+                    if (std.mem.eql(u8, interp_type, "flat")) {
+                        // flat: sampling must be 'first' or 'either'
+                        if (!std.mem.eql(u8, sampling, "first") and !std.mem.eql(u8, sampling, "either")) {
+                            v.addErrorWithCodeR(attrRange(attr), Diagnostic.Code.invalid_interpolation, v.fmtError("@interpolate(flat) sampling must be 'first' or 'either', got '{s}'", .{sampling}));
+                        }
+                    } else {
+                        // perspective/linear: sampling must be 'center', 'centroid', or 'sample'
+                        if (!std.mem.eql(u8, sampling, "center") and !std.mem.eql(u8, sampling, "centroid") and !std.mem.eql(u8, sampling, "sample")) {
+                            v.addErrorWithCodeR(attrRange(attr), Diagnostic.Code.invalid_interpolation, v.fmtError("@interpolate({s}) sampling must be 'center', 'centroid', or 'sample', got '{s}'", .{ interp_type, sampling }));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn hasAttr(attrs: std.ArrayListUnmanaged(Ast.Attribute), name: []const u8) bool {
+    for (attrs.items) |attr| {
+        if (std.mem.eql(u8, attr.name, name)) return true;
+    }
+    return false;
+}
+
+fn exprIdent(expr: Ast.Expr) []const u8 {
+    return switch (expr) {
+        .ident => |e| e.name,
+        else => "",
+    };
+}
+
+fn isIntegerVector(t: Types.Type) bool {
+    return switch (t) {
+        .vector => |ve| Types.isInteger(.{ .scalar = ve.element }),
+        else => false,
+    };
 }
 
 fn vertexHasPositionOutput(v: *Validator, fn_decl: *Ast.FunctionDecl) bool {
@@ -1019,7 +1234,7 @@ fn getLocationValue(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?i64 {
 fn getLocationInfo(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?struct { value: i64, loc: u32 } {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, "location") and attr.args.items.len > 0) {
-            if (tryExtractIntValue(attr.args.items[0])) |val| {
+            if (extractLiteralIntValue(attr.args.items[0])) |val| {
                 return .{ .value = val, .loc = attr.loc };
             }
         }
@@ -1182,7 +1397,19 @@ fn validateStmt(v: *Validator, stmt: Ast.Stmt) Allocator.Error!void {
     }
 }
 
+const max_stmt_depth: u32 = 127;
+
 fn validateCompoundStmt(v: *Validator, s: *Ast.CompoundStmt) Allocator.Error!void {
+    v.stmt_depth += 1;
+    defer v.stmt_depth -= 1;
+
+    if (v.stmt_depth > max_stmt_depth) {
+        // Report once at the first stmt in the block (if any)
+        const loc: LocRange = if (s.stmts.items.len > 0) v.getStmtRange(s.stmts.items[0]) else .{ .start = 0, .end = 1 };
+        v.addErrorWithCodeR(loc, Diagnostic.Code.nesting_too_deep, v.fmtError("statement nesting depth exceeds maximum of {d}", .{max_stmt_depth}));
+        return;
+    }
+
     var terminated = false;
     for (s.stmts.items) |stmt| {
         if (terminated) {
@@ -1347,8 +1574,12 @@ fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!void {
                     v.addErrorWithRelatedR(exprRange(sel), Diagnostic.Code.type_mismatch, v.fmtError("case selector '{s}' doesn't match switch type '{s}'", .{ sel_type.?.string(), selector_type.?.string() }), v.makeRelatedR(exprRange(s.expr), v.fmtError("switch expression has type '{s}'", .{selector_type.?.string()})));
                 }
             }
+            // Switch case selectors must be const-expressions
+            if (v.classifyExprStage(sel) != .const_expr) {
+                v.addErrorWithCodeR(exprRange(sel), Diagnostic.Code.expression_not_const, "case selector must be a const-expression");
+            }
             // Check for duplicate case selector values
-            if (tryExtractIntValue(sel)) |val| {
+            if (v.tryExtractIntValue(sel)) |val| {
                 if (seen_values.get(val) != null) {
                     v.addErrorWithCodeR(exprRange(sel), Diagnostic.Code.duplicate_case_selector, v.fmtError("duplicate case selector value '{d}'", .{val}));
                 } else {
@@ -1376,6 +1607,13 @@ fn validateLoopStmt(v: *Validator, s: *Ast.LoopStmt) Allocator.Error!void {
         v.in_continuing = true;
         try v.validateCompoundStmt(cont);
         v.in_continuing = prev_in_continuing;
+    }
+
+    // Detect infinite loops: body has no exit and continuing has no break_if
+    if (!blockHasExit(s.body) and !continuingHasBreakIf(s.continuing)) {
+        // Use the first statement's location if available, or a default
+        const loc = if (s.body.stmts.items.len > 0) v.getStmtRange(s.body.stmts.items[0]).start else 0;
+        v.addWarningR(.{ .start = loc, .end = loc +| 4 }, "loop has no exit path (break, return, or discard)");
     }
 
     v.in_loop = prev_in_loop;
@@ -1508,13 +1746,36 @@ fn validateIncrDecrStmt(v: *Validator, s: *Ast.IncrDecrStmt) Allocator.Error!voi
 
 fn validateCallStmt(v: *Validator, s: *Ast.CallStmt) Allocator.Error!void {
     _ = try v.checkCallExpr(s.call);
+
+    // @must_use: builtin functions with return values must not be called as statements
+    if (s.call.func) |func| {
+        switch (func) {
+            .ident => |ident| {
+                if (Builtins.lookup(ident.name)) |builtin_fn| {
+                    if (builtin_fn.must_use) {
+                        v.addErrorWithCodeR(exprRange(.{ .call = s.call }), Diagnostic.Code.must_use_ignored, v.fmtError("return value of '@must_use' builtin '{s}' must be used", .{ident.name}));
+                    }
+                }
+            },
+            else => {},
+        }
+    }
 }
 
 fn validateDeclStmt(v: *Validator, s: *Ast.DeclStmt) Allocator.Error!void {
     switch (s.decl) {
-        .@"const" => |d| try v.validateConstDecl(d),
-        .let => |d| try v.validateLetDecl(d),
-        .@"var" => |d| try v.validateVarDecl(d),
+        .@"const" => |d| {
+            try v.validateConstDecl(d);
+            v.checkShadowing(d.name);
+        },
+        .let => |d| {
+            try v.validateLetDecl(d);
+            v.checkShadowing(d.name);
+        },
+        .@"var" => |d| {
+            try v.validateVarDecl(d);
+            v.checkShadowing(d.name);
+        },
         .const_assert => |d| try v.validateConstAssert(d),
         else => {},
     }
@@ -1543,7 +1804,6 @@ fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!?Types.Type {
 }
 
 fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) ?Types.Type {
-    _ = v;
     const val = e.value;
     if (val.len == 0) return Types.AbstractInt;
 
@@ -1554,18 +1814,68 @@ fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) ?Types.Type {
 
     // Check for float indicators
     if (hasByteAny(val, ".eE")) {
-        if (val[val.len - 1] == 'h') return Types.F16;
+        v.checkFloatLiteralValue(e);
+        if (val[val.len - 1] == 'h') {
+            v.checkF16Enabled(e.loc);
+            return Types.F16;
+        }
         if (val[val.len - 1] == 'f') return Types.F32;
         return Types.AbstractFloat;
     }
 
     // Suffix-based typing
-    if (val[val.len - 1] == 'h') return Types.F16;
-    if (val[val.len - 1] == 'f') return Types.F32;
+    if (val[val.len - 1] == 'h') {
+        v.checkFloatLiteralValue(e);
+        v.checkF16Enabled(e.loc);
+        return Types.F16;
+    }
+    if (val[val.len - 1] == 'f') {
+        v.checkFloatLiteralValue(e);
+        return Types.F32;
+    }
     if (val[val.len - 1] == 'u') return Types.U32;
     if (val[val.len - 1] == 'i') return Types.I32;
 
     return Types.AbstractInt;
+}
+
+/// Warn when a local declaration or parameter shadows a module-scope name.
+fn checkShadowing(v: *Validator, sym_idx: Ast.SymbolIndex) void {
+    if (!sym_idx.isValid()) return;
+    const name = v.symbolName(sym_idx);
+    if (name.len == 0) return;
+    // Check against module-scope declarations
+    for (v.module.declarations.items) |decl| {
+        const decl_name_idx = decl.nameRef();
+        if (!decl_name_idx.isValid()) continue;
+        if (decl_name_idx.index() == sym_idx.index()) continue; // same symbol
+        if (std.mem.eql(u8, v.symbolName(decl_name_idx), name)) {
+            v.addWarningR(v.symbolRange(sym_idx), v.fmtError("'{s}' shadows a module-scope declaration", .{name}));
+            return;
+        }
+    }
+}
+
+fn checkF16Enabled(v: *Validator, loc: u32) void {
+    if (!v.enabled_features.contains("f16")) {
+        v.addErrorWithCodeR(.{ .start = loc, .end = loc +| 1 }, Diagnostic.Code.feature_not_enabled, "'f16' requires 'enable f16;'");
+    }
+}
+
+/// Validate that a float literal does not evaluate to NaN or infinity.
+fn checkFloatLiteralValue(v: *Validator, e: *Ast.LiteralExpr) void {
+    // Strip suffix for parsing
+    var parse_str = e.value;
+    if (parse_str.len > 0 and (parse_str[parse_str.len - 1] == 'f' or parse_str[parse_str.len - 1] == 'h')) {
+        parse_str = parse_str[0 .. parse_str.len - 1];
+    }
+    if (parse_str.len == 0) return;
+    const parsed = std.fmt.parseFloat(f64, parse_str) catch return;
+    if (std.math.isNan(parsed)) {
+        v.addErrorWithCodeR(.{ .start = e.loc, .end = e.loc +| @as(u32, @intCast(e.value.len)) }, Diagnostic.Code.invalid_float_literal, "float literal evaluates to NaN");
+    } else if (std.math.isInf(parsed)) {
+        v.addErrorWithCodeR(.{ .start = e.loc, .end = e.loc +| @as(u32, @intCast(e.value.len)) }, Diagnostic.Code.invalid_float_literal, "float literal evaluates to infinity");
+    }
 }
 
 fn checkIdent(v: *Validator, e: *Ast.IdentExpr) ?Types.Type {
@@ -1670,6 +1980,12 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
         .div => {
             const result = Types.divResultType(v.arena, left_type, right_type) catch return null;
             if (result) |r| {
+                // Const division by zero
+                if (v.tryExtractIntValue(e.right)) |rhs_val| {
+                    if (rhs_val == 0) {
+                        v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
+                    }
+                }
                 return r;
             }
             v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot divide '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
@@ -1680,6 +1996,12 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
             if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type)) {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '%' requires numeric operands, got '{s}' and '{s}'", .{ left_type.string(), right_type.string() }));
                 return null;
+            }
+            // Const modulo by zero
+            if (v.tryExtractIntValue(e.right)) |rhs_val| {
+                if (rhs_val == 0) {
+                    v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
+                }
             }
             return Types.commonType(left_type, right_type);
         },
@@ -1870,6 +2192,13 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
 fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr, callee_name: []const u8) Allocator.Error!?Types.Type {
     if (ident.ref.isValid()) {
         const idx = ident.ref.index();
+
+        // Entry points must not be called as functions (WGSL spec 8.6)
+        if (idx < v.module.symbols.items.len and v.module.symbols.items[idx].flags.is_entry_point) {
+            v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.entry_point_called, v.fmtError("entry point '{s}' cannot be the target of a function call", .{callee_name}));
+            return null;
+        }
+
         if (v.symbol_types.get(idx)) |sym_type| {
             switch (sym_type) {
                 .function => |fn_type| {
@@ -2311,6 +2640,21 @@ fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!?Types.Type {
     if (index_type) |it| {
         if (!Types.isInteger(it)) {
             v.addErrorWithCodeR(exprRange(.{ .index = e }), Diagnostic.Code.type_mismatch, v.fmtError("array index must be integer, got '{s}'", .{it.string()}));
+        }
+    }
+
+    // Out-of-bounds literal index detection
+    if (v.tryExtractIntValue(e.idx)) |idx_val| {
+        const bound: ?i64 = switch (base_type) {
+            .array => |a| if (a.count > 0) @as(i64, @intCast(a.count)) else null,
+            .vector => |ve| @as(i64, @intCast(ve.width)),
+            .matrix => |m| @as(i64, @intCast(m.cols)),
+            else => null,
+        };
+        if (bound) |b| {
+            if (idx_val < 0 or idx_val >= b) {
+                v.addErrorWithCodeR(exprRange(e.idx), Diagnostic.Code.index_out_of_bounds, v.fmtError("index {d} is out of bounds for '{s}' with {d} element{s}", .{ idx_val, base_type.string(), b, if (b != 1) "s" else "" }));
+            }
         }
     }
 
@@ -2890,8 +3234,13 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
             const elem_type = if (t.elem_type) |et| (v.resolveType(et) orelse return null) else return null;
             var count: u32 = 0;
             if (t.size) |size_expr| {
+                // Array element count must be a const-expression or override-expression
+                const size_stage = v.classifyExprStage(size_expr);
+                if (size_stage == .runtime_expr) {
+                    v.addErrorWithCodeR(exprRange(size_expr), Diagnostic.Code.expression_not_const, "array element count must be a const-expression or override-expression");
+                }
                 // Try to evaluate constant expression for array size
-                if (tryExtractIntValue(size_expr)) |val| {
+                if (v.tryExtractIntValue(size_expr)) |val| {
                     if (val <= 0) {
                         // Spec: array element count must be > 0
                         v.addErrorWithCodeR(exprRange(size_expr), Diagnostic.Code.invalid_array_count, "array element count must be greater than 0");
@@ -2968,7 +3317,12 @@ fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
     if (std.mem.eql(u8, name, "i32")) return Types.I32;
     if (std.mem.eql(u8, name, "u32")) return Types.U32;
     if (std.mem.eql(u8, name, "f32")) return Types.F32;
-    if (std.mem.eql(u8, name, "f16")) return Types.F16;
+    if (std.mem.eql(u8, name, "f16")) {
+        if (!v.enabled_features.contains("f16")) {
+            v.addErrorWithCodeR(.{ .start = 0, .end = 1 }, Diagnostic.Code.feature_not_enabled, "'f16' requires 'enable f16;'");
+        }
+        return Types.F16;
+    }
     if (std.mem.eql(u8, name, "sampler")) {
         const s = v.arena.create(Types.Sampler) catch return null;
         s.* = .{ .comparison = false };
@@ -3375,6 +3729,16 @@ fn symbolName(v: *Validator, sym_idx: Ast.SymbolIndex) []const u8 {
 fn setSymbolType(v: *Validator, sym_idx: Ast.SymbolIndex, typ: ?Types.Type) Allocator.Error!void {
     if (!sym_idx.isValid()) return;
     if (typ) |t| {
+        // Defensive check: abstract types must not survive into var/let storage
+        if (!t.isConcrete()) {
+            const idx = sym_idx.index();
+            if (idx < v.module.symbols.items.len) {
+                const kind = v.module.symbols.items[idx].kind;
+                if (kind == .@"var" or kind == .let) {
+                    v.addWarningR(v.symbolRange(sym_idx), v.fmtError("'{s}' has abstract type '{s}' which will be concretized", .{ v.symbolName(sym_idx), t.string() }));
+                }
+            }
+        }
         try v.symbol_types.put(v.arena, sym_idx.index(), t);
     }
 }
@@ -3476,9 +3840,9 @@ fn attrRange(attr: *const Ast.Attribute) LocRange {
     return .{ .start = attr.loc, .end = attr.loc +| 1 +| @as(u32, @intCast(attr.name.len)) };
 }
 
-/// Try to extract a constant integer value from a literal expression.
-/// Iteratively unwraps paren and unary-negate to reach the literal.
-fn tryExtractIntValue(expr: Ast.Expr) ?i64 {
+/// Try to extract a constant integer value from an expression.
+/// Handles literals, paren/negate wrappers, and const-declared identifiers.
+fn tryExtractIntValue(v: *const Validator, expr: Ast.Expr) ?i64 {
     var current = expr;
     var negate = false;
 
@@ -3489,6 +3853,46 @@ fn tryExtractIntValue(expr: Ast.Expr) ?i64 {
             .literal => |lit| {
                 if (lit.value.len == 0) return if (negate) @as(i64, 0) else @as(i64, 0);
                 // Strip integer suffix (e.g., "1i", "2u")
+                var val_str = lit.value;
+                if (val_str.len > 0 and (val_str[val_str.len - 1] == 'i' or val_str[val_str.len - 1] == 'u')) {
+                    val_str = val_str[0 .. val_str.len - 1];
+                }
+                const val = std.fmt.parseInt(i64, val_str, 0) catch return null;
+                return if (negate) -val else val;
+            },
+            .ident => |ident| {
+                // Resolve const-declared identifiers to their evaluated values
+                if (ident.ref.isValid()) {
+                    if (v.const_values.get(ident.ref.index())) |val| {
+                        return if (negate) -val else val;
+                    }
+                }
+                return null;
+            },
+            .unary => |u| {
+                if (u.op == .neg) {
+                    negate = !negate;
+                    current = u.operand;
+                } else {
+                    return null;
+                }
+            },
+            .paren => |p| current = p.expr,
+            else => return null,
+        }
+    }
+    return null;
+}
+
+/// Extract a constant integer from a literal expression (no const lookup).
+/// Used by freestanding helpers that don't have access to the Validator.
+fn extractLiteralIntValue(expr: Ast.Expr) ?i64 {
+    var current = expr;
+    var negate = false;
+    for (0..32) |_| {
+        switch (current) {
+            .literal => |lit| {
+                if (lit.value.len == 0) return @as(i64, 0);
                 var val_str = lit.value;
                 if (val_str.len > 0 and (val_str[val_str.len - 1] == 'i' or val_str[val_str.len - 1] == 'u')) {
                     val_str = val_str[0 .. val_str.len - 1];
@@ -3509,6 +3913,147 @@ fn tryExtractIntValue(expr: Ast.Expr) ?i64 {
         }
     }
     return null;
+}
+
+/// Expression evaluation stage per WGSL spec sections 6.7-6.9.
+const ExprStage = enum(u2) {
+    const_expr, // Evaluable at shader creation time from const declarations
+    override_expr, // Evaluable at pipeline creation time (references overrides)
+    runtime_expr, // Only evaluable at runtime
+};
+
+/// Classify the evaluation stage of an expression.
+/// const_expr < override_expr < runtime_expr; parent = max(children).
+fn classifyExprStage(v: *const Validator, expr: Ast.Expr) ExprStage {
+    return v.classifyExprStageDepth(expr, 0);
+}
+
+fn classifyExprStageDepth(v: *const Validator, expr: Ast.Expr, depth: u32) ExprStage {
+    if (depth > 64) return .runtime_expr;
+    switch (expr) {
+        .literal => return .const_expr,
+        .ident => |e| {
+            if (e.ref.isValid()) {
+                const idx = e.ref.index();
+                if (idx < v.module.symbols.items.len) {
+                    const kind = v.module.symbols.items[idx].kind;
+                    return switch (kind) {
+                        .@"const" => .const_expr,
+                        .override => .override_expr,
+                        .let, .@"var", .parameter => .runtime_expr,
+                        .@"struct", .alias => .const_expr,
+                        .function, .builtin => .const_expr,
+                        else => .runtime_expr,
+                    };
+                }
+            }
+            // Attribute args may not have resolved refs — look up by name
+            return v.classifyIdentByName(e.name);
+        },
+        .binary => |e| {
+            const left = v.classifyExprStageDepth(e.left, depth + 1);
+            const right = v.classifyExprStageDepth(e.right, depth + 1);
+            return @enumFromInt(@max(@intFromEnum(left), @intFromEnum(right)));
+        },
+        .unary => |e| return v.classifyExprStageDepth(e.operand, depth + 1),
+        .paren => |e| return v.classifyExprStageDepth(e.expr, depth + 1),
+        .call => |e| {
+            // Type constructors with all-const args are const
+            // Builtin const_eval functions with all-const args are const
+            var max_stage: ExprStage = .const_expr;
+            for (e.args.items) |arg| {
+                const arg_stage = v.classifyExprStageDepth(arg, depth + 1);
+                max_stage = @enumFromInt(@max(@intFromEnum(max_stage), @intFromEnum(arg_stage)));
+            }
+            // Check if callee is a const-evaluable builtin
+            if (e.func) |func| {
+                switch (func) {
+                    .ident => |ident| {
+                        if (Builtins.lookup(ident.name)) |bi| {
+                            if (bi.stage != .const_eval) {
+                                max_stage = @enumFromInt(@max(@intFromEnum(max_stage), @intFromEnum(ExprStage.runtime_expr)));
+                            }
+                        }
+                    },
+                    else => {},
+                }
+            }
+            return max_stage;
+        },
+        .index => |e| {
+            const base = v.classifyExprStageDepth(e.base, depth + 1);
+            const idx_stage = v.classifyExprStageDepth(e.idx, depth + 1);
+            return @enumFromInt(@max(@intFromEnum(base), @intFromEnum(idx_stage)));
+        },
+        .member => |e| return v.classifyExprStageDepth(e.base, depth + 1),
+    }
+}
+
+/// Check if a compound statement block contains any exit (break, return, discard).
+fn blockHasExit(block: *Ast.CompoundStmt) bool {
+    for (block.stmts.items) |stmt| {
+        if (stmtHasExit(stmt)) return true;
+    }
+    return false;
+}
+
+/// Recursively check if a statement contains a break, return, or discard.
+fn stmtHasExit(stmt: Ast.Stmt) bool {
+    switch (stmt) {
+        .@"break", .@"return", .discard => return true,
+        .compound => |s| return blockHasExit(s),
+        .@"if" => |s| {
+            if (blockHasExit(s.body)) return true;
+            if (s.else_branch) |eb| return stmtHasExit(eb);
+            return false;
+        },
+        .@"switch" => |s| {
+            for (s.cases.items) |c| {
+                if (blockHasExit(c.body)) return true;
+            }
+            return false;
+        },
+        .loop => |s| return blockHasExit(s.body),
+        .@"for" => |s| return blockHasExit(s.body),
+        .@"while" => |s| return blockHasExit(s.body),
+        else => return false,
+    }
+}
+
+/// Check if a continuing block has a break_if statement.
+fn continuingHasBreakIf(continuing: ?*Ast.CompoundStmt) bool {
+    const cont = continuing orelse return false;
+    for (cont.stmts.items) |stmt| {
+        switch (stmt) {
+            .break_if => return true,
+            else => {},
+        }
+    }
+    return false;
+}
+
+/// Look up an identifier by name in module-scope declarations to classify its stage.
+/// Used when the ident ref is unresolved (e.g., in attribute arguments).
+fn classifyIdentByName(v: *const Validator, name: []const u8) ExprStage {
+    for (v.module.declarations.items) |decl| {
+        const decl_name_idx = decl.nameRef();
+        if (!decl_name_idx.isValid()) continue;
+        const idx = decl_name_idx.index();
+        if (idx >= v.module.symbols.items.len) continue;
+        if (std.mem.eql(u8, v.module.symbols.items[idx].original_name, name)) {
+            return switch (v.module.symbols.items[idx].kind) {
+                .@"const" => .const_expr,
+                .override => .override_expr,
+                .@"struct", .alias => .const_expr,
+                .function => .const_expr,
+                else => .runtime_expr,
+            };
+        }
+    }
+    // Check if it's a builtin type name
+    if (std.mem.eql(u8, name, "true") or std.mem.eql(u8, name, "false"))
+        return .const_expr;
+    return .runtime_expr;
 }
 
 /// Check if a byte slice contains any of the given bytes.
