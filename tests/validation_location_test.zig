@@ -1134,6 +1134,229 @@ test "did-you-mean prefers vec2i for 2-arg call" {
 }
 
 // =========================================================================
+// Type constructor arity validation
+// =========================================================================
+
+test "vec2f rejects 3 scalar args and suggests vec3f" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec2f(0.9, 0.8, 0.7);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec3f'");
+}
+
+test "vec2f rejects 4 scalar args and suggests vec4f" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec2f(0.9, 0.8, 0.7, 0.6);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec4f'");
+}
+
+test "vec3f rejects 4 scalar args and suggests vec4f" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec3f(0.9, 0.8, 0.7, 0.6);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec4f'");
+}
+
+test "vec2i rejects 3 args and suggests vec3i" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec2i(1, 2, 3);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec3i'");
+}
+
+test "vec4f rejects 3 scalar args and suggests vec3f" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec4f(0.9, 0.8, 0.7);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec3f'");
+}
+
+test "vec3f rejects 2 scalar args and suggests vec2f" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec3f(0.9, 0.8);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec2f'");
+}
+
+test "vec4f rejects 2 scalar args and suggests vec2f" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let a = vec4f(0.9, 0.8);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec2f'");
+}
+
+test "vec3f rejects vec2+vec2 (4 components) and suggests vec4f" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let v = vec2f(1.0, 2.0);
+        \\    let a = vec3f(v, v);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec4f'");
+}
+
+test "vec4f rejects vec2+scalar (3 components) and suggests vec3f" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let v = vec2f(1.0, 2.0);
+        \\    let a = vec4f(v, 0.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec3f'");
+}
+
+test "vec3f rejects single vec2 arg (width mismatch)" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let v = vec2f(1.0, 2.0);
+        \\    let a = vec3f(v);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec2f'");
+}
+
+test "vec2f rejects single vec4 arg (width mismatch)" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let v = vec4f(1.0, 2.0, 3.0, 4.0);
+        \\    let a = vec2f(v);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec4f'");
+}
+
+test "vec2f rejects 6 components (no suggestion)" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let v = vec3f(1.0, 2.0, 3.0);
+        \\    let a = vec2f(v, v);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "requires 2 components, got 6");
+    // No valid vec type for 6 components, so no "did you mean"
+    const diags = result.diagnostics.diagnostics.items;
+    for (diags) |d| {
+        if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "vec2f") != null) {
+            try std.testing.expect(std.mem.indexOf(u8, d.message, "did you mean") == null);
+            break;
+        }
+    }
+}
+
+test "mat2x2f rejects 3 scalar args" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let m = mat2x2f(1.0, 2.0, 3.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "scalar constructor requires 4 values, got 3");
+}
+
+test "mat2x2f rejects 5 scalar args" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let m = mat2x2f(1.0, 2.0, 3.0, 4.0, 5.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "scalar constructor requires 4 values, got 5");
+}
+
+test "mat2x2f rejects 3 column vectors" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let v = vec2f(1.0, 0.0);
+        \\    let m = mat2x2f(v, v, v);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "column constructor requires 2 vectors, got 3");
+}
+
+test "f32 rejects 2 arguments" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let x = f32(1.0, 2.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 13, "takes at most 1 argument, got 2");
+}
+
+test "struct constructor rejects wrong arg count" {
+    const source =
+        \\struct MyData { x: f32, y: f32, z: f32 }
+        \\@fragment
+        \\fn main() {
+        \\    let d = MyData(1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "expects 3 arguments, got 1");
+}
+
+// =========================================================================
 // "Did you mean?" — Swizzle component hints
 // =========================================================================
 

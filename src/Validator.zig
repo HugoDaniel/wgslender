@@ -1797,7 +1797,7 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
 
     // Check if it's a type constructor
     if (v.lookupType(callee_name)) |t| {
-        return v.checkTypeConstructor(e, t, constructor_arg_types.items);
+        return v.checkTypeConstructor(e, callee_name, t, constructor_arg_types.items);
     }
 
     // Check if it's a user-defined function
@@ -2060,49 +2060,150 @@ const vec4_u32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_u32
 const vec4_i32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_i32_ptr };
 const vec2_f32_singleton = Types.Vector{ .width = 2, .element = Types.scalar_f32_ptr };
 
-fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, t: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
+fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
     const arg_count = e.args.items.len;
+    const range = exprRange(.{ .call = e });
 
     switch (t) {
         .scalar => {
-            if (arg_count > 1) return null;
-            // Scalar constructor: single arg must be a scalar type
-            if (arg_count == 1) {
-                if (arg_types.len > 0) {
-                    if (arg_types[0]) |at| {
-                        if (at != .scalar) {
-                            v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
-                            return null;
-                        }
+            if (arg_count > 1) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor takes at most 1 argument, got {d}", .{ callee_name, arg_count }));
+                return null;
+            }
+            if (arg_count == 1 and arg_types.len > 0) {
+                if (arg_types[0]) |at| {
+                    if (at != .scalar) {
+                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
+                        return null;
                     }
                 }
             }
         },
         .vector => |ve| {
-            // Single vector arg: element types must be scalar-compatible
-            if (arg_count == 1 and arg_types.len > 0) {
-                if (arg_types[0]) |at| {
-                    if (at == .vector) {
-                        const src_elem = at.vector.element;
-                        const dst_elem = ve.element;
-                        // Both must be numeric or both bool
-                        if (src_elem.isNumeric() != dst_elem.isNumeric()) {
-                            v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
+            const width: usize = ve.width;
+
+            // 0 args: zero-value constructor
+            if (arg_count == 0) return t;
+
+            // 1 arg: splat (scalar) or copy/convert (matching-width vector)
+            if (arg_count == 1) {
+                if (arg_types.len > 0) {
+                    if (arg_types[0]) |at| {
+                        if (at == .scalar) return t; // splat
+                        if (at == .vector) {
+                            const src_width: usize = at.vector.width;
+                            if (src_width != width) {
+                                if (v.suggestVecForComponents(callee_name, src_width)) |suggestion| {
+                                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, width, src_width, suggestion }));
+                                } else {
+                                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, width, src_width }));
+                                }
+                                return null;
+                            }
+                            // Same width — check element type compatibility
+                            const src_elem = at.vector.element;
+                            const dst_elem = ve.element;
+                            if (src_elem.isNumeric() != dst_elem.isNumeric()) {
+                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
+                                return null;
+                            }
+                            return t;
+                        }
+                    }
+                }
+                return t; // unknown arg type, skip validation
+            }
+
+            // Multiple args: count total components (scalars + vector widths)
+            var total: usize = 0;
+            for (arg_types) |at_opt| {
+                const at = at_opt orelse return t; // unknown type, skip
+                if (at == .scalar) {
+                    total += 1;
+                } else if (at == .vector) {
+                    total += at.vector.width;
+                } else {
+                    return t; // non-scalar/vector arg, skip validation
+                }
+            }
+
+            if (total != width) {
+                if (v.suggestVecForComponents(callee_name, total)) |suggestion| {
+                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, width, total, suggestion }));
+                } else {
+                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, width, total }));
+                }
+                return null;
+            }
+        },
+        .matrix => |mt| {
+            const cols: usize = mt.cols;
+            const rows: usize = mt.rows;
+
+            // 0 args: zero-value constructor
+            if (arg_count == 0) return t;
+
+            // 1 arg: copy/convert (matching-dimension matrix)
+            if (arg_count == 1) {
+                if (arg_types.len > 0) {
+                    if (arg_types[0]) |at| {
+                        if (at == .matrix) {
+                            if (at.matrix.cols != mt.cols or at.matrix.rows != mt.rows) {
+                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
+                                return null;
+                            }
+                        }
+                    }
+                }
+                return t;
+            }
+
+            // Classify args: all scalars or all vectors
+            var all_scalar = true;
+            var all_vector = true;
+            for (arg_types) |at_opt| {
+                const at = at_opt orelse return t; // unknown type, skip
+                if (at != .scalar) all_scalar = false;
+                if (at != .vector) all_vector = false;
+            }
+
+            if (all_scalar) {
+                // C*R scalars required
+                if (arg_count != cols * rows) {
+                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' scalar constructor requires {d} values, got {d}", .{ callee_name, cols * rows, arg_count }));
+                    return null;
+                }
+            } else if (all_vector) {
+                // C column vectors of height R required
+                if (arg_count != cols) {
+                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' column constructor requires {d} vectors, got {d}", .{ callee_name, cols, arg_count }));
+                    return null;
+                }
+                // Check each column vector has height == rows
+                for (arg_types) |at_opt| {
+                    if (at_opt) |at| {
+                        if (at == .vector and at.vector.width != rows) {
+                            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' column vectors must have {d} components, got {d}", .{ callee_name, rows, at.vector.width }));
                             return null;
                         }
                     }
                 }
+            } else {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' constructor requires all scalar values or all column vectors, not a mix", .{callee_name}));
+                return null;
             }
         },
         .@"struct" => |st| {
-            if (arg_count != 0 and arg_count != st.fields.len) return null;
-            // Check each field type matches
+            if (arg_count != 0 and arg_count != st.fields.len) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor expects {d} arguments, got {d}", .{ callee_name, st.fields.len, arg_count }));
+                return null;
+            }
             if (arg_count == st.fields.len) {
                 for (st.fields, 0..) |field, i| {
                     if (i < arg_types.len) {
                         if (arg_types[i]) |at| {
                             if (!at.eql(field.typ) and !Types.canConvertTo(at, field.typ)) {
-                                v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' for field '{s}'", .{ at.string(), field.typ.string(), field.name }));
+                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' for field '{s}'", .{ at.string(), field.typ.string(), field.name }));
                                 return null;
                             }
                         }
@@ -2113,6 +2214,17 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, t: Types.Type, arg_type
         else => {},
     }
     return t;
+}
+
+/// Suggest a vector type name matching `total_components` by replacing the
+/// width digit in `callee_name` (e.g. "vec2f" + 3 components → "vec3f").
+fn suggestVecForComponents(v: *Validator, callee_name: []const u8, total_components: usize) ?[]const u8 {
+    if (total_components < 2 or total_components > 4) return null;
+    if (callee_name.len < 4 or !std.mem.startsWith(u8, callee_name, "vec")) return null;
+    const buf = v.arena.alloc(u8, callee_name.len) catch return null;
+    @memcpy(buf, callee_name);
+    buf[3] = @as(u8, @intCast('0' + total_components));
+    return buf;
 }
 
 fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!?Types.Type {

@@ -11,6 +11,8 @@ pub const @"types/entry_point_fragment" = @embedFile("testdata/validation/types/
 pub const @"types/switch_valid" = @embedFile("testdata/validation/types/switch_valid.wgsl");
 pub const @"types/matrix_valid" = @embedFile("testdata/validation/types/matrix_valid.wgsl");
 pub const @"types/incr_decr_valid" = @embedFile("testdata/validation/types/incr_decr_valid.wgsl");
+pub const @"types/vector_constructors_valid" = @embedFile("testdata/validation/types/vector_constructors_valid.wgsl");
+pub const @"types/matrix_constructors_valid" = @embedFile("testdata/validation/types/matrix_constructors_valid.wgsl");
 
 // --- declarations/ ---
 pub const @"declarations/let_basic" = @embedFile("testdata/validation/declarations/let_basic.wgsl");
@@ -52,6 +54,9 @@ pub const @"errors/calls/too_many_args" = @embedFile("testdata/validation/errors
 pub const @"errors/calls/arg_type_mismatch" = @embedFile("testdata/validation/errors/calls/arg_type_mismatch.wgsl");
 pub const @"errors/calls/too_few_args" = @embedFile("testdata/validation/errors/calls/too_few_args.wgsl");
 pub const @"errors/calls/not_callable" = @embedFile("testdata/validation/errors/calls/not_callable.wgsl");
+pub const @"errors/calls/vec_constructor_wrong_count" = @embedFile("testdata/validation/errors/calls/vec_constructor_wrong_count.wgsl");
+pub const @"errors/calls/mat_constructor_wrong_count" = @embedFile("testdata/validation/errors/calls/mat_constructor_wrong_count.wgsl");
+pub const @"errors/calls/scalar_constructor_too_many" = @embedFile("testdata/validation/errors/calls/scalar_constructor_too_many.wgsl");
 
 // --- errors/types/ ---
 pub const @"errors/types/let_initializer_mismatch" = @embedFile("testdata/validation/errors/types/let_initializer_mismatch.wgsl");

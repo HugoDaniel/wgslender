@@ -259,6 +259,18 @@ test "validation: types/incr_decr_valid" {
     try runValidationTest(arena.allocator(), validation_data.@"types/incr_decr_valid");
 }
 
+test "validation: types/vector_constructors_valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/vector_constructors_valid");
+}
+
+test "validation: types/matrix_constructors_valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/matrix_constructors_valid");
+}
+
 // --- declarations/ (4 + 3 new files) ---
 
 test "validation: declarations/let_basic" {
@@ -443,6 +455,24 @@ test "validation: errors/calls/not_callable" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try runValidationTest(arena.allocator(), validation_data.@"errors/calls/not_callable");
+}
+
+test "validation: errors/calls/vec_constructor_wrong_count" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/calls/vec_constructor_wrong_count");
+}
+
+test "validation: errors/calls/mat_constructor_wrong_count" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/calls/mat_constructor_wrong_count");
+}
+
+test "validation: errors/calls/scalar_constructor_too_many" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/calls/scalar_constructor_too_many");
 }
 
 // --- errors/types/ (7 files) ---
