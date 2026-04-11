@@ -65,6 +65,22 @@ pub fn build(b: *std.Build) void {
     const wasm_step = b.step("wasm", "Build WASM binary");
     wasm_step.dependOn(&install_wasm.step);
 
+    // C static library
+    const lib = b.addLibrary(.{
+        .name = "wgslender",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const install_lib = b.addInstallArtifact(lib, .{});
+    const install_header = b.addInstallFile(b.path("include/wgslender.h"), "include/wgslender.h");
+    const lib_step = b.step("lib", "Build C static library (libwgslender.a)");
+    lib_step.dependOn(&install_lib.step);
+    lib_step.dependOn(&install_header.step);
+
     // LSP server (native)
     const lsp_kit_dep = b.dependency("lsp_kit", .{
         .target = target,

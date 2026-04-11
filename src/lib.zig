@@ -241,7 +241,7 @@ fn makeSentinelSource(
 }
 
 fn copyToPageAllocator(data: []const u8) ?[]u8 {
-    const out = std.heap.page_alloc.alloc(u8, data.len) catch return null;
+    const out = std.heap.page_allocator.alloc(u8, data.len) catch return null;
     @memcpy(out, data);
     return out;
 }
