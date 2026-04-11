@@ -91,11 +91,14 @@ pub fn minify(arena: std.mem.Allocator, source: [:0]const u8, options: Options) 
 
     // 2. Parse
     var parser = try Parser.init(arena, source, tokens);
-    const module = parser.parse() catch {
-        result.code = source;
-        result.minified_size = source.len;
-        result.errors = parser.errors.items;
-        return result;
+    const module = parser.parse() catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            result.code = source;
+            result.minified_size = source.len;
+            result.errors = parser.errors.items;
+            return result;
+        },
     };
 
     if (parser.errors.items.len > 0) {
@@ -180,14 +183,17 @@ pub fn minifyAndReflect(arena: std.mem.Allocator, source: [:0]const u8, options:
 
     // 2. Parse
     var parser = try Parser.init(arena, source, tokens);
-    const module = parser.parse() catch {
-        result.minify.code = source;
-        result.minify.minified_size = source.len;
-        result.minify.errors = parser.errors.items;
-        for (parser.errors.items) |err| {
-            try result.reflect.errors.append(arena, err.message);
-        }
-        return result;
+    const module = parser.parse() catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            result.minify.code = source;
+            result.minify.minified_size = source.len;
+            result.minify.errors = parser.errors.items;
+            for (parser.errors.items) |err| {
+                try result.reflect.errors.append(arena, err.message);
+            }
+            return result;
+        },
     };
 
     if (parser.errors.items.len > 0) {

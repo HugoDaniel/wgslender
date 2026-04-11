@@ -165,6 +165,12 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
     // Code action integration tests
     _ = addTestStep(b, test_step, "tests/code_action_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // OOM exhaustive tests
+    _ = addTestStep(b, test_step, "tests/oom_test.zig", target, optimize, &.{w});
+    // Fuzz tests
+    _ = addTestStep(b, test_step, "tests/fuzz_test.zig", target, optimize, &.{w});
+    // Determinism tests
+    _ = addTestStep(b, test_step, "tests/determinism_test.zig", target, optimize, &.{w});
 }
 
 fn addTestStep(

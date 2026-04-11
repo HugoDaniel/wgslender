@@ -88,19 +88,22 @@ pub fn validateWithOptions(gpa: Allocator, source: [:0]const u8, options: Valida
     const alloc = arena.allocator();
     const tokens = try Lexer.tokenize(alloc, source);
     var parser = try Parser.init(alloc, source, tokens);
-    const module = parser.parse() catch {
-        const diags = try alloc.create(Diagnostic);
-        diags.* = try Diagnostic.init(alloc, source);
-        diags.line_offset = options.line_offset;
-        for (parser.errors.items) |err| {
-            const end = if (err.end > err.pos) err.end else err.pos + 1;
-            if (err.code.len > 0) {
-                diags.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
-            } else {
-                diags.addErrorRange(alloc, err.pos, end, err.message);
+    const module = parser.parse() catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            const diags = try alloc.create(Diagnostic);
+            diags.* = try Diagnostic.init(alloc, source);
+            diags.line_offset = options.line_offset;
+            for (parser.errors.items) |err| {
+                const end = if (err.end > err.pos) err.end else err.pos + 1;
+                if (err.code.len > 0) {
+                    diags.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
+                } else {
+                    diags.addErrorRange(alloc, err.pos, end, err.message);
+                }
             }
-        }
-        return .{ .valid = false, .diagnostics = diags, ._arena = arena };
+            return .{ .valid = false, .diagnostics = diags, ._arena = arena };
+        },
     };
     var result = try Validator.validate(alloc, module, options);
     // Inject parser errors (e.g. reserved word usage) into validation diagnostics
@@ -130,11 +133,14 @@ pub fn reflect(gpa: Allocator, source: [:0]const u8) !Reflect.ReflectResult {
     const alloc = arena.allocator();
     const tokens = try Lexer.tokenize(alloc, source);
     var parser = try Parser.init(alloc, source, tokens);
-    const module = parser.parse() catch {
-        var result = Reflect.ReflectResult{};
-        try result.errors.append(alloc, "parse error");
-        result._arena = arena;
-        return result;
+    const module = parser.parse() catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            var result = Reflect.ReflectResult{};
+            try result.errors.append(alloc, "parse error");
+            result._arena = arena;
+            return result;
+        },
     };
     var result = try Reflect.reflect(alloc, module);
     result._arena = arena;

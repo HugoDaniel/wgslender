@@ -453,6 +453,7 @@ fn addAllToMap(map: *std.StringHashMapUnmanaged(void), arena: std.mem.Allocator,
 /// (keywords, reserved words, builtin types, etc.).
 pub fn computeReservedNames(arena: std.mem.Allocator) Allocator.Error!std.StringHashMapUnmanaged(void) {
     var reserved = std.StringHashMapUnmanaged(void){};
+    errdefer reserved.deinit(arena);
     try addAllToMap(&reserved, arena, &reserved_keywords);
     try addAllToMap(&reserved, arena, &reserved_words);
     try reserved.put(arena, "_", {});
