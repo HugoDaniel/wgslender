@@ -40,11 +40,6 @@ fn mangleExt(allocator: std.mem.Allocator, input: [:0]const u8) ![]const u8 {
     return r.code;
 }
 
-fn a(comptime init_fn: anytype) std.heap.ArenaAllocator {
-    _ = init_fn;
-    return std.heap.ArenaAllocator.init(std.testing.allocator);
-}
-
 // =========================================================================
 // snapshots_basic.txt (whitespace-only)
 // =========================================================================
