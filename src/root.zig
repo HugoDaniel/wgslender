@@ -121,6 +121,62 @@ pub fn validateWithOptions(gpa: Allocator, source: [:0]const u8, options: Valida
 }
 
 // =========================================================================
+// Analyze API (validation + retained semantic state for LSP)
+// =========================================================================
+
+/// Analyze WGSL source with default options, retaining semantic state.
+/// Returns resolved types, struct layouts, and the full AST module.
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn analyze(gpa: Allocator, source: [:0]const u8) !Validator.AnalysisResult {
+    return analyzeWithOptions(gpa, source, .{});
+}
+
+/// Analyze WGSL source with custom options, retaining semantic state.
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn analyzeWithOptions(gpa: Allocator, source: [:0]const u8, options: Validator.Options) !Validator.AnalysisResult {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    errdefer arena.deinit();
+
+    const alloc = arena.allocator();
+    const tokens = try Lexer.tokenize(alloc, source);
+    var parser = try Parser.init(alloc, source, tokens);
+    const module = parser.parse() catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => {
+            const diags = try alloc.create(Diagnostic);
+            diags.* = try Diagnostic.init(alloc, source);
+            diags.line_offset = options.line_offset;
+            for (parser.errors.items) |err| {
+                const end = if (err.end > err.pos) err.end else err.pos + 1;
+                if (err.code.len > 0) {
+                    diags.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
+                } else {
+                    diags.addErrorRange(alloc, err.pos, end, err.message);
+                }
+            }
+            return .{
+                .valid = false,
+                .diagnostics = diags,
+                ._arena = arena,
+            };
+        },
+    };
+    var result = try Validator.analyze(alloc, module, options);
+    // Inject parser errors (e.g. reserved word usage) into analysis diagnostics
+    for (parser.errors.items) |err| {
+        const end = if (err.end > err.pos) err.end else err.pos + 1;
+        if (err.code.len > 0) {
+            result.diagnostics.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
+        } else {
+            result.diagnostics.addErrorRange(alloc, err.pos, end, err.message);
+        }
+        result.valid = false;
+    }
+    result._arena = arena;
+    return result;
+}
+
+// =========================================================================
 // Reflect API
 // =========================================================================
 
@@ -234,6 +290,69 @@ test "reflect: propagates OOM" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const result = reflect(failing.allocator(), "@group(0) @binding(0) var<uniform> u: f32;");
     try std.testing.expect(result == error.OutOfMemory);
+}
+
+test "analyze: returns symbol_types for valid shader" {
+    const a = std.testing.allocator;
+    const source: [:0]const u8 = "fn f() { let x: f32 = 1.0; let y: i32 = 2; }";
+    var result = try analyzeWithOptions(a, source, .{});
+    defer result.deinit(a);
+    try std.testing.expect(result.valid);
+    // The validator should have resolved types for the declared symbols
+    try std.testing.expect(result.symbol_types.count() > 0);
+}
+
+test "analyze: returns struct_types" {
+    const a = std.testing.allocator;
+    const source: [:0]const u8 = "struct MyStruct { x: f32, y: f32 }";
+    var result = try analyzeWithOptions(a, source, .{});
+    defer result.deinit(a);
+    try std.testing.expect(result.struct_types.get("MyStruct") != null);
+}
+
+test "analyze: deinit frees all memory" {
+    const a = std.testing.allocator;
+    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
+    var result = try analyzeWithOptions(a, source, .{});
+    defer result.deinit(a);
+    try std.testing.expect(result.valid);
+    try std.testing.expect(result.module != null);
+    try std.testing.expect(result.module.?.declarations.items.len > 0);
+}
+
+test "analyze: parse error returns partial result" {
+    const a = std.testing.allocator;
+    const source: [:0]const u8 = "fn { invalid }";
+    var result = try analyzeWithOptions(a, source, .{});
+    defer result.deinit(a);
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(result.diagnostics.diagnostics.items.len > 0);
+}
+
+test "analyze: propagates OOM" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const result = analyzeWithOptions(failing.allocator(), "@compute @workgroup_size(1) fn main() {}", .{});
+    try std.testing.expect(result == error.OutOfMemory);
+}
+
+test "analyze: module symbols accessible" {
+    const a = std.testing.allocator;
+    const source: [:0]const u8 = "const MY_CONST: f32 = 3.14; fn my_func() -> f32 { return MY_CONST; }";
+    var result = try analyzeWithOptions(a, source, .{});
+    defer result.deinit(a);
+    try std.testing.expect(result.valid);
+    const module = result.module orelse return error.TestUnexpectedResult;
+    // Should have symbols for both declarations
+    try std.testing.expect(module.symbols.items.len >= 2);
+}
+
+test "analyze: const_values populated" {
+    const a = std.testing.allocator;
+    const source: [:0]const u8 = "const N: i32 = 42;";
+    var result = try analyzeWithOptions(a, source, .{});
+    defer result.deinit(a);
+    // The const value 42 should be tracked
+    try std.testing.expect(result.const_values.count() > 0);
 }
 
 // Re-export tests from all modules

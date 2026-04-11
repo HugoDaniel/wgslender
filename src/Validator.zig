@@ -72,6 +72,28 @@ pub const Result = struct {
     }
 };
 
+/// Enriched analysis result that retains the validator's semantic state.
+/// Used by the LSP to power features like hover, go-to-definition, etc.
+pub const AnalysisResult = struct {
+    valid: bool,
+    diagnostics: *Diagnostic,
+    /// The parsed AST module. Null only when parsing failed entirely.
+    module: ?*Ast.Module = null,
+    symbol_types: std.AutoHashMapUnmanaged(u32, Types.Type) = .{},
+    struct_types: std.StringHashMapUnmanaged(*Types.Struct) = .{},
+    alias_types: std.StringHashMapUnmanaged(?Types.Type) = .{},
+    const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
+    _arena: ?std.heap.ArenaAllocator = null,
+
+    /// Free all memory owned by this result.
+    pub fn deinit(self: *AnalysisResult, allocator: std.mem.Allocator) void {
+        _ = allocator;
+        var arena = self._arena orelse return;
+        arena.deinit();
+        self._arena = null;
+    }
+};
+
 // =========================================================================
 // Validator State
 // =========================================================================
@@ -162,6 +184,42 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     return .{
         .valid = !diags.hasErrors(),
         .diagnostics = diags,
+    };
+}
+
+/// Analyze a parsed WGSL module, retaining semantic state.
+/// Returns an enriched result with resolved types, struct layouts, etc.
+pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !AnalysisResult {
+    const diags = try arena.create(Diagnostic);
+    diags.* = try Diagnostic.init(arena, module.source);
+    diags.line_offset = options.line_offset;
+
+    var v = Validator{
+        .arena = arena,
+        .module = module,
+        .diags = diags,
+        .options = options,
+    };
+
+    try v.processDirectives();
+    try v.collectTypeDeclarations();
+    try v.resolveStructLayouts();
+    v.checkRecursiveStructs();
+    try v.validateDeclarations();
+    try v.registerFunctionSignatures();
+    try v.checkRecursiveFunctions();
+    try v.validateFunctions();
+    v.analyzeUniformity();
+    diags.deduplicate();
+
+    return .{
+        .valid = !diags.hasErrors(),
+        .diagnostics = diags,
+        .module = module,
+        .symbol_types = v.symbol_types,
+        .struct_types = v.struct_types,
+        .alias_types = v.alias_types,
+        .const_values = v.const_values,
     };
 }
 

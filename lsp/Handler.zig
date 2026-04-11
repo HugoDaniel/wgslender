@@ -19,6 +19,11 @@ documents: std.StringHashMapUnmanaged(Document),
 pub const Document = struct {
     source: []u8,
     version: i32,
+    /// Cached analysis result. Invalidated on document change/close.
+    analysis: ?*wgslender.Validator.AnalysisResult = null,
+    /// Sentinel-terminated source used by the analysis. Must stay alive
+    /// as long as the analysis result since the AST holds slices into it.
+    analysis_source: ?[:0]u8 = null,
 };
 
 // =========================================================================
@@ -64,7 +69,7 @@ pub const LspCodeAction = struct {
 
 /// Server capabilities as a JSON string (shared by native and WASM).
 pub const capabilities_json =
-    \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]}}
+    \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true}}
 ;
 
 /// Creates a handler with an empty document store.
@@ -79,10 +84,30 @@ pub fn init(gpa: std.mem.Allocator) Handler {
 pub fn deinit(self: *Handler) void {
     var it = self.documents.iterator();
     while (it.next()) |entry| {
+        if (entry.value_ptr.analysis) |a| {
+            a.deinit(self.gpa);
+            self.gpa.destroy(a);
+        }
+        if (entry.value_ptr.analysis_source) |s| {
+            self.gpa.free(s);
+        }
         self.gpa.free(entry.key_ptr.*);
         self.gpa.free(entry.value_ptr.source);
     }
     self.documents.deinit(self.gpa);
+}
+
+fn invalidateAnalysis(self: *Handler, uri: []const u8) void {
+    const doc = self.documents.getPtr(uri) orelse return;
+    if (doc.analysis) |a| {
+        a.deinit(self.gpa);
+        self.gpa.destroy(a);
+        doc.analysis = null;
+    }
+    if (doc.analysis_source) |s| {
+        self.gpa.free(s);
+        doc.analysis_source = null;
+    }
 }
 
 // =========================================================================
@@ -105,6 +130,7 @@ pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: 
 
 /// Replaces the source text of an already-open document.
 pub fn changeDocument(self: *Handler, uri: []const u8, text: []const u8) !void {
+    self.invalidateAnalysis(uri);
     const doc = self.documents.getPtr(uri) orelse return;
     const new_source = try self.gpa.dupe(u8, text);
     self.gpa.free(doc.source);
@@ -113,6 +139,7 @@ pub fn changeDocument(self: *Handler, uri: []const u8, text: []const u8) !void {
 
 /// Removes a document and frees its source and URI.
 pub fn closeDocument(self: *Handler, uri: []const u8) void {
+    self.invalidateAnalysis(uri);
     const entry = self.documents.fetchRemove(uri) orelse return;
     self.gpa.free(entry.key);
     self.gpa.free(entry.value.source);
@@ -121,6 +148,26 @@ pub fn closeDocument(self: *Handler, uri: []const u8) void {
 pub fn getDocumentSource(self: *const Handler, uri: []const u8) ?[]const u8 {
     const doc = self.documents.get(uri) orelse return null;
     return doc.source;
+}
+
+/// Returns cached analysis result for a document, running analysis if needed.
+/// The returned pointer is owned by the Handler and valid until the document
+/// is changed or closed.
+pub fn analyzeDocument(self: *Handler, uri: []const u8) !*wgslender.Validator.AnalysisResult {
+    const doc = self.documents.getPtr(uri) orelse return error.DocumentNotFound;
+    if (doc.analysis) |a| return a;
+
+    // The sentinel-terminated source must stay alive as long as the analysis
+    // result, because the AST holds slices into it.
+    const source_z = try self.gpa.dupeZ(u8, doc.source);
+    errdefer self.gpa.free(source_z);
+
+    const result = try self.gpa.create(wgslender.Validator.AnalysisResult);
+    errdefer self.gpa.destroy(result);
+    result.* = try wgslender.analyzeWithOptions(self.gpa, source_z, .{});
+    doc.analysis = result;
+    doc.analysis_source = source_z;
+    return result;
 }
 
 // =========================================================================
@@ -375,9 +422,693 @@ pub fn lspPositionToOffset(source: []const u8, pos: Position) ?usize {
     return offset;
 }
 
+/// Convert a byte offset to an LSP 0-based Position.
+/// Uses a simple linear scan (suitable for typical shader sizes).
+pub fn offsetToLspPosition(source: []const u8, offset: u32) ?Position {
+    if (offset > source.len) return null;
+    var line: u32 = 0;
+    var col: u32 = 0;
+    var i: u32 = 0;
+    while (i < offset) : (i += 1) {
+        if (source[i] == '\n') {
+            line += 1;
+            col = 0;
+        } else if (source[i] == '\r') {
+            line += 1;
+            col = 0;
+            if (i + 1 < offset and source[i + 1] == '\n') {
+                i += 1; // skip LF in CRLF
+            }
+        } else {
+            col += 1;
+        }
+    }
+    return .{ .line = line, .character = col };
+}
+
+/// Convert a byte offset range to an LSP Range.
+pub fn offsetRangeToLspRange(source: []const u8, start: u32, end: u32) ?Range {
+    const start_pos = offsetToLspPosition(source, start) orelse return null;
+    const end_pos = offsetToLspPosition(source, end) orelse return null;
+    return .{ .start = start_pos, .end = end_pos };
+}
+
+// =========================================================================
+// AST Node-at-Position Lookup
+// =========================================================================
+
+const Ast = wgslender.Ast;
+
+pub const NodeAtPosition = union(enum) {
+    /// An identifier expression referencing a symbol.
+    ident: struct { name: []const u8, ref: Ast.SymbolIndex, loc: u32 },
+    /// A member access expression (e.g., `s.field`).
+    member_access: struct { member: []const u8, loc: u32 },
+    /// A declaration name (the identifier in fn/struct/var/const/let/alias).
+    decl_name: struct { sym_idx: Ast.SymbolIndex, loc: u32 },
+    /// A type reference (e.g., `f32`, `MyStruct` in a type annotation).
+    type_ref: struct { name: []const u8, ref: Ast.SymbolIndex, loc: u32 },
+    /// No identifiable node at this position.
+    none,
+};
+
+/// Find the AST node at a given byte offset in the source.
+/// Walks declarations, statements, and expressions to find the
+/// most specific node covering the offset.
+pub fn findNodeAtOffset(module: *const Ast.Module, offset: u32) NodeAtPosition {
+    for (module.declarations.items) |decl| {
+        const result = findInDecl(module, decl, offset);
+        if (result != .none) return result;
+    }
+    return .none;
+}
+
+fn findInDecl(module: *const Ast.Module, decl: Ast.Decl, offset: u32) NodeAtPosition {
+    switch (decl) {
+        .function => |f| {
+            if (checkDeclName(module, f.name, offset)) |r| return r;
+            for (f.parameters.items) |param| {
+                if (checkDeclName(module, param.name, offset)) |r| return r;
+                if (findInType(param.typ, offset)) |r| return r;
+            }
+            if (f.return_type) |rt| {
+                if (findInType(rt, offset)) |r| return r;
+            }
+            if (f.body) |body| {
+                if (findInCompound(module, body, offset)) |r| return r;
+            }
+        },
+        .@"struct" => |s| {
+            if (checkDeclName(module, s.name, offset)) |r| return r;
+            for (s.members.items) |m| {
+                if (checkDeclName(module, m.name, offset)) |r| return r;
+                if (findInType(m.typ, offset)) |r| return r;
+            }
+        },
+        .@"const" => |c| {
+            if (checkDeclName(module, c.name, offset)) |r| return r;
+            if (c.typ) |t| {
+                if (findInType(t, offset)) |r| return r;
+            }
+            if (c.initializer) |initializer| {
+                if (findInExpr(initializer, offset)) |r| return r;
+            }
+        },
+        .override => |o| {
+            if (checkDeclName(module, o.name, offset)) |r| return r;
+            if (o.typ) |t| {
+                if (findInType(t, offset)) |r| return r;
+            }
+            if (o.initializer) |initializer| {
+                if (findInExpr(initializer, offset)) |r| return r;
+            }
+        },
+        .@"var" => |v| {
+            if (checkDeclName(module, v.name, offset)) |r| return r;
+            if (v.typ) |t| {
+                if (findInType(t, offset)) |r| return r;
+            }
+            if (v.initializer) |initializer| {
+                if (findInExpr(initializer, offset)) |r| return r;
+            }
+        },
+        .let => |l| {
+            if (checkDeclName(module, l.name, offset)) |r| return r;
+            if (l.typ) |t| {
+                if (findInType(t, offset)) |r| return r;
+            }
+            if (l.initializer) |initializer| {
+                if (findInExpr(initializer, offset)) |r| return r;
+            }
+        },
+        .alias => |a| {
+            if (checkDeclName(module, a.name, offset)) |r| return r;
+            if (findInType(a.typ, offset)) |r| return r;
+        },
+        .const_assert => |ca| {
+            if (findInExpr(ca.expr, offset)) |r| return r;
+        },
+    }
+    return .none;
+}
+
+fn checkDeclName(module: *const Ast.Module, sym_idx: Ast.SymbolIndex, offset: u32) ?NodeAtPosition {
+    if (!sym_idx.isValid()) return null;
+    const sym = module.symbols.items[sym_idx.index()];
+    if (offset >= sym.loc and offset < sym.loc + @as(u32, @intCast(sym.original_name.len))) {
+        return .{ .decl_name = .{ .sym_idx = sym_idx, .loc = sym.loc } };
+    }
+    return null;
+}
+
+fn findInType(typ: Ast.Type, offset: u32) ?NodeAtPosition {
+    switch (typ) {
+        .ident => |t| {
+            if (offset >= t.loc and offset < t.loc + @as(u32, @intCast(t.name.len))) {
+                return .{ .type_ref = .{ .name = t.name, .ref = t.ref, .loc = t.loc } };
+            }
+        },
+        .vec => |t| {
+            if (t.elem_type) |et| return findInType(et, offset);
+        },
+        .mat => |t| {
+            if (t.elem_type) |et| return findInType(et, offset);
+        },
+        .array => |t| {
+            if (t.elem_type) |et| {
+                if (findInType(et, offset)) |r| return r;
+            }
+            if (t.size) |sz| {
+                // size is an Expr, not a Type
+                return findInExpr(sz, offset);
+            }
+        },
+        .ptr => |t| return findInType(t.elem_type, offset),
+        .atomic => |t| return findInType(t.elem_type, offset),
+        .sampler, .texture => {},
+    }
+    return null;
+}
+
+fn findInCompound(module: *const Ast.Module, compound: *const Ast.CompoundStmt, offset: u32) ?NodeAtPosition {
+    for (compound.stmts.items) |stmt| {
+        if (findInStmt(module, stmt, offset)) |r| return r;
+    }
+    return null;
+}
+
+fn findInStmt(module: *const Ast.Module, stmt: Ast.Stmt, offset: u32) ?NodeAtPosition {
+    switch (stmt) {
+        .compound => |c| return findInCompound(module, c, offset),
+        .@"return" => |r| {
+            if (r.value) |v| return findInExpr(v, offset);
+        },
+        .@"if" => |i| {
+            if (findInExpr(i.condition, offset)) |r| return r;
+            if (findInCompound(module, i.body, offset)) |r| return r;
+            if (i.else_branch) |eb| return findInStmt(module, eb, offset);
+        },
+        .@"switch" => |s| {
+            if (findInExpr(s.expr, offset)) |r| return r;
+            for (s.cases.items) |case| {
+                for (case.selectors.items) |sel| {
+                    if (findInExpr(sel, offset)) |r| return r;
+                }
+                if (findInCompound(module, case.body, offset)) |r| return r;
+            }
+        },
+        .@"for" => |f| {
+            if (f.init_stmt) |init_s| {
+                if (findInStmt(module, init_s, offset)) |r| return r;
+            }
+            if (f.condition) |cond| {
+                if (findInExpr(cond, offset)) |r| return r;
+            }
+            if (f.update) |upd| {
+                if (findInStmt(module, upd, offset)) |r| return r;
+            }
+            return findInCompound(module, f.body, offset);
+        },
+        .@"while" => |w| {
+            if (findInExpr(w.condition, offset)) |r| return r;
+            return findInCompound(module, w.body, offset);
+        },
+        .loop => |l| {
+            if (findInCompound(module, l.body, offset)) |r| return r;
+            if (l.continuing) |cont| return findInCompound(module, cont, offset);
+        },
+        .assign => |a| {
+            if (findInExpr(a.left, offset)) |r| return r;
+            return findInExpr(a.right, offset);
+        },
+        .incr_decr => |i| return findInExpr(i.expr, offset),
+        .call => |c| return findInExpr(.{ .call = c.call }, offset),
+        .decl => |d| return findInDecl(module, d.decl, offset),
+        .@"break" => {},
+        .@"continue" => {},
+        .discard => {},
+        .break_if => |b| return findInExpr(b.condition, offset),
+    }
+    return null;
+}
+
+fn findInExpr(expr: Ast.Expr, offset: u32) ?NodeAtPosition {
+    switch (expr) {
+        .ident => |e| {
+            if (offset >= e.loc and offset < e.loc + @as(u32, @intCast(e.name.len))) {
+                return .{ .ident = .{ .name = e.name, .ref = e.ref, .loc = e.loc } };
+            }
+        },
+        .member => |e| {
+            // e.loc is the dot position; member name starts at dot + 1
+            const member_loc = e.loc + 1;
+            if (offset >= member_loc and offset < member_loc + @as(u32, @intCast(e.member_name.len))) {
+                return .{ .member_access = .{ .member = e.member_name, .loc = member_loc } };
+            }
+            return findInExpr(e.base, offset);
+        },
+        .call => |e| {
+            if (e.func) |f| {
+                if (findInExpr(f, offset)) |r| return r;
+            }
+            if (e.template_type) |tt| {
+                if (findInType(tt, offset)) |r| return r;
+            }
+            for (e.args.items) |arg| {
+                if (findInExpr(arg, offset)) |r| return r;
+            }
+        },
+        .binary => |e| {
+            if (findInExpr(e.left, offset)) |r| return r;
+            return findInExpr(e.right, offset);
+        },
+        .unary => |e| return findInExpr(e.operand, offset),
+        .index => |e| {
+            if (findInExpr(e.base, offset)) |r| return r;
+            return findInExpr(e.idx, offset);
+        },
+        .paren => |e| return findInExpr(e.expr, offset),
+        .literal => {},
+    }
+    return null;
+}
+
+// =========================================================================
+// LSP Feature: Hover
+// =========================================================================
+
+pub const HoverResult = struct {
+    contents: []const u8,
+    range: Range,
+};
+
+pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?HoverResult {
+    const doc = self.documents.getPtr(uri) orelse return null;
+    const source = doc.source;
+    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
+    const analysis = try self.analyzeDocument(uri);
+    const module = analysis.module orelse return null;
+
+    const node = findNodeAtOffset(module, offset);
+    var buf: [512]u8 = undefined;
+    switch (node) {
+        .ident => |id| {
+            if (!id.ref.isValid()) return null;
+            const sym = module.symbols.items[id.ref.index()];
+            const kind_str = @tagName(sym.kind);
+            const type_str = if (analysis.symbol_types.get(id.ref.index())) |t| t.string() else "unknown";
+            const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s}", .{ kind_str, id.name, type_str }) catch return null).len;
+            const contents = try self.gpa.dupe(u8, buf[0..len]);
+            return .{
+                .contents = contents,
+                .range = offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len))) orelse return null,
+            };
+        },
+        .decl_name => |dn| {
+            if (!dn.sym_idx.isValid()) return null;
+            const sym = module.symbols.items[dn.sym_idx.index()];
+            const kind_str = @tagName(sym.kind);
+            const type_str = if (analysis.symbol_types.get(dn.sym_idx.index())) |t| t.string() else "";
+            const len = if (type_str.len > 0)
+                (std.fmt.bufPrint(&buf, "({s}) {s}: {s}", .{ kind_str, sym.original_name, type_str }) catch return null).len
+            else
+                (std.fmt.bufPrint(&buf, "({s}) {s}", .{ kind_str, sym.original_name }) catch return null).len;
+            const contents = try self.gpa.dupe(u8, buf[0..len]);
+            return .{
+                .contents = contents,
+                .range = offsetRangeToLspRange(source, dn.loc, dn.loc + @as(u32, @intCast(sym.original_name.len))) orelse return null,
+            };
+        },
+        .type_ref => |tr| {
+            if (analysis.struct_types.get(tr.name)) |st| {
+                // Show struct fields using bufPrint
+                var pos_in_buf: usize = 0;
+                const header = std.fmt.bufPrint(&buf, "struct {s} {{ ", .{tr.name}) catch return null;
+                pos_in_buf = header.len;
+                for (st.fields, 0..) |field, fi| {
+                    if (fi > 0) {
+                        const sep = std.fmt.bufPrint(buf[pos_in_buf..], ", ", .{}) catch return null;
+                        pos_in_buf += sep.len;
+                    }
+                    const fld = std.fmt.bufPrint(buf[pos_in_buf..], "{s}: {s}", .{ field.name, field.typ.string() }) catch return null;
+                    pos_in_buf += fld.len;
+                }
+                const tail = std.fmt.bufPrint(buf[pos_in_buf..], " }}", .{}) catch return null;
+                pos_in_buf += tail.len;
+                const contents = try self.gpa.dupe(u8, buf[0..pos_in_buf]);
+                return .{
+                    .contents = contents,
+                    .range = offsetRangeToLspRange(source, tr.loc, tr.loc + @as(u32, @intCast(tr.name.len))) orelse return null,
+                };
+            }
+            return null;
+        },
+        .member_access => |ma| {
+            const contents = try self.gpa.dupe(u8, ma.member);
+            return .{
+                .contents = contents,
+                .range = offsetRangeToLspRange(source, ma.loc, ma.loc + @as(u32, @intCast(ma.member.len))) orelse return null,
+            };
+        },
+        .none => return null,
+    }
+}
+
+// =========================================================================
+// LSP Feature: Go-to-Definition
+// =========================================================================
+
+pub fn computeDefinition(self: *Handler, uri: []const u8, position: Position) !?Range {
+    const doc = self.documents.getPtr(uri) orelse return null;
+    const source = doc.source;
+    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
+    const analysis = try self.analyzeDocument(uri);
+    const module = analysis.module orelse return null;
+
+    const node = findNodeAtOffset(module, offset);
+    switch (node) {
+        .ident => |id| {
+            if (!id.ref.isValid()) return null;
+            const sym = module.symbols.items[id.ref.index()];
+            return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
+        },
+        .type_ref => |tr| {
+            if (!tr.ref.isValid()) return null;
+            const sym = module.symbols.items[tr.ref.index()];
+            return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
+        },
+        .decl_name => |dn| {
+            if (!dn.sym_idx.isValid()) return null;
+            const sym = module.symbols.items[dn.sym_idx.index()];
+            return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
+        },
+        .member_access, .none => return null,
+    }
+}
+
+// =========================================================================
+// LSP Feature: Find All References
+// =========================================================================
+
+/// Collect all byte offset locations of references to a given symbol.
+fn collectReferences(gpa: std.mem.Allocator, module: *const Ast.Module, target: Ast.SymbolIndex, include_declaration: bool) ![]Range {
+    const source = module.source;
+    var locations: std.ArrayListUnmanaged(Range) = .empty;
+    defer locations.deinit(gpa);
+
+    // Include declaration location
+    if (include_declaration and target.isValid()) {
+        const sym = module.symbols.items[target.index()];
+        if (offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)))) |range| {
+            try locations.append(gpa, range);
+        }
+    }
+
+    // Walk all declarations collecting references
+    for (module.declarations.items) |decl| {
+        try collectRefsInDecl(gpa, module, decl, target, source, &locations);
+    }
+
+    return try gpa.dupe(Range, locations.items);
+}
+
+fn collectRefsInDecl(gpa: std.mem.Allocator, module: *const Ast.Module, decl: Ast.Decl, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+    switch (decl) {
+        .function => |f| {
+            for (f.parameters.items) |param| {
+                try collectRefsInType(gpa, param.typ, target, source, locations);
+            }
+            if (f.return_type) |rt| try collectRefsInType(gpa, rt, target, source, locations);
+            if (f.body) |body| try collectRefsInCompound(gpa, module, body, target, source, locations);
+        },
+        .@"struct" => |s| {
+            for (s.members.items) |m| {
+                try collectRefsInType(gpa, m.typ, target, source, locations);
+            }
+        },
+        .@"const" => |c| {
+            if (c.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
+            if (c.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations);
+        },
+        .override => |o| {
+            if (o.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
+            if (o.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations);
+        },
+        .@"var" => |v| {
+            if (v.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
+            if (v.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations);
+        },
+        .let => |l| {
+            if (l.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
+            if (l.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations);
+        },
+        .alias => |a| try collectRefsInType(gpa, a.typ, target, source, locations),
+        .const_assert => |ca| try collectRefsInExpr(gpa, ca.expr, target, source, locations),
+    }
+}
+
+fn collectRefsInType(gpa: std.mem.Allocator, typ: Ast.Type, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+    switch (typ) {
+        .ident => |t| {
+            if (t.ref == target) {
+                if (offsetRangeToLspRange(source, t.loc, t.loc + @as(u32, @intCast(t.name.len)))) |range| {
+                    try locations.append(gpa, range);
+                }
+            }
+        },
+        .vec => |t| {
+            if (t.elem_type) |et| try collectRefsInType(gpa, et, target, source, locations);
+        },
+        .mat => |t| {
+            if (t.elem_type) |et| try collectRefsInType(gpa, et, target, source, locations);
+        },
+        .array => |t| {
+            if (t.elem_type) |et| try collectRefsInType(gpa, et, target, source, locations);
+            if (t.size) |sz| try collectRefsInExpr(gpa, sz, target, source, locations);
+        },
+        .ptr => |t| try collectRefsInType(gpa, t.elem_type, target, source, locations),
+        .atomic => |t| try collectRefsInType(gpa, t.elem_type, target, source, locations),
+        .sampler, .texture => {},
+    }
+}
+
+fn collectRefsInCompound(gpa: std.mem.Allocator, module: *const Ast.Module, compound: *const Ast.CompoundStmt, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+    for (compound.stmts.items) |stmt| {
+        try collectRefsInStmt(gpa, module, stmt, target, source, locations);
+    }
+}
+
+fn collectRefsInStmt(gpa: std.mem.Allocator, module: *const Ast.Module, stmt: Ast.Stmt, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+    switch (stmt) {
+        .compound => |c| try collectRefsInCompound(gpa, module, c, target, source, locations),
+        .@"return" => |r| {
+            if (r.value) |v| try collectRefsInExpr(gpa, v, target, source, locations);
+        },
+        .@"if" => |i| {
+            try collectRefsInExpr(gpa, i.condition, target, source, locations);
+            try collectRefsInCompound(gpa, module, i.body, target, source, locations);
+            if (i.else_branch) |eb| try collectRefsInStmt(gpa, module, eb, target, source, locations);
+        },
+        .@"switch" => |s| {
+            try collectRefsInExpr(gpa, s.expr, target, source, locations);
+            for (s.cases.items) |case| {
+                for (case.selectors.items) |sel| {
+                    try collectRefsInExpr(gpa, sel, target, source, locations);
+                }
+                try collectRefsInCompound(gpa, module, case.body, target, source, locations);
+            }
+        },
+        .@"for" => |f| {
+            if (f.init_stmt) |init_s| try collectRefsInStmt(gpa, module, init_s, target, source, locations);
+            if (f.condition) |cond| try collectRefsInExpr(gpa, cond, target, source, locations);
+            if (f.update) |upd| try collectRefsInStmt(gpa, module, upd, target, source, locations);
+            try collectRefsInCompound(gpa, module, f.body, target, source, locations);
+        },
+        .@"while" => |w| {
+            try collectRefsInExpr(gpa, w.condition, target, source, locations);
+            try collectRefsInCompound(gpa, module, w.body, target, source, locations);
+        },
+        .loop => |l| {
+            try collectRefsInCompound(gpa, module, l.body, target, source, locations);
+            if (l.continuing) |cont| try collectRefsInCompound(gpa, module, cont, target, source, locations);
+        },
+        .assign => |a| {
+            try collectRefsInExpr(gpa, a.left, target, source, locations);
+            try collectRefsInExpr(gpa, a.right, target, source, locations);
+        },
+        .incr_decr => |i| try collectRefsInExpr(gpa, i.expr, target, source, locations),
+        .call => |c| try collectRefsInExpr(gpa, .{ .call = c.call }, target, source, locations),
+        .decl => |d| try collectRefsInDecl(gpa, module, d.decl, target, source, locations),
+        .@"break", .@"continue", .discard => {},
+        .break_if => |b| try collectRefsInExpr(gpa, b.condition, target, source, locations),
+    }
+}
+
+fn collectRefsInExpr(gpa: std.mem.Allocator, expr: Ast.Expr, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+    switch (expr) {
+        .ident => |e| {
+            if (e.ref == target) {
+                if (offsetRangeToLspRange(source, e.loc, e.loc + @as(u32, @intCast(e.name.len)))) |range| {
+                    try locations.append(gpa, range);
+                }
+            }
+        },
+        .member => |e| try collectRefsInExpr(gpa, e.base, target, source, locations),
+        .call => |e| {
+            if (e.func) |f| try collectRefsInExpr(gpa, f, target, source, locations);
+            if (e.template_type) |tt| try collectRefsInType(gpa, tt, target, source, locations);
+            for (e.args.items) |arg| try collectRefsInExpr(gpa, arg, target, source, locations);
+        },
+        .binary => |e| {
+            try collectRefsInExpr(gpa, e.left, target, source, locations);
+            try collectRefsInExpr(gpa, e.right, target, source, locations);
+        },
+        .unary => |e| try collectRefsInExpr(gpa, e.operand, target, source, locations),
+        .index => |e| {
+            try collectRefsInExpr(gpa, e.base, target, source, locations);
+            try collectRefsInExpr(gpa, e.idx, target, source, locations);
+        },
+        .paren => |e| try collectRefsInExpr(gpa, e.expr, target, source, locations),
+        .literal => {},
+    }
+}
+
+pub fn computeReferences(self: *Handler, uri: []const u8, position: Position, include_declaration: bool) !?[]Range {
+    const doc = self.documents.getPtr(uri) orelse return null;
+    const source = doc.source;
+    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
+    const analysis = try self.analyzeDocument(uri);
+    const module = analysis.module orelse return null;
+
+    const node = findNodeAtOffset(module, offset);
+    const target: Ast.SymbolIndex = switch (node) {
+        .ident => |id| id.ref,
+        .decl_name => |dn| dn.sym_idx,
+        .type_ref => |tr| tr.ref,
+        else => return null,
+    };
+    if (!target.isValid()) return null;
+    return try collectReferences(self.gpa, module, target, include_declaration);
+}
+
+// =========================================================================
+// LSP Feature: Rename Symbol
+// =========================================================================
+
+const Lexer = wgslender.Lexer;
+
+pub fn prepareRename(self: *Handler, uri: []const u8, position: Position) !?Range {
+    const doc = self.documents.getPtr(uri) orelse return null;
+    const source = doc.source;
+    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
+    const analysis = try self.analyzeDocument(uri);
+    const module = analysis.module orelse return null;
+
+    const node = findNodeAtOffset(module, offset);
+    switch (node) {
+        .ident => |id| {
+            if (!id.ref.isValid()) return null;
+            const sym = module.symbols.items[id.ref.index()];
+            if (sym.flags.is_builtin) return null;
+            return offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len)));
+        },
+        .decl_name => |dn| {
+            if (!dn.sym_idx.isValid()) return null;
+            const sym = module.symbols.items[dn.sym_idx.index()];
+            if (sym.flags.is_builtin) return null;
+            return offsetRangeToLspRange(source, dn.loc, dn.loc + @as(u32, @intCast(sym.original_name.len)));
+        },
+        .type_ref => |tr| {
+            if (!tr.ref.isValid()) return null;
+            const sym = module.symbols.items[tr.ref.index()];
+            if (sym.flags.is_builtin) return null;
+            return offsetRangeToLspRange(source, tr.loc, tr.loc + @as(u32, @intCast(tr.name.len)));
+        },
+        else => return null,
+    }
+}
+
+pub fn isValidWgslIdentifier(name: []const u8) bool {
+    if (name.len == 0) return false;
+    // WGSL reserved __ prefix
+    if (name.len >= 2 and name[0] == '_' and name[1] == '_') return false;
+    // Check it's not a keyword or reserved word
+    if (Lexer.keywords_map.has(name)) return false;
+    if (Lexer.reserved_words.has(name)) return false;
+    // Basic identifier character check
+    for (name, 0..) |c, i| {
+        if (i == 0) {
+            if (!std.ascii.isAlphabetic(c) and c != '_') return false;
+        } else {
+            if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
+        }
+    }
+    return true;
+}
+
+pub fn computeRename(self: *Handler, uri: []const u8, position: Position, new_name: []const u8) !?[]LspTextEdit {
+    if (!isValidWgslIdentifier(new_name)) return null;
+
+    const refs = (try self.computeReferences(uri, position, true)) orelse return null;
+    defer self.gpa.free(refs);
+
+    if (refs.len == 0) return null;
+
+    const edits = try self.gpa.alloc(LspTextEdit, refs.len);
+    for (refs, 0..) |ref_range, i| {
+        edits[i] = .{
+            .range = ref_range,
+            .new_text = new_name,
+        };
+    }
+    return edits;
+}
+
 // =========================================================================
 // Tests
 // =========================================================================
+
+test "analyzeDocument caches result" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument("test://file.wgsl", "fn f() {}", 1);
+    const a1 = try handler.analyzeDocument("test://file.wgsl");
+    const a2 = try handler.analyzeDocument("test://file.wgsl");
+    try std.testing.expect(a1 == a2); // same pointer
+}
+
+test "changeDocument invalidates analysis cache" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument("test://file.wgsl", "fn f() {}", 1);
+    _ = try handler.analyzeDocument("test://file.wgsl");
+    const doc1 = handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expect(doc1.analysis != null);
+    try handler.changeDocument("test://file.wgsl", "fn g() {}");
+    const doc2 = handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expect(doc2.analysis == null);
+}
+
+test "analyzeDocument after change re-analyzes" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument("test://file.wgsl", "fn f() {}", 1);
+    const a1 = try handler.analyzeDocument("test://file.wgsl");
+    try handler.changeDocument("test://file.wgsl", "fn g() {}");
+    const a2 = try handler.analyzeDocument("test://file.wgsl");
+    try std.testing.expect(a1 != a2); // different pointer after re-analysis
+}
+
+test "analyzeDocument returns semantic data" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument("test://file.wgsl", "struct S { x: f32, y: f32 }", 1);
+    const analysis = try handler.analyzeDocument("test://file.wgsl");
+    try std.testing.expect(analysis.module != null);
+    const module = analysis.module.?;
+    // Should have at least the struct declaration symbol
+    try std.testing.expect(module.symbols.items.len > 0);
+}
 
 test "convertDiagnostic preserves code" {
     const entry = WgslDiagnostic.Entry{ .code = "E0200" };
@@ -662,6 +1393,48 @@ test "computeCodeActions: E0403 invalid builtin with suggestion" {
 
     try std.testing.expectEqual(@as(usize, 1), actions.len);
     try std.testing.expectEqualStrings("Replace with 'position'", actions[0].title);
+}
+
+test "offsetToLspPosition: basic" {
+    const source = "line1\nline2\nline3";
+    // offset 0 → line 0, char 0
+    const p0 = offsetToLspPosition(source, 0).?;
+    try std.testing.expectEqual(@as(u32, 0), p0.line);
+    try std.testing.expectEqual(@as(u32, 0), p0.character);
+    // offset 6 → line 1, char 0 (first char of "line2")
+    const p6 = offsetToLspPosition(source, 6).?;
+    try std.testing.expectEqual(@as(u32, 1), p6.line);
+    try std.testing.expectEqual(@as(u32, 0), p6.character);
+    // offset 8 → line 1, char 2 (third char of "line2")
+    const p8 = offsetToLspPosition(source, 8).?;
+    try std.testing.expectEqual(@as(u32, 1), p8.line);
+    try std.testing.expectEqual(@as(u32, 2), p8.character);
+}
+
+test "offsetToLspPosition: past end returns null" {
+    const source = "abc";
+    try std.testing.expect(offsetToLspPosition(source, 4) == null);
+}
+
+test "offsetToLspPosition: round-trip with lspPositionToOffset" {
+    const source = "fn main() {\n  let x = 1;\n  return;\n}";
+    // Test a few offsets
+    for ([_]u32{ 0, 5, 12, 14, 25, 35 }) |offset| {
+        if (offset > source.len) continue;
+        const pos = offsetToLspPosition(source, offset) orelse continue;
+        const back = lspPositionToOffset(source, pos) orelse continue;
+        try std.testing.expectEqual(@as(usize, offset), back);
+    }
+}
+
+test "offsetRangeToLspRange: basic" {
+    const source = "fn main() {\n  let x = 1;\n}";
+    const range = offsetRangeToLspRange(source, 3, 7).?;
+    // "main" starts at offset 3 on line 0
+    try std.testing.expectEqual(@as(u32, 0), range.start.line);
+    try std.testing.expectEqual(@as(u32, 3), range.start.character);
+    try std.testing.expectEqual(@as(u32, 0), range.end.line);
+    try std.testing.expectEqual(@as(u32, 7), range.end.character);
 }
 
 test "lspPositionToOffset: basic" {

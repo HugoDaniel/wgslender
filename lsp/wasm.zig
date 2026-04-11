@@ -102,6 +102,16 @@ fn handleMessage(json: []const u8) void {
         handleDidClose(root);
     } else if (eql(method, "textDocument/codeAction")) {
         handleCodeAction(root, id);
+    } else if (eql(method, "textDocument/hover")) {
+        handleHover(root, id);
+    } else if (eql(method, "textDocument/definition")) {
+        handleDefinition(root, id);
+    } else if (eql(method, "textDocument/references")) {
+        handleReferences(root, id);
+    } else if (eql(method, "textDocument/rename")) {
+        handleRename(root, id);
+    } else if (eql(method, "textDocument/prepareRename")) {
+        handlePrepareRename(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -148,7 +158,7 @@ fn handleDidClose(root: std.json.ObjectMap) void {
     // Clear diagnostics.
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri);
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
     appendStr(&buf, "\",\"diagnostics\":[]}}");
     enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
 }
@@ -237,7 +247,7 @@ fn buildCodeActionJsonResponse(id: ?std.json.Value, uri: []const u8, actions: []
     for (actions, 0..) |action, ai| {
         if (ai > 0) buf.append(wasm_allocator, ',') catch {};
         appendStr(&buf, "{\"title\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, action.title);
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, action.title) catch return;
         appendStr(&buf, "\",\"kind\":\"quickfix\"");
         if (action.is_preferred) {
             appendStr(&buf, ",\"isPreferred\":true");
@@ -253,18 +263,18 @@ fn buildCodeActionJsonResponse(id: ?std.json.Value, uri: []const u8, actions: []
         appendStr(&buf, ",\"character\":");
         appendUint(&buf, action.diagnostic.range.end.character);
         appendStr(&buf, "}},\"message\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, action.diagnostic.message);
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, action.diagnostic.message) catch return;
         appendStr(&buf, "\"");
         if (action.diagnostic.code.len > 0) {
             appendStr(&buf, ",\"code\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, action.diagnostic.code);
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, action.diagnostic.code) catch return;
             appendStr(&buf, "\"");
         }
         appendStr(&buf, "}]");
 
         // Edit (WorkspaceEdit with changes)
         appendStr(&buf, ",\"edit\":{\"changes\":{\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri);
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
         appendStr(&buf, "\":[");
         for (action.edits, 0..) |edit, ei| {
             if (ei > 0) buf.append(wasm_allocator, ',') catch {};
@@ -277,7 +287,7 @@ fn buildCodeActionJsonResponse(id: ?std.json.Value, uri: []const u8, actions: []
             appendStr(&buf, ",\"character\":");
             appendUint(&buf, edit.range.end.character);
             appendStr(&buf, "}},\"newText\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, edit.new_text);
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, edit.new_text) catch return;
             appendStr(&buf, "\"}");
         }
         appendStr(&buf, "]}}}");
@@ -288,17 +298,148 @@ fn buildCodeActionJsonResponse(id: ?std.json.Value, uri: []const u8, actions: []
 }
 
 // =========================================================================
+// Hover, Definition, References, Rename (WASM handlers)
+// =========================================================================
+
+fn extractUriAndPosition(root: std.json.ObjectMap) ?struct { uri: []const u8, line: u32, char: u32 } {
+    const params = root.getPtr("params") orelse return null;
+    const td = objGet(params, "textDocument") orelse return null;
+    const uri = strVal(objGet(td, "uri")) orelse return null;
+    const pos = objGet(params, "position") orelse return null;
+    const line: u32 = if (intVal(objGet(pos, "line"))) |v| @intCast(v) else return null;
+    const char: u32 = if (intVal(objGet(pos, "character"))) |v| @intCast(v) else return null;
+    return .{ .uri = uri, .line = line, .char = char };
+}
+
+fn handleHover(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const result = handler.computeHover(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
+    const r = result orelse return sendResult(id, "null");
+    defer handler.gpa.free(r.contents);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"contents\":{\"kind\":\"plaintext\",\"value\":\"");
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, r.contents) catch return;
+    appendStr(&buf, "\"},\"range\":{\"start\":{\"line\":");
+    appendUint(&buf, r.range.start.line);
+    appendStr(&buf, ",\"character\":");
+    appendUint(&buf, r.range.start.character);
+    appendStr(&buf, "},\"end\":{\"line\":");
+    appendUint(&buf, r.range.end.line);
+    appendStr(&buf, ",\"character\":");
+    appendUint(&buf, r.range.end.character);
+    appendStr(&buf, "}}}");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn formatRange(buf: *std.ArrayListUnmanaged(u8), range: Handler.Range) void {
+    appendStr(buf, "{\"start\":{\"line\":");
+    appendUint(buf, range.start.line);
+    appendStr(buf, ",\"character\":");
+    appendUint(buf, range.start.character);
+    appendStr(buf, "},\"end\":{\"line\":");
+    appendUint(buf, range.end.line);
+    appendStr(buf, ",\"character\":");
+    appendUint(buf, range.end.character);
+    appendStr(buf, "}}");
+}
+
+fn handleDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const range = handler.computeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
+    const r = range orelse return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"uri\":\"");
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
+    appendStr(&buf, "\",\"range\":");
+    formatRange(&buf, r);
+    appendStr(&buf, "}");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleReferences(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const ctx = objGet(params, "context");
+    const include_decl = if (ctx) |c| blk: {
+        const v = objGet(c, "includeDeclaration");
+        if (v) |val| {
+            break :blk switch (val.*) {
+                .bool => |b| b,
+                else => true,
+            };
+        }
+        break :blk true;
+    } else true;
+
+    const refs = handler.computeReferences(p.uri, .{ .line = p.line, .character = p.char }, include_decl) catch return sendResult(id, "null");
+    const handler_refs = refs orelse return sendResult(id, "null");
+    defer handler.gpa.free(handler_refs);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (handler_refs, 0..) |ref, i| {
+        if (i > 0) appendStr(&buf, ",");
+        appendStr(&buf, "{\"uri\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
+        appendStr(&buf, "\",\"range\":");
+        formatRange(&buf, ref);
+        appendStr(&buf, "}");
+    }
+    appendStr(&buf, "]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const new_name = strVal(objGet(params, "newName")) orelse return sendResult(id, "null");
+
+    const edits = handler.computeRename(p.uri, .{ .line = p.line, .character = p.char }, new_name) catch return sendResult(id, "null");
+    const handler_edits = edits orelse return sendResult(id, "null");
+    defer handler.gpa.free(handler_edits);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"changes\":{\"");
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
+    appendStr(&buf, "\":[");
+    for (handler_edits, 0..) |edit, i| {
+        if (i > 0) appendStr(&buf, ",");
+        appendStr(&buf, "{\"range\":");
+        formatRange(&buf, edit.range);
+        appendStr(&buf, ",\"newText\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, edit.new_text) catch return;
+        appendStr(&buf, "\"}");
+    }
+    appendStr(&buf, "]}}");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handlePrepareRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const range = handler.prepareRename(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
+    const r = range orelse return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"range\":");
+    formatRange(&buf, r);
+    appendStr(&buf, ",\"placeholder\":\"\"}");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+// =========================================================================
 // Diagnostics (reuses Handler.validateDocument + Handler.LspDiagnostic)
 // =========================================================================
 
 fn emitDiagnostics(uri: []const u8) void {
     const source = handler.getDocumentSource(uri) orelse return;
     const diags = handler.validateDocument(source) catch return;
-    defer Handler.freeDiagnostics(handler.allocator, diags);
+    defer Handler.freeDiagnostics(handler.gpa, diags);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri);
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
     appendStr(&buf, "\",\"diagnostics\":[");
 
     for (diags, 0..) |diag, i| {
@@ -314,16 +455,16 @@ fn emitDiagnostics(uri: []const u8) void {
         appendStr(&buf, "}},\"severity\":");
         appendUint(&buf, @intFromEnum(diag.severity));
         appendStr(&buf, ",\"source\":\"wgslender\",\"message\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.message);
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.message) catch return;
         appendStr(&buf, "\"");
         if (diag.code.len > 0) {
             appendStr(&buf, ",\"code\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.code);
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.code) catch return;
             appendStr(&buf, "\"");
         }
         if (diag.spec_url.len > 0) {
             appendStr(&buf, ",\"codeDescription\":{\"href\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.spec_url);
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.spec_url) catch return;
             appendStr(&buf, "\"}");
         }
         if (diag.related.len > 0) {
@@ -331,7 +472,7 @@ fn emitDiagnostics(uri: []const u8) void {
             for (diag.related, 0..) |rel, ri| {
                 if (ri > 0) buf.append(wasm_allocator, ',') catch {};
                 appendStr(&buf, "{\"location\":{\"uri\":\"");
-                Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri);
+                Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
                 appendStr(&buf, "\",\"range\":{\"start\":{\"line\":");
                 appendUint(&buf, rel.range.start.line);
                 appendStr(&buf, ",\"character\":");
@@ -341,7 +482,7 @@ fn emitDiagnostics(uri: []const u8) void {
                 appendStr(&buf, ",\"character\":");
                 appendUint(&buf, rel.range.end.character);
                 appendStr(&buf, "}}},\"message\":\"");
-                Diagnostic.appendJsonEscaped(&buf, wasm_allocator, rel.message);
+                Diagnostic.appendJsonEscaped(&buf, wasm_allocator, rel.message) catch return;
                 appendStr(&buf, "\"}");
             }
             appendStr(&buf, "]");

@@ -181,6 +181,13 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
     // Code action integration tests
     _ = addTestStep(b, test_step, "tests/code_action_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // Node-at-position tests
+    _ = addTestStep(b, test_step, "tests/node_at_position_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // LSP feature tests
+    _ = addTestStep(b, test_step, "tests/hover_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "tests/definition_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "tests/references_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "tests/rename_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // OOM exhaustive tests
     _ = addTestStep(b, test_step, "tests/oom_test.zig", target, optimize, &.{w});
     // Fuzz tests

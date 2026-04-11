@@ -61,6 +61,12 @@ const NativeServer = struct {
                         .codeActionKinds = &.{.quickfix},
                     },
                 },
+                .hoverProvider = .{ .bool = true },
+                .definitionProvider = .{ .bool = true },
+                .referencesProvider = .{ .bool = true },
+                .renameProvider = .{
+                    .rename_options = .{ .prepareProvider = true },
+                },
             },
         };
     }
@@ -207,6 +213,129 @@ const NativeServer = struct {
             };
         }
         return results;
+    }
+
+    // ----- Hover -----
+
+    pub fn @"textDocument/hover"(
+        self: *NativeServer,
+        _: std.mem.Allocator,
+        params: lsp.types.Hover.Params,
+    ) ?lsp.types.Hover {
+        const result = self.handler.computeHover(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+        ) catch return null;
+        const r = result orelse return null;
+        return .{
+            .contents = .{ .markup_content = .{ .kind = .plaintext, .value = r.contents } },
+            .range = .{
+                .start = .{ .line = r.range.start.line, .character = r.range.start.character },
+                .end = .{ .line = r.range.end.line, .character = r.range.end.character },
+            },
+        };
+    }
+
+    // ----- Go-to-Definition -----
+
+    pub fn @"textDocument/definition"(
+        self: *NativeServer,
+        _: std.mem.Allocator,
+        params: lsp.types.Definition.Params,
+    ) ?lsp.types.Definition.Result {
+        const range = self.handler.computeDefinition(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+        ) catch return null;
+        const r = range orelse return null;
+        return .{
+            .definition = .{
+                .location = .{
+                    .uri = params.textDocument.uri,
+                    .range = .{
+                        .start = .{ .line = r.start.line, .character = r.start.character },
+                        .end = .{ .line = r.end.line, .character = r.end.character },
+                    },
+                },
+            },
+        };
+    }
+
+    // ----- Find References -----
+
+    pub fn @"textDocument/references"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.reference.Params,
+    ) ?[]const lsp.types.Location {
+        const refs = self.handler.computeReferences(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+            params.context.includeDeclaration,
+        ) catch return null;
+        const handler_refs = refs orelse return null;
+        defer self.handler.gpa.free(handler_refs);
+        const locations = arena.alloc(lsp.types.Location, handler_refs.len) catch return null;
+        for (handler_refs, 0..) |ref, i| {
+            locations[i] = .{
+                .uri = params.textDocument.uri,
+                .range = .{
+                    .start = .{ .line = ref.start.line, .character = ref.start.character },
+                    .end = .{ .line = ref.end.line, .character = ref.end.character },
+                },
+            };
+        }
+        return locations;
+    }
+
+    // ----- Rename -----
+
+    pub fn @"textDocument/rename"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.rename.Params,
+    ) ?lsp.types.WorkspaceEdit {
+        const edits = self.handler.computeRename(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+            params.newName,
+        ) catch return null;
+        const handler_edits = edits orelse return null;
+        defer self.handler.gpa.free(handler_edits);
+        const text_edits = arena.alloc(lsp.types.TextEdit, handler_edits.len) catch return null;
+        for (handler_edits, 0..) |edit, i| {
+            text_edits[i] = .{
+                .range = .{
+                    .start = .{ .line = edit.range.start.line, .character = edit.range.start.character },
+                    .end = .{ .line = edit.range.end.line, .character = edit.range.end.character },
+                },
+                .newText = edit.new_text,
+            };
+        }
+        var changes = std.json.ArrayHashMap([]const lsp.types.TextEdit){};
+        changes.map.put(arena, params.textDocument.uri, text_edits) catch return null;
+        return .{ .changes = changes };
+    }
+
+    pub fn @"textDocument/prepareRename"(
+        self: *NativeServer,
+        _: std.mem.Allocator,
+        params: lsp.types.prepare_rename.Params,
+    ) ?lsp.types.prepare_rename.Result {
+        const range = self.handler.prepareRename(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+        ) catch return null;
+        const r = range orelse return null;
+        return .{
+            .prepare_rename_placeholder = .{
+                .range = .{
+                    .start = .{ .line = r.start.line, .character = r.start.character },
+                    .end = .{ .line = r.end.line, .character = r.end.character },
+                },
+                .placeholder = "",
+            },
+        };
     }
 
     // ----- Helpers -----
