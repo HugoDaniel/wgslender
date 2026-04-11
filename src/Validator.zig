@@ -792,6 +792,14 @@ fn validateConstAssert(v: *Validator, d: *Ast.ConstAssertDecl) Allocator.Error!v
     const expr_type = (try v.checkExpr(d.expr)) orelse return;
     if (!expr_type.eql(Types.Bool)) {
         v.addErrorWithCodeR(exprSpan(d.expr), Diagnostic.Code.invalid_const_expr, v.fmtError("const_assert expression must be 'bool', got '{s}'", .{expr_type.string()}));
+        return;
+    }
+
+    // WGSL spec section 9.6: const_assert condition must evaluate to true.
+    if (v.tryEvalConstBool(d.expr)) |val| {
+        if (!val) {
+            v.addErrorWithCodeR(exprSpan(d.expr), Diagnostic.Code.const_assert_failed, "const_assert condition is false");
+        }
     }
 }
 
@@ -804,6 +812,15 @@ fn validateAddressSpace(v: *Validator, d: *Ast.VarDecl, var_type: Types.Type) vo
         v.addErrorWithCodeR(r, Diagnostic.Code.invalid_address_space, v.fmtError("var '{s}' of handle type must not specify an address space", .{name}));
         return;
     }
+    // WGSL spec section 6.2.8: atomic types can only be in workgroup or storage(read_write) address space.
+    if (typeContainsAtomic(var_type)) {
+        if (d.address_space != .workgroup and d.address_space != .storage) {
+            v.addErrorWithCodeR(r, Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic var '{s}' must be in 'workgroup' or 'storage' address space", .{name}));
+        } else if (d.address_space == .storage and d.access_mode != .read_write and d.access_mode != .none) {
+            v.addErrorWithCodeR(r, Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic var '{s}' in storage address space must have 'read_write' access mode", .{name}));
+        }
+    }
+
     switch (d.address_space) {
         .workgroup => {
             if (!var_type.isStorable()) {
@@ -942,7 +959,11 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
         if (param_type) |pt| {
             try v.setSymbolType(param.name, pt);
             try param_types.append(v.arena, pt);
-            // Pointer parameters: address space must be function or private by default
+            // WGSL spec section 8.6: parameters must be constructible, pointer, texture, or sampler.
+            if (!pt.isConstructible() and pt != .pointer and pt != .texture and pt != .sampler) {
+                v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_arg_type, v.fmtError("parameter '{s}' has non-constructible type '{s}'; must be constructible, pointer, texture, or sampler", .{ v.symbolName(param.name), pt.string() }));
+            }
+            // Pointer parameters: address space must be function or private by default.
             if (pt == .pointer) {
                 const space = pt.pointer.address_space;
                 if (space != .function and space != .private and space != .none) {
@@ -1025,6 +1046,7 @@ fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error
                     }
                     // Each @workgroup_size arg must be a const or override expression,
                     // and must evaluate to a positive integer (WGSL spec section 9.5).
+                    var wg_product: u64 = 1;
                     for (attr.args.items) |arg| {
                         const stage = v.classifyExprStage(arg);
                         if (stage == .runtime_expr) {
@@ -1033,8 +1055,14 @@ fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error
                         if (v.tryExtractIntValue(arg)) |val| {
                             if (val <= 0) {
                                 v.addErrorWithCodeR(exprRange(arg), Diagnostic.Code.invalid_attribute, v.fmtError("@workgroup_size dimension must be at least 1, got {d}", .{val}));
+                            } else {
+                                wg_product *|= @intCast(val);
                             }
                         }
+                    }
+                    // Product of dimensions must not overflow u32.
+                    if (wg_product > std.math.maxInt(u32)) {
+                        v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@workgroup_size product exceeds maximum (4294967295)");
                     }
                 }
             }
@@ -1073,6 +1101,11 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
         if (param_type == .@"struct") {
             if (v.findStructDecl(param_type.@"struct".name)) |sd| {
                 for (sd.members.items) |member| {
+                    // WGSL spec section 10.1: entry point I/O struct members must not be struct types.
+                    const mt = v.resolveType(member.typ);
+                    if (mt != null and mt.? == .@"struct") {
+                        v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("entry point I/O member '{s}' cannot be a struct type", .{v.symbolName(member.name)}));
+                    }
                     if (!hasLocationOrBuiltin(member.attributes)) {
                         v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("entry point struct member '{s}' must have @builtin or @location", .{v.symbolName(member.name)}));
                     }
@@ -1085,7 +1118,6 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                     }
                     // Validate @interpolate on fragment inputs
                     if (v.current_stage == .fragment) {
-                        const mt = v.resolveType(member.typ);
                         v.validateInterpolation(member.attributes, mt, v.symbolLoc(member.name));
                     }
                     v.validateInvariantAttr(member.attributes, v.symbolLoc(member.name));
@@ -1104,6 +1136,11 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
         if (ret_type == .@"struct") {
             if (v.findStructDecl(ret_type.@"struct".name)) |sd| {
                 for (sd.members.items) |member| {
+                    // Nested struct in output I/O is invalid.
+                    const out_mt = v.resolveType(member.typ);
+                    if (out_mt != null and out_mt.? == .@"struct") {
+                        v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("entry point I/O member '{s}' cannot be a struct type", .{v.symbolName(member.name)}));
+                    }
                     if (!hasLocationOrBuiltin(member.attributes)) {
                         v.addErrorWithCodeR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("entry point struct member '{s}' must have @builtin or @location", .{v.symbolName(member.name)}));
                     }
@@ -1116,8 +1153,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                     }
                     // Validate @interpolate on vertex outputs
                     if (v.current_stage == .vertex) {
-                        const mt = v.resolveType(member.typ);
-                        v.validateInterpolation(member.attributes, mt, v.symbolLoc(member.name));
+                        v.validateInterpolation(member.attributes, out_mt, v.symbolLoc(member.name));
                     }
                     v.validateInvariantAttr(member.attributes, v.symbolLoc(member.name));
                 }
@@ -1195,6 +1231,25 @@ fn validateInterpolation(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attrib
             }
         }
     }
+}
+
+/// Check if a type contains an atomic anywhere (including inside structs/arrays).
+fn typeContainsAtomic(typ: Types.Type) bool {
+    var current = typ;
+    for (0..32) |_| {
+        switch (current) {
+            .atomic => return true,
+            .array => |a| current = a.element,
+            .@"struct" => |s| {
+                for (s.fields) |f| {
+                    if (typeContainsAtomic(f.typ)) return true;
+                }
+                return false;
+            },
+            else => return false,
+        }
+    }
+    return false;
 }
 
 /// Detect duplicate characters in a swizzle string (e.g., "xx", "xyxy").
@@ -3932,6 +3987,40 @@ fn astTypeRange(ast_type: Ast.Type) LocRange {
 fn attrRange(attr: *const Ast.Attribute) LocRange {
     // +1 for the '@' prefix
     return .{ .start = attr.loc, .end = attr.loc +| 1 +| @as(u32, @intCast(attr.name.len)) };
+}
+
+/// Try to evaluate a const bool expression (for const_assert).
+/// Handles: true/false literals, comparison operators on known-const int operands, logical not.
+fn tryEvalConstBool(v: *const Validator, expr: Ast.Expr) ?bool {
+    switch (expr) {
+        .literal => |lit| {
+            if (std.mem.eql(u8, lit.value, "true")) return true;
+            if (std.mem.eql(u8, lit.value, "false")) return false;
+            return null;
+        },
+        .paren => |p| return v.tryEvalConstBool(p.expr),
+        .unary => |u| {
+            if (u.op == .not) {
+                if (v.tryEvalConstBool(u.operand)) |val| return !val;
+            }
+            return null;
+        },
+        .binary => |b| {
+            // Try evaluating as integer comparison.
+            const left_val = v.tryExtractIntValue(b.left) orelse return null;
+            const right_val = v.tryExtractIntValue(b.right) orelse return null;
+            return switch (b.op) {
+                .eq => left_val == right_val,
+                .ne => left_val != right_val,
+                .lt => left_val < right_val,
+                .le => left_val <= right_val,
+                .gt => left_val > right_val,
+                .ge => left_val >= right_val,
+                else => null,
+            };
+        },
+        else => return null,
+    }
 }
 
 /// Try to extract a constant integer value from an expression.

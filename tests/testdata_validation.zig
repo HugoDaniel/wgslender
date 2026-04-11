@@ -30,6 +30,7 @@ pub const @"declarations/const_switch_cases" = @embedFile("testdata/validation/d
 pub const @"declarations/diagnostic_valid" = @embedFile("testdata/validation/declarations/diagnostic_valid.wgsl");
 pub const @"declarations/f16_with_enable" = @embedFile("testdata/validation/declarations/f16_with_enable.wgsl");
 pub const @"declarations/override_workgroup_size" = @embedFile("testdata/validation/declarations/override_workgroup_size.wgsl");
+pub const @"declarations/const_assert_true" = @embedFile("testdata/validation/declarations/const_assert_true.wgsl");
 
 // --- uniformity/ ---
 pub const @"uniformity/barrier_uniform" = @embedFile("testdata/validation/uniformity/barrier_uniform.wgsl");
@@ -153,6 +154,10 @@ pub const @"errors/declarations/opaque_in_struct" = @embedFile("testdata/validat
 pub const @"errors/declarations/workgroup_size_zero" = @embedFile("testdata/validation/errors/declarations/workgroup_size_zero.wgsl");
 pub const @"errors/declarations/invariant_not_position" = @embedFile("testdata/validation/errors/declarations/invariant_not_position.wgsl");
 pub const @"errors/declarations/location_on_compute" = @embedFile("testdata/validation/errors/declarations/location_on_compute.wgsl");
+pub const @"errors/declarations/const_assert_false" = @embedFile("testdata/validation/errors/declarations/const_assert_false.wgsl");
+pub const @"errors/declarations/atomic_wrong_space" = @embedFile("testdata/validation/errors/declarations/atomic_wrong_space.wgsl");
+pub const @"errors/declarations/nested_struct_io" = @embedFile("testdata/validation/errors/declarations/nested_struct_io.wgsl");
+pub const @"errors/declarations/non_constructible_param" = @embedFile("testdata/validation/errors/declarations/non_constructible_param.wgsl");
 
 // --- errors/types/ (new batch) ---
 pub const @"errors/types/assign_to_let" = @embedFile("testdata/validation/errors/types/assign_to_let.wgsl");
