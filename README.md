@@ -1,6 +1,6 @@
 # wgslender
 
-A high-performance WGSL minifier, validator, and reflection tool written in Zig.
+A high-performance WGSL minifier, validator, and reflection tool written in Zig — with a built-in language server.
 
 **[Try the online demo](https://hugodaniel.com/pages/wgslender/)**
 
@@ -10,6 +10,9 @@ wgslender shader.wgsl -o shader.min.wgsl
 
 # npm
 npm install wgslender
+
+# Editor support (LSP)
+npm install wgslender-lsp
 ```
 
 ## Quick Start
@@ -38,11 +41,12 @@ console.log(info.entryPoints); // Entry point metadata
 | Feature            | Description                                                    |
 | ------------------ | -------------------------------------------------------------- |
 | **Minification**   | Whitespace removal, identifier renaming, dead code elimination |
-| **Validation**     | Type checking, symbol resolution, uniformity analysis          |
+| **Validation**     | Type checking, symbol resolution, uniformity analysis, rich diagnostics |
 | **Reflection**     | Extract bindings, struct layouts, entry points                 |
 | **Source Maps**    | Debug minified shaders with v3 source maps                     |
 | **Binary shaders** | Compile WGSL to `.wasm` — BPE compression + tiny WASM decoder  |
 | **Multi-platform** | CLI, npm/WASM, Zig library, C library (FFI)                    |
+| **Editor support** | Language server (LSP) with diagnostics, quick fixes, "did you mean?" suggestions |
 | **Well tested**    | Validated against Dawn Tint test suite (7,961 shaders)         |
 
 ## Installation
@@ -65,6 +69,16 @@ npm install wgslender
 
 ```bash
 zig build -Doptimize=ReleaseSafe   # Produces static library
+```
+
+### LSP Server
+
+```bash
+# Native (VS Code, Neovim — stdio transport)
+zig build lsp -Doptimize=ReleaseSafe   # → zig-out/bin/wgslender-lsp
+
+# Browser editors
+npm install wgslender-lsp
 ```
 
 ## CLI Usage
@@ -101,11 +115,15 @@ wgslender --source-map shader.wgsl -o shader.min.wgsl
 | `--mangle-external-bindings` | Rename uniform/storage vars directly |
 | `--keep-names <names>`       | Preserve specific names              |
 | `--no-tree-shaking`          | Keep unused declarations             |
+| `--preserve-uniform-struct-types` | Keep struct names used in uniforms |
 | `--sort-declarations`        | Sort declarations by kind (compression) |
 | `--scope-local-rename`       | Per-function canonical naming (compression) |
 | `--source-map`               | Generate source map                  |
+| `--source-map-inline`        | Embed source map as inline data URI  |
+| `--source-map-sources`       | Include original source in source map|
 | `--config <file>`            | Use config file                      |
 | `--no-config`                | Ignore config files                  |
+| `--line-offset <n>`          | Add n to reported line numbers (validate) |
 
 ### Subcommands
 
@@ -229,11 +247,42 @@ const wgsl = new TextDecoder().decode(new Uint8Array(instance.exports.memory.buf
 device.createShaderModule({ code: wgsl });
 ```
 
+## Language Server (LSP)
+
+Real-time diagnostics, quick-fix code actions, and "did you mean?" suggestions for WGSL files.
+
+### Native (VS Code / Neovim)
+
+```bash
+zig build lsp -Doptimize=ReleaseSafe
+# → zig-out/bin/wgslender-lsp (stdio transport)
+```
+
+Configure your editor to run `wgslender-lsp` as a language server for `.wgsl` files.
+
+### Browser (CodeMirror)
+
+```bash
+npm install wgslender-lsp
+```
+
+```javascript
+import { initialize, createTransport } from "wgslender-lsp";
+import { LSPClient, languageServerExtensions } from "@codemirror/lsp-client";
+
+await initialize();
+const transport = createTransport();
+const client = new LSPClient({ extensions: languageServerExtensions() });
+client.connect(transport);
+```
+
 ## Development
 
 ```bash
 zig build              # Build CLI → zig-out/bin/wgslender
 zig build wasm         # Build WASM → zig-out/bin/wgslender.wasm
+zig build lsp          # Build LSP server → zig-out/bin/wgslender-lsp
+zig build lsp-wasm     # Build WASM LSP → zig-out/bin/wgslender-lsp.wasm
 zig build test         # Run all tests
 
 # Run
@@ -243,6 +292,7 @@ echo 'fn main() {}' | ./zig-out/bin/wgslender
 
 # NPM package tests
 cd npm/wgslender && node test.js
+cd npm/wgslender-lsp && node test.js
 ```
 
 Requires [Zig master](https://ziglang.org/download/) (0.16.x) — install via `zigup master`.
@@ -253,6 +303,7 @@ Requires [Zig master](https://ziglang.org/download/) (0.16.x) — install via `z
 - [Why pre-validate WGSL?](docs/why-pre-validate-wgsl.md) - Benefits of build-time validation
 - [Why reflect WGSL?](docs/why-reflect-wgsl.md) - Benefits of shader reflection
 - [npm package docs](npm/wgslender/README.md) - JavaScript/TypeScript API
+- [C API reference](docs/C-API.md) - C/FFI integration
 - [Building with wgslender](BUILDING_WITH_WGSLENDER.md) - Integration guide
 
 ## License
