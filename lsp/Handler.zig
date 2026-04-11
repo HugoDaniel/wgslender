@@ -69,7 +69,7 @@ pub const LspCodeAction = struct {
 
 /// Server capabilities as a JSON string (shared by native and WASM).
 pub const capabilities_json =
-    \\{"textDocumentSync":{"openClose":true,"change":1},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{}}
+    \\{"textDocumentSync":{"openClose":true,"change":2},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{},"documentFormattingProvider":true}
 ;
 
 /// Creates a handler with an empty document store.
@@ -1732,6 +1732,66 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
     }
 
     return try self.gpa.dupe(CodeLensInfo, lenses.items);
+}
+
+// =========================================================================
+// LSP Feature: Incremental Text Sync
+// =========================================================================
+
+/// Apply an incremental text change to an open document.
+/// The range specifies which portion of the source to replace.
+pub fn changeDocumentIncremental(self: *Handler, uri: []const u8, range: Range, text: []const u8) !void {
+    self.invalidateAnalysis(uri);
+    const doc = self.documents.getPtr(uri) orelse return;
+    const source = doc.source;
+
+    const start = lspPositionToOffset(source, range.start) orelse return;
+    const end = lspPositionToOffset(source, range.end) orelse return;
+    if (end < start) return;
+
+    // Build new source: source[0..start] ++ text ++ source[end..]
+    const new_len = start + text.len + (source.len - end);
+    const new_source = try self.gpa.alloc(u8, new_len);
+    @memcpy(new_source[0..start], source[0..start]);
+    @memcpy(new_source[start..][0..text.len], text);
+    @memcpy(new_source[start + text.len ..], source[end..]);
+    self.gpa.free(doc.source);
+    doc.source = new_source;
+}
+
+// =========================================================================
+// LSP Feature: Formatting
+// =========================================================================
+
+const Printer = wgslender.Printer;
+
+pub fn computeFormatting(self: *Handler, uri: []const u8) !?LspTextEdit {
+    const doc = self.documents.getPtr(uri) orelse return null;
+    const source = doc.source;
+
+    // Parse and print with non-minified settings
+    const source_z = try self.gpa.dupeZ(u8, source);
+    defer self.gpa.free(source_z);
+
+    var options = wgslender.Minifier.defaultOptions();
+    options.minify_whitespace = false;
+    options.minify_identifiers = false;
+
+    var result = try wgslender.minifyWithOptions(self.gpa, source_z, options);
+    defer result.deinit(self.gpa);
+
+    if (result.errors.len > 0) return null; // Can't format with parse errors
+
+    // Compute the end position of the document
+    const end_pos = offsetToLspPosition(source, @intCast(source.len)) orelse return null;
+
+    return .{
+        .range = .{
+            .start = .{ .line = 0, .character = 0 },
+            .end = end_pos,
+        },
+        .new_text = try self.gpa.dupe(u8, result.code),
+    };
 }
 
 // =========================================================================

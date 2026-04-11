@@ -53,7 +53,7 @@ const NativeServer = struct {
                 .textDocumentSync = .{
                     .text_document_sync_options = .{
                         .openClose = true,
-                        .change = .Full,
+                        .change = .Incremental,
                     },
                 },
                 .codeActionProvider = .{
@@ -78,6 +78,7 @@ const NativeServer = struct {
                 .typeDefinitionProvider = .{ .bool = true },
                 .inlayHintProvider = .{ .bool = true },
                 .codeLensProvider = .{},
+                .documentFormattingProvider = .{ .bool = true },
             },
         };
     }
@@ -116,7 +117,12 @@ const NativeServer = struct {
                 .text_document_content_change_whole_document => |full| {
                     try self.handler.changeDocument(uri, full.text);
                 },
-                .text_document_content_change_partial => {},
+                .text_document_content_change_partial => |partial| {
+                    try self.handler.changeDocumentIncremental(uri, .{
+                        .start = .{ .line = partial.range.start.line, .character = partial.range.start.character },
+                        .end = .{ .line = partial.range.end.line, .character = partial.range.end.character },
+                    }, partial.text);
+                },
             }
         }
         self.publishDiagnostics(uri);
@@ -574,6 +580,27 @@ const NativeServer = struct {
             };
         }
         return lsp_lenses;
+    }
+
+    // ----- Formatting -----
+
+    pub fn @"textDocument/formatting"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.document_formatting.Params,
+    ) ?[]const lsp.types.TextEdit {
+        const edit = self.handler.computeFormatting(params.textDocument.uri) catch return null;
+        const e = edit orelse return null;
+        defer self.handler.gpa.free(e.new_text);
+        const result = arena.alloc(lsp.types.TextEdit, 1) catch return null;
+        result[0] = .{
+            .range = .{
+                .start = .{ .line = e.range.start.line, .character = e.range.start.character },
+                .end = .{ .line = e.range.end.line, .character = e.range.end.character },
+            },
+            .newText = arena.dupe(u8, e.new_text) catch return null,
+        };
+        return result;
     }
 
     // ----- Helpers -----

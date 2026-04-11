@@ -126,6 +126,8 @@ fn handleMessage(json: []const u8) void {
         handleInlayHint(root, id);
     } else if (eql(method, "textDocument/codeLens")) {
         handleCodeLens(root, id);
+    } else if (eql(method, "textDocument/formatting")) {
+        handleFormatting(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -158,8 +160,29 @@ fn handleDidChange(root: std.json.ObjectMap) void {
         else => return,
     };
     if (changes.len == 0) return;
-    const text = strVal(objGet(&changes[changes.len - 1], "text")) orelse return;
-    handler.changeDocument(uri, text) catch return;
+
+    // Apply each change (may be incremental or full)
+    for (changes) |*change_val| {
+        const change = objGet(change_val, "text") orelse continue;
+        const text = strVal(change) orelse continue;
+        const range_val = objGet(change_val, "range");
+        if (range_val) |rv| {
+            // Incremental change with range
+            const start_obj = objGet(rv, "start");
+            const end_obj = objGet(rv, "end");
+            const start_line: u32 = if (intVal(if (start_obj) |s| objGet(s, "line") else null)) |v| @intCast(v) else continue;
+            const start_char: u32 = if (intVal(if (start_obj) |s| objGet(s, "character") else null)) |v| @intCast(v) else continue;
+            const end_line: u32 = if (intVal(if (end_obj) |e| objGet(e, "line") else null)) |v| @intCast(v) else continue;
+            const end_char: u32 = if (intVal(if (end_obj) |e| objGet(e, "character") else null)) |v| @intCast(v) else continue;
+            handler.changeDocumentIncremental(uri, .{
+                .start = .{ .line = start_line, .character = start_char },
+                .end = .{ .line = end_line, .character = end_char },
+            }, text) catch continue;
+        } else {
+            // Full document replacement
+            handler.changeDocument(uri, text) catch continue;
+        }
+    }
     emitDiagnostics(uri);
 }
 
@@ -648,6 +671,23 @@ fn handleCodeLens(root: std.json.ObjectMap, id: ?std.json.Value) void {
         appendStr(&buf, "\",\"command\":\"\"}}");
     }
     appendStr(&buf, "]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleFormatting(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
+    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const edit = handler.computeFormatting(uri) catch return sendResult(id, "null");
+    const e = edit orelse return sendResult(id, "null");
+    defer handler.gpa.free(e.new_text);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[{\"range\":");
+    formatRange(&buf, e.range);
+    appendStr(&buf, ",\"newText\":\"");
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, e.new_text) catch return;
+    appendStr(&buf, "\"}]");
     sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
 }
 
