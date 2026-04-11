@@ -1645,6 +1645,52 @@ fn collectInlayHintsFromStmt(
 }
 
 // =========================================================================
+// LSP Feature: Unused Symbol Warnings
+// =========================================================================
+
+/// Append warnings for unused symbols to a diagnostics list.
+/// Called after analysis to supplement validation diagnostics.
+pub fn appendUnusedWarnings(
+    gpa: std.mem.Allocator,
+    analysis: *const wgslender.Validator.AnalysisResult,
+    diags: *std.ArrayListUnmanaged(LspDiagnostic),
+) void {
+    const module = analysis.module orelse return;
+    const source = module.source;
+
+    for (module.symbols.items, 0..) |sym, idx| {
+        if (sym.use_count > 0) continue;
+        if (sym.original_name.len == 0) continue;
+        if (sym.flags.is_entry_point) continue;
+        if (sym.flags.is_api_facing) continue;
+        if (sym.flags.is_external_binding) continue;
+
+        // Only warn for user-declared symbols
+        switch (sym.kind) {
+            .function, .@"const", .let, .@"var", .override => {},
+            .parameter => {
+                // Skip parameters of entry point functions
+                // We can't easily detect this from the symbol alone,
+                // so skip all parameters for now (they may be required by signature)
+                continue;
+            },
+            else => continue,
+        }
+
+        _ = idx;
+        const range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "'{s}' is declared but never used", .{sym.original_name}) catch continue;
+        diags.append(gpa, .{
+            .range = range,
+            .severity = .warning,
+            .message = gpa.dupe(u8, msg) catch continue,
+            .code = "W0001",
+        }) catch continue;
+    }
+}
+
+// =========================================================================
 // Tests
 // =========================================================================
 
