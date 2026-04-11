@@ -1,4 +1,4 @@
-//! Collision detection tests — ported from Go internal/minifier_tests/collision_test.go.
+//! Collision detection tests.
 //! Ensures the renamer never produces duplicate declaration names.
 
 const std = @import("std");

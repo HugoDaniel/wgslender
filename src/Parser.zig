@@ -2945,7 +2945,7 @@ test "parser: unclosed compound statement" {
 }
 
 // -------------------------------------------------------------------------
-// Regression tests (from scenew_regression_test.go)
+// Regression tests
 // -------------------------------------------------------------------------
 
 test "parser: inline array initialization" {

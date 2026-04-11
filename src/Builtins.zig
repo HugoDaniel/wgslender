@@ -2,7 +2,6 @@
 //!
 //! Implements the builtin function table as defined in WGSL spec section 17,
 //! supporting overload resolution and validation of builtin function calls.
-//! Ports the Go `internal/builtins/builtins.go` package.
 
 const std = @import("std");
 

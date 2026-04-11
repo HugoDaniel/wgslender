@@ -1,4 +1,4 @@
-//! Reflect tests — ported from Go's internal/minifier_tests/minify_reflect_test.go.
+//! Reflect tests.
 //! Tests the combined minification and reflection functionality.
 
 const std = @import("std");
@@ -290,7 +290,7 @@ test "ConvenienceMinifyFunction" {
 }
 
 // =========================================================================
-// Reflect External Tests (ported from Go internal/reflect/reflect_test.go)
+// Reflect External Tests
 // =========================================================================
 
 fn reflectSource(allocator: std.mem.Allocator, source: [:0]const u8) !wgslender.Reflect.ReflectResult {

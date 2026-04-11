@@ -63,86 +63,47 @@ const combined = minifyAndReflect(source, options);
 // combined: { code, reflect: { bindings[], structs{}, ... } }
 ```
 
-### Go
-```go
-import "github.com/HugoDaniel/wgslender/pkg/api"
-result := api.Minify(source)                    // Full minification
-result := api.MinifyWhitespaceOnly(source)      // Safe mode
-result := api.MinifyWithOptions(source, opts)   // Custom
-info := api.Reflect(source)                     // Shader reflection
-combined := api.MinifyAndReflect(source)        // Minify + reflect with mapped names
-valid := api.Validate(source)                   // Semantic validation
-valid := api.ValidateWithOptions(source, opts)  // Validation with options
-```
-
 ### C Library (FFI)
 
-Build: `make lib` → `build/libwgslender.a` + `build/libwgslender.h`
+Build: `zig build lib` → `zig-out/lib/libwgslender.a` + `zig-out/include/wgslender.h`
 
 #### Function Signatures
 
 ```c
-#include "libwgslender.h"
+#include "wgslender.h"
 
-// Minify WGSL source code
-// Returns: 0=success, 1=json_encode_failed, 2=null_input
-int wgslender_minify(
-    const char* source,      // WGSL source (not null-terminated required)
-    int source_len,          // Length of source in bytes
-    const char* options,     // JSON options (nullable)
-    int options_len,         // Length of options (0 if null)
-    char** out_code,         // Output: minified WGSL (caller must free)
-    int* out_code_len,       // Output: length of minified code
-    char** out_json,         // Output: result JSON (caller must free)
-    int* out_json_len        // Output: length of JSON
-);
+// Minify WGSL source with bitflag options
+WgslenderResult wgslender_minify_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t flags);
+
+// Minify WGSL source with JSON options (same keys as config files)
+WgslenderResult wgslender_minify_json_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *opts_ptr, uint32_t opts_len);
+
+// Validate WGSL source (returns validity + JSON diagnostics)
+WgslenderValidateResult wgslender_validate_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t flags);
 
 // Reflect on WGSL source (extract bindings, structs, entry points)
-// Returns: 0=success, 1=json_encode_failed, 2=null_input
-int wgslender_reflect(
-    const char* source,      // WGSL source
-    int source_len,          // Length of source
-    char** out_json,         // Output: reflection JSON (caller must free)
-    int* out_json_len        // Output: length of JSON
-);
+WgslenderJsonResult wgslender_reflect_c(
+    const uint8_t *source_ptr, uint32_t source_len);
 
-// Minify and reflect in one call (includes mapped identifier names)
-// Returns: 0=success, 1=json_encode_failed, 2=null_input
-int wgslender_minify_and_reflect(
-    const char* source,      // WGSL source
-    int source_len,          // Length of source
-    const char* options,     // JSON options (nullable)
-    int options_len,         // Length of options (0 if null)
-    char** out_code,         // Output: minified WGSL (caller must free)
-    int* out_code_len,       // Output: length of minified code
-    char** out_json,         // Output: reflection JSON (caller must free)
-    int* out_json_len        // Output: length of JSON
-);
-
-// Semantic validation
-// Returns: 0=success, 1=json_encode_failed, 2=null_input
-int wgslender_validate(
-    const char* source,      // WGSL source
-    int source_len,          // Length of source
-    const char* options,     // JSON options (nullable)
-    int options_len,         // Length of options (0 if null)
-    char** out_json,         // Output: validation JSON (caller must free)
-    int* out_json_len        // Output: length of JSON
-);
-
-// Free memory allocated by wgslender functions
-void wgslender_free(void* ptr);
+// Free memory returned by wgslender functions (both ptr and len required)
+void wgslender_free_c(uint8_t *ptr, uint32_t len);
 
 // Get library version (static string, do NOT free)
-const char* wgslender_version(void);
+const uint8_t *wgslender_version_c(uint32_t *len);
 ```
 
 #### Memory Ownership
 
-- All `out_*` parameters are allocated by wgslender (Go heap)
-- Caller MUST call `wgslender_free()` on returned pointers
-- Do NOT use `free()` - memory is managed by Go runtime
-- Do NOT access memory after calling `wgslender_free()`
+- All result pointers (`code_ptr`, `json_ptr`) are allocated by wgslender
+- Caller MUST call `wgslender_free_c(ptr, len)` — both pointer and length required
+- Do NOT use `free()` — memory is managed by Zig's page allocator
+- Do NOT access memory after calling `wgslender_free_c()`
 
 #### Reflection JSON Format
 
@@ -194,36 +155,35 @@ const char* wgslender_version(void);
 #### Basic Usage
 
 ```c
-#include "libwgslender.h"
+#include "wgslender.h"
 #include <stdio.h>
 #include <string.h>
 
-int main() {
-    const char* source = "@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.); }";
-    char *code = NULL, *json = NULL;
-    int code_len = 0, json_len = 0;
+int main(void) {
+    const char *source = "@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.); }";
 
     // Minify with default options
-    int err = wgslender_minify(source, strlen(source), NULL, 0,
-                             &code, &code_len, &json, &json_len);
-    if (err == 0) {
-        printf("Minified (%d bytes): %.*s\n", code_len, code_len, code);
-        wgslender_free(code);
-        wgslender_free(json);
+    WgslenderResult r = wgslender_minify_c(
+        (const uint8_t *)source, (uint32_t)strlen(source),
+        WGSLENDER_OPT_DEFAULT);
+    if (!r.error) {
+        printf("Minified (%u bytes): %.*s\n", r.code_len, r.code_len, r.code_ptr);
+        wgslender_free_c((uint8_t *)r.code_ptr, r.code_len);
     }
 
     // Reflection only
-    err = wgslender_reflect(source, strlen(source), &json, &json_len);
-    if (err == 0) {
-        printf("Reflection: %.*s\n", json_len, json);
-        wgslender_free(json);
+    WgslenderJsonResult ref = wgslender_reflect_c(
+        (const uint8_t *)source, (uint32_t)strlen(source));
+    if (!ref.error) {
+        printf("Reflection: %.*s\n", ref.json_len, ref.json_ptr);
+        wgslender_free_c((uint8_t *)ref.json_ptr, ref.json_len);
     }
 
     return 0;
 }
 ```
 
-Link with: `gcc -o myapp myapp.c -L./build -lwgslender -lpthread -lm`
+Link with: `cc -std=c11 -o myapp myapp.c -Izig-out/include zig-out/lib/libwgslender.a`
 
 ## Options Reference
 
@@ -355,18 +315,10 @@ console.log(result.sourceMap);  // JSON string
 const code = result.code + '\n//# sourceMappingURL=data:application/json;base64,' + btoa(result.sourceMap);
 ```
 
-```go
-// Go API: Generate source map
-result := api.MinifyWithOptions(source, api.MinifyOptions{
-    SourceMap: true,
-    SourceMapOptions: api.SourceMapOptions{
-        File: "out.min.wgsl",
-        SourceName: "input.wgsl",
-        IncludeSource: true,
-    },
-})
-fmt.Println(result.SourceMap)     // JSON string
-fmt.Println(result.SourceMapDataURI)  // data:application/json;base64,...
+```bash
+# CLI: Source map with embedded source
+wgslender -o out.min.wgsl --source-map --source-map-sources input.wgsl
+# Produces out.min.wgsl.map with original source included
 ```
 
 ### Pattern 7: WebGPU Error Translation
@@ -493,90 +445,28 @@ if (!result.valid) {
 }
 ```
 
-### Pattern 15: C/Zig FFI Integration
+### Pattern 15: C FFI Integration
 ```c
-// Build: make lib
-// Link: gcc -o myapp myapp.c -L./build -lwgslender -lpthread -lm
+// Build: zig build lib
+// Link: cc -std=c11 -o myapp myapp.c -Izig-out/include zig-out/lib/libwgslender.a
 
-#include "libwgslender.h"
+#include "wgslender.h"
 
-const char* source = "@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.); }";
-char *code = NULL, *json = NULL;
-int code_len = 0, json_len = 0;
+const char *source = "@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.); }";
 
 // Use custom options via JSON
-const char* opts = "{\"minifyWhitespace\":true,\"minifyIdentifiers\":true}";
-int err = wgslender_minify(
-    (char*)source, strlen(source),
-    (char*)opts, strlen(opts),
-    &code, &code_len,
-    &json, &json_len
-);
+const char *opts = "{\"minifyWhitespace\":true,\"minifyIdentifiers\":true}";
+WgslenderResult r = wgslender_minify_json_c(
+    (const uint8_t *)source, (uint32_t)strlen(source),
+    (const uint8_t *)opts, (uint32_t)strlen(opts));
 
-if (err == 0) {
-    printf("Minified: %.*s\n", code_len, code);
-    wgslender_free(code);
-    wgslender_free(json);
+if (!r.error) {
+    printf("Minified: %.*s\n", r.code_len, r.code_ptr);
+    wgslender_free_c((uint8_t *)r.code_ptr, r.code_len);
 }
 ```
 
-```zig
-// Zig FFI example (simplified from PNGine's wgslender_ffi.zig)
-const c = @cImport({
-    @cInclude("libwgslender.h");
-});
-
-/// Result wrapper for FFI calls. Holds C-allocated memory.
-pub const FfiResult = struct {
-    json: []const u8,
-
-    pub fn deinit(self: *FfiResult) void {
-        c.wgslender_free(@ptrCast(@constCast(self.json.ptr)));
-        self.* = undefined;
-    }
-};
-
-/// Reflect on WGSL source. Caller must call result.deinit().
-pub fn reflectFfi(source: []const u8) !FfiResult {
-    var out_json: [*c]u8 = undefined;
-    var out_len: c_int = 0;
-
-    const result = c.wgslender_reflect(
-        @ptrCast(@constCast(source.ptr)),
-        @intCast(source.len),
-        &out_json,
-        &out_len,
-    );
-
-    return switch (result) {
-        0 => FfiResult{ .json = out_json[0..@intCast(out_len)] },
-        1 => error.JsonEncodeFailed,
-        2 => error.NullInput,
-        else => error.UnknownError,
-    };
-}
-
-// Usage:
-// var result = try reflectFfi(wgsl_source);
-// defer result.deinit();
-// // Parse result.json...
-```
-
-**Zig Build Integration** (build.zig):
-```zig
-// Add wgslender library to your module
-const wgslender_lib = b.option([]const u8, "wgslender-lib", "Path to libwgslender.a");
-if (wgslender_lib) |lib_path| {
-    module.addObjectFile(.{ .cwd_relative = lib_path });
-    module.addIncludePath(.{ .cwd_relative = "path/to/wgslender/build" });
-    module.link_libc = true;
-    if (target.result.os.tag == .macos) {
-        module.linkFramework("CoreFoundation", .{});
-        module.linkFramework("Security", .{});
-    }
-    module.linkSystemLibrary("pthread", .{});
-}
-```
+See [`examples/c/`](examples/c/) for full working examples and [`docs/C-API.md`](docs/C-API.md) for the complete API reference.
 
 ## Gotchas & Edge Cases
 
@@ -678,12 +568,8 @@ Minifier returns original source on parse errors, never partial/corrupted output
 ## Build Outputs
 
 ```bash
-make build        # Native binary: build/wgslender
-make build-wasm   # WASM: build/wgslender.wasm (~3.6MB)
-make lib          # C static library: build/libwgslender.a + libwgslender.h
-make build-all    # All platforms + WASM
+zig build          # Native CLI: zig-out/bin/wgslender
+zig build wasm     # WASM: zig-out/bin/wgslender.wasm
+zig build lib      # C static library: zig-out/lib/libwgslender.a + zig-out/include/wgslender.h
+zig build lsp      # LSP server: zig-out/bin/wgslender-lsp
 ```
-
-WASM requires `wasm_exec.js` from Go toolchain (included in npm package).
-
-C library requires CGO. Link with: `-lwgslender -lpthread -lm`

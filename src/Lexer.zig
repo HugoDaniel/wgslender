@@ -1226,7 +1226,7 @@ test "tokenize numbers" {
 }
 
 // =========================================================================
-// Ported from Go internal/lexer/lexer_test.go
+// Lexer unit tests
 // =========================================================================
 
 /// Tokenize `input`, assert the first token has the given tag, free memory.

@@ -2,7 +2,7 @@
 //!
 //! Implements the type system as defined in WGSL spec section 6,
 //! supporting type inference, type checking, and overload resolution.
-//! Ported from Go's internal/types/types.go.
+
 
 const std = @import("std");
 const Ast = @import("Ast.zig");

@@ -1164,7 +1164,7 @@ test "decodeMappings with name index" {
 }
 
 // =========================================================================
-// VLQ encode known positive values (from Go TestVLQEncodePositive)
+// VLQ encode known positive values
 // =========================================================================
 
 test "VLQ encode known positive values" {
@@ -1267,7 +1267,7 @@ test "VLQ decode truncated continuation" {
 }
 
 // =========================================================================
-// LineIndex detailed multi-line positions (from Go TestLineIndexMultiLine)
+// LineIndex detailed multi-line positions
 // =========================================================================
 
 test "LineIndex multi-line detailed positions" {
@@ -1319,7 +1319,7 @@ test "LineIndex multi-line detailed positions" {
 }
 
 // =========================================================================
-// LineIndex CRLF detailed positions (from Go TestLineIndexCRLFPositions)
+// LineIndex CRLF detailed positions
 // =========================================================================
 
 test "LineIndex CRLF detailed positions" {
@@ -1364,7 +1364,7 @@ test "LineIndex CRLF detailed positions" {
 }
 
 // =========================================================================
-// LineIndex UTF-16 emoji/multibyte tests (from Go position_test.go)
+// LineIndex UTF-16 emoji/multibyte tests
 // =========================================================================
 
 test "LineIndex UTF-16 emoji column" {
@@ -1472,7 +1472,7 @@ test "LineIndex UTF-16 empty source" {
 }
 
 // =========================================================================
-// LineIndex lineColumnToByteOffset (from Go TestLineColumnToByteOffset*)
+// LineIndex lineColumnToByteOffset
 // =========================================================================
 
 test "LineIndex lineColumnToByteOffset basic" {
@@ -1511,7 +1511,6 @@ test "LineIndex lineColumnToByteOffset column out of bounds clamp" {
 
 // =========================================================================
 // Generator single mapping with decode verification
-// (from Go TestSourceMapSingleMapping)
 // =========================================================================
 
 test "Generator single mapping decode verification" {
@@ -1543,7 +1542,6 @@ test "Generator single mapping decode verification" {
 
 // =========================================================================
 // Generator multiple mappings same line
-// (from Go TestSourceMapMultipleMappingsSameLine)
 // =========================================================================
 
 test "Generator multiple mappings same line" {
@@ -1566,7 +1564,6 @@ test "Generator multiple mappings same line" {
 
 // =========================================================================
 // Generator multiple lines
-// (from Go TestSourceMapMultipleLines)
 // =========================================================================
 
 test "Generator multiple lines semicolons" {
@@ -1593,7 +1590,6 @@ test "Generator multiple lines semicolons" {
 
 // =========================================================================
 // Generator delta encoding verification
-// (from Go TestSourceMapDeltaEncoding)
 // =========================================================================
 
 test "Generator delta encoding" {
@@ -1625,7 +1621,6 @@ test "Generator delta encoding" {
 
 // =========================================================================
 // Generator mappings format verification
-// (from Go TestSourceMapMappingsFormat)
 // =========================================================================
 
 test "Generator mappings format" {
@@ -1652,7 +1647,6 @@ test "Generator mappings format" {
 
 // =========================================================================
 // Line coverage workaround tests
-// (from Go TestLineCoverageWorkaround, etc.)
 // =========================================================================
 
 test "Generator line coverage fills gap lines" {
@@ -1756,7 +1750,7 @@ test "Generator line coverage disabled" {
 }
 
 // =========================================================================
-// Result toComment (from Go TestToCommentInline / TestToCommentExternal)
+// Result toComment
 // =========================================================================
 
 test "Result toComment inline" {
@@ -1791,7 +1785,6 @@ test "Result toComment external" {
 
 // =========================================================================
 // decodeMappings edge cases
-// (from Go TestDecodeMappings* edge case tests)
 // =========================================================================
 
 test "decodeMappings multiple segments same line" {

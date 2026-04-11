@@ -4,7 +4,6 @@
 //! -> verify entry point count and binding count are preserved.
 //! These tests are REQUIRED to pass (not optional).
 //!
-//! Ported from Go's tint_test.go and samples_test.go.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
@@ -449,7 +448,7 @@ test "compute.toys semantic: spaced.wgsl" {
 }
 
 // =========================================================================
-// Entry point name preservation tests (from Go samples_test.go)
+// Entry point name preservation tests
 // =========================================================================
 
 fn testPreservesEntryPointNames(allocator: std.mem.Allocator, source_bytes: []const u8, entry_points: []const []const u8) !void {
@@ -505,7 +504,7 @@ test "preserves entry points: shadow_fragment.wgsl" {
 }
 
 // =========================================================================
-// Binding count preservation tests (from Go samples_test.go)
+// Binding count preservation tests
 // =========================================================================
 
 fn countOccurrences(haystack: []const u8, needle: []const u8) usize {
@@ -564,7 +563,7 @@ test "preserves bindings: shadow_fragment.wgsl" {
 }
 
 // =========================================================================
-// Builtin count preservation tests (from Go samples_test.go)
+// Builtin count preservation tests
 // =========================================================================
 
 fn testPreservesBuiltinCount(allocator: std.mem.Allocator, source_bytes: []const u8) !void {

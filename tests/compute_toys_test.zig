@@ -1,4 +1,4 @@
-//! compute.toys integration tests — ported from Go's compute_toys_test.go.
+//! compute.toys integration tests.
 //! Tests that the compute.toys config correctly preserves platform-specific
 //! names (uniforms, textures, samplers, helpers) while renaming local variables.
 

@@ -11,7 +11,6 @@
 //! The tests/testdata/tint/ directory is OPTIONAL — if it does not exist the test
 //! prints a skip message and exits successfully.
 //!
-//! Ported from Go's internal/minifier_tests/tint_test.go.
 
 const std = @import("std");
 const wgslender = @import("wgslender");

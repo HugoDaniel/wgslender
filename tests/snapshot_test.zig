@@ -1,6 +1,6 @@
-//! Snapshot tests — all 44 test cases from the Go minifier_test.go.
+//! Snapshot tests — golden file testing for minification output.
 //! Each test minifies a WGSL input and compares against the expected
-//! output from the Go snapshot files (byte-identical matching).
+//! output snapshot (byte-identical matching).
 
 const std = @import("std");
 const wgslender = @import("wgslender");
@@ -695,7 +695,7 @@ test "ForLoopRenamed" {
 }
 
 // =========================================================================
-// DCE tests (from dce_test.go)
+// DCE tests
 // =========================================================================
 
 fn dce(allocator: std.mem.Allocator, input: [:0]const u8) ![]const u8 {

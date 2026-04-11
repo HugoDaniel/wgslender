@@ -1,4 +1,4 @@
-//! Regression / bug-fix tests ported from Go internal/minifier_tests/minifier_test.go.
+//! Regression / bug-fix tests.
 //! These test behavioural invariants (contains / not-contains checks) rather than
 //! exact snapshot output.
 
@@ -1797,7 +1797,7 @@ test "SceneW: trailing comma compute shader" {
 }
 
 // =========================================================================
-// DCE Integration Tests (ported from Go internal/minifier_tests/dce_test.go)
+// DCE Integration Tests
 // =========================================================================
 
 test "DCE: basic unused function removal" {

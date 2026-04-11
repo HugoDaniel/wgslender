@@ -1,4 +1,4 @@
-//! Source map integration tests — ported from Go internal/sourcemap/*_test.go.
+//! Source map integration tests.
 //! These test source map generation through the full minifier pipeline.
 
 const std = @import("std");

@@ -38,22 +38,16 @@ cp -r ~/Development/dawn/test/tint/out_of_order_decls tests/testdata/tint/
 
 ```bash
 # Run all Tint semantic preservation tests
-go test ./internal/minifier_tests/... -run TestTintSemanticPreservation -v
+zig build tint-test
 
-# Quick summary (pass/fail counts only)
-go test ./internal/minifier_tests/... -run TestTintSemanticPreservation
-
-# Run specific category
-go test ./internal/minifier_tests/... -run "TestTintSemanticPreservation/expressions" -v
-go test ./internal/minifier_tests/... -run "TestTintSemanticPreservation/bug" -v
+# Or run as part of the full test suite
+zig build test
 ```
 
 ### 3. Expected Output
 
 ```
-=== RUN   TestTintSemanticPreservation
-    tint_test.go:65: Tint tests: 1445 total, 572 passed, 0 failed, 0 skipped
---- PASS: TestTintSemanticPreservation (1.50s)
+tint tests: 12668 total, 7855 passed, 0 failed, 4813 skipped
 ```
 
 Tests are skipped (not failed) when:
@@ -80,7 +74,7 @@ Tests are skipped (not failed) when:
 
 ## How It Works
 
-The test harness (`internal/minifier_tests/tint_test.go`) performs semantic preservation testing:
+The test harness (`tests/tint_test.zig`) performs semantic preservation testing:
 
 1. **Parse** original WGSL with wgslender parser
 2. **Validate** original (skip if errors - likely intentional test case)

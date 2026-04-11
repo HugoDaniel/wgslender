@@ -95,7 +95,7 @@ Use the included benchmark script to compare size and speed:
 
 ```bash
 # Build wgslender
-make build
+zig build
 
 # Install Rust minifier (optional, for comparison)
 cargo install wgsl-minifier
