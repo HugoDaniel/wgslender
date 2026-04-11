@@ -114,7 +114,7 @@ const NativeServer = struct {
         const uri = notification.textDocument.uri;
         self.handler.closeDocument(uri);
         self.transport.writeNotification(
-            self.io, self.handler.allocator,
+            self.io, self.handler.gpa,
             "textDocument/publishDiagnostics",
             lsp.types.publish_diagnostics.Params,
             .{ .uri = uri, .diagnostics = &.{} },
@@ -214,11 +214,11 @@ const NativeServer = struct {
     fn publishDiagnostics(self: *NativeServer, uri: []const u8) void {
         const source = self.handler.getDocumentSource(uri) orelse return;
         const diags = self.handler.validateDocument(source) catch return;
-        defer Handler.freeDiagnostics(self.handler.allocator, diags);
+        defer Handler.freeDiagnostics(self.handler.gpa, diags);
 
         // Convert Handler diagnostics to lsp-kit types.
-        const lsp_diags = self.handler.allocator.alloc(lsp.types.Diagnostic, diags.len) catch return;
-        defer self.handler.allocator.free(lsp_diags);
+        const lsp_diags = self.handler.gpa.alloc(lsp.types.Diagnostic, diags.len) catch return;
+        defer self.handler.gpa.free(lsp_diags);
 
         // Track related_info allocations so we can free them after serialization.
         var related_allocs: [256]?[]const lsp.types.Diagnostic.RelatedInformation = undefined;
@@ -227,7 +227,7 @@ const NativeServer = struct {
         for (diags, 0..) |d, i| {
             var related_info: ?[]const lsp.types.Diagnostic.RelatedInformation = null;
             if (d.related.len > 0) {
-                const rel = self.handler.allocator.alloc(lsp.types.Diagnostic.RelatedInformation, d.related.len) catch null;
+                const rel = self.handler.gpa.alloc(lsp.types.Diagnostic.RelatedInformation, d.related.len) catch null;
                 if (rel) |r| {
                     for (d.related, 0..) |rel_item, ri| {
                         r[ri] = .{
@@ -268,7 +268,7 @@ const NativeServer = struct {
         }
 
         self.transport.writeNotification(
-            self.io, self.handler.allocator,
+            self.io, self.handler.gpa,
             "textDocument/publishDiagnostics",
             lsp.types.publish_diagnostics.Params,
             .{ .uri = uri, .diagnostics = lsp_diags },
@@ -277,7 +277,7 @@ const NativeServer = struct {
 
         // Free related_info arrays after serialization.
         for (related_allocs[0..related_count]) |ri| {
-            if (ri) |r| self.handler.allocator.free(r);
+            if (ri) |r| self.handler.gpa.free(r);
         }
     }
 };
