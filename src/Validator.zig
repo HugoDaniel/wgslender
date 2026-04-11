@@ -130,7 +130,7 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     };
 
     // Phase 0: Process directives (enable, diagnostic)
-    v.processDirectives();
+    try v.processDirectives();
 
     // Phase 1: Collect type declarations (structs, aliases)
     try v.collectTypeDeclarations();
@@ -182,7 +182,7 @@ const known_diagnostic_rules = [_][]const u8{
     "derivative_uniformity",
 };
 
-fn processDirectives(v: *Validator) void {
+fn processDirectives(v: *Validator) Allocator.Error!void {
     for (v.module.directives.items) |directive| {
         switch (directive) {
             .enable => |d| {
@@ -197,11 +197,11 @@ fn processDirectives(v: *Validator) void {
                     if (!is_known) {
                         v.addErrorWithCodeR(.{ .start = 0, .end = 1 }, Diagnostic.Code.unknown_feature, v.fmtError("unknown enable feature '{s}'", .{feature}));
                     }
-                    v.enabled_features.put(v.arena, feature, {}) catch {};
+                    try v.enabled_features.put(v.arena, feature, {});
                 }
             },
             .diagnostic => |d| {
-                // Validate severity
+                // WGSL spec section 3.2: severity must be one of the four defined levels.
                 const valid_severities = [_][]const u8{ "error", "warning", "info", "off" };
                 var severity_valid = false;
                 for (valid_severities) |vs| {
@@ -1119,7 +1119,7 @@ fn validateInterpolation(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attrib
         }
     }
 
-    // Integer types at @location must have @interpolate(flat)
+    // WGSL spec section 10.3: integer-typed I/O cannot be interpolated, so flat is mandatory.
     if (is_integer) {
         if (interpolate_attr) |attr| {
             if (attr.args.items.len > 0) {
@@ -1133,12 +1133,11 @@ fn validateInterpolation(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attrib
         }
     }
 
-    // Validate interpolation type and sampling combinations
+    // WGSL spec section 10.3: only three interpolation types exist, each with restricted sampling modes.
     if (interpolate_attr) |attr| {
         if (attr.args.items.len > 0) {
             const interp_type = exprIdent(attr.args.items[0]);
 
-            // Validate interpolation type name
             if (interp_type.len > 0 and !std.mem.eql(u8, interp_type, "flat") and
                 !std.mem.eql(u8, interp_type, "perspective") and
                 !std.mem.eql(u8, interp_type, "linear"))
@@ -1146,7 +1145,7 @@ fn validateInterpolation(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attrib
                 v.addErrorWithCodeR(attrRange(attr), Diagnostic.Code.invalid_interpolation, v.fmtError("invalid interpolation type '{s}'; expected 'flat', 'perspective', or 'linear'", .{interp_type}));
             }
 
-            // Validate sampling parameter
+            // Flat and perspective/linear have disjoint valid sampling sets per spec.
             if (attr.args.items.len > 1) {
                 const sampling = exprIdent(attr.args.items[1]);
                 if (sampling.len > 0) {
@@ -3990,34 +3989,77 @@ fn classifyExprStageDepth(v: *const Validator, expr: Ast.Expr, depth: u32) ExprS
 }
 
 /// Check if a compound statement block contains any exit (break, return, discard).
+/// Check if a compound block contains any exit (break, return, discard).
+/// Uses a bounded worklist to avoid unbounded recursion on deep ASTs.
 fn blockHasExit(block: *Ast.CompoundStmt) bool {
+    var stack: [128]Ast.Stmt = undefined;
+    var top: usize = 0;
+
+    // Seed the stack with all statements in the block.
     for (block.stmts.items) |stmt| {
-        if (stmtHasExit(stmt)) return true;
+        if (top >= stack.len) return false;
+        stack[top] = stmt;
+        top += 1;
+    }
+
+    while (top > 0) {
+        top -= 1;
+        const stmt = stack[top];
+        switch (stmt) {
+            .@"break", .@"return", .discard => return true,
+            .compound => |s| {
+                for (s.stmts.items) |inner| {
+                    if (top >= stack.len) return false;
+                    stack[top] = inner;
+                    top += 1;
+                }
+            },
+            .@"if" => |s| {
+                for (s.body.stmts.items) |inner| {
+                    if (top >= stack.len) return false;
+                    stack[top] = inner;
+                    top += 1;
+                }
+                if (s.else_branch) |eb| {
+                    if (top >= stack.len) return false;
+                    stack[top] = eb;
+                    top += 1;
+                }
+            },
+            .@"switch" => |s| {
+                for (s.cases.items) |c| {
+                    for (c.body.stmts.items) |inner| {
+                        if (top >= stack.len) return false;
+                        stack[top] = inner;
+                        top += 1;
+                    }
+                }
+            },
+            .loop => |s| {
+                for (s.body.stmts.items) |inner| {
+                    if (top >= stack.len) return false;
+                    stack[top] = inner;
+                    top += 1;
+                }
+            },
+            .@"for" => |s| {
+                for (s.body.stmts.items) |inner| {
+                    if (top >= stack.len) return false;
+                    stack[top] = inner;
+                    top += 1;
+                }
+            },
+            .@"while" => |s| {
+                for (s.body.stmts.items) |inner| {
+                    if (top >= stack.len) return false;
+                    stack[top] = inner;
+                    top += 1;
+                }
+            },
+            else => {},
+        }
     }
     return false;
-}
-
-/// Recursively check if a statement contains a break, return, or discard.
-fn stmtHasExit(stmt: Ast.Stmt) bool {
-    switch (stmt) {
-        .@"break", .@"return", .discard => return true,
-        .compound => |s| return blockHasExit(s),
-        .@"if" => |s| {
-            if (blockHasExit(s.body)) return true;
-            if (s.else_branch) |eb| return stmtHasExit(eb);
-            return false;
-        },
-        .@"switch" => |s| {
-            for (s.cases.items) |c| {
-                if (blockHasExit(c.body)) return true;
-            }
-            return false;
-        },
-        .loop => |s| return blockHasExit(s.body),
-        .@"for" => |s| return blockHasExit(s.body),
-        .@"while" => |s| return blockHasExit(s.body),
-        else => return false,
-    }
 }
 
 /// Check if a continuing block has a break_if statement.
