@@ -1097,6 +1097,42 @@ test "no suggestion for completely wrong call" {
     return error.TestUnexpectedResult;
 }
 
+test "did-you-mean prefers vec3f for 3-arg call" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let tmp = vec5f(0.0, 1.0, 2.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 15, "did you mean 'vec3f'");
+}
+
+test "did-you-mean prefers vec4f for 4-arg call" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let tmp = vec5f(0.0, 1.0, 2.0, 3.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 15, "did you mean 'vec4f'");
+}
+
+test "did-you-mean prefers vec2i for 2-arg call" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let tmp = vec5i(0, 1);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 3, 15, "did you mean 'vec2i'");
+}
+
 // =========================================================================
 // "Did you mean?" — Swizzle component hints
 // =========================================================================

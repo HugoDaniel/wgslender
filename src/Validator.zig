@@ -1912,7 +1912,7 @@ fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr,
 }
 
 fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8) void {
-    if (v.suggestCallable(callee_name)) |s| {
+    if (v.suggestCallable(callee_name, e.args.items.len)) |s| {
         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
     } else {
         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
@@ -2649,7 +2649,7 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
         .ident => |t| {
             if (v.lookupType(t.name)) |typ| return typ;
             // Type not found — report with suggestion if close match exists.
-            if (v.suggestType(t.name)) |suggestion| {
+            if (v.suggestType(t.name, null)) |suggestion| {
                 v.addErrorWithCodeR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'; did you mean '{s}'?", .{ t.name, suggestion }));
             } else {
                 v.addErrorWithCodeR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'", .{t.name}));
@@ -2854,7 +2854,9 @@ fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
 
 /// Find the closest type name to `name` within Levenshtein distance 2.
 /// Checks built-in WGSL types plus user-defined structs and aliases.
-fn suggestType(v: *Validator, name: []const u8) ?[]const u8 {
+/// When `arg_count` is provided, uses it as a tiebreaker for type constructors
+/// whose names encode an arity (e.g. vec3f → 3 components).
+fn suggestType(v: *Validator, name: []const u8, arg_count: ?usize) ?[]const u8 {
     // Suffixed variants first — they're more commonly intended than bare constructors.
     const builtins = [_][]const u8{
         "bool",             "i32",                    "u32",                "f32",                      "f16",
@@ -2873,8 +2875,11 @@ fn suggestType(v: *Validator, name: []const u8) ?[]const u8 {
     var best: ?[]const u8 = null;
     var best_dist: usize = 3; // only suggest if distance <= 2
     for (&builtins) |candidate| {
-        const d = levenshteinBounded(name, candidate, best_dist);
-        if (d < best_dist) {
+        // Use best_dist + 1 as the bound so that exact ties are distinguishable
+        // from "capped at max" returns from levenshteinBounded.
+        const d = levenshteinBounded(name, candidate, best_dist + 1);
+        const arity_match = if (arg_count) |ac| arityOfTypeConstructor(candidate) == ac else false;
+        if (d < best_dist or (d == best_dist and arity_match)) {
             best = candidate;
             best_dist = d;
         }
@@ -2967,7 +2972,7 @@ fn suggestIdentifier(v: *Validator, name: []const u8) ?[]const u8 {
 }
 
 /// Suggest a close match for a not-callable name from builtin functions, user functions, and type constructors.
-fn suggestCallable(v: *Validator, name: []const u8) ?[]const u8 {
+fn suggestCallable(v: *Validator, name: []const u8, arg_count: ?usize) ?[]const u8 {
     var best: ?[]const u8 = null;
     var best_dist: usize = 3;
     // Builtin functions
@@ -2988,13 +2993,37 @@ fn suggestCallable(v: *Validator, name: []const u8) ?[]const u8 {
         }
     }
     // Type constructors
-    if (v.suggestType(name)) |type_name| {
+    if (v.suggestType(name, arg_count)) |type_name| {
         const d = levenshteinBounded(name, type_name, best_dist);
         if (d < best_dist) {
             best = type_name;
         }
     }
     return best;
+}
+
+/// Extract the natural argument count from a type constructor name.
+/// For vector shorthands (vec2f, vec3i, vec4, ...) returns the width (2, 3, 4).
+/// For matrix shorthands (mat2x3f, ...) returns the column count.
+/// Returns null for types that don't encode arity in their name.
+fn arityOfTypeConstructor(name: []const u8) ?usize {
+    if (name.len >= 4 and name.len <= 5 and std.mem.startsWith(u8, name, "vec")) {
+        return switch (name[3]) {
+            '2' => 2,
+            '3' => 3,
+            '4' => 4,
+            else => null,
+        };
+    }
+    if (name.len >= 6 and name.len <= 7 and std.mem.startsWith(u8, name, "mat") and name[4] == 'x') {
+        return switch (name[3]) {
+            '2' => 2,
+            '3' => 3,
+            '4' => 4,
+            else => null,
+        };
+    }
+    return null;
 }
 
 fn parseVectorShorthand(v: *Validator, name: []const u8) ?Types.Type {
