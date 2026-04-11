@@ -1,6 +1,6 @@
 #!/bin/bash
 # WGSL Minifier Benchmark Script
-# Compares wgslender (Go) vs wgsl-minifier (Rust)
+# Compares wgslender (Zig) vs wgsl-minifier (Rust)
 # Measures both output size and execution speed
 
 set -e
@@ -13,7 +13,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-WGSLENDER_BIN="${WGSLENDER_BIN:-./build/wgslender}"
+WGSLENDER_BIN="${WGSLENDER_BIN:-./zig-out/bin/wgslender}"
 RUST_BIN="${RUST_BIN:-wgsl-minifier}"
 ITERATIONS="${ITERATIONS:-10}"
 TESTDATA_DIR="${TESTDATA_DIR:-tests/testdata}"
@@ -26,7 +26,7 @@ trap "rm -rf $TMP_DIR" EXIT
 check_deps() {
     if [ ! -x "$WGSLENDER_BIN" ]; then
         echo -e "${RED}Error: wgslender not found at $WGSLENDER_BIN${NC}"
-        echo "Run 'make build' first"
+        echo "Run 'zig build' first"
         exit 1
     fi
 
