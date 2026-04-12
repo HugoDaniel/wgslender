@@ -62,3 +62,34 @@ test "code lens: empty file" {
     defer freeLenses(lenses);
     try std.testing.expectEqual(@as(usize, 0), lenses.len);
 }
+
+test "code lens: multiple functions and structs" {
+    const source: [:0]const u8 = "struct A { x: f32 } struct B { a: A } fn use_a(a: A) {} fn use_b(b: B) {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    // 2 structs + 2 functions = 4 lenses
+    try std.testing.expectEqual(@as(usize, 4), lenses.len);
+}
+
+test "code lens: pluralization" {
+    const source: [:0]const u8 = "fn helper() {} fn main() { helper(); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    // helper has 1 reference, should say "1 reference" (not "references")
+    for (lenses) |l| {
+        if (std.mem.indexOf(u8, l.title, "1 reference") != null) {
+            try std.testing.expect(std.mem.indexOf(u8, l.title, "1 references") == null);
+        }
+    }
+}
+
+test "code lens: unknown document" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    const lenses = try handler.computeCodeLens("test://nonexistent.wgsl");
+    try std.testing.expectEqual(@as(usize, 0), lenses.len);
+}

@@ -110,3 +110,75 @@ test "isValidWgslIdentifier: invalid names" {
     try std.testing.expect(!Handler.isValidWgslIdentifier("123abc"));
     try std.testing.expect(!Handler.isValidWgslIdentifier("fn"));
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "rename: function used across multiple call sites" {
+    const source: [:0]const u8 =
+        \\fn helper(x: f32) -> f32 { return x * 2.0; }
+        \\fn a() -> f32 { return helper(1.0); }
+        \\fn b() -> f32 { return helper(2.0); }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult;
+    const edits = try ctx.handler.computeRename("test://file.wgsl", pos, "util");
+    try std.testing.expect(edits != null);
+    defer std.testing.allocator.free(edits.?);
+    // Declaration + 2 call sites = 3 edits
+    try std.testing.expectEqual(@as(usize, 3), edits.?.len);
+}
+
+test "rename: reject all WGSL keywords" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult;
+    // Test several keywords
+    for ([_][]const u8{ "if", "else", "for", "while", "loop", "switch", "case",
+                        "break", "continue", "return", "discard", "let", "var",
+                        "const", "struct", "alias", "fn", "override", "true", "false",
+                        "enable", "default" }) |kw| {
+        const edits = try ctx.handler.computeRename("test://file.wgsl", pos, kw);
+        try std.testing.expect(edits == null);
+    }
+}
+
+test "rename: reject WGSL reserved words" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult;
+    for ([_][]const u8{ "abstract", "async", "await", "class", "enum", "import",
+                        "interface", "module", "namespace", "template", "typeof", "yield" }) |rw| {
+        const edits = try ctx.handler.computeRename("test://file.wgsl", pos, rw);
+        try std.testing.expect(edits == null);
+    }
+}
+
+test "rename: single-character valid names" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult;
+    const edits = try ctx.handler.computeRename("test://file.wgsl", pos, "g");
+    try std.testing.expect(edits != null);
+    defer std.testing.allocator.free(edits.?);
+    try std.testing.expectEqual(@as(usize, 1), edits.?.len);
+}
+
+test "rename: underscore prefix valid (single underscore)" {
+    try std.testing.expect(Handler.isValidWgslIdentifier("_x"));
+    try std.testing.expect(Handler.isValidWgslIdentifier("_"));
+    try std.testing.expect(!Handler.isValidWgslIdentifier("__x")); // double underscore reserved
+}
+
+test "rename: position past end returns null" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.prepareRename("test://file.wgsl", .{ .line = 99, .character = 0 });
+    try std.testing.expect(result == null);
+}

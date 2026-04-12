@@ -71,3 +71,85 @@ test "references: whitespace returns null" {
     const result = try ctx.handler.computeReferences("test://file.wgsl", .{ .line = 0, .character = 2 }, true);
     try std.testing.expect(result == null);
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "references: function used as callee in nested expressions" {
+    const source: [:0]const u8 =
+        \\fn helper(x: f32) -> f32 { return x * 2.0; }
+        \\fn main() {
+        \\  let a = helper(1.0);
+        \\  let b = helper(helper(2.0));
+        \\  let c = helper(a) + helper(b);
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult; // 'h' in helper decl
+    const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, false);
+    try std.testing.expect(refs != null);
+    defer std.testing.allocator.free(refs.?);
+    // helper is called 5 times (lines 2, 3x2, 4x2)
+    try std.testing.expect(refs.?.len >= 4);
+}
+
+test "references: struct used in multiple type positions" {
+    const source: [:0]const u8 =
+        \\struct Vec2 { x: f32, y: f32 }
+        \\fn make() -> Vec2 { return Vec2(0.0, 0.0); }
+        \\fn use(v: Vec2) -> f32 { return v.x; }
+        \\const ZERO: Vec2 = Vec2(0.0, 0.0);
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 7) orelse return error.TestUnexpectedResult; // 'V' in struct Vec2
+    const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
+    try std.testing.expect(refs != null);
+    defer std.testing.allocator.free(refs.?);
+    // Declaration + return type + constructor calls + param type + const type
+    try std.testing.expect(refs.?.len >= 4);
+}
+
+test "references: parameter referenced in function body" {
+    const source: [:0]const u8 = "fn f(val: f32) -> f32 { let a = val; let b = val + val; return b; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Find 'val' parameter
+    const val_pos = std.mem.indexOf(u8, source, "val") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(val_pos)) orelse return error.TestUnexpectedResult;
+    const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
+    try std.testing.expect(refs != null);
+    defer std.testing.allocator.free(refs.?);
+    // Declaration + 3 usages
+    try std.testing.expectEqual(@as(usize, 4), refs.?.len);
+}
+
+test "references: position past end of file returns null" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeReferences("test://file.wgsl", .{ .line = 99, .character = 0 }, true);
+    try std.testing.expect(result == null);
+}
+
+test "references: empty source returns null" {
+    const source: [:0]const u8 = "";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeReferences("test://file.wgsl", .{ .line = 0, .character = 0 }, true);
+    try std.testing.expect(result == null);
+}
+
+test "references: variable in for loop body" {
+    const source: [:0]const u8 = "const N: u32 = 10; fn f() { for (var i: u32 = 0; i < N; i++) { let x = N; } }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 6) orelse return error.TestUnexpectedResult; // 'N' in const
+    const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
+    try std.testing.expect(refs != null);
+    defer std.testing.allocator.free(refs.?);
+    // Declaration + 2 usages in for loop
+    try std.testing.expect(refs.?.len >= 3);
+}

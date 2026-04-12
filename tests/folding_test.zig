@@ -78,3 +78,67 @@ test "folding: empty file" {
     defer std.testing.allocator.free(ranges);
     try std.testing.expectEqual(@as(usize, 0), ranges.len);
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "folding: entry point with attributes spans from name" {
+    const source: [:0]const u8 =
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  let x = 1;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const ranges = try ctx.handler.computeFoldingRanges("test://file.wgsl");
+    defer std.testing.allocator.free(ranges);
+    try std.testing.expect(ranges.len >= 1);
+}
+
+test "folding: deeply nested struct" {
+    const source: [:0]const u8 =
+        \\struct Outer {
+        \\  a: f32,
+        \\  b: f32,
+        \\  c: f32,
+        \\  d: f32,
+        \\  e: f32,
+        \\  f: f32,
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const ranges = try ctx.handler.computeFoldingRanges("test://file.wgsl");
+    defer std.testing.allocator.free(ranges);
+    try std.testing.expectEqual(@as(usize, 1), ranges.len);
+    // Should span multiple lines
+    try std.testing.expect(ranges[0].end_line > ranges[0].start_line + 2);
+}
+
+test "folding: many functions" {
+    const source: [:0]const u8 =
+        \\fn a() {
+        \\  let x = 1;
+        \\}
+        \\fn b() {
+        \\  let y = 2;
+        \\}
+        \\fn c() {
+        \\  let z = 3;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const ranges = try ctx.handler.computeFoldingRanges("test://file.wgsl");
+    defer std.testing.allocator.free(ranges);
+    try std.testing.expectEqual(@as(usize, 3), ranges.len);
+}
+
+test "folding: unknown document" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    const ranges = try handler.computeFoldingRanges("test://nonexistent.wgsl");
+    try std.testing.expectEqual(@as(usize, 0), ranges.len);
+}

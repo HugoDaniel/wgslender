@@ -68,3 +68,77 @@ test "unused warnings: severity is warning" {
     try std.testing.expect(warnings[0].severity == .warning);
     try std.testing.expectEqualStrings("W0001", warnings[0].code);
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "unused warnings: unused const" {
+    const source: [:0]const u8 = "const UNUSED_CONST: f32 = 3.14;";
+    const warnings = try getUnusedWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(hasWarningFor(warnings, "UNUSED_CONST"));
+}
+
+test "unused warnings: unused override" {
+    const source: [:0]const u8 = "@id(0) override UNUSED_OVR: u32 = 8;";
+    const warnings = try getUnusedWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(hasWarningFor(warnings, "UNUSED_OVR"));
+}
+
+test "unused warnings: function used by another function no warning" {
+    const source: [:0]const u8 = "fn helper() -> f32 { return 1.0; } fn main() -> f32 { return helper(); }";
+    const warnings = try getUnusedWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(!hasWarningFor(warnings, "helper"));
+}
+
+test "unused warnings: all entry point stages excluded" {
+    const source: [:0]const u8 =
+        \\@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0); }
+        \\@fragment fn fs() -> @location(0) vec4f { return vec4f(0.0); }
+        \\@compute @workgroup_size(1) fn cs() {}
+    ;
+    const warnings = try getUnusedWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(!hasWarningFor(warnings, "vs"));
+    try std.testing.expect(!hasWarningFor(warnings, "fs"));
+    try std.testing.expect(!hasWarningFor(warnings, "cs"));
+}
+
+test "unused warnings: multiple unused symbols" {
+    const source: [:0]const u8 = "fn a() {} fn b() {} fn c() {} const D: f32 = 1.0;";
+    const warnings = try getUnusedWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(hasWarningFor(warnings, "a"));
+    try std.testing.expect(hasWarningFor(warnings, "b"));
+    try std.testing.expect(hasWarningFor(warnings, "c"));
+    try std.testing.expect(hasWarningFor(warnings, "D"));
+}
+
+test "unused warnings: empty source no warnings" {
+    const source: [:0]const u8 = "";
+    const warnings = try getUnusedWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expectEqual(@as(usize, 0), warnings.len);
+}
+
+test "unused warnings: struct not warned" {
+    // Structs don't have use_count in the same way
+    const source: [:0]const u8 = "struct S { x: f32 }";
+    const warnings = try getUnusedWarnings(source);
+    defer freeWarnings(warnings);
+    // Structs are not warned about (kind is .struct, excluded from check)
+    try std.testing.expect(!hasWarningFor(warnings, "S"));
+}
+
+test "unused warnings: message format" {
+    const source: [:0]const u8 = "fn lonely() {}";
+    const warnings = try getUnusedWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(warnings.len > 0);
+    // Message should contain the name in quotes
+    try std.testing.expect(std.mem.indexOf(u8, warnings[0].message, "'lonely'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, warnings[0].message, "declared but never used") != null);
+}

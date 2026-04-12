@@ -64,3 +64,62 @@ test "inlay hints: unknown document" {
     });
     try std.testing.expectEqual(@as(usize, 0), hints.len);
 }
+
+test "inlay hints: multiple lets without types in function" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  let a = 1.0;
+        \\  let b = 2.0;
+        \\  let c = 3.0;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 4, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // Should have type hints for a, b, c (if types are resolved)
+    // All should be type_hint kind
+    for (hints) |h| {
+        try std.testing.expect(h.kind == .type_hint);
+    }
+}
+
+test "inlay hints: const with explicit type has no hint" {
+    const source: [:0]const u8 = "fn f() { let x: f32 = 1.0; let y: i32 = 2; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = @intCast(source.len) },
+    });
+    defer std.testing.allocator.free(hints);
+    // No hints since both have explicit types
+    try std.testing.expectEqual(@as(usize, 0), hints.len);
+}
+
+test "inlay hints: range filtering works" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  let a = 1.0;
+        \\  let b = 2.0;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Request hints only for line 1
+    const all = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 4, .character = 0 },
+    });
+    defer std.testing.allocator.free(all);
+    // Now request only line 1 range
+    const subset = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 1, .character = 0 },
+        .end = .{ .line = 1, .character = 30 },
+    });
+    defer std.testing.allocator.free(subset);
+    try std.testing.expect(subset.len <= all.len);
+}

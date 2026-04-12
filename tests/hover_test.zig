@@ -81,3 +81,136 @@ test "hover: unknown document returns null" {
     const result = try handler.computeHover("test://nonexistent.wgsl", .{ .line = 0, .character = 0 });
     try std.testing.expect(result == null);
 }
+
+// =========================================================================
+// Edge cases: multi-line, nested, WGSL-specific
+// =========================================================================
+
+test "hover: multi-line function with parameters" {
+    const source: [:0]const u8 =
+        \\@compute @workgroup_size(1)
+        \\fn main(
+        \\  @builtin(global_invocation_id) id: vec3u
+        \\) {
+        \\  let x: f32 = 1.0;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Hover on 'x' in let statement — line 4, char 6
+    const result = try ctx.handler.computeHover("test://file.wgsl", .{ .line = 4, .character = 6 });
+    if (result) |r| {
+        defer std.testing.allocator.free(r.contents);
+        try std.testing.expect(std.mem.indexOf(u8, r.contents, "f32") != null);
+    }
+}
+
+test "hover: const with integer value" {
+    const source: [:0]const u8 = "const SIZE: u32 = 256;";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "SIZE") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "const") != null);
+}
+
+test "hover: override declaration" {
+    const source: [:0]const u8 = "@id(0) override WG_SIZE: u32 = 64;";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "WG_SIZE") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "override") != null);
+}
+
+test "hover: variable with address space" {
+    const source: [:0]const u8 = "var<private> counter: u32 = 0;";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "counter") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(result.?.contents.len > 0);
+}
+
+test "hover: struct with multiple fields shows all" {
+    const source: [:0]const u8 =
+        \\struct Vertex {
+        \\  position: vec3f,
+        \\  normal: vec3f,
+        \\  uv: vec2f,
+        \\}
+        \\fn f(v: Vertex) {}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Hover on "Vertex" in parameter type — find the second occurrence
+    const type_offset = std.mem.lastIndexOf(u8, source, "Vertex") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(type_offset)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "position") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "normal") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "uv") != null);
+}
+
+test "hover: parameter inside function body" {
+    const source: [:0]const u8 = "fn add(a: f32, b: f32) -> f32 { return a + b; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Hover on 'a' in "return a + b" (the usage)
+    const a_usage = std.mem.lastIndexOf(u8, source, "a") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(a_usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    if (result) |r| {
+        defer std.testing.allocator.free(r.contents);
+        try std.testing.expect(std.mem.indexOf(u8, r.contents, "parameter") != null);
+    }
+}
+
+test "hover: entry point function" {
+    const source: [:0]const u8 = "@vertex fn vs_main() -> @builtin(position) vec4f { return vec4f(0.0); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "vs_main") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "function") != null);
+}
+
+test "hover: position past end of file returns null" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeHover("test://file.wgsl", .{ .line = 99, .character = 0 });
+    try std.testing.expect(result == null);
+}
+
+test "hover: empty source returns null" {
+    const source: [:0]const u8 = "";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeHover("test://file.wgsl", .{ .line = 0, .character = 0 });
+    try std.testing.expect(result == null);
+}
+
+test "hover: nested struct member type" {
+    const source: [:0]const u8 = "struct Inner { x: f32 } struct Outer { inner: Inner }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Hover on "Inner" in Outer's field type
+    const inner_ref = std.mem.lastIndexOf(u8, source, "Inner") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(inner_ref)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    // Should show Inner's struct info
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "Inner") != null);
+}

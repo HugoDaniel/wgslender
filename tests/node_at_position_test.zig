@@ -155,3 +155,120 @@ test "findNodeAtOffset: cursor just past identifier returns none" {
     const node = Handler.findNodeAtOffset(module, 6);
     try std.testing.expect(node == .none);
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "findNodeAtOffset: const declaration name" {
+    const source: [:0]const u8 = "const PI: f32 = 3.14;";
+    const result = try analyzeSource(source);
+    defer cleanup(result);
+    const module = result.module orelse return error.TestUnexpectedResult;
+    const node = Handler.findNodeAtOffset(module, 6); // 'P' in PI
+    switch (node) {
+        .decl_name => |dn| {
+            const sym = module.symbols.items[dn.sym_idx.index()];
+            try std.testing.expectEqualStrings("PI", sym.original_name);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "findNodeAtOffset: variable usage in binary expression" {
+    const source: [:0]const u8 = "const a: i32 = 1; const b: i32 = 2; fn f() -> i32 { return a + b; }";
+    const result = try analyzeSource(source);
+    defer cleanup(result);
+    const module = result.module orelse return error.TestUnexpectedResult;
+    // Find 'b' in "a + b"
+    const b_offset = std.mem.lastIndexOf(u8, source, "b") orelse return error.TestUnexpectedResult;
+    const node = Handler.findNodeAtOffset(module, @intCast(b_offset));
+    switch (node) {
+        .ident => |id| {
+            try std.testing.expectEqualStrings("b", id.name);
+            try std.testing.expect(id.ref.isValid());
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "findNodeAtOffset: multi-line function" {
+    const source: [:0]const u8 =
+        \\fn compute(
+        \\  x: f32,
+        \\  y: f32,
+        \\) -> f32 {
+        \\  return x + y;
+        \\}
+    ;
+    const result = try analyzeSource(source);
+    defer cleanup(result);
+    const module = result.module orelse return error.TestUnexpectedResult;
+    // 'compute' starts at offset 3
+    const node = Handler.findNodeAtOffset(module, 3);
+    switch (node) {
+        .decl_name => |dn| {
+            const sym = module.symbols.items[dn.sym_idx.index()];
+            try std.testing.expectEqualStrings("compute", sym.original_name);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "findNodeAtOffset: let inside if body" {
+    const source: [:0]const u8 = "fn f(c: bool) { if (c) { let inner: f32 = 1.0; } }";
+    const result = try analyzeSource(source);
+    defer cleanup(result);
+    const module = result.module orelse return error.TestUnexpectedResult;
+    const inner_pos = std.mem.indexOf(u8, source, "inner") orelse return error.TestUnexpectedResult;
+    const node = Handler.findNodeAtOffset(module, @intCast(inner_pos));
+    switch (node) {
+        .decl_name => |dn| {
+            const sym = module.symbols.items[dn.sym_idx.index()];
+            try std.testing.expectEqualStrings("inner", sym.original_name);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "findNodeAtOffset: offset 0 on fn keyword returns none" {
+    const source: [:0]const u8 = "fn f() {}";
+    const result = try analyzeSource(source);
+    defer cleanup(result);
+    const module = result.module orelse return error.TestUnexpectedResult;
+    // Offset 0 is 'f' of 'fn' keyword — not an identifier node
+    const node = Handler.findNodeAtOffset(module, 0);
+    try std.testing.expect(node == .none);
+}
+
+test "findNodeAtOffset: struct member declaration name" {
+    const source: [:0]const u8 = "struct S { field_a: f32, field_b: i32 }";
+    const result = try analyzeSource(source);
+    defer cleanup(result);
+    const module = result.module orelse return error.TestUnexpectedResult;
+    const pos = std.mem.indexOf(u8, source, "field_b") orelse return error.TestUnexpectedResult;
+    const node = Handler.findNodeAtOffset(module, @intCast(pos));
+    switch (node) {
+        .decl_name => |dn| {
+            const sym = module.symbols.items[dn.sym_idx.index()];
+            try std.testing.expectEqualStrings("field_b", sym.original_name);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}
+
+test "findNodeAtOffset: type in function return position" {
+    const source: [:0]const u8 = "struct R { x: f32 } fn f() -> R { return R(1.0); }";
+    const result = try analyzeSource(source);
+    defer cleanup(result);
+    const module = result.module orelse return error.TestUnexpectedResult;
+    // Find 'R' in "-> R" (the return type reference)
+    const arrow_pos = std.mem.indexOf(u8, source, "-> R") orelse return error.TestUnexpectedResult;
+    const node = Handler.findNodeAtOffset(module, @intCast(arrow_pos + 3));
+    switch (node) {
+        .type_ref => |tr| {
+            try std.testing.expectEqualStrings("R", tr.name);
+        },
+        else => return error.TestUnexpectedResult,
+    }
+}

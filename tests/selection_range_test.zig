@@ -75,3 +75,61 @@ test "selection range: unknown document" {
     const result = try handler.computeSelectionRange("test://nonexistent.wgsl", .{ .line = 0, .character = 0 });
     try std.testing.expect(result == null);
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "selection range: struct declaration" {
+    const source: [:0]const u8 =
+        \\struct Point {
+        \\  x: f32,
+        \\  y: f32,
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 7) orelse return error.TestUnexpectedResult; // 'P' in Point
+    const sel = try ctx.handler.computeSelectionRange("test://file.wgsl", pos);
+    try std.testing.expect(sel != null);
+    defer freeSelectionChain(std.testing.allocator, sel);
+    // Should have struct range and then file range
+    try std.testing.expect(sel.?.parent != null);
+}
+
+test "selection range: empty source" {
+    const source: [:0]const u8 = "";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const sel = try ctx.handler.computeSelectionRange("test://file.wgsl", .{ .line = 0, .character = 0 });
+    // Even empty file should return something (the file range)
+    if (sel) |s| {
+        defer freeSelectionChain(std.testing.allocator, s);
+        try std.testing.expectEqual(@as(u32, 0), s.range.start.line);
+    }
+}
+
+test "selection range: multi-function file" {
+    const source: [:0]const u8 =
+        \\fn first() {}
+        \\fn second() {
+        \\  let x = 1;
+        \\}
+        \\fn third() {}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Position inside 'second' function body
+    const pos = Handler.offsetToLspPosition(source, 17) orelse return error.TestUnexpectedResult;
+    const sel = try ctx.handler.computeSelectionRange("test://file.wgsl", pos);
+    try std.testing.expect(sel != null);
+    defer freeSelectionChain(std.testing.allocator, sel);
+}
+
+test "selection range: position past end" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const sel = try ctx.handler.computeSelectionRange("test://file.wgsl", .{ .line = 99, .character = 0 });
+    try std.testing.expect(sel == null);
+}

@@ -85,3 +85,67 @@ test "incremental sync: edit at start of file" {
     const source = ctx.handler.getDocumentSource("test://file.wgsl") orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("// header\nfn f() {}", source);
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "incremental sync: edit at end of file" {
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 9 },
+        .end = .{ .line = 0, .character = 9 },
+    }, "\nfn g() {}");
+    const source = ctx.handler.getDocumentSource("test://file.wgsl") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("fn f() {}\nfn g() {}", source);
+}
+
+test "incremental sync: replace entire document" {
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = 9 },
+    }, "fn g() { let x = 1; }");
+    const source = ctx.handler.getDocumentSource("test://file.wgsl") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("fn g() { let x = 1; }", source);
+}
+
+test "incremental sync: sequential edits" {
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    // First edit: insert " -> f32"
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 6 },
+        .end = .{ .line = 0, .character = 6 },
+    }, " -> f32");
+    // Second edit: insert "return 0.0; " inside body
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 15 },
+        .end = .{ .line = 0, .character = 15 },
+    }, " return 0.0; ");
+    const source = ctx.handler.getDocumentSource("test://file.wgsl") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("fn f() -> f32 { return 0.0; }", source);
+}
+
+test "incremental sync: delete to empty" {
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = 9 },
+    }, "");
+    const source = ctx.handler.getDocumentSource("test://file.wgsl") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("", source);
+}
+
+test "incremental sync: unknown document no crash" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    // Should not crash on unknown document
+    try handler.changeDocumentIncremental("test://nonexistent.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = 0 },
+    }, "text");
+}

@@ -79,3 +79,97 @@ test "definition: unknown document returns null" {
     const result = try handler.computeDefinition("test://nonexistent.wgsl", .{ .line = 0, .character = 0 });
     try std.testing.expect(result == null);
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "definition: multi-line function parameter usage" {
+    const source: [:0]const u8 =
+        \\fn compute(
+        \\  x: f32,
+        \\  y: f32,
+        \\) -> f32 {
+        \\  return x + y;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Jump from 'x' in "return x + y" to 'x' parameter declaration
+    const x_usage = std.mem.lastIndexOf(u8, source, "x") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(x_usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    // Parameter 'x' is on line 1
+    try std.testing.expectEqual(@as(u32, 1), result.?.start.line);
+}
+
+test "definition: const used across multiple functions" {
+    const source: [:0]const u8 =
+        \\const PI: f32 = 3.14159;
+        \\fn circle_area(r: f32) -> f32 { return PI * r * r; }
+        \\fn circumference(r: f32) -> f32 { return 2.0 * PI * r; }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Jump from last 'PI' usage to declaration
+    const pi_usage = std.mem.lastIndexOf(u8, source, "PI") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(pi_usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line); // const PI is on line 0
+}
+
+test "definition: struct used as function return type" {
+    const source: [:0]const u8 =
+        \\struct Color { r: f32, g: f32, b: f32, a: f32 }
+        \\fn red() -> Color { return Color(1.0, 0.0, 0.0, 1.0); }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Jump from "Color" return type to struct
+    const color_in_ret = std.mem.indexOf(u8, source, "-> Color") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(color_in_ret + 3)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+}
+
+test "definition: position past end of file returns null" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", .{ .line = 99, .character = 0 });
+    try std.testing.expect(result == null);
+}
+
+test "definition: empty source returns null" {
+    const source: [:0]const u8 = "";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", .{ .line = 0, .character = 0 });
+    try std.testing.expect(result == null);
+}
+
+test "definition: override declaration" {
+    const source: [:0]const u8 = "@id(0) override WG: u32 = 64; fn f() { let x = WG; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Jump from WG usage in function body to override declaration
+    const wg_usage = std.mem.lastIndexOf(u8, source, "WG") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(wg_usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+}
+
+test "definition: alias type reference" {
+    const source: [:0]const u8 = "alias Float = f32; fn f() -> Float { return 1.0; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Jump from Float usage to alias declaration
+    const float_usage = std.mem.lastIndexOf(u8, source, "Float") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(float_usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+}

@@ -50,3 +50,29 @@ test "type definition: unknown document" {
     const result = try handler.computeTypeDefinition("test://nonexistent.wgsl", .{ .line = 0, .character = 0 });
     try std.testing.expect(result == null);
 }
+
+test "type definition: vector type returns null (builtin)" {
+    const source: [:0]const u8 = "fn f() { let v: vec3f = vec3f(0.0); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Hover on 'v' — its type is vec3f which has no user declaration
+    const pos = Handler.offsetToLspPosition(source, 13) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeTypeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result == null);
+}
+
+test "type definition: position past end" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeTypeDefinition("test://file.wgsl", .{ .line = 99, .character = 0 });
+    try std.testing.expect(result == null);
+}
+
+test "type definition: empty source" {
+    const source: [:0]const u8 = "";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeTypeDefinition("test://file.wgsl", .{ .line = 0, .character = 0 });
+    try std.testing.expect(result == null);
+}

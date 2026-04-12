@@ -98,3 +98,124 @@ test "completion: unknown document returns empty" {
     const items = try handler.computeCompletion("test://nonexistent.wgsl", .{ .line = 0, .character = 0 });
     try std.testing.expectEqual(@as(usize, 0), items.len);
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "completion: includes user-defined structs" {
+    const source: [:0]const u8 = "struct MyData { x: f32 } fn f() { }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try ctx.handler.computeCompletion("test://file.wgsl", .{ .line = 0, .character = 34 });
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "MyData"));
+}
+
+test "completion: includes user-defined functions" {
+    const source: [:0]const u8 = "fn helper() {} fn main() { }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try ctx.handler.computeCompletion("test://file.wgsl", .{ .line = 0, .character = 27 });
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "helper"));
+}
+
+test "completion: after @ includes all standard attributes" {
+    const source: [:0]const u8 = "@";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try ctx.handler.computeCompletion("test://file.wgsl", .{ .line = 0, .character = 1 });
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "workgroup_size"));
+    try std.testing.expect(hasItem(items, "builtin"));
+    try std.testing.expect(hasItem(items, "id"));
+    try std.testing.expect(hasItem(items, "align"));
+    try std.testing.expect(hasItem(items, "size"));
+    try std.testing.expect(hasItem(items, "interpolate"));
+    try std.testing.expect(hasItem(items, "invariant"));
+    try std.testing.expect(hasItem(items, "must_use"));
+    try std.testing.expect(hasItem(items, "diagnostic"));
+}
+
+test "completion: includes all texture type names" {
+    const source: [:0]const u8 = "fn f() { }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try ctx.handler.computeCompletion("test://file.wgsl", .{ .line = 0, .character = 9 });
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "texture_2d"));
+    try std.testing.expect(hasItem(items, "texture_3d"));
+    try std.testing.expect(hasItem(items, "texture_cube"));
+    try std.testing.expect(hasItem(items, "sampler"));
+    try std.testing.expect(hasItem(items, "sampler_comparison"));
+}
+
+test "completion: includes vector/matrix shorthands" {
+    const source: [:0]const u8 = "fn f() { }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try ctx.handler.computeCompletion("test://file.wgsl", .{ .line = 0, .character = 9 });
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "vec2f"));
+    try std.testing.expect(hasItem(items, "vec3u"));
+    try std.testing.expect(hasItem(items, "vec4i"));
+    try std.testing.expect(hasItem(items, "mat4x4f"));
+    try std.testing.expect(hasItem(items, "mat2x2h"));
+}
+
+test "completion: includes control flow keywords" {
+    const source: [:0]const u8 = "fn f() { }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try ctx.handler.computeCompletion("test://file.wgsl", .{ .line = 0, .character = 9 });
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "for"));
+    try std.testing.expect(hasItem(items, "while"));
+    try std.testing.expect(hasItem(items, "loop"));
+    try std.testing.expect(hasItem(items, "switch"));
+    try std.testing.expect(hasItem(items, "break"));
+    try std.testing.expect(hasItem(items, "continue"));
+    try std.testing.expect(hasItem(items, "discard"));
+}
+
+test "completion: includes math builtins" {
+    const source: [:0]const u8 = "fn f() { }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try ctx.handler.computeCompletion("test://file.wgsl", .{ .line = 0, .character = 9 });
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "abs"));
+    try std.testing.expect(hasItem(items, "clamp"));
+    try std.testing.expect(hasItem(items, "min"));
+    try std.testing.expect(hasItem(items, "max"));
+    try std.testing.expect(hasItem(items, "pow"));
+    try std.testing.expect(hasItem(items, "sqrt"));
+    try std.testing.expect(hasItem(items, "normalize"));
+    try std.testing.expect(hasItem(items, "cross"));
+    try std.testing.expect(hasItem(items, "length"));
+    try std.testing.expect(hasItem(items, "distance"));
+}
+
+test "completion: includes atomic builtins" {
+    const source: [:0]const u8 = "fn f() { }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try ctx.handler.computeCompletion("test://file.wgsl", .{ .line = 0, .character = 9 });
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "atomicLoad"));
+    try std.testing.expect(hasItem(items, "atomicStore"));
+    try std.testing.expect(hasItem(items, "atomicAdd"));
+}
+
+test "completion: includes texture builtins" {
+    const source: [:0]const u8 = "fn f() { }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try ctx.handler.computeCompletion("test://file.wgsl", .{ .line = 0, .character = 9 });
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "textureSample"));
+    try std.testing.expect(hasItem(items, "textureLoad"));
+    try std.testing.expect(hasItem(items, "textureStore"));
+    try std.testing.expect(hasItem(items, "textureDimensions"));
+}

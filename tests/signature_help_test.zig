@@ -72,3 +72,65 @@ test "signature help: nested calls" {
     defer std.testing.allocator.free(result.?.label);
     try std.testing.expect(std.mem.indexOf(u8, result.?.label, "cos") != null);
 }
+
+// =========================================================================
+// Edge cases
+// =========================================================================
+
+test "signature help: multi-param builtin clamp" {
+    const source: [:0]const u8 = "fn f() { let x = clamp(1.0, 0.0, ); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Position after second comma — active parameter should be 2
+    const last_comma = std.mem.lastIndexOf(u8, source, ",") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(last_comma + 2)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeSignatureHelp("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.label);
+    try std.testing.expectEqual(@as(u32, 2), result.?.active_parameter);
+}
+
+test "signature help: user function with many params" {
+    const source: [:0]const u8 = "fn quad(a: f32, b: f32, c: f32, d: f32) -> f32 { return a; } fn g() { let r = quad(1.0, 2.0, 3.0, 4.0); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Position at third argument — active parameter 2
+    const third_arg = std.mem.indexOf(u8, source, "3.0") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(third_arg)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeSignatureHelp("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer {
+        std.testing.allocator.free(result.?.label);
+        std.testing.allocator.free(result.?.parameters);
+    }
+    try std.testing.expectEqual(@as(u32, 2), result.?.active_parameter);
+    try std.testing.expectEqual(@as(usize, 4), result.?.parameters.len);
+}
+
+test "signature help: empty parens shows first param" {
+    const source: [:0]const u8 = "fn f() { let x = abs(); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const paren_pos = std.mem.indexOf(u8, source, "abs(") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(paren_pos + 4)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeSignatureHelp("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.label);
+    try std.testing.expectEqual(@as(u32, 0), result.?.active_parameter);
+}
+
+test "signature help: position before any paren returns null" {
+    const source: [:0]const u8 = "fn f() { let x = 42; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeSignatureHelp("test://file.wgsl", .{ .line = 0, .character = 17 });
+    try std.testing.expect(result == null);
+}
+
+test "signature help: position past end returns null" {
+    const source: [:0]const u8 = "fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const result = try ctx.handler.computeSignatureHelp("test://file.wgsl", .{ .line = 99, .character = 0 });
+    try std.testing.expect(result == null);
+}
