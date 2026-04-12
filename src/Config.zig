@@ -4,6 +4,7 @@
 //! Walks up directory tree to find config.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Minifier = @import("Minifier.zig");
 
 const Config = @This();
@@ -27,7 +28,7 @@ pub const config_file_names = [_][]const u8{
 };
 
 /// Load config from a JSON file.
-pub fn loadFile(allocator: std.mem.Allocator, path: []const u8) !Config {
+pub fn loadFile(allocator: Allocator, path: []const u8) !Config {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
     const content = try file.readToEndAlloc(allocator, 1024 * 1024);
@@ -35,7 +36,7 @@ pub fn loadFile(allocator: std.mem.Allocator, path: []const u8) !Config {
     return parseJson(allocator, content);
 }
 
-pub fn parseJson(allocator: std.mem.Allocator, content: []const u8) !Config {
+pub fn parseJson(allocator: Allocator, content: []const u8) !Config {
     var config = Config{};
 
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
@@ -91,7 +92,7 @@ pub fn parseJson(allocator: std.mem.Allocator, content: []const u8) !Config {
 
 /// Search for a config file starting from `start_dir`, walking up to parent directories.
 /// Returns null if no config file is found. Uses `std.Io.Dir` for file access.
-pub fn discover(allocator: std.mem.Allocator, io: std.Io, start_dir: ?[]const u8) ?Config {
+pub fn discover(allocator: Allocator, io: std.Io, start_dir: ?[]const u8) ?Config {
     const Dir = std.Io.Dir;
     const cwd = Dir.cwd();
 

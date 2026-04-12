@@ -4,10 +4,11 @@
 //! If no entry points exist, all symbols are conservatively marked live.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 
 /// Perform dead code elimination. Returns the number of dead symbols.
-pub fn mark(arena: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator.Error!u32 {
+pub fn mark(arena: Allocator, module: *Ast.Module) Allocator.Error!u32 {
     if (module.symbols.items.len == 0) return 0;
 
     // Build dependency graph
@@ -92,20 +93,20 @@ pub fn mark(arena: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator.Err
 }
 
 fn buildDependencyGraph(
-    arena: std.mem.Allocator,
+    arena: Allocator,
     module: *const Ast.Module,
     deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),
-) std.mem.Allocator.Error!void {
+) Allocator.Error!void {
     for (module.declarations.items) |decl| {
         try collectDeclDeps(arena, decl, deps);
     }
 }
 
 fn collectDeclDeps(
-    arena: std.mem.Allocator,
+    arena: Allocator,
     decl: Ast.Decl,
     deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),
-) std.mem.Allocator.Error!void {
+) Allocator.Error!void {
     const name_ref = decl.nameRef();
     if (!name_ref.isValid()) return;
     const sym_idx = name_ref.index();
@@ -146,10 +147,10 @@ fn collectDeclDeps(
 
 /// Iteratively collects symbol references from an expression tree using a worklist.
 pub fn collectExprRefs(
-    arena: std.mem.Allocator,
+    arena: Allocator,
     expr: Ast.Expr,
     refs: *std.ArrayListUnmanaged(u32),
-) std.mem.Allocator.Error!void {
+) Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, expr);
@@ -187,10 +188,10 @@ pub fn collectExprRefs(
 
 /// Iteratively collects symbol references from a type tree.
 fn collectTypeRefs(
-    arena: std.mem.Allocator,
+    arena: Allocator,
     typ: Ast.Type,
     refs: *std.ArrayListUnmanaged(u32),
-) std.mem.Allocator.Error!void {
+) Allocator.Error!void {
     var current = typ;
     for (0..32) |_| {
         switch (current) {
@@ -224,10 +225,10 @@ fn collectTypeRefs(
 
 /// Iteratively collects symbol references from a statement tree using a worklist.
 pub fn collectStmtRefs(
-    arena: std.mem.Allocator,
+    arena: Allocator,
     stmt: Ast.Stmt,
     refs: *std.ArrayListUnmanaged(u32),
-) std.mem.Allocator.Error!void {
+) Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, stmt);
@@ -319,7 +320,7 @@ pub fn isDeclarationLive(decl: Ast.Decl, symbols: []const Ast.Symbol) bool {
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 
-fn parseModule(arena: std.mem.Allocator, source: [:0]const u8) ?*Ast.Module {
+fn parseModule(arena: Allocator, source: [:0]const u8) ?*Ast.Module {
     var tokens = Lexer.tokenize(arena, source) catch return null;
     defer tokens.deinit(arena);
     var parser = Parser.init(arena, source, tokens) catch return null;

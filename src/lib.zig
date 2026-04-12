@@ -5,6 +5,7 @@
 //! arena — callers only need to free returned pointers via wgslender_free_c.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const wgslender = @import("root.zig");
 const Minifier = @import("Minifier.zig");
 const Config = @import("Config.zig");
@@ -212,9 +213,9 @@ export fn wgslender_minify_json_c(
 
 fn buildValidateJson(
     json_buf: *std.ArrayListUnmanaged(u8),
-    alloc: std.mem.Allocator,
+    alloc: Allocator,
     result: anytype,
-) std.mem.Allocator.Error!void {
+) Allocator.Error!void {
     try json_buf.appendSlice(alloc, "{\"valid\":");
     try json_buf.appendSlice(alloc, if (result.valid) "true" else "false");
     try json_buf.appendSlice(alloc, ",\"diagnostics\":[");
@@ -230,7 +231,7 @@ fn buildValidateJson(
 }
 
 fn makeSentinelSource(
-    alloc: std.mem.Allocator,
+    alloc: Allocator,
     source_ptr: [*]const u8,
     source_len: u32,
 ) ?[:0]const u8 {
