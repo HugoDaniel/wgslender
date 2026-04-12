@@ -235,12 +235,12 @@ pub const CharFreq = struct {
     /// a-z → 0-25, A-Z → 26-51, 0-9 → 52-61, _ → 62
     pub fn scan(self: *CharFreq, text: []const u8, delta: i32) void {
         for (text) |c| {
-            const idx: ?usize = if (c >= 'a' and c <= 'z')
-                @as(usize, c - 'a')
+            const idx: ?u8 = if (c >= 'a' and c <= 'z')
+                c - 'a'
             else if (c >= 'A' and c <= 'Z')
-                @as(usize, c - 'A' + 26)
+                c - 'A' + 26
             else if (c >= '0' and c <= '9')
-                @as(usize, c - '0' + 52)
+                c - '0' + 52
             else if (c == '_')
                 62
             else

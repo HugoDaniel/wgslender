@@ -1318,25 +1318,38 @@ fn parseMultiplicativeExpr(self: *Parser) !?Ast.Expr {
 }
 
 fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
-    const op: ?Ast.UnaryOp = switch (self.currentTag()) {
-        .minus => .neg,
-        .bang => .not,
-        .tilde => .bit_not,
-        .star => .deref,
-        .amp => .addr,
-        else => null,
-    };
+    // Collect chained unary operators iteratively, then fold right-to-left.
+    const OpLoc = struct { op: Ast.UnaryOp, loc: u32 };
+    var ops_buf: [32]OpLoc = undefined;
+    var ops_len: u8 = 0;
 
-    if (op) |unary_op| {
-        const loc = self.currentStart();
+    while (ops_len < ops_buf.len) {
+        const unary_op: Ast.UnaryOp = switch (self.currentTag()) {
+            .minus => .neg,
+            .bang => .not,
+            .tilde => .bit_not,
+            .star => .deref,
+            .amp => .addr,
+            else => break,
+        };
+        ops_buf[ops_len] = .{ .op = unary_op, .loc = self.currentStart() };
+        ops_len += 1;
         self.advance();
-        const operand = (try self.parseUnaryExpr()) orelse return null;
-        const node = try self.arena.create(Ast.UnaryExpr);
-        node.* = .{ .loc = loc, .op = unary_op, .operand = operand };
-        return .{ .unary = node };
     }
 
-    return self.parsePostfixExpr();
+    var operand = (try self.parsePostfixExpr()) orelse return null;
+
+    // Fold right-to-left: innermost op wraps the operand first.
+    var i: u8 = ops_len;
+    while (i > 0) {
+        i -= 1;
+        const entry = ops_buf[i];
+        const node = try self.arena.create(Ast.UnaryExpr);
+        node.* = .{ .loc = entry.loc, .op = entry.op, .operand = operand };
+        operand = .{ .unary = node };
+    }
+
+    return operand;
 }
 
 fn parsePostfixExpr(self: *Parser) !?Ast.Expr {

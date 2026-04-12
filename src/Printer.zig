@@ -383,7 +383,7 @@ fn printAttributes(self: *Printer, attrs: []const Ast.Attribute) !void {
 fn printType(self: *Printer, t: Ast.Type) error{OutOfMemory}!void {
     // 16 levels handles worst-case WGSL type nesting (e.g., ptr<storage, array<vec4<f32>>, read>).
     var close_stack: [16]struct { suffix: []const u8, needs_space: bool, access: ?[]const u8 } = undefined;
-    var close_top: usize = 0;
+    var close_top: u8 = 0;
     var current = t;
 
     for (0..32) |_| {
