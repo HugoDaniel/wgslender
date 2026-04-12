@@ -130,6 +130,14 @@ fn handleMessage(json: []const u8) void {
         handleFormatting(root, id);
     } else if (eql(method, "textDocument/semanticTokens/full")) {
         handleSemanticTokens(root, id);
+    } else if (eql(method, "textDocument/selectionRange")) {
+        handleSelectionRange(root, id);
+    } else if (eql(method, "textDocument/prepareCallHierarchy")) {
+        handlePrepareCallHierarchy(root, id);
+    } else if (eql(method, "callHierarchy/incomingCalls")) {
+        handleIncomingCalls(root, id);
+    } else if (eql(method, "callHierarchy/outgoingCalls")) {
+        handleOutgoingCalls(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -708,6 +716,130 @@ fn handleSemanticTokens(root: std.json.ObjectMap, id: ?std.json.Value) void {
         appendUint(&buf, v);
     }
     appendStr(&buf, "]}");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleSelectionRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
+    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const positions = switch ((objGet(params, "positions") orelse return sendResult(id, "null")).*) {
+        .array => |a| a.items,
+        else => return sendResult(id, "null"),
+    };
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (positions, 0..) |*pos_val, pi| {
+        if (pi > 0) appendStr(&buf, ",");
+        const line: u32 = if (intVal(objGet(pos_val, "line"))) |v| @intCast(v) else 0;
+        const char: u32 = if (intVal(objGet(pos_val, "character"))) |v| @intCast(v) else 0;
+        const sel = handler.computeSelectionRange(uri, .{ .line = line, .character = char }) catch null;
+        if (sel) |s| {
+            emitSelectionRange(&buf, s);
+        } else {
+            appendStr(&buf, "{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}}");
+        }
+    }
+    appendStr(&buf, "]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn emitSelectionRange(buf: *std.ArrayListUnmanaged(u8), sel: *const Handler.SelectionRangeInfo) void {
+    appendStr(buf, "{\"range\":");
+    formatRange(buf, sel.range);
+    if (sel.parent) |p| {
+        appendStr(buf, ",\"parent\":");
+        emitSelectionRange(buf, p);
+    }
+    appendStr(buf, "}");
+}
+
+fn handlePrepareCallHierarchy(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const item = handler.prepareCallHierarchy(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
+    const i = item orelse return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[{\"name\":\"");
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, i.name) catch return;
+    appendStr(&buf, "\",\"kind\":12,\"uri\":\"");
+    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
+    appendStr(&buf, "\",\"range\":");
+    formatRange(&buf, i.range);
+    appendStr(&buf, ",\"selectionRange\":");
+    formatRange(&buf, i.selection_range);
+    appendStr(&buf, "}]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleIncomingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const item_val = objGet(params, "item") orelse return sendResult(id, "null");
+    const name = strVal(objGet(item_val, "name")) orelse return sendResult(id, "null");
+    const uri_val = objGet(item_val, "uri");
+    const uri = if (uri_val) |u| strVal(u) orelse return sendResult(id, "null") else return sendResult(id, "null");
+    const calls = handler.computeIncomingCalls(uri, name) catch return sendResult(id, "null");
+    defer {
+        for (calls) |c| handler.gpa.free(c.from_ranges);
+        handler.gpa.free(calls);
+    }
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (calls, 0..) |call, ci| {
+        if (ci > 0) appendStr(&buf, ",");
+        appendStr(&buf, "{\"from\":{\"name\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, call.from.name) catch return;
+        appendStr(&buf, "\",\"kind\":12,\"uri\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
+        appendStr(&buf, "\",\"range\":");
+        formatRange(&buf, call.from.range);
+        appendStr(&buf, ",\"selectionRange\":");
+        formatRange(&buf, call.from.selection_range);
+        appendStr(&buf, "},\"fromRanges\":[");
+        for (call.from_ranges, 0..) |fr, fi| {
+            if (fi > 0) appendStr(&buf, ",");
+            formatRange(&buf, fr);
+        }
+        appendStr(&buf, "]}");
+    }
+    appendStr(&buf, "]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleOutgoingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const item_val = objGet(params, "item") orelse return sendResult(id, "null");
+    const name = strVal(objGet(item_val, "name")) orelse return sendResult(id, "null");
+    const uri_val = objGet(item_val, "uri");
+    const uri = if (uri_val) |u| strVal(u) orelse return sendResult(id, "null") else return sendResult(id, "null");
+    const calls = handler.computeOutgoingCalls(uri, name) catch return sendResult(id, "null");
+    defer {
+        for (calls) |c| handler.gpa.free(c.from_ranges);
+        handler.gpa.free(calls);
+    }
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (calls, 0..) |call, ci| {
+        if (ci > 0) appendStr(&buf, ",");
+        appendStr(&buf, "{\"to\":{\"name\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, call.to.name) catch return;
+        appendStr(&buf, "\",\"kind\":12,\"uri\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
+        appendStr(&buf, "\",\"range\":");
+        formatRange(&buf, call.to.range);
+        appendStr(&buf, ",\"selectionRange\":");
+        formatRange(&buf, call.to.selection_range);
+        appendStr(&buf, "},\"fromRanges\":[");
+        for (call.from_ranges, 0..) |fr, fi| {
+            if (fi > 0) appendStr(&buf, ",");
+            formatRange(&buf, fr);
+        }
+        appendStr(&buf, "]}");
+    }
+    appendStr(&buf, "]");
     sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
 }
 

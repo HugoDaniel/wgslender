@@ -79,6 +79,7 @@ const NativeServer = struct {
                 .inlayHintProvider = .{ .bool = true },
                 .codeLensProvider = .{},
                 .documentFormattingProvider = .{ .bool = true },
+                .selectionRangeProvider = .{ .bool = true },
                 .semanticTokensProvider = .{
                     .semantic_tokens_options = .{
                         .full = .{ .bool = true },
@@ -594,6 +595,50 @@ const NativeServer = struct {
             };
         }
         return lsp_lenses;
+    }
+
+    // ----- Selection Range -----
+
+    pub fn @"textDocument/selectionRange"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.SelectionRange.Params,
+    ) ?[]const lsp.types.SelectionRange {
+        if (params.positions.len == 0) return null;
+        const results = arena.alloc(lsp.types.SelectionRange, params.positions.len) catch return null;
+        for (params.positions, 0..) |pos, i| {
+            const sel = self.handler.computeSelectionRange(
+                params.textDocument.uri,
+                .{ .line = pos.line, .character = pos.character },
+            ) catch return null;
+            if (sel) |s| {
+                results[i] = convertSelectionRange(arena, s);
+            } else {
+                results[i] = .{ .range = .{
+                    .start = .{ .line = pos.line, .character = pos.character },
+                    .end = .{ .line = pos.line, .character = pos.character },
+                } };
+            }
+        }
+        return results;
+    }
+
+    fn convertSelectionRange(arena: std.mem.Allocator, sel: *const Handler.SelectionRangeInfo) lsp.types.SelectionRange {
+        var parent: ?*const lsp.types.SelectionRange = null;
+        if (sel.parent) |p| {
+            const lsp_parent = arena.create(lsp.types.SelectionRange) catch return .{
+                .range = .{ .start = .{ .line = sel.range.start.line, .character = sel.range.start.character }, .end = .{ .line = sel.range.end.line, .character = sel.range.end.character } },
+            };
+            lsp_parent.* = convertSelectionRange(arena, p);
+            parent = lsp_parent;
+        }
+        return .{
+            .range = .{
+                .start = .{ .line = sel.range.start.line, .character = sel.range.start.character },
+                .end = .{ .line = sel.range.end.line, .character = sel.range.end.character },
+            },
+            .parent = parent,
+        };
     }
 
     // ----- Semantic Tokens -----
