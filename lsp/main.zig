@@ -79,6 +79,20 @@ const NativeServer = struct {
                 .inlayHintProvider = .{ .bool = true },
                 .codeLensProvider = .{},
                 .documentFormattingProvider = .{ .bool = true },
+                .semanticTokensProvider = .{
+                    .semantic_tokens_options = .{
+                        .full = .{ .bool = true },
+                        .legend = .{
+                            .tokenTypes = &[_][]const u8{
+                                "keyword", "function", "struct", "parameter", "variable",
+                                "number",  "type",     "comment", "decorator",
+                            },
+                            .tokenModifiers = &[_][]const u8{
+                                "declaration", "readonly", "defaultLibrary",
+                            },
+                        },
+                    },
+                },
             },
         };
     }
@@ -580,6 +594,19 @@ const NativeServer = struct {
             };
         }
         return lsp_lenses;
+    }
+
+    // ----- Semantic Tokens -----
+
+    pub fn @"textDocument/semanticTokens/full"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.semantic_tokens.Params,
+    ) ?lsp.types.semantic_tokens.Result {
+        const data = self.handler.computeSemanticTokens(params.textDocument.uri) catch return null;
+        defer self.handler.gpa.free(data);
+        if (data.len == 0) return null;
+        return .{ .data = arena.dupe(u32, data) catch return null };
     }
 
     // ----- Formatting -----

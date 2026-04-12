@@ -128,6 +128,8 @@ fn handleMessage(json: []const u8) void {
         handleCodeLens(root, id);
     } else if (eql(method, "textDocument/formatting")) {
         handleFormatting(root, id);
+    } else if (eql(method, "textDocument/semanticTokens/full")) {
+        handleSemanticTokens(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -688,6 +690,24 @@ fn handleFormatting(root: std.json.ObjectMap, id: ?std.json.Value) void {
     appendStr(&buf, ",\"newText\":\"");
     Diagnostic.appendJsonEscaped(&buf, wasm_allocator, e.new_text) catch return;
     appendStr(&buf, "\"}]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleSemanticTokens(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse return sendResult(id, "null");
+    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
+    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const data = handler.computeSemanticTokens(uri) catch return sendResult(id, "null");
+    defer handler.gpa.free(data);
+    if (data.len == 0) return sendResult(id, "null");
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"data\":[");
+    for (data, 0..) |v, i| {
+        if (i > 0) appendStr(&buf, ",");
+        appendUint(&buf, v);
+    }
+    appendStr(&buf, "]}");
     sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
 }
 
