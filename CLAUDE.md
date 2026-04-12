@@ -10,6 +10,8 @@ A high-performance WGSL (WebGPU Shading Language) minifier written in Zig, with 
 # Build
 zig build              # Native CLI → zig-out/bin/wgslender
 zig build wasm         # WASM → zig-out/bin/wgslender.wasm
+zig build lsp          # Native LSP → zig-out/bin/wgslender-lsp
+zig build lsp-wasm     # WASM LSP → zig-out/bin/wgslender-lsp.wasm
 
 # Test
 zig build test         # Run all tests
@@ -68,6 +70,9 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/lib.zig` | C static library entry point (FFI) |
 | `src/root.zig` | Public API |
 | `cli/main.zig` | CLI |
+| `lsp/main.zig` | LSP server entry point (native, stdio transport) |
+| `lsp/wasm.zig` | LSP server WASM entry point |
+| `lsp/Handler.zig` | LSP request/notification handler |
 | `npm/wgslender` | NPM package |
 
 ### Key Design Decisions
