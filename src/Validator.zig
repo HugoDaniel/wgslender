@@ -233,6 +233,7 @@ const known_enable_features = [_][]const u8{
     "subgroups_f16",
     "dual_source_blending",
     "clip_distances",
+    "unrestricted_pointer_parameters",
     "chromium_experimental_framebuffer_fetch",
 };
 
@@ -352,6 +353,12 @@ fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!voi
     // Spec: struct must have at least 1 member.
     if (d.members.items.len == 0) {
         v.addErrorWithCodeR(name_range, Diagnostic.Code.empty_struct, v.fmtError("struct '{s}' must have at least one member", .{name}));
+        return;
+    }
+
+    // Spec: struct may have at most 1023 members.
+    if (d.members.items.len > 1023) {
+        v.addErrorWithCodeR(name_range, Diagnostic.Code.empty_struct, v.fmtError("struct '{s}' has {d} members, exceeding the maximum of 1023", .{ name, d.members.items.len }));
         return;
     }
 
@@ -638,6 +645,19 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) Allocator.Error!void {
     } else {
         // Infer type from initializer, converting abstract to concrete
         decl_type = Types.concreteType(init_type);
+    }
+
+    // const initializer must be a const-expression (not override or runtime).
+    if (d.initializer) |init| {
+        const stage = v.classifyExprStage(init);
+        if (stage == .override_expr) {
+            v.addErrorWithCodeR(r, Diagnostic.Code.invalid_const_expr, v.fmtError("const '{s}' initializer references an override; use 'override' instead of 'const'", .{name}));
+            return;
+        }
+        if (stage == .runtime_expr) {
+            v.addErrorWithCodeR(r, Diagnostic.Code.invalid_const_expr, v.fmtError("const '{s}' initializer is not a const-expression", .{name}));
+            return;
+        }
     }
 
     // const must have constructible type
@@ -1039,10 +1059,11 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
                 v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_arg_type, v.fmtError("parameter '{s}' has non-constructible type '{s}'; must be constructible, pointer, texture, or sampler", .{ v.symbolName(param.name), pt.string() }));
             }
             // Pointer parameters: address space must be function or private by default.
-            if (pt == .pointer) {
+            // With 'enable unrestricted_pointer_parameters', all address spaces are allowed.
+            if (pt == .pointer and !v.enabled_features.contains("unrestricted_pointer_parameters")) {
                 const space = pt.pointer.address_space;
                 if (space != .function and space != .private and space != .none) {
-                    v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_address_space, v.fmtError("pointer parameter '{s}' must use 'function' or 'private' address space, got '{s}'", .{ v.symbolName(param.name), space.string() }));
+                    v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_address_space, v.fmtError("pointer parameter '{s}' must use 'function' or 'private' address space, got '{s}' (enable 'unrestricted_pointer_parameters' to allow this)", .{ v.symbolName(param.name), space.string() }));
                 }
             }
         }
@@ -1657,7 +1678,7 @@ fn stmtTerminates(root: Ast.Stmt) bool {
         // Follow compound→last and if→body+else chains
         for (0..65536) |_| {
             switch (current) {
-                .@"return", .@"break", .@"continue" => break,
+                .@"return", .@"break", .@"continue", .discard => break,
                 .compound => |s| {
                     if (s.stmts.items.len == 0) return false;
                     current = s.stmts.items[s.stmts.items.len - 1];
@@ -1835,6 +1856,13 @@ fn validateLoopStmt(v: *Validator, s: *Ast.LoopStmt) Allocator.Error!void {
         v.in_continuing = true;
         try v.validateCompoundStmt(cont);
         v.in_continuing = prev_in_continuing;
+
+        // Spec: break if must be the last statement in a continuing block.
+        for (cont.stmts.items, 0..) |stmt, i| {
+            if (stmt == .break_if and i != cont.stmts.items.len - 1) {
+                v.addErrorWithCodeR(v.getStmtRange(stmt), Diagnostic.Code.break_outside_loop, "'break if' must be the last statement in a continuing block");
+            }
+        }
     }
 
     // Detect infinite loops: body has no exit and continuing has no break_if
@@ -1911,6 +1939,8 @@ fn validateDiscardStmt(v: *Validator, s: *Ast.DiscardStmt) void {
     if (v.current_stage != .fragment) {
         v.addErrorWithCodeR(.{ .start = s.loc, .end = s.loc +| 7 }, Diagnostic.Code.discard_outside_fragment, v.fmtError("'discard' is only valid in fragment shaders, not {s}", .{v.current_stage.string()})); // "discard"
     }
+    // discard terminates the invocation, satisfying any return requirement.
+    v.has_return = true;
 }
 
 fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
@@ -2364,6 +2394,39 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
         }
     }
 
+    // bitcast<T>(expr): validate conversion constraints before the generic template path.
+    if (std.mem.eql(u8, callee_name, "bitcast")) {
+        if (e.template_type) |tt| {
+            const dest_type = v.resolveType(tt) orelse return null;
+            const range = exprRange(.{ .call = e });
+
+            if (e.args.items.len != 1) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'bitcast' requires exactly 1 argument, got {d}", .{e.args.items.len}));
+                return null;
+            }
+
+            // Evaluate the source argument
+            const src_type = (try v.checkExpr(e.args.items[0])) orelse return dest_type;
+
+            // Spec: bitcast operands must be numeric scalar or vector (no bool, no pointer, no struct).
+            const src_size = bitcastSize(src_type);
+            const dst_size = bitcastSize(dest_type);
+            if (src_size == 0) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast from '{s}'; must be a numeric scalar or vector of numeric scalars", .{src_type.string()}));
+                return dest_type;
+            }
+            if (dst_size == 0) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast to '{s}'; must be a numeric scalar or vector of numeric scalars", .{dest_type.string()}));
+                return dest_type;
+            }
+            // Spec: source and destination must have the same bit-width.
+            if (src_size != dst_size) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("bitcast source type '{s}' ({d} bits) and destination type '{s}' ({d} bits) must have the same bit-width", .{ src_type.string(), src_size, dest_type.string(), dst_size }));
+            }
+            return dest_type;
+        }
+    }
+
     // Template type constructor (e.g. array<vec3f, 7>(...), vec3<f32>(...))
     if (e.template_type) |tt| {
         const resolved = v.resolveType(tt) orelse return null;
@@ -2664,6 +2727,12 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8
     const arg_count = e.args.items.len;
     const range = exprRange(.{ .call = e });
 
+    // Spec: only constructible types can be used as value constructors.
+    if (!t.isConstructible() and !std.mem.eql(u8, callee_name, "bitcast")) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.type_mismatch, v.fmtError("type '{s}' is not constructible", .{t.string()}));
+        return null;
+    }
+
     switch (t) {
         .scalar => {
             if (arg_count > 1) {
@@ -2882,6 +2951,29 @@ fn elementTypeOf(t: Types.Type) ?*const Types.Scalar {
         .matrix => |mt| mt.element,
         else => null,
     };
+}
+
+/// Returns the bit-width of a type for bitcast validation, or 0 if not bitcastable.
+/// Spec: bitcast operands must be concrete numeric scalar or vector of concrete numeric scalars.
+fn bitcastSize(t: Types.Type) u32 {
+    switch (t) {
+        .scalar => |s| {
+            return switch (s.kind) {
+                .f32, .i32, .u32 => 32,
+                .f16 => 16,
+                .bool, .abstract_int, .abstract_float => 0,
+            };
+        },
+        .vector => |ve| {
+            const elem_bits: u32 = switch (ve.element.kind) {
+                .f32, .i32, .u32 => 32,
+                .f16 => 16,
+                .bool, .abstract_int, .abstract_float => return 0,
+            };
+            return elem_bits * ve.width;
+        },
+        else => return 0,
+    }
 }
 
 /// Suggest a vector type name matching `total_components` by replacing the
@@ -3519,6 +3611,22 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
         },
         .ptr => |t| {
             const elem_type = v.resolveType(t.elem_type) orelse return null;
+            // Spec: pointer element type must not be a pointer, reference, sampler, or texture.
+            switch (elem_type) {
+                .pointer, .reference => {
+                    v.addErrorWithCodeR(astTypeRange(.{ .ptr = t }), Diagnostic.Code.type_mismatch, "pointer element type must not be a pointer or reference");
+                    return null;
+                },
+                .sampler => {
+                    v.addErrorWithCodeR(astTypeRange(.{ .ptr = t }), Diagnostic.Code.type_mismatch, "pointer element type must not be a sampler");
+                    return null;
+                },
+                .texture => {
+                    v.addErrorWithCodeR(astTypeRange(.{ .ptr = t }), Diagnostic.Code.type_mismatch, "pointer element type must not be a texture");
+                    return null;
+                },
+                else => {},
+            }
             const result = v.arena.create(Types.Pointer) catch return null;
             result.* = .{
                 .address_space = t.address_space,
@@ -3552,6 +3660,10 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
             return .{ .sampler = result };
         },
         .texture => |t| {
+            const tex_range = astTypeRange(.{ .texture = t });
+            const kind = astTextureKindToType(t.kind);
+            const dimension = astTextureDimToType(t.dimension);
+
             var sampled_scalar: ?*const Types.Scalar = null;
             if (t.sampled_type) |st| {
                 if (v.resolveType(st)) |resolved| {
@@ -3561,10 +3673,34 @@ fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
                     }
                 }
             }
+
+            // Spec: sampled and multisampled texture element types must be f32, i32, or u32.
+            if (kind == .sampled or kind == .multisampled) {
+                if (sampled_scalar) |s| {
+                    if (s.kind != .f32 and s.kind != .i32 and s.kind != .u32) {
+                        v.addErrorWithCodeR(tex_range, Diagnostic.Code.type_mismatch, v.fmtError("texture element type must be f32, i32, or u32, got '{s}'", .{s.string()}));
+                    }
+                }
+            }
+
+            // Spec: multisampled textures must be 2D.
+            if (kind == .multisampled or kind == .depth_multisampled) {
+                if (dimension != .@"2d") {
+                    v.addErrorWithCodeR(tex_range, Diagnostic.Code.type_mismatch, v.fmtError("multisampled texture must be 2d, got '{s}'", .{dimension.string()}));
+                }
+            }
+
+            // Spec: storage textures must not use cube or cube_array dimensions.
+            if (kind == .storage) {
+                if (dimension == .cube or dimension == .cube_array) {
+                    v.addErrorWithCodeR(tex_range, Diagnostic.Code.type_mismatch, v.fmtError("storage texture must not use '{s}' dimension", .{dimension.string()}));
+                }
+            }
+
             const result = v.arena.create(Types.Texture) catch return null;
             result.* = .{
-                .kind = astTextureKindToType(t.kind),
-                .dimension = astTextureDimToType(t.dimension),
+                .kind = kind,
+                .dimension = dimension,
                 .sampled_type = sampled_scalar,
                 .texel_format = t.texel_format,
                 .access_mode = t.access_mode,

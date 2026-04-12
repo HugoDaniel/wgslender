@@ -180,7 +180,7 @@ test "validate: discard only in fragment" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     // Valid: discard in fragment shader
-    const result1 = try runValidation(arena.allocator(), "@fragment fn main() -> @location(0) vec4f { discard; return vec4f(0.0); }");
+    const result1 = try runValidation(arena.allocator(), "@fragment fn main() -> @location(0) vec4f { discard; }");
     try std.testing.expect(result1.valid);
 }
 

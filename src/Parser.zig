@@ -1404,6 +1404,11 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
                 return self.parseTemplatedConstructor(text, loc);
             }
 
+            // bitcast<T>(expr): builtin with template type argument
+            if (self.currentTag() == .lt and std.mem.eql(u8, text, "bitcast")) {
+                return self.parseBitcastExpr(text, loc);
+            }
+
             const node = try self.arena.create(Ast.IdentExpr);
             node.* = .{ .loc = loc, .name = text, .ref = .none };
             return .{ .ident = node };
@@ -1442,6 +1447,28 @@ fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?A
     _ = self.expect(.r_paren);
     const node = try self.arena.create(Ast.CallExpr);
     node.* = .{ .loc = paren_loc, .template_type = template_type, .args = args };
+    return .{ .call = node };
+}
+
+fn parseBitcastExpr(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
+    _ = self.expect(.lt);
+    const dest_type = try self.parseType("in bitcast type");
+    _ = self.expect(.gt);
+    if (self.currentTag() != .l_paren) {
+        self.addError("expected '(' after bitcast<T>");
+        const node = try self.arena.create(Ast.IdentExpr);
+        node.* = .{ .name = name, .ref = .none, .loc = name_loc };
+        return .{ .ident = node };
+    }
+    const paren_loc = self.currentStart();
+    self.advance();
+    const args = try self.parseExpressionList();
+    _ = self.expect(.r_paren);
+    // Create a CallExpr with func=ident("bitcast") and template_type=dest_type
+    const func_node = try self.arena.create(Ast.IdentExpr);
+    func_node.* = .{ .name = name, .ref = .none, .loc = name_loc };
+    const node = try self.arena.create(Ast.CallExpr);
+    node.* = .{ .loc = paren_loc, .func = .{ .ident = func_node }, .template_type = dest_type, .args = args };
     return .{ .call = node };
 }
 

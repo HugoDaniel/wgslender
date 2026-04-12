@@ -743,7 +743,15 @@ fn printExpr(self: *Printer, e: Ast.Expr) !void {
                     }
                     try stack.append(self.arena, .{ .literal = "(" });
                     if (expr.template_type) |tt| {
-                        try stack.append(self.arena, .{ .print_type = tt });
+                        if (expr.func) |f| {
+                            // Both func and template_type: e.g. bitcast<T>(...)
+                            try stack.append(self.arena, .{ .literal = ">" });
+                            try stack.append(self.arena, .{ .print_type = tt });
+                            try stack.append(self.arena, .{ .literal = "<" });
+                            try stack.append(self.arena, .{ .expr = f });
+                        } else {
+                            try stack.append(self.arena, .{ .print_type = tt });
+                        }
                     } else if (expr.func) |f| {
                         try stack.append(self.arena, .{ .expr = f });
                     }
