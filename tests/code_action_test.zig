@@ -427,3 +427,87 @@ test "action diagnostic field preserves original diagnostic" {
     try std.testing.expectEqual(@as(u32, 2), actions[0].diagnostic.range.start.line);
     try std.testing.expectEqual(@as(u32, 10), actions[0].diagnostic.range.start.character);
 }
+
+// =========================================================================
+// Code actions: unused symbol removal (W0001)
+// =========================================================================
+
+test "code action: W0001 unused produces remove action" {
+    const handler = try std.testing.allocator.create(Handler);
+    handler.* = Handler.init(std.testing.allocator);
+    defer {
+        handler.deinit();
+        std.testing.allocator.destroy(handler);
+    }
+
+    // Synthesize a W0001 diagnostic
+    const diag = Handler.LspDiagnostic{
+        .range = .{
+            .start = .{ .line = 0, .character = 6 },
+            .end = .{ .line = 0, .character = 17 },
+        },
+        .severity = .warning,
+        .message = "'unused_var' is declared but never used",
+        .code = "W0001",
+    };
+    const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
+    defer std.testing.allocator.free(diags);
+    diags[0] = diag;
+
+    const actions = try handler.computeCodeActions(diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| {
+                if (e.new_text.len > 0) std.testing.allocator.free(e.new_text);
+            }
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    try std.testing.expect(actions.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, actions[0].title, "unused_var") != null);
+}
+
+// =========================================================================
+// Code actions: enable f16 (E0900)
+// =========================================================================
+
+test "code action: E0900 feature not enabled offers enable f16" {
+    const handler = try std.testing.allocator.create(Handler);
+    handler.* = Handler.init(std.testing.allocator);
+    defer {
+        handler.deinit();
+        std.testing.allocator.destroy(handler);
+    }
+
+    const diag = Handler.LspDiagnostic{
+        .range = .{
+            .start = .{ .line = 0, .character = 7 },
+            .end = .{ .line = 0, .character = 10 },
+        },
+        .severity = .@"error",
+        .message = "type 'f16' requires 'enable f16;' directive",
+        .code = "E0900",
+    };
+    const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
+    defer std.testing.allocator.free(diags);
+    diags[0] = diag;
+
+    const actions = try handler.computeCodeActions(diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| std.testing.allocator.free(e.new_text);
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    try std.testing.expect(actions.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, actions[0].title, "enable f16") != null);
+    // Edit should insert at line 0, char 0
+    try std.testing.expectEqual(@as(u32, 0), actions[0].edits[0].range.start.line);
+    try std.testing.expectEqual(@as(u32, 0), actions[0].edits[0].range.start.character);
+}

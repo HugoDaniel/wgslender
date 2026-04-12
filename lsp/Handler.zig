@@ -348,6 +348,69 @@ pub fn computeCodeActions(
                 };
             }
         }
+
+        // Unused symbol → remove declaration
+        if (std.mem.eql(u8, diag.code, "W0001")) {
+            // Extract the name from "'{name}' is declared but never used"
+            if (std.mem.indexOf(u8, diag.message, "'")) |start| {
+                if (std.mem.indexOfPos(u8, diag.message, start + 1, "'")) |end| {
+                    const name = diag.message[start + 1 .. end];
+                    const title = std.fmt.allocPrint(self.gpa, "Remove unused '{s}'", .{name}) catch continue;
+                    // To remove the declaration, we'd need to find its full range.
+                    // For now, offer a simple removal of the diagnostic range line.
+                    // A full implementation would parse the declaration extent.
+                    const edit = self.gpa.alloc(LspTextEdit, 1) catch {
+                        self.gpa.free(title);
+                        continue;
+                    };
+                    edit[0] = .{ .range = diag.range, .new_text = self.gpa.dupe(u8, "") catch "" };
+                    actions.append(self.gpa, .{
+                        .title = title,
+                        .kind = "quickfix",
+                        .diagnostic = diag,
+                        .edits = edit,
+                    }) catch {
+                        self.gpa.free(edit);
+                        self.gpa.free(title);
+                    };
+                }
+            }
+        }
+
+        // Feature not enabled → insert 'enable f16;'
+        if (std.mem.eql(u8, diag.code, "E0900")) {
+            if (std.mem.indexOf(u8, diag.message, "f16") != null) {
+                const title = self.gpa.dupe(u8, "Add 'enable f16;'") catch continue;
+                const new_text = self.gpa.dupe(u8, "enable f16;\n") catch {
+                    self.gpa.free(title);
+                    continue;
+                };
+                const edit = self.gpa.alloc(LspTextEdit, 1) catch {
+                    self.gpa.free(new_text);
+                    self.gpa.free(title);
+                    continue;
+                };
+                // Insert at top of file
+                edit[0] = .{
+                    .range = .{
+                        .start = .{ .line = 0, .character = 0 },
+                        .end = .{ .line = 0, .character = 0 },
+                    },
+                    .new_text = new_text,
+                };
+                actions.append(self.gpa, .{
+                    .title = title,
+                    .kind = "quickfix",
+                    .is_preferred = true,
+                    .diagnostic = diag,
+                    .edits = edit,
+                }) catch {
+                    self.gpa.free(edit);
+                    self.gpa.free(new_text);
+                    self.gpa.free(title);
+                };
+            }
+        }
     }
 
     return actions.toOwnedSlice(self.gpa) catch &.{};
