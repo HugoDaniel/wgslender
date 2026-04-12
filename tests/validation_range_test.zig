@@ -95,7 +95,7 @@ fn expectRelatedWidth(
 // Identifier ranges
 // =========================================================================
 
-test "unknown type underlines full type name" {
+test "validation range: unknown type underlines full type name" {
     const source =
         \\fn dummy() {
         \\  var x: VertexOutput;
@@ -107,7 +107,7 @@ test "unknown type underlines full type name" {
     try expectErrorWidth(result, "unknown type", 12);
 }
 
-test "short unknown type underlines 1 char" {
+test "validation range: short unknown type underlines 1 char" {
     const source =
         \\fn dummy() {
         \\  var x: T;
@@ -119,7 +119,7 @@ test "short unknown type underlines 1 char" {
     try expectErrorWidth(result, "unknown type", 1);
 }
 
-test "undefined identifier underlines full name" {
+test "validation range: undefined identifier underlines full name" {
     const source =
         \\@fragment
         \\fn main() {
@@ -132,7 +132,7 @@ test "undefined identifier underlines full name" {
     try expectErrorWidth(result, "undeclared identifier", 10);
 }
 
-test "short undefined identifier underlines 1 char" {
+test "validation range: short undefined identifier underlines 1 char" {
     const source =
         \\@fragment
         \\fn main() {
@@ -148,7 +148,7 @@ test "short undefined identifier underlines 1 char" {
 // Type ranges
 // =========================================================================
 
-test "vec shorthand type range" {
+test "validation range: vec shorthand type range" {
     // vec3f is 5 chars
     const source =
         \\fn dummy() {
@@ -160,7 +160,7 @@ test "vec shorthand type range" {
     try expectErrorWidth(result, "cannot initialize", 1); // 'x' is the declaration name
 }
 
-test "custom struct type range in error" {
+test "validation range: custom struct type range in error" {
     const source =
         \\struct MyStruct { val: f32 }
         \\const x: MyStruct = 1.5;
@@ -174,7 +174,7 @@ test "custom struct type range in error" {
 // Expression ranges
 // =========================================================================
 
-test "binary operator range for +" {
+test "validation range: binary operator range for +" {
     const source =
         \\@fragment
         \\fn main() {
@@ -187,7 +187,7 @@ test "binary operator range for +" {
     try expectErrorWidth(result, "requires numeric", 1);
 }
 
-test "binary operator range for ==" {
+test "validation range: binary operator range for ==" {
     // Compare a bool and an int — incompatible types
     const source =
         \\@fragment
@@ -201,7 +201,7 @@ test "binary operator range for ==" {
     try expectErrorWidth(result, "requires compatible", 2);
 }
 
-test "binary operator range for <<" {
+test "validation range: binary operator range for <<" {
     const source =
         \\@fragment
         \\fn main() {
@@ -214,7 +214,7 @@ test "binary operator range for <<" {
     try expectErrorWidth(result, "requires integer", 2);
 }
 
-test "unary operator range for !" {
+test "validation range: unary operator range for !" {
     const source =
         \\@fragment
         \\fn main() {
@@ -227,7 +227,7 @@ test "unary operator range for !" {
     try expectErrorWidth(result, "requires 'bool'", 1);
 }
 
-test "unary operator range for ~" {
+test "validation range: unary operator range for ~" {
     const source =
         \\@fragment
         \\fn main() {
@@ -244,7 +244,7 @@ test "unary operator range for ~" {
 // Declaration ranges
 // =========================================================================
 
-test "const declaration name range" {
+test "validation range: const declaration name range" {
     const source =
         \\const myvar: i32 = 1.5;
     ;
@@ -254,7 +254,7 @@ test "const declaration name range" {
     try expectErrorWidth(result, "cannot initialize", 5);
 }
 
-test "var declaration name range" {
+test "validation range: var declaration name range" {
     const source =
         \\fn dummy() {}
         \\var<private> myvar: i32 = 1.5;
@@ -264,7 +264,7 @@ test "var declaration name range" {
     try expectErrorWidth(result, "cannot initialize", 5);
 }
 
-test "let declaration name range" {
+test "validation range: let declaration name range" {
     const source =
         \\@fragment
         \\fn main() {
@@ -277,7 +277,7 @@ test "let declaration name range" {
     try expectErrorWidth(result, "cannot initialize", 5);
 }
 
-test "override declaration name range" {
+test "validation range: override declaration name range" {
     const source =
         \\struct S { x: f32 }
         \\override o: S = 1;
@@ -292,7 +292,7 @@ test "override declaration name range" {
 // Statement keyword ranges
 // =========================================================================
 
-test "break outside loop underlines keyword" {
+test "validation range: break outside loop underlines keyword" {
     const source =
         \\@fragment
         \\fn main() {
@@ -305,7 +305,7 @@ test "break outside loop underlines keyword" {
     try expectErrorWidth(result, "break", 5);
 }
 
-test "continue outside loop underlines keyword" {
+test "validation range: continue outside loop underlines keyword" {
     const source =
         \\@fragment
         \\fn main() {
@@ -318,7 +318,7 @@ test "continue outside loop underlines keyword" {
     try expectErrorWidth(result, "continue", 8);
 }
 
-test "discard outside fragment underlines keyword" {
+test "validation range: discard outside fragment underlines keyword" {
     const source =
         \\@compute @workgroup_size(1)
         \\fn main() {
@@ -331,7 +331,7 @@ test "discard outside fragment underlines keyword" {
     try expectErrorWidth(result, "discard", 7);
 }
 
-test "return missing value underlines keyword" {
+test "validation range: return missing value underlines keyword" {
     const source =
         \\fn foo() -> f32 {
         \\  return;
@@ -347,7 +347,7 @@ test "return missing value underlines keyword" {
 // Member access ranges
 // =========================================================================
 
-test "member access error underlines dot+member" {
+test "validation range: member access error underlines dot+member" {
     const source =
         \\struct S { x: f32 }
         \\@fragment
@@ -362,7 +362,7 @@ test "member access error underlines dot+member" {
     try expectErrorWidth(result, "no member", 12);
 }
 
-test "short member access error" {
+test "validation range: short member access error" {
     const source =
         \\struct S { x: f32 }
         \\@fragment
@@ -381,7 +381,7 @@ test "short member access error" {
 // Call expression ranges
 // =========================================================================
 
-test "unknown function call underlines function name" {
+test "validation range: unknown function call underlines function name" {
     const source =
         \\@fragment
         \\fn main() {
@@ -398,7 +398,7 @@ test "unknown function call underlines function name" {
 // Related info ranges
 // =========================================================================
 
-test "related info for duplicate member spans full name" {
+test "validation range: related info for duplicate member spans full name" {
     const source =
         \\struct Foo {
         \\  myfield: f32,
@@ -413,7 +413,7 @@ test "related info for duplicate member spans full name" {
     try expectRelatedWidth(result, "duplicate member", 7);
 }
 
-test "related info for type annotation spans type name" {
+test "validation range: related info for type annotation spans type name" {
     const source =
         \\const x: i32 = 1.5;
     ;
@@ -427,7 +427,7 @@ test "related info for type annotation spans type name" {
 // Return expression ranges
 // =========================================================================
 
-test "return type mismatch underlines return expression" {
+test "validation range: return type mismatch underlines return expression" {
     const source =
         \\fn foo() -> i32 {
         \\  return 1.5;
@@ -439,7 +439,7 @@ test "return type mismatch underlines return expression" {
     try expectErrorWidth(result, "cannot return", 3);
 }
 
-test "assignment type mismatch underlines RHS expression" {
+test "validation range: assignment type mismatch underlines RHS expression" {
     const source =
         \\@fragment
         \\fn main() {
@@ -457,7 +457,7 @@ test "assignment type mismatch underlines RHS expression" {
 // Recursive struct / function ranges
 // =========================================================================
 
-test "recursive struct underlines struct name" {
+test "validation range: recursive struct underlines struct name" {
     const source =
         \\struct Node {
         \\  child: Node,
@@ -473,7 +473,7 @@ test "recursive struct underlines struct name" {
 // Edge cases
 // =========================================================================
 
-test "end-of-source error does not crash" {
+test "validation range: end-of-source error does not crash" {
     // This source ends abruptly — parser should handle gracefully
     const source =
         \\fn foo() {
@@ -485,7 +485,7 @@ test "end-of-source error does not crash" {
     _ = result.diagnostics.count();
 }
 
-test "single-char identifier range" {
+test "validation range: single-char identifier range" {
     const source =
         \\@fragment
         \\fn main() {
@@ -502,7 +502,7 @@ test "single-char identifier range" {
 // Deduplication
 // =========================================================================
 
-test "unknown type in function signature is not duplicated" {
+test "validation range: unknown type in function signature is not duplicated" {
     // This used to produce 3x "unknown type 'BadType'" because resolveType
     // was called in phase 3.5 (registerFunctionSignatures) and again in
     // phase 4 (validateFunction) for parameters and return types.
@@ -522,7 +522,7 @@ test "unknown type in function signature is not duplicated" {
     try std.testing.expectEqual(@as(u32, 1), count);
 }
 
-test "unknown return type is not duplicated" {
+test "validation range: unknown return type is not duplicated" {
     const source =
         \\@vertex
         \\fn main() -> BadOutput {
@@ -544,7 +544,7 @@ test "unknown return type is not duplicated" {
 // Swizzle / vector member ranges
 // =========================================================================
 
-test "invalid swizzle underlines dot+swizzle" {
+test "validation range: invalid swizzle underlines dot+swizzle" {
     const source =
         \\@fragment
         \\fn main() {
@@ -558,7 +558,7 @@ test "invalid swizzle underlines dot+swizzle" {
     try expectErrorWidth(result, "swizzle", 5);
 }
 
-test "out-of-bounds swizzle component on vec2" {
+test "validation range: out-of-bounds swizzle component on vec2" {
     const source =
         \\@fragment
         \\fn main() {
@@ -572,7 +572,7 @@ test "out-of-bounds swizzle component on vec2" {
     try expectErrorWidth(result, "out of bounds", 2);
 }
 
-test "mixed swizzle groups xyzw and rgba" {
+test "validation range: mixed swizzle groups xyzw and rgba" {
     const source =
         \\@fragment
         \\fn main() {
@@ -590,7 +590,7 @@ test "mixed swizzle groups xyzw and rgba" {
 // Index expression ranges
 // =========================================================================
 
-test "not-indexable error underlines bracket" {
+test "validation range: not-indexable error underlines bracket" {
     const source =
         \\@fragment
         \\fn main() {
@@ -604,7 +604,7 @@ test "not-indexable error underlines bracket" {
     try expectErrorWidth(result, "not indexable", 1);
 }
 
-test "array index type error underlines bracket" {
+test "validation range: array index type error underlines bracket" {
     const source =
         \\@fragment
         \\fn main() {
@@ -621,7 +621,7 @@ test "array index type error underlines bracket" {
 // More unary operator ranges
 // =========================================================================
 
-test "unary negation of bool underlines -" {
+test "validation range: unary negation of bool underlines -" {
     const source =
         \\@fragment
         \\fn main() {
@@ -634,7 +634,7 @@ test "unary negation of bool underlines -" {
     try expectErrorWidth(result, "requires numeric", 1);
 }
 
-test "deref non-pointer underlines *" {
+test "validation range: deref non-pointer underlines *" {
     const source =
         \\@fragment
         \\fn main() {
@@ -652,7 +652,7 @@ test "deref non-pointer underlines *" {
 // Function call argument ranges
 // =========================================================================
 
-test "wrong argument count underlines function name" {
+test "validation range: wrong argument count underlines function name" {
     const source =
         \\fn foo(a: f32, b: f32) -> f32 { return a + b; }
         \\@fragment
@@ -666,7 +666,7 @@ test "wrong argument count underlines function name" {
     try expectErrorWidth(result, "expects 2 arguments", 3);
 }
 
-test "wrong argument type underlines function name" {
+test "validation range: wrong argument type underlines function name" {
     const source =
         \\fn foo(a: i32) -> i32 { return a; }
         \\@fragment
@@ -680,7 +680,7 @@ test "wrong argument type underlines function name" {
     try expectErrorWidth(result, "argument 1", 3);
 }
 
-test "builtin arg count error underlines function name" {
+test "validation range: builtin arg count error underlines function name" {
     const source =
         \\@fragment
         \\fn main() {
@@ -697,7 +697,7 @@ test "builtin arg count error underlines function name" {
 // If / while / for condition ranges
 // =========================================================================
 
-test "if condition type error underlines condition expression" {
+test "validation range: if condition type error underlines condition expression" {
     const source =
         \\@fragment
         \\fn main() {
@@ -710,7 +710,7 @@ test "if condition type error underlines condition expression" {
     try expectErrorWidth(result, "if condition must be 'bool'", 2);
 }
 
-test "while condition type error underlines condition" {
+test "validation range: while condition type error underlines condition" {
     const source =
         \\@fragment
         \\fn main() {
@@ -723,7 +723,7 @@ test "while condition type error underlines condition" {
     try expectErrorWidth(result, "while condition must be 'bool'", 3);
 }
 
-test "for condition type error underlines condition" {
+test "validation range: for condition type error underlines condition" {
     const source =
         \\@fragment
         \\fn main() {
@@ -740,7 +740,7 @@ test "for condition type error underlines condition" {
 // Compound assignment / increment
 // =========================================================================
 
-test "compound assignment operator error underlines operator" {
+test "validation range: compound assignment operator error underlines operator" {
     const source =
         \\@fragment
         \\fn main() {
@@ -754,7 +754,7 @@ test "compound assignment operator error underlines operator" {
     try expectErrorWidth(result, "invalid operands", 2);
 }
 
-test "incr/decr on float underlines operand expression" {
+test "validation range: incr/decr on float underlines operand expression" {
     const source =
         \\@fragment
         \\fn main() {
@@ -772,7 +772,7 @@ test "incr/decr on float underlines operand expression" {
 // Empty struct range
 // =========================================================================
 
-test "empty struct error underlines struct name" {
+test "validation range: empty struct error underlines struct name" {
     const source =
         \\struct Empty {}
     ;
@@ -786,7 +786,7 @@ test "empty struct error underlines struct name" {
 // Missing function return range
 // =========================================================================
 
-test "missing return underlines function name" {
+test "validation range: missing return underlines function name" {
     const source =
         \\fn compute() -> f32 {
         \\  let x = 1.0;
@@ -802,7 +802,7 @@ test "missing return underlines function name" {
 // Exact column position tests
 // =========================================================================
 
-test "error at exact column with indentation" {
+test "validation range: error at exact column with indentation" {
     const source =
         \\@fragment
         \\fn main() {
@@ -815,7 +815,7 @@ test "error at exact column with indentation" {
     try expectErrorRange(result, "undeclared identifier", 17, 29);
 }
 
-test "error at column 1 for top-level declaration" {
+test "validation range: error at column 1 for top-level declaration" {
     const source =
         \\struct E {}
     ;
@@ -829,7 +829,7 @@ test "error at column 1 for top-level declaration" {
 // Deduplication
 // =========================================================================
 
-test "multiple unknown types each appear exactly once" {
+test "validation range: multiple unknown types each appear exactly once" {
     const source =
         \\@vertex
         \\fn main(a: TypeA, b: TypeB) -> TypeC {

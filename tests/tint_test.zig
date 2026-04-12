@@ -154,7 +154,7 @@ fn testOneShader(
     return .passed;
 }
 
-test "tint semantic preservation" {
+test "tint: semantic preservation" {
     const tint_dir_rel = "tests/testdata/tint";
 
     // std.Options.debug_io is available in all contexts, including tests.

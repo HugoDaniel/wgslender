@@ -8,7 +8,7 @@ const wgslender = @import("wgslender");
 // TestMinifyAndReflect
 // =========================================================================
 
-test "MinifyAndReflect" {
+test "reflect: minify and reflect" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -76,7 +76,7 @@ test "MinifyAndReflect" {
 // TestMinifyAndReflectCombined — uses minifyAndReflect for shared renamer
 // =========================================================================
 
-test "MinifyAndReflectCombined" {
+test "reflect: minify and reflect combined" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -138,7 +138,7 @@ test "MinifyAndReflectCombined" {
 // TestMinifyAndReflectCombinedParseError
 // =========================================================================
 
-test "MinifyAndReflectCombinedParseError" {
+test "reflect: minify and reflect combined parse error" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -154,7 +154,7 @@ test "MinifyAndReflectCombinedParseError" {
 // TestMinifyAndReflectParseError
 // =========================================================================
 
-test "MinifyAndReflectParseError" {
+test "reflect: minify and reflect parse error" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -170,7 +170,7 @@ test "MinifyAndReflectParseError" {
 // TestMinifyAndReflectWithTreeShaking
 // =========================================================================
 
-test "MinifyAndReflectWithTreeShaking" {
+test "reflect: minify and reflect with tree shaking" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -214,7 +214,7 @@ test "MinifyAndReflectWithTreeShaking" {
 // TestMinifyAndReflectStructLayout
 // =========================================================================
 
-test "MinifyAndReflectStructLayout" {
+test "reflect: minify and reflect struct layout" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -267,7 +267,7 @@ test "MinifyAndReflectStructLayout" {
 // TestConvenienceMinifyFunction
 // =========================================================================
 
-test "ConvenienceMinifyFunction" {
+test "reflect: convenience minify function" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const allocator = arena.allocator();
@@ -306,7 +306,7 @@ fn findBinding(bindings: []const wgslender.Reflect.BindingInfo, name: []const u8
 
 // --- Struct Layout Tests ---
 
-test "Reflect: basic struct layout" {
+test "reflect: basic struct layout" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -349,7 +349,7 @@ test "Reflect: basic struct layout" {
     try std.testing.expectEqual(@as(u32, 16), layout.fields.items[2].offset);
 }
 
-test "Reflect: vec3 alignment" {
+test "reflect: vec3 alignment" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -375,7 +375,7 @@ test "Reflect: vec3 alignment" {
     try std.testing.expectEqual(@as(u32, 28), layout.fields.items[2].offset);
 }
 
-test "Reflect: nested struct" {
+test "reflect: nested struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -403,7 +403,7 @@ test "Reflect: nested struct" {
     try std.testing.expectEqual(@as(u32, 8), inner_layout.size);
 }
 
-test "Reflect: matrix layout" {
+test "reflect: matrix layout" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -424,7 +424,7 @@ test "Reflect: matrix layout" {
     try std.testing.expectEqual(@as(u32, 64), layout.fields.items[2].size);
 }
 
-test "Reflect: array layout in struct" {
+test "reflect: array layout in struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -437,7 +437,7 @@ test "Reflect: array layout in struct" {
     try std.testing.expectEqual(@as(u32, 4), layout.fields.items[0].alignment);
 }
 
-test "Reflect: medium struct size" {
+test "reflect: medium struct size" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -458,7 +458,7 @@ test "Reflect: medium struct size" {
     try std.testing.expectEqual(@as(u32, 64), layout.size);
 }
 
-test "Reflect: struct with array of structs" {
+test "reflect: struct with array of structs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -484,7 +484,7 @@ test "Reflect: struct with array of structs" {
     try std.testing.expectEqual(@as(u32, 160), layout.size);
 }
 
-test "Reflect: four matrices struct" {
+test "reflect: four matrices struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -502,7 +502,7 @@ test "Reflect: four matrices struct" {
     try std.testing.expectEqual(@as(u32, 256), layout.size);
 }
 
-test "Reflect: mixed vectors struct" {
+test "reflect: mixed vectors struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -519,7 +519,7 @@ test "Reflect: mixed vectors struct" {
     try std.testing.expectEqual(@as(u32, 48), layout.size);
 }
 
-test "Reflect: single vec3f struct" {
+test "reflect: single vec3f struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -530,7 +530,7 @@ test "Reflect: single vec3f struct" {
     try std.testing.expectEqual(@as(u32, 16), layout.size);
 }
 
-test "Reflect: two vec3f struct" {
+test "reflect: two vec3f struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -543,7 +543,7 @@ test "Reflect: two vec3f struct" {
     try std.testing.expectEqual(@as(u32, 16), layout.fields.items[1].offset);
 }
 
-test "Reflect: complex nested struct" {
+test "reflect: complex nested struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -564,7 +564,7 @@ test "Reflect: complex nested struct" {
     try std.testing.expectEqual(@as(u32, 96), layout.size);
 }
 
-test "Reflect: struct with nested struct and vec3f" {
+test "reflect: struct with nested struct and vec3f" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -584,7 +584,7 @@ test "Reflect: struct with nested struct and vec3f" {
     try std.testing.expectEqual(@as(u32, 64), layout.size);
 }
 
-test "Reflect: complex struct with arrays" {
+test "reflect: complex struct with arrays" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -606,7 +606,7 @@ test "Reflect: complex struct with arrays" {
 
 // --- Bindings & Entry Points Tests ---
 
-test "Reflect: multiple bindings across groups" {
+test "reflect: multiple bindings across groups" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -641,7 +641,7 @@ test "Reflect: multiple bindings across groups" {
     try std.testing.expectEqualStrings("read_write", db.access_mode);
 }
 
-test "Reflect: sampler and sampler_comparison" {
+test "reflect: sampler and sampler_comparison" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -656,7 +656,7 @@ test "Reflect: sampler and sampler_comparison" {
     try std.testing.expectEqualStrings("sampler_comparison", result.bindings.items[1].typ);
 }
 
-test "Reflect: texture bindings" {
+test "reflect: texture bindings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -670,7 +670,7 @@ test "Reflect: texture bindings" {
     try std.testing.expectEqual(@as(usize, 3), result.bindings.items.len);
 }
 
-test "Reflect: handle type sampler_comparison" {
+test "reflect: handle type sampler_comparison" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -682,7 +682,7 @@ test "Reflect: handle type sampler_comparison" {
     try std.testing.expectEqualStrings("handle", result.bindings.items[0].address_space);
 }
 
-test "Reflect: entry points" {
+test "reflect: entry points" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -730,7 +730,7 @@ test "Reflect: entry points" {
     try std.testing.expect(fragment_found);
 }
 
-test "Reflect: workgroup size variants" {
+test "reflect: workgroup size variants" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -752,7 +752,7 @@ test "Reflect: workgroup size variants" {
 
 // --- Array Binding Tests ---
 
-test "Reflect: simple array binding" {
+test "reflect: simple array binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -776,7 +776,7 @@ test "Reflect: simple array binding" {
     try std.testing.expect(arr.nested == null);
 }
 
-test "Reflect: runtime-sized array binding" {
+test "reflect: runtime-sized array binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -790,7 +790,7 @@ test "Reflect: runtime-sized array binding" {
     try std.testing.expectEqual(@as(u32, 4), arr.element_stride);
 }
 
-test "Reflect: array of structs binding" {
+test "reflect: array of structs binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -819,7 +819,7 @@ test "Reflect: array of structs binding" {
     try std.testing.expectEqualStrings("vel", el.fields.items[1].name);
 }
 
-test "Reflect: nested array binding" {
+test "reflect: nested array binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -844,7 +844,7 @@ test "Reflect: nested array binding" {
     try std.testing.expect(inner.nested == null);
 }
 
-test "Reflect: deeply nested array binding" {
+test "reflect: deeply nested array binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -869,7 +869,7 @@ test "Reflect: deeply nested array binding" {
     try std.testing.expect(l3.nested == null);
 }
 
-test "Reflect: vec3 array stride" {
+test "reflect: vec3 array stride" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -881,7 +881,7 @@ test "Reflect: vec3 array stride" {
     try std.testing.expectEqual(@as(?i32, 160), arr.total_size);
 }
 
-test "Reflect: uniform array in struct" {
+test "reflect: uniform array in struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -897,7 +897,7 @@ test "Reflect: uniform array in struct" {
     try std.testing.expect(b.layout != null);
 }
 
-test "Reflect: atomic array elements" {
+test "reflect: atomic array elements" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -911,7 +911,7 @@ test "Reflect: atomic array elements" {
     try std.testing.expectEqual(@as(u32, 4), arr.element_stride);
 }
 
-test "Reflect: mat4x4 array elements" {
+test "reflect: mat4x4 array elements" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -926,7 +926,7 @@ test "Reflect: mat4x4 array elements" {
     try std.testing.expectEqual(@as(?i32, 6400), arr.total_size);
 }
 
-test "Reflect: mixed array and non-array bindings" {
+test "reflect: mixed array and non-array bindings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -959,7 +959,7 @@ test "Reflect: mixed array and non-array bindings" {
     try std.testing.expectEqual(@as(?i32, null), varr.element_count);
 }
 
-test "Reflect: nested struct in array binding" {
+test "reflect: nested struct in array binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -979,7 +979,7 @@ test "Reflect: nested struct in array binding" {
     try std.testing.expect(el.fields.items[1].layout != null);
 }
 
-test "Reflect: empty struct array binding" {
+test "reflect: empty struct array binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -992,7 +992,7 @@ test "Reflect: empty struct array binding" {
     _ = result;
 }
 
-test "Reflect: zero-size array binding" {
+test "reflect: zero-size array binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1002,7 +1002,7 @@ test "Reflect: zero-size array binding" {
     _ = result;
 }
 
-test "Reflect: large count array binding" {
+test "reflect: large count array binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1016,7 +1016,7 @@ test "Reflect: large count array binding" {
 
 // --- Real Shader Tests ---
 
-test "Reflect: real shader with array of structs" {
+test "reflect: real shader with array of structs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1070,7 +1070,7 @@ test "Reflect: real shader with array of structs" {
     try std.testing.expectEqual(@as(u32, 64), result.entry_points.items[0].workgroup_size[0]);
 }
 
-test "Reflect: real shader direct array binding" {
+test "reflect: real shader direct array binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1109,7 +1109,7 @@ test "Reflect: real shader direct array binding" {
     try std.testing.expectEqual(@as(?i32, 48000), fixed_arr.total_size);
 }
 
-test "Reflect: complex real shader with camera/lights" {
+test "reflect: complex real shader with camera/lights" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1162,7 +1162,7 @@ test "Reflect: complex real shader with camera/lights" {
 
 // --- Mapped Names Tests ---
 
-test "Reflect: mapped names without renamer" {
+test "reflect: mapped names without renamer" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1190,7 +1190,7 @@ test "Reflect: mapped names without renamer" {
     }
 }
 
-test "Reflect: mapped names with renamer (via minifyAndReflect)" {
+test "reflect: mapped names with renamer (via minifyAndReflect)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1218,7 +1218,7 @@ test "Reflect: mapped names with renamer (via minifyAndReflect)" {
     try std.testing.expect(std.mem.indexOf(u8, result.minify.code, b.name_mapped) != null);
 }
 
-test "Reflect: field mapped names" {
+test "reflect: field mapped names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1240,7 +1240,7 @@ test "Reflect: field mapped names" {
 
 // --- Generic Type Tests ---
 
-test "Reflect: generic vector types" {
+test "reflect: generic vector types" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1266,7 +1266,7 @@ test "Reflect: generic vector types" {
     }
 }
 
-test "Reflect: generic matrix types" {
+test "reflect: generic matrix types" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1288,7 +1288,7 @@ test "Reflect: generic matrix types" {
     }
 }
 
-test "Reflect: pointer type in struct" {
+test "reflect: pointer type in struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1299,7 +1299,7 @@ test "Reflect: pointer type in struct" {
     try std.testing.expectEqual(@as(usize, 1), layout.fields.items.len);
 }
 
-test "Reflect: atomic types" {
+test "reflect: atomic types" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1319,7 +1319,7 @@ test "Reflect: atomic types" {
 
 // --- Edge Cases ---
 
-test "Reflect: parse errors" {
+test "reflect: parse errors" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1330,7 +1330,7 @@ test "Reflect: parse errors" {
     try std.testing.expect(result.errors.len > 0);
 }
 
-test "Reflect: empty shader" {
+test "reflect: empty shader" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1341,7 +1341,7 @@ test "Reflect: empty shader" {
     try std.testing.expectEqual(@as(usize, 0), result.entry_points.items.len);
 }
 
-test "Reflect: array of vec2f struct" {
+test "reflect: array of vec2f struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1352,7 +1352,7 @@ test "Reflect: array of vec2f struct" {
     try std.testing.expectEqual(@as(u32, 24), layout.size);
 }
 
-test "Reflect: private var not in bindings" {
+test "reflect: private var not in bindings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();

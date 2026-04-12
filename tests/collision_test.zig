@@ -72,7 +72,7 @@ fn checkNoDuplicateNames(code: []const u8) !void {
 // Tests
 // =========================================================================
 
-test "NoDuplicateNamesBasic" {
+test "collision: no duplicate names basic" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
@@ -101,7 +101,7 @@ test "NoDuplicateNamesBasic" {
     try checkNoDuplicateNames(result.code);
 }
 
-test "NoDuplicateNamesManySymbols" {
+test "collision: no duplicate names many symbols" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 

@@ -13,7 +13,7 @@ const wgslender = @import("wgslender");
 // Fuzz test 1: Parser no-crash
 // =========================================================================
 
-test "fuzz parser no crash" {
+test "fuzz: parser no crash" {
     try std.testing.fuzz({}, testParserNoCrash, .{
         .corpus = &.{
             "fn main() {}",
@@ -49,7 +49,7 @@ fn testParserNoCrash(_: void, smith: *std.testing.Smith) !void {
 // Fuzz test 2: Minify no-crash
 // =========================================================================
 
-test "fuzz minify no crash" {
+test "fuzz: minify no crash" {
     try std.testing.fuzz({}, testMinifyNoCrash, .{
         .corpus = &.{
             "fn main() { let x = 1; }",
@@ -76,7 +76,7 @@ fn testMinifyNoCrash(_: void, smith: *std.testing.Smith) !void {
 // Fuzz test 3: Validate no-crash
 // =========================================================================
 
-test "fuzz validate no crash" {
+test "fuzz: validate no crash" {
     try std.testing.fuzz({}, testValidateNoCrash, .{
         .corpus = &.{
             "@compute @workgroup_size(1) fn main() {}",
@@ -103,7 +103,7 @@ fn testValidateNoCrash(_: void, smith: *std.testing.Smith) !void {
 // Fuzz test 4: Minify idempotence (whitespace + syntax only)
 // =========================================================================
 
-test "fuzz minify idempotence" {
+test "fuzz: minify idempotence" {
     try std.testing.fuzz({}, testMinifyIdempotence, .{
         .corpus = &.{
             "fn main(){}",
@@ -155,7 +155,7 @@ fn testMinifyIdempotence(_: void, smith: *std.testing.Smith) !void {
 // Fuzz test 5: Reflect no-crash
 // =========================================================================
 
-test "fuzz reflect no crash" {
+test "fuzz: reflect no crash" {
     try std.testing.fuzz({}, testReflectNoCrash, .{
         .corpus = &.{
             "@group(0) @binding(0) var<uniform> u: f32;",
@@ -181,7 +181,7 @@ fn testReflectNoCrash(_: void, smith: *std.testing.Smith) !void {
 // Fuzz test 6: Compile no-crash
 // =========================================================================
 
-test "fuzz compile no crash" {
+test "fuzz: compile no crash" {
     try std.testing.fuzz({}, testCompileNoCrash, .{
         .corpus = &.{
             "fn main() {}",

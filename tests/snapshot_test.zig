@@ -44,7 +44,7 @@ fn mangleExt(allocator: std.mem.Allocator, input: [:0]const u8) ![]const u8 {
 // snapshots_basic.txt (whitespace-only)
 // =========================================================================
 
-test "ConstSimple" {
+test "snapshot: const simple" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -53,7 +53,7 @@ test "ConstSimple" {
     );
 }
 
-test "VarDeclarations" {
+test "snapshot: var declarations" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -62,7 +62,7 @@ test "VarDeclarations" {
     );
 }
 
-test "FunctionSimple" {
+test "snapshot: function simple" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -71,7 +71,7 @@ test "FunctionSimple" {
     );
 }
 
-test "StructSimple" {
+test "snapshot: struct simple" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -84,7 +84,7 @@ test "StructSimple" {
 // snapshots_whitespace.txt
 // =========================================================================
 
-test "RemoveNewlines" {
+test "snapshot: remove newlines" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -93,7 +93,7 @@ test "RemoveNewlines" {
     );
 }
 
-test "RemoveIndentation" {
+test "snapshot: remove indentation" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -102,7 +102,7 @@ test "RemoveIndentation" {
     );
 }
 
-test "CompactOperators" {
+test "snapshot: compact operators" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -111,7 +111,7 @@ test "CompactOperators" {
     );
 }
 
-test "CompactFunction" {
+test "snapshot: compact function" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -124,7 +124,7 @@ test "CompactFunction" {
 // snapshots_expressions.txt (whitespace-only)
 // =========================================================================
 
-test "Arithmetic" {
+test "snapshot: arithmetic" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -133,7 +133,7 @@ test "Arithmetic" {
     );
 }
 
-test "Logical" {
+test "snapshot: logical" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -142,7 +142,7 @@ test "Logical" {
     );
 }
 
-test "Bitwise" {
+test "snapshot: bitwise" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -151,7 +151,7 @@ test "Bitwise" {
     );
 }
 
-test "Comparison" {
+test "snapshot: comparison" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -160,7 +160,7 @@ test "Comparison" {
     );
 }
 
-test "MemberAccess" {
+test "snapshot: member access" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -169,7 +169,7 @@ test "MemberAccess" {
     );
 }
 
-test "FunctionCalls" {
+test "snapshot: function calls" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -178,7 +178,7 @@ test "FunctionCalls" {
     );
 }
 
-test "TypeConstructors" {
+test "snapshot: type constructors" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -191,7 +191,7 @@ test "TypeConstructors" {
 // snapshots_controlflow.txt (whitespace-only)
 // =========================================================================
 
-test "IfElse" {
+test "snapshot: if else" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -200,7 +200,7 @@ test "IfElse" {
     );
 }
 
-test "WhileLoop" {
+test "snapshot: while loop" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -209,7 +209,7 @@ test "WhileLoop" {
     );
 }
 
-test "LoopSimple" {
+test "snapshot: loop simple" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -218,7 +218,7 @@ test "LoopSimple" {
     );
 }
 
-test "Switch" {
+test "snapshot: switch" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -231,7 +231,7 @@ test "Switch" {
 // snapshots_types.txt (whitespace-only)
 // =========================================================================
 
-test "ScalarTypes" {
+test "snapshot: scalar types" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -240,7 +240,7 @@ test "ScalarTypes" {
     );
 }
 
-test "VectorTypes" {
+test "snapshot: vector types" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -249,7 +249,7 @@ test "VectorTypes" {
     );
 }
 
-test "MatrixTypes" {
+test "snapshot: matrix types" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -258,7 +258,7 @@ test "MatrixTypes" {
     );
 }
 
-test "ArrayTypes" {
+test "snapshot: array types" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -267,7 +267,7 @@ test "ArrayTypes" {
     );
 }
 
-test "TextureTypes" {
+test "snapshot: texture types" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -276,7 +276,7 @@ test "TextureTypes" {
     );
 }
 
-test "SamplerTypes" {
+test "snapshot: sampler types" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -289,7 +289,7 @@ test "SamplerTypes" {
 // snapshots_directives.txt (whitespace-only)
 // =========================================================================
 
-test "EnableDirective" {
+test "snapshot: enable directive" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -298,7 +298,7 @@ test "EnableDirective" {
     );
 }
 
-test "DiagnosticDirective" {
+test "snapshot: diagnostic directive" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -307,7 +307,7 @@ test "DiagnosticDirective" {
     );
 }
 
-test "ConstAssert" {
+test "snapshot: const assert" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -320,7 +320,7 @@ test "ConstAssert" {
 // snapshots_attributes.txt (whitespace-only)
 // =========================================================================
 
-test "BindingAttributes" {
+test "snapshot: binding attributes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -329,7 +329,7 @@ test "BindingAttributes" {
     );
 }
 
-test "BuiltinAttributes" {
+test "snapshot: builtin attributes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -338,7 +338,7 @@ test "BuiltinAttributes" {
     );
 }
 
-test "WorkgroupSize" {
+test "snapshot: workgroup size" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -351,7 +351,7 @@ test "WorkgroupSize" {
 // snapshots_complex.txt (whitespace-only)
 // =========================================================================
 
-test "VertexShaderWithStructs" {
+test "snapshot: vertex shader with structs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -360,7 +360,7 @@ test "VertexShaderWithStructs" {
     );
 }
 
-test "FragmentShaderWithTexture" {
+test "snapshot: fragment shader with texture" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -369,7 +369,7 @@ test "FragmentShaderWithTexture" {
     );
 }
 
-test "ComputeShaderSimple" {
+test "snapshot: compute shader simple" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -382,7 +382,7 @@ test "ComputeShaderSimple" {
 // snapshots_entrypoints.txt (full minification)
 // =========================================================================
 
-test "VertexEntryPoint" {
+test "snapshot: vertex entry point" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -391,7 +391,7 @@ test "VertexEntryPoint" {
     );
 }
 
-test "FragmentEntryPoint" {
+test "snapshot: fragment entry point" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -400,7 +400,7 @@ test "FragmentEntryPoint" {
     );
 }
 
-test "ComputeEntryPoint" {
+test "snapshot: compute entry point" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -413,7 +413,7 @@ test "ComputeEntryPoint" {
 // snapshots_identifiers.txt (full minification)
 // =========================================================================
 
-test "LocalVariables" {
+test "snapshot: local variables" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -422,7 +422,7 @@ test "LocalVariables" {
     );
 }
 
-test "FunctionParameters" {
+test "snapshot: function parameters" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -431,7 +431,7 @@ test "FunctionParameters" {
     );
 }
 
-test "HelperFunctions" {
+test "snapshot: helper functions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -440,7 +440,7 @@ test "HelperFunctions" {
     );
 }
 
-test "EntryPointPreserved" {
+test "snapshot: entry point preserved" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -449,7 +449,7 @@ test "EntryPointPreserved" {
     );
 }
 
-test "StructRenaming" {
+test "snapshot: struct renaming" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -458,7 +458,7 @@ test "StructRenaming" {
     );
 }
 
-test "ConstRenaming" {
+test "snapshot: const renaming" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -467,7 +467,7 @@ test "ConstRenaming" {
     );
 }
 
-test "SameScopedNames" {
+test "snapshot: same scoped names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -476,7 +476,7 @@ test "SameScopedNames" {
     );
 }
 
-test "NestedScopes" {
+test "snapshot: nested scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -489,7 +489,7 @@ test "NestedScopes" {
 // snapshots_combined.txt (full minification)
 // =========================================================================
 
-test "FullVertexShader" {
+test "snapshot: full vertex shader" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -498,7 +498,7 @@ test "FullVertexShader" {
     );
 }
 
-test "FullFragmentShader" {
+test "snapshot: full fragment shader" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -511,7 +511,7 @@ test "FullFragmentShader" {
 // snapshots_external_bindings.txt (full minification)
 // =========================================================================
 
-test "SingleUniformBinding" {
+test "snapshot: single uniform binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -520,7 +520,7 @@ test "SingleUniformBinding" {
     );
 }
 
-test "StorageBinding" {
+test "snapshot: storage binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -533,7 +533,7 @@ test "StorageBinding" {
 // snapshots_mangle_external.txt (mangle external bindings)
 // =========================================================================
 
-test "MangledUniform" {
+test "snapshot: mangled uniform" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -542,7 +542,7 @@ test "MangledUniform" {
     );
 }
 
-test "MangledStorage" {
+test "snapshot: mangled storage" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -551,7 +551,7 @@ test "MangledStorage" {
     );
 }
 
-test "MangledVsAliased" {
+test "snapshot: mangled vs aliased" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -564,7 +564,7 @@ test "MangledVsAliased" {
 // Remaining external bindings snapshot tests
 // =========================================================================
 
-test "MultipleUniformBindings" {
+test "snapshot: multiple uniform bindings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -573,7 +573,7 @@ test "MultipleUniformBindings" {
     );
 }
 
-test "MixedUniformStorage" {
+test "snapshot: mixed uniform storage" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -582,7 +582,7 @@ test "MixedUniformStorage" {
     );
 }
 
-test "UniformWithTextures" {
+test "snapshot: uniform with textures" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -591,7 +591,7 @@ test "UniformWithTextures" {
     );
 }
 
-test "UniformMultipleUses" {
+test "snapshot: uniform multiple uses" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -600,7 +600,7 @@ test "UniformMultipleUses" {
     );
 }
 
-test "StructUniform" {
+test "snapshot: struct uniform" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -609,7 +609,7 @@ test "StructUniform" {
     );
 }
 
-test "UnusedUniform" {
+test "snapshot: unused uniform" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -618,7 +618,7 @@ test "UnusedUniform" {
     );
 }
 
-test "LongBindingName" {
+test "snapshot: long binding name" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -627,7 +627,7 @@ test "LongBindingName" {
     );
 }
 
-test "MangledMultipleUniforms" {
+test "snapshot: mangled multiple uniforms" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -640,7 +640,7 @@ test "MangledMultipleUniforms" {
 // For-loop tests
 // =========================================================================
 
-test "ForLoopBasic" {
+test "snapshot: for loop basic" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -649,7 +649,7 @@ test "ForLoopBasic" {
     );
 }
 
-test "ForLoopWithBody" {
+test "snapshot: for loop with body" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -658,7 +658,7 @@ test "ForLoopWithBody" {
     );
 }
 
-test "ForLoopLetInit" {
+test "snapshot: for loop let init" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -667,7 +667,7 @@ test "ForLoopLetInit" {
     );
 }
 
-test "ForLoopAssignUpdate" {
+test "snapshot: for loop assign update" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -676,7 +676,7 @@ test "ForLoopAssignUpdate" {
     );
 }
 
-test "ForLoopNoInit" {
+test "snapshot: for loop no init" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -685,7 +685,7 @@ test "ForLoopNoInit" {
     );
 }
 
-test "ForLoopRenamed" {
+test "snapshot: for loop renamed" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectEqualStrings(
@@ -809,7 +809,7 @@ test "DCE: const_assert kept" {
     try std.testing.expect(std.mem.indexOf(u8, result, "const_assert") != null);
 }
 
-test "DCE disabled keeps everything" {
+test "DCE: disabled keeps everything" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const r = try wgslender.minifyWithOptions(arena.allocator(), "fn unused() {}\n@fragment fn main() -> @location(0) vec4f {\n    return vec4f(1.0);\n}\n", .{

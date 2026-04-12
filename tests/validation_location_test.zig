@@ -71,7 +71,7 @@ fn expectNthErrorAt(result: wgslender.Validator.Result, n: usize, expected_line:
 // Declaration Errors
 // =========================================================================
 
-test "const missing initializer reports correct line" {
+test "validation location: const missing initializer reports correct line" {
     // "const x : i32;" is a parse error, validator won't see it.
     // Use a const without '=' which the parser accepts but validator catches:
     // Actually, the parser requires '=' for const. Let's test a different const error.
@@ -86,7 +86,7 @@ test "const missing initializer reports correct line" {
     try expectErrorAt(result, 2, 7);
 }
 
-test "var type mismatch reports declaration location" {
+test "validation location: var type mismatch reports declaration location" {
     const source =
         \\fn dummy() {}
         \\
@@ -98,7 +98,7 @@ test "var type mismatch reports declaration location" {
     try expectErrorAt(result, 3, 14);
 }
 
-test "storage var with write-only access mode is rejected" {
+test "validation location: storage var with write-only access mode is rejected" {
     const source =
         \\struct Data { value : f32 }
         \\@group(0) @binding(0) var<storage, write> buf : Data;
@@ -111,7 +111,7 @@ test "storage var with write-only access mode is rejected" {
     try expectErrorAtWithMessage(result, 2, 43, "access mode");
 }
 
-test "let missing initializer reports declaration location" {
+test "validation location: let missing initializer reports declaration location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -128,7 +128,7 @@ test "let missing initializer reports declaration location" {
 // Statement Errors
 // =========================================================================
 
-test "break outside loop reports break keyword location" {
+test "validation location: break outside loop reports break keyword location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -141,7 +141,7 @@ test "break outside loop reports break keyword location" {
     try expectErrorAt(result, 3, 5);
 }
 
-test "continue outside loop reports continue keyword location" {
+test "validation location: continue outside loop reports continue keyword location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -154,7 +154,7 @@ test "continue outside loop reports continue keyword location" {
     try expectErrorAt(result, 3, 5);
 }
 
-test "discard outside fragment reports discard keyword location" {
+test "validation location: discard outside fragment reports discard keyword location" {
     const source =
         \\@vertex
         \\fn main() -> @builtin(position) vec4<f32> {
@@ -168,7 +168,7 @@ test "discard outside fragment reports discard keyword location" {
     try expectErrorAtWithMessage(result, 3, 5, "discard");
 }
 
-test "if condition not bool reports condition location" {
+test "validation location: if condition not bool reports condition location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -181,7 +181,7 @@ test "if condition not bool reports condition location" {
     try expectErrorAt(result, 3, 9);
 }
 
-test "while condition not bool reports condition location" {
+test "validation location: while condition not bool reports condition location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -194,7 +194,7 @@ test "while condition not bool reports condition location" {
     try expectErrorAt(result, 3, 12);
 }
 
-test "for condition not bool reports condition location" {
+test "validation location: for condition not bool reports condition location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -211,7 +211,7 @@ test "for condition not bool reports condition location" {
 // Expression Errors
 // =========================================================================
 
-test "binary operator type error reports operator location" {
+test "validation location: binary operator type error reports operator location" {
     // Modulo on bools triggers "modulo operator requires numeric operands"
     const source =
         \\@fragment
@@ -225,7 +225,7 @@ test "binary operator type error reports operator location" {
     try expectErrorAt(result, 3, 18);
 }
 
-test "logical operator type error reports operator location" {
+test "validation location: logical operator type error reports operator location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -238,7 +238,7 @@ test "logical operator type error reports operator location" {
     try expectErrorAt(result, 3, 15);
 }
 
-test "unary operator type error reports operator location" {
+test "validation location: unary operator type error reports operator location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -251,7 +251,7 @@ test "unary operator type error reports operator location" {
     try expectErrorAt(result, 3, 13);
 }
 
-test "undefined identifier reports identifier location" {
+test "validation location: undefined identifier reports identifier location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -268,7 +268,7 @@ test "undefined identifier reports identifier location" {
 // Multi-Error Sources
 // =========================================================================
 
-test "multiple errors report different locations" {
+test "validation location: multiple errors report different locations" {
     const source =
         \\@fragment
         \\fn main() {
@@ -288,7 +288,7 @@ test "multiple errors report different locations" {
 // Nested Scope Errors
 // =========================================================================
 
-test "error in nested if body reports correct location" {
+test "validation location: error in nested if body reports correct location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -309,7 +309,7 @@ test "error in nested if body reports correct location" {
 // Errors Not at Line 1
 // =========================================================================
 
-test "error on last line of source" {
+test "validation location: error on last line of source" {
     const source =
         \\@fragment
         \\fn main() {
@@ -322,7 +322,7 @@ test "error on last line of source" {
     try expectErrorAt(result, 4, 7);
 }
 
-test "error after many blank lines" {
+test "validation location: error after many blank lines" {
     const source =
         \\
         \\
@@ -343,7 +343,7 @@ test "error after many blank lines" {
 // Column Accuracy
 // =========================================================================
 
-test "error column with leading whitespace" {
+test "validation location: error column with leading whitespace" {
     const source =
         \\@fragment
         \\fn main() {
@@ -360,7 +360,7 @@ test "error column with leading whitespace" {
 // Line Offset
 // =========================================================================
 
-test "line_offset shifts reported line numbers" {
+test "validation location: line_offset shifts reported line numbers" {
     const source =
         \\@fragment
         \\fn main() {
@@ -375,7 +375,7 @@ test "line_offset shifts reported line numbers" {
     try expectErrorAt(result, 102, 5);
 }
 
-test "line_offset zero is default behavior" {
+test "validation location: line_offset zero is default behavior" {
     const source =
         \\@fragment
         \\fn main() {
@@ -389,7 +389,7 @@ test "line_offset zero is default behavior" {
     try expectErrorAt(result, 3, 5);
 }
 
-test "line_offset does not affect column numbers" {
+test "validation location: line_offset does not affect column numbers" {
     const source =
         \\@fragment
         \\fn main() {
@@ -404,7 +404,7 @@ test "line_offset does not affect column numbers" {
     try expectErrorAt(result, 13, 9);
 }
 
-test "negative line_offset shifts lines down" {
+test "validation location: negative line_offset shifts lines down" {
     const source =
         \\@fragment
         \\fn main() {
@@ -419,7 +419,7 @@ test "negative line_offset shifts lines down" {
     try expectErrorAt(result, 1, 5);
 }
 
-test "negative line_offset clamps to line 1" {
+test "validation location: negative line_offset clamps to line 1" {
     const source =
         \\@fragment
         \\fn main() {
@@ -434,7 +434,7 @@ test "negative line_offset clamps to line 1" {
     try expectErrorAt(result, 1, 5);
 }
 
-test "line_offset applies to multiple errors" {
+test "validation location: line_offset applies to multiple errors" {
     const source =
         \\@fragment
         \\fn main() {
@@ -454,7 +454,7 @@ test "line_offset applies to multiple errors" {
 // Compound Assignment with Vector-Scalar Promotion
 // =========================================================================
 
-test "vec3f *= f32 is valid" {
+test "validation location: vec3f *= f32 is valid" {
     const source =
         \\fn foo() {
         \\    var c = vec3f(1.0);
@@ -466,7 +466,7 @@ test "vec3f *= f32 is valid" {
     try std.testing.expect(result.valid);
 }
 
-test "vec3f += f32 is valid" {
+test "validation location: vec3f += f32 is valid" {
     const source =
         \\fn foo() {
         \\    var c = vec3f(1.0);
@@ -478,7 +478,7 @@ test "vec3f += f32 is valid" {
     try std.testing.expect(result.valid);
 }
 
-test "vec3f -= f32 is valid" {
+test "validation location: vec3f -= f32 is valid" {
     const source =
         \\fn foo() {
         \\    var c = vec3f(1.0);
@@ -490,7 +490,7 @@ test "vec3f -= f32 is valid" {
     try std.testing.expect(result.valid);
 }
 
-test "vec3f /= f32 is valid" {
+test "validation location: vec3f /= f32 is valid" {
     const source =
         \\fn foo() {
         \\    var c = vec3f(1.0);
@@ -502,7 +502,7 @@ test "vec3f /= f32 is valid" {
     try std.testing.expect(result.valid);
 }
 
-test "vec3f *= vec3f is still valid" {
+test "validation location: vec3f *= vec3f is still valid" {
     const source =
         \\fn foo() {
         \\    var c = vec3f(1.0);
@@ -514,7 +514,7 @@ test "vec3f *= vec3f is still valid" {
     try std.testing.expect(result.valid);
 }
 
-test "scalar i32 += i32 is still valid" {
+test "validation location: scalar i32 += i32 is still valid" {
     const source =
         \\fn foo() {
         \\    var i : i32 = 0;
@@ -526,7 +526,7 @@ test "scalar i32 += i32 is still valid" {
     try std.testing.expect(result.valid);
 }
 
-test "vec3f *= bool is rejected" {
+test "validation location: vec3f *= bool is rejected" {
     const source =
         \\fn foo() {
         \\    var c = vec3f(1.0);
@@ -538,7 +538,7 @@ test "vec3f *= bool is rejected" {
     try std.testing.expect(!result.valid);
 }
 
-test "simple assignment f32 to vec3f is still rejected" {
+test "validation location: simple assignment f32 to vec3f is still rejected" {
     const source =
         \\fn foo() {
         \\    var c = vec3f(1.0);
@@ -550,7 +550,7 @@ test "simple assignment f32 to vec3f is still rejected" {
     try std.testing.expect(!result.valid);
 }
 
-test "return type mismatch reports return keyword" {
+test "validation location: return type mismatch reports return keyword" {
     const source =
         \\fn foo() -> i32 {
         \\    return;
@@ -585,7 +585,7 @@ fn expectAnyErrorAtWithMessage(result: wgslender.Validator.Result, expected_line
 // Unknown Type Location Tests
 // =========================================================================
 
-test "unknown type in var reports type location" {
+test "validation location: unknown type in var reports type location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -598,7 +598,7 @@ test "unknown type in var reports type location" {
     try expectErrorAtWithMessage(result, 3, 13, "unknown type");
 }
 
-test "unknown type in function return reports type location" {
+test "validation location: unknown type in function return reports type location" {
     const source =
         \\fn foo() -> BadType {
         \\}
@@ -609,7 +609,7 @@ test "unknown type in function return reports type location" {
     try expectErrorAtWithMessage(result, 1, 13, "unknown type");
 }
 
-test "unknown type in function parameter reports type location" {
+test "validation location: unknown type in function parameter reports type location" {
     const source =
         \\@fragment
         \\fn main(x: BadType) {
@@ -621,7 +621,7 @@ test "unknown type in function parameter reports type location" {
     try expectErrorAtWithMessage(result, 2, 12, "unknown type");
 }
 
-test "unknown type in struct member reports type location" {
+test "validation location: unknown type in struct member reports type location" {
     const source =
         \\struct Foo {
         \\    x: BadType,
@@ -633,7 +633,7 @@ test "unknown type in struct member reports type location" {
     try expectErrorAtWithMessage(result, 2, 8, "unknown type");
 }
 
-test "unknown type in let reports type location" {
+test "validation location: unknown type in let reports type location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -646,7 +646,7 @@ test "unknown type in let reports type location" {
     try expectErrorAtWithMessage(result, 3, 13, "unknown type");
 }
 
-test "unknown type in const reports type location" {
+test "validation location: unknown type in const reports type location" {
     const source =
         \\const x : BadType = 1;
     ;
@@ -656,7 +656,7 @@ test "unknown type in const reports type location" {
     try expectErrorAtWithMessage(result, 1, 11, "unknown type");
 }
 
-test "unknown type in override reports type location" {
+test "validation location: unknown type in override reports type location" {
     const source =
         \\override x : BadType = 1;
     ;
@@ -666,7 +666,7 @@ test "unknown type in override reports type location" {
     try expectErrorAtWithMessage(result, 1, 14, "unknown type");
 }
 
-test "unknown type in alias reports type location" {
+test "validation location: unknown type in alias reports type location" {
     const source =
         \\alias T = BadType;
     ;
@@ -676,7 +676,7 @@ test "unknown type in alias reports type location" {
     try expectErrorAtWithMessage(result, 1, 11, "unknown type");
 }
 
-test "multiple unknown type refs report distinct locations" {
+test "validation location: multiple unknown type refs report distinct locations" {
     const source =
         \\struct Foo { x: f32 }
         \\fn bar() -> Fo {
@@ -696,7 +696,7 @@ test "multiple unknown type refs report distinct locations" {
 // "Did you mean?" Suggestion Tests
 // =========================================================================
 
-test "did-you-mean suggests close struct name" {
+test "validation location: did-you-mean suggests close struct name" {
     const source =
         \\struct MyVertex { x: f32 }
         \\@fragment
@@ -710,7 +710,7 @@ test "did-you-mean suggests close struct name" {
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'MyVertex'");
 }
 
-test "did-you-mean suggests close builtin type" {
+test "validation location: did-you-mean suggests close builtin type" {
     const source =
         \\@fragment
         \\fn main() {
@@ -723,7 +723,7 @@ test "did-you-mean suggests close builtin type" {
     try expectErrorAtWithMessage(result, 3, 13, "did you mean");
 }
 
-test "unknown type with did-you-mean reports type location" {
+test "validation location: unknown type with did-you-mean reports type location" {
     const source =
         \\struct VertexOutputs { @builtin(position) pos: vec4f }
         \\@fragment
@@ -736,7 +736,7 @@ test "unknown type with did-you-mean reports type location" {
     try expectErrorAtWithMessage(result, 3, 12, "did you mean 'VertexOutputs'");
 }
 
-test "no suggestion for completely different name" {
+test "validation location: no suggestion for completely different name" {
     const source =
         \\@fragment
         \\fn main() {
@@ -760,7 +760,7 @@ test "no suggestion for completely different name" {
 // Renamed struct scenario (user's exact case)
 // =========================================================================
 
-test "renamed struct VertexOutput to VertexOutputs — three distinct error locations" {
+test "validation location: renamed struct VertexOutput to VertexOutputs — three distinct error locations" {
     const source =
         \\struct VertexOutputs {
         \\    @builtin(position) pos: vec4f,
@@ -807,7 +807,7 @@ test "renamed struct VertexOutput to VertexOutputs — three distinct error loca
 // Matrix / Atomic Type Location Tests
 // =========================================================================
 
-test "matrix with non-float element type reports location" {
+test "validation location: matrix with non-float element type reports location" {
     const source =
         \\@fragment
         \\fn main() {
@@ -820,7 +820,7 @@ test "matrix with non-float element type reports location" {
     try expectErrorAtWithMessage(result, 3, 13, "matrix element");
 }
 
-test "atomic with non-integer element type reports location" {
+test "validation location: atomic with non-integer element type reports location" {
     const source =
         \\var<workgroup> a : atomic<f32>;
     ;
@@ -834,7 +834,7 @@ test "atomic with non-integer element type reports location" {
 // "Did you mean?" — Struct member suggestions
 // =========================================================================
 
-test "did-you-mean suggests close struct member" {
+test "validation location: did-you-mean suggests close struct member" {
     const source =
         \\struct Vertex { position: f32 }
         \\@fragment
@@ -848,7 +848,7 @@ test "did-you-mean suggests close struct member" {
     try expectErrorAtWithMessage(result, 5, 16, "did you mean 'position'");
 }
 
-test "did-you-mean suggests struct member with transposition" {
+test "validation location: did-you-mean suggests struct member with transposition" {
     const source =
         \\struct Mesh { color: vec4f }
         \\@fragment
@@ -862,7 +862,7 @@ test "did-you-mean suggests struct member with transposition" {
     try expectErrorAtWithMessage(result, 5, 16, "did you mean 'color'");
 }
 
-test "no suggestion for completely wrong struct member" {
+test "validation location: no suggestion for completely wrong struct member" {
     const source =
         \\struct S { x: f32 }
         \\@fragment
@@ -883,7 +883,7 @@ test "no suggestion for completely wrong struct member" {
     return error.TestUnexpectedResult;
 }
 
-test "did-you-mean struct member off-by-one char" {
+test "validation location: did-you-mean struct member off-by-one char" {
     const source =
         \\struct S { normal: vec3f }
         \\@fragment
@@ -897,7 +897,7 @@ test "did-you-mean struct member off-by-one char" {
     try expectErrorAtWithMessage(result, 5, 16, "did you mean 'normal'");
 }
 
-test "did-you-mean struct member picks best from multiple" {
+test "validation location: did-you-mean struct member picks best from multiple" {
     const source =
         \\struct S { position: f32, rotation: f32 }
         \\@fragment
@@ -916,7 +916,7 @@ test "did-you-mean struct member picks best from multiple" {
 // "Did you mean?" — @builtin value suggestions
 // =========================================================================
 
-test "did-you-mean suggests close builtin value" {
+test "validation location: did-you-mean suggests close builtin value" {
     const source =
         \\@vertex
         \\fn main(@builtin(positon) idx: u32) -> @builtin(position) vec4f {
@@ -928,7 +928,7 @@ test "did-you-mean suggests close builtin value" {
     try expectErrorAtWithMessage(result, 2, 9, "did you mean 'position'");
 }
 
-test "did-you-mean for misspelled builtin vertex_index" {
+test "validation location: did-you-mean for misspelled builtin vertex_index" {
     const source =
         \\@vertex
         \\fn main(@builtin(vertex_indx) idx: u32) -> @builtin(position) vec4f {
@@ -940,7 +940,7 @@ test "did-you-mean for misspelled builtin vertex_index" {
     try expectErrorAtWithMessage(result, 2, 9, "did you mean 'vertex_index'");
 }
 
-test "unknown builtin value with no close match" {
+test "validation location: unknown builtin value with no close match" {
     const source =
         \\@vertex
         \\fn main(@builtin(xyzzy) idx: u32) -> @builtin(position) vec4f {
@@ -960,7 +960,7 @@ test "unknown builtin value with no close match" {
     return error.TestUnexpectedResult;
 }
 
-test "did-you-mean builtin with underscore typo" {
+test "validation location: did-you-mean builtin with underscore typo" {
     const source =
         \\@compute @workgroup_size(1)
         \\fn main(@builtin(local_invocationid) id: vec3u) {
@@ -971,7 +971,7 @@ test "did-you-mean builtin with underscore typo" {
     try expectErrorAtWithMessage(result, 2, 9, "did you mean 'local_invocation_id'");
 }
 
-test "builtin wrong for stage suggests valid alternative" {
+test "validation location: builtin wrong for stage suggests valid alternative" {
     const source =
         \\@fragment
         \\fn main(@builtin(vertex_index) idx: u32) -> @location(0) vec4f {
@@ -988,7 +988,7 @@ test "builtin wrong for stage suggests valid alternative" {
 // "Did you mean?" — Undeclared identifier suggestions
 // =========================================================================
 
-test "did-you-mean suggests close variable name" {
+test "validation location: did-you-mean suggests close variable name" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1001,7 +1001,7 @@ test "did-you-mean suggests close variable name" {
     try expectErrorAtWithMessage(result, 4, 15, "did you mean 'position'");
 }
 
-test "did-you-mean suggests function name for identifier" {
+test "validation location: did-you-mean suggests function name for identifier" {
     const source =
         \\fn compute() {}
         \\@fragment
@@ -1015,7 +1015,7 @@ test "did-you-mean suggests function name for identifier" {
     try expectErrorAtWithMessage(result, 4, 5, "did you mean 'compute'");
 }
 
-test "did-you-mean suggests builtin function name" {
+test "validation location: did-you-mean suggests builtin function name" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1028,7 +1028,7 @@ test "did-you-mean suggests builtin function name" {
     try expectErrorAtWithMessage(result, 3, 15, "did you mean 'sin'");
 }
 
-test "no suggestion for completely wrong identifier" {
+test "validation location: no suggestion for completely wrong identifier" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1051,7 +1051,7 @@ test "no suggestion for completely wrong identifier" {
 // "Did you mean?" — Not-callable suggestions
 // =========================================================================
 
-test "did-you-mean suggests close builtin function call" {
+test "validation location: did-you-mean suggests close builtin function call" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1064,7 +1064,7 @@ test "did-you-mean suggests close builtin function call" {
     try expectErrorAtWithMessage(result, 3, 15, "did you mean 'cos'");
 }
 
-test "did-you-mean suggests close user function call" {
+test "validation location: did-you-mean suggests close user function call" {
     const source =
         \\fn calculate() -> f32 { return 1.0; }
         \\@fragment
@@ -1078,7 +1078,7 @@ test "did-you-mean suggests close user function call" {
     try expectErrorAtWithMessage(result, 4, 15, "did you mean 'calculate'");
 }
 
-test "no suggestion for completely wrong call" {
+test "validation location: no suggestion for completely wrong call" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1097,7 +1097,7 @@ test "no suggestion for completely wrong call" {
     return error.TestUnexpectedResult;
 }
 
-test "did-you-mean prefers vec3f for 3-arg call" {
+test "validation location: did-you-mean prefers vec3f for 3-arg call" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1109,7 +1109,7 @@ test "did-you-mean prefers vec3f for 3-arg call" {
     try expectErrorAtWithMessage(result, 3, 15, "did you mean 'vec3f'");
 }
 
-test "did-you-mean prefers vec4f for 4-arg call" {
+test "validation location: did-you-mean prefers vec4f for 4-arg call" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1121,7 +1121,7 @@ test "did-you-mean prefers vec4f for 4-arg call" {
     try expectErrorAtWithMessage(result, 3, 15, "did you mean 'vec4f'");
 }
 
-test "did-you-mean prefers vec2i for 2-arg call" {
+test "validation location: did-you-mean prefers vec2i for 2-arg call" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1137,7 +1137,7 @@ test "did-you-mean prefers vec2i for 2-arg call" {
 // Type constructor arity validation
 // =========================================================================
 
-test "vec2f rejects 3 scalar args and suggests vec3f" {
+test "validation location: vec2f rejects 3 scalar args and suggests vec3f" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1149,7 +1149,7 @@ test "vec2f rejects 3 scalar args and suggests vec3f" {
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec3f'");
 }
 
-test "vec2f rejects 4 scalar args and suggests vec4f" {
+test "validation location: vec2f rejects 4 scalar args and suggests vec4f" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1161,7 +1161,7 @@ test "vec2f rejects 4 scalar args and suggests vec4f" {
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec4f'");
 }
 
-test "vec3f rejects 4 scalar args and suggests vec4f" {
+test "validation location: vec3f rejects 4 scalar args and suggests vec4f" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1173,7 +1173,7 @@ test "vec3f rejects 4 scalar args and suggests vec4f" {
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec4f'");
 }
 
-test "vec2i rejects 3 args and suggests vec3i" {
+test "validation location: vec2i rejects 3 args and suggests vec3i" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1185,7 +1185,7 @@ test "vec2i rejects 3 args and suggests vec3i" {
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec3i'");
 }
 
-test "vec4f rejects 3 scalar args and suggests vec3f" {
+test "validation location: vec4f rejects 3 scalar args and suggests vec3f" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1197,7 +1197,7 @@ test "vec4f rejects 3 scalar args and suggests vec3f" {
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec3f'");
 }
 
-test "vec3f rejects 2 scalar args and suggests vec2f" {
+test "validation location: vec3f rejects 2 scalar args and suggests vec2f" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1209,7 +1209,7 @@ test "vec3f rejects 2 scalar args and suggests vec2f" {
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec2f'");
 }
 
-test "vec4f rejects 2 scalar args and suggests vec2f" {
+test "validation location: vec4f rejects 2 scalar args and suggests vec2f" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1221,7 +1221,7 @@ test "vec4f rejects 2 scalar args and suggests vec2f" {
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec2f'");
 }
 
-test "vec3f rejects vec2+vec2 (4 components) and suggests vec4f" {
+test "validation location: vec3f rejects vec2+vec2 (4 components) and suggests vec4f" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1234,7 +1234,7 @@ test "vec3f rejects vec2+vec2 (4 components) and suggests vec4f" {
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec4f'");
 }
 
-test "vec4f rejects vec2+scalar (3 components) and suggests vec3f" {
+test "validation location: vec4f rejects vec2+scalar (3 components) and suggests vec3f" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1247,7 +1247,7 @@ test "vec4f rejects vec2+scalar (3 components) and suggests vec3f" {
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec3f'");
 }
 
-test "vec3f rejects single vec2 arg (width mismatch)" {
+test "validation location: vec3f rejects single vec2 arg (width mismatch)" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1260,7 +1260,7 @@ test "vec3f rejects single vec2 arg (width mismatch)" {
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec2f'");
 }
 
-test "vec2f rejects single vec4 arg (width mismatch)" {
+test "validation location: vec2f rejects single vec4 arg (width mismatch)" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1273,7 +1273,7 @@ test "vec2f rejects single vec4 arg (width mismatch)" {
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec4f'");
 }
 
-test "vec2f rejects 6 components (no suggestion)" {
+test "validation location: vec2f rejects 6 components (no suggestion)" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1294,7 +1294,7 @@ test "vec2f rejects 6 components (no suggestion)" {
     }
 }
 
-test "mat2x2f rejects 3 scalar args" {
+test "validation location: mat2x2f rejects 3 scalar args" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1306,7 +1306,7 @@ test "mat2x2f rejects 3 scalar args" {
     try expectErrorAtWithMessage(result, 3, 13, "scalar constructor requires 4 values, got 3");
 }
 
-test "mat2x2f rejects 5 scalar args" {
+test "validation location: mat2x2f rejects 5 scalar args" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1318,7 +1318,7 @@ test "mat2x2f rejects 5 scalar args" {
     try expectErrorAtWithMessage(result, 3, 13, "scalar constructor requires 4 values, got 5");
 }
 
-test "mat2x2f rejects 3 column vectors" {
+test "validation location: mat2x2f rejects 3 column vectors" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1331,7 +1331,7 @@ test "mat2x2f rejects 3 column vectors" {
     try expectErrorAtWithMessage(result, 4, 13, "column constructor requires 2 vectors, got 3");
 }
 
-test "f32 rejects 2 arguments" {
+test "validation location: f32 rejects 2 arguments" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1343,7 +1343,7 @@ test "f32 rejects 2 arguments" {
     try expectErrorAtWithMessage(result, 3, 13, "takes at most 1 argument, got 2");
 }
 
-test "struct constructor rejects wrong arg count" {
+test "validation location: struct constructor rejects wrong arg count" {
     const source =
         \\struct MyData { x: f32, y: f32, z: f32 }
         \\@fragment
@@ -1360,7 +1360,7 @@ test "struct constructor rejects wrong arg count" {
 // Type constructor element type validation
 // =========================================================================
 
-test "vec3i rejects AbstractFloat args" {
+test "validation location: vec3i rejects AbstractFloat args" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1372,7 +1372,7 @@ test "vec3i rejects AbstractFloat args" {
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'i32'");
 }
 
-test "vec2u rejects AbstractFloat args" {
+test "validation location: vec2u rejects AbstractFloat args" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1384,7 +1384,7 @@ test "vec2u rejects AbstractFloat args" {
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'u32'");
 }
 
-test "vec3i rejects AbstractFloat splat" {
+test "validation location: vec3i rejects AbstractFloat splat" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1396,7 +1396,7 @@ test "vec3i rejects AbstractFloat splat" {
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'i32'");
 }
 
-test "vec3i rejects vec3f copy" {
+test "validation location: vec3i rejects vec3f copy" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1409,7 +1409,7 @@ test "vec3i rejects vec3f copy" {
     try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'vec3<f32>' to 'vec3<i32>'");
 }
 
-test "vec3f rejects concrete i32 args" {
+test "validation location: vec3f rejects concrete i32 args" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1421,7 +1421,7 @@ test "vec3f rejects concrete i32 args" {
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'i32' to 'f32'");
 }
 
-test "vec3i rejects concrete f32 args" {
+test "validation location: vec3i rejects concrete f32 args" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1433,7 +1433,7 @@ test "vec3i rejects concrete f32 args" {
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'f32' to 'i32'");
 }
 
-test "vec3i rejects mixed vec2f arg" {
+test "validation location: vec3i rejects mixed vec2f arg" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1446,7 +1446,7 @@ test "vec3i rejects mixed vec2f arg" {
     try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'f32' to 'i32'");
 }
 
-test "vec3f accepts AbstractInt args" {
+test "validation location: vec3f accepts AbstractInt args" {
     const source =
         \\@fragment
         \\fn main() -> @location(0) vec4f {
@@ -1459,7 +1459,7 @@ test "vec3f accepts AbstractInt args" {
     try std.testing.expect(result.valid);
 }
 
-test "vec3i accepts AbstractInt args" {
+test "validation location: vec3i accepts AbstractInt args" {
     const source =
         \\@fragment
         \\fn main() -> @location(0) vec4f {
@@ -1472,7 +1472,7 @@ test "vec3i accepts AbstractInt args" {
     try std.testing.expect(result.valid);
 }
 
-test "scalar constructor allows explicit cross-type conversion" {
+test "validation location: scalar constructor allows explicit cross-type conversion" {
     const source =
         \\@fragment
         \\fn main() -> @location(0) vec4f {
@@ -1488,7 +1488,7 @@ test "scalar constructor allows explicit cross-type conversion" {
     try std.testing.expect(result.valid);
 }
 
-test "mat2x2f rejects concrete i32 scalar args" {
+test "validation location: mat2x2f rejects concrete i32 scalar args" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1500,7 +1500,7 @@ test "mat2x2f rejects concrete i32 scalar args" {
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'i32' to 'f32'");
 }
 
-test "mat3x3f rejects AbstractFloat-to-i32 impossible case via column vectors" {
+test "validation location: mat3x3f rejects AbstractFloat-to-i32 impossible case via column vectors" {
     // mat3x3f with vec3i columns — element f32 vs i32
     const source =
         \\@fragment
@@ -1514,7 +1514,7 @@ test "mat3x3f rejects AbstractFloat-to-i32 impossible case via column vectors" {
     try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'i32' to 'f32'");
 }
 
-test "mat2x2f accepts AbstractInt scalar args" {
+test "validation location: mat2x2f accepts AbstractInt scalar args" {
     const source =
         \\@fragment
         \\fn main() -> @location(0) vec4f {
@@ -1527,7 +1527,7 @@ test "mat2x2f accepts AbstractInt scalar args" {
     try std.testing.expect(result.valid);
 }
 
-test "mat2x2f accepts AbstractFloat scalar args" {
+test "validation location: mat2x2f accepts AbstractFloat scalar args" {
     const source =
         \\@fragment
         \\fn main() -> @location(0) vec4f {
@@ -1540,7 +1540,7 @@ test "mat2x2f accepts AbstractFloat scalar args" {
     try std.testing.expect(result.valid);
 }
 
-test "mat2x2f accepts vec2f column vectors" {
+test "validation location: mat2x2f accepts vec2f column vectors" {
     const source =
         \\@fragment
         \\fn main() -> @location(0) vec4f {
@@ -1554,7 +1554,7 @@ test "mat2x2f accepts vec2f column vectors" {
     try std.testing.expect(result.valid);
 }
 
-test "mat2x2f copy rejects mat2x2 with wrong element type" {
+test "validation location: mat2x2f copy rejects mat2x2 with wrong element type" {
     // mat2x2<i32> doesn't exist in practice (WGSL matrices are float-only),
     // but if the type system ever resolves one, the conversion should be caught.
     // Instead test mat2x2h(mat2x2f_val) — f32 cannot convert to f16 automatically.
@@ -1571,7 +1571,7 @@ test "mat2x2f copy rejects mat2x2 with wrong element type" {
     try std.testing.expect(result.valid);
 }
 
-test "vec4i rejects AbstractFloat in 4-arg form" {
+test "validation location: vec4i rejects AbstractFloat in 4-arg form" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1583,7 +1583,7 @@ test "vec4i rejects AbstractFloat in 4-arg form" {
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'i32'");
 }
 
-test "vec2f rejects concrete u32 args" {
+test "validation location: vec2f rejects concrete u32 args" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1599,7 +1599,7 @@ test "vec2f rejects concrete u32 args" {
 // Array constructor validation
 // =========================================================================
 
-test "array<vec3f,3> rejects vec2f element" {
+test "validation location: array<vec3f,3> rejects vec2f element" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1612,7 +1612,7 @@ test "array<vec3f,3> rejects vec2f element" {
     try expectErrorAtWithMessage(result, 3, 27, "cannot convert 'vec2<f32>' to 'vec3<f32>' for element 0");
 }
 
-test "array<vec3f,2> rejects wrong element count" {
+test "validation location: array<vec3f,2> rejects wrong element count" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1624,7 +1624,7 @@ test "array<vec3f,2> rejects wrong element count" {
     try expectErrorAtWithMessage(result, 3, 27, "constructor expects 2 elements, got 1");
 }
 
-test "array<f32,3> rejects i32 element" {
+test "validation location: array<f32,3> rejects i32 element" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1637,7 +1637,7 @@ test "array<f32,3> rejects i32 element" {
     try expectErrorAtWithMessage(result, 3, 25, "cannot convert 'i32' to 'f32' for element 1");
 }
 
-test "array<vec3f,2> accepts valid elements" {
+test "validation location: array<vec3f,2> accepts valid elements" {
     const source =
         \\@fragment
         \\fn main() -> @location(0) vec4f {
@@ -1650,7 +1650,7 @@ test "array<vec3f,2> accepts valid elements" {
     try std.testing.expect(result.valid);
 }
 
-test "template vec3<i32> rejects AbstractFloat" {
+test "validation location: template vec3<i32> rejects AbstractFloat" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1663,7 +1663,7 @@ test "template vec3<i32> rejects AbstractFloat" {
     try expectErrorAtWithMessage(result, 3, 22, "cannot convert 'abstract-float' to 'i32'");
 }
 
-test "template vec3<f32> accepts AbstractInt" {
+test "validation location: template vec3<f32> accepts AbstractInt" {
     const source =
         \\@fragment
         \\fn main() -> @location(0) vec4f {
@@ -1680,7 +1680,7 @@ test "template vec3<f32> accepts AbstractInt" {
 // "Did you mean?" — Swizzle component hints
 // =========================================================================
 
-test "swizzle error shows valid components hint" {
+test "validation location: swizzle error shows valid components hint" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1694,7 +1694,7 @@ test "swizzle error shows valid components hint" {
     try expectErrorAtWithMessage(result, 4, 16, "valid components are xyzw or rgba");
 }
 
-test "swizzle with invalid character in multi-component shows hint" {
+test "validation location: swizzle with invalid character in multi-component shows hint" {
     const source =
         \\@fragment
         \\fn main() {
@@ -1707,7 +1707,7 @@ test "swizzle with invalid character in multi-component shows hint" {
     try expectErrorAtWithMessage(result, 4, 16, "valid components are xyzw or rgba");
 }
 
-test "swizzle out-of-bounds does not show components hint" {
+test "validation location: swizzle out-of-bounds does not show components hint" {
     const source =
         \\@fragment
         \\fn main() {

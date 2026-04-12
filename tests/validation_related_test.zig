@@ -73,7 +73,7 @@ fn expectRelatedMessage(
 // Duplicate Detection
 // =========================================================================
 
-test "duplicate struct member has related info pointing to first member" {
+test "validation related: duplicate struct member has related info pointing to first member" {
     const source =
         \\struct Foo {
         \\  x: f32,
@@ -88,7 +88,7 @@ test "duplicate struct member has related info pointing to first member" {
     try expectRelatedMessage(result, "duplicate member 'x'", "first declared here");
 }
 
-test "duplicate @id has related info pointing to first override" {
+test "validation related: duplicate @id has related info pointing to first override" {
     const source =
         \\@id(1) override a: f32;
         \\@id(1) override b: f32;
@@ -101,7 +101,7 @@ test "duplicate @id has related info pointing to first override" {
     try expectRelatedMessage(result, "@id(1) is already used", "first used here");
 }
 
-test "duplicate @group/@binding has related info pointing to first binding" {
+test "validation related: duplicate @group/@binding has related info pointing to first binding" {
     const source =
         \\@group(0) @binding(0) var<uniform> a: f32;
         \\@group(0) @binding(0) var<uniform> b: f32;
@@ -118,7 +118,7 @@ test "duplicate @group/@binding has related info pointing to first binding" {
 // Type Mismatches
 // =========================================================================
 
-test "const init type mismatch has related info pointing to type annotation" {
+test "validation related: const init type mismatch has related info pointing to type annotation" {
     const source =
         \\const x: i32 = 1.5;
     ;
@@ -130,7 +130,7 @@ test "const init type mismatch has related info pointing to type annotation" {
     try expectRelatedMessage(result, "cannot initialize", "type");
 }
 
-test "var init type mismatch has related info pointing to type annotation" {
+test "validation related: var init type mismatch has related info pointing to type annotation" {
     const source =
         \\fn foo() {
         \\  var x: i32 = 1.5;
@@ -143,7 +143,7 @@ test "var init type mismatch has related info pointing to type annotation" {
     try expectRelatedMessage(result, "cannot initialize", "type");
 }
 
-test "return type mismatch has related info pointing to return type" {
+test "validation related: return type mismatch has related info pointing to return type" {
     const source =
         \\fn foo() -> i32 {
         \\  return 1.5;
@@ -157,7 +157,7 @@ test "return type mismatch has related info pointing to return type" {
     try expectRelatedMessage(result, "cannot return", "return type");
 }
 
-test "assignment type mismatch has related info pointing to LHS" {
+test "validation related: assignment type mismatch has related info pointing to LHS" {
     const source =
         \\fn foo() {
         \\  var x: i32 = 1;
@@ -175,7 +175,7 @@ test "assignment type mismatch has related info pointing to LHS" {
 // Struct/Function References
 // =========================================================================
 
-test "struct has no member has related info pointing to struct definition" {
+test "validation related: struct has no member has related info pointing to struct definition" {
     const source =
         \\struct Foo {
         \\  x: f32,
@@ -193,7 +193,7 @@ test "struct has no member has related info pointing to struct definition" {
     try expectRelatedMessage(result, "has no member 'y'", "defined here");
 }
 
-test "function arg count mismatch has related info pointing to function" {
+test "validation related: function arg count mismatch has related info pointing to function" {
     const source =
         \\fn add(a: i32, b: i32) -> i32 {
         \\  return a + b;
@@ -210,7 +210,7 @@ test "function arg count mismatch has related info pointing to function" {
     try expectRelatedMessage(result, "expects 2 arguments", "declared here");
 }
 
-test "function arg type mismatch has related info pointing to function" {
+test "validation related: function arg type mismatch has related info pointing to function" {
     const source =
         \\fn add(a: i32, b: i32) -> i32 {
         \\  return a + b;
@@ -231,7 +231,7 @@ test "function arg type mismatch has related info pointing to function" {
 // JSON Serialization
 // =========================================================================
 
-test "related info is serialized in JSON output" {
+test "validation related: related info is serialized in JSON output" {
     const source =
         \\struct Foo {
         \\  x: f32,

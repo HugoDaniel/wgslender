@@ -91,7 +91,7 @@ fn count(haystack: []const u8, needle: []const u8) usize {
 // 1. TestExternalBindingsKeepOriginalNames
 // =========================================================================
 
-test "TestExternalBindingsKeepOriginalNames" {
+test "regression: external bindings keep original names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -116,7 +116,7 @@ test "TestExternalBindingsKeepOriginalNames" {
 // 2. TestNoLetAtModuleScopeWithBindings
 // =========================================================================
 
-test "TestNoLetAtModuleScopeWithBindings_SingleBinding" {
+test "regression: no let at module scope with bindings single binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -131,7 +131,7 @@ test "TestNoLetAtModuleScopeWithBindings_SingleBinding" {
     try std.testing.expect(!contains(module_scope, "let "));
 }
 
-test "TestNoLetAtModuleScopeWithBindings_MultipleBindings" {
+test "regression: no let at module scope with bindings multiple bindings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -147,7 +147,7 @@ test "TestNoLetAtModuleScopeWithBindings_MultipleBindings" {
     try std.testing.expect(!contains(module_scope, "let "));
 }
 
-test "TestNoLetAtModuleScopeWithBindings_StructBinding" {
+test "regression: no let at module scope with bindings struct binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -163,7 +163,7 @@ test "TestNoLetAtModuleScopeWithBindings_StructBinding" {
     try std.testing.expect(!contains(module_scope, "let "));
 }
 
-test "TestNoLetAtModuleScopeWithBindings_StorageBinding" {
+test "regression: no let at module scope with bindings storage binding" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -182,7 +182,7 @@ test "TestNoLetAtModuleScopeWithBindings_StorageBinding" {
 // 3. TestNoLetAtModuleScope
 // =========================================================================
 
-test "TestNoLetAtModuleScope" {
+test "regression: no let at module scope" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -217,7 +217,7 @@ test "TestNoLetAtModuleScope" {
 // 4. TestTemplatedConstructorTypeRenaming
 // =========================================================================
 
-test "TestTemplatedConstructorTypeRenaming" {
+test "regression: templated constructor type renaming" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -251,7 +251,7 @@ test "TestTemplatedConstructorTypeRenaming" {
 // 5. TestNestedTemplatedTypeRenaming
 // =========================================================================
 
-test "TestNestedTemplatedTypeRenaming" {
+test "regression: nested templated type renaming" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -276,7 +276,7 @@ test "TestNestedTemplatedTypeRenaming" {
 // 6. TestArraySizeConstantRenaming
 // =========================================================================
 
-test "TestArraySizeConstantRenaming" {
+test "regression: array size constant renaming" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -302,7 +302,7 @@ test "TestArraySizeConstantRenaming" {
 // 7. TestBuiltinTypesInTemplatedConstructors
 // =========================================================================
 
-test "TestBuiltinTypesInTemplatedConstructors" {
+test "regression: builtin types in templated constructors" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -325,7 +325,7 @@ test "TestBuiltinTypesInTemplatedConstructors" {
 // 8. TestLocalShadowsFunction
 // =========================================================================
 
-test "TestLocalShadowsFunction" {
+test "regression: local shadows function" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -358,7 +358,7 @@ test "TestLocalShadowsFunction" {
 // 9. TestLocalShadowsFunctionComplex
 // =========================================================================
 
-test "TestLocalShadowsFunctionComplex" {
+test "regression: local shadows function complex" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -394,7 +394,7 @@ test "TestLocalShadowsFunctionComplex" {
 // 10. TestElseIfSpacing
 // =========================================================================
 
-test "TestElseIfSpacing_SimpleElseIf" {
+test "regression: else if spacing simple else if" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -416,7 +416,7 @@ test "TestElseIfSpacing_SimpleElseIf" {
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
 }
 
-test "TestElseIfSpacing_ChainedElseIf" {
+test "regression: else if spacing chained else if" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -442,7 +442,7 @@ test "TestElseIfSpacing_ChainedElseIf" {
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
 }
 
-test "TestElseIfSpacing_NestedElseIf" {
+test "regression: else if spacing nested else if" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -470,7 +470,7 @@ test "TestElseIfSpacing_NestedElseIf" {
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
 }
 
-test "TestElseIfSpacing_ElseIfWithoutFinalElse" {
+test "regression: else if spacing else if without final else" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -491,7 +491,7 @@ test "TestElseIfSpacing_ElseIfWithoutFinalElse" {
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
 }
 
-test "TestElseIfSpacing_ElseIfWithComplexConditions" {
+test "regression: else if spacing else if with complex conditions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -519,7 +519,7 @@ test "TestElseIfSpacing_ElseIfWithComplexConditions" {
 // 11. TestElseIfInComputeShader
 // =========================================================================
 
-test "TestElseIfInComputeShader" {
+test "regression: else if in compute shader" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -555,7 +555,7 @@ test "TestElseIfInComputeShader" {
 // 12. TestNoInvalidConstAliases
 // =========================================================================
 
-test "TestNoInvalidConstAliases_SingleUniform" {
+test "regression: no invalid const aliases single uniform" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -576,7 +576,7 @@ test "TestNoInvalidConstAliases_SingleUniform" {
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
 }
 
-test "TestNoInvalidConstAliases_MultipleUniforms" {
+test "regression: no invalid const aliases multiple uniforms" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -597,7 +597,7 @@ test "TestNoInvalidConstAliases_MultipleUniforms" {
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
 }
 
-test "TestNoInvalidConstAliases_StorageBuffer" {
+test "regression: no invalid const aliases storage buffer" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -617,7 +617,7 @@ test "TestNoInvalidConstAliases_StorageBuffer" {
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
 }
 
-test "TestNoInvalidConstAliases_MixedBindings" {
+test "regression: no invalid const aliases mixed bindings" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -640,7 +640,7 @@ test "TestNoInvalidConstAliases_MixedBindings" {
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
 }
 
-test "TestNoInvalidConstAliases_UniformUsedManyTimes" {
+test "regression: no invalid const aliases uniform used many times" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -668,7 +668,7 @@ test "TestNoInvalidConstAliases_UniformUsedManyTimes" {
 // 13. TestExternalBindingsPreserveNames
 // =========================================================================
 
-test "TestExternalBindingsPreserveNames" {
+test "regression: external bindings preserve names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -699,7 +699,7 @@ test "TestExternalBindingsPreserveNames" {
 // 14. TestExternalBindingsMangled
 // =========================================================================
 
-test "TestExternalBindingsMangled" {
+test "regression: external bindings mangled" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -720,7 +720,7 @@ test "TestExternalBindingsMangled" {
 // 15. TestShadowingBasic
 // =========================================================================
 
-test "TestShadowingBasic" {
+test "regression: shadowing basic" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -751,7 +751,7 @@ test "TestShadowingBasic" {
 // 16. TestShadowingMultipleFunctions
 // =========================================================================
 
-test "TestShadowingMultipleFunctions" {
+test "regression: shadowing multiple functions" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -793,7 +793,7 @@ test "TestShadowingMultipleFunctions" {
 // 17. TestShadowingInNestedScopes
 // =========================================================================
 
-test "TestShadowingInNestedScopes" {
+test "regression: shadowing in nested scopes" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -824,7 +824,7 @@ test "TestShadowingInNestedScopes" {
 // 18. TestShadowingWithLoops
 // =========================================================================
 
-test "TestShadowingWithLoops" {
+test "regression: shadowing with loops" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -856,7 +856,7 @@ test "TestShadowingWithLoops" {
 // 19. TestShadowingCallBeforeAndAfter
 // =========================================================================
 
-test "TestShadowingCallBeforeAndAfter" {
+test "regression: shadowing call before and after" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -892,7 +892,7 @@ test "TestShadowingCallBeforeAndAfter" {
 // 20. TestShadowingStruct
 // =========================================================================
 
-test "TestShadowingStruct" {
+test "regression: shadowing struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -924,7 +924,7 @@ test "TestShadowingStruct" {
 // 21. TestShadowingParameter
 // =========================================================================
 
-test "TestShadowingParameter" {
+test "regression: shadowing parameter" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -954,7 +954,7 @@ test "TestShadowingParameter" {
 // 22. TestPreserveUniformStructTypes_Basic
 // =========================================================================
 
-test "TestPreserveUniformStructTypes_Basic" {
+test "regression: preserve uniform struct types basic" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -992,7 +992,7 @@ test "TestPreserveUniformStructTypes_Basic" {
 // 23. TestPreserveUniformStructTypes_MultipleStructs
 // =========================================================================
 
-test "TestPreserveUniformStructTypes_MultipleStructs" {
+test "regression: preserve uniform struct types multiple structs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1037,7 +1037,7 @@ test "TestPreserveUniformStructTypes_MultipleStructs" {
 // 24. TestPreserveUniformStructTypes_NestedType
 // =========================================================================
 
-test "TestPreserveUniformStructTypes_NestedType" {
+test "regression: preserve uniform struct types nested type" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1071,7 +1071,7 @@ test "TestPreserveUniformStructTypes_NestedType" {
 // 25. TestPreserveUniformStructTypes_Disabled
 // =========================================================================
 
-test "TestPreserveUniformStructTypes_Disabled" {
+test "regression: preserve uniform struct types disabled" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1101,7 +1101,7 @@ test "TestPreserveUniformStructTypes_Disabled" {
 // 26. TestPreserveUniformStructTypes_WithKeepNames
 // =========================================================================
 
-test "TestPreserveUniformStructTypes_WithKeepNames" {
+test "regression: preserve uniform struct types with keep names" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1148,7 +1148,7 @@ test "TestPreserveUniformStructTypes_WithKeepNames" {
 // 27. TestPreserveUniformStructTypes_PngineBuiltins
 // =========================================================================
 
-test "TestPreserveUniformStructTypes_PngineBuiltins" {
+test "regression: preserve uniform struct types pngine builtins" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -1201,7 +1201,7 @@ test "TestPreserveUniformStructTypes_PngineBuiltins" {
 // 28. TestShadowingRealisticSDF
 // =========================================================================
 
-test "TestShadowingRealisticSDF" {
+test "regression: shadowing realistic SDF" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();

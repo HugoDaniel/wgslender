@@ -75,7 +75,7 @@ fn applyEdit(source: []const u8, edit: Handler.LspTextEdit) ![]u8 {
 // "Did you mean?" rename tests
 // =========================================================================
 
-test "undefined identifier with close match produces rename action" {
+test "code action: undefined identifier with close match produces rename action" {
     const source =
         \\const position: f32 = 1.0;
         \\fn main() -> f32 { return positon; }
@@ -91,7 +91,7 @@ test "undefined identifier with close match produces rename action" {
     try std.testing.expectEqualStrings("position", action.?.edits[0].new_text);
 }
 
-test "undefined identifier rename produces valid WGSL after apply" {
+test "code action: undefined identifier rename produces valid WGSL after apply" {
     const source: [:0]const u8 =
         \\const position: f32 = 1.0;
         \\fn main() -> f32 { return positon; }
@@ -110,7 +110,7 @@ test "undefined identifier rename produces valid WGSL after apply" {
     try std.testing.expect(std.mem.indexOf(u8, fixed, "return position;") != null);
 }
 
-test "unknown type with suggestion produces rename action" {
+test "code action: unknown type with suggestion produces rename action" {
     const source =
         \\fn main() { var x: vec4ff = vec4f(1.0, 2.0, 3.0, 4.0); _ = x; }
     ;
@@ -123,7 +123,7 @@ test "unknown type with suggestion produces rename action" {
     try std.testing.expectEqualStrings("vec4f", action.?.edits[0].new_text);
 }
 
-test "wrong struct member with suggestion" {
+test "code action: wrong struct member with suggestion" {
     const source =
         \\struct S { x: f32 }
         \\fn f(s: S) -> f32 { return s.y; }
@@ -136,7 +136,7 @@ test "wrong struct member with suggestion" {
     try std.testing.expectEqualStrings("x", action.?.edits[0].new_text);
 }
 
-test "invalid builtin value with suggestion" {
+test "code action: invalid builtin value with suggestion" {
     // Use a non-entry-point function to avoid E0600 overshadowing
     const source =
         \\fn main(@builtin(positon) v: u32) -> u32 { return v; }
@@ -149,7 +149,7 @@ test "invalid builtin value with suggestion" {
     try std.testing.expectEqualStrings("position", action.?.edits[0].new_text);
 }
 
-test "no suggestion available produces no code action" {
+test "code action: no suggestion available produces no code action" {
     const source =
         \\fn main() -> f32 { return zzzzzzzzz; }
     ;
@@ -165,7 +165,7 @@ test "no suggestion available produces no code action" {
 // Duplicate @location tests
 // =========================================================================
 
-test "duplicate @location produces increment action for input parameters" {
+test "code action: duplicate @location produces increment action for input parameters" {
     // Use direct function parameters where the diagnostic range is on the
     // parameter itself (near the @location attribute), not on the function name.
     const source =
@@ -184,14 +184,14 @@ test "duplicate @location produces increment action for input parameters" {
 // Edge cases
 // =========================================================================
 
-test "empty source produces no actions" {
+test "code action: empty source produces no actions" {
     const source: [:0]const u8 = "";
     const result = try getCodeActions(source);
     defer cleanup(result);
     try std.testing.expectEqual(@as(usize, 0), result.actions.len);
 }
 
-test "valid source produces no actions" {
+test "code action: valid source produces no actions" {
     const source =
         \\fn main() -> f32 { return 1.0; }
     ;
@@ -200,7 +200,7 @@ test "valid source produces no actions" {
     try std.testing.expectEqual(@as(usize, 0), result.actions.len);
 }
 
-test "diagnostic without code produces no action" {
+test "code action: diagnostic without code produces no action" {
     // Parser errors may not have suggestion-eligible codes
     const source =
         \\fn main() { if }
@@ -213,7 +213,7 @@ test "diagnostic without code produces no action" {
     try std.testing.expect(action == null);
 }
 
-test "multiple errors produce multiple actions" {
+test "code action: multiple errors produce multiple actions" {
     const source =
         \\const position: f32 = 1.0;
         \\const velocity: f32 = 2.0;
@@ -230,7 +230,7 @@ test "multiple errors produce multiple actions" {
     try std.testing.expect(rename_count >= 2);
 }
 
-test "code action edit range is correct for multi-char identifiers" {
+test "code action: edit range is correct for multi-char identifiers" {
     const source: [:0]const u8 =
         \\const position: f32 = 1.0;
         \\fn main() -> f32 { return positon; }
@@ -255,7 +255,7 @@ test "code action edit range is correct for multi-char identifiers" {
 // Apply-and-revalidate tests
 // =========================================================================
 
-test "applying unknown type fix produces fewer errors" {
+test "code action: applying unknown type fix produces fewer errors" {
     const source: [:0]const u8 =
         \\fn main() { var x: vec4ff = vec4f(1.0, 2.0, 3.0, 4.0); _ = x; }
     ;
@@ -290,7 +290,7 @@ test "applying unknown type fix produces fewer errors" {
     }
 }
 
-test "applying struct member fix replaces the diagnostic range" {
+test "code action: applying struct member fix replaces the diagnostic range" {
     const source: [:0]const u8 =
         \\struct S { x: f32 }
         \\fn f(s: S) -> f32 { return s.y; }
@@ -316,7 +316,7 @@ test "applying struct member fix replaces the diagnostic range" {
 // Additional integration edge cases
 // =========================================================================
 
-test "not callable with suggestion produces rename" {
+test "code action: not callable with suggestion produces rename" {
     // Use a typo of a builtin function name to trigger E0204
     const source =
         \\fn main() { let x = coss(1.0); _ = x; }
@@ -331,7 +331,7 @@ test "not callable with suggestion produces rename" {
     _ = action;
 }
 
-test "suggestion preserves edit range across lines" {
+test "code action: suggestion preserves edit range across lines" {
     const source: [:0]const u8 =
         \\const position: f32 = 1.0;
         \\const velocity: f32 = 2.0;
@@ -354,7 +354,7 @@ test "suggestion preserves edit range across lines" {
     try std.testing.expect(std.mem.indexOf(u8, fixed, "return position;") != null);
 }
 
-test "duplicate @location fix for input parameters updates correctly" {
+test "code action: duplicate @location fix for input parameters updates correctly" {
     const source: [:0]const u8 =
         \\@fragment fn main(@location(0) a: f32, @location(0) b: f32) -> @location(0) vec4f { return vec4f(a, b, 0.0, 1.0); }
     ;
@@ -374,7 +374,7 @@ test "duplicate @location fix for input parameters updates correctly" {
     try std.testing.expect(std.mem.indexOf(u8, fixed, "@location(0)") != null);
 }
 
-test "code actions for warnings (not just errors)" {
+test "code action: actions for warnings (not just errors)" {
     var handler = Handler.init(std.testing.allocator);
     defer handler.deinit();
 
@@ -400,7 +400,7 @@ test "code actions for warnings (not just errors)" {
     try std.testing.expectEqual(@as(usize, 1), actions.len);
 }
 
-test "action diagnostic field preserves original diagnostic" {
+test "code action: action diagnostic field preserves original diagnostic" {
     var handler = Handler.init(std.testing.allocator);
     defer handler.deinit();
 
