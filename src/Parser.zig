@@ -4,6 +4,7 @@
 //! Pass 2 (visit): Bind identifiers to symbols, increment use_count, mark purity.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Lexer = @import("Lexer.zig");
 
@@ -11,7 +12,7 @@ const Parser = @This();
 
 const Tag = Lexer.Tag;
 
-arena: std.mem.Allocator,
+arena: Allocator,
 source: [:0]const u8,
 token_tags: []const Tag,
 token_starts: []const u32,
@@ -42,7 +43,7 @@ pub const ParseError = struct {
 // =========================================================================
 
 /// Creates a parser for the given tokenized WGSL source. Allocates the root scope.
-pub fn init(arena: std.mem.Allocator, source: [:0]const u8, tokens: std.MultiArrayList(Lexer.Token)) !Parser {
+pub fn init(arena: Allocator, source: [:0]const u8, tokens: std.MultiArrayList(Lexer.Token)) !Parser {
     // Pre-condition: token list must contain at least one token (the EOF).
     std.debug.assert(tokens.len > 0);
 
@@ -1969,7 +1970,7 @@ pub fn isIdentStartFn(c: u8) bool {
 // Tests
 // =========================================================================
 
-test "parse simple const" {
+test "parser: simple const" {
     const source: [:0]const u8 = "const x = 1;";
     var tokens = try Lexer.tokenize(std.testing.allocator, source);
     defer tokens.deinit(std.testing.allocator);
@@ -3339,4 +3340,4 @@ test "parser error: expected assignment or call in statement" {
     try expectParseErrorMessage("fn foo() { 42; }", "expected assignment, increment, or function call");
 }
 
-pub const Error = error{ParseFailed} || std.mem.Allocator.Error;
+pub const Error = error{ParseFailed} || Allocator.Error;

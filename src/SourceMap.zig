@@ -39,7 +39,7 @@ const vlq_sign_bit: u32 = 1;
 const vlq_max_digits = 8;
 
 /// Encode a signed integer as a VLQ base64 sequence, appending to `buf`.
-pub fn encodeVlq(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: i32) Allocator.Error!void {
+pub fn encodeVlq(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: i32) Allocator.Error!void {
     // Convert to VLQ signed representation:
     //   positive: value << 1
     //   negative: ((-value) << 1) | 1
@@ -140,7 +140,7 @@ pub const LineIndex = struct {
     line_starts: std.ArrayListUnmanaged(u32),
 
     /// Build a line index by scanning `source` for newlines.
-    pub fn init(allocator: std.mem.Allocator, source: []const u8) Allocator.Error!LineIndex {
+    pub fn init(allocator: Allocator, source: []const u8) Allocator.Error!LineIndex {
         var starts: std.ArrayListUnmanaged(u32) = .empty;
         try starts.append(allocator, 0);
 
@@ -171,7 +171,7 @@ pub const LineIndex = struct {
         return .{ .line_starts = starts };
     }
 
-    pub fn deinit(self: *LineIndex, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *LineIndex, allocator: Allocator) void {
         self.line_starts.deinit(allocator);
     }
 
@@ -311,12 +311,12 @@ pub const Generator = struct {
     source_name: []const u8,
     include_source: bool,
     cover_lines_without_mappings: bool,
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
     // Heap-allocated single-element arrays for Result slices
     sources_buf: [][]const u8 = &.{},
     sources_content_buf: [][]const u8 = &.{},
 
-    pub fn init(allocator: std.mem.Allocator, source: []const u8) Allocator.Error!Generator {
+    pub fn init(allocator: Allocator, source: []const u8) Allocator.Error!Generator {
         return .{
             .source = source,
             .line_index = try LineIndex.init(allocator, source),
@@ -516,7 +516,7 @@ pub const Result = struct {
     mappings: []const u8 = "",
 
     /// Serialize to JSON, appending to `buf`.
-    pub fn toJson(self: *const Result, buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) Allocator.Error!void {
+    pub fn toJson(self: *const Result, buf: *std.ArrayListUnmanaged(u8), allocator: Allocator) Allocator.Error!void {
         try appendStr(buf, allocator, "{\"version\":");
         try appendInt(buf, allocator, self.version);
 
@@ -543,7 +543,7 @@ pub const Result = struct {
     }
 
     /// Serialize to a data URI (`data:application/json;base64,...`).
-    pub fn toDataUri(self: *const Result, buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator) Allocator.Error!void {
+    pub fn toDataUri(self: *const Result, buf: *std.ArrayListUnmanaged(u8), allocator: Allocator) Allocator.Error!void {
         // First produce the JSON into a temporary buffer.
         var json_buf: std.ArrayListUnmanaged(u8) = .empty;
         defer json_buf.deinit(allocator);
@@ -562,7 +562,7 @@ pub const Result = struct {
 
     /// Return a source-mapping comment for appending to generated code.
     /// When `inline_uri` is true, emits a data URI; otherwise emits a file reference.
-    pub fn toComment(self: *const Result, buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, inline_uri: bool) Allocator.Error!void {
+    pub fn toComment(self: *const Result, buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, inline_uri: bool) Allocator.Error!void {
         try appendStr(buf, allocator, "//# sourceMappingURL=");
         if (inline_uri) {
             try self.toDataUri(buf, allocator);
@@ -581,7 +581,7 @@ pub const Result = struct {
 pub const DecodedMappings = struct {
     items: []Mapping,
     list: std.ArrayListUnmanaged(Mapping),
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
 
     pub fn deinit(self: *DecodedMappings) void {
         self.list.deinit(self.allocator);
@@ -589,7 +589,7 @@ pub const DecodedMappings = struct {
 };
 
 /// Decode a VLQ-encoded mappings string into a list of Mapping values.
-pub fn decodeMappings(allocator: std.mem.Allocator, mappings: []const u8) Allocator.Error!DecodedMappings {
+pub fn decodeMappings(allocator: Allocator, mappings: []const u8) Allocator.Error!DecodedMappings {
     if (mappings.len == 0) return .{ .items = &.{}, .list = .empty, .allocator = allocator };
 
     var result: std.ArrayListUnmanaged(Mapping) = .empty;
@@ -669,17 +669,17 @@ pub fn decodeMappings(allocator: std.mem.Allocator, mappings: []const u8) Alloca
 // JSON helpers
 // =========================================================================
 
-fn appendStr(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) Allocator.Error!void {
+fn appendStr(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
     try buf.appendSlice(allocator, s);
 }
 
-fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: u32) Allocator.Error!void {
+fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: u32) Allocator.Error!void {
     var tmp: [20]u8 = undefined;
     const s = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return;
     try appendStr(buf, allocator, s);
 }
 
-fn appendJsonString(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) Allocator.Error!void {
+fn appendJsonString(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
     try buf.append(allocator, '"');
     for (s) |c| {
         switch (c) {
@@ -703,7 +703,7 @@ fn appendJsonString(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocat
     try buf.append(allocator, '"');
 }
 
-fn appendJsonStringArray(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, items: []const []const u8) Allocator.Error!void {
+fn appendJsonStringArray(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, items: []const []const u8) Allocator.Error!void {
     try buf.append(allocator, '[');
     for (items, 0..) |item, idx| {
         if (idx > 0) try buf.append(allocator, ',');
@@ -716,7 +716,7 @@ fn appendJsonStringArray(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Al
 // Tests
 // =========================================================================
 
-test "VLQ encode/decode round-trip" {
+test "VLQ: encode/decode round-trip" {
     const allocator = std.testing.allocator;
     const test_values = [_]i32{ 0, 1, -1, 5, -5, 15, -15, 16, -16, 31, 100, -100, 1000, -1000, 100000, -100000 };
 
@@ -732,7 +732,7 @@ test "VLQ encode/decode round-trip" {
     }
 }
 
-test "VLQ encode known values" {
+test "VLQ: encode known values" {
     const allocator = std.testing.allocator;
 
     // 0 -> 'A' (vlq=0, digit=0)
@@ -758,12 +758,12 @@ test "VLQ encode known values" {
     }
 }
 
-test "VLQ decode invalid input" {
+test "VLQ: decode invalid input" {
     try std.testing.expect(decodeVlq("") == null);
     try std.testing.expect(decodeVlq("!!!") == null);
 }
 
-test "LineIndex basic" {
+test "line index: basic line and column lookup" {
     const allocator = std.testing.allocator;
     var li = try LineIndex.init(allocator, "abc\ndef\nghi");
     defer li.deinit(allocator);
@@ -790,7 +790,7 @@ test "LineIndex basic" {
     try std.testing.expectEqual(@as(u32, 0), pos3.col);
 }
 
-test "LineIndex single line" {
+test "line index: single line source" {
     const allocator = std.testing.allocator;
     var li = try LineIndex.init(allocator, "hello");
     defer li.deinit(allocator);
@@ -802,7 +802,7 @@ test "LineIndex single line" {
     try std.testing.expectEqual(@as(u32, 3), pos.col);
 }
 
-test "LineIndex empty source" {
+test "line index: empty source" {
     const allocator = std.testing.allocator;
     var li = try LineIndex.init(allocator, "");
     defer li.deinit(allocator);
@@ -813,7 +813,7 @@ test "LineIndex empty source" {
     try std.testing.expectEqual(@as(u32, 0), pos.col);
 }
 
-test "LineIndex UTF-16 column for ASCII" {
+test "line index: UTF-16 column for ASCII" {
     const allocator = std.testing.allocator;
     const source = "abc\ndef";
     var li = try LineIndex.init(allocator, source);
@@ -825,7 +825,7 @@ test "LineIndex UTF-16 column for ASCII" {
     try std.testing.expectEqual(@as(u32, 1), pos.col);
 }
 
-test "Generator produces valid mappings" {
+test "source map: generator produces valid mappings" {
     const allocator = std.testing.allocator;
     const source = "fn main() {}";
     var gen = try Generator.init(allocator, source);
@@ -845,7 +845,7 @@ test "Generator produces valid mappings" {
     try std.testing.expect(result.mappings.len > 0);
 }
 
-test "Result toJson" {
+test "source map: Result toJson serialization" {
     const allocator = std.testing.allocator;
     const result = Result{
         .version = 3,
@@ -866,7 +866,7 @@ test "Result toJson" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"mappings\":\"AAAA\"") != null);
 }
 
-test "Result toDataUri" {
+test "source map: Result toDataUri encoding" {
     const allocator = std.testing.allocator;
     const result = Result{
         .version = 3,
@@ -880,7 +880,7 @@ test "Result toDataUri" {
     try std.testing.expect(std.mem.startsWith(u8, buf.items, "data:application/json;base64,"));
 }
 
-test "decodeMappings round-trip" {
+test "decodeMappings: round-trip encode and decode" {
     const allocator = std.testing.allocator;
     const source = "fn main() {\n  return;\n}";
     var gen = try Generator.init(allocator, source);
@@ -912,7 +912,7 @@ test "decodeMappings round-trip" {
 // Additional VLQ tests
 // =========================================================================
 
-test "VLQ large values" {
+test "VLQ: large values" {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
@@ -930,11 +930,11 @@ test "VLQ large values" {
     try std.testing.expectEqual(@as(i32, -100000), d2.?.value);
 }
 
-test "VLQ base64 alphabet covers 64 chars" {
+test "VLQ: base64 alphabet covers 64 chars" {
     try std.testing.expectEqual(@as(usize, 64), base64_alphabet.len);
 }
 
-test "VLQ fast path small positive via encode/decode" {
+test "VLQ: fast path small positive via encode/decode" {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
@@ -944,7 +944,7 @@ test "VLQ fast path small positive via encode/decode" {
     try std.testing.expectEqual(@as(u8, 'A'), buf.items[0]);
 }
 
-test "VLQ fast path small negative via encode/decode" {
+test "VLQ: fast path small negative via encode/decode" {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
@@ -953,7 +953,7 @@ test "VLQ fast path small negative via encode/decode" {
     try std.testing.expectEqual(@as(u8, 'D'), buf.items[0]);
 }
 
-test "VLQ boundary value 15" {
+test "VLQ: boundary value 15" {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
@@ -961,17 +961,17 @@ test "VLQ boundary value 15" {
     try std.testing.expectEqual(@as(usize, 1), buf.items.len);
 }
 
-test "VLQ decode invalid high byte" {
+test "VLQ: decode invalid high byte" {
     const result = decodeVlq(&[_]u8{0xFF});
     try std.testing.expect(result == null);
 }
 
-test "VLQ decode invalid base64 char" {
+test "VLQ: decode invalid base64 char" {
     const result = decodeVlq(&[_]u8{'!'});
     try std.testing.expect(result == null);
 }
 
-test "VLQ decode sequence" {
+test "VLQ: decode sequence of multiple values" {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
@@ -1001,7 +1001,7 @@ test "VLQ decode sequence" {
 // Additional LineIndex / Position tests
 // =========================================================================
 
-test "LineIndex CRLF newlines" {
+test "line index: CRLF newlines" {
     const allocator = std.testing.allocator;
     const source = "line1\r\nline2\r\nline3";
     const li = try LineIndex.init(allocator, source);
@@ -1011,7 +1011,7 @@ test "LineIndex CRLF newlines" {
     try std.testing.expectEqual(@as(usize, 3), li.line_starts.items.len);
 }
 
-test "LineIndex CR-only newlines" {
+test "line index: CR-only newlines" {
     const allocator = std.testing.allocator;
     const source = "line1\rline2\rline3";
     const li = try LineIndex.init(allocator, source);
@@ -1021,7 +1021,7 @@ test "LineIndex CR-only newlines" {
     try std.testing.expectEqual(@as(usize, 3), li.line_starts.items.len);
 }
 
-test "LineIndex UTF-8 multibyte" {
+test "line index: UTF-8 multibyte characters" {
     const allocator = std.testing.allocator;
     // "héllo" has a 2-byte character
     const source = "h\xc3\xa9llo\nworld";
@@ -1033,7 +1033,7 @@ test "LineIndex UTF-8 multibyte" {
     try std.testing.expectEqual(@as(u32, 0), li.line_starts.items[0]);
 }
 
-test "LineIndex byteOffsetToLineColumn out of bounds" {
+test "line index: byteOffsetToLineColumn out of bounds" {
     const allocator = std.testing.allocator;
     const source = "hello";
     const li = try LineIndex.init(allocator, source);
@@ -1045,7 +1045,7 @@ test "LineIndex byteOffsetToLineColumn out of bounds" {
     _ = pos;
 }
 
-test "LineIndex many lines" {
+test "line index: many lines" {
     const allocator = std.testing.allocator;
     // Build a source with many lines
     var buf: [1000]u8 = undefined;
@@ -1064,7 +1064,7 @@ test "LineIndex many lines" {
     try std.testing.expectEqual(line_count, li.line_starts.items.len);
 }
 
-test "LineIndex reverse lookup" {
+test "line index: reverse lookup from byte offset" {
     const allocator = std.testing.allocator;
     const source = "fn main() {\n  return;\n}";
     const li = try LineIndex.init(allocator, source);
@@ -1084,7 +1084,7 @@ test "LineIndex reverse lookup" {
 // Additional Generator / decodeMappings tests
 // =========================================================================
 
-test "Generator name deduplication" {
+test "source map: generator name deduplication" {
     const allocator = std.testing.allocator;
     const source = "fn foo() { let x = foo(); }";
     var gen = try Generator.init(allocator, source);
@@ -1098,7 +1098,7 @@ test "Generator name deduplication" {
     try std.testing.expectEqual(@as(usize, 1), result.names.len);
 }
 
-test "Generator mapping without name" {
+test "source map: generator mapping without name" {
     const allocator = std.testing.allocator;
     const source = "fn foo() {}";
     var gen = try Generator.init(allocator, source);
@@ -1112,7 +1112,7 @@ test "Generator mapping without name" {
     try std.testing.expectEqual(@as(usize, 0), result.names.len);
 }
 
-test "Generator empty source" {
+test "source map: generator with empty source" {
     const allocator = std.testing.allocator;
     var gen = try Generator.init(allocator, "");
     defer gen.deinit();
@@ -1121,7 +1121,7 @@ test "Generator empty source" {
     try std.testing.expectEqual(@as(u32, 3), result.version);
 }
 
-test "Generator file and sources content" {
+test "source map: generator file and sources content" {
     const allocator = std.testing.allocator;
     const source = "fn foo() {}";
     var gen = try Generator.init(allocator, source);
@@ -1137,13 +1137,13 @@ test "Generator file and sources content" {
     try std.testing.expect(result.sources_content.len > 0);
 }
 
-test "decodeMappings empty" {
+test "decodeMappings: empty input" {
     const decoded = try decodeMappings(std.testing.allocator, "");
     defer @constCast(&decoded).deinit();
     try std.testing.expectEqual(@as(usize, 0), decoded.items.len);
 }
 
-test "decodeMappings semicolons produce line breaks" {
+test "decodeMappings: semicolons produce line breaks" {
     const decoded = try decodeMappings(std.testing.allocator, "AAAA;AACA");
     defer @constCast(&decoded).deinit();
     // Should have entries on different lines
@@ -1154,7 +1154,7 @@ test "decodeMappings semicolons produce line breaks" {
     }
 }
 
-test "decodeMappings with name index" {
+test "decodeMappings: segment with name index" {
     // AAAA has 4 segments: gen_col=0, src_idx=0, src_line=0, src_col=0
     // AAAAA has 5 segments: gen_col=0, src_idx=0, src_line=0, src_col=0, name_idx=0
     const decoded = try decodeMappings(std.testing.allocator, "AAAAA");
@@ -1167,7 +1167,7 @@ test "decodeMappings with name index" {
 // VLQ encode known positive values
 // =========================================================================
 
-test "VLQ encode known positive values" {
+test "VLQ: encode known positive values" {
     const allocator = std.testing.allocator;
     const cases = .{
         .{ @as(i32, 2), "E" },
@@ -1188,7 +1188,7 @@ test "VLQ encode known positive values" {
     }
 }
 
-test "VLQ encode known negative values" {
+test "VLQ: encode known negative values" {
     const allocator = std.testing.allocator;
     const cases = .{
         .{ @as(i32, -2), "F" },
@@ -1212,7 +1212,7 @@ test "VLQ encode known negative values" {
 // VLQ fast path: values 0-15 produce single char, 16 needs two
 // =========================================================================
 
-test "VLQ fast path small positive all single char" {
+test "VLQ: fast path small positive all single char" {
     const allocator = std.testing.allocator;
     var v: i32 = 0;
     while (v <= 15) : (v += 1) {
@@ -1223,7 +1223,7 @@ test "VLQ fast path small positive all single char" {
     }
 }
 
-test "VLQ fast path small negative all single char" {
+test "VLQ: fast path small negative all single char" {
     const allocator = std.testing.allocator;
     var v: i32 = -1;
     while (v >= -15) : (v -= 1) {
@@ -1234,7 +1234,7 @@ test "VLQ fast path small negative all single char" {
     }
 }
 
-test "VLQ fast path boundary 16 needs two digits" {
+test "VLQ: fast path boundary 16 needs two digits" {
     const allocator = std.testing.allocator;
     {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -1254,14 +1254,14 @@ test "VLQ fast path boundary 16 needs two digits" {
 // VLQ decode edge cases
 // =========================================================================
 
-test "VLQ decode multiple invalid base64 chars" {
+test "VLQ: decode multiple invalid base64 chars" {
     const invalid = [_][]const u8{ "@", "#", "$", "%", "^", "&", "*", "(", ")", "-", "_" };
     for (invalid) |ch| {
         try std.testing.expect(decodeVlq(ch) == null);
     }
 }
 
-test "VLQ decode truncated continuation" {
+test "VLQ: decode truncated continuation" {
     // 'g' is index 32, which has the continuation bit set. Alone it is truncated.
     try std.testing.expect(decodeVlq("g") == null);
 }
@@ -1270,7 +1270,7 @@ test "VLQ decode truncated continuation" {
 // LineIndex detailed multi-line positions
 // =========================================================================
 
-test "LineIndex multi-line detailed positions" {
+test "line index: multi-line detailed positions" {
     const allocator = std.testing.allocator;
     const source = "const x = 1;\nconst y = 2;\nconst z = 3;";
     var li = try LineIndex.init(allocator, source);
@@ -1322,7 +1322,7 @@ test "LineIndex multi-line detailed positions" {
 // LineIndex CRLF detailed positions
 // =========================================================================
 
-test "LineIndex CRLF detailed positions" {
+test "line index: CRLF detailed positions" {
     const allocator = std.testing.allocator;
     // "ab\r\ncd\r\nef"
     const source = "ab\r\ncd\r\nef";
@@ -1367,7 +1367,7 @@ test "LineIndex CRLF detailed positions" {
 // LineIndex UTF-16 emoji/multibyte tests
 // =========================================================================
 
-test "LineIndex UTF-16 emoji column" {
+test "line index: UTF-16 emoji column" {
     const allocator = std.testing.allocator;
     // "a😀b" - 😀 is 4 UTF-8 bytes, 2 UTF-16 code units
     const source = "a\xf0\x9f\x98\x80b";
@@ -1391,7 +1391,7 @@ test "LineIndex UTF-16 emoji column" {
     }
 }
 
-test "LineIndex UTF-16 multiple emojis" {
+test "line index: UTF-16 multiple emojis" {
     const allocator = std.testing.allocator;
     // "a👍👎b" - each emoji is 4 UTF-8 bytes, 2 UTF-16 code units
     const source = "a\xf0\x9f\x91\x8d\xf0\x9f\x91\x8eb";
@@ -1420,7 +1420,7 @@ test "LineIndex UTF-16 multiple emojis" {
     }
 }
 
-test "LineIndex UTF-16 mixed BMP content" {
+test "line index: UTF-16 mixed BMP content" {
     const allocator = std.testing.allocator;
     // "café" - 'é' is 2 UTF-8 bytes but 1 UTF-16 code unit (BMP)
     const source = "caf\xc3\xa9";
@@ -1449,7 +1449,7 @@ test "LineIndex UTF-16 mixed BMP content" {
     }
 }
 
-test "LineIndex UTF-16 clamp out of bounds" {
+test "line index: UTF-16 clamp out of bounds" {
     const allocator = std.testing.allocator;
     const source = "abc";
     var li = try LineIndex.init(allocator, source);
@@ -1460,7 +1460,7 @@ test "LineIndex UTF-16 clamp out of bounds" {
     try std.testing.expectEqual(@as(u32, 3), pos.col);
 }
 
-test "LineIndex UTF-16 empty source" {
+test "line index: UTF-16 empty source" {
     const allocator = std.testing.allocator;
     const source = "";
     var li = try LineIndex.init(allocator, source);
@@ -1475,7 +1475,7 @@ test "LineIndex UTF-16 empty source" {
 // LineIndex lineColumnToByteOffset
 // =========================================================================
 
-test "LineIndex lineColumnToByteOffset basic" {
+test "line index: lineColumnToByteOffset basic" {
     const allocator = std.testing.allocator;
     const source = "const x = 1;\nconst y = 2;\n";
     var li = try LineIndex.init(allocator, source);
@@ -1487,7 +1487,7 @@ test "LineIndex lineColumnToByteOffset basic" {
     try std.testing.expectEqual(@as(u32, 19), li.lineColumnToByteOffset(@intCast(source.len), 1, 6));
 }
 
-test "LineIndex lineColumnToByteOffset line out of bounds clamp" {
+test "line index: lineColumnToByteOffset line out of bounds clamp" {
     const allocator = std.testing.allocator;
     const source = "abc\ndef\n";
     var li = try LineIndex.init(allocator, source);
@@ -1498,7 +1498,7 @@ test "LineIndex lineColumnToByteOffset line out of bounds clamp" {
     try std.testing.expectEqual(@as(u32, 4), offset);
 }
 
-test "LineIndex lineColumnToByteOffset column out of bounds clamp" {
+test "line index: lineColumnToByteOffset column out of bounds clamp" {
     const allocator = std.testing.allocator;
     const source = "abc";
     var li = try LineIndex.init(allocator, source);
@@ -1513,7 +1513,7 @@ test "LineIndex lineColumnToByteOffset column out of bounds clamp" {
 // Generator single mapping with decode verification
 // =========================================================================
 
-test "Generator single mapping decode verification" {
+test "source map: generator single mapping decode verification" {
     const allocator = std.testing.allocator;
     const source = "const x = 1;";
     var gen = try Generator.init(allocator, source);
@@ -1544,7 +1544,7 @@ test "Generator single mapping decode verification" {
 // Generator multiple mappings same line
 // =========================================================================
 
-test "Generator multiple mappings same line" {
+test "source map: generator multiple mappings same line" {
     const allocator = std.testing.allocator;
     const source = "const a = b + c;";
     var gen = try Generator.init(allocator, source);
@@ -1566,7 +1566,7 @@ test "Generator multiple mappings same line" {
 // Generator multiple lines
 // =========================================================================
 
-test "Generator multiple lines semicolons" {
+test "source map: generator multiple lines semicolons" {
     const allocator = std.testing.allocator;
     const source = "const a = 1;\nconst b = 2;\nconst c = 3;";
     var gen = try Generator.init(allocator, source);
@@ -1592,7 +1592,7 @@ test "Generator multiple lines semicolons" {
 // Generator delta encoding verification
 // =========================================================================
 
-test "Generator delta encoding" {
+test "source map: generator delta encoding" {
     const allocator = std.testing.allocator;
     const source = "const abc = 1;\nconst def = 2;";
     var gen = try Generator.init(allocator, source);
@@ -1623,7 +1623,7 @@ test "Generator delta encoding" {
 // Generator mappings format verification
 // =========================================================================
 
-test "Generator mappings format" {
+test "source map: generator mappings format" {
     const allocator = std.testing.allocator;
     const source = "a\nb\nc";
     var gen = try Generator.init(allocator, source);
@@ -1649,7 +1649,7 @@ test "Generator mappings format" {
 // Line coverage workaround tests
 // =========================================================================
 
-test "Generator line coverage fills gap lines" {
+test "source map: line coverage fills gap lines" {
     const allocator = std.testing.allocator;
     const source = "line1\nline2\nline3\n";
     var gen = try Generator.init(allocator, source);
@@ -1675,7 +1675,7 @@ test "Generator line coverage fills gap lines" {
     try std.testing.expect(has_line1_col0);
 }
 
-test "Generator line coverage not duplicated when line has col 0" {
+test "source map: line coverage not duplicated when line has col 0" {
     const allocator = std.testing.allocator;
     const source = "line1\nline2\n";
     var gen = try Generator.init(allocator, source);
@@ -1698,7 +1698,7 @@ test "Generator line coverage not duplicated when line has col 0" {
     try std.testing.expectEqual(@as(usize, 1), line1_count);
 }
 
-test "Generator line coverage multiple gaps" {
+test "source map: line coverage multiple gaps" {
     const allocator = std.testing.allocator;
     const source = "a\nb\nc\nd\ne\n";
     var gen = try Generator.init(allocator, source);
@@ -1725,7 +1725,7 @@ test "Generator line coverage multiple gaps" {
     }
 }
 
-test "Generator line coverage disabled" {
+test "source map: line coverage disabled" {
     const allocator = std.testing.allocator;
     const source = "line1\nline2\nline3\n";
     var gen = try Generator.init(allocator, source);
@@ -1753,7 +1753,7 @@ test "Generator line coverage disabled" {
 // Result toComment
 // =========================================================================
 
-test "Result toComment inline" {
+test "source map: Result toComment inline" {
     const allocator = std.testing.allocator;
     const result = Result{
         .version = 3,
@@ -1768,7 +1768,7 @@ test "Result toComment inline" {
     try std.testing.expect(std.mem.startsWith(u8, buf.items, "//# sourceMappingURL=data:application/json;base64,"));
 }
 
-test "Result toComment external" {
+test "source map: Result toComment external" {
     const allocator = std.testing.allocator;
     const result = Result{
         .version = 3,
@@ -1787,7 +1787,7 @@ test "Result toComment external" {
 // decodeMappings edge cases
 // =========================================================================
 
-test "decodeMappings multiple segments same line" {
+test "decodeMappings: multiple segments same line" {
     // "AAAA,CACA" = two segments on same line
     var decoded = try decodeMappings(std.testing.allocator, "AAAA,CACA");
     defer decoded.deinit();
@@ -1799,7 +1799,7 @@ test "decodeMappings multiple segments same line" {
     try std.testing.expectEqual(@as(u32, 1), decoded.items[1].gen_col);
 }
 
-test "decodeMappings three lines" {
+test "decodeMappings: three lines" {
     // "AAAA;CACA;EAEA" = one mapping per line
     var decoded = try decodeMappings(std.testing.allocator, "AAAA;CACA;EAEA");
     defer decoded.deinit();
@@ -1810,7 +1810,7 @@ test "decodeMappings three lines" {
     try std.testing.expectEqual(@as(u32, 2), decoded.items[2].gen_line);
 }
 
-test "decodeMappings empty segment skipped" {
+test "decodeMappings: empty segment skipped" {
     // "AAAA,,CACA" - empty segment between commas
     var decoded = try decodeMappings(std.testing.allocator, "AAAA,,CACA");
     defer decoded.deinit();
@@ -1818,7 +1818,7 @@ test "decodeMappings empty segment skipped" {
     try std.testing.expectEqual(@as(usize, 2), decoded.items.len);
 }
 
-test "decodeMappings empty lines increment line counter" {
+test "decodeMappings: empty lines increment line counter" {
     // "AAAA;;;CACA" - lines 1 and 2 are empty
     var decoded = try decodeMappings(std.testing.allocator, "AAAA;;;CACA");
     defer decoded.deinit();
@@ -1828,7 +1828,7 @@ test "decodeMappings empty lines increment line counter" {
     try std.testing.expectEqual(@as(u32, 3), decoded.items[1].gen_line);
 }
 
-test "decodeMappings invalid VLQ segment skipped" {
+test "decodeMappings: invalid VLQ segment skipped" {
     // "g" has continuation bit set, alone it is invalid. Should be skipped.
     // "AAAA" that follows should decode fine.
     var decoded = try decodeMappings(std.testing.allocator, "g,AAAA");
@@ -1838,7 +1838,7 @@ test "decodeMappings invalid VLQ segment skipped" {
     try std.testing.expectEqual(@as(usize, 1), decoded.items.len);
 }
 
-test "decodeMappings segment with only column" {
+test "decodeMappings: segment with only column" {
     // "C" is a single VLQ value (1), no source info
     var decoded = try decodeMappings(std.testing.allocator, "C");
     defer decoded.deinit();
@@ -1851,15 +1851,15 @@ test "decodeMappings segment with only column" {
 // utf8ToUtf16Column direct tests
 // =========================================================================
 
-test "utf8ToUtf16Column zero length" {
+test "utf8ToUtf16Column: zero length" {
     try std.testing.expectEqual(@as(u32, 0), utf8ToUtf16Column("abc", 0));
 }
 
-test "utf8ToUtf16Column beyond string" {
+test "utf8ToUtf16Column: beyond string length" {
     try std.testing.expectEqual(@as(u32, 3), utf8ToUtf16Column("abc", 100));
 }
 
-test "utf8ToUtf16Column invalid UTF-8" {
+test "utf8ToUtf16Column: invalid UTF-8" {
     // \xff is not valid UTF-8, should be counted as 1 unit
     const s = "a\xffb";
     const col = utf8ToUtf16Column(s, 2);

@@ -912,25 +912,25 @@ comptime {
 // Tests
 // =========================================================================
 
-test "SymbolIndex none is max u32" {
+test "SymbolIndex: none is max u32" {
     try std.testing.expectEqual(@as(u32, std.math.maxInt(u32)), @intFromEnum(SymbolIndex.none));
 }
 
-test "SymbolIndex valid" {
+test "SymbolIndex: valid index is accessible" {
     const s: SymbolIndex = @enumFromInt(5);
     try std.testing.expect(s.isValid());
     try std.testing.expectEqual(@as(u32, 5), s.index());
 }
 
-test "SymbolIndex none is not valid" {
+test "SymbolIndex: none is not valid" {
     try std.testing.expect(!SymbolIndex.none.isValid());
 }
 
-test "Symbol.Flags packed size" {
+test "Symbol.Flags: packed size is 2 bytes" {
     try std.testing.expectEqual(@as(usize, 2), @sizeOf(Symbol.Flags));
 }
 
-test "Symbol.Flags bitwise operations" {
+test "Symbol.Flags: bitwise operations" {
     var flags = Symbol.Flags{};
     try std.testing.expect(!flags.must_not_be_renamed);
     try std.testing.expect(!flags.is_entry_point);
@@ -943,7 +943,7 @@ test "Symbol.Flags bitwise operations" {
     try std.testing.expect(!flags.is_external_binding);
 }
 
-test "AddressSpace string conversion" {
+test "AddressSpace: string conversion" {
     try std.testing.expectEqualStrings("function", AddressSpace.function.string());
     try std.testing.expectEqualStrings("private", AddressSpace.private.string());
     try std.testing.expectEqualStrings("workgroup", AddressSpace.workgroup.string());
@@ -953,14 +953,14 @@ test "AddressSpace string conversion" {
     try std.testing.expectEqualStrings("", AddressSpace.none.string());
 }
 
-test "AccessMode string conversion" {
+test "AccessMode: string conversion" {
     try std.testing.expectEqualStrings("read", AccessMode.read.string());
     try std.testing.expectEqualStrings("write", AccessMode.write.string());
     try std.testing.expectEqualStrings("read_write", AccessMode.read_write.string());
     try std.testing.expectEqualStrings("", AccessMode.none.string());
 }
 
-test "Scope.init with parent" {
+test "Scope: init with parent" {
     var parent = Scope.init(null);
     try std.testing.expect(parent.parent == null);
 
@@ -969,7 +969,7 @@ test "Scope.init with parent" {
     try std.testing.expectEqual(@as(usize, 0), child.members.count());
 }
 
-test "SymbolIndex design avoids Go zero-value bug" {
+test "SymbolIndex: design avoids Go zero-value bug" {
     // In Go, Ref{0,0} passes IsValid() — the zero-value bug.
     // In Zig, SymbolIndex uses enum(u32) with none = maxInt(u32).
     // Index 0 IS valid (it's a real symbol index), and none is NOT valid.
@@ -983,96 +983,96 @@ test "SymbolIndex design avoids Go zero-value bug" {
 // Purity Tests
 // =========================================================================
 
-test "isSymbolPure returns false for invalid ref" {
+test "isSymbolPure: returns false for invalid ref" {
     const symbols = [_]Symbol{.{ .original_name = "x", .kind = .@"const", .flags = .{} }};
     try std.testing.expect(!isSymbolPure(.none, &symbols));
 }
 
-test "isSymbolPure returns false for out-of-bounds ref" {
+test "isSymbolPure: returns false for out-of-bounds ref" {
     const symbols = [_]Symbol{.{ .original_name = "x", .kind = .@"const", .flags = .{} }};
     try std.testing.expect(!isSymbolPure(@enumFromInt(999), &symbols));
 }
 
-test "isSymbolPure returns true for const symbol" {
+test "isSymbolPure: returns true for const symbol" {
     const symbols = [_]Symbol{.{ .original_name = "x", .kind = .@"const", .flags = .{} }};
     try std.testing.expect(isSymbolPure(@enumFromInt(0), &symbols));
 }
 
-test "isSymbolPure returns true for let symbol" {
+test "isSymbolPure: returns true for let symbol" {
     const symbols = [_]Symbol{.{ .original_name = "x", .kind = .let, .flags = .{} }};
     try std.testing.expect(isSymbolPure(@enumFromInt(0), &symbols));
 }
 
-test "isSymbolPure returns true for var symbol" {
+test "isSymbolPure: returns true for var symbol" {
     const symbols = [_]Symbol{.{ .original_name = "x", .kind = .@"var", .flags = .{} }};
     try std.testing.expect(isSymbolPure(@enumFromInt(0), &symbols));
 }
 
-test "isSymbolPure returns true for parameter symbol" {
+test "isSymbolPure: returns true for parameter symbol" {
     const symbols = [_]Symbol{.{ .original_name = "x", .kind = .parameter, .flags = .{} }};
     try std.testing.expect(isSymbolPure(@enumFromInt(0), &symbols));
 }
 
-test "isSymbolPure returns true for function symbol" {
+test "isSymbolPure: returns true for function symbol" {
     const symbols = [_]Symbol{.{ .original_name = "f", .kind = .function, .flags = .{} }};
     try std.testing.expect(isSymbolPure(@enumFromInt(0), &symbols));
 }
 
-test "isSymbolPure returns true for struct symbol" {
+test "isSymbolPure: returns true for struct symbol" {
     const symbols = [_]Symbol{.{ .original_name = "S", .kind = .@"struct", .flags = .{} }};
     try std.testing.expect(isSymbolPure(@enumFromInt(0), &symbols));
 }
 
-test "isSymbolPure returns true for alias symbol" {
+test "isSymbolPure: returns true for alias symbol" {
     const symbols = [_]Symbol{.{ .original_name = "T", .kind = .alias, .flags = .{} }};
     try std.testing.expect(isSymbolPure(@enumFromInt(0), &symbols));
 }
 
-test "isSymbolPure returns true for member symbol" {
+test "isSymbolPure: returns true for member symbol" {
     const symbols = [_]Symbol{.{ .original_name = "field", .kind = .member, .flags = .{} }};
     try std.testing.expect(isSymbolPure(@enumFromInt(0), &symbols));
 }
 
-test "isSymbolPure returns true for unbound symbol" {
+test "isSymbolPure: returns true for unbound symbol" {
     const symbols = [_]Symbol{.{ .original_name = "unknown", .kind = .unbound, .flags = .{} }};
     try std.testing.expect(isSymbolPure(@enumFromInt(0), &symbols));
 }
 
-test "exprCanBeRemovedIfUnused literal" {
+test "exprCanBeRemovedIfUnused: literal" {
     var lit = LiteralExpr{ .kind = .int_literal, .value = "42" };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .literal = &lit }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused ident with valid pure symbol" {
+test "exprCanBeRemovedIfUnused: ident with valid pure symbol" {
     const symbols = [_]Symbol{.{ .original_name = "x", .kind = .@"var", .flags = .{} }};
     var id = IdentExpr{ .name = "x", .ref = @enumFromInt(0) };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .ident = &id }, &symbols));
 }
 
-test "exprCanBeRemovedIfUnused ident with invalid ref (builtin)" {
+test "exprCanBeRemovedIfUnused: ident with invalid ref (builtin)" {
     var id = IdentExpr{ .name = "f32", .ref = .none };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .ident = &id }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused ident with flag set" {
+test "exprCanBeRemovedIfUnused: ident with flag set" {
     var id = IdentExpr{ .name = "x", .ref = @enumFromInt(999), .flags = .{ .can_be_removed_if_unused = true } };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .ident = &id }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused binary with pure children" {
+test "exprCanBeRemovedIfUnused: binary with pure children" {
     var left = LiteralExpr{ .kind = .int_literal, .value = "1" };
     var right = LiteralExpr{ .kind = .int_literal, .value = "2" };
     var bin = BinaryExpr{ .op = .add, .left = .{ .literal = &left }, .right = .{ .literal = &right } };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .binary = &bin }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused unary with pure child" {
+test "exprCanBeRemovedIfUnused: unary with pure child" {
     var operand = LiteralExpr{ .kind = .int_literal, .value = "42" };
     var un = UnaryExpr{ .op = .neg, .operand = .{ .literal = &operand } };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .unary = &un }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused pure call with pure args" {
+test "exprCanBeRemovedIfUnused: pure call with pure args" {
     var func_id = IdentExpr{ .name = "sin" };
     var arg = LiteralExpr{ .kind = .float_literal, .value = "1.0" };
     var call = CallExpr{ .func = .{ .ident = &func_id }, .args = .empty };
@@ -1083,82 +1083,82 @@ test "exprCanBeRemovedIfUnused pure call with pure args" {
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .call = &call }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused impure call" {
+test "exprCanBeRemovedIfUnused: impure call" {
     var func_id = IdentExpr{ .name = "impureFunc" };
     var call = CallExpr{ .func = .{ .ident = &func_id }, .args = .empty };
     try std.testing.expect(!exprCanBeRemovedIfUnused(.{ .call = &call }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused call with can_be_removed flag" {
+test "exprCanBeRemovedIfUnused: call with can_be_removed flag" {
     var func_id = IdentExpr{ .name = "unknownFunc" };
     var call = CallExpr{ .func = .{ .ident = &func_id }, .args = .empty, .flags = .{ .can_be_removed_if_unused = true } };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .call = &call }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused call with from_pure_function flag" {
+test "exprCanBeRemovedIfUnused: call with from_pure_function flag" {
     var func_id = IdentExpr{ .name = "unknownFunc" };
     var call = CallExpr{ .func = .{ .ident = &func_id }, .args = .empty, .flags = .{ .from_pure_function = true } };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .call = &call }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused index with pure children" {
+test "exprCanBeRemovedIfUnused: index with pure children" {
     var base = LiteralExpr{ .kind = .int_literal, .value = "0" };
     var idx_expr = LiteralExpr{ .kind = .int_literal, .value = "1" };
     var index = IndexExpr{ .base = .{ .literal = &base }, .idx = .{ .literal = &idx_expr } };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .index = &index }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused member with pure base" {
+test "exprCanBeRemovedIfUnused: member with pure base" {
     var base = LiteralExpr{ .kind = .int_literal, .value = "0" };
     var mem = MemberExpr{ .base = .{ .literal = &base }, .member_name = "x" };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .member = &mem }, &.{}));
 }
 
-test "exprCanBeRemovedIfUnused paren with pure inner" {
+test "exprCanBeRemovedIfUnused: paren with pure inner" {
     var inner = LiteralExpr{ .kind = .int_literal, .value = "42" };
     var paren = ParenExpr{ .expr = .{ .literal = &inner } };
     try std.testing.expect(exprCanBeRemovedIfUnused(.{ .paren = &paren }, &.{}));
 }
 
-test "stmtCanBeRemovedIfUnused return without value" {
+test "stmtCanBeRemovedIfUnused: return without value" {
     var ret = ReturnStmt{};
     try std.testing.expect(stmtCanBeRemovedIfUnused(.{ .@"return" = &ret }, &.{}));
 }
 
-test "stmtCanBeRemovedIfUnused return with pure value" {
+test "stmtCanBeRemovedIfUnused: return with pure value" {
     var lit = LiteralExpr{ .kind = .int_literal, .value = "42" };
     var ret = ReturnStmt{ .value = .{ .literal = &lit } };
     try std.testing.expect(stmtCanBeRemovedIfUnused(.{ .@"return" = &ret }, &.{}));
 }
 
-test "stmtCanBeRemovedIfUnused return with impure value" {
+test "stmtCanBeRemovedIfUnused: return with impure value" {
     var func_id = IdentExpr{ .name = "impureFunc" };
     var call = CallExpr{ .func = .{ .ident = &func_id }, .args = .empty };
     var ret = ReturnStmt{ .value = .{ .call = &call } };
     try std.testing.expect(!stmtCanBeRemovedIfUnused(.{ .@"return" = &ret }, &.{}));
 }
 
-test "stmtCanBeRemovedIfUnused call stmt" {
+test "stmtCanBeRemovedIfUnused: call stmt" {
     var func_id = IdentExpr{ .name = "f" };
     var call_expr = CallExpr{ .func = .{ .ident = &func_id }, .args = .empty };
     var call_stmt = CallStmt{ .call = &call_expr };
     try std.testing.expect(!stmtCanBeRemovedIfUnused(.{ .call = &call_stmt }, &.{}));
 }
 
-test "stmtCanBeRemovedIfUnused assign stmt" {
+test "stmtCanBeRemovedIfUnused: assign stmt" {
     var left = IdentExpr{ .name = "x" };
     var right = LiteralExpr{ .kind = .int_literal, .value = "1" };
     var assign = AssignStmt{ .op = .simple, .left = .{ .ident = &left }, .right = .{ .literal = &right } };
     try std.testing.expect(!stmtCanBeRemovedIfUnused(.{ .assign = &assign }, &.{}));
 }
 
-test "stmtCanBeRemovedIfUnused incr_decr stmt" {
+test "stmtCanBeRemovedIfUnused: incr_decr stmt" {
     var id = IdentExpr{ .name = "x" };
     var incr = IncrDecrStmt{ .expr = .{ .ident = &id }, .increment = true };
     try std.testing.expect(!stmtCanBeRemovedIfUnused(.{ .incr_decr = &incr }, &.{}));
 }
 
-test "stmtCanBeRemovedIfUnused control flow" {
+test "stmtCanBeRemovedIfUnused: control flow" {
     var cond = LiteralExpr{ .kind = .true_literal, .value = "true" };
     var body = CompoundStmt{ .stmts = .empty };
     var if_stmt = IfStmt{ .condition = .{ .literal = &cond }, .body = &body };
@@ -1183,71 +1183,71 @@ test "stmtCanBeRemovedIfUnused control flow" {
     try std.testing.expect(!stmtCanBeRemovedIfUnused(.{ .discard = &discard_stmt }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused const with pure init" {
+test "declCanBeRemovedIfUnused: const with pure init" {
     var lit = LiteralExpr{ .kind = .int_literal, .value = "42" };
     var decl = ConstDecl{ .name = @enumFromInt(0), .initializer = .{ .literal = &lit } };
     try std.testing.expect(declCanBeRemovedIfUnused(.{ .@"const" = &decl }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused const with impure init" {
+test "declCanBeRemovedIfUnused: const with impure init" {
     var func_id = IdentExpr{ .name = "impureFunc" };
     var call = CallExpr{ .func = .{ .ident = &func_id }, .args = .empty };
     var decl = ConstDecl{ .name = @enumFromInt(0), .initializer = .{ .call = &call } };
     try std.testing.expect(!declCanBeRemovedIfUnused(.{ .@"const" = &decl }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused let with pure init" {
+test "declCanBeRemovedIfUnused: let with pure init" {
     var lit = LiteralExpr{ .kind = .int_literal, .value = "1" };
     var decl = LetDecl{ .name = @enumFromInt(0), .initializer = .{ .literal = &lit } };
     try std.testing.expect(declCanBeRemovedIfUnused(.{ .let = &decl }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused var with no init" {
+test "declCanBeRemovedIfUnused: var with no init" {
     var decl = VarDecl{ .name = @enumFromInt(0), .attributes = .empty };
     try std.testing.expect(declCanBeRemovedIfUnused(.{ .@"var" = &decl }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused var with pure init" {
+test "declCanBeRemovedIfUnused: var with pure init" {
     var lit = LiteralExpr{ .kind = .int_literal, .value = "5" };
     var decl = VarDecl{ .name = @enumFromInt(0), .attributes = .empty, .initializer = .{ .literal = &lit } };
     try std.testing.expect(declCanBeRemovedIfUnused(.{ .@"var" = &decl }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused function" {
+test "declCanBeRemovedIfUnused: function" {
     var decl = FunctionDecl{ .name = @enumFromInt(0), .attributes = .empty, .parameters = .empty, .return_attr = .empty };
     try std.testing.expect(declCanBeRemovedIfUnused(.{ .function = &decl }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused struct" {
+test "declCanBeRemovedIfUnused: struct" {
     var decl = StructDecl{ .name = @enumFromInt(0), .members = .empty };
     try std.testing.expect(declCanBeRemovedIfUnused(.{ .@"struct" = &decl }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused alias" {
+test "declCanBeRemovedIfUnused: alias" {
     var ident_type = IdentType{ .name = "f32" };
     var decl = AliasDecl{ .name = @enumFromInt(0), .typ = .{ .ident = &ident_type } };
     try std.testing.expect(declCanBeRemovedIfUnused(.{ .alias = &decl }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused override" {
+test "declCanBeRemovedIfUnused: override" {
     var decl = OverrideDecl{ .name = @enumFromInt(0), .attributes = .empty };
     try std.testing.expect(!declCanBeRemovedIfUnused(.{ .override = &decl }, &.{}));
 }
 
-test "declCanBeRemovedIfUnused const_assert" {
+test "declCanBeRemovedIfUnused: const_assert" {
     var lit = LiteralExpr{ .kind = .true_literal, .value = "true" };
     var decl = ConstAssertDecl{ .expr = .{ .literal = &lit } };
     try std.testing.expect(!declCanBeRemovedIfUnused(.{ .const_assert = &decl }, &.{}));
 }
 
-test "markExprPurity literal sets both flags" {
+test "markExprPurity: literal sets both flags" {
     var lit = LiteralExpr{ .kind = .int_literal, .value = "42" };
     markExprPurity(.{ .literal = &lit }, &.{});
     try std.testing.expect(lit.flags.can_be_removed_if_unused);
     try std.testing.expect(lit.flags.is_constant);
 }
 
-test "markExprPurity ident with const symbol sets both flags" {
+test "markExprPurity: ident with const symbol sets both flags" {
     const symbols = [_]Symbol{.{ .original_name = "MY_CONST", .kind = .@"const", .flags = .{} }};
     var id = IdentExpr{ .name = "MY_CONST", .ref = @enumFromInt(0) };
     markExprPurity(.{ .ident = &id }, &symbols);
@@ -1255,7 +1255,7 @@ test "markExprPurity ident with const symbol sets both flags" {
     try std.testing.expect(id.flags.is_constant);
 }
 
-test "markExprPurity ident with var symbol sets removable only" {
+test "markExprPurity: ident with var symbol sets removable only" {
     const symbols = [_]Symbol{.{ .original_name = "myVar", .kind = .@"var", .flags = .{} }};
     var id = IdentExpr{ .name = "myVar", .ref = @enumFromInt(0) };
     markExprPurity(.{ .ident = &id }, &symbols);
@@ -1263,14 +1263,14 @@ test "markExprPurity ident with var symbol sets removable only" {
     try std.testing.expect(!id.flags.is_constant);
 }
 
-test "markExprPurity ident with invalid ref sets removable" {
+test "markExprPurity: ident with invalid ref sets removable" {
     var id = IdentExpr{ .name = "f32", .ref = .none };
     markExprPurity(.{ .ident = &id }, &.{});
     try std.testing.expect(id.flags.can_be_removed_if_unused);
     try std.testing.expect(!id.flags.is_constant);
 }
 
-test "markExprPurity binary with pure children" {
+test "markExprPurity: binary with pure children" {
     var left = LiteralExpr{ .kind = .int_literal, .value = "1", .flags = .{ .can_be_removed_if_unused = true } };
     var right = LiteralExpr{ .kind = .int_literal, .value = "2", .flags = .{ .can_be_removed_if_unused = true } };
     var bin = BinaryExpr{ .op = .add, .left = .{ .literal = &left }, .right = .{ .literal = &right } };
@@ -1278,14 +1278,14 @@ test "markExprPurity binary with pure children" {
     try std.testing.expect(bin.flags.can_be_removed_if_unused);
 }
 
-test "markExprPurity unary with pure child" {
+test "markExprPurity: unary with pure child" {
     var operand = LiteralExpr{ .kind = .int_literal, .value = "42", .flags = .{ .can_be_removed_if_unused = true } };
     var un = UnaryExpr{ .op = .neg, .operand = .{ .literal = &operand } };
     markExprPurity(.{ .unary = &un }, &.{});
     try std.testing.expect(un.flags.can_be_removed_if_unused);
 }
 
-test "markExprPurity call to pure function with pure args" {
+test "markExprPurity: call to pure function with pure args" {
     var func_id = IdentExpr{ .name = "sin" };
     var arg = LiteralExpr{ .kind = .float_literal, .value = "1.0", .flags = .{ .can_be_removed_if_unused = true } };
     var arg_buf = [_]Expr{.{ .literal = &arg }};
@@ -1295,7 +1295,7 @@ test "markExprPurity call to pure function with pure args" {
     try std.testing.expect(call.flags.can_be_removed_if_unused);
 }
 
-test "markExprPurity call to pure function with impure arg" {
+test "markExprPurity: call to pure function with impure arg" {
     var func_id = IdentExpr{ .name = "sin" };
     var impure_func = IdentExpr{ .name = "impureFunc" };
     var impure_call = CallExpr{ .func = .{ .ident = &impure_func }, .args = .empty };
@@ -1306,7 +1306,7 @@ test "markExprPurity call to pure function with impure arg" {
     try std.testing.expect(!call.flags.can_be_removed_if_unused);
 }
 
-test "markExprPurity index with pure children" {
+test "markExprPurity: index with pure children" {
     var base = LiteralExpr{ .kind = .int_literal, .value = "0", .flags = .{ .can_be_removed_if_unused = true } };
     var idx_expr = LiteralExpr{ .kind = .int_literal, .value = "1", .flags = .{ .can_be_removed_if_unused = true } };
     var index = IndexExpr{ .base = .{ .literal = &base }, .idx = .{ .literal = &idx_expr } };
@@ -1314,14 +1314,14 @@ test "markExprPurity index with pure children" {
     try std.testing.expect(index.flags.can_be_removed_if_unused);
 }
 
-test "markExprPurity member with pure base" {
+test "markExprPurity: member with pure base" {
     var base = LiteralExpr{ .kind = .int_literal, .value = "0", .flags = .{ .can_be_removed_if_unused = true } };
     var mem = MemberExpr{ .base = .{ .literal = &base }, .member_name = "x" };
     markExprPurity(.{ .member = &mem }, &.{});
     try std.testing.expect(mem.flags.can_be_removed_if_unused);
 }
 
-test "markExprPurity paren with pure inner" {
+test "markExprPurity: paren with pure inner" {
     var inner = LiteralExpr{ .kind = .int_literal, .value = "42", .flags = .{ .can_be_removed_if_unused = true } };
     var paren = ParenExpr{ .expr = .{ .literal = &inner } };
     markExprPurity(.{ .paren = &paren }, &.{});

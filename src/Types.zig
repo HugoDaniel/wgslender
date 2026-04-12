@@ -1175,7 +1175,7 @@ fn concreteMatrixSingleton(cols: u8, rows: u8) Type {
 // Tests
 // =========================================================================
 
-test "scalar singleton equality" {
+test "types: scalar singleton equality" {
     try std.testing.expect(Bool.eql(Bool));
     try std.testing.expect(I32.eql(I32));
     try std.testing.expect(F32.eql(F32));
@@ -1183,7 +1183,7 @@ test "scalar singleton equality" {
     try std.testing.expect(!Bool.eql(I32));
 }
 
-test "scalar properties" {
+test "types: scalar properties" {
     // Bool is concrete, not numeric, not host-shareable.
     try std.testing.expect(Bool.isConcrete());
     try std.testing.expect(Bool.isConstructible());
@@ -1199,7 +1199,7 @@ test "scalar properties" {
     try std.testing.expectEqual(@as(u32, 2), F16.size());
 }
 
-test "scalar string" {
+test "types: scalar string" {
     try std.testing.expectEqualStrings("bool", Bool.string());
     try std.testing.expectEqualStrings("i32", I32.string());
     try std.testing.expectEqualStrings("f32", F32.string());
@@ -1208,7 +1208,7 @@ test "scalar string" {
     try std.testing.expectEqualStrings("abstract-float", AbstractFloat.string());
 }
 
-test "vector type" {
+test "types: vector type" {
     const allocator = std.testing.allocator;
 
     const v2f = try vec(allocator, 2, scalar_f32_ptr);
@@ -1230,7 +1230,7 @@ test "vector type" {
     try std.testing.expect(!v2f.eql(v3i));
 }
 
-test "matrix type" {
+test "types: matrix type" {
     const allocator = std.testing.allocator;
 
     const m4x4 = try mat(allocator, 4, 4, scalar_f32_ptr);
@@ -1249,7 +1249,7 @@ test "matrix type" {
     try std.testing.expectEqual(@as(u32, 32), m2x3.size());
 }
 
-test "canConvertTo" {
+test "types: canConvertTo" {
     // Same type.
     try std.testing.expect(canConvertTo(I32, I32));
 
@@ -1273,7 +1273,7 @@ test "canConvertTo" {
     try std.testing.expect(!canConvertTo(I32, F32));
 }
 
-test "commonType" {
+test "types: commonType" {
     // Same type.
     try std.testing.expect(commonType(I32, I32).?.eql(I32));
 
@@ -1289,14 +1289,14 @@ test "commonType" {
     try std.testing.expect(commonType(I32, F32) == null);
 }
 
-test "concreteType" {
+test "types: concreteType" {
     try std.testing.expect(concreteType(AbstractInt).eql(I32));
     try std.testing.expect(concreteType(AbstractFloat).eql(F32));
     try std.testing.expect(concreteType(I32).eql(I32));
     try std.testing.expect(concreteType(F32).eql(F32));
 }
 
-test "void type" {
+test "types: void type" {
     try std.testing.expect(Void.eql(Void));
     try std.testing.expectEqualStrings("void", Void.string());
     try std.testing.expect(!Void.isConstructible());
@@ -1304,7 +1304,7 @@ test "void type" {
     try std.testing.expectEqual(@as(u32, 0), Void.size());
 }
 
-test "type query functions" {
+test "types: type query functions" {
     try std.testing.expect(isScalar(I32));
     try std.testing.expect(!isScalar(Void));
     try std.testing.expect(isNumeric(I32));
@@ -1318,7 +1318,7 @@ test "type query functions" {
     try std.testing.expect(!isFloat(I32));
 }
 
-test "scalarOf extracts element type" {
+test "types: scalarOf extracts element type" {
     const allocator = std.testing.allocator;
 
     // Scalar returns itself.
@@ -1342,7 +1342,7 @@ test "scalarOf extracts element type" {
     try std.testing.expect(scalarOf(Void) == null);
 }
 
-test "texelFormatToScalar maps formats correctly" {
+test "types: texelFormatToScalar maps formats correctly" {
     // Float formats (unorm, snorm, float) → f32.
     try std.testing.expectEqual(ScalarKind.f32, texelFormatToScalar("rgba8unorm").kind);
     try std.testing.expectEqual(ScalarKind.f32, texelFormatToScalar("rgba8snorm").kind);
@@ -1361,7 +1361,7 @@ test "texelFormatToScalar maps formats correctly" {
     try std.testing.expectEqual(ScalarKind.f32, texelFormatToScalar("").kind);
 }
 
-test "canConvertTo pointer compatibility" {
+test "types: canConvertTo pointer compatibility" {
     const allocator = std.testing.allocator;
 
     // Same pointer type is compatible.
@@ -1378,7 +1378,7 @@ test "canConvertTo pointer compatibility" {
     try std.testing.expect(!canConvertTo(p1, p3));
 }
 
-test "sampler type" {
+test "types: sampler type" {
     const allocator = std.testing.allocator;
 
     const s = try samplerType(allocator, false);
@@ -1395,7 +1395,7 @@ test "sampler type" {
     try std.testing.expect(!s.eql(sc));
 }
 
-test "pointer and reference types" {
+test "types: pointer and reference types" {
     const allocator = std.testing.allocator;
 
     const p = try ptr(allocator, .function, I32, .read_write);
@@ -1414,7 +1414,7 @@ test "pointer and reference types" {
     try std.testing.expect(!r.isStorable());
 }
 
-test "atomic type" {
+test "types: atomic type" {
     const allocator = std.testing.allocator;
 
     const a = try atomicType(allocator, scalar_i32_ptr);
@@ -1428,7 +1428,7 @@ test "atomic type" {
     try std.testing.expectEqual(@as(u32, 4), a.alignment());
 }
 
-test "array type" {
+test "types: array type" {
     const allocator = std.testing.allocator;
 
     const a = try arr(allocator, F32, 4);
@@ -1449,7 +1449,7 @@ test "array type" {
     try std.testing.expectEqual(@as(u32, 0), ra.size());
 }
 
-test "multiplyResultType for 6 cases" {
+test "types: multiplyResultType for 6 cases" {
     const allocator = std.testing.allocator;
 
     // mat4x4 * vec4 -> vec4
@@ -1493,7 +1493,7 @@ test "multiplyResultType for 6 cases" {
     defer allocator.destroy(mat_scalar.?.matrix);
 }
 
-test "struct layout" {
+test "types: struct layout" {
     const allocator = std.testing.allocator;
 
     var fields = [_]StructField{

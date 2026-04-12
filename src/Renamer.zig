@@ -54,7 +54,7 @@ pub const MinifyRenamer = struct {
     top_level_slots: std.AutoHashMapUnmanaged(u32, u32),
     name_buf: std.ArrayListUnmanaged(u8), // storage for generated names
     name_offsets: std.ArrayListUnmanaged(NameSlice), // offset+len into name_buf
-    arena: std.mem.Allocator,
+    arena: Allocator,
     renamer: Printer.Renamer,
 
     const SymbolSlot = struct {
@@ -68,7 +68,7 @@ pub const MinifyRenamer = struct {
     };
 
     /// Creates a renamer for the given symbol table, skipping reserved names.
-    pub fn init(arena: std.mem.Allocator, symbols: []Ast.Symbol, reserved: std.StringHashMapUnmanaged(void)) MinifyRenamer {
+    pub fn init(arena: Allocator, symbols: []Ast.Symbol, reserved: std.StringHashMapUnmanaged(void)) MinifyRenamer {
         std.debug.assert(symbols.len <= std.math.maxInt(u32));
 
         var self = MinifyRenamer{
@@ -450,13 +450,13 @@ const reserved_texel_formats = [_][]const u8{
     "rgb10a2unorm",
 };
 
-fn addAllToMap(map: *std.StringHashMapUnmanaged(void), arena: std.mem.Allocator, names: []const []const u8) Allocator.Error!void {
+fn addAllToMap(map: *std.StringHashMapUnmanaged(void), arena: Allocator, names: []const []const u8) Allocator.Error!void {
     for (names) |name| try map.put(arena, name, {});
 }
 
 /// Build the set of names that must not be used for renamed symbols
 /// (keywords, reserved words, builtin types, etc.).
-pub fn computeReservedNames(arena: std.mem.Allocator) Allocator.Error!std.StringHashMapUnmanaged(void) {
+pub fn computeReservedNames(arena: Allocator) Allocator.Error!std.StringHashMapUnmanaged(void) {
     var reserved = std.StringHashMapUnmanaged(void){};
     errdefer reserved.deinit(arena);
     try addAllToMap(&reserved, arena, &reserved_keywords);
@@ -474,7 +474,7 @@ pub fn computeReservedNames(arena: std.mem.Allocator) Allocator.Error!std.String
 // Tests
 // =========================================================================
 
-test "numberToMinifiedName sequence" {
+test "renamer: numberToMinifiedName sequence" {
     var buf: [16]u8 = undefined;
     try std.testing.expectEqualStrings("a", numberToMinifiedName(&buf, 0));
     try std.testing.expectEqualStrings("b", numberToMinifiedName(&buf, 1));
@@ -485,7 +485,7 @@ test "numberToMinifiedName sequence" {
     try std.testing.expectEqualStrings("ba", numberToMinifiedName(&buf, 53));
 }
 
-test "numberToMinifiedName generates valid identifiers for 1000 names" {
+test "renamer: numberToMinifiedName generates valid identifiers for 1000 names" {
     var buf: [16]u8 = undefined;
     for (0..1000) |i| {
         const name = numberToMinifiedName(&buf, @intCast(i));
@@ -502,7 +502,7 @@ test "numberToMinifiedName generates valid identifiers for 1000 names" {
     }
 }
 
-test "numberToMinifiedName no duplicates in 10000 names" {
+test "renamer: numberToMinifiedName no duplicates in 10000 names" {
     var buf: [16]u8 = undefined;
     var seen = std.StringHashMapUnmanaged(void){};
     defer seen.deinit(std.testing.allocator);
@@ -523,7 +523,7 @@ test "numberToMinifiedName no duplicates in 10000 names" {
     }
 }
 
-test "computeReservedNames includes keywords" {
+test "renamer: computeReservedNames includes keywords" {
     var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
@@ -534,7 +534,7 @@ test "computeReservedNames includes keywords" {
     try std.testing.expect(reserved.contains("if"));
 }
 
-test "computeReservedNames has reasonable count" {
+test "renamer: computeReservedNames has reasonable count" {
     var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
@@ -542,7 +542,7 @@ test "computeReservedNames has reasonable count" {
     try std.testing.expect(reserved.count() >= 150);
 }
 
-test "generated names don't collide with reserved" {
+test "renamer: generated names don't collide with reserved" {
     var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
@@ -562,7 +562,7 @@ test "generated names don't collide with reserved" {
     try std.testing.expect(count == 100);
 }
 
-test "NoOpRenamer returns original names" {
+test "renamer: NoOpRenamer returns original names" {
     const symbols = [_]Ast.Symbol{
         .{ .original_name = "myFunc", .kind = .function, .flags = .{} },
         .{ .original_name = "myVar", .kind = .@"var", .flags = .{} },
@@ -573,7 +573,7 @@ test "NoOpRenamer returns original names" {
     try std.testing.expectEqualStrings("myVar", noop.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(1))));
 }
 
-test "NoOpRenamer handles invalid ref" {
+test "renamer: NoOpRenamer handles invalid ref" {
     const symbols = [_]Ast.Symbol{
         .{ .original_name = "foo", .kind = .function, .flags = .{} },
     };
@@ -581,7 +581,7 @@ test "NoOpRenamer handles invalid ref" {
     try std.testing.expectEqualStrings("", noop.renamer.nameForSymbol(Ast.SymbolIndex.none));
 }
 
-test "NoOpRenamer handles out-of-bounds ref" {
+test "renamer: NoOpRenamer handles out-of-bounds ref" {
     const symbols = [_]Ast.Symbol{
         .{ .original_name = "foo", .kind = .function, .flags = .{} },
     };
@@ -590,7 +590,7 @@ test "NoOpRenamer handles out-of-bounds ref" {
     try std.testing.expectEqualStrings("", noop.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(100))));
 }
 
-test "MinifyRenamer full workflow" {
+test "renamer: MinifyRenamer full workflow" {
     var symbols = [_]Ast.Symbol{
         .{ .original_name = "entryMain", .kind = .function, .flags = .{ .must_not_be_renamed = true } },
         .{ .original_name = "helperFunc", .kind = .function, .flags = .{}, .use_count = 0 },
@@ -632,7 +632,7 @@ test "MinifyRenamer full workflow" {
     try std.testing.expect(!std.mem.eql(u8, name2, "otherFunc"));
 }
 
-test "MinifyRenamer invalid ref returns empty" {
+test "renamer: MinifyRenamer invalid ref returns empty" {
     var symbols = [_]Ast.Symbol{
         .{ .original_name = "foo", .kind = .function, .flags = .{} },
     };
@@ -642,7 +642,7 @@ test "MinifyRenamer invalid ref returns empty" {
     try std.testing.expectEqualStrings("", renamer.renamer.nameForSymbol(Ast.SymbolIndex.none));
 }
 
-test "MinifyRenamer zero use count not renamed" {
+test "renamer: MinifyRenamer zero use count not renamed" {
     var symbols = [_]Ast.Symbol{
         .{ .original_name = "unused", .kind = .function, .flags = .{}, .use_count = 0 },
     };
@@ -663,7 +663,7 @@ test "MinifyRenamer zero use count not renamed" {
     try std.testing.expectEqualStrings("unused", renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
 }
 
-test "MinifyRenamer must_not_be_renamed flag" {
+test "renamer: MinifyRenamer must_not_be_renamed flag" {
     var symbols = [_]Ast.Symbol{
         .{ .original_name = "keepMe", .kind = .function, .flags = .{ .must_not_be_renamed = true }, .use_count = 10 },
     };
@@ -689,7 +689,7 @@ test "MinifyRenamer must_not_be_renamed flag" {
     try std.testing.expectEqualStrings("keepMe", renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
 }
 
-test "CharFreq scan lowercase" {
+test "renamer: CharFreq scan lowercase" {
     var freq = CharFreq{};
     freq.scan("aaa", 1);
     try std.testing.expectEqual(@as(i32, 3), freq.counts[0]);
@@ -700,7 +700,7 @@ test "CharFreq scan lowercase" {
     try std.testing.expectEqual(@as(i32, 1), freq.counts[2]); // 'c'
 }
 
-test "CharFreq scan uppercase" {
+test "renamer: CharFreq scan uppercase" {
     var freq = CharFreq{};
     freq.scan("ABC", 1);
     try std.testing.expectEqual(@as(i32, 1), freq.counts[26]); // 'A'
@@ -708,7 +708,7 @@ test "CharFreq scan uppercase" {
     try std.testing.expectEqual(@as(i32, 1), freq.counts[28]); // 'C'
 }
 
-test "CharFreq scan digits" {
+test "renamer: CharFreq scan digits" {
     var freq = CharFreq{};
     freq.scan("012", 1);
     try std.testing.expectEqual(@as(i32, 1), freq.counts[52]); // '0'
@@ -716,19 +716,19 @@ test "CharFreq scan digits" {
     try std.testing.expectEqual(@as(i32, 1), freq.counts[54]); // '2'
 }
 
-test "CharFreq scan mixed" {
+test "renamer: CharFreq scan mixed" {
     var freq = CharFreq{};
     freq.scan("variableName123", 1);
     try std.testing.expect(freq.counts[0] >= 2); // 'a' appears at least twice
 }
 
-test "CharFreq scan underscore" {
+test "renamer: CharFreq scan underscore" {
     var freq = CharFreq{};
     freq.scan("my_var_name", 1);
     try std.testing.expectEqual(@as(i32, 2), freq.counts[62]); // '_'
 }
 
-test "CharFreq scan ignores invalid chars" {
+test "renamer: CharFreq scan ignores invalid chars" {
     var freq = CharFreq{};
     freq.scan("a!@#$%^&*()b+=-[]{}|c d\t\n", 1);
     try std.testing.expectEqual(@as(i32, 1), freq.counts[0]); // 'a'
@@ -737,7 +737,7 @@ test "CharFreq scan ignores invalid chars" {
     try std.testing.expectEqual(@as(i32, 1), freq.counts[3]); // 'd'
 }
 
-test "shuffleByCharFreq reorders alphabet" {
+test "renamer: shuffleByCharFreq reorders alphabet" {
     var freq = CharFreq{};
     freq.counts[25] = 100; // 'z'
     freq.counts[0] = 1; // 'a'
@@ -749,7 +749,7 @@ test "shuffleByCharFreq reorders alphabet" {
     try std.testing.expectEqual(@as(u8, 'z'), first[0]);
 }
 
-test "NameMinifier default matches numberToMinifiedName" {
+test "renamer: NameMinifier default matches numberToMinifiedName" {
     const nm = NameMinifier.init();
     var buf1: [16]u8 = undefined;
     var buf2: [16]u8 = undefined;
@@ -760,7 +760,7 @@ test "NameMinifier default matches numberToMinifiedName" {
     }
 }
 
-test "MinifyRenamer skips reserved names" {
+test "renamer: MinifyRenamer skips reserved names" {
     var symbols = [_]Ast.Symbol{
         .{ .original_name = "myFunc", .kind = .function, .flags = .{}, .use_count = 5 },
     };

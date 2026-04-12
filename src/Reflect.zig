@@ -23,7 +23,7 @@ pub const ReflectResult = struct {
     /// Free all memory owned by this result. If this result was created
     /// through the public API (root.zig), deinits the internal arena.
     /// After calling deinit, all slices and pointers in the result are invalid.
-    pub fn deinit(self: *ReflectResult, arena: std.mem.Allocator) void {
+    pub fn deinit(self: *ReflectResult, arena: Allocator) void {
         if (self._arena) |_| {
             var owned_arena = self._arena.?;
             owned_arena.deinit();
@@ -491,7 +491,7 @@ const primitive_layouts = std.StaticStringMap(PrimitiveLayout).initComptime(.{
 // =========================================================================
 
 const LayoutComputer = struct {
-    arena: std.mem.Allocator,
+    arena: Allocator,
     module: *Ast.Module,
     struct_cache: std.StringHashMapUnmanaged(StructLayout),
     renamer: ?*const Printer.Renamer,
@@ -499,7 +499,7 @@ const LayoutComputer = struct {
     fmt_buf: std.ArrayListUnmanaged(u8) = .empty,
 
     fn init(
-        arena: std.mem.Allocator,
+        arena: Allocator,
         module: *Ast.Module,
         renamer: ?*const Printer.Renamer,
     ) LayoutComputer {
@@ -1079,7 +1079,7 @@ fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, ep: *
 // Tests
 // =========================================================================
 
-test "roundUp basic cases" {
+test "reflect: roundUp basic cases" {
     const testing = std.testing;
     try testing.expectEqual(@as(u32, 0), roundUp(0, 4));
     try testing.expectEqual(@as(u32, 4), roundUp(1, 4));
@@ -1090,7 +1090,7 @@ test "roundUp basic cases" {
     try testing.expectEqual(@as(u32, 5), roundUp(5, 0));
 }
 
-test "primitive layout lookup" {
+test "reflect: primitive layout lookup" {
     const testing = std.testing;
     const f32_layout = primitive_layouts.get("f32").?;
     try testing.expectEqual(@as(u32, 4), f32_layout.size);
@@ -1105,7 +1105,7 @@ test "primitive layout lookup" {
     try testing.expectEqual(@as(u32, 16), mat4x4f_layout.alignment);
 }
 
-test "computeVecLayout" {
+test "reflect: computeVecLayout" {
     const testing = std.testing;
     const v2 = computeVecLayout(2, 4);
     try testing.expectEqual(@as(u32, 8), v2.size);
@@ -1120,7 +1120,7 @@ test "computeVecLayout" {
     try testing.expectEqual(@as(u32, 16), v4.alignment);
 }
 
-test "computeMatLayout" {
+test "reflect: computeMatLayout" {
     const testing = std.testing;
     // mat4x4f: 4 columns of vec4f
     const m = computeMatLayout(4, 4, 4);
@@ -1133,7 +1133,7 @@ test "computeMatLayout" {
     try testing.expectEqual(@as(u32, 16), m2.alignment);
 }
 
-test "isHandleType sampler ident" {
+test "reflect: isHandleType sampler ident" {
     var ident = Ast.IdentType{ .name = "sampler" };
     try std.testing.expect(isHandleType(.{ .ident = &ident }));
 
@@ -1141,19 +1141,19 @@ test "isHandleType sampler ident" {
     try std.testing.expect(!isHandleType(.{ .ident = &non_handle }));
 }
 
-test "isHandleType sampler type" {
+test "reflect: isHandleType sampler type" {
     var s = Ast.SamplerType{ .comparison = false };
     try std.testing.expect(isHandleType(.{ .sampler = &s }));
 }
 
-test "parseWorkgroupSize" {
+test "reflect: parseWorkgroupSize" {
     const testing = std.testing;
     // Empty args -> default
     const empty = parseWorkgroupSize(&.{});
     try testing.expectEqual([3]u32{ 1, 1, 1 }, empty);
 }
 
-test "getSymbolName valid ref" {
+test "reflect: getSymbolName valid ref" {
     const symbols = [_]Ast.Symbol{
         .{ .original_name = "foo", .kind = .function, .flags = .{} },
         .{ .original_name = "bar", .kind = .@"var", .flags = .{} },
@@ -1162,53 +1162,53 @@ test "getSymbolName valid ref" {
     try std.testing.expectEqualStrings("bar", getSymbolName(@enumFromInt(1), &symbols));
 }
 
-test "getSymbolName invalid ref" {
+test "reflect: getSymbolName invalid ref" {
     const symbols = [_]Ast.Symbol{
         .{ .original_name = "foo", .kind = .function, .flags = .{} },
     };
     try std.testing.expectEqualStrings("", getSymbolName(Ast.SymbolIndex.none, &symbols));
 }
 
-test "getSymbolName out of bounds" {
+test "reflect: getSymbolName out of bounds" {
     const symbols = [_]Ast.Symbol{
         .{ .original_name = "foo", .kind = .function, .flags = .{} },
     };
     try std.testing.expectEqualStrings("", getSymbolName(@enumFromInt(10), &symbols));
 }
 
-test "getSymbolName empty symbols" {
+test "reflect: getSymbolName empty symbols" {
     const symbols = [_]Ast.Symbol{};
     try std.testing.expectEqualStrings("", getSymbolName(@enumFromInt(0), &symbols));
 }
 
-test "parseIntAttr literal" {
+test "reflect: parseIntAttr literal" {
     var lit = Ast.LiteralExpr{ .kind = .int_literal, .value = "42" };
     try std.testing.expectEqual(@as(i32, 42), parseIntAttr(.{ .literal = &lit }));
 }
 
-test "parseIntAttr non-integer literal" {
+test "reflect: parseIntAttr non-integer literal" {
     var lit = Ast.LiteralExpr{ .kind = .float_literal, .value = "1.5" };
     try std.testing.expectEqual(@as(i32, -1), parseIntAttr(.{ .literal = &lit }));
 }
 
-test "parseIntAttr non-literal expr" {
+test "reflect: parseIntAttr non-literal expr" {
     var ident = Ast.IdentExpr{ .name = "someConst" };
     try std.testing.expectEqual(@as(i32, -1), parseIntAttr(.{ .ident = &ident }));
 }
 
-test "addressSpaceToString" {
+test "reflect: addressSpaceToString" {
     try std.testing.expectEqualStrings("uniform", addressSpaceToString(.uniform));
     try std.testing.expectEqualStrings("storage", addressSpaceToString(.storage));
     try std.testing.expectEqualStrings("handle", addressSpaceToString(.handle));
     try std.testing.expectEqualStrings("", addressSpaceToString(.none));
 }
 
-test "isHandleType texture type" {
+test "reflect: isHandleType texture type" {
     var tex = Ast.TextureType{ .kind = .sampled, .dimension = .@"2d" };
     try std.testing.expect(isHandleType(.{ .texture = &tex }));
 }
 
-test "isHandleType non-handle types" {
+test "reflect: isHandleType non-handle types" {
     var vec = Ast.VecType{ .size = 3 };
     try std.testing.expect(!isHandleType(.{ .vec = &vec }));
 
@@ -1219,7 +1219,7 @@ test "isHandleType non-handle types" {
     try std.testing.expect(!isHandleType(.{ .array = &arr }));
 }
 
-test "isHandleType various sampler/texture ident types" {
+test "reflect: isHandleType various sampler/texture ident types" {
     const handle_names = [_][]const u8{
         "sampler",          "sampler_comparison",
         "texture_1d",       "texture_2d",
@@ -1233,11 +1233,11 @@ test "isHandleType various sampler/texture ident types" {
     }
 }
 
-test "roundUp zero alignment" {
+test "reflect: roundUp zero alignment" {
     try std.testing.expectEqual(@as(u32, 10), roundUp(10, 0));
 }
 
-test "roundUp various values" {
+test "reflect: roundUp various values" {
     try std.testing.expectEqual(@as(u32, 0), roundUp(0, 4));
     try std.testing.expectEqual(@as(u32, 4), roundUp(1, 4));
     try std.testing.expectEqual(@as(u32, 4), roundUp(4, 4));
@@ -1247,7 +1247,7 @@ test "roundUp various values" {
     try std.testing.expectEqual(@as(u32, 32), roundUp(17, 16));
 }
 
-test "computeVecLayout edge cases" {
+test "reflect: computeVecLayout edge cases" {
     // vec3<f32>: size=12, align=16
     const v3 = computeVecLayout(3, 4);
     try std.testing.expectEqual(@as(u32, 12), v3.size);
@@ -1259,13 +1259,13 @@ test "computeVecLayout edge cases" {
     try std.testing.expectEqual(@as(u32, 0), invalid.alignment);
 }
 
-test "computeMatLayout mat2x2" {
+test "reflect: computeMatLayout mat2x2" {
     const m = computeMatLayout(2, 2, 4);
     try std.testing.expectEqual(@as(u32, 16), m.size);
     try std.testing.expectEqual(@as(u32, 8), m.alignment);
 }
 
-test "computeMatLayout mat3x3" {
+test "reflect: computeMatLayout mat3x3" {
     const m = computeMatLayout(3, 3, 4);
     try std.testing.expectEqual(@as(u32, 48), m.size);
     try std.testing.expectEqual(@as(u32, 16), m.alignment);

@@ -8,6 +8,7 @@
 //! near-identical text and grouping declarations by kind.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
@@ -60,7 +61,7 @@ pub const Result = struct {
 
     /// Free all memory owned by this result. After calling deinit, all
     /// slices (code, errors, source_map) are invalid.
-    pub fn deinit(self: *Result, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Result, allocator: Allocator) void {
         _ = allocator;
         var arena = self._arena orelse return;
         arena.deinit();
@@ -75,7 +76,7 @@ pub fn defaultOptions() Options {
 
 /// Minify WGSL source code. Returns the minified code and statistics.
 /// The returned code is owned by the arena allocator.
-pub fn minify(arena: std.mem.Allocator, source: [:0]const u8, options: Options) !Result {
+pub fn minify(arena: Allocator, source: [:0]const u8, options: Options) !Result {
     // Pre-conditions: source is sentinel-terminated (enforced by type),
     // keep_names entries must not be empty strings.
     for (options.keep_names) |name| {
@@ -166,7 +167,7 @@ pub const MinifyAndReflectResult = struct {
     reflect: Reflect.ReflectResult,
     _arena: ?std.heap.ArenaAllocator = null,
 
-    pub fn deinit(self: *MinifyAndReflectResult, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *MinifyAndReflectResult, allocator: Allocator) void {
         _ = allocator;
         var arena = self._arena orelse return;
         arena.deinit();
@@ -177,7 +178,7 @@ pub const MinifyAndReflectResult = struct {
 /// Minify and reflect in a single pass, sharing the parsed module and renamer.
 /// Reflection uses the minified names so callers can map bindings to the
 /// minified output.
-pub fn minifyAndReflect(arena: std.mem.Allocator, source: [:0]const u8, options: Options) !MinifyAndReflectResult {
+pub fn minifyAndReflect(arena: Allocator, source: [:0]const u8, options: Options) !MinifyAndReflectResult {
     var result = MinifyAndReflectResult{
         .minify = .{
             .code = "",
@@ -259,7 +260,7 @@ pub fn minifyAndReflect(arena: std.mem.Allocator, source: [:0]const u8, options:
     return result;
 }
 
-fn initSourceMapGen(arena: std.mem.Allocator, source: [:0]const u8, options: Options) !?*SourceMap.Generator {
+fn initSourceMapGen(arena: Allocator, source: [:0]const u8, options: Options) !?*SourceMap.Generator {
     if (!options.generate_source_map) return null;
     const gen = try arena.create(SourceMap.Generator);
     gen.* = try SourceMap.Generator.init(arena, source);
@@ -275,7 +276,7 @@ const PrintResult = struct {
 };
 
 fn createMinifyRenamer(
-    arena: std.mem.Allocator,
+    arena: Allocator,
     module: *Ast.Module,
     uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
     reserved: std.StringHashMapUnmanaged(void),
@@ -290,7 +291,7 @@ fn createMinifyRenamer(
     return &r.renamer;
 }
 
-fn createNoOpRenamer(arena: std.mem.Allocator, module: *Ast.Module) !*const Printer.Renamer {
+fn createNoOpRenamer(arena: Allocator, module: *Ast.Module) !*const Printer.Renamer {
     const r = try arena.create(RenamerMod.NoOpRenamer);
     r.* = RenamerMod.NoOpRenamer.init(module.symbols.items);
     r.renamer.ptr = @ptrCast(r);
@@ -298,7 +299,7 @@ fn createNoOpRenamer(arena: std.mem.Allocator, module: *Ast.Module) !*const Prin
 }
 
 fn printWithRenamer(
-    arena: std.mem.Allocator,
+    arena: Allocator,
     module: *Ast.Module,
     options: Options,
     uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
@@ -395,7 +396,7 @@ fn checkModuleInvariants(module: *const Ast.Module) void {
     }
 }
 
-pub fn computeSymbolUsage(arena: std.mem.Allocator, module: *const Ast.Module) !std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32) {
+pub fn computeSymbolUsage(arena: Allocator, module: *const Ast.Module) !std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32) {
     var uses: std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32) = .empty;
     for (module.declarations.items) |decl| {
         try countDeclUsage(arena, decl, &uses);
@@ -403,7 +404,7 @@ pub fn computeSymbolUsage(arena: std.mem.Allocator, module: *const Ast.Module) !
     return uses;
 }
 
-fn countDeclUsage(arena: std.mem.Allocator, decl: Ast.Decl, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
+fn countDeclUsage(arena: Allocator, decl: Ast.Decl, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) Allocator.Error!void {
     switch (decl) {
         .@"const" => |d| {
             if (d.initializer) |init_expr| try countExprUsage(arena, init_expr, uses);
@@ -430,7 +431,7 @@ fn countDeclUsage(arena: std.mem.Allocator, decl: Ast.Decl, uses: *std.AutoHashM
 }
 
 /// Iteratively counts symbol usage in an expression tree using a worklist.
-fn countExprUsage(arena: std.mem.Allocator, expr: Ast.Expr, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
+fn countExprUsage(arena: Allocator, expr: Ast.Expr, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, expr);
@@ -469,7 +470,7 @@ fn countExprUsage(arena: std.mem.Allocator, expr: Ast.Expr, uses: *std.AutoHashM
 }
 
 /// Iteratively counts symbol usage in a statement tree using a worklist.
-fn countStmtUsage(arena: std.mem.Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) std.mem.Allocator.Error!void {
+fn countStmtUsage(arena: Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, stmt);
@@ -536,7 +537,7 @@ pub const ScopeLocalRenamer = struct {
     base: *const Printer.Renamer,
     ren: Printer.Renamer,
 
-    pub fn init(arena: std.mem.Allocator, module: *const Ast.Module, base: *const Printer.Renamer) !*ScopeLocalRenamer {
+    pub fn init(arena: Allocator, module: *const Ast.Module, base: *const Printer.Renamer) !*ScopeLocalRenamer {
         const self = try arena.create(ScopeLocalRenamer);
         self.* = .{ .overrides = .{}, .base = base, .ren = undefined };
 
@@ -582,7 +583,7 @@ pub const ScopeLocalRenamer = struct {
         return self;
     }
 
-    fn allocCanonicalName(arena: std.mem.Allocator, buf: *[16]u8, idx: *u32, reserved: *const std.StringHashMapUnmanaged(void)) ![]const u8 {
+    fn allocCanonicalName(arena: Allocator, buf: *[16]u8, idx: *u32, reserved: *const std.StringHashMapUnmanaged(void)) ![]const u8 {
         for (0..256) |_| {
             const name = RenamerMod.numberToMinifiedName(buf, idx.*);
             idx.* += 1;
@@ -595,7 +596,7 @@ pub const ScopeLocalRenamer = struct {
 
     /// Iteratively walks compound statements, assigning canonical names to local declarations.
     fn collectBodyLocals(
-        arena: std.mem.Allocator,
+        arena: Allocator,
         body: *const Ast.CompoundStmt,
         module: *const Ast.Module,
         globals: *const std.AutoHashMapUnmanaged(u32, void),
@@ -603,7 +604,7 @@ pub const ScopeLocalRenamer = struct {
         name_buf: *[16]u8,
         name_idx: *u32,
         reserved: *const std.StringHashMapUnmanaged(void),
-    ) std.mem.Allocator.Error!void {
+    ) Allocator.Error!void {
         var bodies: std.ArrayListUnmanaged(*const Ast.CompoundStmt) = .empty;
         defer bodies.deinit(arena);
         try bodies.append(arena, body);
@@ -670,7 +671,7 @@ pub const ScopeLocalRenamer = struct {
 
 /// Sort module-level declarations by kind (struct→alias→const→var→fn) then
 /// by estimated size. Filters to live declarations.
-pub fn sortDeclarations(arena: std.mem.Allocator, module: *const Ast.Module) ![]Ast.Decl {
+pub fn sortDeclarations(arena: Allocator, module: *const Ast.Module) ![]Ast.Decl {
     var live: std.ArrayListUnmanaged(Ast.Decl) = .empty;
     for (module.declarations.items) |decl| {
         if (Dce.isDeclarationLive(decl, module.symbols.items)) {
@@ -716,7 +717,7 @@ pub fn sortDeclarations(arena: std.mem.Allocator, module: *const Ast.Module) ![]
 // Tests
 // =========================================================================
 
-test "minify basic smoke test" {
+test "minifier: basic smoke test" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const source: [:0]const u8 = "fn main() { let x = 1; }";

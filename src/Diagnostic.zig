@@ -98,7 +98,7 @@ pub const Entry = struct {
 // =========================================================================
 
 /// Serialize a single diagnostic entry as a JSON object (no surrounding braces array).
-pub fn entryToJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, entry: *const Entry) Allocator.Error!void {
+pub fn entryToJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, entry: *const Entry) Allocator.Error!void {
     try buf.appendSlice(allocator, "{\"severity\":\"");
     try buf.appendSlice(allocator, entry.severity.string());
     try buf.appendSlice(allocator, "\",\"message\":\"");
@@ -140,7 +140,7 @@ pub fn entryToJson(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocato
     try buf.append(allocator, '}');
 }
 
-pub fn appendJsonEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, s: []const u8) Allocator.Error!void {
+pub fn appendJsonEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
     for (s) |c| {
         switch (c) {
             '"' => try buf.appendSlice(allocator, "\\\""),
@@ -153,7 +153,7 @@ pub fn appendJsonEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Al
     }
 }
 
-pub fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, value: anytype) Allocator.Error!void {
+pub fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: anytype) Allocator.Error!void {
     var tmp: [20]u8 = undefined;
     const s = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return;
     try buf.appendSlice(allocator, s);
@@ -168,7 +168,7 @@ pub const LineIndex = struct {
     line_starts: std.ArrayListUnmanaged(u32),
 
     /// Build a line index by scanning `source` for newlines.
-    pub fn init(allocator: std.mem.Allocator, source: []const u8) Allocator.Error!LineIndex {
+    pub fn init(allocator: Allocator, source: []const u8) Allocator.Error!LineIndex {
         var starts: std.ArrayListUnmanaged(u32) = .empty;
         try starts.append(allocator, 0);
 
@@ -200,7 +200,7 @@ pub const LineIndex = struct {
         return .{ .line_starts = starts };
     }
 
-    pub fn deinit(self: *LineIndex, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *LineIndex, allocator: Allocator) void {
         self.line_starts.deinit(allocator);
     }
 
@@ -247,7 +247,7 @@ has_errors: bool,
 line_offset: i32 = 0,
 
 /// Create a new diagnostic list for the given source.
-pub fn init(allocator: std.mem.Allocator, source: []const u8) Allocator.Error!Diagnostic {
+pub fn init(allocator: Allocator, source: []const u8) Allocator.Error!Diagnostic {
     return .{
         .diagnostics = .empty,
         .line_index = try LineIndex.init(allocator, source),
@@ -256,7 +256,7 @@ pub fn init(allocator: std.mem.Allocator, source: []const u8) Allocator.Error!Di
     };
 }
 
-pub fn deinit(self: *Diagnostic, allocator: std.mem.Allocator) void {
+pub fn deinit(self: *Diagnostic, allocator: Allocator) void {
     self.diagnostics.deinit(allocator);
     self.line_index.deinit(allocator);
 }
@@ -266,7 +266,7 @@ pub fn deinit(self: *Diagnostic, allocator: std.mem.Allocator) void {
 // -------------------------------------------------------------------------
 
 /// Add a diagnostic entry.
-pub fn add(self: *Diagnostic, allocator: std.mem.Allocator, entry: Entry) void {
+pub fn add(self: *Diagnostic, allocator: Allocator, entry: Entry) void {
     // Diagnostics are best-effort: silently drop if OOM rather than
     // propagating allocation failure through every parse/validate call site.
     self.diagnostics.append(allocator, entry) catch {};
@@ -276,12 +276,12 @@ pub fn add(self: *Diagnostic, allocator: std.mem.Allocator, entry: Entry) void {
 }
 
 /// Add an error at a single byte offset.
-pub fn addError(self: *Diagnostic, allocator: std.mem.Allocator, offset: u32, message: []const u8) void {
+pub fn addError(self: *Diagnostic, allocator: Allocator, offset: u32, message: []const u8) void {
     self.addErrorRange(allocator, offset, offset + 1, message);
 }
 
 /// Add an error spanning a byte range.
-pub fn addErrorRange(self: *Diagnostic, allocator: std.mem.Allocator, start: u32, end: u32, message: []const u8) void {
+pub fn addErrorRange(self: *Diagnostic, allocator: Allocator, start: u32, end: u32, message: []const u8) void {
     self.add(allocator, .{
         .severity = .@"error",
         .message = message,
@@ -290,7 +290,7 @@ pub fn addErrorRange(self: *Diagnostic, allocator: std.mem.Allocator, start: u32
 }
 
 /// Add an error with an error code.
-pub fn addErrorWithCode(self: *Diagnostic, allocator: std.mem.Allocator, offset: u32, code: []const u8, message: []const u8) void {
+pub fn addErrorWithCode(self: *Diagnostic, allocator: Allocator, offset: u32, code: []const u8, message: []const u8) void {
     self.add(allocator, .{
         .severity = .@"error",
         .code = code,
@@ -300,7 +300,7 @@ pub fn addErrorWithCode(self: *Diagnostic, allocator: std.mem.Allocator, offset:
 }
 
 /// Add an error with an error code spanning a byte range.
-pub fn addErrorWithCodeRange(self: *Diagnostic, allocator: std.mem.Allocator, start: u32, end: u32, code: []const u8, message: []const u8) void {
+pub fn addErrorWithCodeRange(self: *Diagnostic, allocator: Allocator, start: u32, end: u32, code: []const u8, message: []const u8) void {
     self.add(allocator, .{
         .severity = .@"error",
         .code = code,
@@ -310,7 +310,7 @@ pub fn addErrorWithCodeRange(self: *Diagnostic, allocator: std.mem.Allocator, st
 }
 
 /// Add a warning at a single byte offset.
-pub fn addWarning(self: *Diagnostic, allocator: std.mem.Allocator, offset: u32, message: []const u8) void {
+pub fn addWarning(self: *Diagnostic, allocator: Allocator, offset: u32, message: []const u8) void {
     self.add(allocator, .{
         .severity = .warning,
         .message = message,
@@ -319,7 +319,7 @@ pub fn addWarning(self: *Diagnostic, allocator: std.mem.Allocator, offset: u32, 
 }
 
 /// Add a warning spanning a byte range.
-pub fn addWarningRange(self: *Diagnostic, allocator: std.mem.Allocator, start: u32, end: u32, message: []const u8) void {
+pub fn addWarningRange(self: *Diagnostic, allocator: Allocator, start: u32, end: u32, message: []const u8) void {
     self.add(allocator, .{
         .severity = .warning,
         .message = message,
@@ -328,7 +328,7 @@ pub fn addWarningRange(self: *Diagnostic, allocator: std.mem.Allocator, start: u
 }
 
 /// Add a note at a single byte offset.
-pub fn addNote(self: *Diagnostic, allocator: std.mem.Allocator, offset: u32, message: []const u8) void {
+pub fn addNote(self: *Diagnostic, allocator: Allocator, offset: u32, message: []const u8) void {
     self.add(allocator, .{
         .severity = .note,
         .message = message,
@@ -402,7 +402,7 @@ pub fn warningCount(self: *const Diagnostic) u32 {
 // -------------------------------------------------------------------------
 
 /// Return only error-level diagnostics (caller owns returned slice).
-pub fn errors(self: *const Diagnostic, allocator: std.mem.Allocator) Allocator.Error![]const Entry {
+pub fn errors(self: *const Diagnostic, allocator: Allocator) Allocator.Error![]const Entry {
     var result: std.ArrayListUnmanaged(Entry) = .empty;
     for (self.diagnostics.items) |d| {
         if (d.severity == .@"error") {
@@ -413,7 +413,7 @@ pub fn errors(self: *const Diagnostic, allocator: std.mem.Allocator) Allocator.E
 }
 
 /// Return only warning-level diagnostics (caller owns returned slice).
-pub fn warnings(self: *const Diagnostic, allocator: std.mem.Allocator) Allocator.Error![]const Entry {
+pub fn warnings(self: *const Diagnostic, allocator: Allocator) Allocator.Error![]const Entry {
     var result: std.ArrayListUnmanaged(Entry) = .empty;
     for (self.diagnostics.items) |d| {
         if (d.severity == .warning) {
@@ -428,7 +428,7 @@ pub fn warnings(self: *const Diagnostic, allocator: std.mem.Allocator) Allocator
 // -------------------------------------------------------------------------
 
 /// Format all diagnostics as a human-readable string.
-pub fn format(self: *const Diagnostic, allocator: std.mem.Allocator) Allocator.Error![]const u8 {
+pub fn format(self: *const Diagnostic, allocator: Allocator) Allocator.Error![]const u8 {
     if (self.diagnostics.items.len == 0) return "";
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -682,17 +682,17 @@ pub const DiagnosticFilter = struct {
         return .{ .rules = .{} };
     }
 
-    pub fn deinit(self: *DiagnosticFilter, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *DiagnosticFilter, allocator: Allocator) void {
         self.rules.deinit(allocator);
     }
 
     /// Set the severity for a diagnostic rule.
-    pub fn setRule(self: *DiagnosticFilter, allocator: std.mem.Allocator, rule: []const u8, severity: Severity) void {
+    pub fn setRule(self: *DiagnosticFilter, allocator: Allocator, rule: []const u8, severity: Severity) void {
         self.rules.put(allocator, rule, severity) catch {};
     }
 
     /// Disable a diagnostic rule.
-    pub fn disableRule(self: *DiagnosticFilter, allocator: std.mem.Allocator, rule: []const u8) void {
+    pub fn disableRule(self: *DiagnosticFilter, allocator: Allocator, rule: []const u8) void {
         self.rules.put(allocator, rule, .disabled) catch {};
     }
 
@@ -720,14 +720,14 @@ pub const DiagnosticFilter = struct {
 // Tests
 // =========================================================================
 
-test "Severity.string" {
+test "diagnostic: Severity.string" {
     try std.testing.expectEqualStrings("error", Severity.@"error".string());
     try std.testing.expectEqualStrings("warning", Severity.warning.string());
     try std.testing.expectEqualStrings("info", Severity.info.string());
     try std.testing.expectEqualStrings("note", Severity.note.string());
 }
 
-test "LineIndex basic" {
+test "diagnostic: LineIndex basic" {
     const allocator = std.testing.allocator;
     var li = try LineIndex.init(allocator, "abc\ndef\nghi");
     defer li.deinit(allocator);
@@ -749,7 +749,7 @@ test "LineIndex basic" {
     try std.testing.expectEqual(@as(u32, 0), p8.col);
 }
 
-test "DiagnosticList add and query" {
+test "diagnostic: DiagnosticList add and query" {
     const allocator = std.testing.allocator;
     var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
@@ -766,7 +766,7 @@ test "DiagnosticList add and query" {
     try std.testing.expectEqual(@as(u32, 1), dl.errorCount());
 }
 
-test "DiagnosticList makePosition" {
+test "diagnostic: DiagnosticList makePosition" {
     const allocator = std.testing.allocator;
     var dl = try Diagnostic.init(allocator, "line1\nline2\nline3");
     defer dl.deinit(allocator);
@@ -782,7 +782,7 @@ test "DiagnosticList makePosition" {
     try std.testing.expectEqual(@as(u32, 1), p6.column);
 }
 
-test "DiagnosticList clear" {
+test "diagnostic: DiagnosticList clear" {
     const allocator = std.testing.allocator;
     var dl = try Diagnostic.init(allocator, "x");
     defer dl.deinit(allocator);
@@ -796,7 +796,7 @@ test "DiagnosticList clear" {
     try std.testing.expect(!dl.hasErrors());
 }
 
-test "deduplicate removes exact duplicates" {
+test "diagnostic: deduplicate removes exact duplicates" {
     const allocator = std.testing.allocator;
     var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
@@ -815,7 +815,7 @@ test "deduplicate removes exact duplicates" {
     try std.testing.expect(dl.hasErrors());
 }
 
-test "deduplicate preserves different messages at same offset" {
+test "diagnostic: deduplicate preserves different messages at same offset" {
     const allocator = std.testing.allocator;
     var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
@@ -828,7 +828,7 @@ test "deduplicate preserves different messages at same offset" {
     try std.testing.expectEqual(@as(u32, 2), dl.count());
 }
 
-test "deduplicate preserves same message at different offsets" {
+test "diagnostic: deduplicate preserves same message at different offsets" {
     const allocator = std.testing.allocator;
     var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
@@ -841,7 +841,7 @@ test "deduplicate preserves same message at different offsets" {
     try std.testing.expectEqual(@as(u32, 2), dl.count());
 }
 
-test "deduplicate recomputes has_errors" {
+test "diagnostic: deduplicate recomputes has_errors" {
     const allocator = std.testing.allocator;
     var dl = try Diagnostic.init(allocator, "fn main() {}");
     defer dl.deinit(allocator);
@@ -855,7 +855,7 @@ test "deduplicate recomputes has_errors" {
     try std.testing.expect(!dl.hasErrors()); // only warnings, no errors
 }
 
-test "DiagnosticFilter" {
+test "diagnostic: DiagnosticFilter" {
     const allocator = std.testing.allocator;
     var filter = DiagnosticFilter.init();
     defer filter.deinit(allocator);

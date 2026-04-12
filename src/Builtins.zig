@@ -424,7 +424,7 @@ fn entry(
 // Tests
 // =========================================================================
 
-test "lookup returns known builtins" {
+test "builtins: lookup returns known builtins" {
     // Logical
     const all_builtin = lookup("all");
     try std.testing.expect(all_builtin != null);
@@ -471,13 +471,13 @@ test "lookup returns known builtins" {
     try std.testing.expect(sb_builtin.?.requiresUniform());
 }
 
-test "lookup returns null for unknown names" {
+test "builtins: lookup returns null for unknown names" {
     try std.testing.expect(lookup("notABuiltin") == null);
     try std.testing.expect(lookup("") == null);
     try std.testing.expect(lookup("SIN") == null);
 }
 
-test "isBuiltin matches lookup" {
+test "builtins: isBuiltin matches lookup" {
     try std.testing.expect(isBuiltin("sin"));
     try std.testing.expect(isBuiltin("cos"));
     try std.testing.expect(isBuiltin("textureSample"));
@@ -487,7 +487,7 @@ test "isBuiltin matches lookup" {
     try std.testing.expect(!isBuiltin(""));
 }
 
-test "checkArgCount validates argument counts" {
+test "builtins: checkArgCount validates argument counts" {
     const select_builtin = lookup("select").?;
     try std.testing.expect(select_builtin.checkArgCount(3));
     try std.testing.expect(!select_builtin.checkArgCount(2));
@@ -511,7 +511,7 @@ test "checkArgCount validates argument counts" {
     try std.testing.expect(!tl_builtin.checkArgCount(5));
 }
 
-test "requiresUniform correctness" {
+test "builtins: requiresUniform correctness" {
     // Derivative builtins require uniform flow.
     const names_uniform = [_][]const u8{
         "dpdx",             "dpdy",              "fwidth",
@@ -537,7 +537,7 @@ test "requiresUniform correctness" {
     }
 }
 
-test "return patterns are assigned" {
+test "builtins: return patterns are assigned" {
     // Numeric builtins return same_as_arg
     try std.testing.expectEqual(ReturnPattern.same_as_arg, lookup("sin").?.return_pattern);
     try std.testing.expectEqual(ReturnPattern.same_as_arg, lookup("abs").?.return_pattern);
@@ -567,7 +567,7 @@ test "return patterns are assigned" {
     try std.testing.expectEqual(ReturnPattern.void_type, lookup("atomicStore").?.return_pattern);
 }
 
-test "all Go builtins are registered" {
+test "builtins: all Go builtins are registered" {
     // Exhaustive list of every builtin registered in the Go implementation.
     const all_names = [_][]const u8{
         // Conversion
@@ -736,7 +736,7 @@ test "all Go builtins are registered" {
     }
 }
 
-test "entry count matches Go implementation" {
+test "builtins: entry count matches Go implementation" {
     // Go has 119 builtins registered (counted from the source).
     // Verify we have at least that many entries.
     const total = builtin_entries.len;

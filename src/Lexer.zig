@@ -1127,7 +1127,7 @@ fn retokenizeEnd(self: *const Lexer, start: u32, tag: Tag, bound: u32) []const u
 // Tests
 // -------------------------------------------------------------------------
 
-test "tokenize simple" {
+test "lexer: tokenize simple" {
     const source: [:0]const u8 = "fn main() {}";
     var tokens = try tokenize(std.testing.allocator, source);
     defer tokens.deinit(std.testing.allocator);
@@ -1142,7 +1142,7 @@ test "tokenize simple" {
     try std.testing.expectEqual(Tag.eof, tags[6]);
 }
 
-test "tokenize operators" {
+test "lexer: tokenize operators" {
     const source: [:0]const u8 = "++ -- && || << >> <= >= == != -> += -= *= /= %= &= |= ^= <<= >>=";
     var tokens = try tokenize(std.testing.allocator, source);
     defer tokens.deinit(std.testing.allocator);
@@ -1160,7 +1160,7 @@ test "tokenize operators" {
     try std.testing.expectEqual(Tag.arrow, tags[10]);
 }
 
-test "tokenize nested block comment" {
+test "lexer: tokenize nested block comment" {
     const source: [:0]const u8 = "/* outer /* inner */ still comment */ fn";
     var tokens = try tokenize(std.testing.allocator, source);
     defer tokens.deinit(std.testing.allocator);
@@ -1169,7 +1169,7 @@ test "tokenize nested block comment" {
     try std.testing.expectEqual(Tag.eof, tags[1]);
 }
 
-test "tokenize keywords" {
+test "lexer: tokenize keywords" {
     const source: [:0]const u8 = "const var let fn struct alias override return if else for while loop break continue discard switch case default";
     var tokens = try tokenize(std.testing.allocator, source);
     defer tokens.deinit(std.testing.allocator);
@@ -1180,7 +1180,7 @@ test "tokenize keywords" {
     try std.testing.expectEqual(Tag.keyword_fn, tags[3]);
 }
 
-test "fuzz lexer no crash" {
+test "lexer: fuzz no crash" {
     try std.testing.fuzz({}, struct {
         fn testOne(_: void, smith: *std.testing.Smith) !void {
             @disableInstrumentation();
@@ -1211,7 +1211,7 @@ test "fuzz lexer no crash" {
     });
 }
 
-test "tokenize numbers" {
+test "lexer: tokenize numbers" {
     const source: [:0]const u8 = "42 3.14 0xFF 1e10 0.5f 1u 2i";
     var tokens = try tokenize(std.testing.allocator, source);
     defer tokens.deinit(std.testing.allocator);

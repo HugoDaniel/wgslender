@@ -63,7 +63,7 @@ pub const Result = struct {
 
     /// Free all memory owned by this result. After calling deinit,
     /// the diagnostics pointer is invalid.
-    pub fn deinit(self: *Result, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *Result, allocator: Allocator) void {
         _ = allocator;
         var arena = self._arena orelse return;
         arena.deinit();
@@ -85,7 +85,7 @@ pub const AnalysisResult = struct {
     _arena: ?std.heap.ArenaAllocator = null,
 
     /// Free all memory owned by this result.
-    pub fn deinit(self: *AnalysisResult, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *AnalysisResult, allocator: Allocator) void {
         _ = allocator;
         var arena = self._arena orelse return;
         arena.deinit();
@@ -4545,14 +4545,14 @@ fn hasByteAny(s: []const u8, chars: []const u8) bool {
 // Tests
 // =========================================================================
 
-test "ShaderStage string" {
+test "validator: ShaderStage string" {
     try std.testing.expectEqualStrings("vertex", ShaderStage.vertex.string());
     try std.testing.expectEqualStrings("fragment", ShaderStage.fragment.string());
     try std.testing.expectEqualStrings("compute", ShaderStage.compute.string());
     try std.testing.expectEqualStrings("none", ShaderStage.none.string());
 }
 
-test "isNonUniformBuiltin" {
+test "validator: isNonUniformBuiltin" {
     try std.testing.expect(isNonUniformBuiltin("vertex_index"));
     try std.testing.expect(isNonUniformBuiltin("instance_index"));
     try std.testing.expect(isNonUniformBuiltin("position"));
@@ -4566,20 +4566,20 @@ test "isNonUniformBuiltin" {
     try std.testing.expect(!isNonUniformBuiltin("not_a_builtin"));
 }
 
-test "isVertexInput" {
+test "validator: isVertexInput" {
     try std.testing.expect(isVertexInput("vertex_index"));
     try std.testing.expect(isVertexInput("instance_index"));
     try std.testing.expect(!isVertexInput("position"));
 }
 
-test "isFragmentInput" {
+test "validator: isFragmentInput" {
     try std.testing.expect(isFragmentInput("position"));
     try std.testing.expect(isFragmentInput("front_facing"));
     try std.testing.expect(isFragmentInput("sample_index"));
     try std.testing.expect(!isFragmentInput("vertex_index"));
 }
 
-test "isComputeInput" {
+test "validator: isComputeInput" {
     try std.testing.expect(isComputeInput("local_invocation_id"));
     try std.testing.expect(isComputeInput("global_invocation_id"));
     try std.testing.expect(isComputeInput("workgroup_id"));
@@ -4587,7 +4587,7 @@ test "isComputeInput" {
     try std.testing.expect(!isComputeInput("position"));
 }
 
-test "shorthandElement" {
+test "validator: shorthandElement" {
     try std.testing.expectEqual(Types.ScalarKind.i32, shorthandElement("vec3i").kind);
     try std.testing.expectEqual(Types.ScalarKind.u32, shorthandElement("vec4u").kind);
     try std.testing.expectEqual(Types.ScalarKind.f32, shorthandElement("vec2f").kind);
@@ -4595,7 +4595,7 @@ test "shorthandElement" {
     try std.testing.expectEqual(Types.ScalarKind.f32, shorthandElement("").kind);
 }
 
-test "hasByteAny" {
+test "validator: hasByteAny" {
     try std.testing.expect(hasByteAny("hello.world", ".eE"));
     try std.testing.expect(hasByteAny("1e5", ".eE"));
     try std.testing.expect(hasByteAny("3.14", ".eE"));
@@ -4603,7 +4603,7 @@ test "hasByteAny" {
     try std.testing.expect(!hasByteAny("", ".eE"));
 }
 
-test "validate empty module" {
+test "validator: validate empty module" {
     const allocator = std.testing.allocator;
     var scope = Ast.Scope.init(null);
     var module = Ast.Module.init(&scope, "");

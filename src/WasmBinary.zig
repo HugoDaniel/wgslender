@@ -534,7 +534,7 @@ pub const Emit = struct {
 // Tests
 // =========================================================================
 
-test "ULEB128 encoding" {
+test "wasm binary: ULEB128 encoding" {
     const a = std.testing.allocator;
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(a);
@@ -555,7 +555,7 @@ test "ULEB128 encoding" {
     try std.testing.expectEqualSlices(u8, &.{ 0xE5, 0x8E, 0x26 }, buf.items);
 }
 
-test "SLEB128 encoding" {
+test "wasm binary: SLEB128 encoding" {
     const a = std.testing.allocator;
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(a);
@@ -572,7 +572,7 @@ test "SLEB128 encoding" {
     try std.testing.expectEqualSlices(u8, &.{ 0x80, 0x20 }, buf.items);
 }
 
-test "module has correct magic and version" {
+test "wasm binary: module has correct magic and version" {
     const a = std.testing.allocator;
     const wasm = try writeModule(a, null, null, 1, &.{
         .{ .name = "memory", .kind = .memory, .index = 0 },
@@ -588,7 +588,7 @@ test "module has correct magic and version" {
     try std.testing.expectEqualSlices(u8, &wasm_version, wasm[4..8]);
 }
 
-test "parse sections round-trip" {
+test "wasm binary: parse sections round-trip" {
     const a = std.testing.allocator;
     const wasm = try writeModule(a, null, null, 1, &.{
         .{ .name = "memory", .kind = .memory, .index = 0 },
@@ -607,7 +607,7 @@ test "parse sections round-trip" {
     try std.testing.expect(findSection(sections, .data) != null);
 }
 
-test "Emit produces valid instruction sequence" {
+test "wasm binary: Emit produces valid instruction sequence" {
     const a = std.testing.allocator;
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     defer buf.deinit(a);
