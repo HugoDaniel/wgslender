@@ -68,6 +68,9 @@ pub fn mark(arena: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator.Err
         }
     }
 
+    // BFS completeness: visited count must equal live count.
+    std.debug.assert(visited.count() <= module.symbols.items.len);
+
     // Count dead
     var dead: u32 = 0;
     var live: u32 = 0;

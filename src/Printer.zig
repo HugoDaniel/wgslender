@@ -171,6 +171,9 @@ fn printModule(self: *Printer, m: *const Ast.Module) !void {
             try self.printDecl(decl);
         }
     }
+
+    // Post-condition: indent must return to zero after printing a full module.
+    std.debug.assert(self.indent == 0);
 }
 
 fn printDirective(self: *Printer, d: Ast.Directive) !void {

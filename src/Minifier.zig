@@ -127,6 +127,8 @@ pub fn minify(arena: std.mem.Allocator, source: [:0]const u8, options: Options) 
         }
     }
 
+    checkModuleInvariants(module);
+
     // 5. Compute usage
     var uses = try computeSymbolUsage(arena, module);
     defer uses.deinit(arena);
@@ -372,6 +374,23 @@ fn markAPIFacingSymbols(module: *Ast.Module, options: Options) void {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Debug-only: verify module invariants after DCE and API marking.
+fn checkModuleInvariants(module: *const Ast.Module) void {
+    // Every declaration's name ref (if valid) must be in-bounds.
+    for (module.declarations.items) |decl| {
+        const ref = decl.nameRef();
+        if (ref.isValid()) {
+            std.debug.assert(ref.index() < module.symbols.items.len);
+        }
+    }
+    // Every live symbol must have a non-empty original name.
+    for (module.symbols.items) |sym| {
+        if (sym.flags.is_live) {
+            std.debug.assert(sym.original_name.len > 0);
         }
     }
 }
