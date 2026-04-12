@@ -848,8 +848,7 @@ fn handleOutgoingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
 // =========================================================================
 
 fn emitDiagnostics(uri: []const u8) void {
-    const source = handler.getDocumentSource(uri) orelse return;
-    const diags = handler.validateDocument(source) catch return;
+    const diags = handler.validateDocumentFull(uri) catch return;
     defer Handler.freeDiagnostics(handler.gpa, diags);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;

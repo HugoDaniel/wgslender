@@ -79,6 +79,7 @@ const NativeServer = struct {
                 .inlayHintProvider = .{ .bool = true },
                 .codeLensProvider = .{},
                 .documentFormattingProvider = .{ .bool = true },
+                .callHierarchyProvider = .{ .bool = true },
                 .selectionRangeProvider = .{ .bool = true },
                 .semanticTokensProvider = .{
                     .semantic_tokens_options = .{
@@ -597,6 +598,117 @@ const NativeServer = struct {
         return lsp_lenses;
     }
 
+    // ----- Call Hierarchy -----
+
+    pub fn @"textDocument/prepareCallHierarchy"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.call_hierarchy.PrepareParams,
+    ) ?[]const lsp.types.call_hierarchy.Item {
+        const item = self.handler.prepareCallHierarchy(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+        ) catch return null;
+        const i = item orelse return null;
+        const result = arena.alloc(lsp.types.call_hierarchy.Item, 1) catch return null;
+        result[0] = .{
+            .name = i.name,
+            .kind = .Function,
+            .uri = params.textDocument.uri,
+            .range = .{
+                .start = .{ .line = i.range.start.line, .character = i.range.start.character },
+                .end = .{ .line = i.range.end.line, .character = i.range.end.character },
+            },
+            .selectionRange = .{
+                .start = .{ .line = i.selection_range.start.line, .character = i.selection_range.start.character },
+                .end = .{ .line = i.selection_range.end.line, .character = i.selection_range.end.character },
+            },
+        };
+        return result;
+    }
+
+    pub fn @"callHierarchy/incomingCalls"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.call_hierarchy.IncomingCallsParams,
+    ) ?[]const lsp.types.call_hierarchy.IncomingCall {
+        const uri = params.item.uri;
+        const calls = self.handler.computeIncomingCalls(uri, params.item.name) catch return null;
+        defer {
+            for (calls) |c| self.handler.gpa.free(c.from_ranges);
+            self.handler.gpa.free(calls);
+        }
+        if (calls.len == 0) return null;
+        const result = arena.alloc(lsp.types.call_hierarchy.IncomingCall, calls.len) catch return null;
+        for (calls, 0..) |call, ci| {
+            const from_ranges = arena.alloc(lsp.types.Range, call.from_ranges.len) catch continue;
+            for (call.from_ranges, 0..) |fr, fi| {
+                from_ranges[fi] = .{
+                    .start = .{ .line = fr.start.line, .character = fr.start.character },
+                    .end = .{ .line = fr.end.line, .character = fr.end.character },
+                };
+            }
+            result[ci] = .{
+                .from = .{
+                    .name = call.from.name,
+                    .kind = .Function,
+                    .uri = uri,
+                    .range = .{
+                        .start = .{ .line = call.from.range.start.line, .character = call.from.range.start.character },
+                        .end = .{ .line = call.from.range.end.line, .character = call.from.range.end.character },
+                    },
+                    .selectionRange = .{
+                        .start = .{ .line = call.from.selection_range.start.line, .character = call.from.selection_range.start.character },
+                        .end = .{ .line = call.from.selection_range.end.line, .character = call.from.selection_range.end.character },
+                    },
+                },
+                .fromRanges = from_ranges,
+            };
+        }
+        return result;
+    }
+
+    pub fn @"callHierarchy/outgoingCalls"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.call_hierarchy.OutgoingCallsParams,
+    ) ?[]const lsp.types.call_hierarchy.OutgoingCall {
+        const uri = params.item.uri;
+        const calls = self.handler.computeOutgoingCalls(uri, params.item.name) catch return null;
+        defer {
+            for (calls) |c| self.handler.gpa.free(c.from_ranges);
+            self.handler.gpa.free(calls);
+        }
+        if (calls.len == 0) return null;
+        const result = arena.alloc(lsp.types.call_hierarchy.OutgoingCall, calls.len) catch return null;
+        for (calls, 0..) |call, ci| {
+            const from_ranges = arena.alloc(lsp.types.Range, call.from_ranges.len) catch continue;
+            for (call.from_ranges, 0..) |fr, fi| {
+                from_ranges[fi] = .{
+                    .start = .{ .line = fr.start.line, .character = fr.start.character },
+                    .end = .{ .line = fr.end.line, .character = fr.end.character },
+                };
+            }
+            result[ci] = .{
+                .to = .{
+                    .name = call.to.name,
+                    .kind = .Function,
+                    .uri = uri,
+                    .range = .{
+                        .start = .{ .line = call.to.range.start.line, .character = call.to.range.start.character },
+                        .end = .{ .line = call.to.range.end.line, .character = call.to.range.end.character },
+                    },
+                    .selectionRange = .{
+                        .start = .{ .line = call.to.selection_range.start.line, .character = call.to.selection_range.start.character },
+                        .end = .{ .line = call.to.selection_range.end.line, .character = call.to.selection_range.end.character },
+                    },
+                },
+                .fromRanges = from_ranges,
+            };
+        }
+        return result;
+    }
+
     // ----- Selection Range -----
 
     pub fn @"textDocument/selectionRange"(
@@ -678,8 +790,7 @@ const NativeServer = struct {
     // ----- Helpers -----
 
     fn publishDiagnostics(self: *NativeServer, uri: []const u8) void {
-        const source = self.handler.getDocumentSource(uri) orelse return;
-        const diags = self.handler.validateDocument(source) catch return;
+        const diags = self.handler.validateDocumentFull(uri) catch return;
         defer Handler.freeDiagnostics(self.handler.gpa, diags);
 
         // Convert Handler diagnostics to lsp-kit types.

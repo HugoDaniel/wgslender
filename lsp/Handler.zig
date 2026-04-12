@@ -193,6 +193,40 @@ pub fn validateDocument(self: *Handler, source: []const u8) ![]LspDiagnostic {
     return diags;
 }
 
+/// Validate a document using the analysis cache and append unused symbol warnings.
+/// This is used by publishDiagnostics to produce a complete diagnostic set.
+pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
+    const analysis = try self.analyzeDocument(uri);
+
+    const entries = analysis.diagnostics.diagnostics.items;
+    var diags: std.ArrayListUnmanaged(LspDiagnostic) = .empty;
+    errdefer {
+        for (diags.items) |d| freeSingleDiagnostic(self.gpa, d);
+        diags.deinit(self.gpa);
+    }
+
+    try diags.ensureTotalCapacity(self.gpa, entries.len + 8);
+    for (entries) |entry| {
+        try diags.append(self.gpa, convertDiagnostic(self.gpa, &entry));
+    }
+
+    // Append unused symbol warnings
+    appendUnusedWarnings(self.gpa, analysis, &diags);
+
+    return try diags.toOwnedSlice(self.gpa);
+}
+
+fn freeSingleDiagnostic(gpa: std.mem.Allocator, d: LspDiagnostic) void {
+    if (d.message.len > 0) gpa.free(d.message);
+    if (d.spec_url.len > 0) gpa.free(d.spec_url);
+    if (d.related.len > 0) {
+        for (d.related) |r| {
+            if (r.message.len > 0) gpa.free(r.message);
+        }
+        gpa.free(d.related);
+    }
+}
+
 const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
 
 fn convertDiagnostic(gpa: std.mem.Allocator, entry: *const WgslDiagnostic.Entry) LspDiagnostic {
@@ -349,21 +383,24 @@ pub fn computeCodeActions(
             }
         }
 
-        // Unused symbol → remove declaration
+        // Unused symbol → remove entire declaration line
         if (std.mem.eql(u8, diag.code, "W0001")) {
-            // Extract the name from "'{name}' is declared but never used"
             if (std.mem.indexOf(u8, diag.message, "'")) |start| {
                 if (std.mem.indexOfPos(u8, diag.message, start + 1, "'")) |end| {
                     const name = diag.message[start + 1 .. end];
                     const title = std.fmt.allocPrint(self.gpa, "Remove unused '{s}'", .{name}) catch continue;
-                    // To remove the declaration, we'd need to find its full range.
-                    // For now, offer a simple removal of the diagnostic range line.
-                    // A full implementation would parse the declaration extent.
                     const edit = self.gpa.alloc(LspTextEdit, 1) catch {
                         self.gpa.free(title);
                         continue;
                     };
-                    edit[0] = .{ .range = diag.range, .new_text = self.gpa.dupe(u8, "") catch "" };
+                    // Delete from start of the line to start of next line
+                    edit[0] = .{
+                        .range = .{
+                            .start = .{ .line = diag.range.start.line, .character = 0 },
+                            .end = .{ .line = diag.range.start.line + 1, .character = 0 },
+                        },
+                        .new_text = self.gpa.dupe(u8, "") catch "",
+                    };
                     actions.append(self.gpa, .{
                         .title = title,
                         .kind = "quickfix",
