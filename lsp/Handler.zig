@@ -911,7 +911,12 @@ pub fn computeDefinition(self: *Handler, uri: []const u8, position: Position) !?
 // =========================================================================
 
 /// Collect all byte offset locations of references to a given symbol.
-fn collectReferences(gpa: std.mem.Allocator, module: *const Ast.Module, target: Ast.SymbolIndex, include_declaration: bool) ![]Range {
+fn collectReferences(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    target: Ast.SymbolIndex,
+    include_declaration: bool,
+) ![]Range {
     const source = module.source;
     var locations: std.ArrayListUnmanaged(Range) = .empty;
     defer locations.deinit(gpa);
@@ -932,7 +937,14 @@ fn collectReferences(gpa: std.mem.Allocator, module: *const Ast.Module, target: 
     return try gpa.dupe(Range, locations.items);
 }
 
-fn collectRefsInDecl(gpa: std.mem.Allocator, module: *const Ast.Module, decl: Ast.Decl, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+fn collectRefsInDecl(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    decl: Ast.Decl,
+    target: Ast.SymbolIndex,
+    source: [:0]const u8,
+    locations: *std.ArrayListUnmanaged(Range),
+) std.mem.Allocator.Error!void {
     switch (decl) {
         .function => |f| {
             for (f.parameters.items) |param| {
@@ -967,7 +979,13 @@ fn collectRefsInDecl(gpa: std.mem.Allocator, module: *const Ast.Module, decl: As
     }
 }
 
-fn collectRefsInType(gpa: std.mem.Allocator, typ: Ast.Type, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+fn collectRefsInType(
+    gpa: std.mem.Allocator,
+    typ: Ast.Type,
+    target: Ast.SymbolIndex,
+    source: [:0]const u8,
+    locations: *std.ArrayListUnmanaged(Range),
+) std.mem.Allocator.Error!void {
     switch (typ) {
         .ident => |t| {
             if (t.ref == target) {
@@ -992,13 +1010,27 @@ fn collectRefsInType(gpa: std.mem.Allocator, typ: Ast.Type, target: Ast.SymbolIn
     }
 }
 
-fn collectRefsInCompound(gpa: std.mem.Allocator, module: *const Ast.Module, compound: *const Ast.CompoundStmt, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+fn collectRefsInCompound(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    compound: *const Ast.CompoundStmt,
+    target: Ast.SymbolIndex,
+    source: [:0]const u8,
+    locations: *std.ArrayListUnmanaged(Range),
+) std.mem.Allocator.Error!void {
     for (compound.stmts.items) |stmt| {
         try collectRefsInStmt(gpa, module, stmt, target, source, locations);
     }
 }
 
-fn collectRefsInStmt(gpa: std.mem.Allocator, module: *const Ast.Module, stmt: Ast.Stmt, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+fn collectRefsInStmt(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    stmt: Ast.Stmt,
+    target: Ast.SymbolIndex,
+    source: [:0]const u8,
+    locations: *std.ArrayListUnmanaged(Range),
+) std.mem.Allocator.Error!void {
     switch (stmt) {
         .compound => |c| try collectRefsInCompound(gpa, module, c, target, source, locations),
         .@"return" => |r| {
@@ -1044,7 +1076,13 @@ fn collectRefsInStmt(gpa: std.mem.Allocator, module: *const Ast.Module, stmt: As
     }
 }
 
-fn collectRefsInExpr(gpa: std.mem.Allocator, expr: Ast.Expr, target: Ast.SymbolIndex, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) std.mem.Allocator.Error!void {
+fn collectRefsInExpr(
+    gpa: std.mem.Allocator,
+    expr: Ast.Expr,
+    target: Ast.SymbolIndex,
+    source: [:0]const u8,
+    locations: *std.ArrayListUnmanaged(Range),
+) std.mem.Allocator.Error!void {
     switch (expr) {
         .ident => |e| {
             if (e.ref == target) {
@@ -1188,36 +1226,27 @@ pub const CompletionKind = enum(u8) {
 };
 
 const wgsl_type_names = [_][]const u8{
-    "bool", "i32", "u32", "f32", "f16",
-    "vec2", "vec3", "vec4",
-    "vec2i", "vec3i", "vec4i",
-    "vec2u", "vec3u", "vec4u",
-    "vec2f", "vec3f", "vec4f",
-    "vec2h", "vec3h", "vec4h",
-    "mat2x2", "mat2x3", "mat2x4",
-    "mat3x2", "mat3x3", "mat3x4",
-    "mat4x2", "mat4x3", "mat4x4",
-    "mat2x2f", "mat2x3f", "mat2x4f",
-    "mat3x2f", "mat3x3f", "mat3x4f",
-    "mat4x2f", "mat4x3f", "mat4x4f",
-    "mat2x2h", "mat2x3h", "mat2x4h",
-    "mat3x2h", "mat3x3h", "mat3x4h",
-    "mat4x2h", "mat4x3h", "mat4x4h",
-    "array",   "atomic",  "ptr",
-    "sampler", "sampler_comparison",
-    "texture_1d",          "texture_2d",          "texture_2d_array",
-    "texture_3d",          "texture_cube",        "texture_cube_array",
-    "texture_multisampled_2d",
-    "texture_storage_1d",  "texture_storage_2d",  "texture_storage_2d_array",
-    "texture_storage_3d",  "texture_depth_2d",    "texture_depth_2d_array",
-    "texture_depth_cube",  "texture_depth_cube_array", "texture_depth_multisampled_2d",
+    "bool",               "i32",                      "u32",                           "f32",                     "f16",
+    "vec2",               "vec3",                     "vec4",                          "vec2i",                   "vec3i",
+    "vec4i",              "vec2u",                    "vec3u",                         "vec4u",                   "vec2f",
+    "vec3f",              "vec4f",                    "vec2h",                         "vec3h",                   "vec4h",
+    "mat2x2",             "mat2x3",                   "mat2x4",                        "mat3x2",                  "mat3x3",
+    "mat3x4",             "mat4x2",                   "mat4x3",                        "mat4x4",                  "mat2x2f",
+    "mat2x3f",            "mat2x4f",                  "mat3x2f",                       "mat3x3f",                 "mat3x4f",
+    "mat4x2f",            "mat4x3f",                  "mat4x4f",                       "mat2x2h",                 "mat2x3h",
+    "mat2x4h",            "mat3x2h",                  "mat3x3h",                       "mat3x4h",                 "mat4x2h",
+    "mat4x3h",            "mat4x4h",                  "array",                         "atomic",                  "ptr",
+    "sampler",            "sampler_comparison",       "texture_1d",                    "texture_2d",              "texture_2d_array",
+    "texture_3d",         "texture_cube",             "texture_cube_array",            "texture_multisampled_2d", "texture_storage_1d",
+    "texture_storage_2d", "texture_storage_2d_array", "texture_storage_3d",            "texture_depth_2d",        "texture_depth_2d_array",
+    "texture_depth_cube", "texture_depth_cube_array", "texture_depth_multisampled_2d",
 };
 
 const wgsl_attributes = [_][]const u8{
-    "align",   "binding",   "builtin",     "compute",
-    "const",   "diagnostic", "fragment",   "group",
-    "id",      "interpolate", "invariant", "location",
-    "must_use", "size",      "vertex",     "workgroup_size",
+    "align",    "binding",     "builtin",   "compute",
+    "const",    "diagnostic",  "fragment",  "group",
+    "id",       "interpolate", "invariant", "location",
+    "must_use", "size",        "vertex",    "workgroup_size",
 };
 
 pub fn computeCompletion(self: *Handler, uri: []const u8, position: Position) ![]CompletionItem {
@@ -1912,7 +1941,7 @@ const SemanticTokenType = enum(u32) {
 };
 
 pub const semantic_token_types = [_][]const u8{
-    "keyword", "function", "struct", "parameter", "variable",
+    "keyword", "function", "struct",  "parameter", "variable",
     "number",  "type",     "comment", "decorator",
 };
 
@@ -1966,9 +1995,13 @@ pub fn computeSemanticTokens(self: *Handler, uri: []const u8) ![]u32 {
                     i += 2;
                     var depth: u32 = 1;
                     while (i + 1 < source.len and depth > 0) {
-                        if (source[i] == '/' and source[i + 1] == '*') { depth += 1; i += 2; }
-                        else if (source[i] == '*' and source[i + 1] == '/') { depth -= 1; i += 2; }
-                        else i += 1;
+                        if (source[i] == '/' and source[i + 1] == '*') {
+                            depth += 1;
+                            i += 2;
+                        } else if (source[i] == '*' and source[i + 1] == '/') {
+                            depth -= 1;
+                            i += 2;
+                        } else i += 1;
                     }
                     comment_ranges.append(self.gpa, .{ .start = cstart, .end = i }) catch {};
                 } else {
@@ -2000,13 +2033,30 @@ pub fn computeSemanticTokens(self: *Handler, uri: []const u8) ![]u32 {
 
         switch (tag) {
             // Keywords
-            .keyword_alias, .keyword_break, .keyword_case, .keyword_const,
-            .keyword_const_assert, .keyword_continue, .keyword_continuing,
-            .keyword_default, .keyword_diagnostic, .keyword_discard,
-            .keyword_else, .keyword_enable, .keyword_fn, .keyword_for,
-            .keyword_if, .keyword_let, .keyword_loop, .keyword_override,
-            .keyword_requires, .keyword_return, .keyword_struct,
-            .keyword_switch, .keyword_var, .keyword_while,
+            .keyword_alias,
+            .keyword_break,
+            .keyword_case,
+            .keyword_const,
+            .keyword_const_assert,
+            .keyword_continue,
+            .keyword_continuing,
+            .keyword_default,
+            .keyword_diagnostic,
+            .keyword_discard,
+            .keyword_else,
+            .keyword_enable,
+            .keyword_fn,
+            .keyword_for,
+            .keyword_if,
+            .keyword_let,
+            .keyword_loop,
+            .keyword_override,
+            .keyword_requires,
+            .keyword_return,
+            .keyword_struct,
+            .keyword_switch,
+            .keyword_var,
+            .keyword_while,
             => {
                 emitSemanticToken(self.gpa, source, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.keyword), 0);
             },
@@ -2070,7 +2120,17 @@ pub fn computeSemanticTokens(self: *Handler, uri: []const u8) ![]u32 {
     return try self.gpa.dupe(u32, data.items);
 }
 
-fn emitSemanticToken(gpa: std.mem.Allocator, source: []const u8, data: *std.ArrayListUnmanaged(u32), prev_line: *u32, prev_char: *u32, start: u32, length: u32, token_type: u32, modifiers: u32) void {
+fn emitSemanticToken(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    data: *std.ArrayListUnmanaged(u32),
+    prev_line: *u32,
+    prev_char: *u32,
+    start: u32,
+    length: u32,
+    token_type: u32,
+    modifiers: u32,
+) void {
     const pos = offsetToLspPosition(source, start) orelse return;
     const delta_line = pos.line - prev_line.*;
     const delta_char = if (delta_line == 0) pos.character - prev_char.* else pos.character;
@@ -2377,13 +2437,27 @@ pub fn computeOutgoingCalls(self: *Handler, uri: []const u8, caller_name: []cons
     return &.{};
 }
 
-fn findCallsInCompound(gpa: std.mem.Allocator, module: *const Ast.Module, compound: *const Ast.CompoundStmt, target_name: []const u8, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) void {
+fn findCallsInCompound(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    compound: *const Ast.CompoundStmt,
+    target_name: []const u8,
+    source: [:0]const u8,
+    locations: *std.ArrayListUnmanaged(Range),
+) void {
     for (compound.stmts.items) |stmt| {
         findCallsInStmt(gpa, module, stmt, target_name, source, locations);
     }
 }
 
-fn findCallsInStmt(gpa: std.mem.Allocator, module: *const Ast.Module, stmt: Ast.Stmt, target_name: []const u8, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) void {
+fn findCallsInStmt(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    stmt: Ast.Stmt,
+    target_name: []const u8,
+    source: [:0]const u8,
+    locations: *std.ArrayListUnmanaged(Range),
+) void {
     switch (stmt) {
         .compound => |c| findCallsInCompound(gpa, module, c, target_name, source, locations),
         .@"return" => |r| {
@@ -2415,9 +2489,15 @@ fn findCallsInStmt(gpa: std.mem.Allocator, module: *const Ast.Module, stmt: Ast.
         .call => |c| findCallsInExprTree(gpa, module, .{ .call = c.call }, target_name, source, locations),
         .decl => |d| {
             switch (d.decl) {
-                .let => |l| { if (l.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, source, locations); },
-                .@"var" => |v| { if (v.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, source, locations); },
-                .@"const" => |cc| { if (cc.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, source, locations); },
+                .let => |l| {
+                    if (l.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, source, locations);
+                },
+                .@"var" => |v| {
+                    if (v.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, source, locations);
+                },
+                .@"const" => |cc| {
+                    if (cc.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, source, locations);
+                },
                 else => {},
             }
         },
@@ -2427,7 +2507,14 @@ fn findCallsInStmt(gpa: std.mem.Allocator, module: *const Ast.Module, stmt: Ast.
     }
 }
 
-fn findCallsInExprTree(gpa: std.mem.Allocator, module: *const Ast.Module, expr: Ast.Expr, target_name: []const u8, source: [:0]const u8, locations: *std.ArrayListUnmanaged(Range)) void {
+fn findCallsInExprTree(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    expr: Ast.Expr,
+    target_name: []const u8,
+    source: [:0]const u8,
+    locations: *std.ArrayListUnmanaged(Range),
+) void {
     switch (expr) {
         .call => |e| {
             if (e.func) |func| {
@@ -2460,16 +2547,30 @@ fn findCallsInExprTree(gpa: std.mem.Allocator, module: *const Ast.Module, expr: 
     }
 }
 
-fn collectOutgoingCalls(gpa: std.mem.Allocator, module: *const Ast.Module, compound: *const Ast.CompoundStmt, source: [:0]const u8, calls_map: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range))) void {
+fn collectOutgoingCalls(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    compound: *const Ast.CompoundStmt,
+    source: [:0]const u8,
+    calls_map: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range)),
+) void {
     for (compound.stmts.items) |stmt| {
         collectOutgoingCallsStmt(gpa, module, stmt, source, calls_map);
     }
 }
 
-fn collectOutgoingCallsStmt(gpa: std.mem.Allocator, module: *const Ast.Module, stmt: Ast.Stmt, source: [:0]const u8, calls_map: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range))) void {
+fn collectOutgoingCallsStmt(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    stmt: Ast.Stmt,
+    source: [:0]const u8,
+    calls_map: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range)),
+) void {
     switch (stmt) {
         .compound => |c| collectOutgoingCalls(gpa, module, c, source, calls_map),
-        .@"return" => |r| { if (r.value) |v| collectOutgoingCallsExpr(gpa, module, v, source, calls_map); },
+        .@"return" => |r| {
+            if (r.value) |v| collectOutgoingCallsExpr(gpa, module, v, source, calls_map);
+        },
         .@"if" => |i| {
             collectOutgoingCallsExpr(gpa, module, i.condition, source, calls_map);
             collectOutgoingCalls(gpa, module, i.body, source, calls_map);
@@ -2496,9 +2597,15 @@ fn collectOutgoingCallsStmt(gpa: std.mem.Allocator, module: *const Ast.Module, s
         .call => |c| collectOutgoingCallsExpr(gpa, module, .{ .call = c.call }, source, calls_map),
         .decl => |d| {
             switch (d.decl) {
-                .let => |l| { if (l.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, source, calls_map); },
-                .@"var" => |v| { if (v.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, source, calls_map); },
-                .@"const" => |cc| { if (cc.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, source, calls_map); },
+                .let => |l| {
+                    if (l.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, source, calls_map);
+                },
+                .@"var" => |v| {
+                    if (v.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, source, calls_map);
+                },
+                .@"const" => |cc| {
+                    if (cc.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, source, calls_map);
+                },
                 else => {},
             }
         },
@@ -2506,7 +2613,13 @@ fn collectOutgoingCallsStmt(gpa: std.mem.Allocator, module: *const Ast.Module, s
     }
 }
 
-fn collectOutgoingCallsExpr(gpa: std.mem.Allocator, module: *const Ast.Module, expr: Ast.Expr, source: [:0]const u8, calls_map: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range))) void {
+fn collectOutgoingCallsExpr(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    expr: Ast.Expr,
+    source: [:0]const u8,
+    calls_map: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range)),
+) void {
     switch (expr) {
         .call => |e| {
             if (e.func) |func| {

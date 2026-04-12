@@ -297,8 +297,15 @@ fn minifyAndReflectJsonImpl(
         options.source_map_options.include_source = sms;
     }
 
+    const empty_result_json =
+        \\{"minify":{"code":"","errors":[{"message":"minification failed"}],
+    ++
+        \\"originalSize":0,"minifiedSize":0},
+    ++
+        \\"reflect":{"bindings":[],"structs":{},"entryPoints":[]}}
+    ;
     const result = Minifier.minifyAndReflect(wasm_allocator, source, options) catch {
-        return packJsonResult("{\"minify\":{\"code\":\"\",\"errors\":[{\"message\":\"minification failed\"}],\"originalSize\":0,\"minifiedSize\":0},\"reflect\":{\"bindings\":[],\"structs\":{},\"entryPoints\":[]}}");
+        return packJsonResult(empty_result_json);
     };
 
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;

@@ -43,6 +43,9 @@ pub const ParseError = struct {
 
 /// Creates a parser for the given tokenized WGSL source. Allocates the root scope.
 pub fn init(arena: std.mem.Allocator, source: [:0]const u8, tokens: std.MultiArrayList(Lexer.Token)) !Parser {
+    // Pre-condition: token list must contain at least one token (the EOF).
+    std.debug.assert(tokens.len > 0);
+
     const scope = try arena.create(Ast.Scope);
     scope.* = Ast.Scope.init(null);
 
@@ -63,6 +66,8 @@ pub fn init(arena: std.mem.Allocator, source: [:0]const u8, tokens: std.MultiArr
 
 /// Parse source into a Module. Caller owns the returned module via the arena.
 pub fn parse(self: *Parser) !*Ast.Module {
+    std.debug.assert(self.pos == 0); // parse should only be called once
+
     const module = try self.arena.create(Ast.Module);
     module.* = Ast.Module.init(self.scope, self.source);
 
@@ -74,6 +79,11 @@ pub fn parse(self: *Parser) !*Ast.Module {
 
     // Copy symbols to module
     module.symbols = self.symbols;
+
+    // Post-condition: all symbols have source names
+    for (module.symbols.items) |sym| {
+        std.debug.assert(sym.original_name.len > 0 or sym.kind == .unbound);
+    }
 
     return module;
 }

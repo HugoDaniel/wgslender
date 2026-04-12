@@ -70,19 +70,39 @@ pub fn mark(arena: std.mem.Allocator, module: *Ast.Module) std.mem.Allocator.Err
 
     // Count dead
     var dead: u32 = 0;
+    var live: u32 = 0;
     for (module.symbols.items) |sym| {
-        if (!sym.flags.is_live) dead += 1;
+        if (!sym.flags.is_live) {
+            dead += 1;
+        } else {
+            live += 1;
+        }
     }
+
+    // Post-conditions: live + dead == total, all entry points are live
+    std.debug.assert(live + dead == module.symbols.items.len);
+    for (module.symbols.items) |sym| {
+        if (sym.flags.is_entry_point) std.debug.assert(sym.flags.is_live);
+    }
+
     return dead;
 }
 
-fn buildDependencyGraph(arena: std.mem.Allocator, module: *const Ast.Module, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) std.mem.Allocator.Error!void {
+fn buildDependencyGraph(
+    arena: std.mem.Allocator,
+    module: *const Ast.Module,
+    deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),
+) std.mem.Allocator.Error!void {
     for (module.declarations.items) |decl| {
         try collectDeclDeps(arena, decl, deps);
     }
 }
 
-fn collectDeclDeps(arena: std.mem.Allocator, decl: Ast.Decl, deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32))) std.mem.Allocator.Error!void {
+fn collectDeclDeps(
+    arena: std.mem.Allocator,
+    decl: Ast.Decl,
+    deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),
+) std.mem.Allocator.Error!void {
     const name_ref = decl.nameRef();
     if (!name_ref.isValid()) return;
     const sym_idx = name_ref.index();
@@ -122,7 +142,11 @@ fn collectDeclDeps(arena: std.mem.Allocator, decl: Ast.Decl, deps: *std.AutoHash
 }
 
 /// Iteratively collects symbol references from an expression tree using a worklist.
-pub fn collectExprRefs(arena: std.mem.Allocator, expr: Ast.Expr, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
+pub fn collectExprRefs(
+    arena: std.mem.Allocator,
+    expr: Ast.Expr,
+    refs: *std.ArrayListUnmanaged(u32),
+) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, expr);
@@ -159,7 +183,11 @@ pub fn collectExprRefs(arena: std.mem.Allocator, expr: Ast.Expr, refs: *std.Arra
 }
 
 /// Iteratively collects symbol references from a type tree.
-fn collectTypeRefs(arena: std.mem.Allocator, typ: Ast.Type, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
+fn collectTypeRefs(
+    arena: std.mem.Allocator,
+    typ: Ast.Type,
+    refs: *std.ArrayListUnmanaged(u32),
+) std.mem.Allocator.Error!void {
     var current = typ;
     for (0..32) |_| {
         switch (current) {
@@ -192,7 +220,11 @@ fn collectTypeRefs(arena: std.mem.Allocator, typ: Ast.Type, refs: *std.ArrayList
 }
 
 /// Iteratively collects symbol references from a statement tree using a worklist.
-pub fn collectStmtRefs(arena: std.mem.Allocator, stmt: Ast.Stmt, refs: *std.ArrayListUnmanaged(u32)) std.mem.Allocator.Error!void {
+pub fn collectStmtRefs(
+    arena: std.mem.Allocator,
+    stmt: Ast.Stmt,
+    refs: *std.ArrayListUnmanaged(u32),
+) std.mem.Allocator.Error!void {
     var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, stmt);

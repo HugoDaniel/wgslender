@@ -86,7 +86,7 @@ const NativeServer = struct {
                         .full = .{ .bool = true },
                         .legend = .{
                             .tokenTypes = &[_][]const u8{
-                                "keyword", "function", "struct", "parameter", "variable",
+                                "keyword", "function", "struct",  "parameter", "variable",
                                 "number",  "type",     "comment", "decorator",
                             },
                             .tokenModifiers = &[_][]const u8{
@@ -102,7 +102,9 @@ const NativeServer = struct {
     /// No-op acknowledgement of the initialized notification.
     pub fn initialized(_: *NativeServer, _: std.mem.Allocator, _: lsp.types.InitializedParams) void {}
     /// Handles LSP shutdown; returns null (no pending work).
-    pub fn shutdown(_: *NativeServer, _: std.mem.Allocator, _: void) ?void { return null; }
+    pub fn shutdown(_: *NativeServer, _: std.mem.Allocator, _: void) ?void {
+        return null;
+    }
     /// No-op exit notification handler.
     pub fn exit(_: *NativeServer, _: std.mem.Allocator, _: void) void {}
     /// No-op handler for server-to-client response messages.
@@ -153,7 +155,8 @@ const NativeServer = struct {
         const uri = notification.textDocument.uri;
         self.handler.closeDocument(uri);
         self.transport.writeNotification(
-            self.io, self.handler.gpa,
+            self.io,
+            self.handler.gpa,
             "textDocument/publishDiagnostics",
             lsp.types.publish_diagnostics.Params,
             .{ .uri = uri, .diagnostics = &.{} },
@@ -845,7 +848,8 @@ const NativeServer = struct {
         }
 
         self.transport.writeNotification(
-            self.io, self.handler.gpa,
+            self.io,
+            self.handler.gpa,
             "textDocument/publishDiagnostics",
             lsp.types.publish_diagnostics.Params,
             .{ .uri = uri, .diagnostics = lsp_diags },

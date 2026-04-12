@@ -53,6 +53,10 @@ pub fn deinit(self: *Printer) void {
 
 /// Prints the entire module and returns the generated WGSL text.
 pub fn print(self: *Printer, module: *const Ast.Module) ![]const u8 {
+    // Pre-conditions: symbols table must match printer's reference
+    std.debug.assert(self.symbols.ptr == module.symbols.items.ptr);
+    std.debug.assert(self.indent == 0);
+
     self.buf.clearRetainingCapacity();
     try self.printModule(module);
     return self.buf.items;
@@ -112,7 +116,7 @@ fn emitSemicolon(self: *Printer) !void {
 fn emitName(self: *Printer, ref: Ast.SymbolIndex) !void {
     if (!ref.isValid()) return;
     const idx = ref.index();
-    if (idx >= self.symbols.len) return;
+    std.debug.assert(idx < self.symbols.len); // valid ref must be in-bounds
     const sym = &self.symbols[idx];
 
     // Record source map mapping before printing
@@ -443,7 +447,15 @@ fn printType(self: *Printer, t: Ast.Type) error{OutOfMemory}!void {
                 try self.emit(",");
                 try self.emitSpace();
                 if (close_top < close_stack.len) {
-                    close_stack[close_top] = .{ .suffix = ">", .needs_space = true, .access = if (typ.access_mode != .none) typ.access_mode.string() else null };
+                    const access = if (typ.access_mode != .none)
+                        typ.access_mode.string()
+                    else
+                        null;
+                    close_stack[close_top] = .{
+                        .suffix = ">",
+                        .needs_space = true,
+                        .access = access,
+                    };
                     close_top += 1;
                 }
                 current = typ.elem_type;

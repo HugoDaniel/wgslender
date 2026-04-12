@@ -76,6 +76,12 @@ pub fn defaultOptions() Options {
 /// Minify WGSL source code. Returns the minified code and statistics.
 /// The returned code is owned by the arena allocator.
 pub fn minify(arena: std.mem.Allocator, source: [:0]const u8, options: Options) !Result {
+    // Pre-conditions: source is sentinel-terminated (enforced by type),
+    // keep_names entries must not be empty strings.
+    for (options.keep_names) |name| {
+        std.debug.assert(name.len > 0);
+    }
+
     var result = Result{
         .code = "",
         .errors = &.{},
@@ -145,6 +151,11 @@ pub fn minify(arena: std.mem.Allocator, source: [:0]const u8, options: Options) 
 
     result.minified_size = result.code.len;
     result.symbols_total = module.symbols.items.len;
+
+    // Post-conditions
+    std.debug.assert(result.minified_size <= result.original_size or !options.minify_whitespace);
+    std.debug.assert(result.symbols_dead <= module.symbols.items.len);
+
     return result;
 }
 

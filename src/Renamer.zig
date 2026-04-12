@@ -69,6 +69,8 @@ pub const MinifyRenamer = struct {
 
     /// Creates a renamer for the given symbol table, skipping reserved names.
     pub fn init(arena: std.mem.Allocator, symbols: []Ast.Symbol, reserved: std.StringHashMapUnmanaged(void)) MinifyRenamer {
+        std.debug.assert(symbols.len <= std.math.maxInt(u32));
+
         var self = MinifyRenamer{
             .symbols = symbols,
             .reserved_names = reserved,
@@ -141,6 +143,9 @@ pub const MinifyRenamer = struct {
 
     /// Generates minified names for all allocated slots, skipping reserved words.
     pub fn assignNames(self: *MinifyRenamer) Allocator.Error!void {
+        // Pre-condition: slots must be allocated before naming
+        std.debug.assert(self.slots.items.len == self.top_level_slots.count());
+
         var name_index: u32 = 0;
         var buf: [16]u8 = undefined;
 

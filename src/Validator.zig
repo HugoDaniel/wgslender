@@ -2,7 +2,6 @@
 //!
 //! Performs type checking, symbol resolution validation, control flow analysis,
 //! and uniformity analysis to ensure shaders conform to the WGSL specification.
-
 //!
 //! Validation runs in five phases:
 //!   1. collectTypeDeclarations — gather struct and alias names

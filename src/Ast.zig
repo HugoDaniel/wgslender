@@ -655,57 +655,59 @@ pub const DeclStmt = struct {
 /// which calls are safe to remove when their result is unused.
 pub const pure_builtins = std.StaticStringMap(void).initComptime(.{
     // Math functions
-    .{ "abs", {} },          .{ "acos", {} },         .{ "acosh", {} },
-    .{ "asin", {} },         .{ "asinh", {} },        .{ "atan", {} },
-    .{ "atanh", {} },        .{ "atan2", {} },        .{ "ceil", {} },
-    .{ "clamp", {} },        .{ "cos", {} },          .{ "cosh", {} },
-    .{ "cross", {} },        .{ "degrees", {} },      .{ "determinant", {} },
-    .{ "distance", {} },     .{ "dot", {} },          .{ "exp", {} },
-    .{ "exp2", {} },         .{ "faceForward", {} },  .{ "floor", {} },
-    .{ "fma", {} },          .{ "fract", {} },        .{ "frexp", {} },
-    .{ "inverseSqrt", {} },  .{ "ldexp", {} },        .{ "length", {} },
-    .{ "log", {} },          .{ "log2", {} },         .{ "max", {} },
-    .{ "min", {} },          .{ "mix", {} },          .{ "modf", {} },
-    .{ "normalize", {} },    .{ "pow", {} },          .{ "quantizeToF16", {} },
-    .{ "radians", {} },      .{ "reflect", {} },      .{ "refract", {} },
-    .{ "round", {} },        .{ "saturate", {} },     .{ "sign", {} },
-    .{ "sin", {} },          .{ "sinh", {} },         .{ "smoothstep", {} },
-    .{ "sqrt", {} },         .{ "step", {} },         .{ "tan", {} },
-    .{ "tanh", {} },         .{ "transpose", {} },    .{ "trunc", {} },
+    .{ "abs", {} },               .{ "acos", {} },            .{ "acosh", {} },
+    .{ "asin", {} },              .{ "asinh", {} },           .{ "atan", {} },
+    .{ "atanh", {} },             .{ "atan2", {} },           .{ "ceil", {} },
+    .{ "clamp", {} },             .{ "cos", {} },             .{ "cosh", {} },
+    .{ "cross", {} },             .{ "degrees", {} },         .{ "determinant", {} },
+    .{ "distance", {} },          .{ "dot", {} },             .{ "exp", {} },
+    .{ "exp2", {} },              .{ "faceForward", {} },     .{ "floor", {} },
+    .{ "fma", {} },               .{ "fract", {} },           .{ "frexp", {} },
+    .{ "inverseSqrt", {} },       .{ "ldexp", {} },           .{ "length", {} },
+    .{ "log", {} },               .{ "log2", {} },            .{ "max", {} },
+    .{ "min", {} },               .{ "mix", {} },             .{ "modf", {} },
+    .{ "normalize", {} },         .{ "pow", {} },             .{ "quantizeToF16", {} },
+    .{ "radians", {} },           .{ "reflect", {} },         .{ "refract", {} },
+    .{ "round", {} },             .{ "saturate", {} },        .{ "sign", {} },
+    .{ "sin", {} },               .{ "sinh", {} },            .{ "smoothstep", {} },
+    .{ "sqrt", {} },              .{ "step", {} },            .{ "tan", {} },
+    .{ "tanh", {} },              .{ "transpose", {} },       .{ "trunc", {} },
     // Integer functions
-    .{ "countLeadingZeros", {} }, .{ "countOneBits", {} }, .{ "countTrailingZeros", {} },
-    .{ "extractBits", {} },  .{ "firstLeadingBit", {} }, .{ "firstTrailingBit", {} },
-    .{ "insertBits", {} },   .{ "reverseBits", {} },
+    .{ "countLeadingZeros", {} }, .{ "countOneBits", {} },    .{ "countTrailingZeros", {} },
+    .{ "extractBits", {} },       .{ "firstLeadingBit", {} }, .{ "firstTrailingBit", {} },
+    .{ "insertBits", {} },        .{ "reverseBits", {} },
     // Logical
-    .{ "all", {} },          .{ "any", {} },          .{ "select", {} },
+        .{ "all", {} },
+    .{ "any", {} },               .{ "select", {} },
     // Constructors
-    .{ "vec2", {} },         .{ "vec3", {} },         .{ "vec4", {} },
-    .{ "vec2f", {} },        .{ "vec3f", {} },        .{ "vec4f", {} },
-    .{ "vec2i", {} },        .{ "vec3i", {} },        .{ "vec4i", {} },
-    .{ "vec2u", {} },        .{ "vec3u", {} },        .{ "vec4u", {} },
-    .{ "vec2h", {} },        .{ "vec3h", {} },        .{ "vec4h", {} },
-    .{ "mat2x2", {} },       .{ "mat2x3", {} },      .{ "mat2x4", {} },
-    .{ "mat3x2", {} },       .{ "mat3x3", {} },      .{ "mat3x4", {} },
-    .{ "mat4x2", {} },       .{ "mat4x3", {} },      .{ "mat4x4", {} },
-    .{ "mat2x2f", {} },      .{ "mat2x3f", {} },     .{ "mat2x4f", {} },
-    .{ "mat3x2f", {} },      .{ "mat3x3f", {} },     .{ "mat3x4f", {} },
-    .{ "mat4x2f", {} },      .{ "mat4x3f", {} },     .{ "mat4x4f", {} },
-    .{ "mat2x2h", {} },      .{ "mat2x3h", {} },     .{ "mat2x4h", {} },
-    .{ "mat3x2h", {} },      .{ "mat3x3h", {} },     .{ "mat3x4h", {} },
-    .{ "mat4x2h", {} },      .{ "mat4x3h", {} },     .{ "mat4x4h", {} },
-    .{ "array", {} },        .{ "bool", {} },         .{ "i32", {} },
-    .{ "u32", {} },          .{ "f32", {} },          .{ "f16", {} },
+             .{ "vec2", {} },
+    .{ "vec3", {} },              .{ "vec4", {} },            .{ "vec2f", {} },
+    .{ "vec3f", {} },             .{ "vec4f", {} },           .{ "vec2i", {} },
+    .{ "vec3i", {} },             .{ "vec4i", {} },           .{ "vec2u", {} },
+    .{ "vec3u", {} },             .{ "vec4u", {} },           .{ "vec2h", {} },
+    .{ "vec3h", {} },             .{ "vec4h", {} },           .{ "mat2x2", {} },
+    .{ "mat2x3", {} },            .{ "mat2x4", {} },          .{ "mat3x2", {} },
+    .{ "mat3x3", {} },            .{ "mat3x4", {} },          .{ "mat4x2", {} },
+    .{ "mat4x3", {} },            .{ "mat4x4", {} },          .{ "mat2x2f", {} },
+    .{ "mat2x3f", {} },           .{ "mat2x4f", {} },         .{ "mat3x2f", {} },
+    .{ "mat3x3f", {} },           .{ "mat3x4f", {} },         .{ "mat4x2f", {} },
+    .{ "mat4x3f", {} },           .{ "mat4x4f", {} },         .{ "mat2x2h", {} },
+    .{ "mat2x3h", {} },           .{ "mat2x4h", {} },         .{ "mat3x2h", {} },
+    .{ "mat3x3h", {} },           .{ "mat3x4h", {} },         .{ "mat4x2h", {} },
+    .{ "mat4x3h", {} },           .{ "mat4x4h", {} },         .{ "array", {} },
+    .{ "bool", {} },              .{ "i32", {} },             .{ "u32", {} },
+    .{ "f32", {} },               .{ "f16", {} },
     // Pack/unpack
-    .{ "pack2x16float", {} }, .{ "pack2x16snorm", {} }, .{ "pack2x16unorm", {} },
-    .{ "pack4x8snorm", {} }, .{ "pack4x8unorm", {} }, .{ "pack4xI8", {} },
-    .{ "pack4xU8", {} },     .{ "pack4xI8Clamp", {} }, .{ "pack4xU8Clamp", {} },
-    .{ "unpack2x16float", {} }, .{ "unpack2x16snorm", {} }, .{ "unpack2x16unorm", {} },
-    .{ "unpack4x8snorm", {} }, .{ "unpack4x8unorm", {} }, .{ "unpack4xI8", {} },
-    .{ "unpack4xU8", {} },
+                .{ "pack2x16float", {} },
+    .{ "pack2x16snorm", {} },     .{ "pack2x16unorm", {} },   .{ "pack4x8snorm", {} },
+    .{ "pack4x8unorm", {} },      .{ "pack4xI8", {} },        .{ "pack4xU8", {} },
+    .{ "pack4xI8Clamp", {} },     .{ "pack4xU8Clamp", {} },   .{ "unpack2x16float", {} },
+    .{ "unpack2x16snorm", {} },   .{ "unpack2x16unorm", {} }, .{ "unpack4x8snorm", {} },
+    .{ "unpack4x8unorm", {} },    .{ "unpack4xI8", {} },      .{ "unpack4xU8", {} },
     // Derivatives
-    .{ "dpdx", {} },         .{ "dpdxCoarse", {} },   .{ "dpdxFine", {} },
-    .{ "dpdy", {} },         .{ "dpdyCoarse", {} },   .{ "dpdyFine", {} },
-    .{ "fwidth", {} },       .{ "fwidthCoarse", {} }, .{ "fwidthFine", {} },
+    .{ "dpdx", {} },              .{ "dpdxCoarse", {} },      .{ "dpdxFine", {} },
+    .{ "dpdy", {} },              .{ "dpdyCoarse", {} },      .{ "dpdyFine", {} },
+    .{ "fwidth", {} },            .{ "fwidthCoarse", {} },    .{ "fwidthFine", {} },
 });
 
 // =========================================================================
@@ -894,9 +896,16 @@ pub fn markExprPurity(e: Expr, symbols: []const Symbol) void {
 // for memory efficiency, and SymbolIndex uses maxInt(u32) as sentinel.
 // Adding fields may break the packed layout or sentinel checks.
 comptime {
+    // Bit-packed types: adding fields may break the packed layout.
     std.debug.assert(@sizeOf(Symbol.Flags) == 2);
     std.debug.assert(@sizeOf(ExprFlags) == 1);
+
+    // SymbolIndex uses maxInt(u32) as sentinel — must be exactly 4 bytes.
     std.debug.assert(@sizeOf(SymbolIndex) == 4);
+    std.debug.assert(@alignOf(SymbolIndex) == @alignOf(u32));
+
+    // Symbol.Kind fits in a nibble (4 bits).
+    std.debug.assert(@sizeOf(Symbol.Kind) == 1);
 }
 
 // =========================================================================

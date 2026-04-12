@@ -467,18 +467,42 @@ pub const Emit = struct {
 
     // -- Arithmetic --
 
-    pub fn i32_eqz(self: Emit) Allocator.Error!void { try self.byte(0x45); }
-    pub fn i32_eq(self: Emit) Allocator.Error!void { try self.byte(0x46); }
-    pub fn i32_ne(self: Emit) Allocator.Error!void { try self.byte(0x47); }
-    pub fn i32_lt_u(self: Emit) Allocator.Error!void { try self.byte(0x49); }
-    pub fn i32_gt_u(self: Emit) Allocator.Error!void { try self.byte(0x4B); }
-    pub fn i32_ge_u(self: Emit) Allocator.Error!void { try self.byte(0x4F); }
-    pub fn i32_add(self: Emit) Allocator.Error!void { try self.byte(0x6A); }
-    pub fn i32_sub(self: Emit) Allocator.Error!void { try self.byte(0x6B); }
-    pub fn i32_mul(self: Emit) Allocator.Error!void { try self.byte(0x6C); }
-    pub fn i32_and(self: Emit) Allocator.Error!void { try self.byte(0x71); }
-    pub fn i32_shr_u(self: Emit) Allocator.Error!void { try self.byte(0x76); }
-    pub fn drop(self: Emit) Allocator.Error!void { try self.byte(0x1A); }
+    pub fn i32_eqz(self: Emit) Allocator.Error!void {
+        try self.byte(0x45);
+    }
+    pub fn i32_eq(self: Emit) Allocator.Error!void {
+        try self.byte(0x46);
+    }
+    pub fn i32_ne(self: Emit) Allocator.Error!void {
+        try self.byte(0x47);
+    }
+    pub fn i32_lt_u(self: Emit) Allocator.Error!void {
+        try self.byte(0x49);
+    }
+    pub fn i32_gt_u(self: Emit) Allocator.Error!void {
+        try self.byte(0x4B);
+    }
+    pub fn i32_ge_u(self: Emit) Allocator.Error!void {
+        try self.byte(0x4F);
+    }
+    pub fn i32_add(self: Emit) Allocator.Error!void {
+        try self.byte(0x6A);
+    }
+    pub fn i32_sub(self: Emit) Allocator.Error!void {
+        try self.byte(0x6B);
+    }
+    pub fn i32_mul(self: Emit) Allocator.Error!void {
+        try self.byte(0x6C);
+    }
+    pub fn i32_and(self: Emit) Allocator.Error!void {
+        try self.byte(0x71);
+    }
+    pub fn i32_shr_u(self: Emit) Allocator.Error!void {
+        try self.byte(0x76);
+    }
+    pub fn drop(self: Emit) Allocator.Error!void {
+        try self.byte(0x1A);
+    }
 
     // -- Helpers --
 

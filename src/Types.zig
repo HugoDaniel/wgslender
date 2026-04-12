@@ -3,7 +3,6 @@
 //! Implements the type system as defined in WGSL spec section 6,
 //! supporting type inference, type checking, and overload resolution.
 
-
 const std = @import("std");
 const Ast = @import("Ast.zig");
 const Allocator = std.mem.Allocator;
