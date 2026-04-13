@@ -108,6 +108,8 @@ fn handleMessage(json: []const u8) void {
         handleDefinition(root, id);
     } else if (eql(method, "textDocument/references")) {
         handleReferences(root, id);
+    } else if (eql(method, "textDocument/documentHighlight")) {
+        handleDocumentHighlight(root, id);
     } else if (eql(method, "textDocument/rename")) {
         handleRename(root, id);
     } else if (eql(method, "textDocument/prepareRename")) {
@@ -365,7 +367,7 @@ fn handleHover(root: std.json.ObjectMap, id: ?std.json.Value) void {
     defer handler.gpa.free(r.contents);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"contents\":{\"kind\":\"plaintext\",\"value\":\"");
+    appendStr(&buf, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
     Diagnostic.appendJsonEscaped(&buf, wasm_allocator, r.contents) catch return;
     appendStr(&buf, "\"},\"range\":{\"start\":{\"line\":");
     appendUint(&buf, r.range.start.line);
@@ -432,6 +434,26 @@ fn handleReferences(root: std.json.ObjectMap, id: ?std.json.Value) void {
         Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
         appendStr(&buf, "\",\"range\":");
         formatRange(&buf, ref);
+        appendStr(&buf, "}");
+    }
+    appendStr(&buf, "]");
+    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleDocumentHighlight(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
+    const highlights = handler.computeDocumentHighlight(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
+    const handler_highlights = highlights orelse return sendResult(id, "null");
+    defer handler.gpa.free(handler_highlights);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "[");
+    for (handler_highlights, 0..) |h, i| {
+        if (i > 0) appendStr(&buf, ",");
+        appendStr(&buf, "{\"range\":");
+        formatRange(&buf, h.range);
+        appendStr(&buf, ",\"kind\":");
+        appendUint(&buf, @intFromEnum(h.kind));
         appendStr(&buf, "}");
     }
     appendStr(&buf, "]");

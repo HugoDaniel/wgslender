@@ -421,6 +421,261 @@ fn entry(
 }
 
 // =========================================================================
+// Documentation Table (for LSP hover)
+// =========================================================================
+
+/// Documentation for a WGSL builtin function, used by the LSP hover feature.
+pub const BuiltinDoc = struct {
+    /// Generic signature from the WGSL spec (e.g., "fn sin(e: T) -> T").
+    signature: []const u8,
+    /// One-line description of the function.
+    description: []const u8,
+    /// Type constraint or overload info (e.g., "T is f32, f16, vecN<f32>, or vecN<f16>").
+    type_constraint: []const u8,
+};
+
+/// Look up documentation for a builtin function by name.
+pub fn doc(name: []const u8) ?BuiltinDoc {
+    return doc_table.get(name);
+}
+
+const doc_table = std.StaticStringMap(BuiltinDoc).initComptime(doc_entries);
+
+const doc_entries = conversion_doc ++
+    logical_doc ++
+    array_doc ++
+    numeric_trig_doc ++
+    numeric_exp_doc ++
+    numeric_misc_doc ++
+    numeric_vector_doc ++
+    numeric_bit_doc ++
+    numeric_matrix_doc ++
+    numeric_special_doc ++
+    derivative_doc ++
+    texture_doc ++
+    atomic_doc ++
+    packing_doc ++
+    synchronization_doc ++
+    subgroup_doc;
+
+fn docEntry(
+    comptime name: []const u8,
+    comptime signature: []const u8,
+    comptime description: []const u8,
+    comptime type_constraint: []const u8,
+) struct { []const u8, BuiltinDoc } {
+    return .{ name, .{ .signature = signature, .description = description, .type_constraint = type_constraint } };
+}
+
+const T_FLOAT = "T is f32, f16, vecN<f32>, or vecN<f16>";
+const T_FLOAT_INT = "T is f32, f16, i32, u32, vecN<f32>, vecN<f16>, vecN<i32>, or vecN<u32>";
+const T_INT = "T is i32, u32, vecN<i32>, or vecN<u32>";
+const T_NUMERIC = "T is f32, f16, i32, u32, or vecN of these";
+
+// --- Conversion ---
+const conversion_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("bitcast", "fn bitcast<T>(e: S) -> T", "Reinterprets the bits of the value as the target type.", "T and S must have the same bit width"),
+};
+
+// --- Logical ---
+const logical_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("all", "fn all(e: vecN<bool>) -> bool", "Returns true if every component of e is true.", ""),
+    docEntry("any", "fn any(e: vecN<bool>) -> bool", "Returns true if any component of e is true.", ""),
+    docEntry("select", "fn select(f: T, t: T, cond: bool) -> T", "Returns t when cond is true, and f otherwise.", T_NUMERIC),
+};
+
+// --- Array ---
+const array_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("arrayLength", "fn arrayLength(p: ptr<storage, array<T>>) -> u32", "Returns the number of elements in the runtime-sized array.", ""),
+};
+
+// --- Numeric: Trigonometric ---
+const numeric_trig_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("sin", "fn sin(e: T) -> T", "Returns the sine of e (radians).", T_FLOAT),
+    docEntry("cos", "fn cos(e: T) -> T", "Returns the cosine of e (radians).", T_FLOAT),
+    docEntry("tan", "fn tan(e: T) -> T", "Returns the tangent of e (radians).", T_FLOAT),
+    docEntry("asin", "fn asin(e: T) -> T", "Returns the arc sine of e. Result in [-pi/2, pi/2].", T_FLOAT),
+    docEntry("acos", "fn acos(e: T) -> T", "Returns the arc cosine of e. Result in [0, pi].", T_FLOAT),
+    docEntry("atan", "fn atan(e: T) -> T", "Returns the arc tangent of e. Result in [-pi/2, pi/2].", T_FLOAT),
+    docEntry("sinh", "fn sinh(e: T) -> T", "Returns the hyperbolic sine of e.", T_FLOAT),
+    docEntry("cosh", "fn cosh(e: T) -> T", "Returns the hyperbolic cosine of e.", T_FLOAT),
+    docEntry("tanh", "fn tanh(e: T) -> T", "Returns the hyperbolic tangent of e.", T_FLOAT),
+    docEntry("asinh", "fn asinh(e: T) -> T", "Returns the inverse hyperbolic sine of e.", T_FLOAT),
+    docEntry("acosh", "fn acosh(e: T) -> T", "Returns the inverse hyperbolic cosine of e.", T_FLOAT),
+    docEntry("atanh", "fn atanh(e: T) -> T", "Returns the inverse hyperbolic tangent of e.", T_FLOAT),
+    docEntry("atan2", "fn atan2(y: T, x: T) -> T", "Returns the arc tangent of y/x. Result in [-pi, pi].", T_FLOAT),
+};
+
+// --- Numeric: Exponential ---
+const numeric_exp_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("exp", "fn exp(e: T) -> T", "Returns the natural exponentiation e^e.", T_FLOAT),
+    docEntry("exp2", "fn exp2(e: T) -> T", "Returns 2 raised to the power e.", T_FLOAT),
+    docEntry("log", "fn log(e: T) -> T", "Returns the natural logarithm of e.", T_FLOAT),
+    docEntry("log2", "fn log2(e: T) -> T", "Returns the base-2 logarithm of e.", T_FLOAT),
+    docEntry("pow", "fn pow(base: T, exponent: T) -> T", "Returns base raised to the power exponent.", T_FLOAT),
+    docEntry("sqrt", "fn sqrt(e: T) -> T", "Returns the square root of e.", T_FLOAT),
+    docEntry("inverseSqrt", "fn inverseSqrt(e: T) -> T", "Returns the reciprocal of the square root of e.", T_FLOAT),
+};
+
+// --- Numeric: Misc math ---
+const numeric_misc_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("abs", "fn abs(e: T) -> T", "Returns the absolute value of e.", T_FLOAT_INT),
+    docEntry("sign", "fn sign(e: T) -> T", "Returns the sign of e: -1, 0, or 1.", T_FLOAT_INT),
+    docEntry("floor", "fn floor(e: T) -> T", "Returns the floor of e (largest integer <= e).", T_FLOAT),
+    docEntry("ceil", "fn ceil(e: T) -> T", "Returns the ceiling of e (smallest integer >= e).", T_FLOAT),
+    docEntry("round", "fn round(e: T) -> T", "Returns e rounded to the nearest integer.", T_FLOAT),
+    docEntry("trunc", "fn trunc(e: T) -> T", "Returns the integer part of e, removing fractional digits.", T_FLOAT),
+    docEntry("fract", "fn fract(e: T) -> T", "Returns the fractional part of e (e - floor(e)).", T_FLOAT),
+    docEntry("min", "fn min(e1: T, e2: T) -> T", "Returns the minimum of e1 and e2.", T_FLOAT_INT),
+    docEntry("max", "fn max(e1: T, e2: T) -> T", "Returns the maximum of e1 and e2.", T_FLOAT_INT),
+    docEntry("clamp", "fn clamp(e: T, low: T, high: T) -> T", "Restricts e to the range [low, high].", T_FLOAT_INT),
+    docEntry("saturate", "fn saturate(e: T) -> T", "Clamps e to the range [0.0, 1.0].", T_FLOAT),
+    docEntry("mix", "fn mix(e1: T, e2: T, e3: T) -> T", "Returns the linear blend e1*(1-e3) + e2*e3.", T_FLOAT),
+    docEntry("step", "fn step(edge: T, x: T) -> T", "Returns 0.0 if x < edge, otherwise 1.0.", T_FLOAT),
+    docEntry("smoothstep", "fn smoothstep(low: T, high: T, x: T) -> T", "Returns smooth Hermite interpolation between 0 and 1.", T_FLOAT),
+    docEntry("fma", "fn fma(e1: T, e2: T, e3: T) -> T", "Returns e1 * e2 + e3 (fused multiply-add).", T_FLOAT),
+    docEntry("degrees", "fn degrees(e: T) -> T", "Converts radians to degrees.", T_FLOAT),
+    docEntry("radians", "fn radians(e: T) -> T", "Converts degrees to radians.", T_FLOAT),
+};
+
+// --- Numeric: Vector ---
+const numeric_vector_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("dot", "fn dot(e1: vecN<T>, e2: vecN<T>) -> T", "Returns the dot product of e1 and e2.", "T is f32, f16"),
+    docEntry("cross", "fn cross(e1: vec3<T>, e2: vec3<T>) -> vec3<T>", "Returns the cross product of e1 and e2.", "T is f32, f16"),
+    docEntry("length", "fn length(e: vecN<T>) -> T", "Returns the length (magnitude) of e.", "T is f32, f16"),
+    docEntry("distance", "fn distance(e1: vecN<T>, e2: vecN<T>) -> T", "Returns the distance between e1 and e2.", "T is f32, f16"),
+    docEntry("normalize", "fn normalize(e: vecN<T>) -> vecN<T>", "Returns the unit vector in the direction of e.", "T is f32, f16"),
+    docEntry("reflect", "fn reflect(e1: vecN<T>, e2: vecN<T>) -> vecN<T>", "Returns the reflection direction for incident e1 and normal e2.", "T is f32, f16"),
+    docEntry("refract", "fn refract(e1: vecN<T>, e2: vecN<T>, e3: T) -> vecN<T>", "Returns the refraction vector for incident e1, normal e2, and ratio e3.", "T is f32, f16"),
+    docEntry("faceForward", "fn faceForward(e1: vecN<T>, e2: vecN<T>, e3: vecN<T>) -> vecN<T>", "Returns e1 if dot(e2,e3) < 0, otherwise -e1.", "T is f32, f16"),
+};
+
+// --- Numeric: Bit operations ---
+const numeric_bit_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("countOneBits", "fn countOneBits(e: T) -> T", "Returns the number of 1 bits in the binary representation of e.", T_INT),
+    docEntry("countLeadingZeros", "fn countLeadingZeros(e: T) -> T", "Returns the number of leading zero bits in e.", T_INT),
+    docEntry("countTrailingZeros", "fn countTrailingZeros(e: T) -> T", "Returns the number of trailing zero bits in e.", T_INT),
+    docEntry("reverseBits", "fn reverseBits(e: T) -> T", "Returns e with its bits reversed.", T_INT),
+    docEntry("firstLeadingBit", "fn firstLeadingBit(e: T) -> T", "Returns the bit position of the most significant 1 bit, or -1/0xFFFFFFFF.", T_INT),
+    docEntry("firstTrailingBit", "fn firstTrailingBit(e: T) -> T", "Returns the bit position of the least significant 1 bit, or -1/0xFFFFFFFF.", T_INT),
+    docEntry("extractBits", "fn extractBits(e: T, offset: u32, count: u32) -> T", "Extracts count bits from e starting at offset.", T_INT),
+    docEntry("insertBits", "fn insertBits(e: T, newbits: T, offset: u32, count: u32) -> T", "Replaces count bits in e starting at offset with bits from newbits.", T_INT),
+};
+
+// --- Numeric: Matrix ---
+const numeric_matrix_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("transpose", "fn transpose(e: matRxC<T>) -> matCxR<T>", "Returns the transpose of the matrix.", "T is f32, f16"),
+    docEntry("determinant", "fn determinant(e: matNxN<T>) -> T", "Returns the determinant of the square matrix.", "T is f32, f16"),
+};
+
+// --- Numeric: Special ---
+const numeric_special_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("ldexp", "fn ldexp(e1: T, e2: I) -> T", "Returns e1 * 2^e2.", "T is f32, f16; I is i32 or vecN<i32>"),
+    docEntry("frexp", "fn frexp(e: T) -> __frexp_result", "Splits e into a significand in [0.5,1.0) and an exponent.", T_FLOAT),
+    docEntry("modf", "fn modf(e: T) -> __modf_result", "Splits e into integer and fractional parts.", T_FLOAT),
+    docEntry("quantizeToF16", "fn quantizeToF16(e: T) -> T", "Quantizes e to IEEE-754 binary16 then converts back.", "T is f32 or vecN<f32>"),
+};
+
+// --- Derivative ---
+const derivative_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("dpdx", "fn dpdx(e: T) -> T", "Returns the partial derivative of e with respect to window x.", T_FLOAT),
+    docEntry("dpdy", "fn dpdy(e: T) -> T", "Returns the partial derivative of e with respect to window y.", T_FLOAT),
+    docEntry("fwidth", "fn fwidth(e: T) -> T", "Returns abs(dpdx(e)) + abs(dpdy(e)).", T_FLOAT),
+    docEntry("dpdxCoarse", "fn dpdxCoarse(e: T) -> T", "Returns a coarse partial derivative of e w.r.t. window x.", T_FLOAT),
+    docEntry("dpdyCoarse", "fn dpdyCoarse(e: T) -> T", "Returns a coarse partial derivative of e w.r.t. window y.", T_FLOAT),
+    docEntry("fwidthCoarse", "fn fwidthCoarse(e: T) -> T", "Returns abs(dpdxCoarse(e)) + abs(dpdyCoarse(e)).", T_FLOAT),
+    docEntry("dpdxFine", "fn dpdxFine(e: T) -> T", "Returns a fine partial derivative of e w.r.t. window x.", T_FLOAT),
+    docEntry("dpdyFine", "fn dpdyFine(e: T) -> T", "Returns a fine partial derivative of e w.r.t. window y.", T_FLOAT),
+    docEntry("fwidthFine", "fn fwidthFine(e: T) -> T", "Returns abs(dpdxFine(e)) + abs(dpdyFine(e)).", T_FLOAT),
+};
+
+// --- Texture ---
+const texture_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("textureSample", "fn textureSample(t: texture, s: sampler, coords: vecN<f32>, ...) -> vec4<f32>", "Samples a texture using implicit level of detail.", "Requires uniform control flow"),
+    docEntry("textureSampleBias", "fn textureSampleBias(t: texture, s: sampler, coords: vecN<f32>, bias: f32, ...) -> vec4<f32>", "Samples a texture with a bias applied to the mip level.", "Requires uniform control flow"),
+    docEntry("textureSampleCompare", "fn textureSampleCompare(t: texture_depth, s: sampler_comparison, coords: vecN<f32>, depth_ref: f32, ...) -> f32", "Samples a depth texture and compares against a reference value.", "Requires uniform control flow"),
+    docEntry("textureSampleCompareLevel", "fn textureSampleCompareLevel(t: texture_depth, s: sampler_comparison, coords: vecN<f32>, depth_ref: f32, ...) -> f32", "Samples a depth texture at mip level 0 and compares against a reference value.", ""),
+    docEntry("textureSampleLevel", "fn textureSampleLevel(t: texture, s: sampler, coords: vecN<f32>, level: f32, ...) -> vec4<f32>", "Samples a texture at an explicit mip level.", ""),
+    docEntry("textureSampleGrad", "fn textureSampleGrad(t: texture, s: sampler, coords: vecN<f32>, ddx: vecN<f32>, ddy: vecN<f32>, ...) -> vec4<f32>", "Samples a texture using explicit gradients.", ""),
+    docEntry("textureLoad", "fn textureLoad(t: texture, coords: vecN<i32/u32>, ...) -> vec4<T>", "Reads a single texel from a texture without sampling.", ""),
+    docEntry("textureStore", "fn textureStore(t: texture_storage, coords: vecN<i32/u32>, value: vec4<T>)", "Writes a single texel to a storage texture.", ""),
+    docEntry("textureDimensions", "fn textureDimensions(t: texture, ...) -> vecN<u32>", "Returns the dimensions of the texture in texels.", ""),
+    docEntry("textureNumLayers", "fn textureNumLayers(t: texture_array) -> u32", "Returns the number of layers in an arrayed texture.", ""),
+    docEntry("textureNumLevels", "fn textureNumLevels(t: texture) -> u32", "Returns the number of mip levels in the texture.", ""),
+    docEntry("textureNumSamples", "fn textureNumSamples(t: texture_multisampled) -> u32", "Returns the number of samples per texel in a multisampled texture.", ""),
+    docEntry("textureGather", "fn textureGather(component: i32, t: texture, s: sampler, coords: vecN<f32>, ...) -> vec4<T>", "Gathers the component from four texels in a 2x2 footprint.", "Requires uniform control flow"),
+    docEntry("textureGatherCompare", "fn textureGatherCompare(t: texture_depth, s: sampler_comparison, coords: vec2<f32>, depth_ref: f32, ...) -> vec4<f32>", "Gathers depth comparison results from four texels.", "Requires uniform control flow"),
+};
+
+// --- Atomic ---
+const atomic_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("atomicLoad", "fn atomicLoad(p: ptr<AS, atomic<T>>) -> T", "Atomically loads the value pointed to by p.", "T is i32 or u32"),
+    docEntry("atomicStore", "fn atomicStore(p: ptr<AS, atomic<T>>, v: T)", "Atomically stores v into the value pointed to by p.", "T is i32 or u32"),
+    docEntry("atomicAdd", "fn atomicAdd(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically adds v to *p and returns the original value.", "T is i32 or u32"),
+    docEntry("atomicSub", "fn atomicSub(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically subtracts v from *p and returns the original value.", "T is i32 or u32"),
+    docEntry("atomicMax", "fn atomicMax(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores max(*p, v) and returns the original value.", "T is i32 or u32"),
+    docEntry("atomicMin", "fn atomicMin(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores min(*p, v) and returns the original value.", "T is i32 or u32"),
+    docEntry("atomicAnd", "fn atomicAnd(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores (*p & v) and returns the original value.", "T is i32 or u32"),
+    docEntry("atomicOr", "fn atomicOr(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores (*p | v) and returns the original value.", "T is i32 or u32"),
+    docEntry("atomicXor", "fn atomicXor(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores (*p ^ v) and returns the original value.", "T is i32 or u32"),
+    docEntry("atomicExchange", "fn atomicExchange(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically replaces *p with v and returns the original value.", "T is i32 or u32"),
+    docEntry("atomicCompareExchangeWeak", "fn atomicCompareExchangeWeak(p: ptr<AS, atomic<T>>, expected: T, v: T) -> __atomic_compare_exchange_result<T>", "Atomically compares *p with expected and exchanges with v if equal.", "T is i32 or u32"),
+};
+
+// --- Packing ---
+const packing_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("pack4x8snorm", "fn pack4x8snorm(e: vec4<f32>) -> u32", "Packs four normalized f32 values into a u32 as signed bytes.", ""),
+    docEntry("pack4x8unorm", "fn pack4x8unorm(e: vec4<f32>) -> u32", "Packs four normalized f32 values into a u32 as unsigned bytes.", ""),
+    docEntry("pack2x16snorm", "fn pack2x16snorm(e: vec2<f32>) -> u32", "Packs two normalized f32 values into a u32 as signed 16-bit integers.", ""),
+    docEntry("pack2x16unorm", "fn pack2x16unorm(e: vec2<f32>) -> u32", "Packs two normalized f32 values into a u32 as unsigned 16-bit integers.", ""),
+    docEntry("pack2x16float", "fn pack2x16float(e: vec2<f32>) -> u32", "Packs two f32 values into a u32 as f16 values.", ""),
+    docEntry("pack4xI8", "fn pack4xI8(e: vec4<i32>) -> u32", "Packs four i32 values into a u32 as signed bytes.", ""),
+    docEntry("pack4xU8", "fn pack4xU8(e: vec4<u32>) -> u32", "Packs four u32 values into a u32 as unsigned bytes.", ""),
+    docEntry("pack4xI8Clamp", "fn pack4xI8Clamp(e: vec4<i32>) -> u32", "Packs four i32 values into a u32 as signed bytes, clamping to [-128, 127].", ""),
+    docEntry("pack4xU8Clamp", "fn pack4xU8Clamp(e: vec4<u32>) -> u32", "Packs four u32 values into a u32 as unsigned bytes, clamping to [0, 255].", ""),
+    docEntry("unpack4x8snorm", "fn unpack4x8snorm(e: u32) -> vec4<f32>", "Unpacks a u32 into four normalized f32 values as signed bytes.", ""),
+    docEntry("unpack4x8unorm", "fn unpack4x8unorm(e: u32) -> vec4<f32>", "Unpacks a u32 into four normalized f32 values as unsigned bytes.", ""),
+    docEntry("unpack2x16snorm", "fn unpack2x16snorm(e: u32) -> vec2<f32>", "Unpacks a u32 into two normalized f32 values as signed 16-bit integers.", ""),
+    docEntry("unpack2x16unorm", "fn unpack2x16unorm(e: u32) -> vec2<f32>", "Unpacks a u32 into two normalized f32 values as unsigned 16-bit integers.", ""),
+    docEntry("unpack2x16float", "fn unpack2x16float(e: u32) -> vec2<f32>", "Unpacks a u32 into two f32 values from f16 values.", ""),
+    docEntry("unpack4xI8", "fn unpack4xI8(e: u32) -> vec4<i32>", "Unpacks a u32 into four i32 values as signed bytes.", ""),
+    docEntry("unpack4xU8", "fn unpack4xU8(e: u32) -> vec4<u32>", "Unpacks a u32 into four u32 values as unsigned bytes.", ""),
+};
+
+// --- Synchronization ---
+const synchronization_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("workgroupBarrier", "fn workgroupBarrier()", "Synchronizes all invocations in the workgroup. Requires uniform control flow.", ""),
+    docEntry("storageBarrier", "fn storageBarrier()", "Ensures all storage memory accesses are visible. Requires uniform control flow.", ""),
+    docEntry("textureBarrier", "fn textureBarrier()", "Ensures all texture memory accesses are visible. Requires uniform control flow.", ""),
+    docEntry("workgroupUniformLoad", "fn workgroupUniformLoad(p: ptr<workgroup, T>) -> T", "Loads a value from workgroup memory after synchronization.", "Requires uniform control flow"),
+};
+
+// --- Subgroup ---
+const subgroup_doc = [_]struct { []const u8, BuiltinDoc }{
+    docEntry("subgroupBallot", "fn subgroupBallot(pred: bool) -> vec4<u32>", "Returns a bitmask of which invocations have pred true.", "Requires enable subgroups"),
+    docEntry("subgroupBroadcast", "fn subgroupBroadcast(e: T, id: u32) -> T", "Broadcasts the value of e from the invocation with the given id.", T_NUMERIC),
+    docEntry("subgroupBroadcastFirst", "fn subgroupBroadcastFirst(e: T) -> T", "Broadcasts the value of e from the invocation with the lowest active id.", T_NUMERIC),
+    docEntry("subgroupShuffle", "fn subgroupShuffle(e: T, id: u32) -> T", "Returns the value of e from the invocation with the given id.", T_NUMERIC),
+    docEntry("subgroupShuffleDown", "fn subgroupShuffleDown(e: T, delta: u32) -> T", "Returns the value of e from the invocation at current id + delta.", T_NUMERIC),
+    docEntry("subgroupShuffleUp", "fn subgroupShuffleUp(e: T, delta: u32) -> T", "Returns the value of e from the invocation at current id - delta.", T_NUMERIC),
+    docEntry("subgroupShuffleXor", "fn subgroupShuffleXor(e: T, mask: u32) -> T", "Returns the value of e from the invocation at current id XOR mask.", T_NUMERIC),
+    docEntry("subgroupAdd", "fn subgroupAdd(e: T) -> T", "Returns the sum of e across all active invocations.", T_NUMERIC),
+    docEntry("subgroupMul", "fn subgroupMul(e: T) -> T", "Returns the product of e across all active invocations.", T_NUMERIC),
+    docEntry("subgroupAnd", "fn subgroupAnd(e: T) -> T", "Returns the bitwise AND of e across all active invocations.", T_INT),
+    docEntry("subgroupOr", "fn subgroupOr(e: T) -> T", "Returns the bitwise OR of e across all active invocations.", T_INT),
+    docEntry("subgroupXor", "fn subgroupXor(e: T) -> T", "Returns the bitwise XOR of e across all active invocations.", T_INT),
+    docEntry("subgroupMin", "fn subgroupMin(e: T) -> T", "Returns the minimum of e across all active invocations.", T_NUMERIC),
+    docEntry("subgroupMax", "fn subgroupMax(e: T) -> T", "Returns the maximum of e across all active invocations.", T_NUMERIC),
+    docEntry("subgroupInclusiveAdd", "fn subgroupInclusiveAdd(e: T) -> T", "Returns the inclusive prefix sum of e.", T_NUMERIC),
+    docEntry("subgroupInclusiveMul", "fn subgroupInclusiveMul(e: T) -> T", "Returns the inclusive prefix product of e.", T_NUMERIC),
+    docEntry("subgroupExclusiveAdd", "fn subgroupExclusiveAdd(e: T) -> T", "Returns the exclusive prefix sum of e.", T_NUMERIC),
+    docEntry("subgroupExclusiveMul", "fn subgroupExclusiveMul(e: T) -> T", "Returns the exclusive prefix product of e.", T_NUMERIC),
+    docEntry("subgroupAll", "fn subgroupAll(e: bool) -> bool", "Returns true if e is true for all active invocations.", ""),
+    docEntry("subgroupAny", "fn subgroupAny(e: bool) -> bool", "Returns true if e is true for any active invocation.", ""),
+    docEntry("subgroupElect", "fn subgroupElect() -> bool", "Returns true for exactly one active invocation in the subgroup.", ""),
+};
+
+// =========================================================================
 // Tests
 // =========================================================================
 
@@ -741,4 +996,26 @@ test "builtins: entry count matches Go implementation" {
     // Verify we have at least that many entries.
     const total = builtin_entries.len;
     try std.testing.expect(total >= 119);
+}
+
+test "builtins: all builtins have documentation" {
+    for (table.keys()) |name| {
+        const has_doc = doc_table.has(name);
+        if (!has_doc) {
+            std.debug.print("Missing doc for builtin: {s}\n", .{name});
+        }
+        try std.testing.expect(has_doc);
+    }
+}
+
+test "builtins: doc returns valid entries" {
+    const sin_doc = doc("sin");
+    try std.testing.expect(sin_doc != null);
+    try std.testing.expect(sin_doc.?.signature.len > 0);
+    try std.testing.expect(sin_doc.?.description.len > 0);
+
+    const barrier_doc = doc("workgroupBarrier");
+    try std.testing.expect(barrier_doc != null);
+
+    try std.testing.expect(doc("notABuiltin") == null);
 }

@@ -31,7 +31,7 @@ test "hover: variable shows type" {
     try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "f32") != null);
 }
 
-test "hover: function name shows info" {
+test "hover: function name shows full signature" {
     const source: [:0]const u8 = "fn my_func() -> f32 { return 1.0; }";
     const ctx = try setup(source);
     defer teardown(ctx);
@@ -40,7 +40,9 @@ test "hover: function name shows info" {
     try std.testing.expect(result != null);
     defer std.testing.allocator.free(result.?.contents);
     try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "my_func") != null);
-    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "function") != null);
+    // Should show full signature: fn my_func() -> f32
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "fn ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "f32") != null);
 }
 
 test "hover: whitespace returns null" {
@@ -182,7 +184,7 @@ test "hover: entry point function" {
     const result = try ctx.handler.computeHover("test://file.wgsl", pos);
     try std.testing.expect(result != null);
     defer std.testing.allocator.free(result.?.contents);
-    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "function") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "fn ") != null);
 }
 
 test "hover: position past end of file returns null" {
@@ -213,4 +215,90 @@ test "hover: nested struct member type" {
     defer std.testing.allocator.free(result.?.contents);
     // Should show Inner's struct info
     try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "Inner") != null);
+}
+
+test "hover: member access shows field type" {
+    const source: [:0]const u8 = "struct S { x: f32 } fn f(s: S) -> f32 { return s.x; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Find the '.x' member access — hover on 'x' after the dot
+    const dot_pos = std.mem.lastIndexOf(u8, source, ".x") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(dot_pos + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    // Should show "(field) x: f32"
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "field") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "f32") != null);
+}
+
+test "hover: function with params shows full signature" {
+    const source: [:0]const u8 = "fn add(a: f32, b: f32) -> f32 { return a + b; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "add") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    // Should show "fn add(a: f32, b: f32) -> f32"
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "fn add(") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "a: f32") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "b: f32") != null);
+}
+
+test "hover: struct type shows size and alignment" {
+    const source: [:0]const u8 = "struct S { x: f32, y: f32 } fn f(s: S) {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Find the second 'S' (in "s: S")
+    const s_type_pos = std.mem.lastIndexOf(u8, source, "S") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(s_type_pos)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    // Should show struct with size/alignment info
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "struct S") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "size:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "align:") != null);
+}
+
+test "hover: builtin function shows signature and description" {
+    const source: [:0]const u8 = "fn f(x: f32) -> f32 { return sin(x); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Hover on 'sin'
+    const pos = posAt(source, "sin") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    // Should show signature
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "fn sin") != null);
+    // Should show description
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "sine") != null);
+    // Should show category
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "numeric") != null);
+}
+
+test "hover: builtin with uniform requirement shows warning" {
+    const source: [:0]const u8 = "@fragment fn f(@location(0) uv: vec2f) -> @location(0) vec4f { return textureSample(t, s, uv); } @group(0) @binding(0) var t: texture_2d<f32>; @group(0) @binding(1) var s: sampler;";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "textureSample") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    // Should show uniform control flow requirement
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "uniform") != null);
+}
+
+test "hover: user function still works after builtin changes" {
+    const source: [:0]const u8 = "fn my_fn(a: f32) -> f32 { return a; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "my_fn") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "my_fn") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "f32") != null);
 }

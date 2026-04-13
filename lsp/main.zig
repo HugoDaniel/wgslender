@@ -264,7 +264,7 @@ const NativeServer = struct {
         ) catch return null;
         const r = result orelse return null;
         return .{
-            .contents = .{ .markup_content = .{ .kind = .plaintext, .value = r.contents } },
+            .contents = .{ .markup_content = .{ .kind = .markdown, .value = r.contents } },
             .range = .{
                 .start = .{ .line = r.range.start.line, .character = r.range.start.character },
                 .end = .{ .line = r.range.end.line, .character = r.range.end.character },
@@ -322,6 +322,36 @@ const NativeServer = struct {
             };
         }
         return locations;
+    }
+
+    // ----- Document Highlight -----
+
+    pub fn @"textDocument/documentHighlight"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.DocumentHighlight.Params,
+    ) ?[]const lsp.types.DocumentHighlight {
+        const highlights = self.handler.computeDocumentHighlight(
+            params.textDocument.uri,
+            .{ .line = params.position.line, .character = params.position.character },
+        ) catch return null;
+        const handler_highlights = highlights orelse return null;
+        defer self.handler.gpa.free(handler_highlights);
+        const result = arena.alloc(lsp.types.DocumentHighlight, handler_highlights.len) catch return null;
+        for (handler_highlights, 0..) |h, i| {
+            result[i] = .{
+                .range = .{
+                    .start = .{ .line = h.range.start.line, .character = h.range.start.character },
+                    .end = .{ .line = h.range.end.line, .character = h.range.end.character },
+                },
+                .kind = switch (h.kind) {
+                    .text => .Text,
+                    .read => .Read,
+                    .write => .Write,
+                },
+            };
+        }
+        return result;
     }
 
     // ----- Rename -----

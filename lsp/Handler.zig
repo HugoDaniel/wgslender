@@ -69,7 +69,7 @@ pub const LspCodeAction = struct {
 
 /// Server capabilities as a JSON string (shared by native and WASM).
 pub const capabilities_json =
-    \\{"textDocumentSync":{"openClose":true,"change":2},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{},"documentFormattingProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenTypes":["keyword","function","struct","parameter","variable","number","type","comment","decorator"],"tokenModifiers":["declaration","readonly","defaultLibrary"]}},"selectionRangeProvider":true,"callHierarchyProvider":true}
+    \\{"textDocumentSync":{"openClose":true,"change":2},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{},"documentFormattingProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenTypes":["keyword","function","struct","parameter","variable","number","type","comment","decorator"],"tokenModifiers":["declaration","readonly","defaultLibrary"]}},"selectionRangeProvider":true,"callHierarchyProvider":true,"documentHighlightProvider":true}
 ;
 
 /// Creates a handler with an empty document store.
@@ -563,7 +563,7 @@ pub const NodeAtPosition = union(enum) {
     /// An identifier expression referencing a symbol.
     ident: struct { name: []const u8, ref: Ast.SymbolIndex, loc: u32 },
     /// A member access expression (e.g., `s.field`).
-    member_access: struct { member: []const u8, loc: u32 },
+    member_access: struct { member: []const u8, loc: u32, base: Ast.Expr },
     /// A declaration name (the identifier in fn/struct/var/const/let/alias).
     decl_name: struct { sym_idx: Ast.SymbolIndex, loc: u32 },
     /// A type reference (e.g., `f32`, `MyStruct` in a type annotation).
@@ -763,7 +763,7 @@ fn findInExpr(expr: Ast.Expr, offset: u32) ?NodeAtPosition {
             // e.loc is the dot position; member name starts at dot + 1
             const member_loc = e.loc + 1;
             if (offset >= member_loc and offset < member_loc + @as(u32, @intCast(e.member_name.len))) {
-                return .{ .member_access = .{ .member = e.member_name, .loc = member_loc } };
+                return .{ .member_access = .{ .member = e.member_name, .loc = member_loc, .base = e.base } };
             }
             return findInExpr(e.base, offset);
         },
@@ -802,6 +802,17 @@ pub const HoverResult = struct {
     range: Range,
 };
 
+pub const DocumentHighlight = struct {
+    range: Range,
+    kind: HighlightKind,
+};
+
+pub const HighlightKind = enum(u8) {
+    text = 1,
+    read = 2,
+    write = 3,
+};
+
 pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?HoverResult {
     const doc = self.documents.getPtr(uri) orelse return null;
     const source = doc.source;
@@ -810,15 +821,44 @@ pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?Hover
     const module = analysis.module orelse return null;
 
     const node = findNodeAtOffset(module, offset);
-    var buf: [512]u8 = undefined;
+    var buf: [1024]u8 = undefined;
     switch (node) {
         .ident => |id| {
-            if (!id.ref.isValid()) return null;
+            if (!id.ref.isValid()) {
+                // Check if this is a builtin function name
+                if (Builtins.lookup(id.name)) |builtin| {
+                    const contents = try self.formatBuiltinHover(&buf, id.name, builtin);
+                    return .{
+                        .contents = contents,
+                        .range = offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len))) orelse return null,
+                    };
+                }
+                return null;
+            }
             const sym = module.symbols.items[id.ref.index()];
             const kind_str = @tagName(sym.kind);
-            const type_str = if (analysis.symbol_types.get(id.ref.index())) |t| t.string() else "unknown";
-            const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s}", .{ kind_str, id.name, type_str }) catch return null).len;
-            const contents = try self.gpa.dupe(u8, buf[0..len]);
+            const contents: []const u8 = blk: {
+                if (analysis.symbol_types.get(id.ref.index())) |t| {
+                    // For functions, show full signature
+                    if (t == .function) {
+                        if (formatFunctionSignature(&buf, module, id.ref, t.function)) |sig| {
+                            break :blk try self.gpa.dupe(u8, sig);
+                        }
+                    }
+                    const type_str = t.string();
+                    // For consts, show value if known
+                    if (sym.kind == .@"const") {
+                        if (analysis.const_values.get(id.ref.index())) |val| {
+                            const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s} = {d}", .{ kind_str, id.name, type_str, val }) catch return null).len;
+                            break :blk try self.gpa.dupe(u8, buf[0..len]);
+                        }
+                    }
+                    const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s}", .{ kind_str, id.name, type_str }) catch return null).len;
+                    break :blk try self.gpa.dupe(u8, buf[0..len]);
+                }
+                const len = (std.fmt.bufPrint(&buf, "({s}) {s}: unknown", .{ kind_str, id.name }) catch return null).len;
+                break :blk try self.gpa.dupe(u8, buf[0..len]);
+            };
             return .{
                 .contents = contents,
                 .range = offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len))) orelse return null,
@@ -828,12 +868,28 @@ pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?Hover
             if (!dn.sym_idx.isValid()) return null;
             const sym = module.symbols.items[dn.sym_idx.index()];
             const kind_str = @tagName(sym.kind);
-            const type_str = if (analysis.symbol_types.get(dn.sym_idx.index())) |t| t.string() else "";
-            const len = if (type_str.len > 0)
-                (std.fmt.bufPrint(&buf, "({s}) {s}: {s}", .{ kind_str, sym.original_name, type_str }) catch return null).len
-            else
-                (std.fmt.bufPrint(&buf, "({s}) {s}", .{ kind_str, sym.original_name }) catch return null).len;
-            const contents = try self.gpa.dupe(u8, buf[0..len]);
+            const contents: []const u8 = blk: {
+                if (analysis.symbol_types.get(dn.sym_idx.index())) |t| {
+                    // For functions, show full signature
+                    if (t == .function) {
+                        if (formatFunctionSignature(&buf, module, dn.sym_idx, t.function)) |sig| {
+                            break :blk try self.gpa.dupe(u8, sig);
+                        }
+                    }
+                    const type_str = t.string();
+                    // For consts, show value if known
+                    if (sym.kind == .@"const") {
+                        if (analysis.const_values.get(dn.sym_idx.index())) |val| {
+                            const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s} = {d}", .{ kind_str, sym.original_name, type_str, val }) catch return null).len;
+                            break :blk try self.gpa.dupe(u8, buf[0..len]);
+                        }
+                    }
+                    const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s}", .{ kind_str, sym.original_name, type_str }) catch return null).len;
+                    break :blk try self.gpa.dupe(u8, buf[0..len]);
+                }
+                const len = (std.fmt.bufPrint(&buf, "({s}) {s}", .{ kind_str, sym.original_name }) catch return null).len;
+                break :blk try self.gpa.dupe(u8, buf[0..len]);
+            };
             return .{
                 .contents = contents,
                 .range = offsetRangeToLspRange(source, dn.loc, dn.loc + @as(u32, @intCast(sym.original_name.len))) orelse return null,
@@ -853,8 +909,14 @@ pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?Hover
                     const fld = std.fmt.bufPrint(buf[pos_in_buf..], "{s}: {s}", .{ field.name, field.typ.string() }) catch return null;
                     pos_in_buf += fld.len;
                 }
-                const tail = std.fmt.bufPrint(buf[pos_in_buf..], " }}", .{}) catch return null;
-                pos_in_buf += tail.len;
+                // Append size/alignment info
+                if (st.size_bytes > 0) {
+                    const layout = std.fmt.bufPrint(buf[pos_in_buf..], " }} (size: {d}B, align: {d}B)", .{ st.size_bytes, st.align_bytes }) catch return null;
+                    pos_in_buf += layout.len;
+                } else {
+                    const tail = std.fmt.bufPrint(buf[pos_in_buf..], " }}", .{}) catch return null;
+                    pos_in_buf += tail.len;
+                }
                 const contents = try self.gpa.dupe(u8, buf[0..pos_in_buf]);
                 return .{
                     .contents = contents,
@@ -864,7 +926,34 @@ pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?Hover
             return null;
         },
         .member_access => |ma| {
-            const contents = try self.gpa.dupe(u8, ma.member);
+            // Try to resolve the base expression's type and show field type
+            const contents: []const u8 = blk: {
+                const base_sym_idx = resolveExprSymbol(ma.base) orelse break :blk try self.gpa.dupe(u8, ma.member);
+                if (!base_sym_idx.isValid()) break :blk try self.gpa.dupe(u8, ma.member);
+                const base_type = analysis.symbol_types.get(base_sym_idx.index()) orelse break :blk try self.gpa.dupe(u8, ma.member);
+                // Dereference pointers/references to get the underlying type
+                const resolved: wgslender.Types.Type = switch (base_type) {
+                    .reference => |r| r.element,
+                    .pointer => |p| p.element,
+                    else => base_type,
+                };
+                switch (resolved) {
+                    .@"struct" => |st| {
+                        if (st.getField(ma.member)) |field| {
+                            const len = (std.fmt.bufPrint(&buf, "(field) {s}: {s}", .{ ma.member, field.typ.string() }) catch break :blk try self.gpa.dupe(u8, ma.member)).len;
+                            break :blk try self.gpa.dupe(u8, buf[0..len]);
+                        }
+                    },
+                    .vector => |v| {
+                        if (ma.member.len == 1) {
+                            const len = (std.fmt.bufPrint(&buf, "(swizzle) {s}: {s}", .{ ma.member, v.element.string() }) catch break :blk try self.gpa.dupe(u8, ma.member)).len;
+                            break :blk try self.gpa.dupe(u8, buf[0..len]);
+                        }
+                    },
+                    else => {},
+                }
+                break :blk try self.gpa.dupe(u8, ma.member);
+            };
             return .{
                 .contents = contents,
                 .range = offsetRangeToLspRange(source, ma.loc, ma.loc + @as(u32, @intCast(ma.member.len))) orelse return null,
@@ -872,6 +961,96 @@ pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?Hover
         },
         .none => return null,
     }
+}
+
+/// Resolve an expression to its underlying SymbolIndex (walks through parens and member bases).
+fn resolveExprSymbol(expr: Ast.Expr) ?Ast.SymbolIndex {
+    return switch (expr) {
+        .ident => |e| e.ref,
+        .paren => |e| resolveExprSymbol(e.expr),
+        .index => |e| resolveExprSymbol(e.base),
+        else => null,
+    };
+}
+
+/// Format a function signature with parameter names and resolved types.
+fn formatFunctionSignature(buf: *[1024]u8, module: *const Ast.Module, sym_idx: Ast.SymbolIndex, fn_type: *const wgslender.Types.Function) ?[]const u8 {
+    // Find the FunctionDecl matching this symbol
+    const func_decl = for (module.declarations.items) |decl| {
+        switch (decl) {
+            .function => |f| {
+                if (f.name == sym_idx) break f;
+            },
+            else => {},
+        }
+    } else return null;
+
+    const sym = module.symbols.items[sym_idx.index()];
+    var pos: usize = 0;
+    const header = std.fmt.bufPrint(buf, "fn {s}(", .{sym.original_name}) catch return null;
+    pos = header.len;
+
+    for (func_decl.parameters.items, 0..) |param, pi| {
+        if (pi > 0) {
+            const sep = std.fmt.bufPrint(buf[pos..], ", ", .{}) catch return null;
+            pos += sep.len;
+        }
+        const p_name = module.symbols.items[param.name.index()].original_name;
+        const p_type_str = if (pi < fn_type.parameters.len) fn_type.parameters[pi].string() else "?";
+        const p = std.fmt.bufPrint(buf[pos..], "{s}: {s}", .{ p_name, p_type_str }) catch return null;
+        pos += p.len;
+    }
+
+    if (fn_type.return_type) |rt| {
+        const ret = std.fmt.bufPrint(buf[pos..], ") -> {s}", .{rt.string()}) catch return null;
+        pos += ret.len;
+    } else {
+        const tail = std.fmt.bufPrint(buf[pos..], ")", .{}) catch return null;
+        pos += tail.len;
+    }
+    return buf[0..pos];
+}
+
+/// Format a hover tooltip for a builtin function, with spec documentation.
+fn formatBuiltinHover(self: *Handler, buf: *[1024]u8, name: []const u8, builtin: Builtins.Builtin) ![]const u8 {
+    var pos: usize = 0;
+
+    // Signature from doc table, or fallback to name
+    if (Builtins.doc(name)) |d| {
+        const sig = std.fmt.bufPrint(buf, "{s}", .{d.signature}) catch return try self.gpa.dupe(u8, name);
+        pos = sig.len;
+
+        // Type constraint
+        if (d.type_constraint.len > 0) {
+            const tc = std.fmt.bufPrint(buf[pos..], "\n  {s}", .{d.type_constraint}) catch return try self.gpa.dupe(u8, buf[0..pos]);
+            pos += tc.len;
+        }
+
+        // Description
+        const desc = std.fmt.bufPrint(buf[pos..], "\n\n{s}", .{d.description}) catch return try self.gpa.dupe(u8, buf[0..pos]);
+        pos += desc.len;
+    } else {
+        const header = std.fmt.bufPrint(buf, "(builtin) {s}", .{name}) catch return try self.gpa.dupe(u8, name);
+        pos = header.len;
+    }
+
+    // Metadata line: category + evaluation stage
+    const kind_str = @tagName(builtin.kind);
+    const stage_str: []const u8 = switch (builtin.stage) {
+        .const_eval => "const-evaluable",
+        .runtime => "runtime",
+        .override => "override-evaluable",
+    };
+    const meta = std.fmt.bufPrint(buf[pos..], "\n\n({s}) {s}", .{ kind_str, stage_str }) catch return try self.gpa.dupe(u8, buf[0..pos]);
+    pos += meta.len;
+
+    // Uniformity warning
+    if (builtin.requiresUniform()) {
+        const warn = std.fmt.bufPrint(buf[pos..], " | requires uniform control flow", .{}) catch return try self.gpa.dupe(u8, buf[0..pos]);
+        pos += warn.len;
+    }
+
+    return try self.gpa.dupe(u8, buf[0..pos]);
 }
 
 // =========================================================================
@@ -910,6 +1089,38 @@ pub fn computeDefinition(self: *Handler, uri: []const u8, position: Position) !?
 // LSP Feature: Find All References
 // =========================================================================
 
+const RefWithKind = struct {
+    range: Range,
+    is_write: bool,
+};
+
+/// Collect all references to a given symbol with read/write context.
+fn collectRefsWithKind(
+    gpa: std.mem.Allocator,
+    module: *const Ast.Module,
+    target: Ast.SymbolIndex,
+    include_declaration: bool,
+) ![]RefWithKind {
+    const source = module.source;
+    var locations: std.ArrayListUnmanaged(RefWithKind) = .empty;
+    defer locations.deinit(gpa);
+
+    // Include declaration location (declarations are writes)
+    if (include_declaration and target.isValid()) {
+        const sym = module.symbols.items[target.index()];
+        if (offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)))) |range| {
+            try locations.append(gpa, .{ .range = range, .is_write = true });
+        }
+    }
+
+    // Walk all declarations collecting references
+    for (module.declarations.items) |decl| {
+        try collectRefsInDecl(gpa, module, decl, target, source, &locations, false);
+    }
+
+    return try gpa.dupe(RefWithKind, locations.items);
+}
+
 /// Collect all byte offset locations of references to a given symbol.
 fn collectReferences(
     gpa: std.mem.Allocator,
@@ -917,24 +1128,11 @@ fn collectReferences(
     target: Ast.SymbolIndex,
     include_declaration: bool,
 ) ![]Range {
-    const source = module.source;
-    var locations: std.ArrayListUnmanaged(Range) = .empty;
-    defer locations.deinit(gpa);
-
-    // Include declaration location
-    if (include_declaration and target.isValid()) {
-        const sym = module.symbols.items[target.index()];
-        if (offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)))) |range| {
-            try locations.append(gpa, range);
-        }
-    }
-
-    // Walk all declarations collecting references
-    for (module.declarations.items) |decl| {
-        try collectRefsInDecl(gpa, module, decl, target, source, &locations);
-    }
-
-    return try gpa.dupe(Range, locations.items);
+    const refs = try collectRefsWithKind(gpa, module, target, include_declaration);
+    defer gpa.free(refs);
+    const ranges = try gpa.alloc(Range, refs.len);
+    for (refs, 0..) |r, i| ranges[i] = r.range;
+    return ranges;
 }
 
 fn collectRefsInDecl(
@@ -943,7 +1141,8 @@ fn collectRefsInDecl(
     decl: Ast.Decl,
     target: Ast.SymbolIndex,
     source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(Range),
+    locations: *std.ArrayListUnmanaged(RefWithKind),
+    is_write: bool,
 ) std.mem.Allocator.Error!void {
     switch (decl) {
         .function => |f| {
@@ -960,22 +1159,22 @@ fn collectRefsInDecl(
         },
         .@"const" => |c| {
             if (c.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
-            if (c.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations);
+            if (c.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations, is_write);
         },
         .override => |o| {
             if (o.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
-            if (o.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations);
+            if (o.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations, is_write);
         },
         .@"var" => |v| {
             if (v.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
-            if (v.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations);
+            if (v.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations, is_write);
         },
         .let => |l| {
             if (l.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
-            if (l.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations);
+            if (l.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations, is_write);
         },
         .alias => |a| try collectRefsInType(gpa, a.typ, target, source, locations),
-        .const_assert => |ca| try collectRefsInExpr(gpa, ca.expr, target, source, locations),
+        .const_assert => |ca| try collectRefsInExpr(gpa, ca.expr, target, source, locations, false),
     }
 }
 
@@ -984,13 +1183,13 @@ fn collectRefsInType(
     typ: Ast.Type,
     target: Ast.SymbolIndex,
     source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(Range),
+    locations: *std.ArrayListUnmanaged(RefWithKind),
 ) std.mem.Allocator.Error!void {
     switch (typ) {
         .ident => |t| {
             if (t.ref == target) {
                 if (offsetRangeToLspRange(source, t.loc, t.loc + @as(u32, @intCast(t.name.len)))) |range| {
-                    try locations.append(gpa, range);
+                    try locations.append(gpa, .{ .range = range, .is_write = false });
                 }
             }
         },
@@ -1002,7 +1201,7 @@ fn collectRefsInType(
         },
         .array => |t| {
             if (t.elem_type) |et| try collectRefsInType(gpa, et, target, source, locations);
-            if (t.size) |sz| try collectRefsInExpr(gpa, sz, target, source, locations);
+            if (t.size) |sz| try collectRefsInExpr(gpa, sz, target, source, locations, false);
         },
         .ptr => |t| try collectRefsInType(gpa, t.elem_type, target, source, locations),
         .atomic => |t| try collectRefsInType(gpa, t.elem_type, target, source, locations),
@@ -1016,7 +1215,7 @@ fn collectRefsInCompound(
     compound: *const Ast.CompoundStmt,
     target: Ast.SymbolIndex,
     source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(Range),
+    locations: *std.ArrayListUnmanaged(RefWithKind),
 ) std.mem.Allocator.Error!void {
     for (compound.stmts.items) |stmt| {
         try collectRefsInStmt(gpa, module, stmt, target, source, locations);
@@ -1029,35 +1228,35 @@ fn collectRefsInStmt(
     stmt: Ast.Stmt,
     target: Ast.SymbolIndex,
     source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(Range),
+    locations: *std.ArrayListUnmanaged(RefWithKind),
 ) std.mem.Allocator.Error!void {
     switch (stmt) {
         .compound => |c| try collectRefsInCompound(gpa, module, c, target, source, locations),
         .@"return" => |r| {
-            if (r.value) |v| try collectRefsInExpr(gpa, v, target, source, locations);
+            if (r.value) |v| try collectRefsInExpr(gpa, v, target, source, locations, false);
         },
         .@"if" => |i| {
-            try collectRefsInExpr(gpa, i.condition, target, source, locations);
+            try collectRefsInExpr(gpa, i.condition, target, source, locations, false);
             try collectRefsInCompound(gpa, module, i.body, target, source, locations);
             if (i.else_branch) |eb| try collectRefsInStmt(gpa, module, eb, target, source, locations);
         },
         .@"switch" => |s| {
-            try collectRefsInExpr(gpa, s.expr, target, source, locations);
+            try collectRefsInExpr(gpa, s.expr, target, source, locations, false);
             for (s.cases.items) |case| {
                 for (case.selectors.items) |sel| {
-                    try collectRefsInExpr(gpa, sel, target, source, locations);
+                    try collectRefsInExpr(gpa, sel, target, source, locations, false);
                 }
                 try collectRefsInCompound(gpa, module, case.body, target, source, locations);
             }
         },
         .@"for" => |f| {
             if (f.init_stmt) |init_s| try collectRefsInStmt(gpa, module, init_s, target, source, locations);
-            if (f.condition) |cond| try collectRefsInExpr(gpa, cond, target, source, locations);
+            if (f.condition) |cond| try collectRefsInExpr(gpa, cond, target, source, locations, false);
             if (f.update) |upd| try collectRefsInStmt(gpa, module, upd, target, source, locations);
             try collectRefsInCompound(gpa, module, f.body, target, source, locations);
         },
         .@"while" => |w| {
-            try collectRefsInExpr(gpa, w.condition, target, source, locations);
+            try collectRefsInExpr(gpa, w.condition, target, source, locations, false);
             try collectRefsInCompound(gpa, module, w.body, target, source, locations);
         },
         .loop => |l| {
@@ -1065,14 +1264,14 @@ fn collectRefsInStmt(
             if (l.continuing) |cont| try collectRefsInCompound(gpa, module, cont, target, source, locations);
         },
         .assign => |a| {
-            try collectRefsInExpr(gpa, a.left, target, source, locations);
-            try collectRefsInExpr(gpa, a.right, target, source, locations);
+            try collectRefsInExpr(gpa, a.left, target, source, locations, true);
+            try collectRefsInExpr(gpa, a.right, target, source, locations, false);
         },
-        .incr_decr => |i| try collectRefsInExpr(gpa, i.expr, target, source, locations),
-        .call => |c| try collectRefsInExpr(gpa, .{ .call = c.call }, target, source, locations),
-        .decl => |d| try collectRefsInDecl(gpa, module, d.decl, target, source, locations),
+        .incr_decr => |i| try collectRefsInExpr(gpa, i.expr, target, source, locations, true),
+        .call => |c| try collectRefsInExpr(gpa, .{ .call = c.call }, target, source, locations, false),
+        .decl => |d| try collectRefsInDecl(gpa, module, d.decl, target, source, locations, false),
         .@"break", .@"continue", .discard => {},
-        .break_if => |b| try collectRefsInExpr(gpa, b.condition, target, source, locations),
+        .break_if => |b| try collectRefsInExpr(gpa, b.condition, target, source, locations, false),
     }
 }
 
@@ -1081,32 +1280,33 @@ fn collectRefsInExpr(
     expr: Ast.Expr,
     target: Ast.SymbolIndex,
     source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(Range),
+    locations: *std.ArrayListUnmanaged(RefWithKind),
+    is_write: bool,
 ) std.mem.Allocator.Error!void {
     switch (expr) {
         .ident => |e| {
             if (e.ref == target) {
                 if (offsetRangeToLspRange(source, e.loc, e.loc + @as(u32, @intCast(e.name.len)))) |range| {
-                    try locations.append(gpa, range);
+                    try locations.append(gpa, .{ .range = range, .is_write = is_write });
                 }
             }
         },
-        .member => |e| try collectRefsInExpr(gpa, e.base, target, source, locations),
+        .member => |e| try collectRefsInExpr(gpa, e.base, target, source, locations, is_write),
         .call => |e| {
-            if (e.func) |f| try collectRefsInExpr(gpa, f, target, source, locations);
+            if (e.func) |f| try collectRefsInExpr(gpa, f, target, source, locations, false);
             if (e.template_type) |tt| try collectRefsInType(gpa, tt, target, source, locations);
-            for (e.args.items) |arg| try collectRefsInExpr(gpa, arg, target, source, locations);
+            for (e.args.items) |arg| try collectRefsInExpr(gpa, arg, target, source, locations, false);
         },
         .binary => |e| {
-            try collectRefsInExpr(gpa, e.left, target, source, locations);
-            try collectRefsInExpr(gpa, e.right, target, source, locations);
+            try collectRefsInExpr(gpa, e.left, target, source, locations, false);
+            try collectRefsInExpr(gpa, e.right, target, source, locations, false);
         },
-        .unary => |e| try collectRefsInExpr(gpa, e.operand, target, source, locations),
+        .unary => |e| try collectRefsInExpr(gpa, e.operand, target, source, locations, false),
         .index => |e| {
-            try collectRefsInExpr(gpa, e.base, target, source, locations);
-            try collectRefsInExpr(gpa, e.idx, target, source, locations);
+            try collectRefsInExpr(gpa, e.base, target, source, locations, is_write);
+            try collectRefsInExpr(gpa, e.idx, target, source, locations, false);
         },
-        .paren => |e| try collectRefsInExpr(gpa, e.expr, target, source, locations),
+        .paren => |e| try collectRefsInExpr(gpa, e.expr, target, source, locations, is_write),
         .literal => {},
     }
 }
@@ -1127,6 +1327,39 @@ pub fn computeReferences(self: *Handler, uri: []const u8, position: Position, in
     };
     if (!target.isValid()) return null;
     return try collectReferences(self.gpa, module, target, include_declaration);
+}
+
+// =========================================================================
+// LSP Feature: Document Highlight
+// =========================================================================
+
+pub fn computeDocumentHighlight(self: *Handler, uri: []const u8, position: Position) !?[]DocumentHighlight {
+    const doc = self.documents.getPtr(uri) orelse return null;
+    const source = doc.source;
+    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
+    const analysis = try self.analyzeDocument(uri);
+    const module = analysis.module orelse return null;
+
+    const node = findNodeAtOffset(module, offset);
+    const target: Ast.SymbolIndex = switch (node) {
+        .ident => |id| id.ref,
+        .decl_name => |dn| dn.sym_idx,
+        .type_ref => |tr| tr.ref,
+        else => return null,
+    };
+    if (!target.isValid()) return null;
+
+    const refs = try collectRefsWithKind(self.gpa, module, target, true);
+    defer self.gpa.free(refs);
+
+    const highlights = try self.gpa.alloc(DocumentHighlight, refs.len);
+    for (refs, 0..) |r, i| {
+        highlights[i] = .{
+            .range = r.range,
+            .kind = if (r.is_write) .write else .read,
+        };
+    }
+    return highlights;
 }
 
 // =========================================================================
