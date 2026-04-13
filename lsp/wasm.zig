@@ -923,6 +923,14 @@ fn emitDiagnostics(uri: []const u8) void {
             }
             appendStr(&buf, "]");
         }
+        if (diag.tags.len > 0) {
+            appendStr(&buf, ",\"tags\":[");
+            for (diag.tags, 0..) |tag, ti| {
+                if (ti > 0) buf.append(wasm_allocator, ',') catch {};
+                appendUint(&buf, @intFromEnum(tag));
+            }
+            appendStr(&buf, "]");
+        }
         appendStr(&buf, "}");
     }
 

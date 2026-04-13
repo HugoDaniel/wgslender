@@ -830,9 +830,11 @@ const NativeServer = struct {
         const lsp_diags = self.handler.gpa.alloc(lsp.types.Diagnostic, diags.len) catch return;
         defer self.handler.gpa.free(lsp_diags);
 
-        // Track related_info allocations so we can free them after serialization.
+        // Track allocations so we can free them after serialization.
         var related_allocs: [256]?[]const lsp.types.Diagnostic.RelatedInformation = undefined;
         var related_count: usize = 0;
+        var tag_allocs: [256]?[]const lsp.types.Diagnostic.Tag = undefined;
+        var tag_count: usize = 0;
 
         for (diags, 0..) |d, i| {
             var related_info: ?[]const lsp.types.Diagnostic.RelatedInformation = null;
@@ -873,6 +875,18 @@ const NativeServer = struct {
                 .codeDescription = if (d.spec_url.len > 0) .{ .href = d.spec_url } else null,
                 .source = "wgslender",
                 .message = d.message,
+                .tags = if (d.tags.len > 0) blk: {
+                    const t = self.handler.gpa.alloc(lsp.types.Diagnostic.Tag, d.tags.len) catch break :blk null;
+                    for (d.tags, 0..) |tag, ti| t[ti] = switch (tag) {
+                        .unnecessary => .Unnecessary,
+                        .deprecated => .Deprecated,
+                    };
+                    if (tag_count < tag_allocs.len) {
+                        tag_allocs[tag_count] = t;
+                        tag_count += 1;
+                    }
+                    break :blk t;
+                } else null,
                 .relatedInformation = related_info,
             };
         }
@@ -886,9 +900,12 @@ const NativeServer = struct {
             .{ .emit_null_optional_fields = false },
         ) catch {};
 
-        // Free related_info arrays after serialization.
+        // Free allocated arrays after serialization.
         for (related_allocs[0..related_count]) |ri| {
             if (ri) |r| self.handler.gpa.free(r);
+        }
+        for (tag_allocs[0..tag_count]) |ti| {
+            if (ti) |t| self.handler.gpa.free(t);
         }
     }
 };

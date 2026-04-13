@@ -45,6 +45,11 @@ pub const LspRelatedInfo = struct {
     message: []const u8,
 };
 
+pub const DiagnosticTag = enum(u8) {
+    unnecessary = 1,
+    deprecated = 2,
+};
+
 pub const LspDiagnostic = struct {
     range: Range,
     severity: DiagnosticSeverity,
@@ -52,6 +57,7 @@ pub const LspDiagnostic = struct {
     code: []const u8 = "",
     spec_url: []const u8 = "",
     related: []const LspRelatedInfo = &.{},
+    tags: []const DiagnosticTag = &.{},
 };
 
 pub const LspTextEdit = struct {
@@ -165,6 +171,12 @@ pub fn analyzeDocument(self: *Handler, uri: []const u8) !*wgslender.Validator.An
     const result = try self.gpa.create(wgslender.Validator.AnalysisResult);
     errdefer self.gpa.destroy(result);
     result.* = try wgslender.analyzeWithOptions(self.gpa, source_z, .{});
+    // Run DCE to compute is_live flags for dead code diagnostics.
+    if (result.module) |module| {
+        if (result._arena) |*arena| {
+            _ = wgslender.Dce.mark(arena.allocator(), module) catch {};
+        }
+    }
     doc.analysis = result;
     doc.analysis_source = source_z;
     return result;
@@ -210,8 +222,9 @@ pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
         try diags.append(self.gpa, convertDiagnostic(self.gpa, &entry));
     }
 
-    // Append unused symbol warnings
+    // Append unused symbol warnings and dead code warnings
     appendUnusedWarnings(self.gpa, analysis, &diags);
+    appendDeadCodeWarnings(self.gpa, analysis, &diags);
 
     return try diags.toOwnedSlice(self.gpa);
 }
@@ -897,27 +910,7 @@ pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?Hover
         },
         .type_ref => |tr| {
             if (analysis.struct_types.get(tr.name)) |st| {
-                // Show struct fields using bufPrint
-                var pos_in_buf: usize = 0;
-                const header = std.fmt.bufPrint(&buf, "struct {s} {{ ", .{tr.name}) catch return null;
-                pos_in_buf = header.len;
-                for (st.fields, 0..) |field, fi| {
-                    if (fi > 0) {
-                        const sep = std.fmt.bufPrint(buf[pos_in_buf..], ", ", .{}) catch return null;
-                        pos_in_buf += sep.len;
-                    }
-                    const fld = std.fmt.bufPrint(buf[pos_in_buf..], "{s}: {s}", .{ field.name, field.typ.string() }) catch return null;
-                    pos_in_buf += fld.len;
-                }
-                // Append size/alignment info
-                if (st.size_bytes > 0) {
-                    const layout = std.fmt.bufPrint(buf[pos_in_buf..], " }} (size: {d}B, align: {d}B)", .{ st.size_bytes, st.align_bytes }) catch return null;
-                    pos_in_buf += layout.len;
-                } else {
-                    const tail = std.fmt.bufPrint(buf[pos_in_buf..], " }}", .{}) catch return null;
-                    pos_in_buf += tail.len;
-                }
-                const contents = try self.gpa.dupe(u8, buf[0..pos_in_buf]);
+                const contents = try formatStructLayout(self.gpa, tr.name, st);
                 return .{
                     .contents = contents,
                     .range = offsetRangeToLspRange(source, tr.loc, tr.loc + @as(u32, @intCast(tr.name.len))) orelse return null,
@@ -1051,6 +1044,50 @@ fn formatBuiltinHover(self: *Handler, buf: *[1024]u8, name: []const u8, builtin:
     }
 
     return try self.gpa.dupe(u8, buf[0..pos]);
+}
+
+/// Format a struct type with per-field byte offsets, sizes, and padding gaps.
+fn formatStructLayout(gpa: std.mem.Allocator, name: []const u8, st: *wgslender.Types.Struct) ![]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(gpa);
+    var tmp: [256]u8 = undefined;
+
+    // Header: struct Name (size: NB, align: MB)
+    const header = std.fmt.bufPrint(&tmp, "struct {s} (size: {d}B, align: {d}B)", .{ name, st.size_bytes, st.align_bytes }) catch return try gpa.dupe(u8, name);
+    try out.appendSlice(gpa, header);
+
+    for (st.fields, 0..) |field, fi| {
+        const field_size = field.typ.size();
+        const field_align = field.typ.alignment();
+
+        // Check for padding before this field
+        if (fi > 0) {
+            const prev = st.fields[fi - 1];
+            const prev_end = prev.offset + prev.typ.size();
+            if (field.offset > prev_end) {
+                const padding = field.offset - prev_end;
+                const pad_line = std.fmt.bufPrint(&tmp, "\n  @{d}  [{d}B padding]", .{ prev_end, padding }) catch continue;
+                try out.appendSlice(gpa, pad_line);
+            }
+        }
+
+        // Field line
+        const fld_line = std.fmt.bufPrint(&tmp, "\n  @{d}  {s}: {s}  ({d}B, align {d})", .{ field.offset, field.name, field.typ.string(), field_size, field_align }) catch continue;
+        try out.appendSlice(gpa, fld_line);
+    }
+
+    // Trailing padding
+    if (st.fields.len > 0) {
+        const last = st.fields[st.fields.len - 1];
+        const last_end = last.offset + last.typ.size();
+        if (st.size_bytes > last_end) {
+            const trailing = st.size_bytes - last_end;
+            const trail_line = std.fmt.bufPrint(&tmp, "\n  @{d}  [{d}B padding]", .{ last_end, trailing }) catch "";
+            try out.appendSlice(gpa, trail_line);
+        }
+    }
+
+    return try gpa.dupe(u8, out.items);
 }
 
 // =========================================================================
@@ -2048,6 +2085,54 @@ pub fn appendUnusedWarnings(
             .severity = .warning,
             .message = gpa.dupe(u8, msg) catch continue,
             .code = "W0001",
+            .tags = &.{.unnecessary},
+        }) catch continue;
+    }
+}
+
+/// Append hint-level diagnostics for symbols that are used internally
+/// but not reachable from any entry point. Only emits when entry points exist.
+pub fn appendDeadCodeWarnings(
+    gpa: std.mem.Allocator,
+    analysis: *const wgslender.Validator.AnalysisResult,
+    diags: *std.ArrayListUnmanaged(LspDiagnostic),
+) void {
+    const module = analysis.module orelse return;
+    const source = module.source;
+
+    // Check if any entry points exist. If none, DCE conservatively marks
+    // everything live (library mode), so there's nothing to warn about.
+    var has_entry_points = false;
+    for (module.symbols.items) |sym| {
+        if (sym.flags.is_entry_point) {
+            has_entry_points = true;
+            break;
+        }
+    }
+    if (!has_entry_points) return;
+
+    for (module.symbols.items) |sym| {
+        // Only flag symbols that are used (use_count > 0) but not live
+        if (sym.flags.is_live) continue;
+        if (sym.use_count == 0) continue; // Already caught by appendUnusedWarnings
+        if (sym.original_name.len == 0) continue;
+        if (sym.flags.is_entry_point) continue;
+        if (sym.flags.is_external_binding) continue;
+
+        switch (sym.kind) {
+            .function, .@"struct", .@"const", .let, .@"var", .override => {},
+            else => continue,
+        }
+
+        const range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "'{s}' is not reachable from any entry point", .{sym.original_name}) catch continue;
+        diags.append(gpa, .{
+            .range = range,
+            .severity = .hint,
+            .message = gpa.dupe(u8, msg) catch continue,
+            .code = "W0002",
+            .tags = &.{.unnecessary},
         }) catch continue;
     }
 }
@@ -2093,7 +2178,112 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
         });
     }
 
+    // Add binding summary and workgroup size lenses for entry points
+    const binding_summary = collectBindingSummary(self.gpa, module);
+    for (module.declarations.items) |decl| {
+        switch (decl) {
+            .function => |f| {
+                if (!f.name.isValid()) continue;
+                const sym = module.symbols.items[f.name.index()];
+                if (!sym.flags.is_entry_point) continue;
+                const range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
+
+                // Binding summary (shared across all entry points)
+                if (binding_summary) |summary| {
+                    try lenses.append(self.gpa, .{ .range = range, .title = summary });
+                }
+
+                // Workgroup size for compute shaders
+                if (getWorkgroupSize(f)) |wg| {
+                    var wg_buf: [64]u8 = undefined;
+                    const wg_title = std.fmt.bufPrint(&wg_buf, "workgroup: {d}x{d}x{d}", .{ wg[0], wg[1], wg[2] }) catch continue;
+                    try lenses.append(self.gpa, .{
+                        .range = range,
+                        .title = try self.gpa.dupe(u8, wg_title),
+                    });
+                }
+            },
+            else => {},
+        }
+    }
+
     return try self.gpa.dupe(CodeLensInfo, lenses.items);
+}
+
+/// Collect a one-line summary of all @group/@binding declarations in the module.
+fn collectBindingSummary(gpa: std.mem.Allocator, module: *const Ast.Module) ?[]const u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(gpa);
+    var tmp: [128]u8 = undefined;
+    var count: usize = 0;
+
+    for (module.declarations.items) |decl| {
+        switch (decl) {
+            .@"var" => |v| {
+                if (!v.name.isValid()) continue;
+
+                // Extract group and binding from attributes
+                var group: ?i32 = null;
+                var binding: ?i32 = null;
+                for (v.attributes.items) |attr| {
+                    if (std.mem.eql(u8, attr.name, "group")) {
+                        group = getIntArg(attr);
+                    } else if (std.mem.eql(u8, attr.name, "binding")) {
+                        binding = getIntArg(attr);
+                    }
+                }
+
+                if (group != null and binding != null) {
+                    if (count > 0) out.appendSlice(gpa, " | ") catch {};
+                    // Show address space for uniform/storage, or type name for sampler/texture
+                    const type_label: []const u8 = if (v.address_space != .none)
+                        v.address_space.string()
+                    else if (v.typ) |typ| switch (typ) {
+                        .sampler => "sampler",
+                        .texture => "texture",
+                        .ident => |t| t.name,
+                        else => "var",
+                    } else "var";
+                    const entry = std.fmt.bufPrint(&tmp, "@group({d}) @binding({d}) {s}", .{ group.?, binding.?, type_label }) catch continue;
+                    out.appendSlice(gpa, entry) catch {};
+                    count += 1;
+                }
+            },
+            else => {},
+        }
+    }
+
+    if (count == 0) return null;
+    return gpa.dupe(u8, out.items) catch null;
+}
+
+/// Extract @workgroup_size(X, Y, Z) from a function's attributes.
+fn getWorkgroupSize(f: *const Ast.FunctionDecl) ?[3]u32 {
+    for (f.attributes.items) |attr| {
+        if (std.mem.eql(u8, attr.name, "workgroup_size")) {
+            var sizes = [3]u32{ 1, 1, 1 };
+            for (attr.args.items, 0..) |arg, i| {
+                if (i >= 3) break;
+                switch (arg) {
+                    .literal => |lit| {
+                        sizes[i] = std.fmt.parseInt(u32, lit.value, 10) catch 1;
+                    },
+                    else => {},
+                }
+            }
+            return sizes;
+        }
+    }
+    return null;
+}
+
+/// Extract an integer value from the first argument of an attribute.
+fn getIntArg(attr: Ast.Attribute) ?i32 {
+    if (attr.args.items.len == 0) return null;
+    switch (attr.args.items[0]) {
+        .literal => |lit| return std.fmt.parseInt(i32, lit.value, 10) catch null,
+        else => return null,
+    }
 }
 
 // =========================================================================

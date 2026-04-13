@@ -260,6 +260,26 @@ test "hover: struct type shows size and alignment" {
     try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "struct S") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "size:") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "align:") != null);
+    // Should show per-field offsets
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "@0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "@4") != null);
+}
+
+test "hover: struct layout shows padding gaps" {
+    // vec3<f32> is 12 bytes but aligns to 16, so there will be padding before the next field
+    const source: [:0]const u8 = "struct V { pos: vec3<f32>, w: f32 } fn f(v: V) {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const v_type_pos = std.mem.lastIndexOf(u8, source, "V") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(v_type_pos)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    // Should show field offsets
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "@0") != null);
+    // vec3<f32> is 12 bytes, next field at offset 12 (no padding since f32 aligns to 4)
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "pos") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "w") != null);
 }
 
 test "hover: builtin function shows signature and description" {

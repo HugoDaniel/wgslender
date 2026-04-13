@@ -93,3 +93,48 @@ test "code lens: unknown document" {
     const lenses = try handler.computeCodeLens("test://nonexistent.wgsl");
     try std.testing.expectEqual(@as(usize, 0), lenses.len);
 }
+
+fn hasLensContaining(lenses: []const Handler.CodeLensInfo, needle: []const u8) bool {
+    for (lenses) |l| {
+        if (std.mem.indexOf(u8, l.title, needle) != null) return true;
+    }
+    return false;
+}
+
+test "code lens: entry point with bindings shows binding summary" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> uniforms: vec4f;
+        \\@group(0) @binding(1) var tex_sampler: sampler;
+        \\@fragment fn main() -> @location(0) vec4f { return vec4f(0.0); }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    // Should have a binding summary lens
+    try std.testing.expect(hasLensContaining(lenses, "@group(0) @binding(0)"));
+    try std.testing.expect(hasLensContaining(lenses, "@group(0) @binding(1)"));
+}
+
+test "code lens: compute shader shows workgroup size" {
+    const source: [:0]const u8 =
+        \\@compute @workgroup_size(8, 8, 1) fn main() {}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    try std.testing.expect(hasLensContaining(lenses, "workgroup: 8x8x1"));
+}
+
+test "code lens: no bindings means no binding lens" {
+    const source: [:0]const u8 =
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    try std.testing.expect(!hasLensContaining(lenses, "@group"));
+    try std.testing.expect(!hasLensContaining(lenses, "workgroup"));
+}

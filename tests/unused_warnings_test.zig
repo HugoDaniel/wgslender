@@ -142,3 +142,64 @@ test "unused warnings: message format" {
     try std.testing.expect(std.mem.indexOf(u8, warnings[0].message, "'lonely'") != null);
     try std.testing.expect(std.mem.indexOf(u8, warnings[0].message, "declared but never used") != null);
 }
+
+test "unused warnings: unused symbol has unnecessary tag" {
+    const source: [:0]const u8 = "fn unused_fn() {}";
+    const warnings = try getUnusedWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(warnings.len > 0);
+    try std.testing.expect(warnings[0].tags.len > 0);
+    try std.testing.expectEqual(Handler.DiagnosticTag.unnecessary, warnings[0].tags[0]);
+}
+
+// =========================================================================
+// Dead code warnings (unreachable from entry points)
+// =========================================================================
+
+fn getDeadCodeWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
+    var result = try wgslender.analyzeWithOptions(std.testing.allocator, source, .{});
+    defer result.deinit(std.testing.allocator);
+
+    // Run DCE to compute is_live flags
+    if (result.module) |module| {
+        if (result._arena) |*arena| {
+            _ = wgslender.Dce.mark(arena.allocator(), module) catch {};
+        }
+    }
+
+    var diags: std.ArrayListUnmanaged(Handler.LspDiagnostic) = .empty;
+    Handler.appendDeadCodeWarnings(std.testing.allocator, &result, &diags);
+    return diags.toOwnedSlice(std.testing.allocator) catch &.{};
+}
+
+test "dead code: function reachable from entry point not flagged" {
+    const source: [:0]const u8 = "fn helper() -> f32 { return 1.0; } @vertex fn main() -> @builtin(position) vec4f { return vec4f(helper()); }";
+    const warnings = try getDeadCodeWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expectEqual(@as(usize, 0), warnings.len);
+}
+
+test "dead code: function not reachable from entry point flagged" {
+    const source: [:0]const u8 = "fn helper() -> f32 { return 1.0; } fn process() -> f32 { return helper(); } @vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }";
+    const warnings = try getDeadCodeWarnings(source);
+    defer freeWarnings(warnings);
+    // Both helper and process are used internally but unreachable from main
+    try std.testing.expect(warnings.len >= 1);
+    try std.testing.expect(warnings[0].tags.len > 0);
+    try std.testing.expectEqual(Handler.DiagnosticTag.unnecessary, warnings[0].tags[0]);
+}
+
+test "dead code: no entry points means no dead code warnings" {
+    // Library mode — no entry points, DCE marks everything live
+    const source: [:0]const u8 = "fn helper() -> f32 { return 1.0; } fn process() -> f32 { return helper(); }";
+    const warnings = try getDeadCodeWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expectEqual(@as(usize, 0), warnings.len);
+}
+
+test "dead code: entry point itself not flagged" {
+    const source: [:0]const u8 = "@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }";
+    const warnings = try getDeadCodeWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expectEqual(@as(usize, 0), warnings.len);
+}
