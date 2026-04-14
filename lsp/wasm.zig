@@ -674,7 +674,7 @@ fn handleInlayHint(root: std.json.ObjectMap, id: ?std.json.Value) void {
         appendStr(&buf, "},\"label\":\"");
         Diagnostic.appendJsonEscaped(&buf, wasm_allocator, h.label) catch return;
         appendStr(&buf, "\",\"kind\":");
-        appendUint(&buf, if (h.kind == .type_hint) @as(u32, 1) else @as(u32, 2));
+        appendUint(&buf, if (h.kind == .parameter_hint) @as(u32, 2) else @as(u32, 1));
         appendStr(&buf, "}");
     }
     appendStr(&buf, "]");

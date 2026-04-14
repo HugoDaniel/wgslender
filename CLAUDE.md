@@ -1,5 +1,7 @@
 # CLAUDE.md - wgslender
 
+Commit often. Atomic commits in a style consistent with existing ones (conventional).
+
 ## Project Overview
 
 A high-performance WGSL (WebGPU Shading Language) minifier written in Zig, with WASM builds for browser/Node.js usage. Architecture inspired by esbuild.

@@ -23,6 +23,14 @@ const Validator = @This();
 /// Name and source location pair, used for duplicate-detection maps.
 const LocName = struct { name: []const u8, loc: u32 };
 
+const BindingInfo = struct {
+    name: []const u8,
+    loc: u32,
+    group: u32,
+    binding: u32,
+    sym_idx: u32,
+};
+
 // =========================================================================
 // Public Types
 // =========================================================================
@@ -73,6 +81,12 @@ pub const Result = struct {
 
 /// Enriched analysis result that retains the validator's semantic state.
 /// Used by the LSP to power features like hover, go-to-definition, etc.
+/// Type information for an expression, keyed by the expression's start offset.
+pub const ExprTypeInfo = struct {
+    typ: Types.Type,
+    end_offset: u32,
+};
+
 pub const AnalysisResult = struct {
     valid: bool,
     diagnostics: *Diagnostic,
@@ -82,6 +96,7 @@ pub const AnalysisResult = struct {
     struct_types: std.StringHashMapUnmanaged(*Types.Struct) = .{},
     alias_types: std.StringHashMapUnmanaged(?Types.Type) = .{},
     const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
+    expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
     _arena: ?std.heap.ArenaAllocator = null,
 
     /// Free all memory owned by this result.
@@ -122,10 +137,19 @@ struct_types: std.StringHashMapUnmanaged(*Types.Struct) = .{},
 // Alias type cache: maps name -> resolved type (null = placeholder)
 alias_types: std.StringHashMapUnmanaged(?Types.Type) = .{},
 
+// Expression type cache: maps expression start offset -> type info
+expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
+
 // Override ID tracking for uniqueness validation
 override_ids: std.AutoHashMapUnmanaged(u32, LocName) = .{},
 // Binding pair tracking for uniqueness validation: key = (group << 32) | binding
 binding_pairs: std.AutoHashMapUnmanaged(u64, LocName) = .{},
+
+// Binding info collection for suspicious pattern analysis and per-entry-point validation
+binding_infos: std.ArrayListUnmanaged(BindingInfo) = .empty,
+
+// True when module has >= 2 entry points (per-entry-point binding validation needed)
+multi_entry_point: bool = false,
 
 // Const value propagation: maps SymbolIndex raw u32 -> evaluated integer value
 const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
@@ -150,6 +174,9 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
         .options = options,
     };
 
+    // Pre-scan: detect multiple entry points for per-entry-point binding validation
+    v.multi_entry_point = countEntryPoints(module) >= 2;
+
     // Phase 0: Process directives (enable, diagnostic)
     try v.processDirectives();
 
@@ -173,6 +200,10 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
 
     // Phase 4: Validate functions and statements
     try v.validateFunctions();
+
+    // Phase 4.5: Per-entry-point binding validation + suspicious patterns
+    try v.validatePerEntryPointBindings();
+    v.checkSuspiciousBindingPatterns();
 
     // Phase 5: Uniformity analysis
     v.analyzeUniformity();
@@ -200,6 +231,9 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
         .options = options,
     };
 
+    // Pre-scan: detect multiple entry points for per-entry-point binding validation
+    v.multi_entry_point = countEntryPoints(module) >= 2;
+
     try v.processDirectives();
     try v.collectTypeDeclarations();
     try v.resolveStructLayouts();
@@ -208,6 +242,8 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
     try v.registerFunctionSignatures();
     try v.checkRecursiveFunctions();
     try v.validateFunctions();
+    try v.validatePerEntryPointBindings();
+    v.checkSuspiciousBindingPatterns();
     v.analyzeUniformity();
     diags.deduplicate();
 
@@ -219,6 +255,7 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
         .struct_types = v.struct_types,
         .alias_types = v.alias_types,
         .const_values = v.const_values,
+        .expr_types = v.expr_types,
     };
 }
 
@@ -836,11 +873,162 @@ fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u8, r
     if (!has_group or !has_binding) {
         v.addErrorWithCodeR(r, Diagnostic.Code.missing_binding, v.fmtError("{s} var '{s}' requires @group and @binding attributes", .{ d.address_space.string(), name }));
     } else if (group_val != null and binding_val != null) {
-        const key = (@as(u64, @intCast(group_val.?)) << 32) | @as(u64, @intCast(binding_val.?));
-        if (v.binding_pairs.get(key)) |existing| {
-            v.addErrorWithRelatedR(r, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}'", .{ group_val.?, binding_val.?, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("'{s}' declared here", .{existing.name})));
+        const gv: u32 = if (group_val.? >= 0 and group_val.? <= std.math.maxInt(u32)) @intCast(group_val.?) else 0;
+        const bv: u32 = if (binding_val.? >= 0 and binding_val.? <= std.math.maxInt(u32)) @intCast(binding_val.?) else 0;
+        const key = (@as(u64, gv) << 32) | @as(u64, bv);
+        // When multiple entry points exist, defer duplicate checks to per-entry-point pass
+        if (!v.multi_entry_point) {
+            if (v.binding_pairs.get(key)) |existing| {
+                v.addErrorWithRelatedR(r, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}'", .{ group_val.?, binding_val.?, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("'{s}' declared here", .{existing.name})));
+            }
+        }
+        try v.binding_pairs.put(v.arena, key, .{ .name = name, .loc = r.start });
+        // Collect binding info for pattern analysis
+        try v.binding_infos.append(v.arena, .{
+            .name = name,
+            .loc = r.start,
+            .group = gv,
+            .binding = bv,
+            .sym_idx = d.name.index(),
+        });
+    }
+}
+
+/// Check for suspicious binding patterns: gaps in binding numbers and unusually high values.
+fn checkSuspiciousBindingPatterns(v: *Validator) void {
+    if (v.binding_infos.items.len == 0) return;
+
+    // Group bindings by @group value. Use a simple approach: find max group,
+    // then iterate per group. Limit to groups 0..15 to avoid huge allocations.
+    var max_group: u32 = 0;
+    for (v.binding_infos.items) |info| {
+        if (info.group > 15) {
+            // High group number warning
+            v.diags.add(v.arena, .{
+                .severity = .info,
+                .code = "W0102",
+                .message = v.fmtError("@group({d}) is unusually high — typical WebGPU pipelines use groups 0–3", .{info.group}),
+                .range = v.diags.makeRange(info.loc, info.loc +| @as(u32, @intCast(info.name.len))),
+            });
         } else {
-            try v.binding_pairs.put(v.arena, key, .{ .name = name, .loc = r.start });
+            if (info.group > max_group) max_group = info.group;
+        }
+        if (info.binding > 15) {
+            v.diags.add(v.arena, .{
+                .severity = .info,
+                .code = "W0102",
+                .message = v.fmtError("@binding({d}) is unusually high — verify this is intentional", .{info.binding}),
+                .range = v.diags.makeRange(info.loc, info.loc +| @as(u32, @intCast(info.name.len))),
+            });
+        }
+    }
+
+    // Check for gaps within each group (only for groups 0..max_group)
+    for (0..max_group + 1) |g| {
+        const group: u32 = @intCast(g);
+        // Collect binding numbers for this group
+        var min_binding: u32 = std.math.maxInt(u32);
+        var max_binding: u32 = 0;
+        var count: u32 = 0;
+        for (v.binding_infos.items) |info| {
+            if (info.group != group) continue;
+            if (info.binding < min_binding) min_binding = info.binding;
+            if (info.binding > max_binding) max_binding = info.binding;
+            count += 1;
+        }
+        if (count < 2) continue;
+        // If there are gaps (range is larger than count), warn on each gap
+        if (max_binding - min_binding + 1 > count and max_binding <= 15) {
+            // Find the specific gaps
+            for (min_binding..max_binding + 1) |b| {
+                const binding: u32 = @intCast(b);
+                var found = false;
+                for (v.binding_infos.items) |info| {
+                    if (info.group == group and info.binding == binding) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    // Find the binding just before the gap to attach the warning to
+                    var best_loc: u32 = 0;
+                    var best_name: []const u8 = "";
+                    for (v.binding_infos.items) |info| {
+                        if (info.group == group and info.binding < binding and info.binding >= best_loc) {
+                            best_loc = info.loc;
+                            best_name = info.name;
+                        }
+                    }
+                    if (best_name.len > 0) {
+                        v.diags.add(v.arena, .{
+                            .severity = .info,
+                            .code = "W0101",
+                            .message = v.fmtError("gap in @group({d}) bindings: @binding({d}) is missing", .{ group, binding }),
+                            .range = v.diags.makeRange(best_loc, best_loc +| @as(u32, @intCast(best_name.len))),
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn countEntryPoints(module: *const Ast.Module) u32 {
+    var count: u32 = 0;
+    for (module.symbols.items) |sym| {
+        if (sym.flags.is_entry_point) count += 1;
+    }
+    return count;
+}
+
+/// Per-entry-point binding collision detection.
+/// When multiple entry points exist, checks that each entry point's reachable
+/// set of bindings has no duplicates. WebGPU allows different entry points to
+/// share the same @group/@binding pair since they use separate pipeline layouts.
+fn validatePerEntryPointBindings(v: *Validator) Allocator.Error!void {
+    if (!v.multi_entry_point) return;
+    if (v.binding_infos.items.len < 2) return;
+
+    // Build dependency graph using the same logic as DCE
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    try Dce.buildDependencyGraph(v.arena, v.module, &deps);
+
+    // For each entry point, BFS to find reachable symbols, then check binding collisions
+    for (v.module.symbols.items, 0..) |sym, idx| {
+        if (!sym.flags.is_entry_point) continue;
+
+        // BFS from this entry point
+        var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        var queue: std.ArrayListUnmanaged(u32) = .empty;
+        try queue.append(v.arena, @intCast(idx));
+
+        var head: usize = 0;
+        while (head < queue.items.len) {
+            const current = queue.items[head];
+            head += 1;
+            if (visited.contains(current)) continue;
+            try visited.put(v.arena, current, {});
+
+            if (deps.get(current)) |dep_list| {
+                for (dep_list.items) |dep_idx| {
+                    if (!visited.contains(dep_idx)) {
+                        try queue.append(v.arena, dep_idx);
+                    }
+                }
+            }
+        }
+
+        // Check for duplicate bindings within this entry point's reachable set
+        var ep_bindings: std.AutoHashMapUnmanaged(u64, BindingInfo) = .empty;
+        for (v.binding_infos.items) |info| {
+            if (!visited.contains(info.sym_idx)) continue;
+            const key = (@as(u64, info.group) << 32) | @as(u64, info.binding);
+            if (ep_bindings.get(key)) |existing| {
+                const r: LocRange = .{ .start = info.loc, .end = info.loc +| @as(u32, @intCast(info.name.len)) };
+                v.addErrorWithRelatedR(r, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}' in entry point '{s}'", .{ info.group, info.binding, existing.name, sym.original_name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| @as(u32, @intCast(existing.name.len)) }, v.fmtError("'{s}' declared here", .{existing.name})));
+            } else {
+                try ep_bindings.put(v.arena, key, info);
+            }
         }
     }
 }
@@ -2076,7 +2264,7 @@ fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!?Types.Type {
     if (v.expr_depth >= max_expr_depth) return null;
     v.expr_depth += 1;
     defer v.expr_depth -= 1;
-    return switch (expr) {
+    const result: ?Types.Type = switch (expr) {
         .literal => |e| v.checkLiteral(e),
         .ident => |e| v.checkIdent(e),
         .binary => |e| try v.checkBinary(e),
@@ -2086,6 +2274,19 @@ fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!?Types.Type {
         .member => |e| try v.checkMember(e),
         .paren => |e| try v.checkExpr(e.expr),
     };
+    if (result) |typ| {
+        switch (expr) {
+            .binary, .call, .index, .member => {
+                const span = exprSpan(expr);
+                v.expr_types.put(v.arena, span.start, .{
+                    .typ = typ,
+                    .end_offset = span.end,
+                }) catch {};
+            },
+            else => {},
+        }
+    }
+    return result;
 }
 
 fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) ?Types.Type {
@@ -4273,78 +4474,99 @@ fn tryEvalConstBool(v: *const Validator, expr: Ast.Expr) ?bool {
 }
 
 /// Try to extract a constant integer value from an expression.
-/// Handles literals, paren/negate wrappers, and const-declared identifiers.
+/// Handles literals, paren/negate wrappers, const-declared identifiers,
+/// and binary arithmetic/bitwise operations on const sub-expressions.
 fn tryExtractIntValue(v: *const Validator, expr: Ast.Expr) ?i64 {
-    var current = expr;
-    var negate = false;
+    return v.tryExtractIntValueDepth(expr, 0);
+}
 
-    // Iteratively peel wrappers (parens, unary negate). Bounded to
-    // prevent runaway on malformed ASTs.
-    for (0..32) |_| {
-        switch (current) {
-            .literal => |lit| {
-                if (lit.value.len == 0) return if (negate) @as(i64, 0) else @as(i64, 0);
-                // Strip integer suffix (e.g., "1i", "2u")
-                var val_str = lit.value;
-                if (val_str.len > 0 and (val_str[val_str.len - 1] == 'i' or val_str[val_str.len - 1] == 'u')) {
-                    val_str = val_str[0 .. val_str.len - 1];
-                }
-                const val = std.fmt.parseInt(i64, val_str, 0) catch return null;
-                return if (negate) -val else val;
-            },
-            .ident => |ident| {
-                // Resolve const-declared identifiers to their evaluated values
-                if (ident.ref.isValid()) {
-                    if (v.const_values.get(ident.ref.index())) |val| {
-                        return if (negate) -val else val;
-                    }
-                }
-                return null;
-            },
-            .unary => |u| {
-                if (u.op == .neg) {
-                    negate = !negate;
-                    current = u.operand;
-                } else {
-                    return null;
-                }
-            },
-            .paren => |p| current = p.expr,
-            else => return null,
-        }
+fn tryExtractIntValueDepth(v: *const Validator, expr: Ast.Expr, depth: u32) ?i64 {
+    if (depth > 32) return null;
+    return switch (expr) {
+        .literal => |lit| extractLiteralInt(lit),
+        .ident => |ident| {
+            if (ident.ref.isValid()) {
+                return v.const_values.get(ident.ref.index());
+            }
+            return null;
+        },
+        .unary => |u| {
+            const val = v.tryExtractIntValueDepth(u.operand, depth + 1) orelse return null;
+            return switch (u.op) {
+                .neg => 0 -| val,
+                .bit_not => ~val,
+                else => null,
+            };
+        },
+        .paren => |p| v.tryExtractIntValueDepth(p.expr, depth + 1),
+        .binary => |b| {
+            const l = v.tryExtractIntValueDepth(b.left, depth + 1) orelse return null;
+            const r = v.tryExtractIntValueDepth(b.right, depth + 1) orelse return null;
+            return switch (b.op) {
+                .add => l +| r,
+                .sub => l -| r,
+                .mul => l *| r,
+                .div => if (r != 0) @divTrunc(l, r) else null,
+                .mod => if (r != 0) @mod(l, r) else null,
+                .shl => if (r >= 0 and r < 64) l << @intCast(r) else null,
+                .shr => if (r >= 0 and r < 64) l >> @intCast(r) else null,
+                .@"and" => l & r,
+                .@"or" => l | r,
+                .xor => l ^ r,
+                else => null,
+            };
+        },
+        else => null,
+    };
+}
+
+fn extractLiteralInt(lit: *Ast.LiteralExpr) ?i64 {
+    if (lit.value.len == 0) return 0;
+    var val_str = lit.value;
+    if (val_str.len > 0 and (val_str[val_str.len - 1] == 'i' or val_str[val_str.len - 1] == 'u')) {
+        val_str = val_str[0 .. val_str.len - 1];
     }
-    return null;
+    return std.fmt.parseInt(i64, val_str, 0) catch null;
 }
 
 /// Extract a constant integer from a literal expression (no const lookup).
 /// Used by freestanding helpers that don't have access to the Validator.
 fn extractLiteralIntValue(expr: Ast.Expr) ?i64 {
-    var current = expr;
-    var negate = false;
-    for (0..32) |_| {
-        switch (current) {
-            .literal => |lit| {
-                if (lit.value.len == 0) return @as(i64, 0);
-                var val_str = lit.value;
-                if (val_str.len > 0 and (val_str[val_str.len - 1] == 'i' or val_str[val_str.len - 1] == 'u')) {
-                    val_str = val_str[0 .. val_str.len - 1];
-                }
-                const val = std.fmt.parseInt(i64, val_str, 0) catch return null;
-                return if (negate) -val else val;
-            },
-            .unary => |u| {
-                if (u.op == .neg) {
-                    negate = !negate;
-                    current = u.operand;
-                } else {
-                    return null;
-                }
-            },
-            .paren => |p| current = p.expr,
-            else => return null,
-        }
-    }
-    return null;
+    return extractLiteralIntValueDepth(expr, 0);
+}
+
+fn extractLiteralIntValueDepth(expr: Ast.Expr, depth: u32) ?i64 {
+    if (depth > 32) return null;
+    return switch (expr) {
+        .literal => |lit| extractLiteralInt(lit),
+        .unary => |u| {
+            const val = extractLiteralIntValueDepth(u.operand, depth + 1) orelse return null;
+            return switch (u.op) {
+                .neg => 0 -| val,
+                .bit_not => ~val,
+                else => null,
+            };
+        },
+        .paren => |p| extractLiteralIntValueDepth(p.expr, depth + 1),
+        .binary => |b| {
+            const l = extractLiteralIntValueDepth(b.left, depth + 1) orelse return null;
+            const r = extractLiteralIntValueDepth(b.right, depth + 1) orelse return null;
+            return switch (b.op) {
+                .add => l +| r,
+                .sub => l -| r,
+                .mul => l *| r,
+                .div => if (r != 0) @divTrunc(l, r) else null,
+                .mod => if (r != 0) @mod(l, r) else null,
+                .shl => if (r >= 0 and r < 64) l << @intCast(r) else null,
+                .shr => if (r >= 0 and r < 64) l >> @intCast(r) else null,
+                .@"and" => l & r,
+                .@"or" => l | r,
+                .xor => l ^ r,
+                else => null,
+            };
+        },
+        else => null,
+    };
 }
 
 /// Expression evaluation stage per WGSL spec sections 6.7-6.9.

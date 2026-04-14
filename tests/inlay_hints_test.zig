@@ -100,6 +100,232 @@ test "inlay hints: const with explicit type has no hint" {
     try std.testing.expectEqual(@as(usize, 0), hints.len);
 }
 
+// =========================================================================
+// Const value hints (array sizes)
+// =========================================================================
+
+test "inlay hints: array size with const ref shows value" {
+    const source: [:0]const u8 =
+        \\const N = 256;
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var buf: array<f32, N>;
+        \\  _ = buf;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 5, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // Should have a const_value_hint showing "= 256" for the array size N
+    var found_const_hint = false;
+    for (hints) |h| {
+        if (h.kind == .const_value_hint) {
+            try std.testing.expect(std.mem.indexOf(u8, h.label, "256") != null);
+            found_const_hint = true;
+        }
+    }
+    try std.testing.expect(found_const_hint);
+}
+
+test "inlay hints: array size with literal has no const hint" {
+    const source: [:0]const u8 =
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var buf: array<f32, 10>;
+        \\  _ = buf;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 4, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // No const_value_hint since size is a plain literal
+    for (hints) |h| {
+        try std.testing.expect(h.kind != .const_value_hint);
+    }
+}
+
+test "inlay hints: array size with const expression shows evaluated value" {
+    const source: [:0]const u8 =
+        \\const W = 16;
+        \\const H = 16;
+        \\const TOTAL = W * H;
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var buf: array<f32, TOTAL>;
+        \\  _ = buf;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 7, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    var found = false;
+    for (hints) |h| {
+        if (h.kind == .const_value_hint) {
+            if (std.mem.indexOf(u8, h.label, "256") != null) found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "inlay hints: module-level array type with const size" {
+    const source: [:0]const u8 =
+        \\const SIZE = 64;
+        \\var<private> data: array<f32, SIZE>;
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 2, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    var found = false;
+    for (hints) |h| {
+        if (h.kind == .const_value_hint) {
+            if (std.mem.indexOf(u8, h.label, "64") != null) found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// =========================================================================
+// Expression type hints
+// =========================================================================
+
+test "inlay hints: binary arithmetic shows result type" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  let a: f32 = 1.0;
+        \\  let b: f32 = 2.0;
+        \\  let c = a + b;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 4, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // Should have type hints — at least one for the let 'c' and one for 'a + b'
+    var has_type_hint = false;
+    for (hints) |h| {
+        if (h.kind == .type_hint) has_type_hint = true;
+    }
+    try std.testing.expect(has_type_hint);
+}
+
+test "inlay hints: comparison op does not show bool hint" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  let a: i32 = 1;
+        \\  let b: i32 = 2;
+        \\  if a == b { }
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 4, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // No expression type hint for == since result is always bool (filtered out)
+    for (hints) |h| {
+        if (h.kind == .type_hint) {
+            try std.testing.expect(std.mem.indexOf(u8, h.label, "bool") == null);
+        }
+    }
+}
+
+test "inlay hints: function call shows return type" {
+    const source: [:0]const u8 =
+        \\fn helper() -> f32 { return 1.0; }
+        \\fn main() {
+        \\  let x: f32 = 1.0;
+        \\  let y = helper() + x;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 4, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // Should have type hints for y's initializer
+    var has_type_hint = false;
+    for (hints) |h| {
+        if (h.kind == .type_hint and std.mem.indexOf(u8, h.label, "f32") != null) {
+            has_type_hint = true;
+        }
+    }
+    try std.testing.expect(has_type_hint);
+}
+
+test "inlay hints: assignment RHS gets expression type hints" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  var x: f32 = 1.0;
+        \\  var y: f32 = 2.0;
+        \\  x = x + y;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 4, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // The assignment RHS `x + y` should get an expression type hint
+    var has_expr_hint = false;
+    for (hints) |h| {
+        if (h.kind == .type_hint and std.mem.indexOf(u8, h.label, "f32") != null) {
+            has_expr_hint = true;
+        }
+    }
+    try std.testing.expect(has_expr_hint);
+}
+
+test "inlay hints: type constructor does not show redundant hint" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  let v = vec3<f32>(1.0, 2.0, 3.0);
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 2, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // The type constructor vec3<f32>(...) should NOT get an expression type hint
+    // (template_type is set, so it's filtered). The let should still get a declaration hint.
+    var expr_type_count: usize = 0;
+    for (hints) |h| {
+        if (h.kind == .type_hint and std.mem.indexOf(u8, h.label, "vec3") != null) {
+            // This could be the let declaration hint OR an unwanted expr hint
+            expr_type_count += 1;
+        }
+    }
+    // Should have at most 1 (the declaration hint for let v), not 2 (no expr hint)
+    try std.testing.expect(expr_type_count <= 1);
+}
+
 test "inlay hints: range filtering works" {
     const source: [:0]const u8 =
         \\fn f() {

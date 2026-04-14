@@ -138,3 +138,70 @@ test "code lens: no bindings means no binding lens" {
     try std.testing.expect(!hasLensContaining(lenses, "@group"));
     try std.testing.expect(!hasLensContaining(lenses, "workgroup"));
 }
+
+// =========================================================================
+// Workgroup size with const references
+// =========================================================================
+
+test "code lens: workgroup size with single const ref" {
+    const source: [:0]const u8 =
+        \\const SIZE = 64;
+        \\@compute @workgroup_size(SIZE) fn main() {}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    try std.testing.expect(hasLensContaining(lenses, "workgroup: 64x1x1"));
+}
+
+test "code lens: workgroup size with multiple const refs" {
+    const source: [:0]const u8 =
+        \\const X = 8;
+        \\const Y = 4;
+        \\const Z = 2;
+        \\@compute @workgroup_size(X, Y, Z) fn main() {}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    try std.testing.expect(hasLensContaining(lenses, "workgroup: 8x4x2"));
+}
+
+test "code lens: workgroup size with mixed literal and const" {
+    const source: [:0]const u8 =
+        \\const WG_X = 16;
+        \\@compute @workgroup_size(WG_X, 8, 1) fn main() {}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    try std.testing.expect(hasLensContaining(lenses, "workgroup: 16x8x1"));
+}
+
+test "code lens: workgroup size with const computed from expression" {
+    const source: [:0]const u8 =
+        \\const BASE = 4;
+        \\const SIZE = BASE * BASE;
+        \\@compute @workgroup_size(SIZE) fn main() {}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    // SIZE = 4 * 4 = 16
+    try std.testing.expect(hasLensContaining(lenses, "workgroup: 16x1x1"));
+}
+
+test "code lens: workgroup size still works with literals" {
+    const source: [:0]const u8 =
+        \\@compute @workgroup_size(32, 4, 1) fn main() {}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const lenses = try ctx.handler.computeCodeLens("test://file.wgsl");
+    defer freeLenses(lenses);
+    try std.testing.expect(hasLensContaining(lenses, "workgroup: 32x4x1"));
+}

@@ -203,3 +203,143 @@ test "dead code: entry point itself not flagged" {
     defer freeWarnings(warnings);
     try std.testing.expectEqual(@as(usize, 0), warnings.len);
 }
+
+// =========================================================================
+// Unused binding warnings (W0003)
+// =========================================================================
+
+fn getUnusedBindingWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
+    var result = try wgslender.analyzeWithOptions(std.testing.allocator, source, .{});
+    defer result.deinit(std.testing.allocator);
+
+    // Run DCE to compute is_live flags
+    if (result.module) |module| {
+        if (result._arena) |*arena| {
+            _ = wgslender.Dce.mark(arena.allocator(), module) catch {};
+        }
+    }
+
+    var diags: std.ArrayListUnmanaged(Handler.LspDiagnostic) = .empty;
+    Handler.appendUnusedBindingWarnings(std.testing.allocator, &result, &diags);
+    return diags.toOwnedSlice(std.testing.allocator) catch &.{};
+}
+
+test "unused binding: unused uniform var gets warning" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> unused_buf: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(hasWarningFor(warnings, "unused_buf"));
+}
+
+test "unused binding: used uniform var no warning" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> used_buf: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = used_buf; }
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(!hasWarningFor(warnings, "used_buf"));
+}
+
+test "unused binding: unused storage var gets warning" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<storage> data: array<f32>;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(hasWarningFor(warnings, "data"));
+}
+
+test "unused binding: severity is warning with code W0003" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> unused_u: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(warnings.len > 0);
+    try std.testing.expect(warnings[0].severity == .warning);
+    try std.testing.expectEqualStrings("W0003", warnings[0].code);
+}
+
+test "unused binding: has unnecessary tag" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> unused_u: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(warnings.len > 0);
+    try std.testing.expect(warnings[0].tags.len > 0);
+    try std.testing.expectEqual(Handler.DiagnosticTag.unnecessary, warnings[0].tags[0]);
+}
+
+test "unused binding: message mentions bind group layout" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> my_buf: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(warnings.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, warnings[0].message, "'my_buf'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, warnings[0].message, "bind group layout slot") != null);
+}
+
+test "unused binding: multiple unused bindings" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> a: f32;
+        \\@group(0) @binding(1) var<uniform> b: f32;
+        \\@group(0) @binding(2) var<storage> c: array<f32>;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(hasWarningFor(warnings, "a"));
+    try std.testing.expect(hasWarningFor(warnings, "b"));
+    try std.testing.expect(hasWarningFor(warnings, "c"));
+}
+
+test "unused binding: mix of used and unused" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> active_buf: f32;
+        \\@group(0) @binding(1) var<uniform> idle_buf: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = active_buf; }
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expect(!hasWarningFor(warnings, "active_buf"));
+    try std.testing.expect(hasWarningFor(warnings, "idle_buf"));
+}
+
+test "unused binding: no bindings means no warnings" {
+    const source: [:0]const u8 =
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    try std.testing.expectEqual(@as(usize, 0), warnings.len);
+}
+
+test "unused binding: private var not treated as binding" {
+    const source: [:0]const u8 =
+        \\var<private> x: f32 = 0.0;
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    // Private vars are not bindings, should not appear here
+    try std.testing.expectEqual(@as(usize, 0), warnings.len);
+}

@@ -222,9 +222,10 @@ pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
         try diags.append(self.gpa, convertDiagnostic(self.gpa, &entry));
     }
 
-    // Append unused symbol warnings and dead code warnings
+    // Append unused symbol warnings, dead code warnings, and unused binding warnings
     appendUnusedWarnings(self.gpa, analysis, &diags);
     appendDeadCodeWarnings(self.gpa, analysis, &diags);
+    appendUnusedBindingWarnings(self.gpa, analysis, &diags);
 
     return try diags.toOwnedSlice(self.gpa);
 }
@@ -581,6 +582,8 @@ pub const NodeAtPosition = union(enum) {
     decl_name: struct { sym_idx: Ast.SymbolIndex, loc: u32 },
     /// A type reference (e.g., `f32`, `MyStruct` in a type annotation).
     type_ref: struct { name: []const u8, ref: Ast.SymbolIndex, loc: u32 },
+    /// A binary operator expression (cursor on the operator token).
+    binary_expr: struct { expr: Ast.Expr, loc: u32, op_len: u32 },
     /// No identifiable node at this position.
     none,
 };
@@ -793,6 +796,12 @@ fn findInExpr(expr: Ast.Expr, offset: u32) ?NodeAtPosition {
         },
         .binary => |e| {
             if (findInExpr(e.left, offset)) |r| return r;
+            // Check if cursor is on the operator token itself
+            const op_str = e.op.string();
+            const op_len: u32 = @intCast(op_str.len);
+            if (offset >= e.loc and offset < e.loc + op_len) {
+                return .{ .binary_expr = .{ .expr = expr, .loc = e.loc, .op_len = op_len } };
+            }
             return findInExpr(e.right, offset);
         },
         .unary => |e| return findInExpr(e.operand, offset),
@@ -950,6 +959,49 @@ pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?Hover
             return .{
                 .contents = contents,
                 .range = offsetRangeToLspRange(source, ma.loc, ma.loc + @as(u32, @intCast(ma.member.len))) orelse return null,
+            };
+        },
+        .binary_expr => |be| {
+            // Show const-evaluated result and/or expression type
+            var parts: [2][]const u8 = undefined;
+            var part_count: usize = 0;
+
+            // Try to show the type of the expression
+            const expr_start = exprStartOffset(be.expr);
+            if (analysis.expr_types.get(expr_start)) |info| {
+                const type_str = info.typ.string();
+                const formatted = std.fmt.bufPrint(&buf, "**{s}**", .{type_str}) catch "";
+                if (formatted.len > 0) {
+                    parts[part_count] = try self.gpa.dupe(u8, formatted);
+                    part_count += 1;
+                }
+            }
+
+            // Try to show const-evaluated result
+            if (resolveConstExpr(be.expr, &analysis.const_values)) |val| {
+                var val_buf: [64]u8 = undefined;
+                const val_str = std.fmt.bufPrint(&val_buf, "= {d}", .{val}) catch "";
+                if (val_str.len > 0) {
+                    parts[part_count] = try self.gpa.dupe(u8, val_str);
+                    part_count += 1;
+                }
+            }
+
+            if (part_count == 0) return null;
+
+            // Join parts with newline
+            if (part_count == 2) {
+                const combined = try std.fmt.allocPrint(self.gpa, "{s}\n\n{s}", .{ parts[0], parts[1] });
+                self.gpa.free(parts[0]);
+                self.gpa.free(parts[1]);
+                return .{
+                    .contents = combined,
+                    .range = offsetRangeToLspRange(source, be.loc, be.loc + be.op_len) orelse return null,
+                };
+            }
+            return .{
+                .contents = parts[0],
+                .range = offsetRangeToLspRange(source, be.loc, be.loc + be.op_len) orelse return null,
             };
         },
         .none => return null,
@@ -1118,7 +1170,7 @@ pub fn computeDefinition(self: *Handler, uri: []const u8, position: Position) !?
             const sym = module.symbols.items[dn.sym_idx.index()];
             return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
         },
-        .member_access, .none => return null,
+        .member_access, .binary_expr, .none => return null,
     }
 }
 
@@ -1948,13 +2000,15 @@ pub fn computeTypeDefinition(self: *Handler, uri: []const u8, position: Position
 pub const InlayHintInfo = struct {
     position: Position,
     label: []const u8,
-    kind: enum { type_hint, parameter_hint },
+    kind: enum { type_hint, parameter_hint, const_value_hint },
 };
 
 pub fn computeInlayHints(self: *Handler, uri: []const u8, range: Range) ![]InlayHintInfo {
     const analysis = self.analyzeDocument(uri) catch return &.{};
     const module = analysis.module orelse return &.{};
     const source = module.source;
+    // Use the analysis arena for label strings so they share lifetime with type strings
+    const label_alloc = if (analysis._arena) |*a| a.allocator() else self.gpa;
 
     const range_start = lspPositionToOffset(source, range.start) orelse 0;
     const range_end = lspPositionToOffset(source, range.end) orelse source.len;
@@ -1962,9 +2016,8 @@ pub fn computeInlayHints(self: *Handler, uri: []const u8, range: Range) ![]Inlay
     var hints: std.ArrayListUnmanaged(InlayHintInfo) = .empty;
     defer hints.deinit(self.gpa);
 
-    // Walk declarations looking for let/var without explicit type annotations
     for (module.declarations.items) |decl| {
-        try self.collectInlayHintsFromDecl(module, &analysis.symbol_types, source, decl, range_start, range_end, &hints);
+        try self.collectInlayHintsFromDecl(module, analysis, label_alloc, source, decl, range_start, range_end, &hints);
     }
 
     return try self.gpa.dupe(InlayHintInfo, hints.items);
@@ -1973,7 +2026,8 @@ pub fn computeInlayHints(self: *Handler, uri: []const u8, range: Range) ![]Inlay
 fn collectInlayHintsFromDecl(
     self: *Handler,
     module: *const Ast.Module,
-    symbol_types: *const std.AutoHashMapUnmanaged(u32, wgslender.Types.Type),
+    analysis: *const wgslender.Validator.AnalysisResult,
+    label_alloc: std.mem.Allocator,
     source: [:0]const u8,
     decl: Ast.Decl,
     range_start: usize,
@@ -1986,7 +2040,7 @@ fn collectInlayHintsFromDecl(
                 if (l.name.isValid()) {
                     const sym = module.symbols.items[l.name.index()];
                     if (sym.loc >= range_start and sym.loc < range_end) {
-                        if (symbol_types.get(l.name.index())) |typ| {
+                        if (analysis.symbol_types.get(l.name.index())) |typ| {
                             const pos = offsetToLspPosition(source, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse return;
                             try hints.append(self.gpa, .{
                                 .position = pos,
@@ -1997,11 +2051,27 @@ fn collectInlayHintsFromDecl(
                     }
                 }
             }
+            // Collect array size hints from type annotation
+            if (l.typ) |typ| try self.collectArraySizeHints(&analysis.const_values, label_alloc, source, typ, range_start, range_end, hints);
+            // Collect expression type hints from initializer
+            if (l.initializer) |init_expr| try self.collectExprTypeHints(&analysis.expr_types, source, init_expr, range_start, range_end, hints, 0);
+        },
+        .@"var" => |v| {
+            // Collect array size hints from type annotation
+            if (v.typ) |typ| try self.collectArraySizeHints(&analysis.const_values, label_alloc, source, typ, range_start, range_end, hints);
+            // Collect expression type hints from initializer
+            if (v.initializer) |init_expr| try self.collectExprTypeHints(&analysis.expr_types, source, init_expr, range_start, range_end, hints, 0);
+        },
+        .@"const" => |c| {
+            // Collect array size hints from type annotation
+            if (c.typ) |typ| try self.collectArraySizeHints(&analysis.const_values, label_alloc, source, typ, range_start, range_end, hints);
+            // Collect expression type hints from initializer
+            if (c.initializer) |init_expr| try self.collectExprTypeHints(&analysis.expr_types, source, init_expr, range_start, range_end, hints, 0);
         },
         .function => |f| {
             if (f.body) |body| {
                 for (body.stmts.items) |stmt| {
-                    try self.collectInlayHintsFromStmt(module, symbol_types, source, stmt, range_start, range_end, hints);
+                    try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, stmt, range_start, range_end, hints);
                 }
             }
         },
@@ -2012,7 +2082,8 @@ fn collectInlayHintsFromDecl(
 fn collectInlayHintsFromStmt(
     self: *Handler,
     module: *const Ast.Module,
-    symbol_types: *const std.AutoHashMapUnmanaged(u32, wgslender.Types.Type),
+    analysis: *const wgslender.Validator.AnalysisResult,
+    label_alloc: std.mem.Allocator,
     source: [:0]const u8,
     stmt: Ast.Stmt,
     range_start: usize,
@@ -2020,27 +2091,193 @@ fn collectInlayHintsFromStmt(
     hints: *std.ArrayListUnmanaged(InlayHintInfo),
 ) std.mem.Allocator.Error!void {
     switch (stmt) {
-        .decl => |d| try self.collectInlayHintsFromDecl(module, symbol_types, source, d.decl, range_start, range_end, hints),
+        .decl => |d| try self.collectInlayHintsFromDecl(module, analysis, label_alloc, source, d.decl, range_start, range_end, hints),
         .compound => |c| {
             for (c.stmts.items) |s| {
-                try self.collectInlayHintsFromStmt(module, symbol_types, source, s, range_start, range_end, hints);
+                try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, s, range_start, range_end, hints);
             }
         },
         .@"if" => |i| {
-            try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = i.body }, range_start, range_end, hints);
-            if (i.else_branch) |eb| try self.collectInlayHintsFromStmt(module, symbol_types, source, eb, range_start, range_end, hints);
+            try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, .{ .compound = i.body }, range_start, range_end, hints);
+            if (i.else_branch) |eb| try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, eb, range_start, range_end, hints);
         },
         .@"for" => |f| {
-            if (f.init_stmt) |init_s| try self.collectInlayHintsFromStmt(module, symbol_types, source, init_s, range_start, range_end, hints);
-            try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = f.body }, range_start, range_end, hints);
+            if (f.init_stmt) |init_s| try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, init_s, range_start, range_end, hints);
+            try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, .{ .compound = f.body }, range_start, range_end, hints);
         },
-        .@"while" => |w| try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = w.body }, range_start, range_end, hints),
+        .@"while" => |w| try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, .{ .compound = w.body }, range_start, range_end, hints),
         .loop => |l| {
-            try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = l.body }, range_start, range_end, hints);
-            if (l.continuing) |cont| try self.collectInlayHintsFromStmt(module, symbol_types, source, .{ .compound = cont }, range_start, range_end, hints);
+            try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, .{ .compound = l.body }, range_start, range_end, hints);
+            if (l.continuing) |cont| try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, .{ .compound = cont }, range_start, range_end, hints);
+        },
+        .assign => |a| {
+            try self.collectExprTypeHints(&analysis.expr_types, source, a.right, range_start, range_end, hints, 0);
+        },
+        .@"return" => |r| {
+            if (r.value) |v| try self.collectExprTypeHints(&analysis.expr_types, source, v, range_start, range_end, hints, 0);
+        },
+        .call => |c| {
+            try self.collectExprTypeHints(&analysis.expr_types, source, .{ .call = c.call }, range_start, range_end, hints, 0);
         },
         else => {},
     }
+}
+
+/// Walk a type expression looking for array types with non-literal const size expressions.
+/// Emits const_value_hint inlay hints showing the evaluated array size.
+/// Labels are allocated from `label_alloc` (typically the analysis arena) so they share
+/// the same lifetime as type hint labels and don't need separate freeing.
+fn collectArraySizeHints(
+    self: *Handler,
+    const_values: *const std.AutoHashMapUnmanaged(u32, i64),
+    label_alloc: std.mem.Allocator,
+    source: [:0]const u8,
+    typ: Ast.Type,
+    range_start: usize,
+    range_end: usize,
+    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+) std.mem.Allocator.Error!void {
+    switch (typ) {
+        .array => |arr| {
+            if (arr.size) |size_expr| {
+                // Only hint when size is not a plain literal (value already visible)
+                switch (size_expr) {
+                    .literal => {},
+                    else => {
+                        if (resolveConstExpr(size_expr, const_values)) |val| {
+                            const end_offset = exprEndOffset(size_expr);
+                            if (end_offset >= range_start and end_offset <= range_end) {
+                                const pos = offsetToLspPosition(source, end_offset) orelse return;
+                                var buf: [32]u8 = undefined;
+                                const label = std.fmt.bufPrint(&buf, " = {d}", .{val}) catch return;
+                                try hints.append(self.gpa, .{
+                                    .position = pos,
+                                    .label = try label_alloc.dupe(u8, label),
+                                    .kind = .const_value_hint,
+                                });
+                            }
+                        }
+                    },
+                }
+            }
+            // Recurse into element type
+            if (arr.elem_type) |et| try self.collectArraySizeHints(const_values, label_alloc, source, et, range_start, range_end, hints);
+        },
+        .vec => |v| {
+            if (v.elem_type) |et| try self.collectArraySizeHints(const_values, label_alloc, source, et, range_start, range_end, hints);
+        },
+        .mat => |m| {
+            if (m.elem_type) |et| try self.collectArraySizeHints(const_values, label_alloc, source, et, range_start, range_end, hints);
+        },
+        .ptr => |p| try self.collectArraySizeHints(const_values, label_alloc, source, p.elem_type, range_start, range_end, hints),
+        .atomic => |a| try self.collectArraySizeHints(const_values, label_alloc, source, a.elem_type, range_start, range_end, hints),
+        else => {},
+    }
+}
+
+/// Compute the byte offset just past the end of an expression.
+/// Simplified version of Validator.exprSpan for use in the handler.
+fn exprEndOffset(expr: Ast.Expr) u32 {
+    return switch (expr) {
+        .ident => |e| e.loc +| @as(u32, @intCast(e.name.len)),
+        .literal => |e| e.loc +| @as(u32, @intCast(e.value.len)),
+        .binary => |e| exprEndOffset(e.right),
+        .unary => |e| exprEndOffset(e.operand),
+        .call => |e| e.loc +| 1, // past the closing paren
+        .index => |e| e.loc +| 1, // past the closing bracket
+        .member => |e| e.loc +| 1 +| @as(u32, @intCast(e.member_name.len)),
+        .paren => |e| exprEndOffset(e.expr),
+    };
+}
+
+/// Collect expression type hints for interesting sub-expressions.
+/// Only emits hints for binary ops (non-comparison), function calls (non-constructors),
+/// member access, and indexing operations within the visible range.
+fn collectExprTypeHints(
+    self: *Handler,
+    expr_types: *const std.AutoHashMapUnmanaged(u32, wgslender.Validator.ExprTypeInfo),
+    source: [:0]const u8,
+    expr: Ast.Expr,
+    range_start: usize,
+    range_end: usize,
+    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+    depth: u32,
+) std.mem.Allocator.Error!void {
+    if (depth > 8) return;
+
+    // Check if this expression has a recorded type
+    const expr_start = exprStartOffset(expr);
+    if (expr_start >= range_start and expr_start < range_end) {
+        if (expr_types.get(expr_start)) |info| {
+            if (shouldShowExprHint(expr, info.typ)) {
+                if (info.end_offset >= range_start and info.end_offset <= range_end) {
+                    const pos = offsetToLspPosition(source, info.end_offset) orelse return;
+                    try hints.append(self.gpa, .{
+                        .position = pos,
+                        .label = info.typ.string(),
+                        .kind = .type_hint,
+                    });
+                }
+            }
+        }
+    }
+
+    // Recurse into sub-expressions
+    switch (expr) {
+        .binary => |e| {
+            try self.collectExprTypeHints(expr_types, source, e.left, range_start, range_end, hints, depth + 1);
+            try self.collectExprTypeHints(expr_types, source, e.right, range_start, range_end, hints, depth + 1);
+        },
+        .call => |e| {
+            for (e.args.items) |arg| {
+                try self.collectExprTypeHints(expr_types, source, arg, range_start, range_end, hints, depth + 1);
+            }
+        },
+        .index => |e| {
+            try self.collectExprTypeHints(expr_types, source, e.base, range_start, range_end, hints, depth + 1);
+        },
+        .member => |e| {
+            try self.collectExprTypeHints(expr_types, source, e.base, range_start, range_end, hints, depth + 1);
+        },
+        .paren => |e| {
+            try self.collectExprTypeHints(expr_types, source, e.expr, range_start, range_end, hints, depth + 1);
+        },
+        else => {},
+    }
+}
+
+fn shouldShowExprHint(expr: Ast.Expr, typ: wgslender.Types.Type) bool {
+    switch (expr) {
+        .binary => |e| {
+            // Skip comparison/logical operators — result is always bool, obvious
+            switch (e.op) {
+                .eq, .ne, .lt, .le, .gt, .ge, .logical_and, .logical_or => return false,
+                else => {},
+            }
+        },
+        .call => |e| {
+            // Skip type constructors where the type is written in the syntax
+            if (e.template_type != null) return false;
+        },
+        .member, .index => {},
+        else => return false,
+    }
+    // Skip void
+    if (typ == .void_type) return false;
+    return true;
+}
+
+fn exprStartOffset(expr: Ast.Expr) u32 {
+    return switch (expr) {
+        .ident => |e| e.loc,
+        .literal => |e| e.loc,
+        .binary => |e| exprStartOffset(e.left),
+        .unary => |e| e.loc,
+        .call => |e| if (e.func) |f| exprStartOffset(f) else e.loc,
+        .index => |e| exprStartOffset(e.base),
+        .member => |e| exprStartOffset(e.base),
+        .paren => |e| exprStartOffset(e.expr),
+    };
 }
 
 // =========================================================================
@@ -2137,6 +2374,34 @@ pub fn appendDeadCodeWarnings(
     }
 }
 
+/// Append warnings for binding variables (@group/@binding) that are declared but never used.
+/// These consume bind group layout slots even when unused.
+pub fn appendUnusedBindingWarnings(
+    gpa: std.mem.Allocator,
+    analysis: *const wgslender.Validator.AnalysisResult,
+    diags: *std.ArrayListUnmanaged(LspDiagnostic),
+) void {
+    const module = analysis.module orelse return;
+    const source = module.source;
+
+    for (module.symbols.items) |sym| {
+        if (!sym.flags.is_external_binding) continue;
+        if (sym.use_count > 0) continue;
+        if (sym.original_name.len == 0) continue;
+
+        const range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "binding variable '{s}' is declared but never used — it will consume a bind group layout slot", .{sym.original_name}) catch continue;
+        diags.append(gpa, .{
+            .range = range,
+            .severity = .warning,
+            .message = gpa.dupe(u8, msg) catch continue,
+            .code = "W0003",
+            .tags = &.{.unnecessary},
+        }) catch continue;
+    }
+}
+
 // =========================================================================
 // LSP Feature: Code Lens (reference counts)
 // =========================================================================
@@ -2194,7 +2459,7 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
                 }
 
                 // Workgroup size for compute shaders
-                if (getWorkgroupSize(f)) |wg| {
+                if (getWorkgroupSize(f, &analysis.const_values, module)) |wg| {
                     var wg_buf: [64]u8 = undefined;
                     const wg_title = std.fmt.bufPrint(&wg_buf, "workgroup: {d}x{d}x{d}", .{ wg[0], wg[1], wg[2] }) catch continue;
                     try lenses.append(self.gpa, .{
@@ -2258,23 +2523,142 @@ fn collectBindingSummary(gpa: std.mem.Allocator, module: *const Ast.Module) ?[]c
 }
 
 /// Extract @workgroup_size(X, Y, Z) from a function's attributes.
-fn getWorkgroupSize(f: *const Ast.FunctionDecl) ?[3]u32 {
+/// Resolves const references via const_values when available.
+/// Needs the module to resolve unbound ident refs by name lookup.
+fn getWorkgroupSize(f: *const Ast.FunctionDecl, const_values: *const std.AutoHashMapUnmanaged(u32, i64), module: *const Ast.Module) ?[3]u32 {
     for (f.attributes.items) |attr| {
         if (std.mem.eql(u8, attr.name, "workgroup_size")) {
             var sizes = [3]u32{ 1, 1, 1 };
             for (attr.args.items, 0..) |arg, i| {
                 if (i >= 3) break;
-                switch (arg) {
-                    .literal => |lit| {
-                        sizes[i] = std.fmt.parseInt(u32, lit.value, 10) catch 1;
-                    },
-                    else => {},
-                }
+                sizes[i] = resolveConstIntExpr(arg, const_values, module) orelse 1;
             }
             return sizes;
         }
     }
     return null;
+}
+
+/// Resolve a const-evaluable expression to a u32 value.
+/// Handles literals and const identifier references via the const_values map.
+/// Falls back to name-based lookup in the module when ident refs are unbound
+/// (e.g., in attribute arguments which don't go through the parser's bind pass).
+fn resolveConstIntExpr(expr: Ast.Expr, const_values: *const std.AutoHashMapUnmanaged(u32, i64), module: *const Ast.Module) ?u32 {
+    return resolveConstIntExprDepth(expr, const_values, module, 0);
+}
+
+fn resolveConstIntExprDepth(expr: Ast.Expr, const_values: *const std.AutoHashMapUnmanaged(u32, i64), module: *const Ast.Module, depth: u32) ?u32 {
+    if (depth > 32) return null;
+    switch (expr) {
+        .literal => |lit| {
+            var val_str = lit.value;
+            if (val_str.len > 0 and (val_str[val_str.len - 1] == 'i' or val_str[val_str.len - 1] == 'u')) {
+                val_str = val_str[0 .. val_str.len - 1];
+            }
+            const val = std.fmt.parseInt(i64, val_str, 0) catch return null;
+            if (val >= 0 and val <= std.math.maxInt(u32)) return @intCast(val);
+            return null;
+        },
+        .ident => |ident| {
+            // Try direct ref lookup first (bound idents)
+            if (ident.ref.isValid()) {
+                if (const_values.get(ident.ref.index())) |val| {
+                    if (val >= 0 and val <= std.math.maxInt(u32)) return @intCast(val);
+                }
+            }
+            // Fallback: look up by name in module symbols (for unbound attribute args)
+            for (module.symbols.items, 0..) |sym, idx| {
+                if (sym.kind == .@"const" and std.mem.eql(u8, sym.original_name, ident.name)) {
+                    if (const_values.get(@intCast(idx))) |val| {
+                        if (val >= 0 and val <= std.math.maxInt(u32)) return @intCast(val);
+                    }
+                    break;
+                }
+            }
+            return null;
+        },
+        .paren => |p| return resolveConstIntExprDepth(p.expr, const_values, module, depth + 1),
+        .unary => |u| {
+            if (u.op == .neg) {
+                // Negative values aren't valid for workgroup sizes etc., but resolve anyway
+                return null;
+            }
+            return null;
+        },
+        .binary => |b| {
+            const l = resolveConstIntExprDepth(b.left, const_values, module, depth + 1) orelse return null;
+            const r = resolveConstIntExprDepth(b.right, const_values, module, depth + 1) orelse return null;
+            const li: i64 = @intCast(l);
+            const ri: i64 = @intCast(r);
+            const result: i64 = switch (b.op) {
+                .add => li +| ri,
+                .sub => li -| ri,
+                .mul => li *| ri,
+                .div => if (ri != 0) @divTrunc(li, ri) else return null,
+                .mod => if (ri != 0) @mod(li, ri) else return null,
+                .shl => if (ri >= 0 and ri < 64) li << @intCast(ri) else return null,
+                .shr => if (ri >= 0 and ri < 64) li >> @intCast(ri) else return null,
+                .@"and" => li & ri,
+                .@"or" => li | ri,
+                .xor => li ^ ri,
+                else => return null,
+            };
+            if (result >= 0 and result <= std.math.maxInt(u32)) return @intCast(result);
+            return null;
+        },
+        else => return null,
+    }
+}
+
+/// Resolve a const-evaluable expression to an i64 value for display purposes.
+/// Handles literals, const ident refs, parens, negation, and binary arithmetic.
+fn resolveConstExpr(expr: Ast.Expr, const_values: *const std.AutoHashMapUnmanaged(u32, i64)) ?i64 {
+    return resolveConstExprDepth(expr, const_values, 0);
+}
+
+fn resolveConstExprDepth(expr: Ast.Expr, const_values: *const std.AutoHashMapUnmanaged(u32, i64), depth: u32) ?i64 {
+    if (depth > 32) return null;
+    return switch (expr) {
+        .literal => |lit| {
+            var val_str = lit.value;
+            if (val_str.len == 0) return @as(i64, 0);
+            if (val_str.len > 0 and (val_str[val_str.len - 1] == 'i' or val_str[val_str.len - 1] == 'u')) {
+                val_str = val_str[0 .. val_str.len - 1];
+            }
+            return std.fmt.parseInt(i64, val_str, 0) catch null;
+        },
+        .ident => |ident| {
+            if (ident.ref.isValid()) return const_values.get(ident.ref.index());
+            return null;
+        },
+        .paren => |p| resolveConstExprDepth(p.expr, const_values, depth + 1),
+        .unary => |u| {
+            const val = resolveConstExprDepth(u.operand, const_values, depth + 1) orelse return null;
+            return switch (u.op) {
+                .neg => 0 -| val,
+                .bit_not => ~val,
+                else => null,
+            };
+        },
+        .binary => |b| {
+            const l = resolveConstExprDepth(b.left, const_values, depth + 1) orelse return null;
+            const r = resolveConstExprDepth(b.right, const_values, depth + 1) orelse return null;
+            return switch (b.op) {
+                .add => l +| r,
+                .sub => l -| r,
+                .mul => l *| r,
+                .div => if (r != 0) @divTrunc(l, r) else null,
+                .mod => if (r != 0) @mod(l, r) else null,
+                .shl => if (r >= 0 and r < 64) l << @intCast(r) else null,
+                .shr => if (r >= 0 and r < 64) l >> @intCast(r) else null,
+                .@"and" => l & r,
+                .@"or" => l | r,
+                .xor => l ^ r,
+                else => null,
+            };
+        },
+        else => null,
+    };
 }
 
 /// Extract an integer value from the first argument of an attribute.

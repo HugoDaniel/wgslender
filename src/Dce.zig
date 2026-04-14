@@ -92,7 +92,7 @@ pub fn mark(arena: Allocator, module: *Ast.Module) Allocator.Error!u32 {
     return dead;
 }
 
-fn buildDependencyGraph(
+pub fn buildDependencyGraph(
     arena: Allocator,
     module: *const Ast.Module,
     deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),

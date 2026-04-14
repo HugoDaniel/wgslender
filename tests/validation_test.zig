@@ -899,3 +899,281 @@ test "validation: errors/control_flow/unreachable_after_return" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/control_flow/unreachable_after_return");
 }
 
+// =========================================================================
+// Const folding tests (binary arithmetic in tryExtractIntValue)
+// =========================================================================
+
+test "validate: const folding — basic arithmetic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\const A = 10;
+        \\const B = A + 5;
+        \\const C = A * B;
+        \\@compute @workgroup_size(B)
+        \\fn main() {
+        \\  var data: array<f32, C>;
+        \\  _ = data;
+        \\}
+    );
+    try std.testing.expect(result.valid);
+}
+
+test "validate: const folding — subtraction and division" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\const TOTAL = 256;
+        \\const HALF = TOTAL / 2;
+        \\const QUARTER = TOTAL / 4;
+        \\const DIFF = HALF - QUARTER;
+        \\@compute @workgroup_size(DIFF)
+        \\fn main() {}
+    );
+    try std.testing.expect(result.valid);
+}
+
+test "validate: const folding — bitwise ops" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\const A = 0xFF;
+        \\const B = A & 0x0F;
+        \\const C = B | 0x10;
+        \\const D = C ^ 0x01;
+        \\@compute @workgroup_size(D)
+        \\fn main() {}
+    );
+    try std.testing.expect(result.valid);
+}
+
+test "validate: const folding — shift ops" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\const BASE = 1;
+        \\const SHIFTED = BASE << 4;
+        \\@compute @workgroup_size(SHIFTED)
+        \\fn main() {}
+    );
+    // SHIFTED = 1 << 4 = 16, valid workgroup size
+    try std.testing.expect(result.valid);
+}
+
+test "validate: const folding — nested binary" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\const X = 2;
+        \\const Y = 3;
+        \\const Z = (X + Y) * (X - 1);
+        \\@compute @workgroup_size(Z)
+        \\fn main() {}
+    );
+    // Z = (2+3)*(2-1) = 5*1 = 5
+    try std.testing.expect(result.valid);
+}
+
+test "validate: const folding — chained const refs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\const A = 2;
+        \\const B = A * A;
+        \\const C = B * B;
+        \\const D = C * C;
+        \\@compute @workgroup_size(D)
+        \\fn main() {}
+    );
+    // A=2, B=4, C=16, D=256
+    try std.testing.expect(result.valid);
+}
+
+test "validate: const folding — modulo" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\const A = 17;
+        \\const B = 8;
+        \\const C = A % B;
+        \\@compute @workgroup_size(C)
+        \\fn main() {}
+    );
+    // C = 17 % 8 = 1
+    try std.testing.expect(result.valid);
+}
+
+test "validate: const folding — with array sizes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\const WIDTH = 16;
+        \\const HEIGHT = 16;
+        \\const TOTAL = WIDTH * HEIGHT;
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var buf: array<f32, TOTAL>;
+        \\  _ = buf;
+        \\}
+    );
+    try std.testing.expect(result.valid);
+}
+
+test "validate: const folding — negation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Negation of a const, used in an expression
+    const result = try runValidation(arena.allocator(),
+        \\const A: i32 = 5;
+        \\const B: i32 = -A + 10;
+        \\@compute @workgroup_size(B)
+        \\fn main() {}
+    );
+    // B = -5 + 10 = 5
+    try std.testing.expect(result.valid);
+}
+
+// =========================================================================
+// Binding conflict detection tests
+// =========================================================================
+
+test "validate: single entry point — duplicate binding errors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0) var<uniform> a: f32;
+        \\@group(0) @binding(0) var<uniform> b: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = a + b; }
+    );
+    try std.testing.expect(!result.valid);
+    // Should have E0804 duplicate_binding
+    var found = false;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, "E0804")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "validate: multi entry point — shared binding across stages is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0) var<uniform> a: f32;
+        \\@group(0) @binding(0) var<uniform> b: f32;
+        \\@vertex fn vs() -> @builtin(position) vec4f { return vec4f(a); }
+        \\@fragment fn fs() -> @location(0) vec4f { return vec4f(b); }
+    );
+    // Different entry points using same binding is allowed
+    try std.testing.expect(result.valid);
+}
+
+test "validate: multi entry point — duplicate within same entry point errors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0) var<uniform> a: f32;
+        \\@group(0) @binding(0) var<uniform> b: f32;
+        \\@vertex fn vs() -> @builtin(position) vec4f { return vec4f(a + b); }
+        \\@fragment fn fs() -> @location(0) vec4f { return vec4f(1.0); }
+    );
+    try std.testing.expect(!result.valid);
+    var found = false;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, "E0804")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "validate: multi entry point — each stage with unique bindings is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0) var<uniform> a: f32;
+        \\@group(0) @binding(1) var<uniform> b: f32;
+        \\@vertex fn vs() -> @builtin(position) vec4f { return vec4f(a); }
+        \\@fragment fn fs() -> @location(0) vec4f { return vec4f(b); }
+    );
+    try std.testing.expect(result.valid);
+}
+
+test "validate: binding gap produces info diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0) var<uniform> a: f32;
+        \\@group(0) @binding(2) var<uniform> b: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = a + b; }
+    );
+    try std.testing.expect(result.valid); // Gaps are info, not errors
+    var found_gap = false;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, "W0101")) found_gap = true;
+    }
+    try std.testing.expect(found_gap);
+}
+
+test "validate: high binding number produces info diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(32) var<uniform> a: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = a; }
+    );
+    try std.testing.expect(result.valid);
+    var found_high = false;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, "W0102")) found_high = true;
+    }
+    try std.testing.expect(found_high);
+}
+
+test "validate: high group number produces info diagnostic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(16) @binding(0) var<uniform> a: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = a; }
+    );
+    try std.testing.expect(result.valid);
+    var found_high = false;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, "W0102")) found_high = true;
+    }
+    try std.testing.expect(found_high);
+}
+
+test "validate: contiguous bindings no gap warning" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0) var<uniform> a: f32;
+        \\@group(0) @binding(1) var<uniform> b: f32;
+        \\@group(0) @binding(2) var<uniform> c: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = a + b + c; }
+    );
+    try std.testing.expect(result.valid);
+    for (result.diagnostics.diagnostics.items) |d| {
+        try std.testing.expect(!std.mem.eql(u8, d.code, "W0101"));
+    }
+}
+
+test "validate: normal group numbers no warning" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0) var<uniform> a: f32;
+        \\@group(1) @binding(0) var<uniform> b: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = a + b; }
+    );
+    try std.testing.expect(result.valid);
+    for (result.diagnostics.diagnostics.items) |d| {
+        try std.testing.expect(!std.mem.eql(u8, d.code, "W0102"));
+    }
+}
+

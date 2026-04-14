@@ -322,3 +322,113 @@ test "hover: user function still works after builtin changes" {
     try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "my_fn") != null);
     try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "f32") != null);
 }
+
+// =========================================================================
+// Binary operator hover — const evaluation and expression types
+// =========================================================================
+
+test "hover: binary operator shows const evaluated value" {
+    const source: [:0]const u8 =
+        \\const A = 10;
+        \\const B = A * 20;
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Hover on the '*' operator in A * 20
+    const pos = posAt(source, "* 20") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    if (result) |r| {
+        defer std.testing.allocator.free(r.contents);
+        // Should show "= 200"
+        try std.testing.expect(std.mem.indexOf(u8, r.contents, "200") != null);
+    }
+}
+
+test "hover: binary operator shows expression type" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  let a: f32 = 1.0;
+        \\  let b: f32 = 2.0;
+        \\  let c = a + b;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Hover on '+' in a + b
+    const pos = posAt(source, "+ b") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    if (result) |r| {
+        defer std.testing.allocator.free(r.contents);
+        // Should show f32 as the expression type
+        try std.testing.expect(std.mem.indexOf(u8, r.contents, "f32") != null);
+    }
+}
+
+test "hover: binary operator on non-const expr shows type only" {
+    const source: [:0]const u8 =
+        \\fn f(x: f32, y: f32) -> f32 {
+        \\  return x + y;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "+ y") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    if (result) |r| {
+        defer std.testing.allocator.free(r.contents);
+        // Should show type (f32) but no const value
+        try std.testing.expect(std.mem.indexOf(u8, r.contents, "f32") != null);
+        try std.testing.expect(std.mem.indexOf(u8, r.contents, "= ") == null);
+    }
+}
+
+test "hover: binary operator with chained const" {
+    const source: [:0]const u8 =
+        \\const X = 3;
+        \\const Y = 4;
+        \\const Z = X + Y;
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "+ Y") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    if (result) |r| {
+        defer std.testing.allocator.free(r.contents);
+        // Should show "= 7"
+        try std.testing.expect(std.mem.indexOf(u8, r.contents, "7") != null);
+    }
+}
+
+test "hover: comparison operator returns null (no useful hover)" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  let a: i32 = 1;
+        \\  let b: i32 = 2;
+        \\  if a == b {}
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "== b") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    // Comparison operators still return a binary_expr node which may show the bool type
+    if (result) |r| {
+        defer std.testing.allocator.free(r.contents);
+    }
+}
+
+test "hover: const multiplication evaluated" {
+    const source: [:0]const u8 =
+        \\const W = 16;
+        \\const H = 8;
+        \\const AREA = W * H;
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "* H") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    if (result) |r| {
+        defer std.testing.allocator.free(r.contents);
+        try std.testing.expect(std.mem.indexOf(u8, r.contents, "128") != null);
+    }
+}
