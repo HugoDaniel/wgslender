@@ -13,13 +13,49 @@
     #editor { border: 1px solid #313244; border-radius: 6px; overflow: hidden; }
     .cm-editor { height: 70vh; }
     .cm-editor .cm-scroller { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 14px; }
-    /* Diagnostic styling */
+
+    /* Diagnostics */
     .cm-lintRange-error { background: none; text-decoration: underline wavy #f38ba8; }
     .cm-lintRange-warning { background: none; text-decoration: underline wavy #f9e2af; }
+    .cm-lintRange-info { background: none; text-decoration: underline wavy #89b4fa; }
     .cm-diagnostic-error { border-left-color: #f38ba8; }
     .cm-diagnostic-warning { border-left-color: #f9e2af; }
+    .cm-diagnostic-info { border-left-color: #89b4fa; }
     .cm-lint-marker-error { content: none; color: #f38ba8; }
     .cm-lint-marker-warning { content: none; color: #f9e2af; }
+
+    /* Hover tooltip */
+    .cm-tooltip-hover { background: #313244 !important; border: 1px solid #45475a !important; border-radius: 4px; padding: 0; }
+    .cm-hover-content { font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 13px; padding: 6px 10px; line-height: 1.5; white-space: pre-wrap; max-width: 500px; color: #cdd6f4; }
+    .cm-hover-content strong { color: #89dceb; font-weight: 600; }
+    .cm-hover-content code { background: #1e1e2e; padding: 1px 4px; border-radius: 2px; font-size: 12px; }
+    .cm-hover-content em { color: #a6adc8; font-style: italic; }
+
+    /* Inlay hints */
+    .cm-inlay-type { color: #6c7086; font-size: 0.85em; padding: 0 3px; margin-left: 2px; border-radius: 2px; background: rgba(108, 112, 134, 0.1); }
+    .cm-inlay-const { color: #a6e3a1; font-size: 0.85em; padding: 0 3px; margin-left: 2px; border-radius: 2px; background: rgba(166, 227, 161, 0.08); }
+
+    /* Code lens */
+    .cm-code-lens { color: #6c7086; font-size: 12px; padding: 0 0 2px 4px; line-height: 1.6; font-family: system-ui, sans-serif; }
+    .cm-code-lens-item { cursor: default; }
+    .cm-code-lens-sep { color: #45475a; margin: 0 6px; }
+
+    /* Document highlight */
+    .cm-highlight-ref { background: rgba(137, 180, 250, 0.15); border-radius: 2px; }
+
+    /* Semantic tokens */
+    .cm-sem-keyword { color: #cba6f7; }
+    .cm-sem-function { color: #89b4fa; }
+    .cm-sem-struct { color: #f9e2af; }
+    .cm-sem-parameter { color: #fab387; font-style: italic; }
+    .cm-sem-variable { color: #cdd6f4; }
+    .cm-sem-number { color: #fab387; }
+    .cm-sem-type { color: #89dceb; }
+    .cm-sem-comment { color: #6c7086; font-style: italic; }
+    .cm-sem-decorator { color: #f38ba8; }
+
+    /* Ctrl+click underline */
+    .cm-editor .cm-content [class*="cm-sem-"] { cursor: default; }
   </style>
 </head>
 <body>
@@ -30,32 +66,29 @@
   <script type="importmap">
   {
     "imports": {
-      "codemirror": "https://esm.sh/codemirror@6",
-      "@codemirror/lang-javascript": "https://esm.sh/@codemirror/lang-javascript@6",
       "@codemirror/state": "https://esm.sh/@codemirror/state@6",
       "@codemirror/view": "https://esm.sh/@codemirror/view@6",
-      "@codemirror/language": "https://esm.sh/@codemirror/language@6",
       "@codemirror/commands": "https://esm.sh/@codemirror/commands@6",
       "@codemirror/autocomplete": "https://esm.sh/@codemirror/autocomplete@6",
       "@codemirror/lint": "https://esm.sh/@codemirror/lint@6",
-      "@codemirror/search": "https://esm.sh/@codemirror/search@6",
       "@codemirror/theme-one-dark": "https://esm.sh/@codemirror/theme-one-dark@6",
-      "@lezer/highlight": "https://esm.sh/@lezer/highlight@1",
-      "@lezer/common": "https://esm.sh/@lezer/common@1",
-      "@lezer/lr": "https://esm.sh/@lezer/lr@1"
+      "@codemirror/language": "https://esm.sh/@codemirror/language@6",
+      "@lezer/highlight": "https://esm.sh/@lezer/highlight@1"
     }
   }
   </script>
 
   <script type="module">
-    import {EditorState} from "@codemirror/state"
-    import {EditorView, keymap} from "@codemirror/view"
+    import {EditorState, StateField, StateEffect} from "@codemirror/state"
+    import {EditorView, keymap, hoverTooltip, Decoration, WidgetType} from "@codemirror/view"
     import {defaultKeymap, indentWithTab} from "@codemirror/commands"
     import {oneDark} from "@codemirror/theme-one-dark"
     import {lintGutter, setDiagnostics} from "@codemirror/lint"
-    import {syntaxHighlighting, defaultHighlightStyle} from "@codemirror/language"
+    import {autocompletion} from "@codemirror/autocomplete"
 
-    // ---- WASM LSP inline (no bundler needed) ----
+    // =========================================================================
+    // WASM LSP
+    // =========================================================================
 
     const _encoder = new TextEncoder()
     const _decoder = new TextDecoder()
@@ -87,9 +120,72 @@
       return responses
     }
 
-    // ---- Diagnostics bridge (WASM LSP → CodeMirror lint) ----
+    let reqId = 100
+    function lspRequest(method, params) {
+      try {
+        const id = reqId++
+        const responses = lspSend(JSON.stringify({jsonrpc: '2.0', id, method, params}))
+        for (const r of responses) {
+          if (r.id === id) return r.result
+        }
+      } catch (e) { console.error('LSP error:', method, e) }
+      return null
+    }
+
+    // =========================================================================
+    // Position utilities
+    // =========================================================================
 
     const FILE_URI = 'file:///shader.wgsl'
+
+    function posToOffset(doc, pos) {
+      if (pos.line >= doc.lines) return doc.length
+      const line = doc.line(pos.line + 1)
+      return Math.min(line.from + pos.character, line.to)
+    }
+
+    function offsetToPos(doc, offset) {
+      const line = doc.lineAt(offset)
+      return {line: line.number - 1, character: offset - line.from}
+    }
+
+    function fullRange(doc) {
+      const last = doc.line(doc.lines)
+      return {
+        start: {line: 0, character: 0},
+        end: {line: last.number - 1, character: last.length},
+      }
+    }
+
+    // =========================================================================
+    // Decoration infrastructure
+    // =========================================================================
+
+    function decoField(effect) {
+      return StateField.define({
+        create() { return Decoration.none },
+        update(decos, tr) {
+          for (const e of tr.effects) if (e.is(effect)) return e.value
+          return tr.docChanged ? decos.map(tr.changes) : decos
+        },
+        provide: f => EditorView.decorations.from(f),
+      })
+    }
+
+    const setTokens = StateEffect.define()
+    const setHints = StateEffect.define()
+    const setLenses = StateEffect.define()
+    const setHighlights = StateEffect.define()
+
+    const tokensField = decoField(setTokens)
+    const hintsField = decoField(setHints)
+    const lensesField = decoField(setLenses)
+    const highlightsField = decoField(setHighlights)
+
+    // =========================================================================
+    // Feature: Diagnostics
+    // =========================================================================
+
     let editorView = null
 
     function pushDiagnosticsToEditor(lspDiags) {
@@ -110,19 +206,295 @@
       editorView.dispatch(setDiagnostics(editorView.state, cmDiags))
     }
 
-    function posToOffset(doc, pos) {
-      if (pos.line >= doc.lines) return doc.length
-      const line = doc.line(pos.line + 1) // CodeMirror lines are 1-based
-      return Math.min(line.from + pos.character, line.to)
+    // =========================================================================
+    // Feature: Hover
+    // =========================================================================
+
+    function renderMarkdown(md) {
+      return md
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        .replace(/`(.+?)`/g, '<code>$1</code>')
+        .replace(/_(.+?)_/g, '<em>$1</em>')
+        .replace(/\n/g, '<br>')
     }
 
-    function validateSource(source) {
+    const hoverExtension = hoverTooltip((view, pos) => {
+      const doc = view.state.doc
+      const result = lspRequest('textDocument/hover', {
+        textDocument: {uri: FILE_URI},
+        position: offsetToPos(doc, pos),
+      })
+      if (!result || !result.contents) return null
+
+      const content = typeof result.contents === 'string'
+        ? result.contents
+        : result.contents.value || ''
+      if (!content) return null
+
+      let from = pos, to = pos
+      if (result.range) {
+        from = posToOffset(doc, result.range.start)
+        to = posToOffset(doc, result.range.end)
+      }
+
+      return {
+        pos: from, end: to, above: true,
+        create() {
+          const dom = document.createElement('div')
+          dom.className = 'cm-hover-content'
+          dom.innerHTML = renderMarkdown(content)
+          return {dom}
+        },
+      }
+    }, {hoverTime: 300})
+
+    // =========================================================================
+    // Feature: Semantic Tokens
+    // =========================================================================
+
+    const TOKEN_TYPES = ['keyword','function','struct','parameter','variable','number','type','comment','decorator']
+    const tokenMarks = Object.fromEntries(TOKEN_TYPES.map(t => [t, Decoration.mark({class: `cm-sem-${t}`})]))
+
+    function refreshSemanticTokens() {
+      const result = lspRequest('textDocument/semanticTokens/full', {textDocument: {uri: FILE_URI}})
+      if (!result || !result.data || result.data.length === 0) {
+        editorView.dispatch({effects: setTokens.of(Decoration.none)})
+        return
+      }
+
+      const doc = editorView.state.doc
+      const data = result.data
+      const ranges = []
+      let line = 0, char = 0
+
+      for (let i = 0; i < data.length; i += 5) {
+        line += data[i]
+        if (data[i] > 0) char = 0
+        char += data[i + 1]
+        const len = data[i + 2]
+        const type = TOKEN_TYPES[data[i + 3]]
+        if (!type) continue
+
+        if (line >= doc.lines) break
+        const docLine = doc.line(line + 1)
+        const from = docLine.from + char
+        const to = Math.min(from + len, docLine.to)
+        if (from < to) ranges.push(tokenMarks[type].range(from, to))
+      }
+
+      editorView.dispatch({effects: setTokens.of(Decoration.set(ranges, true))})
+    }
+
+    // =========================================================================
+    // Feature: Inlay Hints
+    // =========================================================================
+
+    class InlayHintWidget extends WidgetType {
+      constructor(label, className) { super(); this.label = label; this.className = className }
+      eq(other) { return this.label === other.label && this.className === other.className }
+      toDOM() {
+        const span = document.createElement('span')
+        span.className = this.className
+        span.textContent = this.label
+        return span
+      }
+    }
+
+    function refreshInlayHints() {
+      const doc = editorView.state.doc
+      const result = lspRequest('textDocument/inlayHint', {
+        textDocument: {uri: FILE_URI},
+        range: fullRange(doc),
+      })
+      if (!result || result.length === 0) {
+        editorView.dispatch({effects: setHints.of(Decoration.none)})
+        return
+      }
+
+      const ranges = []
+      for (const h of result) {
+        const offset = posToOffset(doc, h.position)
+        // kind: 1 = type, 2 = parameter
+        const className = h.label.startsWith(' =') ? 'cm-inlay-const' : 'cm-inlay-type'
+        ranges.push(Decoration.widget({
+          widget: new InlayHintWidget(h.label, className),
+          side: 1,
+        }).range(offset))
+      }
+
+      ranges.sort((a, b) => a.from - b.from)
+      editorView.dispatch({effects: setHints.of(Decoration.set(ranges, true))})
+    }
+
+    // =========================================================================
+    // Feature: Code Lens
+    // =========================================================================
+
+    class CodeLensWidget extends WidgetType {
+      constructor(items) { super(); this.items = items }
+      get estimatedHeight() { return 18 }
+      eq(other) { return this.items.length === other.items.length && this.items.every((t, i) => t === other.items[i]) }
+      toDOM() {
+        const div = document.createElement('div')
+        div.className = 'cm-code-lens'
+        for (let i = 0; i < this.items.length; i++) {
+          if (i > 0) {
+            const sep = document.createElement('span')
+            sep.className = 'cm-code-lens-sep'
+            sep.textContent = '|'
+            div.appendChild(sep)
+          }
+          const span = document.createElement('span')
+          span.className = 'cm-code-lens-item'
+          span.textContent = this.items[i]
+          div.appendChild(span)
+        }
+        return div
+      }
+    }
+
+    function refreshCodeLenses() {
+      const result = lspRequest('textDocument/codeLens', {textDocument: {uri: FILE_URI}})
+      if (!result || result.length === 0) {
+        editorView.dispatch({effects: setLenses.of(Decoration.none)})
+        return
+      }
+
+      const doc = editorView.state.doc
+      // Group lenses by start line
+      const byLine = new Map()
+      for (const lens of result) {
+        const line = lens.range.start.line
+        const title = lens.command?.title
+        if (!title) continue
+        if (!byLine.has(line)) byLine.set(line, [])
+        byLine.get(line).push(title)
+      }
+
+      const ranges = []
+      for (const [lineNum, titles] of byLine) {
+        if (lineNum >= doc.lines) continue
+        const lineStart = doc.line(lineNum + 1).from
+        ranges.push(Decoration.widget({
+          widget: new CodeLensWidget(titles),
+          block: true,
+          side: -1,
+        }).range(lineStart))
+      }
+
+      ranges.sort((a, b) => a.from - b.from)
+      editorView.dispatch({effects: setLenses.of(Decoration.set(ranges, true))})
+    }
+
+    // =========================================================================
+    // Feature: Document Highlight
+    // =========================================================================
+
+    const highlightMark = Decoration.mark({class: 'cm-highlight-ref'})
+
+    function refreshDocumentHighlight() {
+      if (!editorView) return
+      const doc = editorView.state.doc
+      const pos = editorView.state.selection.main.head
+      const result = lspRequest('textDocument/documentHighlight', {
+        textDocument: {uri: FILE_URI},
+        position: offsetToPos(doc, pos),
+      })
+
+      if (!result || result.length === 0) {
+        editorView.dispatch({effects: setHighlights.of(Decoration.none)})
+        return
+      }
+
+      const ranges = []
+      for (const h of result) {
+        const from = posToOffset(doc, h.range.start)
+        const to = posToOffset(doc, h.range.end)
+        if (from < to) ranges.push(highlightMark.range(from, to))
+      }
+
+      ranges.sort((a, b) => a.from - b.from)
+      editorView.dispatch({effects: setHighlights.of(Decoration.set(ranges, true))})
+    }
+
+    // =========================================================================
+    // Feature: Go to Definition (Ctrl/Cmd+Click)
+    // =========================================================================
+
+    const modKey = /Mac|iPhone|iPad/.test(navigator.platform) ? 'metaKey' : 'ctrlKey'
+
+    const gotoDefExtension = EditorView.domEventHandlers({
+      click(event, view) {
+        if (!event[modKey]) return false
+        const pos = view.posAtCoords({x: event.clientX, y: event.clientY})
+        if (pos == null) return false
+
+        const doc = view.state.doc
+        const result = lspRequest('textDocument/definition', {
+          textDocument: {uri: FILE_URI},
+          position: offsetToPos(doc, pos),
+        })
+        if (!result || !result.range) return false
+
+        const target = posToOffset(doc, result.range.start)
+        view.dispatch({selection: {anchor: target}, scrollIntoView: true})
+        view.focus()
+        return true
+      },
+    })
+
+    // =========================================================================
+    // Feature: Autocompletion
+    // =========================================================================
+
+    const COMPLETION_KIND_MAP = {
+      1: 'text', 2: 'method', 3: 'function', 4: 'constructor', 5: 'field',
+      6: 'variable', 7: 'class', 8: 'interface', 9: 'module', 10: 'property',
+      14: 'keyword', 21: 'constant', 22: 'class',
+    }
+
+    function wgslCompletionSource(context) {
+      const word = context.matchBefore(/[\w]*/)
+      const prev = context.pos > 0 ? context.state.doc.sliceString(context.pos - 1, context.pos) : ''
+
+      if (!context.explicit && prev !== '.' && prev !== '@') {
+        if (!word || word.to - word.from < 2) return null
+      }
+
+      const result = lspRequest('textDocument/completion', {
+        textDocument: {uri: FILE_URI},
+        position: offsetToPos(context.state.doc, context.pos),
+      })
+      if (!result) return null
+      const items = Array.isArray(result) ? result : (result.items || [])
+      if (items.length === 0) return null
+
+      const from = word ? word.from : context.pos
+      return {
+        from,
+        options: items.map(item => ({
+          label: item.label,
+          type: COMPLETION_KIND_MAP[item.kind] || 'text',
+          detail: item.detail || '',
+        })),
+      }
+    }
+
+    // =========================================================================
+    // Document sync + feature refresh
+    // =========================================================================
+
+    let docVersion = 0
+    let debounceTimer = null
+    let highlightTimer = null
+
+    function validateAndRefresh(source) {
       const responses = lspSend(JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'textDocument/didChange',
+        jsonrpc: '2.0', method: 'textDocument/didChange',
         params: {
-          textDocument: { uri: FILE_URI, version: ++docVersion },
-          contentChanges: [{ text: source }],
+          textDocument: {uri: FILE_URI, version: ++docVersion},
+          contentChanges: [{text: source}],
         }
       }))
 
@@ -131,79 +503,105 @@
           pushDiagnosticsToEditor(r.params.diagnostics)
         }
       }
+
+      refreshSemanticTokens()
+      refreshInlayHints()
+      refreshCodeLenses()
+      refreshDocumentHighlight()
     }
 
-    // ---- Editor setup ----
+    const docChangeListener = EditorView.updateListener.of(update => {
+      if (update.docChanged) {
+        clearTimeout(debounceTimer)
+        debounceTimer = setTimeout(() => validateAndRefresh(update.state.doc.toString()), 200)
+      }
+      if (update.selectionSet && !update.docChanged) {
+        clearTimeout(highlightTimer)
+        highlightTimer = setTimeout(refreshDocumentHighlight, 100)
+      }
+    })
 
-    const sampleShader = `// Try editing this WGSL shader — errors appear in real time.
+    // =========================================================================
+    // Sample shader
+    // =========================================================================
 
-struct VertexOutput {
-    @builtin(position) pos: vec4f,
-    @location(0) color: vec3f,
+    const sampleShader = `// wgslender-lsp demo — hover, inlay hints, code lens, and more.
+// Hover over identifiers and operators. Ctrl+Click to go to definition.
+// Type . or @ for completions.
+
+const WORKGROUP_SIZE = 64;
+const TILE_DIM = 16;
+const BUFFER_SIZE = TILE_DIM * TILE_DIM;
+
+struct Particle {
+    position: vec3f,
+    velocity: vec3f,
+    lifetime: f32,
 };
 
-@vertex
-fn vs_main(@builtin(vertex_index) idx: u32) -> VertexOutput {
-    var out: VertexOutput;
-    let x = f32(i32(idx) - 1);
-    let y = f32(i32(idx & 1u) * 2 - 1);
-    out.pos = vec4f(x, y, 0.0, 1.0);
-    out.color = vec3f(x + 0.5, y + 0.5, 0.5);
-    return out;
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+@group(0) @binding(1) var<uniform> dt: f32;
+@group(0) @binding(2) var<uniform> gravity: vec3f;
+
+fn clamp_speed(v: vec3f, max_speed: f32) -> vec3f {
+    let speed = length(v);
+    if speed > max_speed {
+        return normalize(v) * max_speed;
+    }
+    return v;
 }
 
-@fragment
-fn fs_main(in: VertexOutput) -> @location(0) vec4f {
-    return vec4f(in.color, 1.0);
+@compute @workgroup_size(WORKGROUP_SIZE)
+fn simulate(@builtin(global_invocation_id) gid: vec3u) {
+    let i = gid.x;
+    var p = particles[i];
+
+    p.velocity += gravity * dt;
+    p.velocity = clamp_speed(p.velocity, 10.0);
+    p.position += p.velocity * dt;
+    p.lifetime -= dt;
+
+    particles[i] = p;
 }
 `
 
-    let docVersion = 0
-    let debounceTimer = null
+    // =========================================================================
+    // Editor setup
+    // =========================================================================
 
     const statusEl = document.getElementById('status')
 
     try {
       await initLSP()
 
-      // Initialize the LSP
-      lspSend(JSON.stringify({
-        jsonrpc: '2.0', id: 1, method: 'initialize',
-        params: { capabilities: {} }
-      }))
-      lspSend(JSON.stringify({
-        jsonrpc: '2.0', method: 'initialized', params: {}
-      }))
+      // Initialize LSP
+      lspSend(JSON.stringify({jsonrpc: '2.0', id: 1, method: 'initialize', params: {capabilities: {}}}))
+      lspSend(JSON.stringify({jsonrpc: '2.0', method: 'initialized', params: {}}))
 
-      // Open the file
+      // Open document
       const openResponses = lspSend(JSON.stringify({
         jsonrpc: '2.0', method: 'textDocument/didOpen',
         params: {
-          textDocument: {
-            uri: FILE_URI, languageId: 'wgsl', version: ++docVersion,
-            text: sampleShader,
-          }
+          textDocument: {uri: FILE_URI, languageId: 'wgsl', version: ++docVersion, text: sampleShader},
         }
       }))
 
       // Create editor
-      const updateListener = EditorView.updateListener.of(update => {
-        if (!update.docChanged) return
-        clearTimeout(debounceTimer)
-        debounceTimer = setTimeout(() => {
-          validateSource(update.state.doc.toString())
-        }, 200)
-      })
-
       editorView = new EditorView({
         state: EditorState.create({
           doc: sampleShader,
           extensions: [
             keymap.of([...defaultKeymap, indentWithTab]),
             oneDark,
-            syntaxHighlighting(defaultHighlightStyle),
             lintGutter(),
-            updateListener,
+            tokensField,
+            hintsField,
+            lensesField,
+            highlightsField,
+            hoverExtension,
+            gotoDefExtension,
+            autocompletion({override: [wgslCompletionSource]}),
+            docChangeListener,
           ],
         }),
         parent: document.getElementById('editor'),
@@ -216,7 +614,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4f {
         }
       }
 
-      statusEl.textContent = 'Ready — edit the shader to see live diagnostics'
+      // Initial feature refresh
+      refreshSemanticTokens()
+      refreshInlayHints()
+      refreshCodeLenses()
+
+      statusEl.textContent = 'Ready — hover, Ctrl+Click, type . or @ for completions'
       statusEl.className = 'ready'
     } catch (e) {
       statusEl.textContent = 'Error: ' + e.message
