@@ -487,6 +487,7 @@ pub const CallExpr = struct {
 
 pub const IndexExpr = struct {
     loc: u32 = 0,
+    end_loc: u32 = 0,
     base: Expr,
     idx: Expr,
     flags: ExprFlags = .{},

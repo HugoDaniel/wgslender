@@ -4321,6 +4321,10 @@ fn exprSpan(expr: Ast.Expr) LocRange {
             .start = if (e.func) |f| exprSpan(f).start else e.loc,
             .end = if (e.end_loc > 0) e.end_loc else exprRange(expr).end,
         },
+        .index => |e| .{
+            .start = exprSpan(e.base).start,
+            .end = if (e.end_loc > 0) e.end_loc else exprRange(expr).end,
+        },
         .paren => |e| exprSpan(e.expr),
         else => exprRange(expr),
     };

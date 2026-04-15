@@ -1376,9 +1376,10 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
                 self.advance();
                 self.expr_context = "in array index";
                 const idx = (try self.parseExpression()) orelse return null;
+                const end_loc = self.currentStart() +| 1; // past the closing ']'
                 _ = self.expect(.r_bracket);
                 const node = try self.arena.create(Ast.IndexExpr);
-                node.* = .{ .loc = bracket_loc, .base = left, .idx = idx };
+                node.* = .{ .loc = bracket_loc, .end_loc = end_loc, .base = left, .idx = idx };
                 left = .{ .index = node };
             },
             .l_paren => {
