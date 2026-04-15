@@ -2275,15 +2275,21 @@ fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!?Types.Type {
         .paren => |e| try v.checkExpr(e.expr),
     };
     if (result) |typ| {
-        switch (expr) {
-            .binary, .call, .index, .member => {
-                const span = exprSpan(expr);
-                v.expr_types.put(v.arena, span.start, .{
-                    .typ = typ,
-                    .end_offset = span.end,
-                }) catch {};
-            },
-            else => {},
+        // Key on each expression's own loc (operator for binary, open-paren
+        // for call, etc.) so nested expressions that share the same start
+        // offset don't collide in the hash map.
+        const key: ?u32 = switch (expr) {
+            .binary => |e| e.loc,
+            .call => |e| e.loc,
+            .index => |e| e.loc,
+            .member => |e| e.loc,
+            else => null,
+        };
+        if (key) |k| {
+            v.expr_types.put(v.arena, k, .{
+                .typ = typ,
+                .end_offset = exprSpan(expr).end,
+            }) catch {};
         }
     }
     return result;

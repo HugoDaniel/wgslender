@@ -357,6 +357,32 @@ test "inlay hints: call expression hint appears after closing paren" {
     try std.testing.expect(found_expr_hint);
 }
 
+test "inlay hints: nested binary+call produces single hint" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  let t: f32 = 1.0;
+        \\  let x = 0.5 + 0.5 * sin(t);
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 3, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // Line 2: "  let x = 0.5 + 0.5 * sin(t);"
+    // The three expressions (0.5 + 0.5*sin(t), 0.5*sin(t), sin(t)) all end at
+    // the same position (after ')'), so only one type hint should be emitted.
+    var expr_hint_count: u32 = 0;
+    for (hints) |h| {
+        if (h.kind == .type_hint and h.position.line == 2 and h.position.character > 10) {
+            expr_hint_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 1), expr_hint_count);
+}
+
 test "inlay hints: range filtering works" {
     const source: [:0]const u8 =
         \\fn f() {

@@ -966,9 +966,8 @@ pub fn computeHover(self: *Handler, uri: []const u8, position: Position) !?Hover
             var parts: [2][]const u8 = undefined;
             var part_count: usize = 0;
 
-            // Try to show the type of the expression
-            const expr_start = exprStartOffset(be.expr);
-            if (analysis.expr_types.get(expr_start)) |info| {
+            // Try to show the type of the expression (key on operator loc)
+            if (analysis.expr_types.get(be.loc)) |info| {
                 const type_str = info.typ.string();
                 const formatted = std.fmt.bufPrint(&buf, "**{s}**", .{type_str}) catch "";
                 if (formatted.len > 0) {
@@ -2205,18 +2204,41 @@ fn collectExprTypeHints(
 ) std.mem.Allocator.Error!void {
     if (depth > 8) return;
 
-    // Check if this expression has a recorded type
-    const expr_start = exprStartOffset(expr);
-    if (expr_start >= range_start and expr_start < range_end) {
-        if (expr_types.get(expr_start)) |info| {
-            if (shouldShowExprHint(expr, info.typ)) {
-                if (info.end_offset >= range_start and info.end_offset <= range_end) {
-                    const pos = offsetToLspPosition(source, info.end_offset) orelse return;
-                    try hints.append(self.gpa, .{
-                        .position = pos,
-                        .label = info.typ.string(),
-                        .kind = .type_hint,
-                    });
+    // Look up by expression-specific loc (operator for binary, open-paren
+    // for call, dot for member, bracket for index) — matches Validator keys.
+    const key: ?u32 = switch (expr) {
+        .binary => |e| e.loc,
+        .call => |e| e.loc,
+        .index => |e| e.loc,
+        .member => |e| e.loc,
+        else => null,
+    };
+    if (key) |k| {
+        if (k >= range_start and k < range_end) {
+            if (expr_types.get(k)) |info| {
+                if (shouldShowExprHint(expr, info.typ)) {
+                    if (info.end_offset >= range_start and info.end_offset <= range_end) {
+                        const pos = offsetToLspPosition(source, info.end_offset) orelse return;
+                        // Deduplicate: skip if a type hint already exists at
+                        // this position (nested expressions sharing an end).
+                        var duplicate = false;
+                        for (hints.items) |h| {
+                            if (h.kind == .type_hint and
+                                h.position.line == pos.line and
+                                h.position.character == pos.character)
+                            {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (!duplicate) {
+                            try hints.append(self.gpa, .{
+                                .position = pos,
+                                .label = info.typ.string(),
+                                .kind = .type_hint,
+                            });
+                        }
+                    }
                 }
             }
         }
