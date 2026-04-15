@@ -220,6 +220,8 @@ const numeric_misc_entries = [_]struct { []const u8, Builtin }{
 
 const numeric_vector_entries = [_]struct { []const u8, Builtin }{
     entry("dot", .numeric, .const_eval, .none, 2, 2, .scalar_of_arg),
+    entry("dot4I8Packed", .numeric, .const_eval, .none, 2, 2, .custom),
+    entry("dot4U8Packed", .numeric, .const_eval, .none, 2, 2, .custom),
     entry("cross", .numeric, .const_eval, .none, 2, 2, .same_as_arg),
     entry("length", .numeric, .const_eval, .none, 1, 1, .scalar_of_arg),
     entry("distance", .numeric, .const_eval, .none, 2, 2, .scalar_of_arg),
@@ -306,6 +308,7 @@ const texture_entries = [_]struct { []const u8, Builtin }{
     // textureGather and textureGatherCompare require uniform control flow
     entry("textureGather", .texture, .runtime, .uniform_flow, 3, 5, .texture),
     entry("textureGatherCompare", .texture, .runtime, .uniform_flow, 4, 6, .texture),
+    entry("textureSampleBaseClampToEdge", .texture, .runtime, .none, 3, 3, .texture),
 };
 
 // ---------------------------------------------------------------------------
@@ -388,6 +391,11 @@ const subgroup_entries = [_]struct { []const u8, Builtin }{
     entry("subgroupAll", .subgroup, .runtime, .uniform_flow, 1, 1, .bool_scalar),
     entry("subgroupAny", .subgroup, .runtime, .uniform_flow, 1, 1, .bool_scalar),
     entry("subgroupElect", .subgroup, .runtime, .uniform_flow, 0, 0, .bool_scalar),
+    // Quad operations (Section 17.13)
+    entry("quadBroadcast", .subgroup, .runtime, .uniform_flow, 2, 2, .same_as_arg),
+    entry("quadSwapDiagonal", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
+    entry("quadSwapX", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
+    entry("quadSwapY", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
 };
 
 // =========================================================================
@@ -541,6 +549,8 @@ const numeric_misc_doc = [_]struct { []const u8, BuiltinDoc }{
 // --- Numeric: Vector ---
 const numeric_vector_doc = [_]struct { []const u8, BuiltinDoc }{
     docEntry("dot", "fn dot(e1: vecN<T>, e2: vecN<T>) -> T", "Returns the dot product of e1 and e2.", "T is f32, f16"),
+    docEntry("dot4I8Packed", "fn dot4I8Packed(e1: u32, e2: u32) -> i32", "Interprets inputs as vectors of four 8-bit signed integers and returns the signed dot product.", "Requires packed_4x8_integer_dot_product"),
+    docEntry("dot4U8Packed", "fn dot4U8Packed(e1: u32, e2: u32) -> u32", "Interprets inputs as vectors of four 8-bit unsigned integers and returns the unsigned dot product.", "Requires packed_4x8_integer_dot_product"),
     docEntry("cross", "fn cross(e1: vec3<T>, e2: vec3<T>) -> vec3<T>", "Returns the cross product of e1 and e2.", "T is f32, f16"),
     docEntry("length", "fn length(e: vecN<T>) -> T", "Returns the length (magnitude) of e.", "T is f32, f16"),
     docEntry("distance", "fn distance(e1: vecN<T>, e2: vecN<T>) -> T", "Returns the distance between e1 and e2.", "T is f32, f16"),
@@ -605,6 +615,7 @@ const texture_doc = [_]struct { []const u8, BuiltinDoc }{
     docEntry("textureNumSamples", "fn textureNumSamples(t: texture_multisampled) -> u32", "Returns the number of samples per texel in a multisampled texture.", ""),
     docEntry("textureGather", "fn textureGather(component: i32, t: texture, s: sampler, coords: vecN<f32>, ...) -> vec4<T>", "Gathers the component from four texels in a 2x2 footprint.", "Requires uniform control flow"),
     docEntry("textureGatherCompare", "fn textureGatherCompare(t: texture_depth, s: sampler_comparison, coords: vec2<f32>, depth_ref: f32, ...) -> vec4<f32>", "Gathers depth comparison results from four texels.", "Requires uniform control flow"),
+    docEntry("textureSampleBaseClampToEdge", "fn textureSampleBaseClampToEdge(t: texture_2d<f32>, s: sampler, coords: vec2<f32>) -> vec4<f32>", "Samples a texture at base level, clamping coordinates to avoid edge wrapping.", "T is texture_2d<f32> or texture_external"),
 };
 
 // --- Atomic ---
@@ -673,6 +684,11 @@ const subgroup_doc = [_]struct { []const u8, BuiltinDoc }{
     docEntry("subgroupAll", "fn subgroupAll(e: bool) -> bool", "Returns true if e is true for all active invocations.", ""),
     docEntry("subgroupAny", "fn subgroupAny(e: bool) -> bool", "Returns true if e is true for any active invocation.", ""),
     docEntry("subgroupElect", "fn subgroupElect() -> bool", "Returns true for exactly one active invocation in the subgroup.", ""),
+    // Quad operations
+    docEntry("quadBroadcast", "fn quadBroadcast(e: T, id: u32) -> T", "Broadcasts the value of e from the quad invocation with the given id.", T_NUMERIC),
+    docEntry("quadSwapDiagonal", "fn quadSwapDiagonal(e: T) -> T", "Returns the value of e from the diagonally opposite quad invocation.", T_NUMERIC),
+    docEntry("quadSwapX", "fn quadSwapX(e: T) -> T", "Returns the value of e from the horizontally adjacent quad invocation.", T_NUMERIC),
+    docEntry("quadSwapY", "fn quadSwapY(e: T) -> T", "Returns the value of e from the vertically adjacent quad invocation.", T_NUMERIC),
 };
 
 // =========================================================================
@@ -774,6 +790,7 @@ test "builtins: requiresUniform correctness" {
         "dpdxFine",         "dpdyFine",          "fwidthFine",
         "textureSample",    "textureSampleBias", "textureSampleCompare",
         "workgroupBarrier", "storageBarrier",    "textureBarrier",
+        "quadBroadcast",    "quadSwapDiagonal",  "quadSwapX",          "quadSwapY",
     };
     for (names_uniform) |name| {
         const b = lookup(name).?;
@@ -875,6 +892,8 @@ test "builtins: all Go builtins are registered" {
         "radians",
         // Vector
         "dot",
+        "dot4I8Packed",
+        "dot4U8Packed",
         "cross",
         "length",
         "distance",
@@ -924,6 +943,7 @@ test "builtins: all Go builtins are registered" {
         "textureNumSamples",
         "textureGather",
         "textureGatherCompare",
+        "textureSampleBaseClampToEdge",
         // Atomic
         "atomicLoad",
         "atomicStore",
@@ -980,6 +1000,11 @@ test "builtins: all Go builtins are registered" {
         "subgroupAll",
         "subgroupAny",
         "subgroupElect",
+        // Quad
+        "quadBroadcast",
+        "quadSwapDiagonal",
+        "quadSwapX",
+        "quadSwapY",
     };
 
     for (all_names) |name| {
@@ -995,7 +1020,7 @@ test "builtins: entry count matches Go implementation" {
     // Go has 119 builtins registered (counted from the source).
     // Verify we have at least that many entries.
     const total = builtin_entries.len;
-    try std.testing.expect(total >= 119);
+    try std.testing.expect(total >= 126);
 }
 
 test "builtins: all builtins have documentation" {
