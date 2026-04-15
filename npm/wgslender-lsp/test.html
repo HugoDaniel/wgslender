@@ -287,7 +287,7 @@
     }
 
     // =========================================================================
-    // Feature: Inlay Hints
+    // Feature: Inlay Hints (visible while Alt/Option is held)
     // =========================================================================
 
     class InlayHintWidget extends WidgetType {
@@ -301,6 +301,9 @@
       }
     }
 
+    let cachedHintDecos = Decoration.none
+    let altPressed = false
+
     function refreshInlayHints() {
       const doc = editorView.state.doc
       const result = lspRequest('textDocument/inlayHint', {
@@ -308,7 +311,8 @@
         range: fullRange(doc),
       })
       if (!result || result.length === 0) {
-        editorView.dispatch({effects: setHints.of(Decoration.none)})
+        cachedHintDecos = Decoration.none
+        if (altPressed) editorView.dispatch({effects: setHints.of(Decoration.none)})
         return
       }
 
@@ -324,8 +328,28 @@
       }
 
       ranges.sort((a, b) => a.from - b.from)
-      editorView.dispatch({effects: setHints.of(Decoration.set(ranges, true))})
+      cachedHintDecos = Decoration.set(ranges, true)
+      if (altPressed) editorView.dispatch({effects: setHints.of(cachedHintDecos)})
     }
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Alt' && !altPressed) {
+        altPressed = true
+        if (editorView) editorView.dispatch({effects: setHints.of(cachedHintDecos)})
+      }
+    })
+    document.addEventListener('keyup', e => {
+      if (e.key === 'Alt' && altPressed) {
+        altPressed = false
+        if (editorView) editorView.dispatch({effects: setHints.of(Decoration.none)})
+      }
+    })
+    window.addEventListener('blur', () => {
+      if (altPressed) {
+        altPressed = false
+        if (editorView) editorView.dispatch({effects: setHints.of(Decoration.none)})
+      }
+    })
 
     // =========================================================================
     // Feature: Code Lens
