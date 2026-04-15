@@ -26,7 +26,7 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
 
-    var args = parseArgs(arena, init.minimal.args, io) orelse return;
+    const args = parseArgs(arena, init.minimal.args, io) orelse return;
 
     // Read input
     const source = try readSource(arena, io, args.input_path);
