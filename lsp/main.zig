@@ -590,9 +590,23 @@ const NativeServer = struct {
         if (hints.len == 0) return null;
         const lsp_hints = arena.alloc(lsp.types.InlayHint, hints.len) catch return null;
         for (hints, 0..) |h, i| {
+            const label: lsp.types.InlayHint.Label = if (h.def_range) |dr| blk: {
+                const parts = arena.alloc(lsp.types.InlayHint.LabelPart, 1) catch return null;
+                parts[0] = .{
+                    .value = h.label,
+                    .location = .{
+                        .uri = params.textDocument.uri,
+                        .range = .{
+                            .start = .{ .line = dr.start.line, .character = dr.start.character },
+                            .end = .{ .line = dr.end.line, .character = dr.end.character },
+                        },
+                    },
+                };
+                break :blk .{ .inlay_hint_label_parts = parts };
+            } else .{ .string = h.label };
             lsp_hints[i] = .{
                 .position = .{ .line = h.position.line, .character = h.position.character },
-                .label = .{ .string = h.label },
+                .label = label,
                 .kind = switch (h.kind) {
                     .type_hint, .const_value_hint => .Type,
                     .parameter_hint => .Parameter,

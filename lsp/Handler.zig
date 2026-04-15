@@ -2003,6 +2003,8 @@ pub const InlayHintInfo = struct {
     position: Position,
     label: []const u8,
     kind: enum { type_hint, parameter_hint, const_value_hint },
+    /// For struct types: the definition range so the hint label is clickable/hoverable.
+    def_range: ?Range = null,
 };
 
 pub fn computeInlayHints(self: *Handler, uri: []const u8, range: Range) ![]InlayHintInfo {
@@ -2048,6 +2050,7 @@ fn collectInlayHintsFromDecl(
                                 .position = pos,
                                 .label = typ.string(),
                                 .kind = .type_hint,
+                                .def_range = structDefRange(module, source, typ),
                             });
                         }
                     }
@@ -2056,19 +2059,19 @@ fn collectInlayHintsFromDecl(
             // Collect array size hints from type annotation
             if (l.typ) |typ| try self.collectArraySizeHints(&analysis.const_values, label_alloc, source, typ, range_start, range_end, hints);
             // Collect expression type hints from initializer
-            if (l.initializer) |init_expr| try self.collectExprTypeHints(&analysis.expr_types, source, init_expr, range_start, range_end, hints, 0);
+            if (l.initializer) |init_expr| try self.collectExprTypeHints(module, &analysis.expr_types, source, init_expr, range_start, range_end, hints, 0);
         },
         .@"var" => |v| {
             // Collect array size hints from type annotation
             if (v.typ) |typ| try self.collectArraySizeHints(&analysis.const_values, label_alloc, source, typ, range_start, range_end, hints);
             // Collect expression type hints from initializer
-            if (v.initializer) |init_expr| try self.collectExprTypeHints(&analysis.expr_types, source, init_expr, range_start, range_end, hints, 0);
+            if (v.initializer) |init_expr| try self.collectExprTypeHints(module, &analysis.expr_types, source, init_expr, range_start, range_end, hints, 0);
         },
         .@"const" => |c| {
             // Collect array size hints from type annotation
             if (c.typ) |typ| try self.collectArraySizeHints(&analysis.const_values, label_alloc, source, typ, range_start, range_end, hints);
             // Collect expression type hints from initializer
-            if (c.initializer) |init_expr| try self.collectExprTypeHints(&analysis.expr_types, source, init_expr, range_start, range_end, hints, 0);
+            if (c.initializer) |init_expr| try self.collectExprTypeHints(module, &analysis.expr_types, source, init_expr, range_start, range_end, hints, 0);
         },
         .function => |f| {
             if (f.body) |body| {
@@ -2113,13 +2116,13 @@ fn collectInlayHintsFromStmt(
             if (l.continuing) |cont| try self.collectInlayHintsFromStmt(module, analysis, label_alloc, source, .{ .compound = cont }, range_start, range_end, hints);
         },
         .assign => |a| {
-            try self.collectExprTypeHints(&analysis.expr_types, source, a.right, range_start, range_end, hints, 0);
+            try self.collectExprTypeHints(module, &analysis.expr_types, source, a.right, range_start, range_end, hints, 0);
         },
         .@"return" => |r| {
-            if (r.value) |v| try self.collectExprTypeHints(&analysis.expr_types, source, v, range_start, range_end, hints, 0);
+            if (r.value) |v| try self.collectExprTypeHints(module, &analysis.expr_types, source, v, range_start, range_end, hints, 0);
         },
         .call => |c| {
-            try self.collectExprTypeHints(&analysis.expr_types, source, .{ .call = c.call }, range_start, range_end, hints, 0);
+            try self.collectExprTypeHints(module, &analysis.expr_types, source, .{ .call = c.call }, range_start, range_end, hints, 0);
         },
         else => {},
     }
@@ -2197,6 +2200,7 @@ fn exprEndOffset(expr: Ast.Expr) u32 {
 /// member access, and indexing operations within the visible range.
 fn collectExprTypeHints(
     self: *Handler,
+    module: *const Ast.Module,
     expr_types: *const std.AutoHashMapUnmanaged(u32, wgslender.Validator.ExprTypeInfo),
     source: [:0]const u8,
     expr: Ast.Expr,
@@ -2239,6 +2243,7 @@ fn collectExprTypeHints(
                                 .position = pos,
                                 .label = info.typ.string(),
                                 .kind = .type_hint,
+                                .def_range = structDefRange(module, source, info.typ),
                             });
                         }
                     }
@@ -2250,22 +2255,22 @@ fn collectExprTypeHints(
     // Recurse into sub-expressions
     switch (expr) {
         .binary => |e| {
-            try self.collectExprTypeHints(expr_types, source, e.left, range_start, range_end, hints, depth + 1);
-            try self.collectExprTypeHints(expr_types, source, e.right, range_start, range_end, hints, depth + 1);
+            try self.collectExprTypeHints(module, expr_types, source, e.left, range_start, range_end, hints, depth + 1);
+            try self.collectExprTypeHints(module, expr_types, source, e.right, range_start, range_end, hints, depth + 1);
         },
         .call => |e| {
             for (e.args.items) |arg| {
-                try self.collectExprTypeHints(expr_types, source, arg, range_start, range_end, hints, depth + 1);
+                try self.collectExprTypeHints(module, expr_types, source, arg, range_start, range_end, hints, depth + 1);
             }
         },
         .index => |e| {
-            try self.collectExprTypeHints(expr_types, source, e.base, range_start, range_end, hints, depth + 1);
+            try self.collectExprTypeHints(module, expr_types, source, e.base, range_start, range_end, hints, depth + 1);
         },
         .member => |e| {
-            try self.collectExprTypeHints(expr_types, source, e.base, range_start, range_end, hints, depth + 1);
+            try self.collectExprTypeHints(module, expr_types, source, e.base, range_start, range_end, hints, depth + 1);
         },
         .paren => |e| {
-            try self.collectExprTypeHints(expr_types, source, e.expr, range_start, range_end, hints, depth + 1);
+            try self.collectExprTypeHints(module, expr_types, source, e.expr, range_start, range_end, hints, depth + 1);
         },
         else => {},
     }
@@ -2290,6 +2295,20 @@ fn shouldShowExprHint(expr: Ast.Expr, typ: wgslender.Types.Type) bool {
     // Skip void
     if (typ == .void_type) return false;
     return true;
+}
+
+/// If `typ` is a struct, return the LSP range of its declaration name.
+fn structDefRange(module: *const Ast.Module, source: [:0]const u8, typ: wgslender.Types.Type) ?Range {
+    const name = switch (typ) {
+        .@"struct" => |s| s.name,
+        else => return null,
+    };
+    for (module.symbols.items) |sym| {
+        if (sym.kind == .@"struct" and std.mem.eql(u8, sym.original_name, name)) {
+            return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
+        }
+    }
+    return null;
 }
 
 fn exprStartOffset(expr: Ast.Expr) u32 {

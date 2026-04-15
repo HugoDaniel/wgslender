@@ -675,9 +675,22 @@ fn handleInlayHint(root: std.json.ObjectMap, id: ?std.json.Value) void {
         appendUint(&buf, h.position.line);
         appendStr(&buf, ",\"character\":");
         appendUint(&buf, h.position.character);
-        appendStr(&buf, "},\"label\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, h.label) catch return;
-        appendStr(&buf, "\",\"kind\":");
+        appendStr(&buf, "},\"label\":");
+        if (h.def_range) |dr| {
+            // Label parts with location for navigation/hover
+            appendStr(&buf, "[{\"value\":\"");
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, h.label) catch return;
+            appendStr(&buf, "\",\"location\":{\"uri\":\"");
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
+            appendStr(&buf, "\",\"range\":");
+            formatRange(&buf, dr);
+            appendStr(&buf, "}}]");
+        } else {
+            appendStr(&buf, "\"");
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, h.label) catch return;
+            appendStr(&buf, "\"");
+        }
+        appendStr(&buf, ",\"kind\":");
         appendUint(&buf, if (h.kind == .parameter_hint) @as(u32, 2) else @as(u32, 1));
         appendStr(&buf, "}");
     }
