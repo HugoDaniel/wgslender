@@ -291,12 +291,23 @@
     // =========================================================================
 
     class InlayHintWidget extends WidgetType {
-      constructor(label, className) { super(); this.label = label; this.className = className }
+      constructor(label, className, location) { super(); this.label = label; this.className = className; this.location = location }
       eq(other) { return this.label === other.label && this.className === other.className }
       toDOM() {
         const span = document.createElement('span')
         span.className = this.className
         span.textContent = this.label
+        if (this.location) {
+          span.style.cursor = 'pointer'
+          span.style.textDecoration = 'underline'
+          span.style.textDecorationStyle = 'dotted'
+          span.addEventListener('click', () => {
+            if (!editorView) return
+            const target = posToOffset(editorView.state.doc, this.location.range.start)
+            editorView.dispatch({selection: {anchor: target}, scrollIntoView: true})
+            editorView.focus()
+          })
+        }
         return span
       }
     }
@@ -319,10 +330,18 @@
       const ranges = []
       for (const h of result) {
         const offset = posToOffset(doc, h.position)
+        // Extract label text and optional location from string or label parts
+        let labelText, location
+        if (Array.isArray(h.label)) {
+          labelText = h.label.map(p => p.value).join('')
+          location = h.label.find(p => p.location)?.location
+        } else {
+          labelText = h.label
+        }
         // kind: 1 = type, 2 = parameter
-        const className = h.label.startsWith(' =') ? 'cm-inlay-const' : 'cm-inlay-type'
+        const className = labelText.startsWith(' =') ? 'cm-inlay-const' : 'cm-inlay-type'
         ranges.push(Decoration.widget({
-          widget: new InlayHintWidget(h.label, className),
+          widget: new InlayHintWidget(labelText, className, location),
           side: 1,
         }).range(offset))
       }
