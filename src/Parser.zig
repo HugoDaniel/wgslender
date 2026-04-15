@@ -1385,9 +1385,10 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
                 const paren_loc = self.currentStart();
                 self.advance();
                 const args = try self.parseExpressionList();
+                const end_loc = self.currentStart() +| 1;
                 _ = self.expect(.r_paren);
                 const node = try self.arena.create(Ast.CallExpr);
-                node.* = .{ .loc = paren_loc, .func = left, .args = args };
+                node.* = .{ .loc = paren_loc, .end_loc = end_loc, .func = left, .args = args };
                 left = .{ .call = node };
             },
             else => return left,
@@ -1468,9 +1469,10 @@ fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?A
     const paren_loc = self.currentStart();
     self.advance();
     const args = try self.parseExpressionList();
+    const end_loc = self.currentStart() +| 1;
     _ = self.expect(.r_paren);
     const node = try self.arena.create(Ast.CallExpr);
-    node.* = .{ .loc = paren_loc, .template_type = template_type, .args = args };
+    node.* = .{ .loc = paren_loc, .end_loc = end_loc, .template_type = template_type, .args = args };
     return .{ .call = node };
 }
 
@@ -1487,12 +1489,13 @@ fn parseBitcastExpr(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
     const paren_loc = self.currentStart();
     self.advance();
     const args = try self.parseExpressionList();
+    const end_loc = self.currentStart() +| 1;
     _ = self.expect(.r_paren);
     // Create a CallExpr with func=ident("bitcast") and template_type=dest_type
     const func_node = try self.arena.create(Ast.IdentExpr);
     func_node.* = .{ .name = name, .ref = .none, .loc = name_loc };
     const node = try self.arena.create(Ast.CallExpr);
-    node.* = .{ .loc = paren_loc, .func = .{ .ident = func_node }, .template_type = dest_type, .args = args };
+    node.* = .{ .loc = paren_loc, .end_loc = end_loc, .func = .{ .ident = func_node }, .template_type = dest_type, .args = args };
     return .{ .call = node };
 }
 

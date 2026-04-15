@@ -64,8 +64,12 @@ export fn wgslender_lsp_recv() ?[*]u8 {
         wasm_allocator.free(msg);
         return null;
     };
+    // Copy message BEFORE writing the length header: the allocator may
+    // return `out` at the same address as `msg`, so writeInt would corrupt
+    // the first 4 bytes of msg. Use copyBackwards to handle the overlap
+    // (dest is 4 bytes ahead of source).
+    std.mem.copyBackwards(u8, out[4..][0..msg.len], msg);
     std.mem.writeInt(u32, out[0..4], @intCast(msg.len), .little);
-    @memcpy(out[4..][0..msg.len], msg);
     wasm_allocator.free(msg);
     return out.ptr;
 }

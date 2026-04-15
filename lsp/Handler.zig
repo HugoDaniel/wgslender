@@ -2183,7 +2183,7 @@ fn exprEndOffset(expr: Ast.Expr) u32 {
         .literal => |e| e.loc +| @as(u32, @intCast(e.value.len)),
         .binary => |e| exprEndOffset(e.right),
         .unary => |e| exprEndOffset(e.operand),
-        .call => |e| e.loc +| 1, // past the closing paren
+        .call => |e| if (e.end_loc > 0) e.end_loc else e.loc +| 1,
         .index => |e| e.loc +| 1, // past the closing bracket
         .member => |e| e.loc +| 1 +| @as(u32, @intCast(e.member_name.len)),
         .paren => |e| exprEndOffset(e.expr),

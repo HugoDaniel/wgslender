@@ -478,6 +478,7 @@ pub const UnaryOp = enum(u8) {
 
 pub const CallExpr = struct {
     loc: u32 = 0,
+    end_loc: u32 = 0,
     func: ?Expr = null,
     template_type: ?Type = null,
     args: std.ArrayListUnmanaged(Expr),

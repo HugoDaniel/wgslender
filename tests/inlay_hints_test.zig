@@ -326,6 +326,37 @@ test "inlay hints: type constructor does not show redundant hint" {
     try std.testing.expect(expr_type_count <= 1);
 }
 
+test "inlay hints: call expression hint appears after closing paren" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\  let t: f32 = 1.0;
+        \\  let x = sin(t);
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 3, .character = 0 },
+    });
+    defer std.testing.allocator.free(hints);
+    // Line 2: "  let x = sin(t);"
+    //          0123456789012345678
+    // Declaration hint for 'x' is at character 7 (after 'x').
+    // Expression hint for sin(t) must be at character 16 (after ')'), not 13 (after 'sin').
+    var found_expr_hint = false;
+    for (hints) |h| {
+        if (h.kind == .type_hint and std.mem.eql(u8, h.label, "f32") and h.position.line == 2) {
+            if (h.position.character > 10) {
+                // This is the expression hint (not the declaration hint at char 7)
+                try std.testing.expectEqual(@as(u32, 16), h.position.character);
+                found_expr_hint = true;
+            }
+        }
+    }
+    try std.testing.expect(found_expr_hint);
+}
+
 test "inlay hints: range filtering works" {
     const source: [:0]const u8 =
         \\fn f() {
