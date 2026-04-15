@@ -759,7 +759,10 @@ fn findInStmt(module: *const Ast.Module, stmt: Ast.Stmt, offset: u32) ?NodeAtPos
         },
         .incr_decr => |i| return findInExpr(i.expr, offset),
         .call => |c| return findInExpr(.{ .call = c.call }, offset),
-        .decl => |d| return findInDecl(module, d.decl, offset),
+        .decl => |d| {
+            const result = findInDecl(module, d.decl, offset);
+            if (result != .none) return result;
+        },
         .@"break" => {},
         .@"continue" => {},
         .discard => {},

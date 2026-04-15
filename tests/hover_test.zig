@@ -311,6 +311,60 @@ test "hover: builtin with uniform requirement shows warning" {
     try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "uniform") != null);
 }
 
+test "hover: builtin length in let initializer" {
+    const source: [:0]const u8 = "fn f(v: vec3f) -> f32 { let s = length(v); return s; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "length") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "fn length") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "magnitude") != null);
+}
+
+test "hover: builtin normalize in return expression" {
+    const source: [:0]const u8 = "fn f(v: vec3f) -> vec3f { return normalize(v); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "normalize") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "fn normalize") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "unit vector") != null);
+}
+
+test "hover: builtin normalize in binary expression" {
+    const source: [:0]const u8 = "fn f(v: vec3f) -> vec3f { return normalize(v) * 2.0; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "normalize") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "fn normalize") != null);
+}
+
+test "hover: builtin after local declaration" {
+    const source: [:0]const u8 =
+        \\fn f(v: vec3f, max_speed: f32) -> vec3f {
+        \\  let speed = length(v);
+        \\  if speed > max_speed {
+        \\    return normalize(v) * max_speed;
+        \\  }
+        \\  return v;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "normalize") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "fn normalize") != null);
+}
+
 test "hover: user function still works after builtin changes" {
     const source: [:0]const u8 = "fn my_fn(a: f32) -> f32 { return a; }";
     const ctx = try setup(source);
