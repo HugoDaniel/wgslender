@@ -71,163 +71,171 @@ pub fn isValidWgslIdentifier(name: []const u8) bool {
 /// Matches:
 ///   - identifier expressions (reads, writes)
 ///   - type references (`MyStruct` in type positions)
-///   - declaration names (`fn foo`, `struct S`, `var x`, etc.)
+///   - top-level declaration names (`fn foo`, `struct S`, `var x`, ...)
+///   - function parameter declaration names
+///   - names of declarations nested inside function bodies (let/const/var)
 ///
-/// Does not match member names (struct field access) — members aren't
-/// renameable as first-class symbols.
+/// Does not match struct member declaration names — member-access sites
+/// carry a string, not a SymbolIndex, so renaming struct fields is not
+/// a safe operation with the current AST.
 pub fn symbolAtOffset(module: *const Ast.Module, offset: u32) Ast.SymbolIndex {
-    // Declaration names come first because they can bound wider spans.
-    for (module.declarations.items) |decl| {
-        const name_ref = decl.nameRef();
-        if (name_ref.isValid()) {
-            const sym = module.symbols.items[name_ref.index()];
-            const start = sym.loc;
-            const end = start + @as(u32, @intCast(sym.original_name.len));
-            if (offset >= start and offset < end) return name_ref;
+    var v = SymbolFinder{ .module = module, .offset = offset };
+    return v.findInModule();
+}
+
+const SymbolFinder = struct {
+    module: *const Ast.Module,
+    offset: u32,
+
+    fn checkName(self: *const SymbolFinder, sym_ref: Ast.SymbolIndex) ?Ast.SymbolIndex {
+        if (!sym_ref.isValid()) return null;
+        const idx = sym_ref.index();
+        if (idx >= self.module.symbols.items.len) return null;
+        const sym = self.module.symbols.items[idx];
+        const start = sym.loc;
+        const end = start + @as(u32, @intCast(sym.original_name.len));
+        if (self.offset >= start and self.offset < end) return sym_ref;
+        return null;
+    }
+
+    fn findInModule(self: *const SymbolFinder) Ast.SymbolIndex {
+        for (self.module.declarations.items) |decl| {
+            if (self.findInDecl(decl)) |s| return s;
         }
-        if (findSymbolInDecl(decl, offset)) |found| return found;
+        return .none;
     }
-    return .none;
-}
 
-fn findSymbolInDecl(decl: Ast.Decl, offset: u32) ?Ast.SymbolIndex {
-    switch (decl) {
-        .function => |f| {
-            for (f.parameters.items) |param| {
-                if (findSymbolInType(param.typ, offset)) |s| return s;
-            }
-            if (f.return_type) |rt| {
-                if (findSymbolInType(rt, offset)) |s| return s;
-            }
-            if (f.body) |body| {
-                for (body.stmts.items) |stmt| {
-                    if (findSymbolInStmt(stmt, offset)) |s| return s;
+    fn findInDecl(self: *const SymbolFinder, decl: Ast.Decl) ?Ast.SymbolIndex {
+        if (self.checkName(decl.nameRef())) |s| return s;
+        switch (decl) {
+            .function => |f| {
+                for (f.parameters.items) |param| {
+                    if (self.checkName(param.name)) |s| return s;
+                    if (self.findInType(param.typ)) |s| return s;
                 }
-            }
-        },
-        .@"struct" => |s| {
-            for (s.members.items) |m| {
-                if (findSymbolInType(m.typ, offset)) |found| return found;
-            }
-        },
-        .@"const" => |c| {
-            if (c.typ) |t| if (findSymbolInType(t, offset)) |s| return s;
-            if (c.initializer) |e| if (findSymbolInExpr(e, offset)) |s| return s;
-        },
-        .override => |o| {
-            if (o.typ) |t| if (findSymbolInType(t, offset)) |s| return s;
-            if (o.initializer) |e| if (findSymbolInExpr(e, offset)) |s| return s;
-        },
-        .@"var" => |v| {
-            if (v.typ) |t| if (findSymbolInType(t, offset)) |s| return s;
-            if (v.initializer) |e| if (findSymbolInExpr(e, offset)) |s| return s;
-        },
-        .let => |l| {
-            if (l.typ) |t| if (findSymbolInType(t, offset)) |s| return s;
-            if (l.initializer) |e| if (findSymbolInExpr(e, offset)) |s| return s;
-        },
-        .alias => |a| {
-            if (findSymbolInType(a.typ, offset)) |s| return s;
-        },
-        .const_assert => |ca| {
-            if (findSymbolInExpr(ca.expr, offset)) |s| return s;
-        },
+                if (f.return_type) |rt| if (self.findInType(rt)) |s| return s;
+                if (f.body) |body| if (self.findInCompound(body)) |s| return s;
+            },
+            .@"struct" => |st| {
+                // Intentionally skip member names — see doc comment above.
+                for (st.members.items) |m| if (self.findInType(m.typ)) |s| return s;
+            },
+            .@"const" => |c| {
+                if (c.typ) |t| if (self.findInType(t)) |s| return s;
+                if (c.initializer) |e| if (self.findInExpr(e)) |s| return s;
+            },
+            .override => |o| {
+                if (o.typ) |t| if (self.findInType(t)) |s| return s;
+                if (o.initializer) |e| if (self.findInExpr(e)) |s| return s;
+            },
+            .@"var" => |v| {
+                if (v.typ) |t| if (self.findInType(t)) |s| return s;
+                if (v.initializer) |e| if (self.findInExpr(e)) |s| return s;
+            },
+            .let => |l| {
+                if (l.typ) |t| if (self.findInType(t)) |s| return s;
+                if (l.initializer) |e| if (self.findInExpr(e)) |s| return s;
+            },
+            .alias => |a| if (self.findInType(a.typ)) |s| return s,
+            .const_assert => |ca| if (self.findInExpr(ca.expr)) |s| return s,
+        }
+        return null;
     }
-    return null;
-}
 
-fn findSymbolInType(typ: Ast.Type, offset: u32) ?Ast.SymbolIndex {
-    switch (typ) {
-        .ident => |t| {
-            const end = t.loc + @as(u32, @intCast(t.name.len));
-            if (offset >= t.loc and offset < end and t.ref.isValid()) return t.ref;
-        },
-        .vec => |t| if (t.elem_type) |et| return findSymbolInType(et, offset),
-        .mat => |t| if (t.elem_type) |et| return findSymbolInType(et, offset),
-        .array => |t| {
-            if (t.elem_type) |et| if (findSymbolInType(et, offset)) |s| return s;
-            if (t.size) |sz| if (findSymbolInExpr(sz, offset)) |s| return s;
-        },
-        .ptr => |t| return findSymbolInType(t.elem_type, offset),
-        .atomic => |t| return findSymbolInType(t.elem_type, offset),
-        .sampler, .texture => {},
+    fn findInType(self: *const SymbolFinder, typ: Ast.Type) ?Ast.SymbolIndex {
+        switch (typ) {
+            .ident => |t| {
+                const end = t.loc + @as(u32, @intCast(t.name.len));
+                if (self.offset >= t.loc and self.offset < end and t.ref.isValid()) return t.ref;
+            },
+            .vec => |t| if (t.elem_type) |et| return self.findInType(et),
+            .mat => |t| if (t.elem_type) |et| return self.findInType(et),
+            .array => |t| {
+                if (t.elem_type) |et| if (self.findInType(et)) |s| return s;
+                if (t.size) |sz| if (self.findInExpr(sz)) |s| return s;
+            },
+            .ptr => |t| return self.findInType(t.elem_type),
+            .atomic => |t| return self.findInType(t.elem_type),
+            .sampler, .texture => {},
+        }
+        return null;
     }
-    return null;
-}
 
-fn findSymbolInStmt(stmt: Ast.Stmt, offset: u32) ?Ast.SymbolIndex {
-    switch (stmt) {
-        .compound => |c| {
-            for (c.stmts.items) |s| if (findSymbolInStmt(s, offset)) |r| return r;
-        },
-        .@"return" => |r| if (r.value) |v| return findSymbolInExpr(v, offset),
-        .@"if" => |i| {
-            if (findSymbolInExpr(i.condition, offset)) |s| return s;
-            for (i.body.stmts.items) |s| if (findSymbolInStmt(s, offset)) |r| return r;
-            if (i.else_branch) |eb| return findSymbolInStmt(eb, offset);
-        },
-        .@"switch" => |s| {
-            if (findSymbolInExpr(s.expr, offset)) |r| return r;
-            for (s.cases.items) |case| {
-                for (case.selectors.items) |sel| if (findSymbolInExpr(sel, offset)) |r| return r;
-                for (case.body.stmts.items) |stmt2| if (findSymbolInStmt(stmt2, offset)) |r| return r;
-            }
-        },
-        .@"for" => |f| {
-            if (f.init_stmt) |is| if (findSymbolInStmt(is, offset)) |r| return r;
-            if (f.condition) |c| if (findSymbolInExpr(c, offset)) |r| return r;
-            if (f.update) |u| if (findSymbolInStmt(u, offset)) |r| return r;
-            for (f.body.stmts.items) |stmt2| if (findSymbolInStmt(stmt2, offset)) |r| return r;
-        },
-        .@"while" => |w| {
-            if (findSymbolInExpr(w.condition, offset)) |r| return r;
-            for (w.body.stmts.items) |s| if (findSymbolInStmt(s, offset)) |r| return r;
-        },
-        .loop => |l| {
-            for (l.body.stmts.items) |s| if (findSymbolInStmt(s, offset)) |r| return r;
-            if (l.continuing) |cont| {
-                for (cont.stmts.items) |s| if (findSymbolInStmt(s, offset)) |r| return r;
-            }
-        },
-        .assign => |a| {
-            if (findSymbolInExpr(a.left, offset)) |r| return r;
-            if (findSymbolInExpr(a.right, offset)) |r| return r;
-        },
-        .incr_decr => |i| return findSymbolInExpr(i.expr, offset),
-        .call => |c| return findSymbolInExpr(.{ .call = c.call }, offset),
-        .decl => |d| return findSymbolInDecl(d.decl, offset),
-        .break_if => |b| return findSymbolInExpr(b.condition, offset),
-        .@"break", .@"continue", .discard => {},
+    fn findInCompound(self: *const SymbolFinder, compound: *const Ast.CompoundStmt) ?Ast.SymbolIndex {
+        for (compound.stmts.items) |stmt| if (self.findInStmt(stmt)) |s| return s;
+        return null;
     }
-    return null;
-}
 
-fn findSymbolInExpr(expr: Ast.Expr, offset: u32) ?Ast.SymbolIndex {
-    switch (expr) {
-        .ident => |e| {
-            const end = e.loc + @as(u32, @intCast(e.name.len));
-            if (offset >= e.loc and offset < end and e.ref.isValid()) return e.ref;
-        },
-        .member => |e| return findSymbolInExpr(e.base, offset),
-        .call => |e| {
-            if (e.func) |f| if (findSymbolInExpr(f, offset)) |s| return s;
-            if (e.template_type) |tt| if (findSymbolInType(tt, offset)) |s| return s;
-            for (e.args.items) |arg| if (findSymbolInExpr(arg, offset)) |s| return s;
-        },
-        .binary => |e| {
-            if (findSymbolInExpr(e.left, offset)) |s| return s;
-            if (findSymbolInExpr(e.right, offset)) |s| return s;
-        },
-        .unary => |e| return findSymbolInExpr(e.operand, offset),
-        .index => |e| {
-            if (findSymbolInExpr(e.base, offset)) |s| return s;
-            if (findSymbolInExpr(e.idx, offset)) |s| return s;
-        },
-        .paren => |e| return findSymbolInExpr(e.expr, offset),
-        .literal => {},
+    fn findInStmt(self: *const SymbolFinder, stmt: Ast.Stmt) ?Ast.SymbolIndex {
+        switch (stmt) {
+            .compound => |c| return self.findInCompound(c),
+            .@"return" => |r| if (r.value) |v| return self.findInExpr(v),
+            .@"if" => |i| {
+                if (self.findInExpr(i.condition)) |s| return s;
+                if (self.findInCompound(i.body)) |s| return s;
+                if (i.else_branch) |eb| return self.findInStmt(eb);
+            },
+            .@"switch" => |sw| {
+                if (self.findInExpr(sw.expr)) |s| return s;
+                for (sw.cases.items) |case| {
+                    for (case.selectors.items) |sel| if (self.findInExpr(sel)) |s| return s;
+                    if (self.findInCompound(case.body)) |s| return s;
+                }
+            },
+            .@"for" => |f| {
+                if (f.init_stmt) |is| if (self.findInStmt(is)) |s| return s;
+                if (f.condition) |c| if (self.findInExpr(c)) |s| return s;
+                if (f.update) |u| if (self.findInStmt(u)) |s| return s;
+                if (self.findInCompound(f.body)) |s| return s;
+            },
+            .@"while" => |w| {
+                if (self.findInExpr(w.condition)) |s| return s;
+                if (self.findInCompound(w.body)) |s| return s;
+            },
+            .loop => |l| {
+                if (self.findInCompound(l.body)) |s| return s;
+                if (l.continuing) |cont| if (self.findInCompound(cont)) |s| return s;
+            },
+            .assign => |a| {
+                if (self.findInExpr(a.left)) |s| return s;
+                if (self.findInExpr(a.right)) |s| return s;
+            },
+            .incr_decr => |i| return self.findInExpr(i.expr),
+            .call => |c| return self.findInExpr(.{ .call = c.call }),
+            .decl => |d| return self.findInDecl(d.decl),
+            .break_if => |b| return self.findInExpr(b.condition),
+            .@"break", .@"continue", .discard => {},
+        }
+        return null;
     }
-    return null;
-}
+
+    fn findInExpr(self: *const SymbolFinder, expr: Ast.Expr) ?Ast.SymbolIndex {
+        switch (expr) {
+            .ident => |e| {
+                const end = e.loc + @as(u32, @intCast(e.name.len));
+                if (self.offset >= e.loc and self.offset < end and e.ref.isValid()) return e.ref;
+            },
+            .member => |e| return self.findInExpr(e.base),
+            .call => |e| {
+                if (e.func) |f| if (self.findInExpr(f)) |s| return s;
+                if (e.template_type) |tt| if (self.findInType(tt)) |s| return s;
+                for (e.args.items) |arg| if (self.findInExpr(arg)) |s| return s;
+            },
+            .binary => |e| {
+                if (self.findInExpr(e.left)) |s| return s;
+                if (self.findInExpr(e.right)) |s| return s;
+            },
+            .unary => |e| return self.findInExpr(e.operand),
+            .index => |e| {
+                if (self.findInExpr(e.base)) |s| return s;
+                if (self.findInExpr(e.idx)) |s| return s;
+            },
+            .paren => |e| return self.findInExpr(e.expr),
+            .literal => {},
+        }
+        return null;
+    }
+};
 
 // =========================================================================
 // Reference collection
