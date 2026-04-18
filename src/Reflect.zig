@@ -5,6 +5,7 @@
 //! for alignment and size rules.
 
 const std = @import("std");
+const StableId = @import("StableId.zig");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Printer = @import("Printer.zig");
@@ -146,6 +147,9 @@ pub const BindingInfo = struct {
     name_mapped: []const u8,
     /// Byte offset of the declared name in the original source, or 0 if unknown.
     name_offset: u32 = 0,
+    /// Reparse-stable identifier for this binding's var symbol. See
+    /// `StableId`. Empty if not computed.
+    stable_id: []const u8 = "",
     address_space: []const u8,
     access_mode: []const u8 = "",
     typ: []const u8,
@@ -176,6 +180,9 @@ pub const FieldInfo = struct {
     name_mapped: []const u8,
     /// Byte offset of the declared field name in the original source, or 0 if unknown.
     name_offset: u32 = 0,
+    /// Reparse-stable identifier for this struct member. See `StableId`.
+    /// Empty if not computed.
+    stable_id: []const u8 = "",
     typ: []const u8,
     type_mapped: []const u8,
     offset: u32,
@@ -188,6 +195,9 @@ pub const EntryPointInfo = struct {
     name: []const u8,
     /// Byte offset of the declared function name in the original source, or 0 if unknown.
     name_offset: u32 = 0,
+    /// Reparse-stable identifier for this function symbol. See `StableId`.
+    /// Empty if not computed.
+    stable_id: []const u8 = "",
     stage: []const u8,
     workgroup_size: [3]u32 = .{ 1, 1, 1 },
     has_workgroup_size: bool = false,
@@ -242,17 +252,51 @@ pub fn reflectWithRenamer(
         switch (decl) {
             .@"var" => |var_decl| {
                 if (extractBinding(var_decl, module.symbols.items, &lc)) |b| {
-                    try result.bindings.append(arena, b);
+                    var info = b;
+                    if (StableId.stableIdFor(arena, module, var_decl.name)) |maybe_id| {
+                        if (maybe_id) |id| info.stable_id = id.bytes;
+                    } else |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.IdTooLong => {}, // leave stable_id empty
+                    }
+                    try result.bindings.append(arena, info);
                 }
             },
             .function => |fn_decl| {
                 if (extractEntryPoint(fn_decl, module.symbols.items)) |ep| {
-                    try result.entry_points.append(arena, ep);
+                    var info = ep;
+                    if (StableId.stableIdFor(arena, module, fn_decl.name)) |maybe_id| {
+                        if (maybe_id) |id| info.stable_id = id.bytes;
+                    } else |err| switch (err) {
+                        error.OutOfMemory => return error.OutOfMemory,
+                        error.IdTooLong => {},
+                    }
+                    try result.entry_points.append(arena, info);
                 }
             },
             else => {},
         }
     }
+
+    // Third pass: annotate struct-layout fields with stable IDs.
+    for (module.declarations.items) |decl| switch (decl) {
+        .@"struct" => |st| {
+            const name = lc.getSymbolName(st.name);
+            if (name.len == 0) continue;
+            const layout_ptr = result.structs.getPtr(name) orelse continue;
+            for (layout_ptr.fields.items, 0..) |*f, i| {
+                if (i >= st.members.items.len) break;
+                const m = st.members.items[i];
+                if (StableId.stableIdFor(arena, module, m.name)) |maybe_id| {
+                    if (maybe_id) |id| f.stable_id = id.bytes;
+                } else |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    error.IdTooLong => {},
+                }
+            }
+        },
+        else => {},
+    };
 
     return result;
 }
@@ -987,6 +1031,10 @@ fn writeBindingJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, b: *cons
     try appendJsonStr(buf, arena, b.name_mapped);
     try appendStr(buf, arena, ",\"nameOffset\":");
     try appendInt(buf, arena, b.name_offset);
+    if (b.stable_id.len > 0) {
+        try appendStr(buf, arena, ",\"stableId\":");
+        try appendJsonStr(buf, arena, b.stable_id);
+    }
     try appendStr(buf, arena, ",\"addressSpace\":");
     try appendJsonStr(buf, arena, b.address_space);
     if (b.access_mode.len > 0) {
@@ -1028,6 +1076,10 @@ fn writeFieldInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, f: *co
     try appendJsonStr(buf, arena, f.name_mapped);
     try appendStr(buf, arena, ",\"nameOffset\":");
     try appendInt(buf, arena, f.name_offset);
+    if (f.stable_id.len > 0) {
+        try appendStr(buf, arena, ",\"stableId\":");
+        try appendJsonStr(buf, arena, f.stable_id);
+    }
     try appendStr(buf, arena, ",\"type\":");
     try appendJsonStr(buf, arena, f.typ);
     try appendStr(buf, arena, ",\"typeMapped\":");
@@ -1082,6 +1134,10 @@ fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, ep: *
     try appendJsonStr(buf, arena, ep.name);
     try appendStr(buf, arena, ",\"nameOffset\":");
     try appendInt(buf, arena, ep.name_offset);
+    if (ep.stable_id.len > 0) {
+        try appendStr(buf, arena, ",\"stableId\":");
+        try appendJsonStr(buf, arena, ep.stable_id);
+    }
     try appendStr(buf, arena, ",\"stage\":");
     try appendJsonStr(buf, arena, ep.stage);
     if (ep.has_workgroup_size) {
