@@ -625,6 +625,152 @@ export fn wgslender_rename_by_id_c(
 }
 
 // =========================================================================
+// Declaration / type edits — C FFI (addressed by stable ID)
+// =========================================================================
+
+/// Locate the full declaration span for a stable ID. Returns JSON
+/// `{"start":N,"end":N}` on success or `{"start":null,"end":null,"error":"..."}`.
+/// Caller must free json_ptr with wgslender_free_c.
+export fn wgslender_locate_declaration_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) WgslenderJsonResult {
+    return locateRangeImplC(source_ptr, source_len, id_ptr, id_len, StableIdMod.locateDeclaration);
+}
+
+/// Locate the type-annotation span for a stable ID. Same JSON shape as
+/// wgslender_locate_declaration_c.
+export fn wgslender_locate_type_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) WgslenderJsonResult {
+    return locateRangeImplC(source_ptr, source_len, id_ptr, id_len, StableIdMod.locateType);
+}
+
+fn locateRangeImplC(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    locator: *const fn (*const wgslender.Ast.Module, []const u8) ?StableIdMod.Range,
+) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const id_bytes = id_ptr[0..id_len];
+
+    const analysis = wgslender.analyzeWithOptions(alloc, source, .{}) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const module = analysis.module orelse
+        return jsonOutPayload("{\"start\":null,\"end\":null,\"error\":\"parse error\"}");
+
+    if (locator(module, id_bytes)) |range| {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        buf.appendSlice(alloc, "{\"start\":") catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        Diagnostic.appendInt(&buf, alloc, range.start) catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        buf.appendSlice(alloc, ",\"end\":") catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        Diagnostic.appendInt(&buf, alloc, range.end) catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        buf.appendSlice(alloc, "}") catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        return jsonOutPayload(buf.items);
+    }
+    return jsonOutPayload("{\"start\":null,\"end\":null,\"error\":\"not found\"}");
+}
+
+/// Remove a declaration by stable ID. Same output shape as
+/// wgslender_rename_by_id_c.
+export fn wgslender_remove_declaration_by_id_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const id_bytes = id_ptr[0..id_len];
+
+    const analysis = wgslender.analyzeWithOptions(alloc, source, .{}) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const module = analysis.module orelse
+        return jsonOutPayload("{\"edits\":[],\"error\":\"parse error\"}");
+
+    const target = StableIdMod.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return jsonOutPayload(
+        "{\"edits\":[],\"error\":\"symbol not found\"}",
+    );
+
+    const maybe_edits = Edits.removeDeclarationEdit(alloc, module, target) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const edits = maybe_edits orelse
+        return jsonOutPayload("{\"edits\":[],\"error\":\"not a removable declaration\"}");
+
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    buildEditsJson(&json, alloc, edits, "") catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    return jsonOutPayload(json.items);
+}
+
+/// Change a type annotation by stable ID. Same output shape as
+/// wgslender_rename_by_id_c.
+export fn wgslender_change_type_by_id_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    new_type_ptr: [*]const u8,
+    new_type_len: u32,
+) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const id_bytes = id_ptr[0..id_len];
+    const new_type = new_type_ptr[0..new_type_len];
+
+    const analysis = wgslender.analyzeWithOptions(alloc, source, .{}) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const module = analysis.module orelse
+        return jsonOutPayload("{\"edits\":[],\"error\":\"parse error\"}");
+
+    const target = StableIdMod.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return jsonOutPayload(
+        "{\"edits\":[],\"error\":\"symbol not found\"}",
+    );
+
+    const maybe_edits = Edits.changeTypeEdit(alloc, module, target, new_type) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const edits = maybe_edits orelse
+        return jsonOutPayload(
+        "{\"edits\":[],\"error\":\"no type annotation or invalid replacement\"}",
+    );
+
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    buildEditsJson(&json, alloc, edits, new_type) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    return jsonOutPayload(json.items);
+}
+
+// =========================================================================
 // Version / Free
 // =========================================================================
 

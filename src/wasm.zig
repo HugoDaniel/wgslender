@@ -736,6 +736,297 @@ fn renameByIdImpl(
     return try packEditsJson(edits, new_name);
 }
 
+// =========================================================================
+// Declaration / type edits (addressed by stable ID)
+// =========================================================================
+
+/// Resolve a stable ID to the full declaration span (first attribute
+/// through terminating `;`/`}`).
+///
+/// Output JSON: `{"start":N,"end":N}` or
+///             `{"start":null,"end":null,"error":"..."}`.
+export fn wgslender_locate_declaration(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) ?[*]u8 {
+    return locateDeclarationImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
+}
+
+fn locateDeclarationImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+    const id_bytes = id_ptr[0..id_len];
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packJsonResultAlloc(
+        "{\"start\":null,\"end\":null,\"error\":\"parse error\"}",
+    );
+
+    if (StableIdMod.locateDeclaration(module, id_bytes)) |range| {
+        return try packRangeJson(range.start, range.end);
+    }
+    return try packJsonResultAlloc("{\"start\":null,\"end\":null,\"error\":\"not found\"}");
+}
+
+/// Resolve a stable ID to its type-annotation span (if the target has
+/// an annotation).
+///
+/// Output JSON: same shape as `wgslender_locate_declaration`.
+export fn wgslender_locate_type(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) ?[*]u8 {
+    return locateTypeImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
+}
+
+fn locateTypeImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+    const id_bytes = id_ptr[0..id_len];
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packJsonResultAlloc(
+        "{\"start\":null,\"end\":null,\"error\":\"parse error\"}",
+    );
+
+    if (StableIdMod.locateType(module, id_bytes)) |range| {
+        return try packRangeJson(range.start, range.end);
+    }
+    return try packJsonResultAlloc("{\"start\":null,\"end\":null,\"error\":\"not found\"}");
+}
+
+fn packRangeJson(start: u32, end: u32) Allocator.Error!?[*]u8 {
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    defer json.deinit(wasm_allocator);
+    try json.appendSlice(wasm_allocator, "{\"start\":");
+    try Diagnostic.appendInt(&json, wasm_allocator, start);
+    try json.appendSlice(wasm_allocator, ",\"end\":");
+    try Diagnostic.appendInt(&json, wasm_allocator, end);
+    try json.appendSlice(wasm_allocator, "}");
+    return packJsonResult(json.items);
+}
+
+/// Compute the edit that deletes the full declaration for a stable ID.
+///
+/// Output JSON: `{"edits":[{...}]}` or `{"edits":[],"error":"..."}`.
+export fn wgslender_remove_declaration_by_id(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) ?[*]u8 {
+    return removeDeclarationByIdImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
+}
+
+fn removeDeclarationByIdImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+    const id_bytes = id_ptr[0..id_len];
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"parse error\"}",
+    );
+
+    const target = StableIdMod.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"symbol not found\"}",
+    );
+
+    const edits = (try Edits.removeDeclarationEdit(wasm_allocator, module, target)) orelse
+        return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"not a removable declaration\"}",
+    );
+    defer wasm_allocator.free(edits);
+
+    return try packEditsJson(edits, "");
+}
+
+/// Remove-and-apply by stable ID. Output shape matches
+/// `wgslender_rename_apply`.
+export fn wgslender_remove_declaration_apply_by_id(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) ?[*]u8 {
+    return removeDeclarationApplyByIdImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
+}
+
+fn removeDeclarationApplyByIdImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source_copy = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source_copy.ptr[0 .. source_copy.len + 1]);
+    const id_bytes = id_ptr[0..id_len];
+    const original_bytes = source_ptr[0..source_len];
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source_copy, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse
+        return try packRenameApplyFailure(original_bytes, "parse error");
+
+    const target = StableIdMod.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return try packRenameApplyFailure(original_bytes, "symbol not found");
+
+    const edits = (try Edits.removeDeclarationEdit(wasm_allocator, module, target)) orelse
+        return try packRenameApplyFailure(original_bytes, "not a removable declaration");
+    defer wasm_allocator.free(edits);
+
+    const rewritten = try Edits.applyEdits(wasm_allocator, original_bytes, edits);
+    defer wasm_allocator.free(rewritten);
+
+    return try packRenameApplySuccess(rewritten, edits, "");
+}
+
+/// Compute the edit that replaces the type annotation for a stable ID.
+///
+/// Output JSON: `{"edits":[{...}]}` or `{"edits":[],"error":"..."}`.
+export fn wgslender_change_type_by_id(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    new_type_ptr: [*]const u8,
+    new_type_len: u32,
+) ?[*]u8 {
+    return changeTypeByIdImpl(
+        source_ptr,
+        source_len,
+        id_ptr,
+        id_len,
+        new_type_ptr,
+        new_type_len,
+    ) catch return null;
+}
+
+fn changeTypeByIdImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    new_type_ptr: [*]const u8,
+    new_type_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+    const id_bytes = id_ptr[0..id_len];
+    const new_type = new_type_ptr[0..new_type_len];
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"parse error\"}",
+    );
+
+    const target = StableIdMod.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"symbol not found\"}",
+    );
+
+    const edits = (try Edits.changeTypeEdit(wasm_allocator, module, target, new_type)) orelse
+        return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"no type annotation or invalid replacement\"}",
+    );
+    defer wasm_allocator.free(edits);
+
+    return try packEditsJson(edits, new_type);
+}
+
+/// Change-type-and-apply by stable ID.
+export fn wgslender_change_type_apply_by_id(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    new_type_ptr: [*]const u8,
+    new_type_len: u32,
+) ?[*]u8 {
+    return changeTypeApplyByIdImpl(
+        source_ptr,
+        source_len,
+        id_ptr,
+        id_len,
+        new_type_ptr,
+        new_type_len,
+    ) catch return null;
+}
+
+fn changeTypeApplyByIdImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    new_type_ptr: [*]const u8,
+    new_type_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source_copy = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source_copy.ptr[0 .. source_copy.len + 1]);
+    const id_bytes = id_ptr[0..id_len];
+    const new_type = new_type_ptr[0..new_type_len];
+    const original_bytes = source_ptr[0..source_len];
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source_copy, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse
+        return try packRenameApplyFailure(original_bytes, "parse error");
+
+    const target = StableIdMod.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return try packRenameApplyFailure(original_bytes, "symbol not found");
+
+    const edits = (try Edits.changeTypeEdit(wasm_allocator, module, target, new_type)) orelse
+        return try packRenameApplyFailure(original_bytes, "no type annotation or invalid replacement");
+    defer wasm_allocator.free(edits);
+
+    const rewritten = try Edits.applyEdits(wasm_allocator, original_bytes, edits);
+    defer wasm_allocator.free(rewritten);
+
+    return try packRenameApplySuccess(rewritten, edits, new_type);
+}
+
 /// Return the version string.
 export fn wgslender_version() [*]const u8 {
     return wgslender.version.ptr;
