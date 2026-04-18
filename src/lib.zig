@@ -248,6 +248,246 @@ fn copyToPageAllocator(data: []const u8) ?[]u8 {
 }
 
 // =========================================================================
+// Edits (rename / findReferences) — C FFI
+// =========================================================================
+
+const Edits = wgslender.Edits;
+
+/// Find all references to the symbol under `offset`. Returns JSON:
+///   {"references":[{"start":N,"end":N,"isWrite":bool},...]}
+/// or {"references":[],"error":"..."} on parse error, or
+///    {"references":[]} if no symbol is under the offset.
+/// Caller must free json_ptr with wgslender_free_c.
+export fn wgslender_find_references_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+    include_declaration: u32,
+) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const analysis = wgslender.analyzeWithOptions(alloc, source, .{}) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const module = analysis.module orelse {
+        return jsonOutPayload(
+            "{\"references\":[],\"error\":\"parse error\"}",
+        );
+    };
+
+    const target = Edits.symbolAtOffset(module, offset);
+    if (!target.isValid()) return jsonOutPayload("{\"references\":[]}");
+
+    const refs = Edits.findReferences(alloc, module, target, include_declaration != 0) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    buildReferencesJson(&json, alloc, refs) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    return jsonOutPayload(json.items);
+}
+
+/// Compute text edits that rename the symbol at `offset` to `new_name`.
+/// Returns JSON: {"edits":[{"start":N,"end":N,"newText":"..."}, ...]}
+/// or {"edits":[],"error":"..."} on failure.
+/// Caller must free json_ptr with wgslender_free_c.
+export fn wgslender_rename_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+    new_name_ptr: [*]const u8,
+    new_name_len: u32,
+) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const new_name = new_name_ptr[0..new_name_len];
+
+    if (!Edits.isValidWgslIdentifier(new_name)) {
+        return jsonOutPayload("{\"edits\":[],\"error\":\"invalid identifier\"}");
+    }
+
+    const analysis = wgslender.analyzeWithOptions(alloc, source, .{}) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const module = analysis.module orelse {
+        return jsonOutPayload("{\"edits\":[],\"error\":\"parse error\"}");
+    };
+
+    const target = Edits.symbolAtOffset(module, offset);
+    if (!target.isValid()) return jsonOutPayload("{\"edits\":[],\"error\":\"symbol not found\"}");
+
+    const maybe_edits = Edits.renameEdits(alloc, module, target, new_name) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const edits = maybe_edits orelse {
+        return jsonOutPayload("{\"edits\":[],\"error\":\"invalid identifier\"}");
+    };
+
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    buildEditsJson(&json, alloc, edits, new_name) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    return jsonOutPayload(json.items);
+}
+
+/// Rename-and-apply. Returns JSON:
+///   {"ok":true,"source":"...","edits":[...]}
+/// on success, or
+///   {"ok":false,"source":"<original>","edits":[],"error":"..."}
+/// on failure. `source` is always present.
+/// Caller must free json_ptr with wgslender_free_c.
+export fn wgslender_rename_apply_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+    new_name_ptr: [*]const u8,
+    new_name_len: u32,
+) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source_copy = makeSentinelSource(alloc, source_ptr, source_len) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const new_name = new_name_ptr[0..new_name_len];
+    const original = source_ptr[0..source_len];
+
+    if (!Edits.isValidWgslIdentifier(new_name)) {
+        return buildRenameApplyFailureJson(alloc, original, "invalid identifier");
+    }
+
+    const analysis = wgslender.analyzeWithOptions(alloc, source_copy, .{}) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const module = analysis.module orelse return buildRenameApplyFailureJson(alloc, original, "parse error");
+
+    const target = Edits.symbolAtOffset(module, offset);
+    if (!target.isValid()) return buildRenameApplyFailureJson(alloc, original, "symbol not found");
+
+    const maybe_edits = Edits.renameEdits(alloc, module, target, new_name) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const edits = maybe_edits orelse
+        return buildRenameApplyFailureJson(alloc, original, "invalid identifier");
+
+    const rewritten = Edits.applyEdits(alloc, original, edits) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    buildRenameApplySuccessJson(&json, alloc, rewritten, edits, new_name) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    return jsonOutPayload(json.items);
+}
+
+fn buildReferencesJson(
+    buf: *std.ArrayListUnmanaged(u8),
+    alloc: Allocator,
+    refs: []const Edits.Reference,
+) Allocator.Error!void {
+    try buf.appendSlice(alloc, "{\"references\":[");
+    for (refs, 0..) |r, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"start\":");
+        try Diagnostic.appendInt(buf, alloc, r.start);
+        try buf.appendSlice(alloc, ",\"end\":");
+        try Diagnostic.appendInt(buf, alloc, r.end);
+        try buf.appendSlice(alloc, ",\"isWrite\":");
+        try buf.appendSlice(alloc, if (r.is_write) "true" else "false");
+        try buf.append(alloc, '}');
+    }
+    try buf.appendSlice(alloc, "]}");
+}
+
+fn buildEditsJson(
+    buf: *std.ArrayListUnmanaged(u8),
+    alloc: Allocator,
+    edits: []const Edits.TextEdit,
+    new_text: []const u8,
+) Allocator.Error!void {
+    try buf.appendSlice(alloc, "{\"edits\":[");
+    for (edits, 0..) |e, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try writeEditJsonLib(buf, alloc, e, new_text);
+    }
+    try buf.appendSlice(alloc, "]}");
+}
+
+fn writeEditJsonLib(
+    buf: *std.ArrayListUnmanaged(u8),
+    alloc: Allocator,
+    edit: Edits.TextEdit,
+    new_text: []const u8,
+) Allocator.Error!void {
+    try buf.appendSlice(alloc, "{\"start\":");
+    try Diagnostic.appendInt(buf, alloc, edit.start);
+    try buf.appendSlice(alloc, ",\"end\":");
+    try Diagnostic.appendInt(buf, alloc, edit.end);
+    try buf.appendSlice(alloc, ",\"newText\":\"");
+    try Diagnostic.appendJsonEscaped(buf, alloc, new_text);
+    try buf.appendSlice(alloc, "\"}");
+}
+
+fn buildRenameApplySuccessJson(
+    buf: *std.ArrayListUnmanaged(u8),
+    alloc: Allocator,
+    rewritten: []const u8,
+    edits: []const Edits.TextEdit,
+    new_text: []const u8,
+) Allocator.Error!void {
+    try buf.appendSlice(alloc, "{\"ok\":true,\"source\":\"");
+    try Diagnostic.appendJsonEscaped(buf, alloc, rewritten);
+    try buf.appendSlice(alloc, "\",\"edits\":[");
+    for (edits, 0..) |e, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try writeEditJsonLib(buf, alloc, e, new_text);
+    }
+    try buf.appendSlice(alloc, "]}");
+}
+
+fn buildRenameApplyFailureJson(
+    alloc: Allocator,
+    original: []const u8,
+    msg: []const u8,
+) WgslenderJsonResult {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    buildFailureJsonImpl(&buf, alloc, original, msg) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    return jsonOutPayload(buf.items);
+}
+
+fn buildFailureJsonImpl(
+    buf: *std.ArrayListUnmanaged(u8),
+    alloc: Allocator,
+    original: []const u8,
+    msg: []const u8,
+) Allocator.Error!void {
+    try buf.appendSlice(alloc, "{\"ok\":false,\"source\":\"");
+    try Diagnostic.appendJsonEscaped(buf, alloc, original);
+    try buf.appendSlice(alloc, "\",\"edits\":[],\"error\":\"");
+    try Diagnostic.appendJsonEscaped(buf, alloc, msg);
+    try buf.appendSlice(alloc, "\"}");
+}
+
+fn jsonOutPayload(json: []const u8) WgslenderJsonResult {
+    const out = copyToPageAllocator(json) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    return .{
+        .json_ptr = out.ptr,
+        .json_len = @intCast(out.len),
+        .@"error" = false,
+    };
+}
+
+// =========================================================================
 // Version / Free
 // =========================================================================
 

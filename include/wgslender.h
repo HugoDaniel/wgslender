@@ -90,6 +90,49 @@ WgslenderJsonResult wgslender_reflect_c(
     const uint8_t *source_ptr, uint32_t source_len);
 
 /**
+ * Find all references to the symbol under `offset` in `source_ptr`.
+ * `offset` is a UTF-8 byte offset. `include_declaration` is 0 or 1.
+ * Returns JSON: {"references":[{"start":N,"end":N,"isWrite":bool},...]}
+ * or {"references":[],"error":"..."} on parse failure, or
+ *    {"references":[]} if no symbol is under the offset.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_find_references_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t offset,
+    uint32_t include_declaration);
+
+/**
+ * Compute text edits that rename the symbol at `offset` to `new_name`.
+ * Returns JSON: {"edits":[{"start":N,"end":N,"newText":"..."}, ...]}
+ * or {"edits":[],"error":"..."} on failure. Possible errors:
+ *   - "invalid identifier" — new_name is a keyword, reserved word,
+ *     starts with __, contains bad chars, or is empty
+ *   - "symbol not found" — offset is not over a symbol
+ *   - "parse error"
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_rename_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t offset,
+    const uint8_t *new_name_ptr, uint32_t new_name_len);
+
+/**
+ * Rename-and-apply: returns the rewritten source plus the edit list.
+ * Returns JSON:
+ *   {"ok":true,"source":"<rewritten>","edits":[...]}
+ * on success, or
+ *   {"ok":false,"source":"<original>","edits":[],"error":"..."}
+ * on failure. The `source` field is always present so callers can
+ * use the response uniformly.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_rename_apply_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t offset,
+    const uint8_t *new_name_ptr, uint32_t new_name_len);
+
+/**
  * Free memory returned by wgslender functions.
  * Both ptr and len must come from a result struct.
  */
