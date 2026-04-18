@@ -145,3 +145,70 @@ test "edits: symbolAtOffset returns none outside any identifier" {
     const s = wgslender.Edits.symbolAtOffset(module, 5);
     try std.testing.expect(!s.isValid());
 }
+
+test "edits: setWorkgroupSize changes attribute args" {
+    const a = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn main() {}
+    ;
+    var analysis = try wgslender.analyze(a, source);
+    defer analysis.deinit(a);
+    const module = analysis.module orelse return error.TestUnexpectedResult;
+
+    const edits = try wgslender.Edits.setWorkgroupSize(a, source, module, "main", .{ 8, 8, 1 }) orelse
+        return error.TestUnexpectedResult;
+    defer wgslender.Edits.freeBuiltEdits(a, edits);
+    try std.testing.expectEqual(@as(usize, 1), edits.len);
+
+    const rewritten = try wgslender.Edits.applyEdits(a, source, edits);
+    defer a.free(rewritten);
+    try std.testing.expectEqualStrings("@compute @workgroup_size(8, 8) fn main() {}", rewritten);
+
+    // New source re-analyzes clean.
+    const rewritten_z = try a.dupeZ(u8, rewritten);
+    defer a.free(rewritten_z);
+    var re = try wgslender.analyze(a, rewritten_z);
+    defer re.deinit(a);
+    try std.testing.expect(re.valid);
+}
+
+test "edits: setWorkgroupSize missing entry point returns null" {
+    const a = std.testing.allocator;
+    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
+    var analysis = try wgslender.analyze(a, source);
+    defer analysis.deinit(a);
+    const module = analysis.module orelse return error.TestUnexpectedResult;
+
+    const edits = try wgslender.Edits.setWorkgroupSize(a, source, module, "nonexistent", .{ 4, 1, 1 });
+    try std.testing.expect(edits == null);
+}
+
+test "edits: setWorkgroupSize missing attribute returns null" {
+    const a = std.testing.allocator;
+    // `main` has no @workgroup_size.
+    const source: [:0]const u8 = "@fragment fn main() -> @location(0) vec4f { return vec4f(0.0); }";
+    var analysis = try wgslender.analyze(a, source);
+    defer analysis.deinit(a);
+    const module = analysis.module orelse return error.TestUnexpectedResult;
+
+    const edits = try wgslender.Edits.setWorkgroupSize(a, source, module, "main", .{ 4, 1, 1 });
+    try std.testing.expect(edits == null);
+}
+
+test "edits: insertAt appended declaration re-analyzes clean" {
+    const a = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> u: f32;
+        \\@compute @workgroup_size(1) fn main() {}
+    ;
+    const append_text = "\n@group(0) @binding(1) var<storage, read> data: array<f32>;";
+    const edit = wgslender.Edits.insertAt(@intCast(source.len), append_text);
+    const rewritten = try wgslender.Edits.applyEdits(a, source, &.{edit});
+    defer a.free(rewritten);
+
+    const rewritten_z = try a.dupeZ(u8, rewritten);
+    defer a.free(rewritten_z);
+    var re = try wgslender.reflect(a, rewritten_z);
+    defer re.deinit(a);
+    try std.testing.expectEqual(@as(usize, 2), re.bindings.items.len);
+}

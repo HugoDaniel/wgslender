@@ -457,6 +457,105 @@ pub fn renameEdits(
 }
 
 // =========================================================================
+// Edit builders
+// =========================================================================
+
+/// Build a text edit that inserts `text` at `offset` without deleting
+/// anything. Useful for "append after last binding" / "prepend" flows.
+pub fn insertAt(offset: u32, text: []const u8) TextEdit {
+    return .{ .start = offset, .end = offset, .new_text = text };
+}
+
+/// Build an edit that replaces the argument list of the `@workgroup_size`
+/// attribute on the entry point named `entry_point_name` with `xyz`.
+/// Returns null if no such entry point exists, or if the entry point has
+/// no `@workgroup_size` attribute, or if the attribute's argument list
+/// cannot be located in source (malformed input).
+///
+/// `xyz` is formatted as the minimal textual form:
+///   [4, 1, 1] → "4"         (trailing 1s collapsed)
+///   [8, 8, 1] → "8, 8"
+///   [4, 4, 4] → "4, 4, 4"
+pub fn setWorkgroupSize(
+    gpa: Allocator,
+    source: []const u8,
+    module: *const Ast.Module,
+    entry_point_name: []const u8,
+    xyz: [3]u32,
+) Allocator.Error!?[]TextEdit {
+    for (module.declarations.items) |decl| {
+        const f = switch (decl) {
+            .function => |fn_decl| fn_decl,
+            else => continue,
+        };
+        if (!f.name.isValid()) continue;
+        const sym = module.symbols.items[f.name.index()];
+        if (!std.mem.eql(u8, sym.original_name, entry_point_name)) continue;
+
+        for (f.attributes.items) |attr| {
+            if (!std.mem.eql(u8, attr.name, "workgroup_size")) continue;
+            const arg_span = findAttrArgSpan(source, attr.loc) orelse return null;
+
+            const args_text = try formatWorkgroupSizeArgs(gpa, xyz);
+            const edits = try gpa.alloc(TextEdit, 1);
+            edits[0] = .{ .start = arg_span.start, .end = arg_span.end, .new_text = args_text };
+            return edits;
+        }
+        // Function found but no @workgroup_size attribute.
+        return null;
+    }
+    return null;
+}
+
+/// Free a TextEdit slice previously returned by `setWorkgroupSize`. The
+/// builder allocates the `new_text` strings from `gpa`, so callers must
+/// free both the slice and each element's text.
+pub fn freeBuiltEdits(gpa: Allocator, edits: []TextEdit) void {
+    for (edits) |e| gpa.free(e.new_text);
+    gpa.free(edits);
+}
+
+const AttrSpan = struct { start: u32, end: u32 };
+
+/// Given the start offset of an `@name` attribute, return the span of
+/// the argument list (contents between `(` and `)`, exclusive of both).
+/// Returns null if no `(` follows the attribute name or the parens are
+/// unbalanced.
+fn findAttrArgSpan(source: []const u8, attr_loc: u32) ?AttrSpan {
+    // attr_loc points at `@`. Scan forward to `(`.
+    var i: usize = attr_loc;
+    if (i >= source.len or source[i] != '@') return null;
+    while (i < source.len and source[i] != '(') : (i += 1) {}
+    if (i >= source.len) return null;
+    const args_start: u32 = @intCast(i + 1);
+
+    // Match parens, skipping nested ones.
+    var depth: u32 = 1;
+    i = args_start;
+    while (i < source.len) : (i += 1) {
+        switch (source[i]) {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if (depth == 0) return .{ .start = args_start, .end = @intCast(i) };
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn formatWorkgroupSizeArgs(gpa: Allocator, xyz: [3]u32) Allocator.Error![]const u8 {
+    // Collapse trailing 1s: [x,1,1]→"x", [x,y,1]→"x, y", else "x, y, z".
+    const keep: usize = if (xyz[2] != 1) 3 else if (xyz[1] != 1) 2 else 1;
+    return switch (keep) {
+        1 => try std.fmt.allocPrint(gpa, "{d}", .{xyz[0]}),
+        2 => try std.fmt.allocPrint(gpa, "{d}, {d}", .{ xyz[0], xyz[1] }),
+        else => try std.fmt.allocPrint(gpa, "{d}, {d}, {d}", .{ xyz[0], xyz[1], xyz[2] }),
+    };
+}
+
+// =========================================================================
 // Apply edits
 // =========================================================================
 
@@ -565,4 +664,47 @@ test "applyEdits: deletion (empty new_text)" {
     const out = try applyEdits(std.testing.allocator, src, &edits);
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("abef", out);
+}
+
+test "insertAt: produces zero-length range edit" {
+    const e = insertAt(5, "hi");
+    try std.testing.expectEqual(@as(u32, 5), e.start);
+    try std.testing.expectEqual(@as(u32, 5), e.end);
+    try std.testing.expectEqualStrings("hi", e.new_text);
+}
+
+test "findAttrArgSpan: simple" {
+    const src = "@workgroup_size(8, 8, 1)";
+    const span = findAttrArgSpan(src, 0).?;
+    try std.testing.expectEqualStrings("8, 8, 1", src[span.start..span.end]);
+}
+
+test "findAttrArgSpan: nested parens" {
+    const src = "@location(max(0, 1))";
+    const span = findAttrArgSpan(src, 0).?;
+    try std.testing.expectEqualStrings("max(0, 1)", src[span.start..span.end]);
+}
+
+test "findAttrArgSpan: missing paren returns null" {
+    try std.testing.expect(findAttrArgSpan("@compute", 0) == null);
+}
+
+test "findAttrArgSpan: unclosed returns null" {
+    try std.testing.expect(findAttrArgSpan("@wg(1, 2", 0) == null);
+}
+
+test "formatWorkgroupSizeArgs: collapses trailing 1s" {
+    const a = std.testing.allocator;
+
+    const one = try formatWorkgroupSizeArgs(a, .{ 4, 1, 1 });
+    defer a.free(one);
+    try std.testing.expectEqualStrings("4", one);
+
+    const two = try formatWorkgroupSizeArgs(a, .{ 8, 8, 1 });
+    defer a.free(two);
+    try std.testing.expectEqualStrings("8, 8", two);
+
+    const three = try formatWorkgroupSizeArgs(a, .{ 4, 4, 4 });
+    defer a.free(three);
+    try std.testing.expectEqualStrings("4, 4, 4", three);
 }
