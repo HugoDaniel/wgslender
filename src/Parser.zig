@@ -233,6 +233,18 @@ fn currentStart(self: *const Parser) u32 {
     return self.token_starts[self.pos];
 }
 
+/// Byte offset one past the end of the most recently consumed token.
+/// Used to close out a span after an `expect(...)` / `advance()` that
+/// consumes the terminator. Returns 0 if no token has been consumed
+/// yet (not reachable during declaration parsing).
+fn prevTokenEnd(self: *const Parser) u32 {
+    if (self.pos == 0) return 0;
+    const prev_pos = self.pos - 1;
+    const start = self.token_starts[prev_pos];
+    const text = self.tokenText(prev_pos);
+    return start + @as(u32, @intCast(text.len));
+}
+
 fn addError(self: *Parser, message: []const u8) void {
     const start = self.currentStart();
     const text = self.currentText();
@@ -734,20 +746,23 @@ fn parseDiagnosticDirective(self: *Parser) !Ast.Directive {
 }
 
 fn parseDeclaration(self: *Parser) !?Ast.Decl {
+    // Span starts at the first attribute's `@` if any, otherwise the
+    // keyword that follows. `currentStart()` returns whichever comes first.
+    const decl_start = self.currentStart();
     var attrs = try self.parseAttributes();
 
     switch (self.currentTag()) {
         .keyword_const => {
-            if (self.peekIdentLike(1)) return .{ .@"const" = try self.parseConstDecl() };
+            if (self.peekIdentLike(1)) return .{ .@"const" = try self.parseConstDecl(decl_start) };
             return .{ .const_assert = try self.parseConstAssert() };
         },
         .keyword_const_assert => return .{ .const_assert = try self.parseConstAssert() },
-        .keyword_override => return .{ .override = try self.parseOverrideDecl(&attrs) },
-        .keyword_var => return .{ .@"var" = try self.parseVarDecl(&attrs) },
-        .keyword_let => return .{ .let = try self.parseLetDecl() },
-        .keyword_fn => return .{ .function = try self.parseFunctionDecl(&attrs) },
-        .keyword_struct => return .{ .@"struct" = try self.parseStructDecl() },
-        .keyword_alias => return .{ .alias = try self.parseAliasDecl() },
+        .keyword_override => return .{ .override = try self.parseOverrideDecl(&attrs, decl_start) },
+        .keyword_var => return .{ .@"var" = try self.parseVarDecl(&attrs, decl_start) },
+        .keyword_let => return .{ .let = try self.parseLetDecl(decl_start) },
+        .keyword_fn => return .{ .function = try self.parseFunctionDecl(&attrs, decl_start) },
+        .keyword_struct => return .{ .@"struct" = try self.parseStructDecl(decl_start) },
+        .keyword_alias => return .{ .alias = try self.parseAliasDecl(decl_start) },
         else => {
             if (attrs.items.len > 0) self.addError("unexpected attributes");
             return null;
@@ -784,7 +799,7 @@ fn parseAttributes(self: *Parser) !std.ArrayListUnmanaged(Ast.Attribute) {
     return attrs;
 }
 
-fn parseConstDecl(self: *Parser) !*Ast.ConstDecl {
+fn parseConstDecl(self: *Parser, decl_start: u32) !*Ast.ConstDecl {
     _ = self.expect(.keyword_const);
     const decl = try self.arena.create(Ast.ConstDecl);
     decl.* = .{ .name = .none };
@@ -800,10 +815,11 @@ fn parseConstDecl(self: *Parser) !*Ast.ConstDecl {
     self.expr_context = "after '=' in const declaration";
     decl.initializer = try self.parseExpression();
     _ = self.expect(.semicolon);
+    decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
-fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute)) !*Ast.OverrideDecl {
+fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), decl_start: u32) !*Ast.OverrideDecl {
     _ = self.expect(.keyword_override);
     const decl = try self.arena.create(Ast.OverrideDecl);
     decl.* = .{ .attributes = attrs.*, .name = .none };
@@ -820,10 +836,11 @@ fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
         decl.initializer = try self.parseExpression();
     }
     _ = self.expect(.semicolon);
+    decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
-fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute)) !*Ast.VarDecl {
+fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), decl_start: u32) !*Ast.VarDecl {
     _ = self.expect(.keyword_var);
     const decl = try self.arena.create(Ast.VarDecl);
     decl.* = .{ .attributes = attrs.*, .name = .none };
@@ -852,10 +869,11 @@ fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute)) !*
         decl.initializer = try self.parseExpression();
     }
     _ = self.expect(.semicolon);
+    decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
-fn parseLetDecl(self: *Parser) !*Ast.LetDecl {
+fn parseLetDecl(self: *Parser, decl_start: u32) !*Ast.LetDecl {
     _ = self.expect(.keyword_let);
     const decl = try self.arena.create(Ast.LetDecl);
     decl.* = .{ .name = .none };
@@ -871,10 +889,11 @@ fn parseLetDecl(self: *Parser) !*Ast.LetDecl {
     self.expr_context = "after '=' in let declaration";
     decl.initializer = try self.parseExpression();
     _ = self.expect(.semicolon);
+    decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
-fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute)) !*Ast.FunctionDecl {
+fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), decl_start: u32) !*Ast.FunctionDecl {
     _ = self.expect(.keyword_fn);
     const decl = try self.arena.create(Ast.FunctionDecl);
     decl.* = .{
@@ -925,6 +944,7 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
 
     decl.body = try self.parseCompoundStmt();
     self.popScope();
+    decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
@@ -946,7 +966,7 @@ fn parseParameters(self: *Parser) !std.ArrayListUnmanaged(Ast.Parameter) {
     return params;
 }
 
-fn parseStructDecl(self: *Parser) !*Ast.StructDecl {
+fn parseStructDecl(self: *Parser, decl_start: u32) !*Ast.StructDecl {
     _ = self.expect(.keyword_struct);
     const decl = try self.arena.create(Ast.StructDecl);
     decl.* = .{ .name = .none, .members = .empty };
@@ -971,10 +991,11 @@ fn parseStructDecl(self: *Parser) !*Ast.StructDecl {
         _ = self.eat(.comma);
     }
     _ = self.expect(.r_brace);
+    decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
-fn parseAliasDecl(self: *Parser) !*Ast.AliasDecl {
+fn parseAliasDecl(self: *Parser, decl_start: u32) !*Ast.AliasDecl {
     _ = self.expect(.keyword_alias);
     const decl = try self.arena.create(Ast.AliasDecl);
     var name: Ast.SymbolIndex = .none;
@@ -986,7 +1007,7 @@ fn parseAliasDecl(self: *Parser) !*Ast.AliasDecl {
     _ = self.expect(.eq);
     const typ = try self.parseType("after '=' in alias declaration");
     _ = self.expect(.semicolon);
-    decl.* = .{ .name = name, .typ = typ };
+    decl.* = .{ .name = name, .typ = typ, .decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() } };
     return decl;
 }
 
@@ -1012,7 +1033,12 @@ fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed
             return self.parseTemplatedType(name, name_loc);
         }
         const typ = try self.arena.create(Ast.IdentType);
-        typ.* = .{ .name = name, .ref = .none, .loc = name_loc };
+        typ.* = .{
+            .name = name,
+            .ref = .none,
+            .loc = name_loc,
+            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+        };
         return .{ .ident = typ };
     }
 
@@ -1024,7 +1050,12 @@ fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed
     const err_loc = self.currentStart();
     self.advance();
     const typ = try self.arena.create(Ast.IdentType);
-    typ.* = .{ .name = "error", .ref = .none, .loc = err_loc };
+    typ.* = .{
+        .name = "error",
+        .ref = .none,
+        .loc = err_loc,
+        .span = .{ .start = err_loc, .end = self.prevTokenEnd() },
+    };
     return .{ .ident = typ };
 }
 
@@ -1036,7 +1067,12 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
         const elem = try self.parseType("in vector type");
         _ = self.expect(.gt);
         const typ = try self.arena.create(Ast.VecType);
-        typ.* = .{ .size = size, .elem_type = elem, .loc = name_loc };
+        typ.* = .{
+            .size = size,
+            .elem_type = elem,
+            .loc = name_loc,
+            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+        };
         return .{ .vec = typ };
     }
 
@@ -1046,7 +1082,13 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
         const elem = try self.parseType("in matrix type");
         _ = self.expect(.gt);
         const typ = try self.arena.create(Ast.MatType);
-        typ.* = .{ .cols = cols, .rows = rows, .elem_type = elem, .loc = name_loc };
+        typ.* = .{
+            .cols = cols,
+            .rows = rows,
+            .elem_type = elem,
+            .loc = name_loc,
+            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+        };
         return .{ .mat = typ };
     }
 
@@ -1059,7 +1101,11 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
         }
         _ = self.expect(.gt);
         const typ = try self.arena.create(Ast.ArrayType);
-        typ.* = .{ .elem_type = elem, .size = size };
+        typ.* = .{
+            .elem_type = elem,
+            .size = size,
+            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+        };
         return .{ .array = typ };
     }
 
@@ -1071,7 +1117,12 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
         if (self.eat(.comma)) access = self.parseAccessMode();
         _ = self.expect(.gt);
         const typ = try self.arena.create(Ast.PtrType);
-        typ.* = .{ .address_space = addr, .elem_type = elem, .access_mode = access };
+        typ.* = .{
+            .address_space = addr,
+            .elem_type = elem,
+            .access_mode = access,
+            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+        };
         return .{ .ptr = typ };
     }
 
@@ -1079,7 +1130,11 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
         const elem = try self.parseType("in atomic type");
         _ = self.expect(.gt);
         const typ = try self.arena.create(Ast.AtomicType);
-        typ.* = .{ .elem_type = elem, .loc = name_loc };
+        typ.* = .{
+            .elem_type = elem,
+            .loc = name_loc,
+            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+        };
         return .{ .atomic = typ };
     }
 
@@ -1097,6 +1152,7 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
             typ.sampled_type = try self.parseType("in texture type");
         }
         _ = self.expect(.gt);
+        typ.span = .{ .start = name_loc, .end = self.prevTokenEnd() };
         return .{ .texture = typ };
     }
 
@@ -1105,7 +1161,12 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
     while (self.eat(.comma)) _ = try self.parseType("in template arguments");
     _ = self.expect(.gt);
     const typ = try self.arena.create(Ast.IdentType);
-    typ.* = .{ .name = name, .ref = .none, .loc = name_loc };
+    typ.* = .{
+        .name = name,
+        .ref = .none,
+        .loc = name_loc,
+        .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+    };
     return .{ .ident = typ };
 }
 

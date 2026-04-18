@@ -9,6 +9,32 @@ const std = @import("std");
 const Lexer = @import("Lexer.zig");
 
 // =========================================================================
+// Source spans
+// =========================================================================
+
+/// Half-open byte range `[start, end)` in the original source. Matches the
+/// shape used by `Edits.TextEdit`, `Edits.Reference`, and
+/// `StableId.Range` — no mental translation needed at call sites.
+pub const Span = struct {
+    start: u32 = 0,
+    end: u32 = 0,
+
+    pub const empty: Span = .{ .start = 0, .end = 0 };
+
+    pub fn slice(self: Span, source: []const u8) []const u8 {
+        return source[self.start..self.end];
+    }
+
+    pub fn len(self: Span) u32 {
+        return self.end - self.start;
+    }
+
+    pub fn isEmpty(self: Span) bool {
+        return self.start == self.end;
+    }
+};
+
+// =========================================================================
 // Symbols and References
 // =========================================================================
 
@@ -195,12 +221,31 @@ pub const Decl = union(enum) {
             .const_assert => .none,
         };
     }
+
+    /// Returns the full syntactic span of the declaration, including any
+    /// leading attributes and the terminating `;`/`}`. Returns
+    /// `Span.empty` for `const_assert` (unnamed, not addressable).
+    pub fn declSpan(self: Decl) Span {
+        return switch (self) {
+            .@"const" => |d| d.decl_span,
+            .override => |d| d.decl_span,
+            .@"var" => |d| d.decl_span,
+            .let => |d| d.decl_span,
+            .function => |d| d.decl_span,
+            .@"struct" => |d| d.decl_span,
+            .alias => |d| d.decl_span,
+            .const_assert => .empty,
+        };
+    }
 };
 
 pub const ConstDecl = struct {
     name: SymbolIndex,
     typ: ?Type = null,
     initializer: ?Expr = null,
+    /// Full syntactic span: from the `const` keyword through the
+    /// terminating `;`. Empty on parse-error recovery.
+    decl_span: Span = .empty,
 };
 
 pub const OverrideDecl = struct {
@@ -208,6 +253,9 @@ pub const OverrideDecl = struct {
     name: SymbolIndex,
     typ: ?Type = null,
     initializer: ?Expr = null,
+    /// Full syntactic span: from the first `@` attribute (if any) or
+    /// `override` keyword through the terminating `;`.
+    decl_span: Span = .empty,
 };
 
 pub const VarDecl = struct {
@@ -217,12 +265,18 @@ pub const VarDecl = struct {
     name: SymbolIndex,
     typ: ?Type = null,
     initializer: ?Expr = null,
+    /// Full syntactic span: from the first `@` attribute (if any) or
+    /// `var` keyword through the terminating `;`.
+    decl_span: Span = .empty,
 };
 
 pub const LetDecl = struct {
     name: SymbolIndex,
     typ: ?Type = null,
     initializer: ?Expr = null,
+    /// Full syntactic span: from the `let` keyword through the
+    /// terminating `;`.
+    decl_span: Span = .empty,
 };
 
 pub const FunctionDecl = struct {
@@ -232,6 +286,9 @@ pub const FunctionDecl = struct {
     return_type: ?Type = null,
     return_attr: std.ArrayListUnmanaged(Attribute),
     body: ?*CompoundStmt = null,
+    /// Full syntactic span: from the first `@` attribute (if any) or
+    /// `fn` keyword through the closing `}` of the body.
+    decl_span: Span = .empty,
 };
 
 pub const Parameter = struct {
@@ -243,6 +300,9 @@ pub const Parameter = struct {
 pub const StructDecl = struct {
     name: SymbolIndex,
     members: std.ArrayListUnmanaged(StructMember),
+    /// Full syntactic span: from the `struct` keyword through the
+    /// closing `}`.
+    decl_span: Span = .empty,
 };
 
 pub const StructMember = struct {
@@ -254,6 +314,9 @@ pub const StructMember = struct {
 pub const AliasDecl = struct {
     name: SymbolIndex,
     typ: Type,
+    /// Full syntactic span: from the `alias` keyword through the
+    /// terminating `;`.
+    decl_span: Span = .empty,
 };
 
 pub const ConstAssertDecl = struct {
@@ -325,12 +388,22 @@ pub const Type = union(enum) {
     atomic: *AtomicType,
     sampler: *SamplerType,
     texture: *TextureType,
+
+    /// Byte-range covering the full type expression as written in
+    /// source (e.g. `"array<vec3<f32>, 4>"`). Populated by the parser;
+    /// may be `Span.empty` on error-recovery paths.
+    pub fn span(self: Type) Span {
+        return switch (self) {
+            inline else => |ptr| ptr.span,
+        };
+    }
 };
 
 pub const IdentType = struct {
     name: []const u8,
     ref: SymbolIndex = .none,
     loc: u32 = 0,
+    span: Span = .empty,
 };
 
 pub const VecType = struct {
@@ -338,6 +411,7 @@ pub const VecType = struct {
     elem_type: ?Type = null,
     shorthand: []const u8 = "",
     loc: u32 = 0,
+    span: Span = .empty,
 };
 
 pub const MatType = struct {
@@ -346,26 +420,31 @@ pub const MatType = struct {
     elem_type: ?Type = null,
     shorthand: []const u8 = "",
     loc: u32 = 0,
+    span: Span = .empty,
 };
 
 pub const ArrayType = struct {
     elem_type: ?Type = null,
     size: ?Expr = null,
+    span: Span = .empty,
 };
 
 pub const PtrType = struct {
     address_space: AddressSpace,
     elem_type: Type,
     access_mode: AccessMode = .none,
+    span: Span = .empty,
 };
 
 pub const AtomicType = struct {
     elem_type: Type,
     loc: u32 = 0,
+    span: Span = .empty,
 };
 
 pub const SamplerType = struct {
     comparison: bool,
+    span: Span = .empty,
 };
 
 pub const TextureType = struct {
@@ -374,6 +453,7 @@ pub const TextureType = struct {
     sampled_type: ?Type = null,
     texel_format: []const u8 = "",
     access_mode: AccessMode = .none,
+    span: Span = .empty,
 };
 
 pub const TextureKind = enum(u8) {
