@@ -1361,3 +1361,60 @@ test "reflect: private var not in bindings" {
     try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
     try std.testing.expectEqual(@as(usize, 0), result.bindings.items.len);
 }
+
+// --- name_offset: byte offsets point at declared names in source ---
+
+test "reflect: name_offset points at binding name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        "@group(0) @binding(0) var<uniform> uniforms: f32;";
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 1), result.bindings.items.len);
+
+    const b = result.bindings.items[0];
+    const off = b.name_offset;
+    try std.testing.expect(off > 0);
+    try std.testing.expect(off + b.name.len <= source.len);
+    try std.testing.expectEqualStrings(b.name, source[off .. off + b.name.len]);
+}
+
+test "reflect: name_offset points at entry point name" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        "@compute @workgroup_size(1) fn simulate() {}";
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 1), result.entry_points.items.len);
+
+    const ep = result.entry_points.items[0];
+    const off = ep.name_offset;
+    try std.testing.expect(off > 0);
+    try std.testing.expectEqualStrings(ep.name, source[off .. off + ep.name.len]);
+}
+
+test "reflect: name_offset points at field names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        "struct Uniforms { time: f32, color: vec3f, }" ++
+        " @group(0) @binding(0) var<uniform> u: Uniforms;";
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    const layout = result.structs.get("Uniforms") orelse return error.TestExpectedStruct;
+    try std.testing.expectEqual(@as(usize, 2), layout.fields.items.len);
+    for (layout.fields.items) |field| {
+        const off = field.name_offset;
+        try std.testing.expect(off > 0);
+        try std.testing.expectEqualStrings(field.name, source[off .. off + field.name.len]);
+    }
+}

@@ -144,6 +144,8 @@ pub const BindingInfo = struct {
     binding: i32,
     name: []const u8,
     name_mapped: []const u8,
+    /// Byte offset of the declared name in the original source, or 0 if unknown.
+    name_offset: u32 = 0,
     address_space: []const u8,
     access_mode: []const u8 = "",
     typ: []const u8,
@@ -172,6 +174,8 @@ pub const StructLayout = struct {
 pub const FieldInfo = struct {
     name: []const u8,
     name_mapped: []const u8,
+    /// Byte offset of the declared field name in the original source, or 0 if unknown.
+    name_offset: u32 = 0,
     typ: []const u8,
     type_mapped: []const u8,
     offset: u32,
@@ -182,6 +186,8 @@ pub const FieldInfo = struct {
 
 pub const EntryPointInfo = struct {
     name: []const u8,
+    /// Byte offset of the declared function name in the original source, or 0 if unknown.
+    name_offset: u32 = 0,
     stage: []const u8,
     workgroup_size: [3]u32 = .{ 1, 1, 1 },
     has_workgroup_size: bool = false,
@@ -286,12 +292,14 @@ fn extractBinding(
 
     const name = getSymbolName(var_decl.name, symbols);
     const mapped_name = lc.getMappedName(var_decl.name);
+    const name_offset = getSymbolLoc(var_decl.name, symbols);
 
     var info = BindingInfo{
         .group = group,
         .binding = binding,
         .name = name,
         .name_mapped = mapped_name,
+        .name_offset = name_offset,
         .address_space = addressSpaceToString(address_space),
         .typ = if (var_decl.typ) |t| lc.typeToStringMapped(t, false) else "",
         .type_mapped = if (var_decl.typ) |t| lc.typeToStringMapped(t, true) else "",
@@ -359,6 +367,7 @@ fn extractEntryPoint(
 
     return .{
         .name = getSymbolName(fn_decl.name, symbols),
+        .name_offset = getSymbolLoc(fn_decl.name, symbols),
         .stage = stage,
         .workgroup_size = workgroup_size,
         .has_workgroup_size = has_workgroup_size,
@@ -392,6 +401,13 @@ fn getSymbolName(ref: Ast.SymbolIndex, symbols: []const Ast.Symbol) []const u8 {
     const idx = ref.index();
     if (idx >= symbols.len) return "";
     return symbols[idx].original_name;
+}
+
+fn getSymbolLoc(ref: Ast.SymbolIndex, symbols: []const Ast.Symbol) u32 {
+    if (!ref.isValid()) return 0;
+    const idx = ref.index();
+    if (idx >= symbols.len) return 0;
+    return symbols[idx].loc;
 }
 
 fn addressSpaceToString(as: Ast.AddressSpace) []const u8 {
@@ -668,6 +684,7 @@ const LayoutComputer = struct {
             var field = FieldInfo{
                 .name = self.getSymbolName(member.name),
                 .name_mapped = self.getMappedName(member.name),
+                .name_offset = getSymbolLoc(member.name, self.module.symbols.items),
                 .typ = self.typeToStringMapped(member_type, false),
                 .type_mapped = self.typeToStringMapped(member_type, true),
                 .offset = offset,
@@ -968,6 +985,8 @@ fn writeBindingJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, b: *cons
     try appendJsonStr(buf, arena, b.name);
     try appendStr(buf, arena, ",\"nameMapped\":");
     try appendJsonStr(buf, arena, b.name_mapped);
+    try appendStr(buf, arena, ",\"nameOffset\":");
+    try appendInt(buf, arena, b.name_offset);
     try appendStr(buf, arena, ",\"addressSpace\":");
     try appendJsonStr(buf, arena, b.address_space);
     if (b.access_mode.len > 0) {
@@ -1007,6 +1026,8 @@ fn writeFieldInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, f: *co
     try appendJsonStr(buf, arena, f.name);
     try appendStr(buf, arena, ",\"nameMapped\":");
     try appendJsonStr(buf, arena, f.name_mapped);
+    try appendStr(buf, arena, ",\"nameOffset\":");
+    try appendInt(buf, arena, f.name_offset);
     try appendStr(buf, arena, ",\"type\":");
     try appendJsonStr(buf, arena, f.typ);
     try appendStr(buf, arena, ",\"typeMapped\":");
@@ -1059,6 +1080,8 @@ fn writeArrayInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, arr: *
 fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, ep: *const EntryPointInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"name\":");
     try appendJsonStr(buf, arena, ep.name);
+    try appendStr(buf, arena, ",\"nameOffset\":");
+    try appendInt(buf, arena, ep.name_offset);
     try appendStr(buf, arena, ",\"stage\":");
     try appendJsonStr(buf, arena, ep.stage);
     if (ep.has_workgroup_size) {
