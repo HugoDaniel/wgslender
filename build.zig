@@ -168,6 +168,8 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
     // Edits tests — library-level rename / text edit primitives
     _ = addTestStep(b, test_step, "tests/edits_test.zig", target, optimize, &.{w});
+    // StableId tests — reparse-stable symbol identifiers
+    _ = addTestStep(b, test_step, "tests/stable_id_test.zig", target, optimize, &.{w});
     // Semantic tests
     const sd: std.Build.Module.Import = .{ .name = "semantic_data", .module = semantic_data_mod };
     _ = addTestStep(b, test_step, "tests/compute_toys_test.zig", target, optimize, &.{ w, sd });
