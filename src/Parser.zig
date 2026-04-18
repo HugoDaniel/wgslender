@@ -7,6 +7,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Lexer = @import("Lexer.zig");
+const Cst = @import("Cst.zig");
 
 const Parser = @This();
 
@@ -30,6 +31,30 @@ current_loc: u32,
 // Errors
 errors: std.ArrayListUnmanaged(ParseError),
 expr_context: []const u8 = "",
+
+// =========================================================================
+// Optional concrete syntax tree shadow.
+//
+// When `cst` is non-null, the parser additionally emits events into the
+// builder for every token it consumes and for every major grammar
+// production it enters. The AST construction path is unaffected — CST
+// emission is strictly additive.
+//
+// `cst_all_tags` / `cst_all_starts` / `cst_all_ends` hold the
+// trivia-preserving token stream (produced by `Lexer.tokenizeAll`). The
+// parser's own token cursor (`self.pos`) indexes into the non-trivia
+// slice, while `cst_nt_to_all[self.pos]` maps it to the matching index
+// in the full stream. `cst_next_all` tracks how far we've emitted into
+// the full stream so trivia tokens between two consecutive real tokens
+// are flushed in-order as leaves of the current open CST node.
+// =========================================================================
+
+cst: ?*Cst.Builder = null,
+cst_all_tags: []const Tag = &.{},
+cst_all_starts: []const u32 = &.{},
+cst_all_ends: []const u32 = &.{},
+cst_nt_to_all: []const u32 = &.{},
+cst_next_all: u32 = 0,
 
 pub const ParseError = struct {
     message: []const u8,
@@ -62,6 +87,91 @@ pub fn init(arena: Allocator, source: [:0]const u8, tokens: std.MultiArrayList(L
         .scope_index = 0,
         .current_loc = 0,
         .errors = .empty,
+    };
+}
+
+/// Precomputed view of a `tokenizeAll` output, splitting the raw token
+/// stream into a trivia-preserving slice (`.*_all`) and a non-trivia
+/// cursor slice mirroring `Lexer.tokenize`.
+pub const TokenStream = struct {
+    all_tags: []const Tag,
+    all_starts: []const u32,
+    all_ends: []const u32,
+
+    non_trivia_tags: []Tag,
+    non_trivia_starts: []u32,
+    nt_to_all: []u32,
+
+    /// Build a stream from the output of `Lexer.tokenizeAll`. Allocates
+    /// `non_trivia_tags`, `non_trivia_starts`, and `nt_to_all` from `arena`;
+    /// `all_*` slices alias the caller's token storage.
+    pub fn init(arena: Allocator, all: *const std.MultiArrayList(Lexer.Token)) !TokenStream {
+        const tags = all.items(.tag);
+        const starts = all.items(.start);
+        const ends = all.items(.end);
+
+        // Count non-trivia.
+        var n: u32 = 0;
+        for (tags) |t| {
+            if (!t.isTrivia()) n += 1;
+        }
+
+        const nt_tags = try arena.alloc(Tag, n);
+        const nt_starts = try arena.alloc(u32, n);
+        const nt_map = try arena.alloc(u32, n);
+        var j: u32 = 0;
+        for (tags, 0..) |t, i| {
+            if (t.isTrivia()) continue;
+            nt_tags[j] = t;
+            nt_starts[j] = starts[i];
+            nt_map[j] = @intCast(i);
+            j += 1;
+        }
+
+        return .{
+            .all_tags = tags,
+            .all_starts = starts,
+            .all_ends = ends,
+            .non_trivia_tags = nt_tags,
+            .non_trivia_starts = nt_starts,
+            .nt_to_all = nt_map,
+        };
+    }
+};
+
+/// Like `init` but wires a CST builder so the parser emits events alongside
+/// AST construction. `stream` is built from a `Lexer.tokenizeAll` output.
+/// The caller retains ownership of the underlying token storage and the
+/// builder; both must outlive the parser's call to `parse`.
+pub fn initWithCst(
+    arena: Allocator,
+    source: [:0]const u8,
+    stream: TokenStream,
+    builder: *Cst.Builder,
+) !Parser {
+    std.debug.assert(stream.non_trivia_tags.len > 0);
+
+    const scope = try arena.create(Ast.Scope);
+    scope.* = Ast.Scope.init(null, .module);
+
+    return .{
+        .arena = arena,
+        .source = source,
+        .token_tags = stream.non_trivia_tags,
+        .token_starts = stream.non_trivia_starts,
+        .pos = 0,
+        .symbols = .empty,
+        .scope = scope,
+        .scopes_in_order = .empty,
+        .scope_index = 0,
+        .current_loc = 0,
+        .errors = .empty,
+        .cst = builder,
+        .cst_all_tags = stream.all_tags,
+        .cst_all_starts = stream.all_starts,
+        .cst_all_ends = stream.all_ends,
+        .cst_nt_to_all = stream.nt_to_all,
+        .cst_next_all = 0,
     };
 }
 
@@ -105,7 +215,59 @@ fn peekTag(self: *const Parser, offset: u32) Tag {
 }
 
 fn advance(self: *Parser) void {
-    if (self.pos < self.token_tags.len) self.pos += 1;
+    if (self.pos < self.token_tags.len) {
+        self.emitCurrentTokenToCst();
+        self.pos += 1;
+    }
+}
+
+/// If a CST builder is attached, emit every trivia token plus the real
+/// token at `self.pos` as children of the currently-open node. Flushing
+/// trivia alongside the real token keeps the builder's child stream
+/// identical (under concatenation) to `tokenizeAll`'s output.
+fn emitCurrentTokenToCst(self: *Parser) void {
+    const builder = self.cst orelse return;
+    if (self.pos >= self.cst_nt_to_all.len) return;
+    const target = self.cst_nt_to_all[self.pos];
+    while (self.cst_next_all <= target) : (self.cst_next_all += 1) {
+        builder.token(self.cst_next_all) catch {
+            // Arena-scoped builder; OOM surfaces via a later check. Drop
+            // silently here to keep the parser's void signature.
+            return;
+        };
+    }
+}
+
+/// Flush any remaining trivia tokens after the last non-trivia token has
+/// been consumed — typically whitespace at EOF or a trailing line comment.
+fn flushTrailingTriviaToCst(self: *Parser) void {
+    const builder = self.cst orelse return;
+    // Target is strictly less than eof's index: every trivia token sits
+    // before the sentinel eof. We emit up to (but not including) eof so
+    // the eof token can be attached to the enclosing `module` node.
+    const total: u32 = @intCast(self.cst_all_tags.len);
+    while (self.cst_next_all < total and self.cst_all_tags[self.cst_next_all].isTrivia()) : (self.cst_next_all += 1) {
+        builder.token(self.cst_next_all) catch return;
+    }
+}
+
+fn cstOpen(self: *Parser) ?Cst.Marker {
+    const builder = self.cst orelse return null;
+    return builder.open() catch null;
+}
+
+fn cstClose(self: *Parser, maybe_marker: ?Cst.Marker, kind: Cst.Kind) void {
+    if (self.cst) |builder| {
+        if (maybe_marker) |m| builder.close(m, kind) catch {};
+    }
+}
+
+fn cstEmitEof(self: *Parser) void {
+    const builder = self.cst orelse return;
+    const total: u32 = @intCast(self.cst_all_tags.len);
+    while (self.cst_next_all < total) : (self.cst_next_all += 1) {
+        builder.token(self.cst_next_all) catch return;
+    }
 }
 
 fn eat(self: *Parser, tag: Tag) bool {
@@ -669,33 +831,47 @@ fn exitScope(self: *Parser) void {
 // =========================================================================
 
 fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
-    // Parse directives
+    const mod_marker = self.cstOpen();
+
+    // Parse directives — each produces one `directive` CST node.
     for (0..self.token_tags.len) |_| {
         switch (self.currentTag()) {
             .keyword_enable => {
+                const dir_marker = self.cstOpen();
                 const dir = try self.parseEnableDirective();
                 try module.directives.append(self.arena, dir);
+                self.cstClose(dir_marker, .directive);
             },
             .keyword_requires => {
+                const dir_marker = self.cstOpen();
                 const dir = try self.parseRequiresDirective();
                 try module.directives.append(self.arena, dir);
+                self.cstClose(dir_marker, .directive);
             },
             .keyword_diagnostic => {
+                const dir_marker = self.cstOpen();
                 const dir = try self.parseDiagnosticDirective();
                 try module.directives.append(self.arena, dir);
+                self.cstClose(dir_marker, .directive);
             },
             else => break,
         }
     } else unreachable;
 
-    // Parse declarations
+    // Parse declarations — `parseDeclaration` emits its own per-decl kind.
     while (self.currentTag() != .eof) {
         if (try self.parseDeclaration()) |decl| {
             try module.declarations.append(self.arena, decl);
         } else {
+            // Malformed: consume the stray token into the module node so
+            // the round-trip invariant holds.
             self.advance();
         }
     }
+
+    // Attach the eof token + any trailing trivia to the module node.
+    self.cstEmitEof();
+    self.cstClose(mod_marker, .module);
 }
 
 fn parseEnableDirective(self: *Parser) !Ast.Directive {
@@ -749,22 +925,63 @@ fn parseDeclaration(self: *Parser) !?Ast.Decl {
     // Span starts at the first attribute's `@` if any, otherwise the
     // keyword that follows. `currentStart()` returns whichever comes first.
     const decl_start = self.currentStart();
+    // Open the CST marker before attributes so attributes land inside the
+    // decl node; close with the specific kind once we know what we parsed.
+    const marker = self.cstOpen();
     var attrs = try self.parseAttributes();
 
     switch (self.currentTag()) {
         .keyword_const => {
-            if (self.peekIdentLike(1)) return .{ .@"const" = try self.parseConstDecl(decl_start) };
-            return .{ .const_assert = try self.parseConstAssert() };
+            if (self.peekIdentLike(1)) {
+                const decl: Ast.Decl = .{ .@"const" = try self.parseConstDecl(decl_start) };
+                self.cstClose(marker, .const_decl);
+                return decl;
+            }
+            const decl: Ast.Decl = .{ .const_assert = try self.parseConstAssert() };
+            self.cstClose(marker, .const_assert_decl);
+            return decl;
         },
-        .keyword_const_assert => return .{ .const_assert = try self.parseConstAssert() },
-        .keyword_override => return .{ .override = try self.parseOverrideDecl(&attrs, decl_start) },
-        .keyword_var => return .{ .@"var" = try self.parseVarDecl(&attrs, decl_start) },
-        .keyword_let => return .{ .let = try self.parseLetDecl(decl_start) },
-        .keyword_fn => return .{ .function = try self.parseFunctionDecl(&attrs, decl_start) },
-        .keyword_struct => return .{ .@"struct" = try self.parseStructDecl(decl_start) },
-        .keyword_alias => return .{ .alias = try self.parseAliasDecl(decl_start) },
+        .keyword_const_assert => {
+            const decl: Ast.Decl = .{ .const_assert = try self.parseConstAssert() };
+            self.cstClose(marker, .const_assert_decl);
+            return decl;
+        },
+        .keyword_override => {
+            const decl: Ast.Decl = .{ .override = try self.parseOverrideDecl(&attrs, decl_start) };
+            self.cstClose(marker, .override_decl);
+            return decl;
+        },
+        .keyword_var => {
+            const decl: Ast.Decl = .{ .@"var" = try self.parseVarDecl(&attrs, decl_start) };
+            self.cstClose(marker, .var_decl);
+            return decl;
+        },
+        .keyword_let => {
+            const decl: Ast.Decl = .{ .let = try self.parseLetDecl(decl_start) };
+            self.cstClose(marker, .let_decl);
+            return decl;
+        },
+        .keyword_fn => {
+            const decl: Ast.Decl = .{ .function = try self.parseFunctionDecl(&attrs, decl_start) };
+            self.cstClose(marker, .fn_decl);
+            return decl;
+        },
+        .keyword_struct => {
+            const decl: Ast.Decl = .{ .@"struct" = try self.parseStructDecl(decl_start) };
+            self.cstClose(marker, .struct_decl);
+            return decl;
+        },
+        .keyword_alias => {
+            const decl: Ast.Decl = .{ .alias = try self.parseAliasDecl(decl_start) };
+            self.cstClose(marker, .alias_decl);
+            return decl;
+        },
         else => {
             if (attrs.items.len > 0) self.addError("unexpected attributes");
+            // No decl was parsed; close as error_tree so stray tokens are
+            // grouped under an obvious recovery node rather than under
+            // `module` directly.
+            self.cstClose(marker, .error_tree);
             return null;
         },
     }
@@ -3412,3 +3629,165 @@ test "parser error: expected assignment or call in statement" {
 }
 
 pub const Error = error{ParseFailed} || Allocator.Error;
+
+// =========================================================================
+// Shadow-CST tests — exercise `initWithCst` alongside normal AST
+// construction, and verify that the resulting CST round-trips the source
+// and nests top-level declarations under the expected kinds.
+// =========================================================================
+
+/// Parse `source` with a CST builder attached, then walk the finalized
+/// tree and assert that concatenating every leaf token yields the original
+/// source byte-for-byte.
+fn expectCstRoundtrip(source: [:0]const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var all_tokens = try Lexer.tokenizeAll(alloc, source);
+    const stream = try TokenStream.init(alloc, &all_tokens);
+
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+
+    var parser = try Parser.initWithCst(alloc, source, stream, &builder);
+    _ = try parser.parse();
+
+    var tree = try builder.finish(alloc, all_tokens, source);
+    // Tree lives in arena, no explicit deinit needed.
+
+    // Walk every token child in document order and rebuild the source.
+    var recovered: std.ArrayListUnmanaged(u8) = .empty;
+    defer recovered.deinit(std.testing.allocator);
+
+    const WalkCtx = struct {
+        tree: *const Cst.Tree,
+        buf: *std.ArrayListUnmanaged(u8),
+        alloc: std.mem.Allocator,
+
+        fn walk(self: @This(), node_idx: Cst.NodeIndex) !void {
+            const n = self.tree.getNode(node_idx);
+            const children = self.tree.children[n.first_child .. n.first_child + n.child_count];
+            for (children) |el| {
+                if (el.asToken()) |tok_idx| {
+                    const start = self.tree.tokens.items(.start)[tok_idx];
+                    const end = self.tree.tokens.items(.end)[tok_idx];
+                    try self.buf.appendSlice(self.alloc, self.tree.source[start..end]);
+                } else if (el.asNode()) |child_idx| {
+                    try self.walk(child_idx);
+                }
+            }
+        }
+    };
+    const ctx = WalkCtx{ .tree = &tree, .buf = &recovered, .alloc = std.testing.allocator };
+    try ctx.walk(tree.root());
+
+    try std.testing.expectEqualStrings(source, recovered.items);
+}
+
+test "cst shadow: round-trip empty source" {
+    try expectCstRoundtrip("");
+}
+
+test "cst shadow: round-trip single const" {
+    try expectCstRoundtrip("const x = 1;");
+}
+
+test "cst shadow: round-trip const with trivia" {
+    try expectCstRoundtrip("// intro\nconst x = 1; /* trailing */\n");
+}
+
+test "cst shadow: round-trip multi-decl module with mixed trivia" {
+    try expectCstRoundtrip(
+        \\// header
+        \\enable f16;
+        \\
+        \\struct S { x: f32, y: i32 }
+        \\
+        \\// comment between
+        \\const PI: f32 = 3.14;
+        \\alias V = vec3<f32>;
+        \\
+        \\@compute @workgroup_size(1)
+        \\fn main() { let a = 1; return; }
+        \\
+    );
+}
+
+test "cst shadow: root kind is module, child kinds match each decl" {
+    const source: [:0]const u8 = "enable f16; const X = 1; fn f() {} struct S { x: f32 } alias V = f32;";
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var all_tokens = try Lexer.tokenizeAll(alloc, source);
+    const stream = try TokenStream.init(alloc, &all_tokens);
+
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+
+    var parser = try Parser.initWithCst(alloc, source, stream, &builder);
+    _ = try parser.parse();
+
+    var tree = try builder.finish(alloc, all_tokens, source);
+    const root_cursor = tree.rootCursor();
+    try std.testing.expectEqual(Cst.Kind.module, root_cursor.kind());
+
+    // Expected child-node kinds in order: directive, const_decl, fn_decl,
+    // struct_decl, alias_decl.
+    const expected = [_]Cst.Kind{
+        .directive,
+        .const_decl,
+        .fn_decl,
+        .struct_decl,
+        .alias_decl,
+    };
+    var found: std.ArrayListUnmanaged(Cst.Kind) = .empty;
+    defer found.deinit(std.testing.allocator);
+    for (root_cursor.childElements()) |el| {
+        if (el.asNode()) |n| {
+            try found.append(std.testing.allocator, tree.getNode(n).kind);
+        }
+    }
+    try std.testing.expectEqualSlices(Cst.Kind, &expected, found.items);
+}
+
+test "cst shadow: AST path unchanged — init without builder still works" {
+    // Sanity: the existing Parser.init path still produces the same AST.
+    const source: [:0]const u8 = "const x = 1;";
+    var tokens = try Lexer.tokenize(std.testing.allocator, source);
+    defer tokens.deinit(std.testing.allocator);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var parser = try Parser.init(arena.allocator(), source, tokens);
+    const module = try parser.parse();
+    try std.testing.expectEqual(@as(usize, 1), module.declarations.items.len);
+    try std.testing.expectEqual(@as(?*Cst.Builder, null), parser.cst);
+}
+
+test "cst shadow: compute.toys sample round-trip" {
+    // Pulled in-line to avoid a large embed; exercises realistic complexity.
+    const source: [:0]const u8 =
+        \\struct Uniforms { time: f32, resolution: vec2f, cursor: vec4f }
+        \\@group(0) @binding(0) var<uniform> u: Uniforms;
+        \\@group(0) @binding(1) var tex: texture_2d<f32>;
+        \\@group(0) @binding(2) var smp: sampler;
+        \\
+        \\fn sdCircle(p: vec2f, r: f32) -> f32 {
+        \\    return length(p) - r;
+        \\}
+        \\
+        \\@compute @workgroup_size(16, 16, 1)
+        \\fn main(@builtin(global_invocation_id) id: vec3u) {
+        \\    let uv = vec2f(id.xy);
+        \\    let d = sdCircle(uv, 32.0);
+        \\    // trailing // comment
+        \\}
+        \\
+    ;
+    try expectCstRoundtrip(source);
+}
+
