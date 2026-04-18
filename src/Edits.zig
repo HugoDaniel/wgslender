@@ -465,6 +465,192 @@ pub fn renameEdits(
 }
 
 // =========================================================================
+// Declaration-level edits
+// =========================================================================
+
+/// Describes where a symbol is declared in the module. Used by both
+/// `removeDeclarationEdit` and `changeTypeEdit` to locate the syntactic
+/// node whose span is to be edited.
+pub const DeclSite = union(enum) {
+    /// Module-scope declaration (or a local let/var/const statement whose
+    /// symbol happens to be module-scope — the same walker reaches both).
+    decl: Ast.Decl,
+    /// A local declaration statement inside a function body.
+    local_decl: Ast.Decl,
+    /// A function parameter.
+    parameter: *const Ast.Parameter,
+    /// A struct member (not a `Decl` — owned by a `StructDecl`).
+    member: *const Ast.StructMember,
+    /// The target symbol is a function whose `return_type` we want to
+    /// edit. `decl` is the owning function.
+    return_type: *const Ast.FunctionDecl,
+    /// Not found.
+    none,
+};
+
+/// Locate the declaration site of a symbol. Walks module declarations
+/// and their children. O(module size) per call; acceptable for
+/// interactive edit flows. If `want_return_type` is true and `target`
+/// is a function symbol with a return type, returns
+/// `DeclSite{ .return_type = fn }`; otherwise returns the function decl
+/// itself (used by `removeDeclarationEdit`).
+pub fn findOwningDecl(
+    module: *const Ast.Module,
+    target: Ast.SymbolIndex,
+    want_return_type: bool,
+) DeclSite {
+    if (!target.isValid()) return .none;
+
+    for (module.declarations.items) |decl| {
+        // Whole-decl match on its own name.
+        if (decl.nameRef() == target) {
+            if (want_return_type) {
+                // Caller wants the return type; only functions have one.
+                if (decl == .function and decl.function.return_type != null) {
+                    return .{ .return_type = decl.function };
+                }
+                // No return type to edit; fall through.
+            }
+            return .{ .decl = decl };
+        }
+
+        switch (decl) {
+            .function => |f| {
+                for (f.parameters.items) |*p| {
+                    if (p.name == target) return .{ .parameter = p };
+                }
+                if (f.body) |body| {
+                    if (findInCompound(body, target)) |site| return site;
+                }
+            },
+            .@"struct" => |st| {
+                for (st.members.items) |*m| {
+                    if (m.name == target) return .{ .member = m };
+                }
+            },
+            else => {},
+        }
+    }
+    return .none;
+}
+
+fn findInCompound(compound: *const Ast.CompoundStmt, target: Ast.SymbolIndex) ?DeclSite {
+    for (compound.stmts.items) |stmt| if (findInStmt(stmt, target)) |s| return s;
+    return null;
+}
+
+fn findInStmt(stmt: Ast.Stmt, target: Ast.SymbolIndex) ?DeclSite {
+    switch (stmt) {
+        .compound => |c| return findInCompound(c, target),
+        .@"if" => |i| {
+            if (findInCompound(i.body, target)) |s| return s;
+            if (i.else_branch) |eb| return findInStmt(eb, target);
+        },
+        .@"switch" => |sw| for (sw.cases.items) |case| {
+            if (findInCompound(case.body, target)) |s| return s;
+        },
+        .@"for" => |f| {
+            if (f.init_stmt) |is| if (findInStmt(is, target)) |s| return s;
+            if (findInCompound(f.body, target)) |s| return s;
+        },
+        .@"while" => |w| if (findInCompound(w.body, target)) |s| return s,
+        .loop => |l| {
+            if (findInCompound(l.body, target)) |s| return s;
+            if (l.continuing) |cont| if (findInCompound(cont, target)) |s| return s;
+        },
+        .decl => |d| {
+            if (d.decl.nameRef() == target) return .{ .local_decl = d.decl };
+        },
+        else => {},
+    }
+    return null;
+}
+
+/// Produce a single `TextEdit` that deletes the full syntactic span of
+/// the declaration owning `target`. Returns null if:
+///   - `target` is `.none` or not a declaration name
+///   - the symbol is a builtin (no source)
+///   - the symbol is a struct member or parameter (remove_field /
+///     remove_parameter would need punctuation-aware fixups — out of
+///     scope here)
+///   - the declaration has no captured span (parse-error recovery)
+pub fn removeDeclarationEdit(
+    gpa: Allocator,
+    module: *const Ast.Module,
+    target: Ast.SymbolIndex,
+) Allocator.Error!?[]TextEdit {
+    const site = findOwningDecl(module, target, false);
+    const span: Ast.Span = switch (site) {
+        .decl, .local_decl => |d| d.declSpan(),
+        // Members and parameters are not removable as whole-declarations.
+        .member, .parameter, .return_type, .none => return null,
+    };
+    if (span.isEmpty()) return null;
+
+    const edits = try gpa.alloc(TextEdit, 1);
+    edits[0] = .{ .start = span.start, .end = span.end, .new_text = "" };
+    return edits;
+}
+
+/// Cheap guard against obviously-malformed replacement text. Full type-
+/// syntax validation is the caller's job (re-analyze the rewritten source).
+fn isPlausibleTypeText(text: []const u8) bool {
+    if (text.len == 0) return false;
+    for (text) |c| {
+        if (c == '\n' or c == '\r' or c == ';' or c == '}' or c == '{') return false;
+    }
+    return true;
+}
+
+/// Produce a single `TextEdit` that replaces the type annotation of
+/// `target` with `new_type_text`. Works for any declaration site with a
+/// type annotation:
+///   - struct members and fn parameters (always typed)
+///   - `var` / `const` / `override` / `let` with explicit `: T`
+///   - function return type (pass the function's SymbolIndex)
+///
+/// Returns null for:
+///   - `target` that is not addressable (none, builtin)
+///   - decls without a type annotation (`typ == null`)
+///   - malformed `new_type_text` (empty, multiline, or containing `;`/`{`/`}`)
+///
+/// The returned slice's element references `new_type_text` by slice; the
+/// caller's buffer must outlive the edits (consistent with `renameEdits`).
+pub fn changeTypeEdit(
+    gpa: Allocator,
+    module: *const Ast.Module,
+    target: Ast.SymbolIndex,
+    new_type_text: []const u8,
+) Allocator.Error!?[]TextEdit {
+    if (!target.isValid()) return null;
+    if (!isPlausibleTypeText(new_type_text)) return null;
+
+    // For functions, `changeTypeEdit` targets the return type.
+    const site = findOwningDecl(module, target, true);
+    const typ_opt: ?Ast.Type = switch (site) {
+        .decl, .local_decl => |d| switch (d) {
+            .@"const" => |c| c.typ,
+            .override => |o| o.typ,
+            .@"var" => |v| v.typ,
+            .let => |l| l.typ,
+            .alias => |a| a.typ,
+            .function, .@"struct", .const_assert => null,
+        },
+        .parameter => |p| p.typ,
+        .member => |m| m.typ,
+        .return_type => |f| f.return_type,
+        .none => return null,
+    };
+    const typ = typ_opt orelse return null;
+    const span = typ.span();
+    if (span.isEmpty()) return null;
+
+    const edits = try gpa.alloc(TextEdit, 1);
+    edits[0] = .{ .start = span.start, .end = span.end, .new_text = new_type_text };
+    return edits;
+}
+
+// =========================================================================
 // Edit builders
 // =========================================================================
 

@@ -181,8 +181,8 @@ pub fn symbolForStableId(
     return expectModuleKind(module, first_parsed.name, first_parsed.kind);
 }
 
-/// Convenience: stable ID → the declaration's byte range in the current
-/// source. Returns null if the ID does not resolve.
+/// Convenience: stable ID → the byte range of the declared *name* in
+/// the current source. Returns null if the ID does not resolve.
 pub fn locateStableId(
     module: *const Ast.Module,
     id_bytes: []const u8,
@@ -194,6 +194,180 @@ pub fn locateStableId(
         .start = s.loc,
         .end = s.loc + @as(u32, @intCast(s.original_name.len)),
     };
+}
+
+/// Returns the full syntactic span of the declaration identified by
+/// `id_bytes` (attributes + keyword + body/`;`). Returns null if the ID
+/// does not resolve, is a builtin, or targets a struct member or
+/// parameter (those are not standalone declarations — use
+/// `locateStableId` for their name range).
+pub fn locateDeclaration(
+    module: *const Ast.Module,
+    id_bytes: []const u8,
+) ?Range {
+    const sym = symbolForStableId(module, id_bytes);
+    if (!sym.isValid()) return null;
+
+    for (module.declarations.items) |decl| {
+        if (decl.nameRef() == sym) {
+            const span = decl.declSpan();
+            if (span.isEmpty()) return null;
+            return .{ .start = span.start, .end = span.end };
+        }
+        // Descend into function bodies for local let/var/const.
+        switch (decl) {
+            .function => |f| if (f.body) |body| {
+                if (findLocalDeclSpan(body, sym)) |r| return r;
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+/// Returns the span of the type annotation attached to the symbol
+/// identified by `id_bytes`. Works for:
+///   - struct members (always typed)
+///   - function parameters (always typed)
+///   - function return types (pass the function's stable ID)
+///   - `var`/`const`/`override`/`let` with an explicit `: T` annotation
+/// Returns null if the ID does not resolve or the target has no type
+/// annotation.
+pub fn locateType(
+    module: *const Ast.Module,
+    id_bytes: []const u8,
+) ?Range {
+    const sym = symbolForStableId(module, id_bytes);
+    if (!sym.isValid()) return null;
+
+    for (module.declarations.items) |decl| {
+        if (decl.nameRef() == sym) {
+            const typ_opt: ?Ast.Type = switch (decl) {
+                .@"const" => |c| c.typ,
+                .override => |o| o.typ,
+                .@"var" => |v| v.typ,
+                .let => |l| l.typ,
+                .alias => |a| a.typ,
+                .function => |f| f.return_type, // function → return type
+                .@"struct", .const_assert => null,
+            };
+            if (typ_opt) |t| {
+                const sp = t.span();
+                if (sp.isEmpty()) return null;
+                return .{ .start = sp.start, .end = sp.end };
+            }
+            return null;
+        }
+        switch (decl) {
+            .function => |f| {
+                for (f.parameters.items) |p| {
+                    if (p.name == sym) {
+                        const sp = p.typ.span();
+                        if (sp.isEmpty()) return null;
+                        return .{ .start = sp.start, .end = sp.end };
+                    }
+                }
+                if (f.body) |body| {
+                    if (findLocalTypeSpan(body, sym)) |r| return r;
+                }
+            },
+            .@"struct" => |st| {
+                for (st.members.items) |m| {
+                    if (m.name == sym) {
+                        const sp = m.typ.span();
+                        if (sp.isEmpty()) return null;
+                        return .{ .start = sp.start, .end = sp.end };
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+    return null;
+}
+
+fn findLocalDeclSpan(compound: *const Ast.CompoundStmt, target: Ast.SymbolIndex) ?Range {
+    for (compound.stmts.items) |stmt| {
+        if (findLocalDeclSpanStmt(stmt, target)) |r| return r;
+    }
+    return null;
+}
+
+fn findLocalDeclSpanStmt(stmt: Ast.Stmt, target: Ast.SymbolIndex) ?Range {
+    switch (stmt) {
+        .compound => |c| return findLocalDeclSpan(c, target),
+        .@"if" => |i| {
+            if (findLocalDeclSpan(i.body, target)) |r| return r;
+            if (i.else_branch) |eb| return findLocalDeclSpanStmt(eb, target);
+        },
+        .@"switch" => |sw| for (sw.cases.items) |case| {
+            if (findLocalDeclSpan(case.body, target)) |r| return r;
+        },
+        .@"for" => |f| {
+            if (f.init_stmt) |is| if (findLocalDeclSpanStmt(is, target)) |r| return r;
+            if (findLocalDeclSpan(f.body, target)) |r| return r;
+        },
+        .@"while" => |w| if (findLocalDeclSpan(w.body, target)) |r| return r,
+        .loop => |l| {
+            if (findLocalDeclSpan(l.body, target)) |r| return r;
+            if (l.continuing) |cont| if (findLocalDeclSpan(cont, target)) |r| return r;
+        },
+        .decl => |d| {
+            if (d.decl.nameRef() == target) {
+                const span = d.decl.declSpan();
+                if (span.isEmpty()) return null;
+                return .{ .start = span.start, .end = span.end };
+            }
+        },
+        else => {},
+    }
+    return null;
+}
+
+fn findLocalTypeSpan(compound: *const Ast.CompoundStmt, target: Ast.SymbolIndex) ?Range {
+    for (compound.stmts.items) |stmt| {
+        if (findLocalTypeSpanStmt(stmt, target)) |r| return r;
+    }
+    return null;
+}
+
+fn findLocalTypeSpanStmt(stmt: Ast.Stmt, target: Ast.SymbolIndex) ?Range {
+    switch (stmt) {
+        .compound => |c| return findLocalTypeSpan(c, target),
+        .@"if" => |i| {
+            if (findLocalTypeSpan(i.body, target)) |r| return r;
+            if (i.else_branch) |eb| return findLocalTypeSpanStmt(eb, target);
+        },
+        .@"switch" => |sw| for (sw.cases.items) |case| {
+            if (findLocalTypeSpan(case.body, target)) |r| return r;
+        },
+        .@"for" => |f| {
+            if (f.init_stmt) |is| if (findLocalTypeSpanStmt(is, target)) |r| return r;
+            if (findLocalTypeSpan(f.body, target)) |r| return r;
+        },
+        .@"while" => |w| if (findLocalTypeSpan(w.body, target)) |r| return r,
+        .loop => |l| {
+            if (findLocalTypeSpan(l.body, target)) |r| return r;
+            if (l.continuing) |cont| if (findLocalTypeSpan(cont, target)) |r| return r;
+        },
+        .decl => |d| {
+            if (d.decl.nameRef() == target) {
+                const typ_opt: ?Ast.Type = switch (d.decl) {
+                    .@"const" => |c| c.typ,
+                    .@"var" => |v| v.typ,
+                    .let => |l| l.typ,
+                    else => null,
+                };
+                if (typ_opt) |t| {
+                    const sp = t.span();
+                    if (sp.isEmpty()) return null;
+                    return .{ .start = sp.start, .end = sp.end };
+                }
+            }
+        },
+        else => {},
+    }
+    return null;
 }
 
 // =========================================================================
