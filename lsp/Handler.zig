@@ -1180,227 +1180,7 @@ pub fn computeDefinition(self: *Handler, uri: []const u8, position: Position) !?
 // LSP Feature: Find All References
 // =========================================================================
 
-const RefWithKind = struct {
-    range: Range,
-    is_write: bool,
-};
-
-/// Collect all references to a given symbol with read/write context.
-fn collectRefsWithKind(
-    gpa: std.mem.Allocator,
-    module: *const Ast.Module,
-    target: Ast.SymbolIndex,
-    include_declaration: bool,
-) ![]RefWithKind {
-    const source = module.source;
-    var locations: std.ArrayListUnmanaged(RefWithKind) = .empty;
-    defer locations.deinit(gpa);
-
-    // Include declaration location (declarations are writes)
-    if (include_declaration and target.isValid()) {
-        const sym = module.symbols.items[target.index()];
-        if (offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)))) |range| {
-            try locations.append(gpa, .{ .range = range, .is_write = true });
-        }
-    }
-
-    // Walk all declarations collecting references
-    for (module.declarations.items) |decl| {
-        try collectRefsInDecl(gpa, module, decl, target, source, &locations, false);
-    }
-
-    return try gpa.dupe(RefWithKind, locations.items);
-}
-
-/// Collect all byte offset locations of references to a given symbol.
-fn collectReferences(
-    gpa: std.mem.Allocator,
-    module: *const Ast.Module,
-    target: Ast.SymbolIndex,
-    include_declaration: bool,
-) ![]Range {
-    const refs = try collectRefsWithKind(gpa, module, target, include_declaration);
-    defer gpa.free(refs);
-    const ranges = try gpa.alloc(Range, refs.len);
-    for (refs, 0..) |r, i| ranges[i] = r.range;
-    return ranges;
-}
-
-fn collectRefsInDecl(
-    gpa: std.mem.Allocator,
-    module: *const Ast.Module,
-    decl: Ast.Decl,
-    target: Ast.SymbolIndex,
-    source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(RefWithKind),
-    is_write: bool,
-) std.mem.Allocator.Error!void {
-    switch (decl) {
-        .function => |f| {
-            for (f.parameters.items) |param| {
-                try collectRefsInType(gpa, param.typ, target, source, locations);
-            }
-            if (f.return_type) |rt| try collectRefsInType(gpa, rt, target, source, locations);
-            if (f.body) |body| try collectRefsInCompound(gpa, module, body, target, source, locations);
-        },
-        .@"struct" => |s| {
-            for (s.members.items) |m| {
-                try collectRefsInType(gpa, m.typ, target, source, locations);
-            }
-        },
-        .@"const" => |c| {
-            if (c.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
-            if (c.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations, is_write);
-        },
-        .override => |o| {
-            if (o.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
-            if (o.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations, is_write);
-        },
-        .@"var" => |v| {
-            if (v.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
-            if (v.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations, is_write);
-        },
-        .let => |l| {
-            if (l.typ) |t| try collectRefsInType(gpa, t, target, source, locations);
-            if (l.initializer) |e| try collectRefsInExpr(gpa, e, target, source, locations, is_write);
-        },
-        .alias => |a| try collectRefsInType(gpa, a.typ, target, source, locations),
-        .const_assert => |ca| try collectRefsInExpr(gpa, ca.expr, target, source, locations, false),
-    }
-}
-
-fn collectRefsInType(
-    gpa: std.mem.Allocator,
-    typ: Ast.Type,
-    target: Ast.SymbolIndex,
-    source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(RefWithKind),
-) std.mem.Allocator.Error!void {
-    switch (typ) {
-        .ident => |t| {
-            if (t.ref == target) {
-                if (offsetRangeToLspRange(source, t.loc, t.loc + @as(u32, @intCast(t.name.len)))) |range| {
-                    try locations.append(gpa, .{ .range = range, .is_write = false });
-                }
-            }
-        },
-        .vec => |t| {
-            if (t.elem_type) |et| try collectRefsInType(gpa, et, target, source, locations);
-        },
-        .mat => |t| {
-            if (t.elem_type) |et| try collectRefsInType(gpa, et, target, source, locations);
-        },
-        .array => |t| {
-            if (t.elem_type) |et| try collectRefsInType(gpa, et, target, source, locations);
-            if (t.size) |sz| try collectRefsInExpr(gpa, sz, target, source, locations, false);
-        },
-        .ptr => |t| try collectRefsInType(gpa, t.elem_type, target, source, locations),
-        .atomic => |t| try collectRefsInType(gpa, t.elem_type, target, source, locations),
-        .sampler, .texture => {},
-    }
-}
-
-fn collectRefsInCompound(
-    gpa: std.mem.Allocator,
-    module: *const Ast.Module,
-    compound: *const Ast.CompoundStmt,
-    target: Ast.SymbolIndex,
-    source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(RefWithKind),
-) std.mem.Allocator.Error!void {
-    for (compound.stmts.items) |stmt| {
-        try collectRefsInStmt(gpa, module, stmt, target, source, locations);
-    }
-}
-
-fn collectRefsInStmt(
-    gpa: std.mem.Allocator,
-    module: *const Ast.Module,
-    stmt: Ast.Stmt,
-    target: Ast.SymbolIndex,
-    source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(RefWithKind),
-) std.mem.Allocator.Error!void {
-    switch (stmt) {
-        .compound => |c| try collectRefsInCompound(gpa, module, c, target, source, locations),
-        .@"return" => |r| {
-            if (r.value) |v| try collectRefsInExpr(gpa, v, target, source, locations, false);
-        },
-        .@"if" => |i| {
-            try collectRefsInExpr(gpa, i.condition, target, source, locations, false);
-            try collectRefsInCompound(gpa, module, i.body, target, source, locations);
-            if (i.else_branch) |eb| try collectRefsInStmt(gpa, module, eb, target, source, locations);
-        },
-        .@"switch" => |s| {
-            try collectRefsInExpr(gpa, s.expr, target, source, locations, false);
-            for (s.cases.items) |case| {
-                for (case.selectors.items) |sel| {
-                    try collectRefsInExpr(gpa, sel, target, source, locations, false);
-                }
-                try collectRefsInCompound(gpa, module, case.body, target, source, locations);
-            }
-        },
-        .@"for" => |f| {
-            if (f.init_stmt) |init_s| try collectRefsInStmt(gpa, module, init_s, target, source, locations);
-            if (f.condition) |cond| try collectRefsInExpr(gpa, cond, target, source, locations, false);
-            if (f.update) |upd| try collectRefsInStmt(gpa, module, upd, target, source, locations);
-            try collectRefsInCompound(gpa, module, f.body, target, source, locations);
-        },
-        .@"while" => |w| {
-            try collectRefsInExpr(gpa, w.condition, target, source, locations, false);
-            try collectRefsInCompound(gpa, module, w.body, target, source, locations);
-        },
-        .loop => |l| {
-            try collectRefsInCompound(gpa, module, l.body, target, source, locations);
-            if (l.continuing) |cont| try collectRefsInCompound(gpa, module, cont, target, source, locations);
-        },
-        .assign => |a| {
-            try collectRefsInExpr(gpa, a.left, target, source, locations, true);
-            try collectRefsInExpr(gpa, a.right, target, source, locations, false);
-        },
-        .incr_decr => |i| try collectRefsInExpr(gpa, i.expr, target, source, locations, true),
-        .call => |c| try collectRefsInExpr(gpa, .{ .call = c.call }, target, source, locations, false),
-        .decl => |d| try collectRefsInDecl(gpa, module, d.decl, target, source, locations, false),
-        .@"break", .@"continue", .discard => {},
-        .break_if => |b| try collectRefsInExpr(gpa, b.condition, target, source, locations, false),
-    }
-}
-
-fn collectRefsInExpr(
-    gpa: std.mem.Allocator,
-    expr: Ast.Expr,
-    target: Ast.SymbolIndex,
-    source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(RefWithKind),
-    is_write: bool,
-) std.mem.Allocator.Error!void {
-    switch (expr) {
-        .ident => |e| {
-            if (e.ref == target) {
-                if (offsetRangeToLspRange(source, e.loc, e.loc + @as(u32, @intCast(e.name.len)))) |range| {
-                    try locations.append(gpa, .{ .range = range, .is_write = is_write });
-                }
-            }
-        },
-        .member => |e| try collectRefsInExpr(gpa, e.base, target, source, locations, is_write),
-        .call => |e| {
-            if (e.func) |f| try collectRefsInExpr(gpa, f, target, source, locations, false);
-            if (e.template_type) |tt| try collectRefsInType(gpa, tt, target, source, locations);
-            for (e.args.items) |arg| try collectRefsInExpr(gpa, arg, target, source, locations, false);
-        },
-        .binary => |e| {
-            try collectRefsInExpr(gpa, e.left, target, source, locations, false);
-            try collectRefsInExpr(gpa, e.right, target, source, locations, false);
-        },
-        .unary => |e| try collectRefsInExpr(gpa, e.operand, target, source, locations, false),
-        .index => |e| {
-            try collectRefsInExpr(gpa, e.base, target, source, locations, is_write);
-            try collectRefsInExpr(gpa, e.idx, target, source, locations, false);
-        },
-        .paren => |e| try collectRefsInExpr(gpa, e.expr, target, source, locations, is_write),
-        .literal => {},
-    }
-}
+const Edits = wgslender.Edits;
 
 pub fn computeReferences(self: *Handler, uri: []const u8, position: Position, include_declaration: bool) !?[]Range {
     const doc = self.documents.getPtr(uri) orelse return null;
@@ -1417,7 +1197,19 @@ pub fn computeReferences(self: *Handler, uri: []const u8, position: Position, in
         else => return null,
     };
     if (!target.isValid()) return null;
-    return try collectReferences(self.gpa, module, target, include_declaration);
+
+    const refs = try Edits.findReferences(self.gpa, module, target, include_declaration);
+    defer self.gpa.free(refs);
+
+    var ranges: std.ArrayListUnmanaged(Range) = .empty;
+    defer ranges.deinit(self.gpa);
+    try ranges.ensureTotalCapacity(self.gpa, refs.len);
+    for (refs) |r| {
+        if (offsetRangeToLspRange(source, r.start, r.end)) |range| {
+            ranges.appendAssumeCapacity(range);
+        }
+    }
+    return try self.gpa.dupe(Range, ranges.items);
 }
 
 // =========================================================================
@@ -1440,17 +1232,21 @@ pub fn computeDocumentHighlight(self: *Handler, uri: []const u8, position: Posit
     };
     if (!target.isValid()) return null;
 
-    const refs = try collectRefsWithKind(self.gpa, module, target, true);
+    const refs = try Edits.findReferences(self.gpa, module, target, true);
     defer self.gpa.free(refs);
 
-    const highlights = try self.gpa.alloc(DocumentHighlight, refs.len);
-    for (refs, 0..) |r, i| {
-        highlights[i] = .{
-            .range = r.range,
-            .kind = if (r.is_write) .write else .read,
-        };
+    var highlights: std.ArrayListUnmanaged(DocumentHighlight) = .empty;
+    defer highlights.deinit(self.gpa);
+    try highlights.ensureTotalCapacity(self.gpa, refs.len);
+    for (refs) |r| {
+        if (offsetRangeToLspRange(source, r.start, r.end)) |range| {
+            highlights.appendAssumeCapacity(.{
+                .range = range,
+                .kind = if (r.is_write) .write else .read,
+            });
+        }
     }
-    return highlights;
+    return try self.gpa.dupe(DocumentHighlight, highlights.items);
 }
 
 // =========================================================================
@@ -1490,23 +1286,7 @@ pub fn prepareRename(self: *Handler, uri: []const u8, position: Position) !?Rang
     }
 }
 
-pub fn isValidWgslIdentifier(name: []const u8) bool {
-    if (name.len == 0) return false;
-    // WGSL reserved __ prefix
-    if (name.len >= 2 and name[0] == '_' and name[1] == '_') return false;
-    // Check it's not a keyword or reserved word
-    if (Lexer.keywords_map.has(name)) return false;
-    if (Lexer.reserved_words.has(name)) return false;
-    // Basic identifier character check
-    for (name, 0..) |c, i| {
-        if (i == 0) {
-            if (!std.ascii.isAlphabetic(c) and c != '_') return false;
-        } else {
-            if (!std.ascii.isAlphanumeric(c) and c != '_') return false;
-        }
-    }
-    return true;
-}
+pub const isValidWgslIdentifier = Edits.isValidWgslIdentifier;
 
 pub fn computeRename(self: *Handler, uri: []const u8, position: Position, new_name: []const u8) !?[]LspTextEdit {
     if (!isValidWgslIdentifier(new_name)) return null;
@@ -2474,8 +2254,8 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
             else => continue,
         }
 
-        // Count references (use the existing reference collector)
-        const refs = collectReferences(self.gpa, module, name_ref, false) catch continue;
+        // Count references (use the shared library reference collector)
+        const refs = Edits.findReferences(self.gpa, module, name_ref, false) catch continue;
         defer self.gpa.free(refs);
 
         const range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;

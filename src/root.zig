@@ -26,6 +26,7 @@ pub const Reflect = @import("Reflect.zig");
 pub const SourceMap = @import("SourceMap.zig");
 pub const Compiler = @import("Compiler.zig");
 pub const WasmBinary = @import("WasmBinary.zig");
+pub const Edits = @import("Edits.zig");
 
 // =========================================================================
 // Minify API
@@ -370,4 +371,5 @@ comptime {
     _ = Dce;
     _ = Compiler;
     _ = WasmBinary;
+    _ = Edits;
 }
