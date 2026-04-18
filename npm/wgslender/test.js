@@ -45,6 +45,9 @@ async function main() {
     initialize, minify, reflect, validate, isInitialized,
     findReferences, rename, renameApply,
     stableIdAtOffset, locateStableId, renameByStableId,
+    locateDeclaration, locateType,
+    removeDeclarationByStableId, removeDeclarationApplyByStableId,
+    changeTypeByStableId, changeTypeApplyByStableId,
   } = wgslender;
 
   // =============================================
@@ -623,6 +626,91 @@ fn get_time(g: Uniforms) -> f32 { return g.time; }
       `binding stableId shape: got "${reflected.bindings[0].stableId}"`);
     assert(typeof reflected.entryPoints[0].stableId === 'string',
       'reflect surfaces stableId on entry points');
+  }
+
+  console.log('');
+
+  // =============================================
+  // Declaration / type edits (by stable ID)
+  // =============================================
+  console.log('--- Decl / Type edits ---');
+
+  {
+    const src = `fn helper() -> f32 { return 1.0; }
+@compute @workgroup_size(1) fn main() { let v = helper(); }`;
+
+    // locateDeclaration: full span of `fn helper` decl.
+    const declRange = locateDeclaration(src, 'v1:fn:helper');
+    assert(declRange.start === 0 && declRange.end === src.indexOf('}') + 1,
+      `locateDeclaration returns full fn span: got [${declRange.start},${declRange.end})`);
+
+    // locateType: return type of `helper` = 'f32'
+    const retRange = locateType(src, 'v1:fn:helper');
+    assert(src.slice(retRange.start, retRange.end) === 'f32',
+      `locateType returns return-type span: got "${src.slice(retRange.start, retRange.end)}"`);
+
+    // removeDeclaration: delete `fn helper`
+    const rm = removeDeclarationApplyByStableId(src, 'v1:fn:helper');
+    assert(rm.ok === true, 'removeDeclarationApplyByStableId.ok === true');
+    assert(!rm.source.includes('fn helper'),
+      'removeDeclarationApplyByStableId wiped `fn helper`');
+    assert(rm.edits.length === 1 && rm.edits[0].newText === '',
+      'removeDeclarationByStableId produces one deletion edit');
+  }
+
+  {
+    // changeType on a struct member.
+    const src = `struct S { x: f32, y: f32 }`;
+    const tRange = locateType(src, 'v1:struct:S/member:x');
+    assert(src.slice(tRange.start, tRange.end) === 'f32',
+      'locateType on struct member');
+
+    const ct = changeTypeApplyByStableId(src, 'v1:struct:S/member:x', 'i32');
+    assert(ct.ok === true, 'changeTypeApplyByStableId.ok === true');
+    assert(ct.source === 'struct S { x: i32, y: f32 }',
+      `changeType rewrote member: got "${ct.source}"`);
+  }
+
+  {
+    // changeType on a fn parameter.
+    const src = `fn f(x: f32) -> f32 { return x; }`;
+    const pRange = locateType(src, 'v1:fn:f/param:x');
+    assert(src.slice(pRange.start, pRange.end) === 'f32',
+      'locateType on parameter');
+
+    const ct = changeTypeApplyByStableId(src, 'v1:fn:f/param:x', 'i32');
+    assert(ct.source === 'fn f(x: i32) -> f32 { return x; }',
+      `changeType rewrote param: got "${ct.source}"`);
+  }
+
+  {
+    // Rejections: unknown ID → error in payload; malformed replacement → error.
+    const src = `const X = 1;`;
+    const missing = removeDeclarationByStableId(src, 'v1:fn:nope');
+    assert(Array.isArray(missing.edits) && missing.edits.length === 0,
+      'removeDeclarationByStableId unknown ID returns empty edits');
+    assert(missing.error !== undefined,
+      'removeDeclarationByStableId unknown ID reports error');
+
+    const noTypeCt = changeTypeByStableId(src, 'v1:const:X', 'f32');
+    assert(noTypeCt.error !== undefined,
+      'changeTypeByStableId on untyped const reports error');
+  }
+
+  {
+    // Reflection output includes declSpan / typeSpan.
+    const src = `@group(0) @binding(0) var<uniform> u: f32;
+@compute @workgroup_size(1) fn main() {}`;
+    const r = reflect(src);
+    const b = r.bindings[0];
+    assert(b.declSpan && typeof b.declSpan.start === 'number' && typeof b.declSpan.end === 'number',
+      'reflect: binding has declSpan');
+    assert(src.slice(b.declSpan.start, b.declSpan.end).startsWith('@group'),
+      'reflect: declSpan starts at leading `@`');
+    assert(b.typeSpan && src.slice(b.typeSpan.start, b.typeSpan.end) === 'f32',
+      'reflect: binding typeSpan is the bare type');
+    assert(r.entryPoints[0].declSpan && typeof r.entryPoints[0].declSpan.start === 'number',
+      'reflect: entry point has declSpan');
   }
 
   console.log('');
