@@ -393,6 +393,67 @@ export function renameByStableId(
 ): RenameResult;
 
 /**
+ * Resolve a stable ID to the full declaration span — from the first
+ * attribute (if any) through the terminating `;` or `}`. Returns
+ * `{start: null, end: null}` for builtins, struct members, parameters,
+ * or stale IDs.
+ */
+export function locateDeclaration(source: string, stableId: string): LocateStableIdResult;
+
+/**
+ * Resolve a stable ID to its type-annotation span. Works for:
+ *   - struct members (`x: f32` → `f32`)
+ *   - function parameters
+ *   - function return types (pass the function's stable ID)
+ *   - `var` / `const` / `let` / `override` with explicit `: T`
+ * Returns `{start: null, end: null}` when the target has no type
+ * annotation or does not resolve.
+ */
+export function locateType(source: string, stableId: string): LocateStableIdResult;
+
+/**
+ * Compute a `TextEdit` list that deletes the full declaration identified
+ * by `stableId`. Empty `edits` + an `error` field if the target is not a
+ * removable declaration (member, parameter, builtin, or unresolved ID).
+ */
+export function removeDeclarationByStableId(
+  source: string,
+  stableId: string
+): RenameResult;
+
+/**
+ * Remove-and-apply by stable ID. Returns the rewritten source plus the
+ * edit list. On failure `source` contains the original text so callers
+ * can use the return value either way.
+ */
+export function removeDeclarationApplyByStableId(
+  source: string,
+  stableId: string
+): RenameApplyResult;
+
+/**
+ * Replace the type annotation of the symbol identified by `stableId`
+ * with `newType` (e.g. `"vec3<f32>"`). Empty `edits` + `error` if the
+ * target has no type annotation or `newType` is malformed (empty,
+ * multiline, or contains `;`/`{`/`}`).
+ */
+export function changeTypeByStableId(
+  source: string,
+  stableId: string,
+  newType: string
+): RenameResult;
+
+/**
+ * Change-type-and-apply by stable ID. Same shape as
+ * `removeDeclarationApplyByStableId`.
+ */
+export function changeTypeApplyByStableId(
+  source: string,
+  stableId: string,
+  newType: string
+): RenameApplyResult;
+
+/**
  * Check if the WASM module is initialized.
  */
 export function isInitialized(): boolean;

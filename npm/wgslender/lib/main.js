@@ -345,6 +345,164 @@ function renameByStableId(source, stableId, newName) {
 }
 
 /**
+ * Resolve a stable ID to the full declaration span (attributes through `;`/`}`).
+ * @param {string} source - WGSL source code
+ * @param {string} stableId - Stable identifier
+ * @returns {{start: number|null, end: number|null, error?: string}}
+ */
+function locateDeclaration(source, stableId) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof stableId !== 'string') throw new TypeError('stableId must be a string');
+
+  const src = _writeString(source);
+  const id = _writeString(stableId);
+  const resultPtr = _wasm.wgslender_locate_declaration(src.ptr, src.len, id.ptr, id.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(id.ptr, id.allocLen);
+
+  if (!resultPtr) throw new Error('locateDeclaration failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
+ * Resolve a stable ID to the type-annotation span (struct members,
+ * parameters, return types, explicit `: T` on var/const/let/override).
+ * @param {string} source - WGSL source code
+ * @param {string} stableId - Stable identifier
+ * @returns {{start: number|null, end: number|null, error?: string}}
+ */
+function locateType(source, stableId) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof stableId !== 'string') throw new TypeError('stableId must be a string');
+
+  const src = _writeString(source);
+  const id = _writeString(stableId);
+  const resultPtr = _wasm.wgslender_locate_type(src.ptr, src.len, id.ptr, id.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(id.ptr, id.allocLen);
+
+  if (!resultPtr) throw new Error('locateType failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
+ * Remove a whole declaration by stable ID. Returns a list of edits
+ * deleting the full syntactic span.
+ * @param {string} source
+ * @param {string} stableId
+ * @returns {{edits: Array<{start:number,end:number,newText:string}>, error?: string}}
+ */
+function removeDeclarationByStableId(source, stableId) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof stableId !== 'string') throw new TypeError('stableId must be a string');
+
+  const src = _writeString(source);
+  const id = _writeString(stableId);
+  const resultPtr = _wasm.wgslender_remove_declaration_by_id(src.ptr, src.len, id.ptr, id.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(id.ptr, id.allocLen);
+
+  if (!resultPtr) throw new Error('removeDeclarationByStableId failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
+ * Remove-and-apply by stable ID. Returns the rewritten source plus edits.
+ * @param {string} source
+ * @param {string} stableId
+ * @returns {{ok: boolean, source: string, edits: Array<{start:number,end:number,newText:string}>, error?: string}}
+ */
+function removeDeclarationApplyByStableId(source, stableId) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof stableId !== 'string') throw new TypeError('stableId must be a string');
+
+  const src = _writeString(source);
+  const id = _writeString(stableId);
+  const resultPtr = _wasm.wgslender_remove_declaration_apply_by_id(src.ptr, src.len, id.ptr, id.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(id.ptr, id.allocLen);
+
+  if (!resultPtr) throw new Error('removeDeclarationApplyByStableId failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
+ * Change the type annotation of the symbol identified by stable ID.
+ * Works for struct members, parameters, return types, and
+ * var/const/let/override with an explicit `: T`.
+ * @param {string} source
+ * @param {string} stableId
+ * @param {string} newType - Replacement WGSL type (e.g. `"vec3<f32>"`)
+ * @returns {{edits: Array<{start:number,end:number,newText:string}>, error?: string}}
+ */
+function changeTypeByStableId(source, stableId, newType) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof stableId !== 'string') throw new TypeError('stableId must be a string');
+  if (typeof newType !== 'string') throw new TypeError('newType must be a string');
+
+  const src = _writeString(source);
+  const id = _writeString(stableId);
+  const type_ = _writeString(newType);
+  const resultPtr = _wasm.wgslender_change_type_by_id(
+    src.ptr, src.len,
+    id.ptr, id.len,
+    type_.ptr, type_.len,
+  );
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(id.ptr, id.allocLen);
+  _wasm.wgslender_dealloc(type_.ptr, type_.allocLen);
+
+  if (!resultPtr) throw new Error('changeTypeByStableId failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
+ * Change-type-and-apply by stable ID.
+ * @param {string} source
+ * @param {string} stableId
+ * @param {string} newType
+ * @returns {{ok: boolean, source: string, edits: Array<{start:number,end:number,newText:string}>, error?: string}}
+ */
+function changeTypeApplyByStableId(source, stableId, newType) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof stableId !== 'string') throw new TypeError('stableId must be a string');
+  if (typeof newType !== 'string') throw new TypeError('newType must be a string');
+
+  const src = _writeString(source);
+  const id = _writeString(stableId);
+  const type_ = _writeString(newType);
+  const resultPtr = _wasm.wgslender_change_type_apply_by_id(
+    src.ptr, src.len,
+    id.ptr, id.len,
+    type_.ptr, type_.len,
+  );
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(id.ptr, id.allocLen);
+  _wasm.wgslender_dealloc(type_.ptr, type_.allocLen);
+
+  if (!resultPtr) throw new Error('changeTypeApplyByStableId failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
  * Check if initialized.
  * @returns {boolean}
  */
@@ -375,7 +533,13 @@ module.exports = {
   renameApply,
   stableIdAtOffset,
   locateStableId,
+  locateDeclaration,
+  locateType,
   renameByStableId,
+  removeDeclarationByStableId,
+  removeDeclarationApplyByStableId,
+  changeTypeByStableId,
+  changeTypeApplyByStableId,
   isInitialized,
   get version() { return getVersion(); }
 };
