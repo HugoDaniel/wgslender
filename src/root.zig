@@ -28,6 +28,7 @@ pub const Compiler = @import("Compiler.zig");
 pub const WasmBinary = @import("WasmBinary.zig");
 pub const Edits = @import("Edits.zig");
 pub const StableId = @import("StableId.zig");
+pub const Cst = @import("Cst.zig");
 
 // =========================================================================
 // Minify API
