@@ -11,6 +11,7 @@ const Allocator = std.mem.Allocator;
 pub const version = "1.0.0";
 
 pub const Ast = @import("Ast.zig");
+pub const AstVisit = @import("AstVisit.zig");
 pub const Lexer = @import("Lexer.zig");
 pub const Parser = @import("Parser.zig");
 pub const Printer = @import("Printer.zig");
@@ -369,6 +370,7 @@ test "analyze: const_values populated" {
 // Re-export tests from all modules
 comptime {
     _ = Ast;
+    _ = AstVisit;
     _ = Lexer;
     _ = Parser;
     _ = Renamer;

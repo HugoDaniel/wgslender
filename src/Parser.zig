@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Lexer = @import("Lexer.zig");
 const Cst = @import("Cst.zig");
+const AstVisit = @import("AstVisit.zig");
 
 const Parser = @This();
 
@@ -22,11 +23,9 @@ pos: u32,
 // Symbol table
 symbols: std.ArrayListUnmanaged(Ast.Symbol),
 scope: *Ast.Scope,
-
-// Two-pass tracking
+/// DFS append-order list of non-root scopes, consumed by `AstVisit.visit`
+/// to walk scopes in the same order `parseTranslationUnit` created them.
 scopes_in_order: std.ArrayListUnmanaged(*Ast.Scope),
-scope_index: u32,
-current_loc: u32,
 
 // Errors
 errors: std.ArrayListUnmanaged(ParseError),
@@ -92,8 +91,6 @@ pub fn init(arena: Allocator, source: [:0]const u8, tokens: std.MultiArrayList(L
         .symbols = .empty,
         .scope = scope,
         .scopes_in_order = .empty,
-        .scope_index = 0,
-        .current_loc = 0,
         .errors = .empty,
     };
 }
@@ -171,8 +168,6 @@ pub fn initWithCst(
         .symbols = .empty,
         .scope = scope,
         .scopes_in_order = .empty,
-        .scope_index = 0,
-        .current_loc = 0,
         .errors = .empty,
         .cst = builder,
         .cst_all_tags = stream.all_tags,
@@ -194,7 +189,15 @@ pub fn parse(self: *Parser) !*Ast.Module {
     try self.parseTranslationUnit(module);
 
     // Pass 2: Visit
-    self.visitModule(module);
+    var ctx = AstVisit.Context{
+        .arena = self.arena,
+        .symbols = self.symbols.items,
+        .scopes_in_order = self.scopes_in_order.items,
+        .scope = module.scope,
+        .errors = &self.errors,
+        .safety_budget = self.token_tags.len * 2,
+    };
+    AstVisit.visit(&ctx, module);
 
     // Copy symbols to module
     module.symbols = self.symbols;
@@ -506,35 +509,6 @@ fn declareSymbolNoScope(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, 
     return @enumFromInt(idx);
 }
 
-fn lookupSymbol(self: *const Parser, name: []const u8) ?Ast.SymbolIndex {
-    var scope_iter: ?*Ast.Scope = self.scope;
-    while (scope_iter) |s| {
-        if (s.members.get(name)) |member| {
-            // Module scope (no parent) is always visible.
-            // Local symbols visible only if declared before current_loc.
-            // During parse pass (current_loc == 0), allow all.
-            if (s.parent == null or self.current_loc == 0 or member.loc < self.current_loc) {
-                return member.ref;
-            }
-        }
-        scope_iter = s.parent;
-    }
-    return null;
-}
-
-/// Like lookupSymbol but ignores text-order constraints.
-/// Used to distinguish "use before declaration" from "truly undefined".
-fn lookupSymbolAnyLoc(self: *const Parser, name: []const u8) ?Ast.SymbolIndex {
-    var scope_iter: ?*Ast.Scope = self.scope;
-    while (scope_iter) |s| {
-        if (s.members.get(name)) |member| {
-            return member.ref;
-        }
-        scope_iter = s.parent;
-    }
-    return null;
-}
-
 fn pushScope(self: *Parser, kind: Ast.ScopeKind) !void {
     const new_scope = try self.arena.create(Ast.Scope);
     new_scope.* = Ast.Scope.init(self.scope, kind);
@@ -551,302 +525,6 @@ fn pushScope(self: *Parser, kind: Ast.ScopeKind) !void {
 
 fn popScope(self: *Parser) void {
     std.debug.assert(self.scope.parent != null);
-    if (self.scope.parent) |p| self.scope = p;
-}
-
-// =========================================================================
-// Pass 2: Visit
-// =========================================================================
-
-fn visitModule(self: *Parser, module: *Ast.Module) void {
-    self.scope = module.scope;
-    self.scope_index = 0;
-
-    for (module.declarations.items) |decl| {
-        self.visitDecl(decl);
-    }
-}
-
-fn visitDecl(self: *Parser, d: Ast.Decl) void {
-    switch (d) {
-        .@"const" => |decl| {
-            if (decl.typ) |t| self.visitType(t);
-            if (decl.initializer) |init_expr| decl.initializer = self.visitExpr(init_expr);
-        },
-        .override => |decl| {
-            if (decl.typ) |t| self.visitType(t);
-            if (decl.initializer) |init_expr| decl.initializer = self.visitExpr(init_expr);
-        },
-        .@"var" => |decl| {
-            if (decl.typ) |t| self.visitType(t);
-            if (decl.initializer) |init_expr| decl.initializer = self.visitExpr(init_expr);
-        },
-        .let => |decl| {
-            if (decl.typ) |t| self.visitType(t);
-            if (decl.initializer) |init_expr| decl.initializer = self.visitExpr(init_expr);
-        },
-        .function => |decl| self.visitFunctionDecl(decl),
-        .@"struct" => |decl| {
-            for (decl.members.items) |member| {
-                self.visitType(member.typ);
-            }
-        },
-        .alias => |decl| self.visitType(decl.typ),
-        .const_assert => |decl| decl.expr = self.visitExpr(decl.expr),
-    }
-}
-
-fn visitFunctionDecl(self: *Parser, decl: *Ast.FunctionDecl) void {
-    for (decl.parameters.items) |param| {
-        self.visitType(param.typ);
-    }
-    if (decl.return_type) |rt| self.visitType(rt);
-    self.enterNextScope();
-    if (decl.body) |body| self.visitCompoundStmt(body);
-    self.exitScope();
-}
-
-/// Iteratively visits statements using a worklist with scope markers.
-fn visitStmt(self: *Parser, root: Ast.Stmt) void {
-    const Work = union(enum) {
-        stmt: Ast.Stmt,
-        compound: *Ast.CompoundStmt,
-        exit_scope,
-    };
-
-    var stack: std.ArrayListUnmanaged(Work) = .empty;
-    defer stack.deinit(self.arena);
-    stack.append(self.arena, .{ .stmt = root }) catch return;
-
-    for (0..self.token_tags.len * 2) |_| {
-        const work = stack.pop() orelse break;
-        switch (work) {
-            .exit_scope => self.exitScope(),
-            .compound => |body| {
-                self.enterNextScope();
-                stack.append(self.arena, .exit_scope) catch {};
-                var i = body.stmts.items.len;
-                while (i > 0) {
-                    i -= 1;
-                    stack.append(self.arena, .{ .stmt = body.stmts.items[i] }) catch {};
-                }
-            },
-            .stmt => |s| self.processOneStmt(s, &stack),
-        }
-    } else unreachable;
-}
-
-/// Process a single statement, pushing child work items onto the stack.
-/// Expression visits are done inline (already iterative).
-fn processOneStmt(self: *Parser, s: Ast.Stmt, stack: anytype) void {
-    const Work = std.meta.Child(@TypeOf(stack.items));
-    switch (s) {
-        .compound => |stmt| stack.append(self.arena, .{ .compound = stmt }) catch {},
-        .@"return" => |stmt| {
-            if (stmt.value) |v| stmt.value = self.visitExpr(v);
-        },
-        .@"if" => |stmt| {
-            stmt.condition = self.visitExpr(stmt.condition);
-            // Push else branch first (processed after body), then body
-            if (stmt.else_branch) |eb| stack.append(self.arena, @as(Work, .{ .stmt = eb })) catch {};
-            stack.append(self.arena, @as(Work, .{ .compound = stmt.body })) catch {};
-        },
-        .@"switch" => |stmt| {
-            stmt.expr = self.visitExpr(stmt.expr);
-            // Push case bodies in reverse order
-            var i = stmt.cases.items.len;
-            while (i > 0) {
-                i -= 1;
-                const c = &stmt.cases.items[i];
-                stack.append(self.arena, @as(Work, .{ .compound = c.body })) catch {};
-            }
-            // Visit selectors inline
-            for (stmt.cases.items) |*c| {
-                for (c.selectors.items, 0..) |sel, j| {
-                    c.selectors.items[j] = self.visitExpr(sel);
-                }
-            }
-        },
-        .@"for" => |stmt| {
-            // For has its own scope wrapping init/condition/update/body
-            self.enterNextScope();
-            if (stmt.init_stmt) |is| self.processOneStmt(is, stack);
-            if (stmt.condition) |cond| stmt.condition = self.visitExpr(cond);
-            if (stmt.update) |upd| self.processOneStmt(upd, stack);
-            // Push exit_scope (for-scope), then body (which adds its own scope)
-            stack.append(self.arena, @as(Work, .exit_scope)) catch {};
-            stack.append(self.arena, @as(Work, .{ .compound = stmt.body })) catch {};
-        },
-        .@"while" => |stmt| {
-            stmt.condition = self.visitExpr(stmt.condition);
-            stack.append(self.arena, @as(Work, .{ .compound = stmt.body })) catch {};
-        },
-        .loop => |stmt| {
-            if (stmt.continuing) |c| stack.append(self.arena, @as(Work, .{ .compound = c })) catch {};
-            stack.append(self.arena, @as(Work, .{ .compound = stmt.body })) catch {};
-        },
-        .break_if => |stmt| {
-            stmt.condition = self.visitExpr(stmt.condition);
-        },
-        .assign => |stmt| {
-            stmt.left = self.visitExpr(stmt.left);
-            stmt.right = self.visitExpr(stmt.right);
-        },
-        .incr_decr => |stmt| {
-            stmt.expr = self.visitExpr(stmt.expr);
-        },
-        .call => |stmt| {
-            if (stmt.call.func) |f| stmt.call.func = self.visitExpr(f);
-            if (stmt.call.template_type) |tt| self.visitType(tt);
-            for (stmt.call.args.items, 0..) |arg, j| {
-                stmt.call.args.items[j] = self.visitExpr(arg);
-            }
-        },
-        .decl => |stmt| self.visitDecl(stmt.decl),
-        .@"break", .@"continue", .discard => {},
-    }
-}
-
-fn visitCompoundStmt(self: *Parser, stmt: *Ast.CompoundStmt) void {
-    const Work = union(enum) {
-        stmt: Ast.Stmt,
-        compound: *Ast.CompoundStmt,
-        exit_scope,
-    };
-
-    var stack: std.ArrayListUnmanaged(Work) = .empty;
-    defer stack.deinit(self.arena);
-    stack.append(self.arena, .{ .compound = stmt }) catch return;
-
-    for (0..self.token_tags.len * 2) |_| {
-        const work = stack.pop() orelse break;
-        switch (work) {
-            .exit_scope => self.exitScope(),
-            .compound => |body| {
-                self.enterNextScope();
-                stack.append(self.arena, .exit_scope) catch {};
-                var i = body.stmts.items.len;
-                while (i > 0) {
-                    i -= 1;
-                    stack.append(self.arena, .{ .stmt = body.stmts.items[i] }) catch {};
-                }
-            },
-            .stmt => |s| self.processOneStmt(s, &stack),
-        }
-    } else unreachable;
-}
-
-/// Iteratively visits an expression tree using a two-phase worklist.
-/// Pushes mark(e) before children so purity marking happens in post-order.
-fn visitExpr(self: *Parser, e: Ast.Expr) Ast.Expr {
-    const Work = union(enum) {
-        visit: Ast.Expr,
-        mark: Ast.Expr,
-    };
-
-    var stack: std.ArrayListUnmanaged(Work) = .empty;
-    defer stack.deinit(self.arena);
-    stack.append(self.arena, .{ .visit = e }) catch return e;
-
-    for (0..self.token_tags.len * 2) |_| {
-        const work = stack.pop() orelse break;
-        switch (work) {
-            .mark => |me| Ast.markExprPurity(me, self.symbols.items),
-            .visit => |ve| {
-                // Push mark first (popped last = post-order)
-                stack.append(self.arena, .{ .mark = ve }) catch {};
-
-                switch (ve) {
-                    .ident => |expr| {
-                        self.current_loc = expr.loc;
-                        if (self.lookupSymbol(expr.name)) |ref| {
-                            expr.ref = ref;
-                            if (ref.isValid()) {
-                                const idx = ref.index();
-                                if (idx < self.symbols.items.len) {
-                                    self.symbols.items[idx].use_count += 1;
-                                }
-                            }
-                        } else if (self.lookupSymbolAnyLoc(expr.name)) |ref| {
-                            const msg = std.fmt.allocPrint(self.arena, "'{s}' is used before its declaration", .{expr.name}) catch "identifier used before declaration";
-                            self.errors.append(self.arena, .{ .message = msg, .pos = expr.loc, .code = "E0102" }) catch {};
-                            expr.ref = ref;
-                        }
-                    },
-                    .literal => {},
-                    .binary => |expr| {
-                        stack.append(self.arena, .{ .visit = expr.right }) catch {};
-                        stack.append(self.arena, .{ .visit = expr.left }) catch {};
-                    },
-                    .unary => |expr| {
-                        stack.append(self.arena, .{ .visit = expr.operand }) catch {};
-                    },
-                    .call => |expr| {
-                        var i = expr.args.items.len;
-                        while (i > 0) {
-                            i -= 1;
-                            stack.append(self.arena, .{ .visit = expr.args.items[i] }) catch {};
-                        }
-                        if (expr.template_type) |tt| self.visitType(tt);
-                        if (expr.func) |f| stack.append(self.arena, .{ .visit = f }) catch {};
-                    },
-                    .index => |expr| {
-                        stack.append(self.arena, .{ .visit = expr.idx }) catch {};
-                        stack.append(self.arena, .{ .visit = expr.base }) catch {};
-                    },
-                    .member => |expr| {
-                        stack.append(self.arena, .{ .visit = expr.base }) catch {};
-                    },
-                    .paren => |expr| {
-                        stack.append(self.arena, .{ .visit = expr.expr }) catch {};
-                    },
-                }
-            },
-        }
-    } else unreachable;
-    return e;
-}
-
-/// Iteratively visits a type, following single-child chains.
-fn visitType(self: *Parser, t: Ast.Type) void {
-    var current = t;
-    for (0..32) |_| {
-        switch (current) {
-            .ident => |typ| {
-                self.current_loc = 0; // Types don't have text-order restrictions at module scope
-                if (self.lookupSymbol(typ.name)) |ref| {
-                    typ.ref = ref;
-                    if (ref.isValid()) {
-                        const idx = ref.index();
-                        if (idx < self.symbols.items.len) {
-                            self.symbols.items[idx].use_count += 1;
-                        }
-                    }
-                }
-                break;
-            },
-            .vec => |typ| current = typ.elem_type orelse break,
-            .mat => |typ| current = typ.elem_type orelse break,
-            .array => |typ| {
-                if (typ.size) |s| _ = self.visitExpr(s);
-                current = typ.elem_type orelse break;
-            },
-            .ptr => |typ| current = typ.elem_type,
-            .atomic => |typ| current = typ.elem_type,
-            .sampler => break,
-            .texture => |typ| current = typ.sampled_type orelse break,
-        }
-    } else unreachable;
-}
-
-fn enterNextScope(self: *Parser) void {
-    if (self.scope_index < self.scopes_in_order.items.len) {
-        self.scope = self.scopes_in_order.items[self.scope_index];
-        self.scope_index += 1;
-    }
-}
-
-fn exitScope(self: *Parser) void {
     if (self.scope.parent) |p| self.scope = p;
 }
 
