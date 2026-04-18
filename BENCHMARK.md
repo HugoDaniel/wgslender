@@ -178,3 +178,41 @@ zig build
 # Override binary paths
 MINIRAY_BIN=/path/to/miniray ./scripts/benchmark.sh
 ```
+
+## Incremental parse + LSP fast path
+
+Two new perf axes shipped alongside the trivia-preserving lexer and CST
+scaffolding:
+
+**`Incremental.classifyEdit(old, new)`** walks both token streams once
+(skipping trivia) and is O(n) in the non-trivia token count. The expected
+characteristic on a 28 KB shader (`bridge.wgsl`, ~1,700 non-trivia tokens)
+is well under one full parse's cost — classify only touches the stream;
+parse builds the entire AST + CST.
+
+**`Handler.changeDocumentIncremental` trivia-only fast path.** When the
+classifier returns `.trivia_only` (pure whitespace or comment changes),
+the LSP keeps the cached `AnalysisResult` hot: the source bytes are
+swapped in place but the validator never re-runs. For interactive
+workloads dominated by comment-writing or whitespace reflow this turns a
+full-module revalidate into a pointer swap.
+
+Empirical numbers aren't committed here yet — Zig 0.16 stripped the
+convenient time-measurement APIs (`std.time.Instant`, `Timer`) we'd use
+for a portable test-time benchmark. The correctness bounds are
+nevertheless gated by the test suite:
+
+- `tests/incremental_corpus_test.zig` verifies the fast path on every
+  compute.toys shader, plus a composition test that runs 20 successive
+  prepend-a-comment reparses without corruption.
+- `tests/incremental_longtail_test.zig` covers 23 edge cases including
+  comment-break / comment-close, keyword-flip, template-vs-comparison
+  disambiguation, and CRLF normalization — each asserts the expected
+  `EditKind` classification.
+
+Future work: once a portable wall-clock primitive lands in Zig 0.16 (or
+we vendor one), add `tests/incremental_bench_test.zig` measuring:
+- `parseFull` on bridge.wgsl (~28 KB),
+- `classifyEdit` on a trivia-only edit,
+- `Handler.changeDocumentIncremental` + `analyzeDocument` round-trip
+  latency, semantic vs trivia-only.
