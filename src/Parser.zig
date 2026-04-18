@@ -56,6 +56,14 @@ cst_all_ends: []const u32 = &.{},
 cst_nt_to_all: []const u32 = &.{},
 cst_next_all: u32 = 0,
 
+/// Marker of the most recently closed expression-level CST node. Read by
+/// `openBefore` call sites in `parsePostfixExpr`, `parseUnaryExpr`, and
+/// each binary-precedence level to wrap the previously-produced
+/// expression under a new outer node. Callers snapshot this into a local
+/// before entering any nested parse that may reassign it (e.g., argument
+/// list parsing inside a call).
+cst_last_closed_expr: ?Cst.Marker = null,
+
 pub const ParseError = struct {
     message: []const u8,
     pos: u32,
@@ -259,6 +267,22 @@ fn cstOpen(self: *Parser) ?Cst.Marker {
 fn cstClose(self: *Parser, maybe_marker: ?Cst.Marker, kind: Cst.Kind) void {
     if (self.cst) |builder| {
         if (maybe_marker) |m| builder.close(m, kind) catch {};
+    }
+}
+
+/// Retroactively wrap `m` under a new outer marker. Returns `null` when no
+/// CST builder is attached or when `m` is null (caller side-by-side with
+/// `cst_last_closed_expr` checks). Used to express left-associative
+/// precedence without rewriting the event stream.
+fn cstOpenBefore(self: *Parser, m: ?Cst.Marker) ?Cst.Marker {
+    const builder = self.cst orelse return null;
+    const marker = m orelse return null;
+    return builder.openBefore(marker) catch null;
+}
+
+fn cstAbandon(self: *Parser, maybe_marker: ?Cst.Marker) void {
+    if (self.cst) |builder| {
+        if (maybe_marker) |m| builder.abandon(m);
     }
 }
 
@@ -1002,7 +1026,10 @@ fn parseDeclaration(self: *Parser) !?Ast.Decl {
 
 fn parseAttributes(self: *Parser) !std.ArrayListUnmanaged(Ast.Attribute) {
     var attrs: std.ArrayListUnmanaged(Ast.Attribute) = .empty;
+    // Only open an attribute_list marker if at least one attribute is coming.
+    const list_marker = if (self.currentTag() == .at) self.cstOpen() else null;
     while (self.currentTag() == .at) {
+        const attr_marker = self.cstOpen();
         const attr_loc = self.currentStart();
         self.advance();
         var attr = Ast.Attribute{ .name = "", .args = .empty, .loc = attr_loc };
@@ -1010,9 +1037,12 @@ fn parseAttributes(self: *Parser) !std.ArrayListUnmanaged(Ast.Attribute) {
             attr.name = text;
             self.advance();
         }
-        if (self.eat(.l_paren)) {
+        if (self.currentTag() == .l_paren) {
+            const args_marker = self.cstOpen();
+            self.advance(); // consume '(' — lives inside the attribute_args node
             attr.args = try self.parseExpressionList();
             _ = self.expect(.r_paren);
+            self.cstClose(args_marker, .attribute_args);
         }
         // Check for duplicate attribute
         if (attr.name.len > 0) {
@@ -1025,7 +1055,9 @@ fn parseAttributes(self: *Parser) !std.ArrayListUnmanaged(Ast.Attribute) {
             }
         }
         try attrs.append(self.arena, attr);
+        self.cstClose(attr_marker, .attribute);
     }
+    self.cstClose(list_marker, .attribute_list);
     return attrs;
 }
 
@@ -1256,11 +1288,15 @@ fn parseConstAssert(self: *Parser) !*Ast.ConstAssertDecl {
 // =========================================================================
 
 fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed }!Ast.Type {
+    const marker = self.cstOpen();
+
     if (self.eatIdent()) |name| {
         const name_loc = self.currentStart();
         self.advance();
         if (self.currentTag() == .lt) {
-            return self.parseTemplatedType(name, name_loc);
+            const result = try self.parseTemplatedType(name, name_loc);
+            self.cstClose(marker, typeCstKind(result));
+            return result;
         }
         const typ = try self.arena.create(Ast.IdentType);
         typ.* = .{
@@ -1269,6 +1305,7 @@ fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed
             .loc = name_loc,
             .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
         };
+        self.cstClose(marker, .type_ident);
         return .{ .ident = typ };
     }
 
@@ -1286,11 +1323,21 @@ fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed
         .loc = err_loc,
         .span = .{ .start = err_loc, .end = self.prevTokenEnd() },
     };
+    self.cstClose(marker, .error_tree);
     return .{ .ident = typ };
 }
 
 fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
+    // The `<...>` region becomes a `template_args` CST node so reparse
+    // anchors inside it land on a tight subtree. Both brackets live inside.
+    const args_marker = self.cstOpen();
     _ = self.expect(.lt);
+    const result = try self.parseTemplatedTypeInner(name, name_loc);
+    self.cstClose(args_marker, .template_args);
+    return result;
+}
+
+fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
 
     if (isVecName(name)) {
         const size = name[3] - '0';
@@ -1464,6 +1511,7 @@ fn parseExpression(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Expr {
 
 fn parseLogicalOrExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseLogicalAndExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     while (self.currentTag() == .pipe_pipe) {
         const loc = self.currentStart();
         self.advance();
@@ -1471,12 +1519,18 @@ fn parseLogicalOrExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .logical_or, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     }
     return left;
 }
 
 fn parseLogicalAndExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseBitwiseOrExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     while (self.currentTag() == .amp_amp) {
         const loc = self.currentStart();
         self.advance();
@@ -1484,12 +1538,18 @@ fn parseLogicalAndExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .logical_and, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     }
     return left;
 }
 
 fn parseBitwiseOrExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseBitwiseXorExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     while (self.currentTag() == .pipe) {
         const loc = self.currentStart();
         self.advance();
@@ -1497,12 +1557,18 @@ fn parseBitwiseOrExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .@"or", .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     }
     return left;
 }
 
 fn parseBitwiseXorExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseBitwiseAndExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     while (self.currentTag() == .caret) {
         const loc = self.currentStart();
         self.advance();
@@ -1510,12 +1576,18 @@ fn parseBitwiseXorExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .xor, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     }
     return left;
 }
 
 fn parseBitwiseAndExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseEqualityExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     while (self.currentTag() == .amp) {
         const loc = self.currentStart();
         self.advance();
@@ -1523,12 +1595,18 @@ fn parseBitwiseAndExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = .@"and", .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     }
     return left;
 }
 
 fn parseEqualityExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseRelationalExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .eq_eq => .eq,
@@ -1541,11 +1619,17 @@ fn parseEqualityExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     } else unreachable;
 }
 
 fn parseRelationalExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseShiftExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .lt => .lt,
@@ -1560,11 +1644,17 @@ fn parseRelationalExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     } else unreachable;
 }
 
 fn parseShiftExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseAdditiveExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .lt_lt => .shl,
@@ -1577,11 +1667,17 @@ fn parseShiftExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     } else unreachable;
 }
 
 fn parseAdditiveExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseMultiplicativeExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .plus => .add,
@@ -1594,11 +1690,17 @@ fn parseAdditiveExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     } else unreachable;
 }
 
 fn parseMultiplicativeExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseUnaryExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .star => .mul,
@@ -1612,13 +1714,22 @@ fn parseMultiplicativeExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     } else unreachable;
 }
 
 fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
     // Collect chained unary operators iteratively, then fold right-to-left.
+    // Each operator opens its own CST marker BEFORE the operator token is
+    // consumed, so the token lands inside that marker. Markers nest, with
+    // the outermost (first) operator at the outside.
     const OpLoc = struct { op: Ast.UnaryOp, loc: u32 };
     var ops_buf: [32]OpLoc = undefined;
+    var cst_markers_buf: [32]?Cst.Marker = undefined;
     var ops_len: u8 = 0;
 
     while (ops_len < ops_buf.len) {
@@ -1630,14 +1741,23 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
             .amp => .addr,
             else => break,
         };
+        cst_markers_buf[ops_len] = self.cstOpen();
         ops_buf[ops_len] = .{ .op = unary_op, .loc = self.currentStart() };
         ops_len += 1;
         self.advance();
     }
 
-    var operand = (try self.parsePostfixExpr()) orelse return null;
+    var operand = (try self.parsePostfixExpr()) orelse {
+        // Operand parse failed; tombstone every unary marker in reverse
+        // so the consumed operator tokens fall through to the enclosing
+        // expression context, matching pre-CST behavior.
+        var k: u8 = ops_len;
+        while (k > 0) : (k -= 1) self.cstAbandon(cst_markers_buf[k - 1]);
+        return null;
+    };
 
-    // Fold right-to-left: innermost op wraps the operand first.
+    // Fold right-to-left: innermost op wraps the operand first. Closing the
+    // markers in reverse order honors the builder's stack discipline.
     var i: u8 = ops_len;
     while (i > 0) {
         i -= 1;
@@ -1645,6 +1765,8 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.UnaryExpr);
         node.* = .{ .loc = entry.loc, .op = entry.op, .operand = operand };
         operand = .{ .unary = node };
+        self.cstClose(cst_markers_buf[i], .unary_expr);
+        self.cst_last_closed_expr = cst_markers_buf[i];
     }
 
     return operand;
@@ -1652,10 +1774,15 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
 
 fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parsePrimaryExpr()) orelse return null;
+    // `parsePrimaryExpr` sets `cst_last_closed_expr`; snapshot it here so
+    // nested expression parses inside postfix bodies (index, args) don't
+    // clobber our "left" wrap target.
+    var left_marker = self.cst_last_closed_expr;
 
     for (0..self.token_tags.len) |_| {
         switch (self.currentTag()) {
             .dot => {
+                const saved = left_marker;
                 const dot_loc = self.currentStart();
                 self.advance();
                 if (self.isIdentLike()) {
@@ -1664,11 +1791,16 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
                     const node = try self.arena.create(Ast.MemberExpr);
                     node.* = .{ .loc = dot_loc, .base = left, .member_name = member };
                     left = .{ .member = node };
+                    const wrap = self.cstOpenBefore(saved);
+                    self.cstClose(wrap, .member_expr);
+                    self.cst_last_closed_expr = wrap;
+                    left_marker = wrap;
                 } else {
                     self.addError("expected member name");
                 }
             },
             .l_bracket => {
+                const saved = left_marker;
                 const bracket_loc = self.currentStart();
                 self.advance();
                 self.expr_context = "in array index";
@@ -1678,8 +1810,13 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
                 const node = try self.arena.create(Ast.IndexExpr);
                 node.* = .{ .loc = bracket_loc, .end_loc = end_loc, .base = left, .idx = idx };
                 left = .{ .index = node };
+                const wrap = self.cstOpenBefore(saved);
+                self.cstClose(wrap, .index_expr);
+                self.cst_last_closed_expr = wrap;
+                left_marker = wrap;
             },
             .l_paren => {
+                const saved = left_marker;
                 const paren_loc = self.currentStart();
                 self.advance();
                 const args = try self.parseExpressionList();
@@ -1688,6 +1825,10 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
                 const node = try self.arena.create(Ast.CallExpr);
                 node.* = .{ .loc = paren_loc, .end_loc = end_loc, .func = left, .args = args };
                 left = .{ .call = node };
+                const wrap = self.cstOpenBefore(saved);
+                self.cstClose(wrap, .call_expr);
+                self.cst_last_closed_expr = wrap;
+                left_marker = wrap;
             },
             else => return left,
         }
@@ -1695,6 +1836,25 @@ fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
 }
 
 fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
+    const marker = self.cstOpen();
+    const result = try self.parsePrimaryExprInner();
+    if (result) |expr| {
+        self.cstClose(marker, exprCstKind(expr));
+        self.cst_last_closed_expr = marker;
+    } else {
+        // Null result covers two shapes: (a) the `else` branch ran, emitted a
+        // parser error, and already consumed one offending token; (b) a
+        // templated-constructor / bitcast fallback drove a `<...>` parse into
+        // the marker and then couldn't find the `(`. In both cases, closing
+        // the marker as `.error_tree` keeps whatever tokens and subtrees were
+        // emitted grouped under a recovery node rather than leaking them to
+        // the enclosing statement.
+        self.cstClose(marker, .error_tree);
+    }
+    return result;
+}
+
+fn parsePrimaryExprInner(self: *Parser) !?Ast.Expr {
     switch (self.currentTag()) {
         .int_literal, .float_literal => {
             const text = self.currentText();
@@ -1760,6 +1920,11 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
 fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
     const template_type = try self.parseTemplatedType(name, name_loc);
     if (self.currentTag() != .l_paren) {
+        // `vec3<f32>` without `(...)` is accepted as a lenient ident
+        // reference (existing behavior, no error emitted). The enclosing
+        // primary closes as .ident_expr; the previously-emitted
+        // template_args node stays as a child of that ident_expr — a
+        // structural oddity we accept in exchange for AST compatibility.
         const node = try self.arena.create(Ast.IdentExpr);
         node.* = .{ .name = name, .ref = .none };
         return .{ .ident = node };
@@ -1775,14 +1940,15 @@ fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?A
 }
 
 fn parseBitcastExpr(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
+    // Wrap `<T>` in template_args to match how parseTemplatedType emits it.
+    const args_marker = self.cstOpen();
     _ = self.expect(.lt);
     const dest_type = try self.parseType("in bitcast type");
     _ = self.expect(.gt);
+    self.cstClose(args_marker, .template_args);
     if (self.currentTag() != .l_paren) {
         self.addError("expected '(' after bitcast<T>");
-        const node = try self.arena.create(Ast.IdentExpr);
-        node.* = .{ .name = name, .ref = .none, .loc = name_loc };
-        return .{ .ident = node };
+        return null;
     }
     const paren_loc = self.currentStart();
     self.advance();
@@ -1820,6 +1986,7 @@ fn parseTemplateArgExpr(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Ex
 
 fn parseTemplateAdditiveExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseTemplateMultiplicativeExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .plus => .add,
@@ -1832,11 +1999,17 @@ fn parseTemplateAdditiveExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     } else unreachable;
 }
 
 fn parseTemplateMultiplicativeExpr(self: *Parser) !?Ast.Expr {
     var left = (try self.parseTemplateUnaryExpr()) orelse return null;
+    var left_marker = self.cst_last_closed_expr;
     for (0..self.token_tags.len) |_| {
         const op: Ast.BinaryOp = switch (self.currentTag()) {
             .star => .mul,
@@ -1850,6 +2023,11 @@ fn parseTemplateMultiplicativeExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
+        if (self.cstOpenBefore(left_marker)) |wrap| {
+            self.cstClose(wrap, .binary_expr);
+            self.cst_last_closed_expr = wrap;
+            left_marker = wrap;
+        }
     } else unreachable;
 }
 
@@ -1861,17 +2039,35 @@ fn parseTemplateUnaryExpr(self: *Parser) !?Ast.Expr {
         else => null,
     };
     if (op) |unary_op| {
+        const outer_marker = self.cstOpen();
         const loc = self.currentStart();
         self.advance();
-        const operand = (try self.parseTemplateUnaryExpr()) orelse return null;
+        const operand = (try self.parseTemplateUnaryExpr()) orelse {
+            self.cstAbandon(outer_marker);
+            return null;
+        };
         const node = try self.arena.create(Ast.UnaryExpr);
         node.* = .{ .loc = loc, .op = unary_op, .operand = operand };
+        self.cstClose(outer_marker, .unary_expr);
+        self.cst_last_closed_expr = outer_marker;
         return .{ .unary = node };
     }
     return self.parseTemplatePrimaryExpr();
 }
 
 fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
+    const marker = self.cstOpen();
+    const result = try self.parseTemplatePrimaryExprInner();
+    if (result) |expr| {
+        self.cstClose(marker, exprCstKind(expr));
+        self.cst_last_closed_expr = marker;
+    } else {
+        self.cstClose(marker, .error_tree);
+    }
+    return result;
+}
+
+fn parseTemplatePrimaryExprInner(self: *Parser) !?Ast.Expr {
     switch (self.currentTag()) {
         .int_literal, .float_literal, .true_literal, .false_literal => {
             const text = self.currentText();
@@ -1935,6 +2131,32 @@ fn stmtCstKind(stmt: Ast.Stmt) Cst.Kind {
         .incr_decr => .incr_decr_stmt,
         .call => .call_stmt,
         .decl => .decl_stmt,
+    };
+}
+
+fn exprCstKind(expr: Ast.Expr) Cst.Kind {
+    return switch (expr) {
+        .binary => .binary_expr,
+        .unary => .unary_expr,
+        .call => .call_expr,
+        .index => .index_expr,
+        .member => .member_expr,
+        .paren => .paren_expr,
+        .ident => .ident_expr,
+        .literal => .literal_expr,
+    };
+}
+
+fn typeCstKind(t: Ast.Type) Cst.Kind {
+    return switch (t) {
+        .ident => .type_ident,
+        .vec => .type_vec,
+        .mat => .type_mat,
+        .array => .type_array,
+        .ptr => .type_ptr,
+        .atomic => .type_atomic,
+        .texture => .type_texture,
+        .sampler => .type_sampler,
     };
 }
 
@@ -3988,5 +4210,134 @@ test "cst shadow: compute.toys sample round-trip" {
         \\
     ;
     try expectCstRoundtrip(source);
+}
+
+/// Build the CST for `source`, locate `needle` in the source, and assert
+/// that the smallest CST node tightly containing `[offset, offset + len)`
+/// has `expected_kind`. Node spans include leading trivia, so this uses a
+/// byte range (not a text slice) to identify the target subtree.
+fn expectCstKindAt(
+    source: [:0]const u8,
+    needle: []const u8,
+    expected_kind: Cst.Kind,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var all_tokens = try Lexer.tokenizeAll(alloc, source);
+    const stream = try TokenStream.init(alloc, &all_tokens);
+
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+
+    var parser = try Parser.initWithCst(alloc, source, stream, &builder);
+    _ = try parser.parse();
+
+    var tree = try builder.finish(alloc, all_tokens, source);
+
+    const idx = std.mem.indexOf(u8, source, needle) orelse {
+        std.debug.print("needle \"{s}\" not found in source", .{needle});
+        return error.TestNeedleNotFound;
+    };
+    const span: Cst.Span = .{
+        .start = @intCast(idx),
+        .end = @intCast(idx + needle.len),
+    };
+    const hit = tree.rootCursor().findSmallestContaining(span);
+    if (hit.kind() != expected_kind) {
+        std.debug.print(
+            "expected kind {any} at \"{s}\" ({d}..{d}) but got {any} (range {d}..{d})\n",
+            .{ expected_kind, needle, span.start, span.end, hit.kind(), hit.range().start, hit.range().end },
+        );
+        return error.TestExpectedKindMismatch;
+    }
+}
+
+test "cst shadow: binary expressions left-associate" {
+    // Use names that don't clash with keyword substrings (avoid naive
+    // indexOf picking up letters inside `const`, `let`, etc.).
+    const source: [:0]const u8 = "fn f() { let r = p + q + r; }";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var all_tokens = try Lexer.tokenizeAll(alloc, source);
+    const stream = try TokenStream.init(alloc, &all_tokens);
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var parser = try Parser.initWithCst(alloc, source, stream, &builder);
+    _ = try parser.parse();
+    var tree = try builder.finish(alloc, all_tokens, source);
+
+    // Outermost binary_expr covers the full `p + q + r` non-trivia span.
+    try expectCstKindAt(source, "p + q + r", .binary_expr);
+    // Inner binary_expr covers `p + q` — the left-associative fold.
+    try expectCstKindAt(source, "p + q", .binary_expr);
+    // Leaves. "r" appears as a let target too (`let r = ...`), so we look
+    // for it via "r;" to reach the rightmost ident.
+    try expectCstKindAt(source, "p", .ident_expr);
+    try expectCstKindAt(source, "q", .ident_expr);
+    // The rightmost `r` is at source index `indexOf("+ r;") + 2`.
+    const r_ident_idx: u32 = @intCast(std.mem.indexOf(u8, source, "+ r;").? + 2);
+    const r_cursor = tree.rootCursor().findSmallestContaining(.{
+        .start = r_ident_idx,
+        .end = r_ident_idx + 1,
+    });
+    try std.testing.expectEqual(Cst.Kind.ident_expr, r_cursor.kind());
+
+    // Structural check: the outer binary_expr's first child node is itself a
+    // binary_expr (the left-fold for `p + q`).
+    const outer_idx = std.mem.indexOf(u8, source, "p + q + r").?;
+    const outer = tree.rootCursor().findSmallestContaining(.{
+        .start = @intCast(outer_idx),
+        .end = @intCast(outer_idx + "p + q + r".len),
+    });
+    try std.testing.expectEqual(Cst.Kind.binary_expr, outer.kind());
+    const first_child_node = outer.firstChildNode() orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqual(Cst.Kind.binary_expr, first_child_node.kind());
+}
+
+test "cst shadow: postfix chain wraps primary" {
+    const source: [:0]const u8 = "fn f() { let x = foo.bar[0](y); }";
+    // Outermost postfix is the call; it wraps the index, which wraps the
+    // member, which wraps the primary ident.
+    try expectCstKindAt(source, "foo.bar[0](y)", .call_expr);
+    try expectCstKindAt(source, "foo.bar[0]", .index_expr);
+    try expectCstKindAt(source, "foo.bar", .member_expr);
+    try expectCstKindAt(source, "foo", .ident_expr);
+    try expectCstKindAt(source, "0", .literal_expr);
+    try expectCstKindAt(source, "y", .ident_expr);
+}
+
+test "cst shadow: unary fold wraps each level" {
+    const source: [:0]const u8 = "const x = -!~a;";
+    // Each prefix op creates its own unary_expr wrap. Byte ranges cover the
+    // op-plus-operand span; findSmallestContaining lands on the matching
+    // unary_expr wrap.
+    try expectCstKindAt(source, "-!~a", .unary_expr);
+    try expectCstKindAt(source, "!~a", .unary_expr);
+    try expectCstKindAt(source, "~a", .unary_expr);
+    try expectCstKindAt(source, "a", .ident_expr);
+}
+
+test "cst shadow: templated types emit type_* + template_args" {
+    const source: [:0]const u8 = "alias V = array<vec3<f32>, 4>;";
+    try expectCstKindAt(source, "array<vec3<f32>, 4>", .type_array);
+    try expectCstKindAt(source, "<vec3<f32>, 4>", .template_args);
+    try expectCstKindAt(source, "vec3<f32>", .type_vec);
+    try expectCstKindAt(source, "<f32>", .template_args);
+    try expectCstKindAt(source, "f32", .type_ident);
+    try expectCstKindAt(source, "4", .literal_expr);
+}
+
+test "cst shadow: attributes emit attribute_list + attribute + attribute_args" {
+    const source: [:0]const u8 = "@group(0) @binding(0) @compute @workgroup_size(16, 16, 1) fn f() {}";
+    try expectCstKindAt(source, "@group(0) @binding(0) @compute @workgroup_size(16, 16, 1)", .attribute_list);
+    try expectCstKindAt(source, "@group(0)", .attribute);
+    try expectCstKindAt(source, "@binding(0)", .attribute);
+    try expectCstKindAt(source, "@compute", .attribute);
+    try expectCstKindAt(source, "@workgroup_size(16, 16, 1)", .attribute);
+    try expectCstKindAt(source, "(16, 16, 1)", .attribute_args);
 }
 
