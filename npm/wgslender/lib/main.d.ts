@@ -268,6 +268,85 @@ export function reflect(source: string): ReflectResult;
 export function validate(source: string, options?: ValidateOptions): ValidateResult;
 
 /**
+ * A byte range in the source with read/write context.
+ * All offsets are UTF-8 byte offsets, not UTF-16 code-unit offsets.
+ */
+export interface Reference {
+  /** Byte offset where the reference begins. */
+  start: number;
+  /** Byte offset one past the last byte of the reference. */
+  end: number;
+  /** True if the reference is the target of a write (assignment, ++/--, or the declaration site). */
+  isWrite: boolean;
+}
+
+/**
+ * A text edit to apply to the original source.
+ * Replace bytes `[start, end)` with `newText`.
+ */
+export interface TextEdit {
+  start: number;
+  end: number;
+  newText: string;
+}
+
+/** Result of findReferences. */
+export interface FindReferencesResult {
+  references: Reference[];
+  /** Present only on parse error. */
+  error?: string;
+}
+
+/** Result of rename — the edits to apply. Empty edits + error on failure. */
+export interface RenameResult {
+  edits: TextEdit[];
+  /** "parse error" | "symbol not found" | "invalid identifier" on failure. */
+  error?: string;
+}
+
+/** Result of renameApply — rewritten source plus the edits that produced it. */
+export interface RenameApplyResult {
+  ok: boolean;
+  /** Rewritten source on success, original source on failure. */
+  source: string;
+  edits: TextEdit[];
+  error?: string;
+}
+
+/**
+ * Find every reference to the symbol under `offset` in `source`.
+ * `offset` is a UTF-8 byte offset.
+ * If no symbol is under `offset`, returns `{references: []}`.
+ */
+export function findReferences(
+  source: string,
+  offset: number,
+  includeDeclaration?: boolean
+): FindReferencesResult;
+
+/**
+ * Compute text edits that rename the symbol under `offset` to `newName`.
+ * Returns `{edits: [], error: ...}` if the rename cannot be applied
+ * (invalid identifier, symbol not found, parse error).
+ */
+export function rename(
+  source: string,
+  offset: number,
+  newName: string
+): RenameResult;
+
+/**
+ * Rename-and-apply: produces the rewritten source plus the edit list.
+ * On failure `source` contains the original text so callers can use
+ * the return value as a drop-in replacement either way.
+ */
+export function renameApply(
+  source: string,
+  offset: number,
+  newName: string
+): RenameApplyResult;
+
+/**
  * Check if the WASM module is initialized.
  */
 export function isInitialized(): boolean;

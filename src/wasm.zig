@@ -338,6 +338,243 @@ fn minifyAndReflectJsonImpl(
     return packJsonResult(json_buf.items);
 }
 
+// =========================================================================
+// Edits (rename / findReferences)
+// =========================================================================
+
+const Edits = wgslender.Edits;
+
+/// Find all references to the symbol under `offset` in source.
+///
+/// Input: source bytes + length, byte offset, include_declaration (0/1).
+/// Output: [u32 json_len][u8 json] where JSON is
+///   {"references":[{"start":N,"end":N,"isWrite":bool},...]}
+/// or, on parse failure or when no symbol is under the offset,
+///   {"references":[],"error":"..."} / {"references":[]}.
+/// Returns null on allocation failure.
+export fn wgslender_find_references(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+    include_declaration: u32,
+) ?[*]u8 {
+    return findReferencesImpl(source_ptr, source_len, offset, include_declaration != 0) catch return null;
+}
+
+fn findReferencesImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+    include_declaration: bool,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packJsonResultAlloc(
+        "{\"references\":[],\"error\":\"parse error\"}",
+    );
+
+    const target = Edits.symbolAtOffset(module, offset);
+    if (!target.isValid()) return try packJsonResultAlloc("{\"references\":[]}");
+
+    const refs = try Edits.findReferences(wasm_allocator, module, target, include_declaration);
+    defer wasm_allocator.free(refs);
+
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    defer json.deinit(wasm_allocator);
+    try json.appendSlice(wasm_allocator, "{\"references\":[");
+    for (refs, 0..) |r, i| {
+        if (i > 0) try json.append(wasm_allocator, ',');
+        try json.appendSlice(wasm_allocator, "{\"start\":");
+        try Diagnostic.appendInt(&json, wasm_allocator, r.start);
+        try json.appendSlice(wasm_allocator, ",\"end\":");
+        try Diagnostic.appendInt(&json, wasm_allocator, r.end);
+        try json.appendSlice(wasm_allocator, ",\"isWrite\":");
+        try json.appendSlice(wasm_allocator, if (r.is_write) "true" else "false");
+        try json.append(wasm_allocator, '}');
+    }
+    try json.appendSlice(wasm_allocator, "]}");
+    return packJsonResult(json.items);
+}
+
+/// Compute the text edits that rename the symbol under `offset` to
+/// `new_name`. Offsets in the returned edits are byte offsets against
+/// the input source (not the sentinel-copy).
+///
+/// Output JSON:
+///   {"edits":[{"start":N,"end":N,"newText":"..."}, ...]}
+/// on success, or with an additional "error" field on failure:
+///   {"edits":[],"error":"invalid identifier" | "symbol not found" | "parse error"}
+///
+/// Returns null on allocation failure.
+export fn wgslender_rename(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+    new_name_ptr: [*]const u8,
+    new_name_len: u32,
+) ?[*]u8 {
+    return renameImpl(source_ptr, source_len, offset, new_name_ptr, new_name_len) catch return null;
+}
+
+fn renameImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+    new_name_ptr: [*]const u8,
+    new_name_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+    const new_name = new_name_ptr[0..new_name_len];
+
+    if (!Edits.isValidWgslIdentifier(new_name)) {
+        return try packJsonResultAlloc("{\"edits\":[],\"error\":\"invalid identifier\"}");
+    }
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"parse error\"}",
+    );
+
+    const target = Edits.symbolAtOffset(module, offset);
+    if (!target.isValid()) return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"symbol not found\"}",
+    );
+
+    const edits = (try Edits.renameEdits(wasm_allocator, module, target, new_name)) orelse
+        return try packJsonResultAlloc("{\"edits\":[],\"error\":\"invalid identifier\"}");
+    defer wasm_allocator.free(edits);
+
+    return try packEditsJson(edits, new_name);
+}
+
+/// Rename-and-apply: compute edits for renaming the symbol at `offset`
+/// to `new_name` and return the rewritten source plus the edits.
+///
+/// Output JSON:
+///   {"source":"...","edits":[...],"ok":true}
+/// or on failure:
+///   {"source":"<original>","edits":[],"ok":false,"error":"..."}
+///
+/// The `source` field is always present — callers can use it as a drop-in
+/// replacement for the input text whether the rename succeeded or not.
+/// Returns null on allocation failure.
+export fn wgslender_rename_apply(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+    new_name_ptr: [*]const u8,
+    new_name_len: u32,
+) ?[*]u8 {
+    return renameApplyImpl(source_ptr, source_len, offset, new_name_ptr, new_name_len) catch return null;
+}
+
+fn renameApplyImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+    new_name_ptr: [*]const u8,
+    new_name_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source_copy = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source_copy.ptr[0 .. source_copy.len + 1]);
+    const new_name = new_name_ptr[0..new_name_len];
+
+    const original_bytes = source_ptr[0..source_len];
+
+    if (!Edits.isValidWgslIdentifier(new_name)) {
+        return try packRenameApplyFailure(original_bytes, "invalid identifier");
+    }
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source_copy, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packRenameApplyFailure(original_bytes, "parse error");
+
+    const target = Edits.symbolAtOffset(module, offset);
+    if (!target.isValid()) return try packRenameApplyFailure(original_bytes, "symbol not found");
+
+    const edits = (try Edits.renameEdits(wasm_allocator, module, target, new_name)) orelse
+        return try packRenameApplyFailure(original_bytes, "invalid identifier");
+    defer wasm_allocator.free(edits);
+
+    const rewritten = try Edits.applyEdits(wasm_allocator, original_bytes, edits);
+    defer wasm_allocator.free(rewritten);
+
+    return try packRenameApplySuccess(rewritten, edits, new_name);
+}
+
+fn packEditsJson(edits: []const Edits.TextEdit, new_name: []const u8) Allocator.Error!?[*]u8 {
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    defer json.deinit(wasm_allocator);
+    try json.appendSlice(wasm_allocator, "{\"edits\":[");
+    for (edits, 0..) |e, i| {
+        if (i > 0) try json.append(wasm_allocator, ',');
+        try writeEditJson(&json, e, new_name);
+    }
+    try json.appendSlice(wasm_allocator, "]}");
+    return packJsonResult(json.items);
+}
+
+fn writeEditJson(
+    json: *std.ArrayListUnmanaged(u8),
+    edit: Edits.TextEdit,
+    new_text: []const u8,
+) Allocator.Error!void {
+    try json.appendSlice(wasm_allocator, "{\"start\":");
+    try Diagnostic.appendInt(json, wasm_allocator, edit.start);
+    try json.appendSlice(wasm_allocator, ",\"end\":");
+    try Diagnostic.appendInt(json, wasm_allocator, edit.end);
+    try json.appendSlice(wasm_allocator, ",\"newText\":\"");
+    try Diagnostic.appendJsonEscaped(json, wasm_allocator, new_text);
+    try json.appendSlice(wasm_allocator, "\"}");
+}
+
+fn packRenameApplySuccess(
+    rewritten: []const u8,
+    edits: []const Edits.TextEdit,
+    new_name: []const u8,
+) Allocator.Error!?[*]u8 {
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    defer json.deinit(wasm_allocator);
+    try json.appendSlice(wasm_allocator, "{\"ok\":true,\"source\":\"");
+    try Diagnostic.appendJsonEscaped(&json, wasm_allocator, rewritten);
+    try json.appendSlice(wasm_allocator, "\",\"edits\":[");
+    for (edits, 0..) |e, i| {
+        if (i > 0) try json.append(wasm_allocator, ',');
+        try writeEditJson(&json, e, new_name);
+    }
+    try json.appendSlice(wasm_allocator, "]}");
+    return packJsonResult(json.items);
+}
+
+fn packRenameApplyFailure(original: []const u8, msg: []const u8) Allocator.Error!?[*]u8 {
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    defer json.deinit(wasm_allocator);
+    try json.appendSlice(wasm_allocator, "{\"ok\":false,\"source\":\"");
+    try Diagnostic.appendJsonEscaped(&json, wasm_allocator, original);
+    try json.appendSlice(wasm_allocator, "\",\"edits\":[],\"error\":\"");
+    try Diagnostic.appendJsonEscaped(&json, wasm_allocator, msg);
+    try json.appendSlice(wasm_allocator, "\"}");
+    return packJsonResult(json.items);
+}
+
+fn packJsonResultAlloc(comptime literal: []const u8) Allocator.Error!?[*]u8 {
+    return packJsonResult(literal);
+}
+
 /// Return the version string.
 export fn wgslender_version() [*]const u8 {
     return wgslender.version.ptr;

@@ -190,6 +190,55 @@ export function validate(source, options) {
 }
 
 /**
+ * Find all references to the symbol under `offset`.
+ */
+export function findReferences(source, offset, includeDeclaration) {
+  if (!_initialized) throw new Error('wgslender not initialized. Call initialize() first.');
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (!Number.isFinite(offset) || offset < 0) throw new TypeError('offset must be a non-negative number');
+  const includeDecl = includeDeclaration !== false;
+  const src = _writeString(source);
+  const resultPtr = _wasm.wgslender_find_references(src.ptr, src.len, offset >>> 0, includeDecl ? 1 : 0);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  if (!resultPtr) throw new Error('findReferences failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
+ * Compute text edits to rename the symbol at `offset` to `newName`.
+ */
+export function rename(source, offset, newName) {
+  if (!_initialized) throw new Error('wgslender not initialized. Call initialize() first.');
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof newName !== 'string') throw new TypeError('newName must be a string');
+  if (!Number.isFinite(offset) || offset < 0) throw new TypeError('offset must be a non-negative number');
+  const src = _writeString(source);
+  const name = _writeString(newName);
+  const resultPtr = _wasm.wgslender_rename(src.ptr, src.len, offset >>> 0, name.ptr, name.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(name.ptr, name.allocLen);
+  if (!resultPtr) throw new Error('rename failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
+ * Rename-and-apply: returns rewritten source and edits.
+ */
+export function renameApply(source, offset, newName) {
+  if (!_initialized) throw new Error('wgslender not initialized. Call initialize() first.');
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof newName !== 'string') throw new TypeError('newName must be a string');
+  if (!Number.isFinite(offset) || offset < 0) throw new TypeError('offset must be a non-negative number');
+  const src = _writeString(source);
+  const name = _writeString(newName);
+  const resultPtr = _wasm.wgslender_rename_apply(src.ptr, src.len, offset >>> 0, name.ptr, name.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(name.ptr, name.allocLen);
+  if (!resultPtr) throw new Error('renameApply failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
  * Check if initialized.
  * @returns {boolean}
  */
@@ -212,4 +261,4 @@ function getVersion() {
 
 export const version = { toString: getVersion, valueOf: getVersion };
 
-export default { initialize, minify, reflect, validate, isInitialized, version };
+export default { initialize, minify, reflect, validate, findReferences, rename, renameApply, isInitialized, version };

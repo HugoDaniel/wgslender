@@ -41,7 +41,7 @@ async function main() {
   console.log('wgslender WASM Node.js Test Suite\n');
 
   const wgslender = require('./lib/main.js');
-  const { initialize, minify, reflect, validate, isInitialized } = wgslender;
+  const { initialize, minify, reflect, validate, isInitialized, findReferences, rename, renameApply } = wgslender;
 
   // =============================================
   // Initialization
@@ -391,6 +391,179 @@ fn computeValue(index: u32) -> f32 { return f32(index) * uniforms.scale; }
     const r1 = minify(source, { minifyWhitespace: true });
     const r2 = minify(r1.code, { minifyWhitespace: true });
     assert(r2.errors.length === 0, 'Minified output can be re-minified (idempotent-ish)');
+  }
+
+  console.log('');
+
+  // =============================================
+  // Edits: findReferences
+  // =============================================
+  console.log('--- Edits: findReferences ---');
+
+  {
+    const source = `fn helper(x: f32) -> f32 { return x * 2.0; }
+fn other(y: f32) -> f32 { return helper(y) + helper(1.0); }
+@compute @workgroup_size(1) fn main() { let z = helper(3.0); }`;
+    const offset = source.indexOf('helper');
+    const r = findReferences(source, offset);
+    assert(!r.error, 'no error on valid source');
+    assert(r.references.length === 4, `found 4 references (decl + 3 calls), got ${r.references.length}`);
+    assert(r.references.filter(x => x.isWrite).length === 1, 'exactly one write (the declaration)');
+    for (const ref of r.references) {
+      assert(source.slice(ref.start, ref.end) === 'helper', 'range spells helper');
+    }
+  }
+
+  {
+    // include_declaration = false drops the decl site
+    const source = 'const PI: f32 = 3.14; fn f(r: f32) -> f32 { return PI * r; }';
+    const offset = source.indexOf('PI');
+    const withDecl = findReferences(source, offset, true);
+    const withoutDecl = findReferences(source, offset, false);
+    assert(withDecl.references.length === 2, 'with decl: 2 refs');
+    assert(withoutDecl.references.length === 1, 'without decl: 1 ref');
+    assert(withoutDecl.references[0].isWrite === false, 'remaining ref is a read');
+  }
+
+  {
+    // No symbol at offset → empty array, no error.
+    const source = 'const x: f32 = 1.0;';
+    const r = findReferences(source, 5); // space between `const` and `x`
+    assert(r.references.length === 0, 'no symbol: empty references');
+    assert(!r.error, 'no error');
+  }
+
+  {
+    // Type validation
+    assertThrows(() => findReferences(123, 0), 'findReferences(non-string) throws', TypeError);
+    assertThrows(() => findReferences('x', -1), 'findReferences(negative offset) throws', TypeError);
+    assertThrows(() => findReferences('x', 'abc'), 'findReferences(non-numeric offset) throws', TypeError);
+  }
+
+  console.log('');
+
+  // =============================================
+  // Edits: rename — function, parameter, variable, alias
+  // =============================================
+  console.log('--- Edits: rename ---');
+
+  {
+    const source = `fn helper(x: f32) -> f32 { return x * 2.0; }
+fn other(y: f32) -> f32 { return helper(y) + helper(1.0); }
+@compute @workgroup_size(1) fn main() { let z = helper(3.0); }`;
+    const r = rename(source, source.indexOf('helper'), 'scale');
+    assert(!r.error, `rename function: no error, got ${r.error}`);
+    assert(r.edits.length === 4, 'rename function: 4 edits');
+    for (const e of r.edits) {
+      assert(e.newText === 'scale', 'newText is scale');
+      assert(source.slice(e.start, e.end) === 'helper', 'range maps to helper');
+    }
+  }
+
+  {
+    // Parameter rename scopes to a single function.
+    const source = `fn first(x: f32) -> f32 { return x + 1.0; }
+fn second(x: f32) -> f32 { return x * 2.0; }`;
+    const offset = source.indexOf('x: f32) -> f32 { return x + 1.0');
+    const r = rename(source, offset, 'value');
+    assert(r.edits.length === 2, 'parameter rename: 2 edits (decl + 1 use)');
+  }
+
+  {
+    // Type alias
+    const source = 'alias Pixel = vec4f;\nfn shade() -> Pixel { return Pixel(1.0, 0.0, 0.0, 1.0); }';
+    const r = rename(source, source.indexOf('Pixel'), 'Color');
+    assert(r.edits.length === 3, 'alias rename: 3 edits');
+  }
+
+  {
+    // Invalid identifier rejected.
+    const r = rename('const v: i32 = 0;', 'const v: i32 = 0;'.indexOf('v'), 'fn');
+    assert(r.edits.length === 0, 'keyword rename: no edits');
+    assert(r.error === 'invalid identifier', 'error message');
+  }
+
+  {
+    // Symbol not found (cursor on whitespace).
+    const source = 'const x: f32 = 1.0;';
+    const r = rename(source, 5, 'y');
+    assert(r.error === 'symbol not found', 'no-symbol error');
+    assert(r.edits.length === 0, 'no edits');
+  }
+
+  console.log('');
+
+  // =============================================
+  // Edits: renameApply — full loop, rewritten source re-validates and re-minifies
+  // =============================================
+  console.log('--- Edits: renameApply ---');
+
+  {
+    const source = `struct Uniforms { time: f32 }
+@group(0) @binding(0) var<uniform> u: Uniforms;
+fn get_time(g: Uniforms) -> f32 { return g.time; }
+@compute @workgroup_size(1) fn main() { let t = get_time(u); }`;
+
+    const r = renameApply(source, source.indexOf('Uniforms {'), 'Globals');
+    assert(r.ok, `renameApply struct: ok, got ${r.error}`);
+    assert(r.edits.length === 3, 'struct rename: 3 edits (decl, var type, param type)');
+    assert(!r.source.includes('Uniforms'), 'old name gone');
+    assert((r.source.match(/Globals/g) || []).length === 3, '3 occurrences of new name');
+    // Rewritten source must still validate.
+    const v = validate(r.source);
+    assert(v.valid, 'rewritten source is valid WGSL');
+    // And minify.
+    const m = minify(r.source, { minifyWhitespace: true });
+    assert(m.errors.length === 0, 'rewritten source minifies without errors');
+  }
+
+  {
+    // On failure, renameApply echoes original source so callers can use it either way.
+    const source = 'const v: i32 = 0;';
+    const r = renameApply(source, source.indexOf('v'), 'return');
+    assert(r.ok === false, 'rename of keyword fails');
+    assert(r.source === source, 'original source echoed on failure');
+    assert(r.edits.length === 0, 'no edits on failure');
+    assert(r.error === 'invalid identifier');
+  }
+
+  {
+    // renameApply with valid local-variable rename.
+    const source = 'fn compute_total(n: i32) -> i32 { let count = n + 1; return count * 2; }';
+    const r = renameApply(source, source.indexOf('count'), 'items');
+    assert(r.ok, 'local rename ok');
+    assert(r.edits.length === 2, '2 edits: decl + use');
+    assert(r.source === 'fn compute_total(n: i32) -> i32 { let items = n + 1; return items * 2; }',
+      `unexpected source: ${r.source}`);
+  }
+
+  console.log('');
+
+  // =============================================
+  // Edits: interaction — iterative rename across multiple rounds
+  // =============================================
+  console.log('--- Edits: iterative interactions ---');
+
+  {
+    // Round 1: rename function. Round 2: rename a variable in the rewritten source.
+    let s = `fn step(x: f32) -> f32 { return x + 1.0; }
+@compute @workgroup_size(1) fn main() { let a = step(1.0); let b = step(a); }`;
+
+    const r1 = renameApply(s, s.indexOf('step'), 'advance');
+    assert(r1.ok, 'round 1 ok');
+    s = r1.source;
+    assert(s.includes('fn advance(') && !s.includes('step'), 'round 1 applied');
+
+    // Now rename a local `a` in the new source.
+    const r2 = renameApply(s, s.indexOf('a = advance'), 'first');
+    assert(r2.ok, 'round 2 ok');
+    s = r2.source;
+    assert(s.includes('let first = advance(1.0)'), 'round 2 applied to let');
+    assert(s.includes('advance(first)'), 'round 2 updated the use');
+    assert(s.includes('let b = advance(first)'), 'round 2 did not touch b');
+    // And the whole thing still validates.
+    const v = validate(s);
+    assert(v.valid, 'iteratively renamed source still valid');
   }
 
   console.log('');
