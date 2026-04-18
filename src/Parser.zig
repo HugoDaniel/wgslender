@@ -48,7 +48,7 @@ pub fn init(arena: Allocator, source: [:0]const u8, tokens: std.MultiArrayList(L
     std.debug.assert(tokens.len > 0);
 
     const scope = try arena.create(Ast.Scope);
-    scope.* = Ast.Scope.init(null);
+    scope.* = Ast.Scope.init(null, .module);
 
     return .{
         .arena = arena,
@@ -337,9 +337,15 @@ fn lookupSymbolAnyLoc(self: *const Parser, name: []const u8) ?Ast.SymbolIndex {
     return null;
 }
 
-fn pushScope(self: *Parser) !void {
+fn pushScope(self: *Parser, kind: Ast.ScopeKind) !void {
     const new_scope = try self.arena.create(Ast.Scope);
-    new_scope.* = Ast.Scope.init(self.scope);
+    new_scope.* = Ast.Scope.init(self.scope, kind);
+    // sibling_index counts same-kind children already present in the parent.
+    var sib: u32 = 0;
+    for (self.scope.children.items) |c| {
+        if (c.kind == kind) sib += 1;
+    }
+    new_scope.sibling_index = sib;
     try self.scope.children.append(self.arena, new_scope);
     self.scope = new_scope;
     try self.scopes_in_order.append(self.arena, new_scope);
@@ -904,7 +910,7 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
         decl.name = try self.declareSymbol(text, .function, flags, loc);
     }
 
-    try self.pushScope();
+    try self.pushScope(.function);
 
     _ = self.expect(.l_paren);
     if (self.currentTag() != .r_paren) {
@@ -1676,7 +1682,7 @@ fn parseStatement(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
 
 fn parseCompoundStmt(self: *Parser) !*Ast.CompoundStmt {
     _ = self.expect(.l_brace);
-    try self.pushScope();
+    try self.pushScope(.block);
     const stmt = try self.arena.create(Ast.CompoundStmt);
     stmt.* = .{ .stmts = .empty };
     while (self.currentTag() != .r_brace and self.currentTag() != .eof) {
@@ -1763,7 +1769,7 @@ fn parseSwitchStmt(self: *Parser) !*Ast.SwitchStmt {
 fn parseForStmt(self: *Parser) !*Ast.ForStmt {
     _ = self.expect(.keyword_for);
     _ = self.expect(.l_paren);
-    try self.pushScope();
+    try self.pushScope(.block);
     const node = try self.arena.create(Ast.ForStmt);
     node.* = .{ .body = undefined };
 

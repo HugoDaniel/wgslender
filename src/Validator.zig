@@ -4841,7 +4841,7 @@ test "validator: hasByteAny" {
 
 test "validator: validate empty module" {
     const allocator = std.testing.allocator;
-    var scope = Ast.Scope.init(null);
+    var scope = Ast.Scope.init(null, .module);
     var module = Ast.Module.init(&scope, "");
     const result = try validate(allocator, &module, .{});
     defer allocator.destroy(result.diagnostics);

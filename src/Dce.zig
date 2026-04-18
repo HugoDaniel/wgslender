@@ -328,7 +328,7 @@ fn parseModule(arena: Allocator, source: [:0]const u8) ?*Ast.Module {
 }
 
 test "mark: empty module" {
-    var scope = Ast.Scope.init(null);
+    var scope = Ast.Scope.init(null, .module);
     var module = Ast.Module.init(&scope, "");
     const dead = try mark(std.testing.allocator, &module);
     try std.testing.expectEqual(@as(u32, 0), dead);

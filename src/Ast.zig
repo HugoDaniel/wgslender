@@ -81,17 +81,41 @@ pub const ScopeMember = struct {
     loc: u32, // Source position for text-order scoping
 };
 
+/// Structural kind of a scope. Used by `StableId` to produce reparse-stable
+/// path segments. Kept intentionally coarse — all compound blocks (function
+/// body, if body, else body, for body, while body, loop body, loop
+/// continuing, switch case body, bare `{ }`) are `.block`. Sibling index is
+/// counted among same-kind children, so inserting a statement that does not
+/// create a scope — or one that creates a scope of a different kind — does
+/// not shift existing indices.
+pub const ScopeKind = enum(u8) {
+    /// The module root scope. Exactly one per module, no parent.
+    module,
+    /// A function scope. Holds parameters; the function body opens a child
+    /// `.block` scope.
+    function,
+    /// Any compound `{ ... }` block, including the implicit `for`-init scope.
+    block,
+};
+
 pub const Scope = struct {
     parent: ?*Scope,
     children: std.ArrayListUnmanaged(*Scope),
     members: std.StringHashMapUnmanaged(ScopeMember),
+    kind: ScopeKind,
+    /// Index among same-kind children of the parent scope. Zero for the
+    /// module scope. Populated when the scope is appended to
+    /// `parent.children`.
+    sibling_index: u32,
 
     /// Creates a new scope with the given parent (null for the root scope).
-    pub fn init(parent: ?*Scope) Scope {
+    pub fn init(parent: ?*Scope, kind: ScopeKind) Scope {
         return .{
             .parent = parent,
             .children = .empty,
             .members = .{},
+            .kind = kind,
+            .sibling_index = 0,
         };
     }
 };
@@ -963,12 +987,14 @@ test "AccessMode: string conversion" {
 }
 
 test "Scope: init with parent" {
-    var parent = Scope.init(null);
+    var parent = Scope.init(null, .module);
     try std.testing.expect(parent.parent == null);
+    try std.testing.expectEqual(ScopeKind.module, parent.kind);
 
-    var child = Scope.init(&parent);
+    var child = Scope.init(&parent, .block);
     try std.testing.expect(child.parent == &parent);
     try std.testing.expectEqual(@as(usize, 0), child.members.count());
+    try std.testing.expectEqual(ScopeKind.block, child.kind);
 }
 
 test "SymbolIndex: design avoids Go zero-value bug" {
