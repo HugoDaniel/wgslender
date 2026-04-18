@@ -140,6 +140,15 @@ fn writeIndent(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, depth: u32) A
     }
 }
 
+pub const SpanInfo = struct {
+    start: u32 = 0,
+    end: u32 = 0,
+
+    pub fn present(self: SpanInfo) bool {
+        return self.end > self.start;
+    }
+};
+
 pub const BindingInfo = struct {
     group: i32,
     binding: i32,
@@ -150,6 +159,13 @@ pub const BindingInfo = struct {
     /// Reparse-stable identifier for this binding's var symbol. See
     /// `StableId`. Empty if not computed.
     stable_id: []const u8 = "",
+    /// Byte range of the full declaration (attributes through `;`), or
+    /// an absent span if unknown.
+    decl_span: SpanInfo = .{},
+    /// Byte range of the binding's type annotation (e.g. the `Uniforms`
+    /// in `var<uniform> u: Uniforms;`), or an absent span if the
+    /// declaration has no type annotation.
+    type_span: SpanInfo = .{},
     address_space: []const u8,
     access_mode: []const u8 = "",
     typ: []const u8,
@@ -183,6 +199,9 @@ pub const FieldInfo = struct {
     /// Reparse-stable identifier for this struct member. See `StableId`.
     /// Empty if not computed.
     stable_id: []const u8 = "",
+    /// Byte range of the member's type annotation, or an absent span if
+    /// unknown.
+    type_span: SpanInfo = .{},
     typ: []const u8,
     type_mapped: []const u8,
     offset: u32,
@@ -198,6 +217,9 @@ pub const EntryPointInfo = struct {
     /// Reparse-stable identifier for this function symbol. See `StableId`.
     /// Empty if not computed.
     stable_id: []const u8 = "",
+    /// Byte range of the full function declaration (leading attributes
+    /// through the closing `}`), or an absent span if unknown.
+    decl_span: SpanInfo = .{},
     stage: []const u8,
     workgroup_size: [3]u32 = .{ 1, 1, 1 },
     has_workgroup_size: bool = false,
@@ -259,6 +281,8 @@ pub fn reflectWithRenamer(
                         error.OutOfMemory => return error.OutOfMemory,
                         error.IdTooLong => {}, // leave stable_id empty
                     }
+                    info.decl_span = spanInfoFromAst(var_decl.decl_span);
+                    if (var_decl.typ) |t| info.type_span = spanInfoFromAst(t.span());
                     try result.bindings.append(arena, info);
                 }
             },
@@ -271,6 +295,7 @@ pub fn reflectWithRenamer(
                         error.OutOfMemory => return error.OutOfMemory,
                         error.IdTooLong => {},
                     }
+                    info.decl_span = spanInfoFromAst(fn_decl.decl_span);
                     try result.entry_points.append(arena, info);
                 }
             },
@@ -278,7 +303,8 @@ pub fn reflectWithRenamer(
         }
     }
 
-    // Third pass: annotate struct-layout fields with stable IDs.
+    // Third pass: annotate struct-layout fields with stable IDs and
+    // the byte span of their type annotations.
     for (module.declarations.items) |decl| switch (decl) {
         .@"struct" => |st| {
             const name = lc.getSymbolName(st.name);
@@ -293,12 +319,17 @@ pub fn reflectWithRenamer(
                     error.OutOfMemory => return error.OutOfMemory,
                     error.IdTooLong => {},
                 }
+                f.type_span = spanInfoFromAst(m.typ.span());
             }
         },
         else => {},
     };
 
     return result;
+}
+
+fn spanInfoFromAst(span: Ast.Span) SpanInfo {
+    return .{ .start = span.start, .end = span.end };
 }
 
 // =========================================================================
@@ -1020,6 +1051,23 @@ fn appendJsonStr(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, s: []const 
     try buf.append(arena, '"');
 }
 
+fn writeSpanField(
+    buf: *std.ArrayListUnmanaged(u8),
+    arena: Allocator,
+    name: []const u8,
+    span: SpanInfo,
+) Allocator.Error!void {
+    if (!span.present()) return;
+    try buf.append(arena, ',');
+    try buf.append(arena, '"');
+    try appendStr(buf, arena, name);
+    try appendStr(buf, arena, "\":{\"start\":");
+    try appendInt(buf, arena, span.start);
+    try appendStr(buf, arena, ",\"end\":");
+    try appendInt(buf, arena, span.end);
+    try appendStr(buf, arena, "}");
+}
+
 fn writeBindingJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, b: *const BindingInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"group\":");
     try appendInt(buf, arena, b.group);
@@ -1035,6 +1083,8 @@ fn writeBindingJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, b: *cons
         try appendStr(buf, arena, ",\"stableId\":");
         try appendJsonStr(buf, arena, b.stable_id);
     }
+    try writeSpanField(buf, arena, "declSpan", b.decl_span);
+    try writeSpanField(buf, arena, "typeSpan", b.type_span);
     try appendStr(buf, arena, ",\"addressSpace\":");
     try appendJsonStr(buf, arena, b.address_space);
     if (b.access_mode.len > 0) {
@@ -1080,6 +1130,7 @@ fn writeFieldInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, f: *co
         try appendStr(buf, arena, ",\"stableId\":");
         try appendJsonStr(buf, arena, f.stable_id);
     }
+    try writeSpanField(buf, arena, "typeSpan", f.type_span);
     try appendStr(buf, arena, ",\"type\":");
     try appendJsonStr(buf, arena, f.typ);
     try appendStr(buf, arena, ",\"typeMapped\":");
@@ -1138,6 +1189,7 @@ fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, ep: *
         try appendStr(buf, arena, ",\"stableId\":");
         try appendJsonStr(buf, arena, ep.stable_id);
     }
+    try writeSpanField(buf, arena, "declSpan", ep.decl_span);
     try appendStr(buf, arena, ",\"stage\":");
     try appendJsonStr(buf, arena, ep.stage);
     if (ep.has_workgroup_size) {

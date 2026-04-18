@@ -104,6 +104,12 @@ export interface ReflectResult {
   errors: string[];
 }
 
+/** A half-open byte range `[start, end)` into the original source. */
+export interface Span {
+  start: number;
+  end: number;
+}
+
 /**
  * Information about a binding variable.
  */
@@ -119,6 +125,17 @@ export interface BindingInfo {
    * produced an ID; survives reparses that don't move the declaration.
    */
   stableId?: string;
+  /**
+   * Byte range of the full declaration (attributes through `;`).
+   * Present when the span was captured at parse time.
+   */
+  declSpan?: Span;
+  /**
+   * Byte range of just the type annotation (e.g., the `Uniforms` in
+   * `var<uniform> u: Uniforms;`). Omitted when the declaration has no
+   * explicit type.
+   */
+  typeSpan?: Span;
   /** Address space: "uniform", "storage", "handle", or "" */
   addressSpace: string;
   /** Access mode for storage: "read", "write", "read_write", or undefined */
@@ -149,6 +166,8 @@ export interface FieldInfo {
   name: string;
   /** Reparse-stable identifier for this field. */
   stableId?: string;
+  /** Byte range of just the member's type annotation. */
+  typeSpan?: Span;
   /** Field type as a string */
   type: string;
   /** Byte offset from start of struct */
@@ -169,6 +188,11 @@ export interface EntryPointInfo {
   name: string;
   /** Reparse-stable identifier for this function symbol. */
   stableId?: string;
+  /**
+   * Byte range of the full function declaration (leading attributes
+   * through the closing `}`).
+   */
+  declSpan?: Span;
   /** Shader stage: "vertex", "fragment", or "compute" */
   stage: string;
   /** Workgroup size [x, y, z] for compute, null otherwise */
