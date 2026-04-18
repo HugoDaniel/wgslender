@@ -30,6 +30,7 @@ pub const WasmBinary = @import("WasmBinary.zig");
 pub const Edits = @import("Edits.zig");
 pub const StableId = @import("StableId.zig");
 pub const Cst = @import("Cst.zig");
+pub const CstLower = @import("CstLower.zig");
 pub const Incremental = @import("Incremental.zig");
 
 test {
@@ -371,6 +372,7 @@ test "analyze: const_values populated" {
 comptime {
     _ = Ast;
     _ = AstVisit;
+    _ = CstLower;
     _ = Lexer;
     _ = Parser;
     _ = Renamer;
