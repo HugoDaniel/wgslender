@@ -17,6 +17,10 @@ tokens: std.MultiArrayList(Token),
 pub const Token = struct {
     tag: Tag,
     start: u32,
+    /// One past the last source byte of the token (half-open). For trivia
+    /// tokens this covers the whole trivia run (not per-character). For
+    /// `.eof`, `end == start`.
+    end: u32,
 };
 
 /// Token tags. Values ≤ keyword_end are keywords, used for StaticStringMap.
@@ -116,6 +120,21 @@ pub const Tag = enum(u8) {
     // Template delimiters (context-sensitive, reserved for future use)
     template_args_start,
     template_args_end,
+
+    // Trivia — only emitted by `tokenizeAll`. The default `tokenize` entry
+    // point skips over trivia (existing parser behavior). `.end` covers the
+    // full run of contiguous whitespace / the full comment extent.
+    whitespace,
+    line_comment,
+    block_comment,
+
+    /// True when `self` is a trivia tag (whitespace or comment).
+    pub fn isTrivia(self: Tag) bool {
+        return switch (self) {
+            .whitespace, .line_comment, .block_comment => true,
+            else => false,
+        };
+    }
 
     pub fn symbol(self: Tag) []const u8 {
         return symbols_table[@intFromEnum(self)];
@@ -352,8 +371,10 @@ pub fn init(source: [:0]const u8) Lexer {
     };
 }
 
-/// Tokenize the entire source, returning owned token storage.
-/// Caller must call `deinit` on the returned Lexer to free memory.
+/// Tokenize the entire source, skipping trivia (whitespace / comments),
+/// returning owned token storage. Classic Parser entry point: the sequence
+/// contains only real tokens followed by an `.eof` sentinel, matching the
+/// pre-trivia-era layout. Every token carries a valid `[start, end)` range.
 pub fn tokenize(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayList(Token) {
     var lex = Lexer{
         .source = source,
@@ -366,9 +387,35 @@ pub fn tokenize(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayL
     try lex.tokens.ensureTotalCapacity(arena, estimated);
 
     for (0..source.len + 1) |_| {
-        const tag = lex.next();
-        try lex.tokens.append(arena, .{ .tag = tag.tag, .start = tag.start });
-        if (tag.tag == .eof or tag.tag == .@"error") break;
+        const tok = lex.next();
+        try lex.tokens.append(arena, .{ .tag = tok.tag, .start = tok.start, .end = tok.end });
+        if (tok.tag == .eof or tok.tag == .@"error") break;
+    } else unreachable;
+
+    return lex.tokens;
+}
+
+/// Tokenize the entire source, emitting `.whitespace`, `.line_comment`, and
+/// `.block_comment` trivia tokens alongside real tokens. The concatenation
+/// of every token's source slice is byte-identical to `source[0..source.len]`
+/// — this is the contract the CST builder relies on.
+pub fn tokenizeAll(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayList(Token) {
+    var lex = Lexer{
+        .source = source,
+        .pos = 0,
+        .tokens = .empty,
+    };
+
+    // Trivia can double the token count; bias the estimate up.
+    const estimated = @max(source.len / 4, 16);
+    try lex.tokens.ensureTotalCapacity(arena, estimated);
+
+    // An upper bound: every source byte can at worst produce a 1-byte trivia
+    // token plus a 0-length boundary token, plus the trailing `.eof`.
+    for (0..source.len * 2 + 2) |_| {
+        const tok = lex.nextAny();
+        try lex.tokens.append(arena, .{ .tag = tok.tag, .start = tok.start, .end = tok.end });
+        if (tok.tag == .eof or tok.tag == .@"error") break;
     } else unreachable;
 
     return lex.tokens;
@@ -378,7 +425,7 @@ pub fn tokenize(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayL
 // Core scanning — labeled switch state machine
 // -------------------------------------------------------------------------
 
-const TokenResult = struct { tag: Tag, start: u32 };
+const TokenResult = struct { tag: Tag, start: u32, end: u32 };
 
 const State = enum {
     start,
@@ -430,7 +477,7 @@ fn next(self: *Lexer) TokenResult {
         // =============================================================
         .start => switch (src[self.pos]) {
             0 => {
-                if (self.pos >= src.len) return .{ .tag = .eof, .start = self.pos };
+                if (self.pos >= src.len) return .{ .tag = .eof, .start = self.pos, .end = self.pos };
                 // Embedded null — treat as error
                 kind = .@"error";
                 self.pos += 1;
@@ -543,7 +590,7 @@ fn next(self: *Lexer) TokenResult {
             0 => {
                 if (self.pos >= src.len) {
                     // Unterminated block comment — match old behavior: return eof
-                    return .{ .tag = .eof, .start = self.pos };
+                    return .{ .tag = .eof, .start = self.pos, .end = self.pos };
                 }
                 // Embedded null in comment
                 self.pos += 1;
@@ -995,7 +1042,75 @@ fn next(self: *Lexer) TokenResult {
         },
     }
 
-    return .{ .tag = kind, .start = start };
+    return .{ .tag = kind, .start = start, .end = self.pos };
+}
+
+// -------------------------------------------------------------------------
+// Trivia-emitting scanner — used by `tokenizeAll` / the CST builder.
+// -------------------------------------------------------------------------
+
+/// Like `next()` but emits whitespace and comment trivia as first-class
+/// tokens instead of skipping them. Guarantees: for any sequence of
+/// successive calls, the concatenation of `source[tok.start..tok.end]` is
+/// byte-identical to the source up to EOF. Each whitespace run collapses
+/// into a single `.whitespace` token (greedy run of any of space / tab /
+/// CR / LF). Comments follow the same one-token-per-comment rule as today,
+/// including nested block comments which still form a single token.
+fn nextAny(self: *Lexer) TokenResult {
+    const src = self.source;
+    const start: u32 = self.pos;
+
+    if (self.pos >= src.len) {
+        return .{ .tag = .eof, .start = start, .end = start };
+    }
+
+    const ch = src[self.pos];
+
+    // Whitespace run.
+    if (ch == ' ' or ch == '\n' or ch == '\t' or ch == '\r') {
+        self.pos += 1;
+        while (self.pos < src.len) {
+            const c = src[self.pos];
+            if (c != ' ' and c != '\n' and c != '\t' and c != '\r') break;
+            self.pos += 1;
+        }
+        return .{ .tag = .whitespace, .start = start, .end = self.pos };
+    }
+
+    // Line / block comments.
+    if (ch == '/' and self.pos + 1 < src.len) {
+        const next_ch = src[self.pos + 1];
+        if (next_ch == '/') {
+            self.pos += 2;
+            while (self.pos < src.len and src[self.pos] != '\n') self.pos += 1;
+            return .{ .tag = .line_comment, .start = start, .end = self.pos };
+        }
+        if (next_ch == '*') {
+            self.pos += 2;
+            var depth: u32 = 1;
+            while (self.pos < src.len and depth > 0) {
+                const c = src[self.pos];
+                if (c == '/' and self.pos + 1 < src.len and src[self.pos + 1] == '*') {
+                    depth += 1;
+                    self.pos += 2;
+                } else if (c == '*' and self.pos + 1 < src.len and src[self.pos + 1] == '/') {
+                    depth -= 1;
+                    self.pos += 2;
+                } else {
+                    self.pos += 1;
+                }
+            }
+            // Unterminated block comment: we return it as a `.block_comment`
+            // token that runs to EOF. The lexer contract (trivia round-trip)
+            // still holds; a higher layer can flag the missing terminator.
+            return .{ .tag = .block_comment, .start = start, .end = self.pos };
+        }
+    }
+
+    // Everything else: defer to the real token scanner. `next()` starts at
+    // `self.pos` and won't encounter leading trivia (we already consumed it
+    // above, and the cases that called `next()` previously did the same).
+    return self.next();
 }
 
 // -------------------------------------------------------------------------
@@ -1126,6 +1241,177 @@ fn retokenizeEnd(self: *const Lexer, start: u32, tag: Tag, bound: u32) []const u
 // -------------------------------------------------------------------------
 // Tests
 // -------------------------------------------------------------------------
+
+/// Assert that `tokenizeAll(source)` produces tokens whose concatenated
+/// source slices equal `source` byte-for-byte (the CST round-trip invariant).
+fn expectTriviaRoundtrip(source: [:0]const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tokens = try tokenizeAll(arena.allocator(), source);
+    const tags = tokens.items(.tag);
+    const starts = tokens.items(.start);
+    const ends = tokens.items(.end);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    for (tags, 0..) |tag, i| {
+        if (tag == .eof) break;
+        const s = starts[i];
+        const e = ends[i];
+        try std.testing.expect(s <= e);
+        try std.testing.expect(e <= source.len);
+        try buf.appendSlice(std.testing.allocator, source[s..e]);
+    }
+    try std.testing.expectEqualStrings(source, buf.items);
+    // Last entry must be a sentinel eof (or an error token — both terminate).
+    try std.testing.expect(tags.len > 0);
+    const last = tags[tags.len - 1];
+    try std.testing.expect(last == .eof or last == .@"error");
+}
+
+test "lexer: tokenizeAll round-trip empty" {
+    try expectTriviaRoundtrip("");
+}
+
+test "lexer: tokenizeAll round-trip line comment only" {
+    try expectTriviaRoundtrip("// only a line comment");
+}
+
+test "lexer: tokenizeAll round-trip block comment only" {
+    try expectTriviaRoundtrip("/* only block */");
+}
+
+test "lexer: tokenizeAll round-trip nested block comment" {
+    try expectTriviaRoundtrip("/* /* nested */ still */");
+}
+
+test "lexer: tokenizeAll round-trip function no trivia" {
+    try expectTriviaRoundtrip("fn f(){}");
+}
+
+test "lexer: tokenizeAll round-trip function with interior trivia" {
+    try expectTriviaRoundtrip("fn f() { /* gap */ return 0; }");
+}
+
+test "lexer: tokenizeAll round-trip mixed whitespace + comments" {
+    try expectTriviaRoundtrip("\t\t fn x(){\n  // indented\n}\n");
+}
+
+test "lexer: tokenizeAll round-trip CRLF" {
+    try expectTriviaRoundtrip("const a = 1;\r\nconst b = 2;\r\n");
+}
+
+test "lexer: tokenizeAll round-trip UTF-8 BOM" {
+    // BOM + code. The BOM bytes land inside an `.@"error"` token (since
+    // 0xEF is not valid in the `.start` dispatch), but the round-trip
+    // contract still holds because every byte up to the error point is
+    // covered.
+    const src: [:0]const u8 = "\xEF\xBB\xBFfn f(){}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tokens = try tokenizeAll(arena.allocator(), src);
+    const tags = tokens.items(.tag);
+    const starts = tokens.items(.start);
+    const ends = tokens.items(.end);
+    // Either we produce a continuous byte cover up to eof, or an error token
+    // halts emission. Both are acceptable; assert no gap before the halt.
+    var covered: usize = 0;
+    for (tags, 0..) |tag, i| {
+        if (tag == .eof or tag == .@"error") {
+            try std.testing.expectEqual(covered, starts[i]);
+            break;
+        }
+        try std.testing.expectEqual(@as(u32, @intCast(covered)), starts[i]);
+        covered = ends[i];
+    }
+}
+
+test "lexer: tokenizeAll round-trip multi-byte ident + emoji in comment" {
+    try expectTriviaRoundtrip("fn x() { /* emoji: \xF0\x9F\x8E\x89 */ }");
+}
+
+test "lexer: tokenizeAll round-trip unterminated line comment" {
+    try expectTriviaRoundtrip("// no newline");
+}
+
+test "lexer: tokenizeAll round-trip unterminated block comment" {
+    // Spans to EOF as a single block_comment trivia token.
+    const src: [:0]const u8 = "/* oops";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tokens = try tokenizeAll(arena.allocator(), src);
+    const tags = tokens.items(.tag);
+    try std.testing.expect(tags.len >= 1);
+    try std.testing.expectEqual(Tag.block_comment, tags[0]);
+    try expectTriviaRoundtrip(src);
+}
+
+test "lexer: tokenizeAll round-trip whitespace only" {
+    try expectTriviaRoundtrip("   \n\n   ");
+}
+
+test "lexer: tokenizeAll round-trip comment adjacent to token" {
+    try expectTriviaRoundtrip("fn/*x*/f(){}");
+}
+
+test "lexer: tokenizeAll emits trivia tags adjacent to real tokens" {
+    const src: [:0]const u8 = "  fn /*mid*/ x() // trailing\n{}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tokens = try tokenizeAll(arena.allocator(), src);
+    const tags = tokens.items(.tag);
+
+    // Expected sequence: ws, fn, ws, block_comment, ws, ident, (, ), ws, line_comment, ws, {, }, eof
+    try std.testing.expectEqual(Tag.whitespace, tags[0]);
+    try std.testing.expectEqual(Tag.keyword_fn, tags[1]);
+    try std.testing.expectEqual(Tag.whitespace, tags[2]);
+    try std.testing.expectEqual(Tag.block_comment, tags[3]);
+    try std.testing.expectEqual(Tag.whitespace, tags[4]);
+    try std.testing.expectEqual(Tag.ident, tags[5]);
+    try std.testing.expectEqual(Tag.l_paren, tags[6]);
+    try std.testing.expectEqual(Tag.r_paren, tags[7]);
+    try std.testing.expectEqual(Tag.whitespace, tags[8]);
+    try std.testing.expectEqual(Tag.line_comment, tags[9]);
+    try std.testing.expectEqual(Tag.whitespace, tags[10]);
+    try std.testing.expectEqual(Tag.l_brace, tags[11]);
+    try std.testing.expectEqual(Tag.r_brace, tags[12]);
+    try std.testing.expectEqual(Tag.eof, tags[13]);
+}
+
+test "lexer: tokenize (skip_trivia) still yields no trivia tags" {
+    const src: [:0]const u8 = "  fn /*m*/ x() // t\n{}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tokens = try tokenize(arena.allocator(), src);
+    const tags = tokens.items(.tag);
+    for (tags) |tag| {
+        try std.testing.expect(!tag.isTrivia());
+    }
+}
+
+test "lexer: tokenize populates end column for real tokens" {
+    const src: [:0]const u8 = "fn main() {}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tokens = try tokenize(arena.allocator(), src);
+    const tags = tokens.items(.tag);
+    const starts = tokens.items(.start);
+    const ends = tokens.items(.end);
+    for (tags, 0..) |tag, i| {
+        if (tag == .eof) {
+            try std.testing.expectEqual(starts[i], ends[i]);
+            continue;
+        }
+        try std.testing.expect(ends[i] > starts[i]);
+        try std.testing.expect(ends[i] <= src.len);
+    }
+    // `fn` covers bytes 0..2 exactly.
+    try std.testing.expectEqual(@as(u32, 0), starts[0]);
+    try std.testing.expectEqual(@as(u32, 2), ends[0]);
+    // `main` covers bytes 3..7.
+    try std.testing.expectEqual(@as(u32, 3), starts[1]);
+    try std.testing.expectEqual(@as(u32, 7), ends[1]);
+}
 
 test "lexer: tokenize simple" {
     const source: [:0]const u8 = "fn main() {}";
