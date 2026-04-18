@@ -61,18 +61,42 @@ test "incremental sync: multi-line edit" {
     try std.testing.expectEqualStrings("fn f() {\n  let x = 1;\n  let y = 2;\n}", source);
 }
 
-test "incremental sync: invalidates analysis cache" {
+test "incremental sync: semantic edit invalidates analysis cache" {
     const ctx = try setup("fn f() {}");
     defer teardown(ctx);
     _ = try ctx.handler.analyzeDocument("test://file.wgsl");
     const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
     try std.testing.expect(doc.analysis != null);
+    // Insert a new declaration — the non-trivia token stream changes, so
+    // the handler must invalidate the cache.
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = 0 },
+    }, "const X = 1;\n");
+    const doc2 = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expect(doc2.analysis == null);
+}
+
+test "incremental sync: trivia-only edit keeps analysis cache hot" {
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    const before = try ctx.handler.analyzeDocument("test://file.wgsl");
+    const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expect(doc.analysis != null);
+
+    // Insert a line comment + newline at the top — no non-trivia tokens
+    // change, so the cached analysis must survive.
     try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
         .end = .{ .line = 0, .character = 0 },
     }, "// comment\n");
+
     const doc2 = ctx.handler.documents.getPtr("test://file.wgsl").?;
-    try std.testing.expect(doc2.analysis == null);
+    try std.testing.expect(doc2.analysis != null);
+    // The cached pointer is unchanged.
+    try std.testing.expectEqual(before, doc2.analysis.?);
+    // Source was updated.
+    try std.testing.expectEqualStrings("// comment\nfn f() {}", doc2.source);
 }
 
 test "incremental sync: edit at start of file" {

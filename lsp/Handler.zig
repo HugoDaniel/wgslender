@@ -2500,23 +2500,67 @@ fn getIntArg(attr: Ast.Attribute) ?i32 {
 
 /// Apply an incremental text change to an open document.
 /// The range specifies which portion of the source to replace.
+///
+/// Fast path: if the edit only affects trivia (whitespace / comments),
+/// the cached `AnalysisResult` is left in place — the source bytes are
+/// updated but no validator work is scheduled. Semantic edits fall back
+/// to the classic invalidate-and-reanalyze behavior.
 pub fn changeDocumentIncremental(self: *Handler, uri: []const u8, range: Range, text: []const u8) !void {
-    self.invalidateAnalysis(uri);
     const doc = self.documents.getPtr(uri) orelse return;
-    const source = doc.source;
+    const old_source = doc.source;
 
-    const start = lspPositionToOffset(source, range.start) orelse return;
-    const end = lspPositionToOffset(source, range.end) orelse return;
-    if (end < start) return;
+    const start = lspPositionToOffset(old_source, range.start) orelse {
+        self.invalidateAnalysis(uri);
+        return;
+    };
+    const end = lspPositionToOffset(old_source, range.end) orelse {
+        self.invalidateAnalysis(uri);
+        return;
+    };
+    if (end < start) {
+        self.invalidateAnalysis(uri);
+        return;
+    }
 
     // Build new source: source[0..start] ++ text ++ source[end..]
-    const new_len = start + text.len + (source.len - end);
+    const new_len = start + text.len + (old_source.len - end);
     const new_source = try self.gpa.alloc(u8, new_len);
-    @memcpy(new_source[0..start], source[0..start]);
+    errdefer self.gpa.free(new_source);
+    @memcpy(new_source[0..start], old_source[0..start]);
     @memcpy(new_source[start..][0..text.len], text);
-    @memcpy(new_source[start + text.len ..], source[end..]);
-    self.gpa.free(doc.source);
-    doc.source = new_source;
+    @memcpy(new_source[start + text.len ..], old_source[end..]);
+
+    // Classify before swapping: if non-trivia tokens didn't change, the
+    // cached analysis is still correct against the new source (analysis
+    // holds its own sentinel-terminated source copy and AST byte offsets
+    // remain valid because they index into `doc.analysis_source`, not
+    // `doc.source`). Just swap buffers.
+    const old_z = self.gpa.dupeZ(u8, old_source) catch null;
+    defer if (old_z) |z| self.gpa.free(z);
+    const new_z = self.gpa.dupeZ(u8, new_source) catch null;
+    defer if (new_z) |z| self.gpa.free(z);
+
+    const classification: wgslender.Incremental.EditKind = blk: {
+        if (old_z == null or new_z == null) break :blk .semantic;
+        break :blk wgslender.Incremental.classifyEdit(self.gpa, old_z.?, new_z.?) catch .semantic;
+    };
+
+    switch (classification) {
+        .no_op => {
+            // Textually identical — discard the (byte-identical) new buffer.
+            self.gpa.free(new_source);
+        },
+        .trivia_only => {
+            // Keep the cached analysis; just swap in the new source bytes.
+            self.gpa.free(doc.source);
+            doc.source = new_source;
+        },
+        .semantic => {
+            self.invalidateAnalysis(uri);
+            self.gpa.free(doc.source);
+            doc.source = new_source;
+        },
+    }
 }
 
 // =========================================================================
