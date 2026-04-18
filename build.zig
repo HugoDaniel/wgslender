@@ -173,6 +173,8 @@ pub fn build(b: *std.Build) void {
     // Declaration / type span tests — spans on AST, removeDeclarationEdit,
     // changeTypeEdit, locateDeclaration, locateType.
     _ = addTestStep(b, test_step, "tests/decl_span_test.zig", target, optimize, &.{w});
+    // Incremental.reparse — bulk corpus over compute.toys + composition.
+    _ = addTestStep(b, test_step, "tests/incremental_corpus_test.zig", target, optimize, &.{w});
     // Semantic tests
     const sd: std.Build.Module.Import = .{ .name = "semantic_data", .module = semantic_data_mod };
     _ = addTestStep(b, test_step, "tests/compute_toys_test.zig", target, optimize, &.{ w, sd });
