@@ -1905,7 +1905,43 @@ fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
 // Statements
 // =========================================================================
 
+fn stmtCstKind(stmt: Ast.Stmt) Cst.Kind {
+    return switch (stmt) {
+        .compound => .compound_stmt,
+        .@"return" => .return_stmt,
+        .@"if" => .if_stmt,
+        .@"switch" => .switch_stmt,
+        .@"for" => .for_stmt,
+        .@"while" => .while_stmt,
+        .loop => .loop_stmt,
+        .@"break" => .break_stmt,
+        .break_if => .break_if_stmt,
+        .@"continue" => .continue_stmt,
+        .discard => .discard_stmt,
+        .assign => .assign_stmt,
+        .incr_decr => .incr_decr_stmt,
+        .call => .call_stmt,
+        .decl => .decl_stmt,
+    };
+}
+
 fn parseStatement(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
+    // Compound statements open their own CST marker inside `parseCompoundStmt`;
+    // don't nest a second one here.
+    if (self.currentTag() == .l_brace) {
+        return .{ .compound = try self.parseCompoundStmt() };
+    }
+    const marker = self.cstOpen();
+    const parsed = try self.parseStatementInner();
+    if (parsed) |s| {
+        self.cstClose(marker, stmtCstKind(s));
+    } else {
+        self.cstClose(marker, .error_tree);
+    }
+    return parsed;
+}
+
+fn parseStatementInner(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
     switch (self.currentTag()) {
         .l_brace => return .{ .compound = try self.parseCompoundStmt() },
         .keyword_return => return .{ .@"return" = try self.parseReturnStmt() },
@@ -1959,6 +1995,7 @@ fn parseStatement(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
 }
 
 fn parseCompoundStmt(self: *Parser) !*Ast.CompoundStmt {
+    const marker = self.cstOpen();
     _ = self.expect(.l_brace);
     try self.pushScope(.block);
     const stmt = try self.arena.create(Ast.CompoundStmt);
@@ -1970,6 +2007,7 @@ fn parseCompoundStmt(self: *Parser) !*Ast.CompoundStmt {
     }
     self.popScope();
     _ = self.expect(.r_brace);
+    self.cstClose(marker, .compound_stmt);
     return stmt;
 }
 
@@ -3766,6 +3804,67 @@ test "cst shadow: AST path unchanged — init without builder still works" {
     const module = try parser.parse();
     try std.testing.expectEqual(@as(usize, 1), module.declarations.items.len);
     try std.testing.expectEqual(@as(?*Cst.Builder, null), parser.cst);
+}
+
+test "cst shadow: statements emit their specific kinds" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\    let x = 1;
+        \\    if x > 0 { return; } else { discard; }
+        \\    for (var i = 0; i < 4; i = i + 1) {}
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var all_tokens = try Lexer.tokenizeAll(alloc, source);
+    const stream = try TokenStream.init(alloc, &all_tokens);
+
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+
+    var parser = try Parser.initWithCst(alloc, source, stream, &builder);
+    _ = try parser.parse();
+
+    var tree = try builder.finish(alloc, all_tokens, source);
+
+    // Walk the tree collecting every distinct kind we see. Must include at
+    // least: module, fn_decl, compound_stmt, decl_stmt, if_stmt, return_stmt,
+    // discard_stmt, for_stmt.
+    var seen: std.AutoArrayHashMapUnmanaged(Cst.Kind, void) = .empty;
+    defer seen.deinit(std.testing.allocator);
+
+    const Walker = struct {
+        tree: *const Cst.Tree,
+        seen: *std.AutoArrayHashMapUnmanaged(Cst.Kind, void),
+        alloc: std.mem.Allocator,
+
+        fn walk(self: @This(), n: Cst.NodeIndex) !void {
+            const node = self.tree.getNode(n);
+            _ = try self.seen.getOrPut(self.alloc, node.kind);
+            for (self.tree.childrenOf(n)) |el| {
+                if (el.asNode()) |c| try self.walk(c);
+            }
+        }
+    };
+    try (Walker{ .tree = &tree, .seen = &seen, .alloc = std.testing.allocator }).walk(tree.root());
+
+    for (&[_]Cst.Kind{
+        .module,
+        .fn_decl,
+        .compound_stmt,
+        .decl_stmt,
+        .if_stmt,
+        .return_stmt,
+        .discard_stmt,
+        .for_stmt,
+    }) |k| {
+        if (!seen.contains(k)) {
+            std.debug.print("missing CST kind in tree: {any}\n", .{k});
+            return error.TestExpectedKindMissing;
+        }
+    }
 }
 
 test "cst shadow: compute.toys sample round-trip" {
