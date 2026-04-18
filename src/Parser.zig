@@ -875,6 +875,7 @@ fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
 }
 
 fn parseEnableDirective(self: *Parser) !Ast.Directive {
+    const dir_start = self.currentStart();
     _ = self.expect(.keyword_enable);
     var features: std.ArrayListUnmanaged([]const u8) = .empty;
     for (0..self.token_tags.len) |_| {
@@ -885,10 +886,14 @@ fn parseEnableDirective(self: *Parser) !Ast.Directive {
         if (!self.eat(.comma)) break;
     } else unreachable;
     _ = self.expect(.semicolon);
-    return .{ .enable = .{ .features = features } };
+    return .{ .enable = .{
+        .features = features,
+        .span = .{ .start = dir_start, .end = self.prevTokenEnd() },
+    } };
 }
 
 fn parseRequiresDirective(self: *Parser) !Ast.Directive {
+    const dir_start = self.currentStart();
     _ = self.expect(.keyword_requires);
     var features: std.ArrayListUnmanaged([]const u8) = .empty;
     for (0..self.token_tags.len) |_| {
@@ -899,10 +904,14 @@ fn parseRequiresDirective(self: *Parser) !Ast.Directive {
         if (!self.eat(.comma)) break;
     } else unreachable;
     _ = self.expect(.semicolon);
-    return .{ .requires = .{ .features = features } };
+    return .{ .requires = .{
+        .features = features,
+        .span = .{ .start = dir_start, .end = self.prevTokenEnd() },
+    } };
 }
 
 fn parseDiagnosticDirective(self: *Parser) !Ast.Directive {
+    const dir_start = self.currentStart();
     _ = self.expect(.keyword_diagnostic);
     _ = self.expect(.l_paren);
     const severity = if (self.currentTag() == .ident) blk: {
@@ -918,7 +927,11 @@ fn parseDiagnosticDirective(self: *Parser) !Ast.Directive {
     } else "";
     _ = self.expect(.r_paren);
     _ = self.expect(.semicolon);
-    return .{ .diagnostic = .{ .severity = severity, .rule = rule } };
+    return .{ .diagnostic = .{
+        .severity = severity,
+        .rule = rule,
+        .span = .{ .start = dir_start, .end = self.prevTokenEnd() },
+    } };
 }
 
 fn parseDeclaration(self: *Parser) !?Ast.Decl {
@@ -1931,14 +1944,39 @@ fn parseStatement(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
     if (self.currentTag() == .l_brace) {
         return .{ .compound = try self.parseCompoundStmt() };
     }
+    const stmt_start = self.currentStart();
     const marker = self.cstOpen();
     const parsed = try self.parseStatementInner();
     if (parsed) |s| {
         self.cstClose(marker, stmtCstKind(s));
+        setStmtSpan(s, .{ .start = stmt_start, .end = self.prevTokenEnd() });
     } else {
         self.cstClose(marker, .error_tree);
     }
     return parsed;
+}
+
+/// Write `span` onto whichever concrete Stmt struct backs the union. A
+/// thin switch so every variant stays in lock-step when new stmt kinds
+/// are added (compile-time exhaustive).
+fn setStmtSpan(stmt: Ast.Stmt, span: Ast.Span) void {
+    switch (stmt) {
+        .compound => |s| s.span = span,
+        .@"return" => |s| s.span = span,
+        .@"if" => |s| s.span = span,
+        .@"switch" => |s| s.span = span,
+        .@"for" => |s| s.span = span,
+        .@"while" => |s| s.span = span,
+        .loop => |s| s.span = span,
+        .@"break" => |s| s.span = span,
+        .break_if => |s| s.span = span,
+        .@"continue" => |s| s.span = span,
+        .discard => |s| s.span = span,
+        .assign => |s| s.span = span,
+        .incr_decr => |s| s.span = span,
+        .call => |s| s.span = span,
+        .decl => |s| s.span = span,
+    }
 }
 
 fn parseStatementInner(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
@@ -1995,6 +2033,7 @@ fn parseStatementInner(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stm
 }
 
 fn parseCompoundStmt(self: *Parser) !*Ast.CompoundStmt {
+    const span_start = self.currentStart();
     const marker = self.cstOpen();
     _ = self.expect(.l_brace);
     try self.pushScope(.block);
@@ -2008,6 +2047,7 @@ fn parseCompoundStmt(self: *Parser) !*Ast.CompoundStmt {
     self.popScope();
     _ = self.expect(.r_brace);
     self.cstClose(marker, .compound_stmt);
+    stmt.span = .{ .start = span_start, .end = self.prevTokenEnd() };
     return stmt;
 }
 
@@ -3864,6 +3904,66 @@ test "cst shadow: statements emit their specific kinds" {
             std.debug.print("missing CST kind in tree: {any}\n", .{k});
             return error.TestExpectedKindMissing;
         }
+    }
+}
+
+test "stmt spans: populated for every statement kind" {
+    const source: [:0]const u8 =
+        \\fn f() {
+        \\    let x = 1;
+        \\    x = x + 1;
+        \\    x++;
+        \\    if x > 0 { return; } else { discard; }
+        \\    while false { break; }
+        \\    for (var i = 0; i < 2; i = i + 1) { continue; }
+        \\    loop { break if true; }
+        \\}
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const tokens = try Lexer.tokenize(arena.allocator(), source);
+    var parser = try Parser.init(arena.allocator(), source, tokens);
+    const module = try parser.parse();
+
+    const fn_decl = module.declarations.items[0].function;
+    const body = fn_decl.body.?;
+    try std.testing.expect(body.stmts.items.len > 0);
+
+    // Every stmt must have a populated, monotonically-increasing span that
+    // stays within the enclosing body.
+    var prev_end: u32 = body.span.start;
+    for (body.stmts.items) |s| {
+        const sp = s.span();
+        try std.testing.expect(sp.start >= prev_end);
+        try std.testing.expect(sp.end > sp.start);
+        try std.testing.expect(sp.end <= body.span.end);
+        prev_end = sp.end;
+    }
+
+    // Top-level body span covers `{` through `}`.
+    try std.testing.expectEqual(@as(u8, '{'), source[body.span.start]);
+    try std.testing.expectEqual(@as(u8, '}'), source[body.span.end - 1]);
+}
+
+test "directive spans: populated for each directive kind" {
+    const source: [:0]const u8 =
+        \\enable f16;
+        \\requires readonly_and_readwrite_storage_textures;
+        \\diagnostic(error, derivative_uniformity);
+    ;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const tokens = try Lexer.tokenize(arena.allocator(), source);
+    var parser = try Parser.init(arena.allocator(), source, tokens);
+    const module = try parser.parse();
+
+    try std.testing.expectEqual(@as(usize, 3), module.directives.items.len);
+    for (module.directives.items) |dir| {
+        const sp = dir.span();
+        try std.testing.expect(sp.end > sp.start);
+        try std.testing.expectEqual(@as(u8, ';'), source[sp.end - 1]);
     }
 }
 

@@ -179,19 +179,32 @@ pub const Directive = union(enum) {
     enable: EnableDirective,
     requires: RequiresDirective,
     diagnostic: DiagnosticDirective,
+
+    /// Byte-range covering the directive from its first keyword through
+    /// the terminating `;`. Populated by the parser.
+    pub fn span(self: Directive) Span {
+        return switch (self) {
+            .enable => |d| d.span,
+            .requires => |d| d.span,
+            .diagnostic => |d| d.span,
+        };
+    }
 };
 
 pub const EnableDirective = struct {
     features: std.ArrayListUnmanaged([]const u8),
+    span: Span = .empty,
 };
 
 pub const RequiresDirective = struct {
     features: std.ArrayListUnmanaged([]const u8),
+    span: Span = .empty,
 };
 
 pub const DiagnosticDirective = struct {
     severity: []const u8,
     rule: []const u8,
+    span: Span = .empty,
 };
 
 // =========================================================================
@@ -642,26 +655,52 @@ pub const Stmt = union(enum) {
     incr_decr: *IncrDecrStmt,
     call: *CallStmt,
     decl: *DeclStmt,
+
+    /// Byte-range covering the statement from its first token through the
+    /// terminator. Populated by the parser; `.empty` on error-recovery.
+    pub fn span(self: Stmt) Span {
+        return switch (self) {
+            .compound => |s| s.span,
+            .@"return" => |s| s.span,
+            .@"if" => |s| s.span,
+            .@"switch" => |s| s.span,
+            .@"for" => |s| s.span,
+            .@"while" => |s| s.span,
+            .loop => |s| s.span,
+            .@"break" => |s| s.span,
+            .break_if => |s| s.span,
+            .@"continue" => |s| s.span,
+            .discard => |s| s.span,
+            .assign => |s| s.span,
+            .incr_decr => |s| s.span,
+            .call => |s| s.span,
+            .decl => |s| s.span,
+        };
+    }
 };
 
 pub const CompoundStmt = struct {
     stmts: std.ArrayListUnmanaged(Stmt),
+    span: Span = .empty,
 };
 
 pub const ReturnStmt = struct {
     loc: u32 = 0,
     value: ?Expr = null,
+    span: Span = .empty,
 };
 
 pub const IfStmt = struct {
     condition: Expr,
     body: *CompoundStmt,
     else_branch: ?Stmt = null,
+    span: Span = .empty,
 };
 
 pub const SwitchStmt = struct {
     expr: Expr,
     cases: std.ArrayListUnmanaged(SwitchCase),
+    span: Span = .empty,
 };
 
 pub const SwitchCase = struct {
@@ -674,32 +713,39 @@ pub const ForStmt = struct {
     condition: ?Expr = null,
     update: ?Stmt = null,
     body: *CompoundStmt,
+    span: Span = .empty,
 };
 
 pub const WhileStmt = struct {
     condition: Expr,
     body: *CompoundStmt,
+    span: Span = .empty,
 };
 
 pub const LoopStmt = struct {
     body: *CompoundStmt,
     continuing: ?*CompoundStmt = null,
+    span: Span = .empty,
 };
 
 pub const BreakStmt = struct {
     loc: u32 = 0,
+    span: Span = .empty,
 };
 
 pub const BreakIfStmt = struct {
     condition: Expr,
+    span: Span = .empty,
 };
 
 pub const ContinueStmt = struct {
     loc: u32 = 0,
+    span: Span = .empty,
 };
 
 pub const DiscardStmt = struct {
     loc: u32 = 0,
+    span: Span = .empty,
 };
 
 pub const AssignStmt = struct {
@@ -707,6 +753,7 @@ pub const AssignStmt = struct {
     op: AssignOp,
     left: Expr,
     right: Expr,
+    span: Span = .empty,
 };
 
 pub const AssignOp = enum(u8) {
@@ -743,14 +790,17 @@ pub const IncrDecrStmt = struct {
     loc: u32 = 0,
     expr: Expr,
     increment: bool, // true = ++, false = --
+    span: Span = .empty,
 };
 
 pub const CallStmt = struct {
     call: *CallExpr,
+    span: Span = .empty,
 };
 
 pub const DeclStmt = struct {
     decl: Decl,
+    span: Span = .empty,
 };
 
 // =========================================================================
