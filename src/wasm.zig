@@ -575,6 +575,167 @@ fn packJsonResultAlloc(comptime literal: []const u8) Allocator.Error!?[*]u8 {
     return packJsonResult(literal);
 }
 
+// =========================================================================
+// Stable IDs (reparse-stable symbol identifiers)
+// =========================================================================
+
+const StableIdMod = wgslender.StableId;
+
+/// Resolve the byte offset to a reparse-stable identifier.
+///
+/// Output JSON:
+///   {"stableId":"v1:fn:main/block#0/let:x"}
+/// or, on parse failure or no symbol under the offset:
+///   {"stableId":null} (possibly with "error" field)
+export fn wgslender_stable_id_at_offset(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+) ?[*]u8 {
+    return stableIdAtOffsetImpl(source_ptr, source_len, offset) catch return null;
+}
+
+fn stableIdAtOffsetImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packJsonResultAlloc(
+        "{\"stableId\":null,\"error\":\"parse error\"}",
+    );
+
+    var sid_arena = std.heap.ArenaAllocator.init(wasm_allocator);
+    defer sid_arena.deinit();
+
+    const maybe_id = StableIdMod.stableIdAtOffset(sid_arena.allocator(), module, offset) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.IdTooLong => return try packJsonResultAlloc("{\"stableId\":null,\"error\":\"id too long\"}"),
+    };
+    if (maybe_id) |id| {
+        var json: std.ArrayListUnmanaged(u8) = .empty;
+        defer json.deinit(wasm_allocator);
+        try json.appendSlice(wasm_allocator, "{\"stableId\":\"");
+        try Diagnostic.appendJsonEscaped(&json, wasm_allocator, id.bytes);
+        try json.appendSlice(wasm_allocator, "\"}");
+        return packJsonResult(json.items);
+    }
+    return try packJsonResultAlloc("{\"stableId\":null}");
+}
+
+/// Resolve a stable ID to the declaration byte range in the current source.
+///
+/// Output JSON:
+///   {"start":N,"end":N}
+/// or on failure:
+///   {"start":null,"end":null,"error":"..."}
+export fn wgslender_locate_stable_id(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) ?[*]u8 {
+    return locateStableIdImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
+}
+
+fn locateStableIdImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+
+    const id_bytes = id_ptr[0..id_len];
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packJsonResultAlloc(
+        "{\"start\":null,\"end\":null,\"error\":\"parse error\"}",
+    );
+
+    if (StableIdMod.locateStableId(module, id_bytes)) |range| {
+        var json: std.ArrayListUnmanaged(u8) = .empty;
+        defer json.deinit(wasm_allocator);
+        try json.appendSlice(wasm_allocator, "{\"start\":");
+        try Diagnostic.appendInt(&json, wasm_allocator, range.start);
+        try json.appendSlice(wasm_allocator, ",\"end\":");
+        try Diagnostic.appendInt(&json, wasm_allocator, range.end);
+        try json.appendSlice(wasm_allocator, "}");
+        return packJsonResult(json.items);
+    }
+    return try packJsonResultAlloc("{\"start\":null,\"end\":null,\"error\":\"not found\"}");
+}
+
+/// Compute rename edits against a symbol identified by stable ID.
+/// Same output shape as `wgslender_rename`.
+export fn wgslender_rename_by_id(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    new_name_ptr: [*]const u8,
+    new_name_len: u32,
+) ?[*]u8 {
+    return renameByIdImpl(
+        source_ptr,
+        source_len,
+        id_ptr,
+        id_len,
+        new_name_ptr,
+        new_name_len,
+    ) catch return null;
+}
+
+fn renameByIdImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    new_name_ptr: [*]const u8,
+    new_name_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+    const id_bytes = id_ptr[0..id_len];
+    const new_name = new_name_ptr[0..new_name_len];
+
+    if (!Edits.isValidWgslIdentifier(new_name)) {
+        return try packJsonResultAlloc("{\"edits\":[],\"error\":\"invalid identifier\"}");
+    }
+
+    var analysis = wgslender.analyzeWithOptions(wasm_allocator, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    defer analysis.deinit(wasm_allocator);
+
+    const module = analysis.module orelse return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"parse error\"}",
+    );
+
+    const target = StableIdMod.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return try packJsonResultAlloc(
+        "{\"edits\":[],\"error\":\"symbol not found\"}",
+    );
+
+    const edits = (try Edits.renameEdits(wasm_allocator, module, target, new_name)) orelse
+        return try packJsonResultAlloc("{\"edits\":[],\"error\":\"invalid identifier\"}");
+    defer wasm_allocator.free(edits);
+
+    return try packEditsJson(edits, new_name);
+}
+
 /// Return the version string.
 export fn wgslender_version() [*]const u8 {
     return wgslender.version.ptr;

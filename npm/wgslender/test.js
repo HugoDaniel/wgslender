@@ -41,7 +41,11 @@ async function main() {
   console.log('wgslender WASM Node.js Test Suite\n');
 
   const wgslender = require('./lib/main.js');
-  const { initialize, minify, reflect, validate, isInitialized, findReferences, rename, renameApply } = wgslender;
+  const {
+    initialize, minify, reflect, validate, isInitialized,
+    findReferences, rename, renameApply,
+    stableIdAtOffset, locateStableId, renameByStableId,
+  } = wgslender;
 
   // =============================================
   // Initialization
@@ -564,6 +568,61 @@ fn get_time(g: Uniforms) -> f32 { return g.time; }
     // And the whole thing still validates.
     const v = validate(s);
     assert(v.valid, 'iteratively renamed source still valid');
+  }
+
+  console.log('');
+
+  // =============================================
+  // StableId: reparse-stable identifiers
+  // =============================================
+  console.log('--- StableId ---');
+
+  {
+    const src1 = `fn compute(x: f32) -> f32 { let y = x + 1.0; return y; }`;
+    const off = src1.indexOf('y =');
+    const r = stableIdAtOffset(src1, off);
+    assert(typeof r.stableId === 'string', 'stableIdAtOffset returns a string for a known offset');
+    assert(r.stableId === 'v1:fn:compute/block#0/let:y',
+      `stableId shape: got "${r.stableId}"`);
+
+    const loc = locateStableId(src1, r.stableId);
+    assert(loc.start === src1.indexOf('y ='), 'locateStableId returns the declaration start');
+    assert(loc.end === loc.start + 1, 'locateStableId returns the correct end offset');
+
+    // After an unrelated edit (comment added), the stableId still resolves.
+    const src2 = `// a comment\n` + src1;
+    const r2 = stableIdAtOffset(src2, src2.indexOf('y ='));
+    assert(r2.stableId === r.stableId,
+      `stableId is stable across whitespace/comment edits; got "${r2.stableId}"`);
+
+    // Rename by stable ID.
+    const ren = renameByStableId(src1, r.stableId, 'result');
+    assert(Array.isArray(ren.edits) && ren.edits.length >= 2,
+      'renameByStableId produces at least decl + use edits');
+    assert(!('error' in ren) || !ren.error, 'renameByStableId succeeds with valid identifier');
+
+    // Stale ID on a shader that deleted the symbol.
+    const src3 = `fn compute(x: f32) -> f32 { return x; }`;
+    const stale = stableIdAtOffset(src3, 0);
+    assert(stale.stableId !== r.stableId, 'different symbol yields different stableId');
+
+    const lostLoc = locateStableId(src3, r.stableId);
+    assert(lostLoc.start === null, 'locateStableId returns null for deleted symbol');
+
+    // Invalid version prefix rejected.
+    const bad = locateStableId(src1, 'v2:fn:compute');
+    assert(bad.start === null, 'unknown version prefix rejected');
+
+    // Reflection surfaces stable IDs.
+    const src4 = `@group(0) @binding(0) var<uniform> u: f32;
+@compute @workgroup_size(1) fn main() { let v = u; }`;
+    const reflected = reflect(src4);
+    assert(typeof reflected.bindings[0].stableId === 'string',
+      `reflect surfaces stableId on bindings; got: ${JSON.stringify(reflected.bindings[0].stableId)}`);
+    assert(reflected.bindings[0].stableId === 'v1:var:u',
+      `binding stableId shape: got "${reflected.bindings[0].stableId}"`);
+    assert(typeof reflected.entryPoints[0].stableId === 'string',
+      'reflect surfaces stableId on entry points');
   }
 
   console.log('');

@@ -270,6 +270,81 @@ function renameApply(source, offset, newName) {
 }
 
 /**
+ * Compute the reparse-stable ID for the symbol under `offset`.
+ * @param {string} source - WGSL source code
+ * @param {number} offset - Byte offset
+ * @returns {{stableId: string|null, error?: string}}
+ */
+function stableIdAtOffset(source, offset) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (!Number.isFinite(offset) || offset < 0) throw new TypeError('offset must be a non-negative number');
+
+  const src = _writeString(source);
+  const resultPtr = _wasm.wgslender_stable_id_at_offset(src.ptr, src.len, offset >>> 0);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+
+  if (!resultPtr) throw new Error('stableIdAtOffset failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
+ * Resolve a stable ID to the declaration byte range in `source`.
+ * @param {string} source - WGSL source code
+ * @param {string} stableId - Stable identifier as returned by stableIdAtOffset
+ * @returns {{start: number|null, end: number|null, error?: string}}
+ */
+function locateStableId(source, stableId) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof stableId !== 'string') throw new TypeError('stableId must be a string');
+
+  const src = _writeString(source);
+  const id = _writeString(stableId);
+  const resultPtr = _wasm.wgslender_locate_stable_id(src.ptr, src.len, id.ptr, id.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(id.ptr, id.allocLen);
+
+  if (!resultPtr) throw new Error('locateStableId failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
+ * Rename the symbol identified by stable ID. Same shape as `rename`.
+ * @param {string} source - WGSL source code
+ * @param {string} stableId - Stable identifier
+ * @param {string} newName - The new identifier name
+ * @returns {{edits: Array<{start:number,end:number,newText:string}>, error?: string}}
+ */
+function renameByStableId(source, stableId, newName) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+  if (typeof stableId !== 'string') throw new TypeError('stableId must be a string');
+  if (typeof newName !== 'string') throw new TypeError('newName must be a string');
+
+  const src = _writeString(source);
+  const id = _writeString(stableId);
+  const name = _writeString(newName);
+  const resultPtr = _wasm.wgslender_rename_by_id(
+    src.ptr, src.len,
+    id.ptr, id.len,
+    name.ptr, name.len,
+  );
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(id.ptr, id.allocLen);
+  _wasm.wgslender_dealloc(name.ptr, name.allocLen);
+
+  if (!resultPtr) throw new Error('renameByStableId failed: WASM returned null');
+  return _readResultJson(resultPtr);
+}
+
+/**
  * Check if initialized.
  * @returns {boolean}
  */
@@ -298,6 +373,9 @@ module.exports = {
   findReferences,
   rename,
   renameApply,
+  stableIdAtOffset,
+  locateStableId,
+  renameByStableId,
   isInitialized,
   get version() { return getVersion(); }
 };

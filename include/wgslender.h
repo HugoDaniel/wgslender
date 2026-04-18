@@ -133,6 +133,40 @@ WgslenderJsonResult wgslender_rename_apply_c(
     const uint8_t *new_name_ptr, uint32_t new_name_len);
 
 /**
+ * Resolve a byte offset to a reparse-stable identifier for the symbol under
+ * the cursor. Returns JSON:
+ *   {"stableId":"v1:fn:main/block#0/let:x"}
+ * or {"stableId":null} / {"stableId":null,"error":"..."} on failure.
+ * Stable IDs survive reparses and edits that do not reorder or insert a
+ * `.block` scope at or above the symbol's declaration.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_stable_id_at_offset_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t offset);
+
+/**
+ * Resolve a stable ID to its declaration byte range in the current source.
+ * Returns JSON:
+ *   {"start":N,"end":N}
+ * or {"start":null,"end":null,"error":"..."} if the ID does not resolve.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_locate_stable_id_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len);
+
+/**
+ * Rename the symbol identified by stable ID. Same JSON shape as
+ * wgslender_rename_c.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_rename_by_id_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len,
+    const uint8_t *new_name_ptr, uint32_t new_name_len);
+
+/**
  * Free memory returned by wgslender functions.
  * Both ptr and len must come from a result struct.
  */

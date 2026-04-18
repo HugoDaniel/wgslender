@@ -488,6 +488,143 @@ fn jsonOutPayload(json: []const u8) WgslenderJsonResult {
 }
 
 // =========================================================================
+// Stable IDs — C FFI
+// =========================================================================
+
+const StableIdMod = wgslender.StableId;
+
+/// Resolve `offset` to a reparse-stable ID. Returns JSON:
+///   {"stableId":"v1:fn:main/block#0/let:x"}
+/// or `{"stableId":null}` / `{"stableId":null,"error":"..."}`.
+/// Caller must free json_ptr with wgslender_free_c.
+export fn wgslender_stable_id_at_offset_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    offset: u32,
+) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const analysis = wgslender.analyzeWithOptions(alloc, source, .{}) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const module = analysis.module orelse {
+        return jsonOutPayload("{\"stableId\":null,\"error\":\"parse error\"}");
+    };
+
+    const maybe_id = StableIdMod.stableIdAtOffset(alloc, module, offset) catch |e| switch (e) {
+        error.OutOfMemory => return .{ .json_ptr = null, .json_len = 0, .@"error" = true },
+        error.IdTooLong => return jsonOutPayload("{\"stableId\":null,\"error\":\"id too long\"}"),
+    };
+    if (maybe_id) |id| {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        buf.appendSlice(alloc, "{\"stableId\":\"") catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        Diagnostic.appendJsonEscaped(&buf, alloc, id.bytes) catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        buf.appendSlice(alloc, "\"}") catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        return jsonOutPayload(buf.items);
+    }
+    return jsonOutPayload("{\"stableId\":null}");
+}
+
+/// Resolve a stable ID to its declaration byte range in the current source.
+/// Returns JSON `{"start":N,"end":N}` or
+/// `{"start":null,"end":null,"error":"..."}`.
+/// Caller must free json_ptr with wgslender_free_c.
+export fn wgslender_locate_stable_id_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const id_bytes = id_ptr[0..id_len];
+
+    const analysis = wgslender.analyzeWithOptions(alloc, source, .{}) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const module = analysis.module orelse {
+        return jsonOutPayload(
+            "{\"start\":null,\"end\":null,\"error\":\"parse error\"}",
+        );
+    };
+
+    if (StableIdMod.locateStableId(module, id_bytes)) |range| {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        buf.appendSlice(alloc, "{\"start\":") catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        Diagnostic.appendInt(&buf, alloc, range.start) catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        buf.appendSlice(alloc, ",\"end\":") catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        Diagnostic.appendInt(&buf, alloc, range.end) catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        buf.appendSlice(alloc, "}") catch
+            return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+        return jsonOutPayload(buf.items);
+    }
+    return jsonOutPayload("{\"start\":null,\"end\":null,\"error\":\"not found\"}");
+}
+
+/// Rename the symbol identified by stable ID. Same shape as
+/// `wgslender_rename_c`.
+export fn wgslender_rename_by_id_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    new_name_ptr: [*]const u8,
+    new_name_len: u32,
+) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = makeSentinelSource(alloc, source_ptr, source_len) orelse
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const id_bytes = id_ptr[0..id_len];
+    const new_name = new_name_ptr[0..new_name_len];
+
+    if (!Edits.isValidWgslIdentifier(new_name)) {
+        return jsonOutPayload("{\"edits\":[],\"error\":\"invalid identifier\"}");
+    }
+
+    const analysis = wgslender.analyzeWithOptions(alloc, source, .{}) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+
+    const module = analysis.module orelse {
+        return jsonOutPayload("{\"edits\":[],\"error\":\"parse error\"}");
+    };
+
+    const target = StableIdMod.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return jsonOutPayload(
+        "{\"edits\":[],\"error\":\"symbol not found\"}",
+    );
+
+    const maybe_edits = Edits.renameEdits(alloc, module, target, new_name) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    const edits = maybe_edits orelse
+        return jsonOutPayload("{\"edits\":[],\"error\":\"invalid identifier\"}");
+
+    var json: std.ArrayListUnmanaged(u8) = .empty;
+    buildEditsJson(&json, alloc, edits, new_name) catch
+        return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+    return jsonOutPayload(json.items);
+}
+
+// =========================================================================
 // Version / Free
 // =========================================================================
 

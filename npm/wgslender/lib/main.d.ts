@@ -114,6 +114,11 @@ export interface BindingInfo {
   binding: number;
   /** Variable name */
   name: string;
+  /**
+   * Reparse-stable identifier for this binding. Present when reflection
+   * produced an ID; survives reparses that don't move the declaration.
+   */
+  stableId?: string;
   /** Address space: "uniform", "storage", "handle", or "" */
   addressSpace: string;
   /** Access mode for storage: "read", "write", "read_write", or undefined */
@@ -142,6 +147,8 @@ export interface StructLayout {
 export interface FieldInfo {
   /** Field name */
   name: string;
+  /** Reparse-stable identifier for this field. */
+  stableId?: string;
   /** Field type as a string */
   type: string;
   /** Byte offset from start of struct */
@@ -160,6 +167,8 @@ export interface FieldInfo {
 export interface EntryPointInfo {
   /** Function name */
   name: string;
+  /** Reparse-stable identifier for this function symbol. */
+  stableId?: string;
   /** Shader stage: "vertex", "fragment", or "compute" */
   stage: string;
   /** Workgroup size [x, y, z] for compute, null otherwise */
@@ -345,6 +354,43 @@ export function renameApply(
   offset: number,
   newName: string
 ): RenameApplyResult;
+
+/** Result of stableIdAtOffset — the ID string, or null if no symbol. */
+export interface StableIdResult {
+  stableId: string | null;
+  /** Present on parse error or if the ID would exceed the max length. */
+  error?: string;
+}
+
+/** Result of locateStableId — the declaration byte range. */
+export interface LocateStableIdResult {
+  start: number | null;
+  end: number | null;
+  error?: string;
+}
+
+/**
+ * Compute the reparse-stable identifier for the symbol under `offset`.
+ * The returned string survives reparses and edits that do not reorder or
+ * insert a `.block` scope at or above the symbol's declaration.
+ */
+export function stableIdAtOffset(source: string, offset: number): StableIdResult;
+
+/**
+ * Resolve a stable ID back to the byte range of its declaration in the
+ * current source. Returns `{start: null, end: null}` if the ID does not
+ * resolve (e.g., the symbol was deleted).
+ */
+export function locateStableId(source: string, stableId: string): LocateStableIdResult;
+
+/**
+ * Rename a symbol identified by stable ID. Same result shape as `rename`.
+ */
+export function renameByStableId(
+  source: string,
+  stableId: string,
+  newName: string
+): RenameResult;
 
 /**
  * Check if the WASM module is initialized.
