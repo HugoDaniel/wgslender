@@ -399,3 +399,128 @@ test "M3.f: 10 successive literal flips on for-update keep hot path" {
         prev = next;
     }
 }
+
+// =========================================================================
+// M4 — `switch` / `case` selector & body mutations.
+//
+// `findSlotInStmt` for `.@"switch"` (`src/Incremental.zig:1169`) walks
+// the switch subject expr, then per-case `selectors` and `body`. Selectors
+// are visited via `visitExpr` in the *switch's enclosing scope* (not the
+// case body's scope) — `AstVisit.processOneStmt` line 170. These tests
+// exercise selector literal/ident mutations and case-body return-stmt
+// mutations, plus the cross-case fallback.
+// =========================================================================
+
+test "M4.a: case literal selector flip (literal_expr anchor)" {
+    const src: [:0]const u8 = "fn f(t: i32) { switch t { case 0: {} default: {} } }";
+    const new_src: []const u8 = "fn f(t: i32) { switch t { case 1: {} default: {} } }";
+    const sel: u32 = at(src, "case 0:") + @as(u32, @intCast("case ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = sel, .end = sel + 1, .new_text = "1" },
+        new_src,
+        true,
+    );
+}
+
+test "M4.b: case multi-selector second-arg literal flip" {
+    const src: [:0]const u8 = "fn f(t: i32) { switch t { case 0, 1: {} default: {} } }";
+    const new_src: []const u8 = "fn f(t: i32) { switch t { case 0, 2: {} default: {} } }";
+    // Second selector literal is the `1` after the comma.
+    const comma: u32 = at(src, ",");
+    const second_sel: u32 = at(src[comma..], "1") + comma;
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = second_sel, .end = second_sel + 1, .new_text = "2" },
+        new_src,
+        true,
+    );
+}
+
+test "M4.c: case selector ident swap to sibling const (ident_expr anchor)" {
+    const src: [:0]const u8 =
+        "const A: i32 = 1; const B: i32 = 2; fn f(t: i32) { switch t { case A: {} default: {} } }";
+    const new_src: []const u8 =
+        "const A: i32 = 1; const B: i32 = 2; fn f(t: i32) { switch t { case B: {} default: {} } }";
+    const sel: u32 = at(src, "case A:") + @as(u32, @intCast("case ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = sel, .end = sel + 1, .new_text = "B" },
+        new_src,
+        true,
+    );
+}
+
+test "M4.d: case-body return value swap (return_stmt anchor)" {
+    const src: [:0]const u8 =
+        "fn f(t: i32) -> i32 { switch t { case 0: { return 1; } default: { return 0; } } }";
+    const new_src: []const u8 =
+        "fn f(t: i32) -> i32 { switch t { case 0: { return 7; } default: { return 0; } } }";
+    // Replace the entire `return 1;` so the new subtree is also a
+    // return_stmt (kind-stable hot path).
+    const ret_off: u32 = at(src, "return 1;");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = ret_off,
+            .end = ret_off + @as(u32, @intCast("return 1;".len)),
+            .new_text = "return 7;",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M4.e: edit spanning two case boundaries collapses cases via compound_stmt re-lower" {
+    // `findAnchor` cannot find a single switch-internal anchor for an edit
+    // that crosses case boundaries — but it CAN promote to the enclosing
+    // function-body `compound_stmt`, which is a hot-path anchor that
+    // triggers a whole-module re-lower (reused = true). This test pins
+    // that behavior so a future change that demotes compound_stmt off the
+    // hot-path allowlist surfaces here.
+    const src: [:0]const u8 =
+        "fn f(t: i32) { switch t { case 0: { return; } case 1: {} default: {} } }";
+    const new_src: []const u8 =
+        "fn f(t: i32) { switch t { case 0, 1: {} default: {} } }";
+    const start: u32 = at(src, "0: { return; } case 1:");
+    const old_chunk: []const u8 = "0: { return; } case 1:";
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = start,
+            .end = start + @as(u32, @intCast(old_chunk.len)),
+            .new_text = "0, 1:",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M4.f: edit spanning two top-level fns falls back" {
+    // No common compound_stmt enclosure — `findAnchor` walks up to the
+    // module root, which is not a hot-path anchor. Triggers full reparse.
+    const src: [:0]const u8 =
+        "fn f() { return; } fn g() { return; }";
+    const new_src: []const u8 =
+        "fn fz() { return; } fn gz() { return; }";
+    // Replace `f() { return; } fn g(` → `fz() { return; } fn gz(`.
+    const start: u32 = at(src, "f() { return; } fn g(");
+    const old_chunk: []const u8 = "f() { return; } fn g(";
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = start,
+            .end = start + @as(u32, @intCast(old_chunk.len)),
+            .new_text = "fz() { return; } fn gz(",
+        },
+        new_src,
+        false,
+    );
+}
+
