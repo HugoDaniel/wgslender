@@ -1278,3 +1278,135 @@ test "M10.c: a watermark trip resets the arena and re-enables the hot path" {
     prev = follow;
 }
 
+// =========================================================================
+// M11 — Fallback robustness: each known hot-path failure mode must
+// leave the resulting state walkable and must NOT poison the next
+// reparse. The in-place hot path may write garbage bytes into
+// prev.arena before a late validation gate fails; this family chains a
+// failure-triggering edit with a clean hot edit and asserts the clean
+// edit still hot-paths and produces an oracle-matching module.
+// =========================================================================
+
+test "M11.a: AnchorKindMismatch fallback allows a follow-up hot edit" {
+    // Triggering edit: S8-shape `1` → `1 * 3` inside `return 1 + 2;`
+    // produces a binary_expr where the anchor was literal_expr. Hot
+    // path bails; parseFull returns a clean result.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 1 + 2; }";
+    var base = try Incremental.parseFull(gpa, base_src);
+    defer base.deinit();
+
+    const lit_off: u32 = at(base_src, "return 1") + @as(u32, @intCast("return ".len));
+    var fallback = try Incremental.reparse(gpa, &base, .{
+        .start = lit_off,
+        .end = lit_off + 1,
+        .new_text = "1 * 3",
+    });
+    defer fallback.deinit();
+    try std.testing.expect(!fallback.reused);
+
+    // Post-fallback source: `"fn f() -> i32 { return 1 * 3 + 2; }"`.
+    // Flip the trailing `2` via a literal-swap edit — classic
+    // symbol-free hot-path shape.
+    const tail_lit: u32 = at(fallback.source, "3 + 2") + 4;
+    var hot = try Incremental.reparse(gpa, &fallback, .{
+        .start = tail_lit,
+        .end = tail_lit + 1,
+        .new_text = "9",
+    });
+    defer hot.deinit();
+    try std.testing.expect(hot.reused);
+
+    var oracle = try Incremental.parseFull(gpa, hot.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, hot.module, oracle.module);
+    try expectUseCountsMatch(hot.module, oracle.module);
+}
+
+test "M11.b: AnchorParseError fallback allows a follow-up hot edit" {
+    // S16-shape: `return 2;` → `return +;` produces a literal_expr
+    // anchor that reparses into an error subtree — sub_parser.errors
+    // populated → fallback.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 2; }";
+    var base = try Incremental.parseFull(gpa, base_src);
+    defer base.deinit();
+
+    const lit_off: u32 = at(base_src, "return ") + @as(u32, @intCast("return ".len));
+    var fallback = try Incremental.reparse(gpa, &base, .{
+        .start = lit_off,
+        .end = lit_off + 1,
+        .new_text = "+",
+    });
+    defer fallback.deinit();
+    try std.testing.expect(!fallback.reused);
+    // Full-parse fallback gives the error-recovered module; fix the
+    // parse error with a second edit and confirm the hot path fires.
+    const bad_off: u32 = at(fallback.source, "return +") + @as(u32, @intCast("return ".len));
+    var fix = try Incremental.reparse(gpa, &fallback, .{
+        .start = bad_off,
+        .end = bad_off + 1,
+        .new_text = "9",
+    });
+    defer fix.deinit();
+    // Fixing the parse error is also a fallback (prev had errors, so
+    // the reparse oracle must run). What we care about is the result
+    // is byte-clean and a *subsequent* literal flip takes the hot
+    // path.
+    const lit2: u32 = at(fix.source, "return 9") + @as(u32, @intCast("return ".len));
+    var hot = try Incremental.reparse(gpa, &fix, .{
+        .start = lit2,
+        .end = lit2 + 1,
+        .new_text = "7",
+    });
+    defer hot.deinit();
+    try std.testing.expect(hot.reused);
+
+    var oracle = try Incremental.parseFull(gpa, hot.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, hot.module, oracle.module);
+    try expectUseCountsMatch(hot.module, oracle.module);
+}
+
+test "M11.c: AddWalkRaisedErrors fallback allows a follow-up hot edit" {
+    // Use-before-declaration inside a condition: the add-walk's E0102
+    // raises and the hot path bails after already writing into
+    // prev.arena. The fallback must still produce a correct result,
+    // and a clean subsequent edit must hot-path.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f() -> i32 { if (false) { return 1; } let x = 7; return x; }";
+    var base = try Incremental.parseFull(gpa, base_src);
+    defer base.deinit();
+
+    // Replace `false` with `x < 1`. `x` is declared *after* the if, so
+    // the add-walk should raise E0102. Hot path writes into prev.arena
+    // before the add-walk fires, proving the failure doesn't corrupt
+    // prev.
+    const cond_off: u32 = at(base_src, "(false)") + 1;
+    var fallback = try Incremental.reparse(gpa, &base, .{
+        .start = cond_off,
+        .end = cond_off + @as(u32, @intCast("false".len)),
+        .new_text = "x < 1",
+    });
+    defer fallback.deinit();
+    try std.testing.expect(!fallback.reused);
+
+    // Post-fallback source references `x` in the condition. A
+    // subsequent literal flip on the `1` inside `(x < 1)` is a
+    // clean literal_expr hot edit.
+    const tail_lit: u32 = at(fallback.source, "x < 1") + 4;
+    var hot = try Incremental.reparse(gpa, &fallback, .{
+        .start = tail_lit,
+        .end = tail_lit + 1,
+        .new_text = "2",
+    });
+    defer hot.deinit();
+    try std.testing.expect(hot.reused);
+
+    var oracle = try Incremental.parseFull(gpa, hot.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, hot.module, oracle.module);
+    try expectUseCountsMatch(hot.module, oracle.module);
+}
+
