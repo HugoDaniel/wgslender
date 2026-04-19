@@ -892,93 +892,15 @@ test "M8.a: 4-edit round-trip across literal/binary/return/attribute returns to 
     try expectUseCountsMatch(step4.module, oracle.module);
 }
 
-test "M8.b: 30 successive symbol-free edits grow retained_arenas linearly" {
-    const gpa = std.testing.allocator;
-    const base_src: [:0]const u8 =
-        "fn f() -> i32 { return 1 + 2; }";
-
-    var prev = try Incremental.parseFull(gpa, base_src);
-    defer prev.deinit();
-    try std.testing.expectEqual(@as(usize, 0), prev.retained_arenas.items.len);
-
-    const lit_off: u32 = at(base_src, "1 + 2") + 4;
-    var i: u32 = 0;
-    while (i < 30) : (i += 1) {
-        const ch: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
-        const new_text = [_]u8{ch};
-        const next = try Incremental.reparse(gpa, &prev, .{
-            .start = lit_off,
-            .end = lit_off + 1,
-            .new_text = &new_text,
-        });
-        try std.testing.expect(next.reused);
-        // Every successful symbol-free hot-path step absorbs prev's arena
-        // (and any arenas prev itself retained). Count grows by 1 each
-        // step, starting from 0.
-        try std.testing.expectEqual(@as(usize, i + 1), next.retained_arenas.items.len);
-
-        prev.deinit();
-        prev = next;
-    }
-
-    var oracle = try Incremental.parseFull(gpa, prev.source);
-    defer oracle.deinit();
-    try expectShapesMatch(gpa, prev.module, oracle.module);
-    try expectUseCountsMatch(prev.module, oracle.module);
-}
-
-test "M8.c: alternating hot-path / fallback edits reset retained_arenas" {
-    const gpa = std.testing.allocator;
-    const base_src: [:0]const u8 =
-        "struct S { x: vec3<f32> } fn f() -> i32 { return 1 + 2; }";
-
-    var prev = try Incremental.parseFull(gpa, base_src);
-    defer prev.deinit();
-    try std.testing.expectEqual(@as(usize, 0), prev.retained_arenas.items.len);
-
-    var lit_off: u32 = at(base_src, "1 + 2") + 4;
-    const vec_off: u32 = at(base_src, "vec3") + 3;
-
-    var hot_toggle: u8 = 0;
-    var vec_toggle: bool = false;
-    var i: u32 = 0;
-    while (i < 6) : (i += 1) {
-        if (i % 2 == 0) {
-            const ch: u8 = '0' + @as(u8, @intCast((hot_toggle + 1) % 10));
-            hot_toggle = (hot_toggle + 1) % 10;
-            const new_text = [_]u8{ch};
-            const next = try Incremental.reparse(gpa, &prev, .{
-                .start = lit_off,
-                .end = lit_off + 1,
-                .new_text = &new_text,
-            });
-            try std.testing.expect(next.reused);
-            // Hot-path step adds exactly one entry on top of prev's
-            // retained list. After every fallback we reset to 0, so the
-            // post-hot count is always 1.
-            try std.testing.expectEqual(@as(usize, 1), next.retained_arenas.items.len);
-            prev.deinit();
-            prev = next;
-        } else {
-            const new_digit: u8 = if (vec_toggle) '3' else '4';
-            vec_toggle = !vec_toggle;
-            const new_text = [_]u8{new_digit};
-            const next = try Incremental.reparse(gpa, &prev, .{
-                .start = vec_off,
-                .end = vec_off + 1,
-                .new_text = &new_text,
-            });
-            try std.testing.expectEqual(false, next.reused);
-            // Full-parse fallback always allocates a fresh arena and
-            // does not retain prev's.
-            try std.testing.expectEqual(@as(usize, 0), next.retained_arenas.items.len);
-            prev.deinit();
-            prev = next;
-            // `vec3` and `vec4` are both 4 bytes — recompute defensively.
-            lit_off = at(prev.source, "1 + ") + 4;
-        }
-    }
-}
+// M8.b and M8.c used to assert the per-edit growth of
+// `retained_arenas.items.len` under the old fresh-arena hot path:
+// one entry appended per successful symbol-free reparse, reset on
+// fallback. With the in-place hot path (`in_place_hot_path = true` in
+// `src/Incremental.zig`) `retained_arenas` stays at 0 across any
+// number of hot-path edits. Coverage of the underlying churn
+// correctness is preserved by M8.d's inverse-round-trip assertion and
+// the M9 family (see `tests/incremental_mutation_longtail_test.zig`
+// after Step 2 of `docs/arena-transfer-zero-alloc-plan.md`).
 
 test "M8.d: edit + inverse on multi-symbol expression preserves use_counts" {
     const gpa = std.testing.allocator;
