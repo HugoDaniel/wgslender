@@ -321,3 +321,136 @@ test "L34: forward + inverse edit sequence produces byte-identical source" {
 test "L-noop: identical sources classify as no_op" {
     try expectClassify("const x = 1;", "const x = 1;", .no_op);
 }
+
+// =========================================================================
+// L-append — compound_stmt hot path for local `let`/`var`/`const` edits.
+// Each case exercises a specific trivia/structural shape that a naive
+// implementation of the append-only path would miss.
+// =========================================================================
+
+test "L-append-01: append a deeply nested block in one edit" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "fn f() {}");
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = 8,
+        .end = 8,
+        .new_text = " { { { let a = 1; } } }",
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqualStrings("fn f() { { { { let a = 1; } } }}", updated.source);
+
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try std.testing.expectEqual(
+        oracle.module.declarations.items.len,
+        updated.module.declarations.items.len,
+    );
+    try std.testing.expectEqual(oracle.module.symbols.items.len, updated.module.symbols.items.len);
+}
+
+test "L-append-02: append a call statement into an empty body" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "fn g() {} fn f() {}");
+    defer base.deinit();
+    // Insert `g();` just before the closing `}` of f.
+    const close_off: u32 = @intCast(base.source.len - 1);
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = close_off,
+        .end = close_off,
+        .new_text = " g();",
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqualStrings("fn g() {} fn f() { g();}", updated.source);
+}
+
+test "L-append-03: append a multi-line decl with mid-expression trivia" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "fn f() {}");
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = 8,
+        .end = 8,
+        .new_text = " let /* hi */ x = 1;",
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqualStrings("fn f() { let /* hi */ x = 1;}", updated.source);
+}
+
+test "L-append-04: append a decl with an underscore/digit identifier" {
+    // WGSL identifiers are ASCII in this parser; use a long ASCII name
+    // with a digit suffix to stress the tokenizer's identifier path.
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "fn f() {}");
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = 8,
+        .end = 8,
+        .new_text = " let _really_long_name_42 = 3.14;",
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqualStrings("fn f() { let _really_long_name_42 = 3.14;}", updated.source);
+}
+
+test "L-append-05: append a for-loop whose body declares a local" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "fn f() {}");
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = 8,
+        .end = 8,
+        .new_text = " for (var i = 0; i < 4; i = i + 1) { let t = i; }",
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try std.testing.expectEqual(oracle.module.symbols.items.len, updated.module.symbols.items.len);
+}
+
+test "L-append-06: append into a body that starts with a block comment" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "fn f() { /* body */ }");
+    defer base.deinit();
+    // Insert `let a = 1;` just before the closing brace.
+    const close_off: u32 = @intCast(base.source.len - 1);
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = close_off,
+        .end = close_off,
+        .new_text = "let a = 1; ",
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqualStrings("fn f() { /* body */ let a = 1; }", updated.source);
+}
+
+test "L-append-07: append followed by inverse delete round-trips" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() { let a = 1; }";
+
+    var step0 = try Incremental.parseFull(gpa, base_src);
+    defer step0.deinit();
+
+    var step1 = try Incremental.reparse(gpa, &step0, .{
+        .start = 19,
+        .end = 19,
+        .new_text = " let b = 2;",
+    });
+    defer step1.deinit();
+    try std.testing.expect(step1.reused);
+
+    // Inverse: delete exactly the bytes we just appended. After the
+    // append, those bytes live at [19, 30) in the new source.
+    var step2 = try Incremental.reparse(gpa, &step1, .{
+        .start = 19,
+        .end = 30,
+        .new_text = "",
+    });
+    defer step2.deinit();
+    try std.testing.expectEqualStrings(base_src, step2.source);
+}

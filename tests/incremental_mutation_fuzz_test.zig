@@ -121,8 +121,62 @@ test "F4: reused path preserves symbol indices (same name + kind by index)" {
     }
 }
 
-// F5 (random single-byte edits) is deliberately omitted: the existing
-// `tests/incremental_fuzz_test.zig` already exercises random-edit
-// correctness against a `parseFull` oracle, so the hot path is covered
-// there transitively. A future session can re-add a targeted variant
-// once the splice path has more defensive guardrails in place.
+test "F5: random local-decl append into a function body always hot-paths" {
+    const gpa = std.testing.allocator;
+    var rng = std.Random.DefaultPrng.init(0xA99EDCAF);
+    const rand = rng.random();
+
+    const shader_bases = [_][:0]const u8{
+        "fn f() {}",
+        "fn f() { let a = 1; }",
+        "fn f() { let a = 1; let b = a + 2; }",
+        "fn g() { let x = 1; } fn f() { let a = 1; }",
+        "fn f() { if (true) { let z = 1; } }",
+    };
+
+    for (shader_bases) |base| {
+        var cur = try Incremental.parseFull(gpa, base);
+        defer cur.deinit();
+
+        var iter: u32 = 0;
+        while (iter < 10) : (iter += 1) {
+            // Find a `}` byte at random and insert a complete statement
+            // just before it. A decl_stmt append at a compound's close
+            // boundary always takes the compound_stmt hot path.
+            var candidate_positions: std.ArrayListUnmanaged(u32) = .empty;
+            defer candidate_positions.deinit(gpa);
+            for (cur.source, 0..) |c, i| {
+                if (c == '}') try candidate_positions.append(gpa, @intCast(i));
+            }
+            if (candidate_positions.items.len == 0) break;
+
+            const pick = rand.intRangeLessThan(usize, 0, candidate_positions.items.len);
+            const close_off = candidate_positions.items[pick];
+
+            var buf: [64]u8 = undefined;
+            const val = rand.intRangeLessThan(u32, 0, 1000);
+            const payload = try std.fmt.bufPrint(&buf, " let tmp_{} = {};", .{ iter, val });
+
+            const next = try Incremental.reparse(gpa, &cur, .{
+                .start = close_off,
+                .end = close_off,
+                .new_text = payload,
+            });
+            cur.deinit();
+            cur = next;
+            try std.testing.expect(cur.reused);
+        }
+
+        // Final shape must match a fresh full parse.
+        var oracle = try Incremental.parseFull(gpa, cur.source);
+        defer oracle.deinit();
+        try std.testing.expectEqual(
+            oracle.module.declarations.items.len,
+            cur.module.declarations.items.len,
+        );
+        try std.testing.expectEqual(
+            oracle.module.symbols.items.len,
+            cur.module.symbols.items.len,
+        );
+    }
+}
