@@ -234,3 +234,26 @@ we vendor one), add `tests/incremental_bench_test.zig` measuring:
 - `classifyEdit` on a trivia-only edit,
 - `Handler.changeDocumentIncremental` + `analyzeDocument` round-trip
   latency, semantic vs trivia-only.
+
+### Arena growth under sustained edits
+
+Symbol-free hot-path reparses extend `prev.arena` in place rather than
+allocating a fresh arena per edit. Live arena capacity therefore grows
+monotonically until `Incremental.reparse` trips its compaction
+watermark — `max(256 KiB, 8 * prev.source.len)` on
+`prev.arena.queryCapacity()` — which bails to `parseFull` and allocates
+a clean arena.
+
+The practical envelope on a long editing session is therefore bounded
+by `~16 × source.len` (one trip's worth of growth plus the next
+iteration's fresh splice allocation). `tests/incremental_mutation_longtail_test.zig`
+M13 locks this on a real compute.toys shader across a 100-edit burst
+via `ReparseResult.arenaBytes()`. The in-session per-edit arena-struct
+allocation count on the hot path is 1 — only the stub installed on
+prev so `prev.deinit()` stays a safe no-op — down from 2 in the
+pre-arena-transfer implementation.
+
+`ReparseResult.retained_arenas.items.len` stays at 0 across any length
+of symbol-free edit churn (M9), and resets to 0 on every `parseFull`
+fallback, so retained-arena overhead does not accumulate across watermark
+trips.

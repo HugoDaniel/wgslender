@@ -1538,3 +1538,53 @@ test "M12.e: zero-delta trivia swap across several tokens reuses module" {
     try std.testing.expectEqual(prev_cst_nodes_bytes, updated.cst.nodes.bytes);
 }
 
+// =========================================================================
+// M13 — Arena envelope smoke test: a 100-edit churn on a real
+// compute.toys shader keeps arena capacity bounded by the
+// compaction watermark on every iteration.
+//
+// queryCapacity() sums used + free pages in the ArenaAllocator's
+// internal free-list, so this tracks live + cache-retained bytes.
+// The assertion uses 16× source size as the envelope — the watermark
+// trips at 8× source size (floor 256 KiB); a 16× ceiling leaves
+// headroom for the single edit between checks that allocated into
+// prev.arena before the next watermark check.
+// =========================================================================
+
+test "M13: 100-edit literal churn on circle_sample keeps arena bounded" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = @embedFile("testdata/compute.toys/circle_sample.wgsl");
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const lit_off: u32 = at(base_src, "let s = 1.0;") + @as(u32, @intCast("let s = ".len));
+    const floor: usize = 256 * 1024;
+    const envelope: usize = @max(floor, base_src.len) * @as(usize, 16);
+
+    var i: u32 = 0;
+    while (i < 100) : (i += 1) {
+        const ch: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+
+        const bytes = next.arenaBytes();
+        if (bytes >= envelope) {
+            std.debug.print("M13: arena capacity {d} exceeded envelope {d} at iter {d}\n", .{ bytes, envelope, i });
+            return error.ArenaEnvelopeExceeded;
+        }
+
+        prev.deinit();
+        prev = next;
+    }
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+

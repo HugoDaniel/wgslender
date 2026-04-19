@@ -94,6 +94,15 @@ pub const ReparseResult = struct {
     /// `minify`, `reflect` — pay no extra allocation.
     scope_for_cst_node: std.AutoHashMapUnmanaged(u32, *Ast.Scope) = .empty,
 
+    /// Total live + free-list capacity of every arena this result
+    /// references, in bytes. Used by telemetry and the compaction
+    /// watermark smoke test (M13) to bound long-session memory drift.
+    pub fn arenaBytes(self: *const ReparseResult) usize {
+        var bytes: usize = self.arena.queryCapacity();
+        for (self.retained_arenas.items) |a| bytes += a.queryCapacity();
+        return bytes;
+    }
+
     pub fn deinit(self: *ReparseResult) void {
         // Drop retained arenas first (they were handed off to us by a
         // prior `reparse` call whose prev we absorbed), then our own.
