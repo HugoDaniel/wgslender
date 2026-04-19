@@ -25,6 +25,22 @@ pub fn lowerTree(
     arena: Allocator,
     cst: *const Cst.Tree,
 ) !*Ast.Module {
+    return lowerTreeWithErrors(gpa, arena, cst, null);
+}
+
+/// Same as `lowerTree`, but lets the caller observe the visit-pass error
+/// list. When `errors_out` is non-null, the caller owns the storage and
+/// the lower's `LowerCtx.errors` aliases it — entries appended during
+/// Pass 2 (identifier resolution) survive past this call. When null,
+/// errors land in a throwaway local that goes out of scope (the
+/// arena-owned message bytes leak harmlessly into the arena, matching
+/// historical behavior).
+pub fn lowerTreeWithErrors(
+    gpa: Allocator,
+    arena: Allocator,
+    cst: *const Cst.Tree,
+    errors_out: ?*std.ArrayListUnmanaged(Parser.ParseError),
+) !*Ast.Module {
     _ = gpa;
 
     const module_scope = try arena.create(Ast.Scope);
@@ -32,6 +48,9 @@ pub fn lowerTree(
 
     const module = try arena.create(Ast.Module);
     module.* = Ast.Module.init(module_scope, cst.source);
+
+    var local_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    const errors_ptr = errors_out orelse &local_errors;
 
     var ctx = LowerCtx{
         .arena = arena,
@@ -42,7 +61,7 @@ pub fn lowerTree(
         .symbols = .empty,
         .scope = module_scope,
         .scopes_in_order = .empty,
-        .errors = .empty,
+        .errors = errors_ptr.*,
     };
 
     const root = cst.rootCursor();
@@ -84,6 +103,11 @@ pub fn lowerTree(
         .safety_budget = @as(usize, @max(64, cst.tokens.len * 2)),
     };
     try AstVisit.visit(&visit_ctx, module);
+
+    // Publish accumulated errors (Pass 1 redeclarations + Pass 2 visit
+    // diagnostics) back to the caller's storage. Both bodies share the
+    // arena, so the message bytes survive past this call regardless.
+    errors_ptr.* = ctx.errors;
 
     return module;
 }
