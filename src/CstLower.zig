@@ -188,6 +188,61 @@ pub fn lowerSubtree(
     }
 }
 
+/// Output of `lowerSubtreeInScope`: the lowered stmt plus every scope
+/// the lowering pushed (in DFS creation order), so the incremental hot
+/// path can feed them to a subsequent `AstVisit` as `scopes_in_order`.
+pub const SubtreeInScopeOut = struct {
+    stmt: Ast.Stmt,
+    new_scopes: std.ArrayListUnmanaged(*Ast.Scope),
+};
+
+/// Lower a `compound_stmt` or `decl_stmt` subtree that DOES introduce
+/// new scopes and/or symbols. Used by the Phase 2 in-place hot path:
+/// declared symbols are appended to `symbols` at fresh indices (old
+/// `SymbolIndex` values stay valid), and new scopes are pushed under
+/// `parent_scope` in creation order.
+///
+/// Callers must position `parent_scope` at the AST scope that will own
+/// the new subtree's top-level decls (function body's block scope for
+/// a top-level compound, enclosing compound's block scope for a nested
+/// compound or decl_stmt).
+///
+/// Does NOT run Pass 2 — ident refs are left unresolved. The caller
+/// runs `AstVisit.visitSubtreeStmt` in `.add` mode with the returned
+/// `new_scopes` as `scopes_in_order`.
+pub fn lowerSubtreeInScope(
+    arena: Allocator,
+    cst: *const Cst.Tree,
+    node: Cst.NodeIndex,
+    parent_scope: *Ast.Scope,
+    symbols: *std.ArrayListUnmanaged(Ast.Symbol),
+) error{ OutOfMemory, InvalidCst }!SubtreeInScopeOut {
+    var ctx = LowerCtx{
+        .arena = arena,
+        .cst = cst,
+        .token_tags = cst.tokens.items(.tag),
+        .token_starts = cst.tokens.items(.start),
+        .token_ends = cst.tokens.items(.end),
+        .symbols = symbols.*,
+        .scope = parent_scope,
+        .scopes_in_order = .empty,
+        .errors = .empty,
+    };
+
+    const kind = ctx.nodeKind(node);
+    const stmt: Ast.Stmt = switch (kind) {
+        .compound_stmt => .{ .compound = try ctx.lowerCompoundStmt(ctx.nodeCursor(node)) },
+        .decl_stmt => (try ctx.lowerDeclStmt(ctx.nodeCursor(node))) orelse return error.InvalidCst,
+        else => return error.InvalidCst,
+    };
+
+    // Hand the (possibly-grown) symbol list back to the caller so they
+    // own future growth on the same arena-backed storage.
+    symbols.* = ctx.symbols;
+
+    return .{ .stmt = stmt, .new_scopes = ctx.scopes_in_order };
+}
+
 // =========================================================================
 // LowerCtx — shared state for the walk.
 // =========================================================================
