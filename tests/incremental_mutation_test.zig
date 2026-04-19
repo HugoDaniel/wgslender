@@ -43,11 +43,44 @@ fn expectShapesMatch(gpa: std.mem.Allocator, a: *const Ast.Module, b: *const Ast
 }
 
 fn expectSymbolsMatch(a: *const Ast.Module, b: *const Ast.Module) !void {
-    try std.testing.expectEqual(a.symbols.items.len, b.symbols.items.len);
-    for (a.symbols.items, b.symbols.items) |sa, sb| {
-        try std.testing.expectEqualStrings(sa.original_name, sb.original_name);
-        try std.testing.expectEqual(sa.kind, sb.kind);
-        try std.testing.expectEqual(sa.use_count, sb.use_count);
+    // Oracle is `b` (from parseFull). `a` came from incremental splice;
+    // the compound_stmt / decl_stmt hot path appends symbols at fresh
+    // indices and leaves removed-subtree symbols in place with
+    // use_count == 0 (append-only contract). Every oracle symbol must
+    // have a matching (name, kind, use_count) symbol in `a`; any extras
+    // in `a` must be dead (use_count == 0).
+    var matched = try std.testing.allocator.alloc(bool, a.symbols.items.len);
+    defer std.testing.allocator.free(matched);
+    for (matched) |*m| m.* = false;
+
+    for (b.symbols.items) |sb| {
+        var found = false;
+        for (a.symbols.items, 0..) |sa, i| {
+            if (matched[i]) continue;
+            if (sa.kind != sb.kind) continue;
+            if (sa.use_count != sb.use_count) continue;
+            if (!std.mem.eql(u8, sa.original_name, sb.original_name)) continue;
+            matched[i] = true;
+            found = true;
+            break;
+        }
+        if (!found) {
+            std.debug.print(
+                "oracle symbol '{s}' (kind={s}, use={d}) has no match in updated\n",
+                .{ sb.original_name, @tagName(sb.kind), sb.use_count },
+            );
+            return error.SymbolMismatch;
+        }
+    }
+    for (a.symbols.items, matched) |sa, m| {
+        if (m) continue;
+        if (sa.use_count != 0) {
+            std.debug.print(
+                "unmatched updated symbol '{s}' (kind={s}, use={d}) has non-zero use_count\n",
+                .{ sa.original_name, @tagName(sa.kind), sa.use_count },
+            );
+            return error.DeadSymbolHasUseCount;
+        }
     }
 }
 

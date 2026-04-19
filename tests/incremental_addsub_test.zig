@@ -28,19 +28,41 @@ fn useCountOf(module: *const Ast.Module, name: []const u8) u32 {
     return 0;
 }
 
-/// Assert that every symbol in `got` has the same `use_count` as the
-/// symbol with the same `original_name` in `oracle`. Both modules must
-/// have the same symbol set.
+fn sumUseCountByName(module: *const Ast.Module, name: []const u8) u32 {
+    var sum: u32 = 0;
+    for (module.symbols.items) |s| {
+        if (std.mem.eql(u8, s.original_name, name)) sum += s.use_count;
+    }
+    return sum;
+}
+
+/// Assert per-name use_count equivalence between `got` and `oracle`.
+/// The Phase 2 compound_stmt / decl_stmt hot paths are append-only:
+/// `got` may carry dead (use_count == 0) copies of removed-subtree
+/// symbols. We therefore compare the SUM of use_counts per name; dead
+/// copies contribute zero and don't disturb the match. Every name in
+/// `oracle` must exist in `got` with the same live sum; any extra
+/// names in `got` must have zero-sum use_counts.
 fn expectUseCountsMatch(got: *const Ast.Module, oracle: *const Ast.Module) !void {
-    try std.testing.expectEqual(oracle.symbols.items.len, got.symbols.items.len);
-    for (got.symbols.items) |g| {
-        const o_uc = useCountOf(oracle, g.original_name);
-        if (o_uc != g.use_count) {
+    for (oracle.symbols.items) |o| {
+        const g_sum = sumUseCountByName(got, o.original_name);
+        const o_sum = sumUseCountByName(oracle, o.original_name);
+        if (g_sum != o_sum) {
             std.debug.print(
-                "use_count mismatch: '{s}' got={d} oracle={d}\n",
-                .{ g.original_name, g.use_count, o_uc },
+                "use_count sum mismatch: '{s}' got_sum={d} oracle_sum={d}\n",
+                .{ o.original_name, g_sum, o_sum },
             );
             return error.UseCountMismatch;
+        }
+    }
+    for (got.symbols.items) |g| {
+        const o_sum = sumUseCountByName(oracle, g.original_name);
+        if (o_sum == 0 and g.use_count != 0) {
+            std.debug.print(
+                "updated-only symbol '{s}' has non-zero use_count {d}\n",
+                .{ g.original_name, g.use_count },
+            );
+            return error.DeadSymbolHasUseCount;
         }
     }
 }
@@ -282,4 +304,186 @@ test "S-BULK-01: attribute argument literal bump preserves use_counts" {
         "const N: i32 = 7; @compute @workgroup_size(64) fn f() -> i32 { return N; }",
         true,
     );
+}
+
+// =========================================================================
+// C-* compound_stmt anchor — function-body / nested-block replacement lands
+// on the in-place scope-splice path. Oracle assertion is per-symbol-name
+// live-sum equivalence (append-only symbol table is a feature of this
+// path, not a defect).
+// =========================================================================
+
+fn replaceBytes(
+    gpa: std.mem.Allocator,
+    src: [:0]const u8,
+    needle: []const u8,
+    replacement: []const u8,
+    expect_reused: bool,
+) !void {
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    const end: u32 = pos + @as(u32, @intCast(needle.len));
+    // Build the expected new source.
+    const new_src = try std.fmt.allocPrint(gpa, "{s}{s}{s}", .{
+        src[0..pos], replacement, src[end..],
+    });
+    defer gpa.free(new_src);
+    try runEdit(
+        gpa,
+        src,
+        .{ .start = pos, .end = end, .new_text = replacement },
+        new_src,
+        expect_reused,
+    );
+}
+
+test "C-01: swap body, external refs unchanged" {
+    try replaceBytes(
+        std.testing.allocator,
+        "const k: i32 = 1; fn f() -> i32 { return k; }",
+        "{ return k; }",
+        "{ return k + k; }",
+        true,
+    );
+}
+
+test "C-02: swap body, external refs change asymmetrically" {
+    try replaceBytes(
+        std.testing.allocator,
+        "const a: i32 = 1; const b: i32 = 2; fn f() -> i32 { return a + a; }",
+        "{ return a + a; }",
+        "{ return b + b + b; }",
+        true,
+    );
+}
+
+test "C-03: swap body, drop all references to previously-used consts" {
+    try replaceBytes(
+        std.testing.allocator,
+        "const a: i32 = 1; const b: i32 = 2; fn f() -> i32 { return a + b; }",
+        "{ return a + b; }",
+        "{ return 7; }",
+        true,
+    );
+}
+
+test "C-04: swap body introduces a fresh local let" {
+    try replaceBytes(
+        std.testing.allocator,
+        "const a: i32 = 1; fn f() -> i32 { return a; }",
+        "{ return a; }",
+        "{ let t = a + 1; return t; }",
+        true,
+    );
+}
+
+test "C-05: swap body removes a local; module consts stay live" {
+    try replaceBytes(
+        std.testing.allocator,
+        "const a: i32 = 1; fn f() -> i32 { let x = a; return x; }",
+        "{ let x = a; return x; }",
+        "{ return a; }",
+        true,
+    );
+}
+
+test "C-06: empty body to non-empty body" {
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() {}",
+        "{}",
+        "{ let q: i32 = 42; }",
+        true,
+    );
+}
+
+test "C-07: non-empty body to empty body" {
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() { let q: i32 = 42; }",
+        "{ let q: i32 = 42; }",
+        "{}",
+        true,
+    );
+}
+
+test "C-08: nested compound replaced (anchor = inner compound)" {
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() -> i32 { let a = 1; { let b = a; return b; } }",
+        "{ let b = a; return b; }",
+        "{ return a; }",
+        true,
+    );
+}
+
+test "C-09: swap body containing a for-loop (scope subtree rebuild)" {
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() { for (var i = 0; i < 10; i = i + 1) { let x = i; } }",
+        "{ for (var i = 0; i < 10; i = i + 1) { let x = i; } }",
+        "{ for (var i = 0; i < 20; i = i + 1) { let y = i; } }",
+        true,
+    );
+}
+
+test "C-10: replace body with byte-identical text (no-op structural)" {
+    // The new symbols get appended with fresh live use_counts; the old
+    // ones stay dead. expectUseCountsMatch sums by name, so the oracle's
+    // single live `a` equals the updated's live new-`a` plus dead-old-`a`
+    // sums.
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() -> i32 { let a = 1; return a; }",
+        "{ let a = 1; return a; }",
+        "{ let a = 1; return a; }",
+        true,
+    );
+}
+
+// =========================================================================
+// F-* CST/AST invariants after a compound_stmt splice.
+// =========================================================================
+
+test "F-01: nested compound replacement keeps outer scope chain intact" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { let a = 1; { let b = a; return b; } }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const needle: []const u8 = "{ let b = a; return b; }";
+    const replacement: []const u8 = "{ return a; }";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, base_src, needle).?);
+    const end: u32 = pos + @as(u32, @intCast(needle.len));
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = pos, .end = end, .new_text = replacement,
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+
+    // Count scopes in module.scope, recursively, and compare shape
+    // against oracle.
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    const u_kinds = try collectScopeKinds(gpa, updated.module.scope);
+    defer gpa.free(u_kinds);
+    const o_kinds = try collectScopeKinds(gpa, oracle.module.scope);
+    defer gpa.free(o_kinds);
+    try std.testing.expectEqualSlices(u8, o_kinds, u_kinds);
+}
+
+fn collectScopeKinds(gpa: std.mem.Allocator, root: *const Ast.Scope) ![]u8 {
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    defer out.deinit(gpa);
+    try collectScopeKindsInner(gpa, root, &out);
+    return out.toOwnedSlice(gpa);
+}
+
+fn collectScopeKindsInner(
+    gpa: std.mem.Allocator,
+    scope: *const Ast.Scope,
+    out: *std.ArrayListUnmanaged(u8),
+) !void {
+    try out.append(gpa, @intFromEnum(scope.kind));
+    for (scope.children.items) |c| try collectScopeKindsInner(gpa, c, out);
+    try out.append(gpa, 0xff); // end-of-children marker
 }
