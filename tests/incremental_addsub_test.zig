@@ -487,3 +487,95 @@ fn collectScopeKindsInner(
     for (scope.children.items) |c| try collectScopeKindsInner(gpa, c, out);
     try out.append(gpa, 0xff); // end-of-children marker
 }
+
+// =========================================================================
+// D-* decl_stmt anchor — rename / retype / reinit a single `let`/`var`/
+// `const` inside a function body. Revisit root is the PARENT compound,
+// so sibling statements re-resolve against the updated scope state.
+// =========================================================================
+
+test "D-01: rename local let (no downstream ref)" {
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() -> i32 { let x = 1; return 0; }",
+        "let x = 1;",
+        "let y = 1;",
+        true,
+    );
+}
+
+test "D-02: rename local let with downstream sibling ref (dangling)" {
+    // Sibling `return x;` becomes undefined — oracle produces E0102.
+    // We only check use-count equivalence; the error-fixup families
+    // (F-*) in incremental_error_fixup_test.zig assert error equality.
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() -> i32 { let x = 1; return x; }",
+        "let x = 1;",
+        "let y = 1;",
+        true,
+    );
+}
+
+test "D-03: change initializer only, name stable" {
+    try replaceBytes(
+        std.testing.allocator,
+        "const k: i32 = 1; fn f() -> i32 { let x = k; return x; }",
+        "let x = k;",
+        "let x = k + k;",
+        true,
+    );
+}
+
+test "D-04: change type annotation on a let" {
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() { let a: i32 = 0; }",
+        "let a: i32 = 0;",
+        "let a: u32 = 0;",
+        true,
+    );
+}
+
+test "D-05: flip let to var" {
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() { let a = 0; }",
+        "let a = 0;",
+        "var a = 0;",
+        true,
+    );
+}
+
+test "D-06: flip let to const with a downstream ref" {
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() { let a = 0; return a; }",
+        "let a = 0;",
+        "const a = 0;",
+        true,
+    );
+}
+
+test "D-07: decl replacement creates a redeclaration collision" {
+    // Oracle parse emits E0101 at the second `let a`. The incremental
+    // path preserves parent_scope's earlier `a` (declared by the first
+    // decl) and triggers the same E0101 on re-lower.
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() { let a = 1; let b = 2; }",
+        "let b = 2;",
+        "let a = 2;",
+        true,
+    );
+}
+
+test "D-09: decl in nested compound" {
+    try replaceBytes(
+        std.testing.allocator,
+        "fn f() -> i32 { let o = 1; { let i = o; return i; } }",
+        "let i = o;",
+        "let i = o + o;",
+        true,
+    );
+}

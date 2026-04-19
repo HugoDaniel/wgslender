@@ -800,11 +800,13 @@ fn tryIncrementalReparseInPlace(
     }
     const anchor_kind = anchor_cursor.kind();
 
-    // Route compound_stmt anchors through the Phase 2 in-place scope-splice
-    // path. decl_stmt and any future non-symbol-free anchor stay on the
-    // fresh-arena re-lower path until their own in-place routing lands.
+    // Route compound_stmt and decl_stmt anchors through the Phase 2
+    // in-place scope-splice paths. Any other non-symbol-free anchor
+    // kind (none exist today but guarded defensively) stays on the
+    // fresh-arena re-lower path.
     const is_compound_inplace = anchor_kind == .compound_stmt;
-    if (!isSymbolFreeAnchor(anchor_kind) and !is_compound_inplace) {
+    const is_decl_stmt_inplace = anchor_kind == .decl_stmt;
+    if (!isSymbolFreeAnchor(anchor_kind) and !is_compound_inplace and !is_decl_stmt_inplace) {
         return try tryIncrementalReparse(gpa, prev, edit, new_buf);
     }
 
@@ -814,13 +816,14 @@ fn tryIncrementalReparseInPlace(
     //    that arena. `reparse()` catches the error below and falls
     //    through to `parseFull`, which allocates a clean arena.
     //
-    //    Symbol-free edits and compound_stmt edits use different floors
-    //    because their per-edit cost differs by roughly an order of
-    //    magnitude: symbol-free touches one stmt/expr (~KB/edit);
-    //    compound_stmt re-lowers and re-visits the entire enclosing
-    //    body plus appends symbols, so realistic edit bursts on typical
-    //    module sizes need more headroom before compacting.
-    const compaction_floor: usize = if (is_compound_inplace) 4 * 1024 * 1024 else 256 * 1024;
+    //    Symbol-free edits and compound/decl_stmt edits use different
+    //    floors because their per-edit cost differs by roughly an order
+    //    of magnitude: symbol-free touches one stmt/expr (~KB/edit);
+    //    compound_stmt and decl_stmt re-lower and re-visit the entire
+    //    enclosing body plus append symbols, so realistic edit bursts
+    //    on typical module sizes need more headroom before compacting.
+    const big_floor: bool = is_compound_inplace or is_decl_stmt_inplace;
+    const compaction_floor: usize = if (big_floor) 4 * 1024 * 1024 else 256 * 1024;
     const compaction_ratio: usize = 8;
     const threshold = @max(compaction_floor, prev.source.len * compaction_ratio);
     if (prev.arena.queryCapacity() > threshold) return error.ArenaWatermarkTripped;
@@ -878,9 +881,20 @@ fn tryIncrementalReparseInPlace(
     // 8. Dispatch on anchor kind. Symbol-free anchors go through the
     //    existing add/sub splice. compound_stmt goes through the Phase 2
     //    scope-splice path which rebuilds the enclosing scope subtree
-    //    and re-runs a targeted Pass 2.
+    //    and re-runs a targeted Pass 2. decl_stmt goes through a sibling
+    //    path that revisits the decl's PARENT compound.
     if (is_compound_inplace) {
         return try tryCompoundSpliceInPlace(
+            gpa,
+            prev,
+            new_source,
+            new_tree,
+            anchor_cursor.node,
+            old_anchor_span,
+        );
+    }
+    if (is_decl_stmt_inplace) {
+        return try tryDeclStmtSpliceInPlace(
             gpa,
             prev,
             new_source,
@@ -1182,6 +1196,203 @@ fn tryCompoundSpliceInPlace(
         .mode = .add,
     };
     try AstVisit.visitSubtreeStmt(&add_ctx, .{ .compound = old_compound });
+
+    // 10. Commit.
+    prev.module.source = new_source;
+
+    const fixed = try fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
+    const merged = try mergeErrorsByPos(prev_arena, fixed, add_errors.items);
+
+    const result = ReparseResult{
+        .gpa = gpa,
+        .arena = prev.arena,
+        .source = new_source,
+        .module = prev.module,
+        .cst = new_tree,
+        .reused = true,
+        .scope_for_cst_node = tmp_result.scope_for_cst_node,
+        .retained_arenas = prev.retained_arenas,
+        .errors = merged,
+    };
+
+    const stub = try gpa.create(std.heap.ArenaAllocator);
+    stub.* = std.heap.ArenaAllocator.init(gpa);
+    prev.arena = stub;
+    prev.retained_arenas = .empty;
+    prev.errors = &.{};
+
+    return result;
+}
+
+/// Phase 2 in-place splice for `decl_stmt` anchors.
+///
+/// Unlike compound_stmt, a decl_stmt edit can affect sibling statements
+/// in the enclosing compound (a renamed `let` invalidates sibling refs
+/// by name). The revisit root is therefore the PARENT compound_stmt,
+/// not the decl_stmt itself.
+///
+/// Ordering:
+///   1. Locate the parent compound_stmt CST node (`enclosingCompoundCst`).
+///      Decl_stmts inside `for_stmt` init/update positions are stored by
+///      value in `ForStmt` and don't fit the slot-replace story; bail in
+///      that case so `reparse()` falls back to `parseFull`.
+///   2. Resolve the parent AST compound (`findCompoundBySpan`) and the
+///      parent block scope (`scope_for_cst_node`).
+///   3. Find the decl_stmt's slot in `parent_compound.stmts.items` by
+///      span match.
+///   4. Read the OLD decl's name and remove it from `parent_scope.members`
+///      so the forthcoming `declareSymbol` doesn't spuriously emit E0101
+///      on a same-name re-decl.
+///   5. Sub-walk the WHOLE parent compound (decrements use_counts for
+///      every resolved ident across the parent + descendants; the
+///      removed decl's symbol drops to use_count 0).
+///   6. Shift downstream AST spans by delta.
+///   7. Lower the new decl_stmt via `CstLower.lowerSubtreeInScope` —
+///      appends a fresh symbol and `put`s its scope-member entry.
+///   8. Write the new `Ast.Stmt` back into the parent's stmts slot.
+///   9. Rebuild `scope_for_cst_node` and add-walk the parent compound
+///      (resolves every ident, increments use_counts).
+///   10. Fixup errors + commit arena transfer.
+fn tryDeclStmtSpliceInPlace(
+    gpa: Allocator,
+    prev: *ReparseResult,
+    new_source: [:0]const u8,
+    new_tree_in: Cst.Tree,
+    new_subtree_node: Cst.NodeIndex,
+    old_anchor_span: Ast.Span,
+) !ReparseResult {
+    var new_tree = new_tree_in;
+    const prev_arena = prev.arena.allocator();
+
+    // 1. Revisit-root CST node = the enclosing compound_stmt. The anchor
+    //    CST node was spliced into prev.cst by `Cst.spliceSubtree`, so
+    //    its parent chain is still walkable.
+    const parent_compound_cst = enclosingCompoundCst(&new_tree, new_subtree_node)
+        orelse return error.DeclStmtNotInCompound;
+
+    // 2. Parent AST compound + parent block scope.
+    const parent_scope = prev.scope_for_cst_node.get(@intFromEnum(parent_compound_cst))
+        orelse return error.ScopeSpliceMalformed;
+
+    // findCompoundBySpan wants the parent compound's OLD span. The
+    // parent compound's CST range spans some bytes in NEW coords (its
+    // end may have shifted by delta); its AST span is in OLD coords
+    // (shifts happen in step 6, below). Reconstruct the OLD parent
+    // span by un-shifting the NEW CST range.
+    const parent_cst_node = new_tree.getNode(parent_compound_cst);
+    const delta_for_parent: i64 = blk: {
+        // The parent compound contains the anchor; its span grew by the
+        // same delta as the anchor (end-shifted, start unchanged).
+        const old_len: u32 = old_anchor_span.end - old_anchor_span.start;
+        const new_anchor = new_tree.getNode(new_subtree_node);
+        const new_len: u32 = new_anchor.end - new_anchor.start;
+        break :blk @as(i64, new_len) - @as(i64, old_len);
+    };
+    const parent_span_old = Ast.Span{
+        .start = parent_cst_node.start,
+        .end = @intCast(@as(i64, parent_cst_node.end) - delta_for_parent),
+    };
+    const parent_compound = findCompoundBySpan(prev.module, parent_span_old)
+        orelse return error.AstSlotNotFound;
+
+    // 3. Find the decl_stmt slot in parent_compound.stmts by span
+    //    containment (the anchor's CST range contains the AST decl_stmt's
+    //    non-trivia span).
+    const slot_idx = blk: {
+        for (parent_compound.stmts.items, 0..) |s, i| {
+            if (s != .decl) continue;
+            if (spanContains(old_anchor_span, s.decl.span)) break :blk i;
+        }
+        return error.AstSlotNotFound;
+    };
+    const old_stmt = parent_compound.stmts.items[slot_idx];
+
+    // 4. Remove the OLD decl's name from parent_scope.members, but only
+    //    if it currently points at the OLD decl's symbol — a duplicate
+    //    earlier decl with the same name (E0101 territory) should keep
+    //    its entry. Entries referenced by a different (earlier) symbol
+    //    index stay intact.
+    const old_sym_idx = old_stmt.decl.decl.nameRef();
+    if (old_sym_idx.isValid()) {
+        const name = prev.module.symbols.items[old_sym_idx.index()].original_name;
+        if (parent_scope.members.get(name)) |mem| {
+            if (mem.ref == old_sym_idx) _ = parent_scope.members.remove(name);
+        }
+    }
+
+    // 5. Sub-walk the PARENT compound (not just the decl). Uses
+    //    scopes_in_order = [parent_scope] + DFS descendants so the
+    //    walker's `enterNextScope` advances correctly.
+    var sub_scopes: std.ArrayListUnmanaged(*Ast.Scope) = .empty;
+    defer sub_scopes.deinit(prev_arena);
+    try sub_scopes.append(prev_arena, parent_scope);
+    try collectScopeSubtreeDfs(prev_arena, parent_scope, &sub_scopes);
+
+    var discard_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer discard_errors.deinit(prev_arena);
+    var sub_ctx = AstVisit.Context{
+        .arena = prev_arena,
+        .symbols = prev.module.symbols.items,
+        .scopes_in_order = sub_scopes.items,
+        .scope = parent_scope.parent orelse prev.module.scope,
+        .errors = &discard_errors,
+        .safety_budget = @max(64, prev.cst.tokens.len * 2),
+        .mode = .sub,
+    };
+    try AstVisit.visitSubtreeStmt(&sub_ctx, .{ .compound = parent_compound });
+
+    // 6. Shift downstream AST spans by delta.
+    const old_len: u32 = old_anchor_span.end - old_anchor_span.start;
+    const new_anchor_node = new_tree.getNode(new_subtree_node);
+    const new_len: u32 = new_anchor_node.end - new_anchor_node.start;
+    const delta: i64 = @as(i64, new_len) - @as(i64, old_len);
+    shiftAstSpans(prev.module, old_anchor_span.end, delta);
+
+    // 7. Lower the new decl_stmt into prev.arena. `lowerSubtreeInScope`
+    //    appends a fresh symbol to `module.symbols`, puts its entry into
+    //    parent_scope.members, and (for decl_stmt) pushes no new scopes.
+    const lowered = try CstLower.lowerSubtreeInScope(
+        prev_arena,
+        &new_tree,
+        new_subtree_node,
+        parent_scope,
+        &prev.module.symbols,
+    );
+    // The lower must have produced no new scopes for a decl_stmt. Defensive
+    // check — if it did, something is off and we bail rather than leave
+    // a stray scope attached.
+    if (lowered.new_scopes.items.len != 0) return error.UnexpectedScopeInDecl;
+
+    // 8. Replace the stmts slot.
+    parent_compound.stmts.items[slot_idx] = lowered.stmt;
+
+    // 9. Rebuild scope_for_cst_node; then add-walk the parent compound.
+    var tmp_result = ReparseResult{
+        .gpa = gpa,
+        .arena = prev.arena,
+        .source = new_source,
+        .module = prev.module,
+        .cst = new_tree,
+    };
+    try buildScopeForCstNodeMap(prev_arena, &tmp_result);
+
+    var add_scopes: std.ArrayListUnmanaged(*Ast.Scope) = .empty;
+    defer add_scopes.deinit(prev_arena);
+    try add_scopes.append(prev_arena, parent_scope);
+    try collectScopeSubtreeDfs(prev_arena, parent_scope, &add_scopes);
+
+    var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer add_errors.deinit(prev_arena);
+    var add_ctx = AstVisit.Context{
+        .arena = prev_arena,
+        .symbols = prev.module.symbols.items,
+        .scopes_in_order = add_scopes.items,
+        .scope = parent_scope.parent orelse prev.module.scope,
+        .errors = &add_errors,
+        .safety_budget = @max(64, new_tree.tokens.len * 2),
+        .mode = .add,
+    };
+    try AstVisit.visitSubtreeStmt(&add_ctx, .{ .compound = parent_compound });
 
     // 10. Commit.
     prev.module.source = new_source;
