@@ -117,28 +117,30 @@ test "S3: swap ident at a use site (ident_expr anchor)" {
     );
 }
 
-test "S4: rename at decl site falls back (not symbol-free)" {
+test "S4: rename at decl site takes the decl_stmt hot path" {
     // Editing the declarator name spans the let_decl. findAnchor
-    // bubbles up to let_decl or decl_stmt, neither of which is in
-    // `isSymbolFreeAnchor`, so we fall back to a full parse.
+    // bubbles to decl_stmt (now on the hot-path allowlist), whose
+    // reparse picks up the new name; module re-lower refreshes the
+    // symbol table in traversal order.
     try applyEditAndVerify(
         std.testing.allocator,
         "fn f() { let a = 1; let b = a + 2; }",
         .{ .start = 13, .end = 14, .new_text = "aa" },
         "fn f() { let aa = 1; let b = a + 2; }",
-        false,
+        true,
     );
 }
 
-test "S5: add a new local stmt → fallback (compound_stmt)" {
-    // Inserting a new stmt into a function body requires re-scoping;
-    // `compound_stmt` is not symbol-free, so we fall back.
+test "S5: add a new local stmt takes the compound_stmt hot path" {
+    // A local-decl append lands on `compound_stmt`, which is a hot-path
+    // anchor; `CstLower.lowerTree` re-derives the symbol table from the
+    // spliced CST so the new `b` symbol shows up correctly.
     try applyEditAndVerify(
         std.testing.allocator,
         "fn f() { let a = 1; }",
         .{ .start = 19, .end = 19, .new_text = " let b = 2;" },
         "fn f() { let a = 1; let b = 2; }",
-        false,
+        true,
     );
 }
 
@@ -275,4 +277,402 @@ test "S16: kind-stable edit that introduces a parse error falls back" {
     defer updated.deinit();
     try std.testing.expect(!updated.reused);
     try std.testing.expectEqualStrings("fn f() -> i32 { return +; }", updated.source);
+}
+
+// =========================================================================
+// A — Append-only hot path: local let/var/const additions land on the
+// compound_stmt anchor and take the hot path. Each edit is verified via
+// the `parseFull` oracle in `applyEditAndVerify` (shape + symbol table).
+// =========================================================================
+
+test "A1: append let into an empty body" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() {}",
+        .{ .start = 8, .end = 8, .new_text = " let x = 1;" },
+        "fn f() { let x = 1;}",
+        true,
+    );
+}
+
+test "A2: append let after last statement" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; }",
+        .{ .start = 19, .end = 19, .new_text = " let b = 2;" },
+        "fn f() { let a = 1; let b = 2; }",
+        true,
+    );
+}
+
+test "A3: append var with explicit type" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; }",
+        .{ .start = 19, .end = 19, .new_text = " var y: i32 = 0;" },
+        "fn f() { let a = 1; var y: i32 = 0; }",
+        true,
+    );
+}
+
+test "A4: append local const" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; }",
+        .{ .start = 19, .end = 19, .new_text = " const C = 3;" },
+        "fn f() { let a = 1; const C = 3; }",
+        true,
+    );
+}
+
+test "A5: append multiple statements at once" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() {}",
+        .{ .start = 8, .end = 8, .new_text = " let a = 1; let b = 2; let c = 3;" },
+        "fn f() { let a = 1; let b = 2; let c = 3;}",
+        true,
+    );
+}
+
+test "A6: append let with explicit type" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() {}",
+        .{ .start = 8, .end = 8, .new_text = " let x: f32 = 1.0;" },
+        "fn f() { let x: f32 = 1.0;}",
+        true,
+    );
+}
+
+test "A7: insert between two existing statements" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; let b = 2; }",
+        .{ .start = 19, .end = 19, .new_text = " let c = 3;" },
+        "fn f() { let a = 1; let c = 3; let b = 2; }",
+        true,
+    );
+}
+
+test "A8: prepend (insert at start of body)" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; }",
+        .{ .start = 9, .end = 9, .new_text = "let z = 0; " },
+        "fn f() { let z = 0; let a = 1; }",
+        true,
+    );
+}
+
+test "A9: append inside a nested block" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { { let a = 1; } }",
+        .{ .start = 21, .end = 21, .new_text = " let b = 2;" },
+        "fn f() { { let a = 1; let b = 2; } }",
+        true,
+    );
+}
+
+test "A10: append inside an if branch body" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { if true { let a = 1; } }",
+        .{ .start = 29, .end = 29, .new_text = " let b = 2;" },
+        "fn f() { if true { let a = 1; let b = 2; } }",
+        true,
+    );
+}
+
+test "A11: append inside a for-loop body" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { for (var i = 0; i < 10; i = i + 1) { let t = i; } }",
+        // Byte 56 sits right after `let t = i;` and before `}`.
+        .{ .start = 56, .end = 56, .new_text = " let u = i + 1;" },
+        "fn f() { for (var i = 0; i < 10; i = i + 1) { let t = i; let u = i + 1; } }",
+        true,
+    );
+}
+
+test "A12: append inside a loop continuing block" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { loop { break; continuing { let a = 1; } } }",
+        .{ .start = 46, .end = 46, .new_text = " let b = 2;" },
+        "fn f() { loop { break; continuing { let a = 1; let b = 2; } } }",
+        true,
+    );
+}
+
+test "A13: append creating a new for-loop sibling" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { for (var i = 0; i < 5; i = i + 1) {} }",
+        .{ .start = 45, .end = 45, .new_text = " for (var j = 0; j < 5; j = j + 1) {}" },
+        "fn f() { for (var i = 0; i < 5; i = i + 1) {} for (var j = 0; j < 5; j = j + 1) {} }",
+        true,
+    );
+}
+
+test "A14: append decl referencing outer symbol bumps use_count" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "fn f() { let a = 1; }";
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = 19,
+        .end = 19,
+        .new_text = " let b = a + 1;",
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+
+    // Oracle equivalence.
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectSymbolsMatch(updated.module, oracle.module);
+
+    // Spot-check: find symbol `a` in updated and assert use_count > 0.
+    var found_a_use: u32 = 0;
+    for (updated.module.symbols.items) |s| {
+        if (std.mem.eql(u8, s.original_name, "a")) {
+            found_a_use = s.use_count;
+        }
+    }
+    try std.testing.expect(found_a_use >= 1);
+}
+
+test "A15: append inside inner block does not affect outer binding" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; { let x = 2; } }",
+        .{ .start = 32, .end = 32, .new_text = " let a = 3;" },
+        "fn f() { let a = 1; { let x = 2; let a = 3; } }",
+        true,
+    );
+}
+
+test "A16: redeclaration in same block — falls back on parser diagnostic" {
+    // The parser emits E0101 when the redeclared `a` is declared in the
+    // same block scope during the compound reparse, so `sub_parser.errors`
+    // is non-empty and the hot path bails. The oracle still succeeds.
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; }",
+        .{ .start = 19, .end = 19, .new_text = " let a = 2;" },
+        "fn f() { let a = 1; let a = 2; }",
+        false,
+    );
+}
+
+test "A17: append with leading newline and indent" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() {\n    let a = 1;\n}",
+        // Insert ` let b = 2;` just before the trailing newline+`}`.
+        .{ .start = 23, .end = 23, .new_text = "\n    let b = 2;" },
+        "fn f() {\n    let a = 1;\n    let b = 2;\n}",
+        true,
+    );
+}
+
+test "A18: append with interleaved line comment" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() {}",
+        .{ .start = 8, .end = 8, .new_text = " // note\n    let b = 2;" },
+        "fn f() { // note\n    let b = 2;}",
+        true,
+    );
+}
+
+test "A19: append pure whitespace — no symbol change" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; }",
+        .{ .start = 19, .end = 19, .new_text = "\n " },
+        "fn f() { let a = 1;\n  }",
+        true,
+    );
+}
+
+test "A21: unbalanced append falls back" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "fn f() { let a = 1; }";
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+
+    // `let b = (` is an unclosed expression — parser emits diagnostic.
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = 19,
+        .end = 20,
+        .new_text = " let b = (",
+    });
+    defer updated.deinit();
+    try std.testing.expect(!updated.reused);
+    try std.testing.expectEqualStrings("fn f() { let a = 1; let b = (}", updated.source);
+}
+
+test "A23: edit crossing two functions falls back" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "fn f() {} fn g() {}";
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+
+    // Replace bytes covering the `{}` of f through the `fn ` of g —
+    // no single hot-path anchor covers the range (it straddles two
+    // fn_decls), so findAnchor hits module root → fallback.
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = 7,
+        .end = 13,
+        .new_text = " fn h() ",
+    });
+    defer updated.deinit();
+    try std.testing.expect(!updated.reused);
+    try std.testing.expectEqualStrings("fn f()  fn h() g() {}", updated.source);
+}
+
+test "A24: append at module scope falls back" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "fn f() {}";
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+
+    // Prepend a module-scope const. The edit sits outside fn_decl's
+    // range (strictly contained only by the module root, which is not
+    // a reparse anchor) → fallback.
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = 0,
+        .end = 0,
+        .new_text = "const X = 1;\n",
+    });
+    defer updated.deinit();
+    try std.testing.expect(!updated.reused);
+    try std.testing.expectEqualStrings("const X = 1;\nfn f() {}", updated.source);
+    try std.testing.expectEqual(@as(usize, 2), updated.module.declarations.items.len);
+}
+
+test "A25: replace one stmt with another (same compound)" {
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; }",
+        .{ .start = 9, .end = 19, .new_text = "var a: i32 = 42;" },
+        "fn f() { var a: i32 = 42; }",
+        true,
+    );
+}
+
+test "A26: delete last stmt falls back (anchor boundary shifts)" {
+    // `findAnchor` picks the inner `decl_stmt` as the narrowest match.
+    // After deletion, the first non-trivia token at the anchor's start
+    // byte is past `edit.start` → `AnchorBoundaryShifted` → fallback.
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; let b = 2; }",
+        .{ .start = 19, .end = 30, .new_text = "" },
+        "fn f() { let a = 1; }",
+        false,
+    );
+}
+
+test "A27: replace stmt with compound falls back on kind mismatch" {
+    // Anchor is the inner `decl_stmt`; reparse yields a `compound_stmt`
+    // (the new `{ … }` block), so the kind-mismatch guard bails.
+    try applyEditAndVerify(
+        std.testing.allocator,
+        "fn f() { let a = 1; }",
+        .{ .start = 9, .end = 19, .new_text = "{ let a = 1; let b = 2; }" },
+        "fn f() { { let a = 1; let b = 2; } }",
+        false,
+    );
+}
+
+test "A29: downstream decl offsets shift after a body append" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "fn f() { }\nconst x = 1;";
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+
+    // Append a local into f's body.
+    var r1 = try Incremental.reparse(gpa, &prev, .{
+        .start = 9,
+        .end = 9,
+        .new_text = "let y = 2;",
+    });
+    defer r1.deinit();
+    try std.testing.expect(r1.reused);
+    try std.testing.expectEqualStrings("fn f() { let y = 2;}\nconst x = 1;", r1.source);
+
+    // Now edit the literal `1` inside `const x = 1;`. It's at byte 31
+    // in the shifted source.
+    const one_off: u32 = @intCast(std.mem.lastIndexOfScalar(u8, r1.source, '1').?);
+    var r2 = try Incremental.reparse(gpa, &r1, .{
+        .start = one_off,
+        .end = one_off + 1,
+        .new_text = "99",
+    });
+    defer r2.deinit();
+    try std.testing.expect(r2.reused);
+    try std.testing.expectEqualStrings("fn f() { let y = 2;}\nconst x = 99;", r2.source);
+}
+
+test "A31: 50 successive appends all take the hot path" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "fn f() {}";
+    var cur = try Incremental.parseFull(gpa, base);
+    defer cur.deinit();
+
+    var i: u32 = 0;
+    while (i < 50) : (i += 1) {
+        // Byte offset of `}` is always source.len - 1.
+        const close_off: u32 = @intCast(cur.source.len - 1);
+        var buf: [32]u8 = undefined;
+        const payload = try std.fmt.bufPrint(&buf, " let v{} = {};", .{ i, i });
+        const next = try Incremental.reparse(gpa, &cur, .{
+            .start = close_off,
+            .end = close_off,
+            .new_text = payload,
+        });
+        cur.deinit();
+        cur = next;
+        try std.testing.expect(cur.reused);
+    }
+    try std.testing.expectEqual(@as(usize, 1), cur.module.declarations.items.len);
+
+    // Shape/symbol equivalence with a fresh full parse.
+    var oracle = try Incremental.parseFull(gpa, cur.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, cur.module, oracle.module);
+    try expectSymbolsMatch(cur.module, oracle.module);
+}
+
+test "A32: alternating appends across two function bodies" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "fn f() {}\nfn g() {}";
+    var cur = try Incremental.parseFull(gpa, base);
+    defer cur.deinit();
+
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        const target: []const u8 = if (i % 2 == 0) "fn f()" else "fn g()";
+        const f_start = std.mem.indexOf(u8, cur.source, target).?;
+        // Find the `{` after `fn X()`.
+        const brace_open = std.mem.indexOfScalarPos(u8, cur.source, f_start, '{').?;
+        const brace_close = std.mem.indexOfScalarPos(u8, cur.source, brace_open, '}').?;
+        const close_off: u32 = @intCast(brace_close);
+        var buf: [32]u8 = undefined;
+        const payload = try std.fmt.bufPrint(&buf, " let v{} = {};", .{ i, i });
+        const next = try Incremental.reparse(gpa, &cur, .{
+            .start = close_off,
+            .end = close_off,
+            .new_text = payload,
+        });
+        cur.deinit();
+        cur = next;
+        try std.testing.expect(cur.reused);
+    }
+    try std.testing.expectEqual(@as(usize, 2), cur.module.declarations.items.len);
 }
