@@ -1594,7 +1594,7 @@ const LowerCtx = struct {
                 const n = w.eatAnyNode().?;
                 if (try self.lowerDecl(self.nodeCursor(n), k)) |decl| {
                     const ds = try self.arena.create(Ast.DeclStmt);
-                    ds.* = .{ .decl = decl };
+                    ds.* = .{ .decl = decl, .span = decl.declSpan() };
                     return Ast.Stmt{ .decl = ds };
                 }
                 return null;
@@ -1618,6 +1618,7 @@ const LowerCtx = struct {
         _ = expect_semicolon;
         const left_n = w.eatAnyNode() orelse return null;
         const left = try self.lowerExpr(left_n);
+        const stmt_start = left.span().start;
         if (w.peekTokenTag()) |t| {
             if (t == .plus_plus or t == .minus_minus) {
                 const tok = w.eatAnyToken().?;
@@ -1626,18 +1627,21 @@ const LowerCtx = struct {
                     .loc = self.tokenStart(tok),
                     .expr = left,
                     .increment = t == .plus_plus,
+                    .span = .{ .start = stmt_start, .end = self.tokenEnd(tok) },
                 };
                 return Ast.Stmt{ .incr_decr = node };
             }
             if (assignOpFromTag(t)) |op| {
                 const tok = w.eatAnyToken().?;
                 const right_n = w.eatAnyNode() orelse return null;
+                const right = try self.lowerExpr(right_n);
                 const node = try self.arena.create(Ast.AssignStmt);
                 node.* = .{
                     .loc = self.tokenStart(tok),
                     .op = op,
                     .left = left,
-                    .right = try self.lowerExpr(right_n),
+                    .right = right,
+                    .span = .{ .start = stmt_start, .end = right.span().end },
                 };
                 return Ast.Stmt{ .assign = node };
             }
@@ -1645,7 +1649,7 @@ const LowerCtx = struct {
         switch (left) {
             .call => |c| {
                 const node = try self.arena.create(Ast.CallStmt);
-                node.* = .{ .call = c };
+                node.* = .{ .call = c, .span = left.span() };
                 return Ast.Stmt{ .call = node };
             },
             else => return null,

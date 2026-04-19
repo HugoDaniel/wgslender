@@ -2090,7 +2090,7 @@ fn parseForStmt(self: *Parser) !*Ast.ForStmt {
             .keyword_var, .keyword_let => {
                 if (try self.parseDeclaration()) |decl| {
                     const ds = try self.arena.create(Ast.DeclStmt);
-                    ds.* = .{ .decl = decl };
+                    ds.* = .{ .decl = decl, .span = decl.declSpan() };
                     node.init_stmt = .{ .decl = ds };
                 }
             },
@@ -2120,6 +2120,11 @@ fn parseForStmt(self: *Parser) !*Ast.ForStmt {
 
 fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
     self.expr_context = "in for update";
+    // Capture the byte offset BEFORE parsing the LHS — Parser-built
+    // expression nodes carry empty spans, so we cannot recover the
+    // statement's start byte from `left.span()`. CstLower mirrors this
+    // computation in `lowerLooseExprStmt`.
+    const stmt_start = self.currentStart();
     const left = (try self.parseExpression()) orelse return null;
 
     // Check for assignment or incr/decr
@@ -2128,14 +2133,24 @@ fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
             const loc = self.currentStart();
             self.advance();
             const node = try self.arena.create(Ast.IncrDecrStmt);
-            node.* = .{ .loc = loc, .expr = left, .increment = true };
+            node.* = .{
+                .loc = loc,
+                .expr = left,
+                .increment = true,
+                .span = .{ .start = stmt_start, .end = self.prevTokenEnd() },
+            };
             return .{ .incr_decr = node };
         },
         .minus_minus => {
             const loc = self.currentStart();
             self.advance();
             const node = try self.arena.create(Ast.IncrDecrStmt);
-            node.* = .{ .loc = loc, .expr = left, .increment = false };
+            node.* = .{
+                .loc = loc,
+                .expr = left,
+                .increment = false,
+                .span = .{ .start = stmt_start, .end = self.prevTokenEnd() },
+            };
             return .{ .incr_decr = node };
         },
         else => {},
@@ -2147,14 +2162,23 @@ fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
         self.expr_context = "in for update assignment";
         const right = (try self.parseExpression()) orelse return null;
         const node = try self.arena.create(Ast.AssignStmt);
-        node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
+        node.* = .{
+            .loc = loc,
+            .op = op,
+            .left = left,
+            .right = right,
+            .span = .{ .start = stmt_start, .end = right.span().end },
+        };
         return .{ .assign = node };
     }
 
     // Call expression
     if (left == .call) {
         const node = try self.arena.create(Ast.CallStmt);
-        node.* = .{ .call = left.call };
+        node.* = .{
+            .call = left.call,
+            .span = .{ .start = stmt_start, .end = self.prevTokenEnd() },
+        };
         return .{ .call = node };
     }
 
