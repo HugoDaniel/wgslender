@@ -30,14 +30,6 @@ const AstVisit = @import("AstVisit.zig");
 
 const Incremental = @This();
 
-/// Compile-time toggle for the arena-transfer rework. When `true`, the
-/// symbol-free hot path extends `prev.arena` in place instead of
-/// allocating a fresh arena and appending prev's arena to
-/// `retained_arenas`. See `docs/arena-transfer-zero-alloc-plan.md`. Flag
-/// stays during the Step 1 / Step 2 rollout so the old behavior remains
-/// reachable for regression coverage; Step 3 deletes it.
-const in_place_hot_path: bool = true;
-
 /// A single contiguous byte-level edit, in OLD-source coordinates.
 /// `[start, end)` is the range being replaced (may be empty for pure
 /// inserts), `new_text` is the replacement (may be empty for pure deletes).
@@ -67,19 +59,21 @@ pub const EditKind = enum {
 /// module, CST, source bytes, and the scope-map. Dropping frees the lot.
 ///
 /// **Ownership model.** `arena` always points to the "current" arena
-/// from which fresh allocations happen. `retained_arenas` holds any
-/// arenas whose storage the result also relies on — populated by the
-/// add/sub hot path, which reuses prev's AST nodes in place rather than
-/// deep-copying them into a fresh arena. The hot path *moves* prev's
-/// arena into `retained_arenas` and replaces prev's own `arena` with an
-/// empty stub so prev's subsequent `deinit` is a harmless no-op.
+/// from which fresh allocations happen. On the symbol-free hot path
+/// this is simply `prev.arena` — extended in place, not replaced — and
+/// `prev` receives an empty stub arena so `prev.deinit()` stays a safe
+/// no-op. `retained_arenas` holds any arenas whose storage the result
+/// also relies on. It is populated only when a non-symbol-free hot-path
+/// edit (compound_stmt / decl_stmt) re-lowers the whole module into a
+/// fresh arena: prev's arena moves into `retained_arenas` and a stub
+/// replaces it.
 pub const ReparseResult = struct {
     gpa: Allocator,
     arena: *std.heap.ArenaAllocator,
     /// Arenas whose backing storage this result still references. Empty
-    /// on full-parse paths (`parseFull` always allocates everything in
-    /// `arena`). Populated only by the add/sub hot path when it reuses
-    /// prev module's declarations / symbols / scopes in place.
+    /// on full-parse and on symbol-free-only edit sequences. Grown by
+    /// non-symbol-free hot-path reparses that allocate a fresh arena
+    /// while keeping prev's module/symbols/scopes live.
     retained_arenas: std.ArrayListUnmanaged(*std.heap.ArenaAllocator) = .empty,
     source: [:0]const u8,
     module: *Ast.Module,
@@ -448,18 +442,7 @@ pub fn reparse(
     // `parseFull`. Wrapped in a small helper so every early return
     // still frees the scratch builder; failures land on the common
     // bottom path.
-    //
-    // Two implementations: `tryIncrementalReparseInPlace` reuses
-    // prev.arena directly (zero new-arena allocations on success);
-    // `tryIncrementalReparse` allocates a fresh arena and transfers
-    // prev's arena into `retained_arenas`. The comptime flag at the
-    // top of this file picks between them; Step 3 of the arena-transfer
-    // rollout drops the old variant.
-    const hot = if (in_place_hot_path)
-        tryIncrementalReparseInPlace(gpa, prev, edit, new_buf)
-    else
-        tryIncrementalReparse(gpa, prev, edit, new_buf);
-    if (hot) |result| {
+    if (tryIncrementalReparseInPlace(gpa, prev, edit, new_buf)) |result| {
         return result;
     } else |_| {
         // Any error (OOM, InvalidCst, kind mismatch, error_tree in the
@@ -576,43 +559,18 @@ fn tryIncrementalReparse(
         return error.AnchorParseDidNotCoverEdit;
     }
 
-    // 8. Capture the old anchor's byte range BEFORE splicing — we need
-    //    it to locate the corresponding AST slot in prev.module. The CST
-    //    range is authoritative: Ast spans are built from non-trivia
-    //    tokens, and the raw CST range contains the non-trivia span, so
-    //    slot lookup by "kind + span fully contained in old_anchor_range"
-    //    is stable.
-    const old_anchor_span: Ast.Span = .{
-        .start = anchor_cursor.range().start,
-        .end = anchor_cursor.range().end,
-    };
+    // Symbol-free anchors never reach this function — the in-place
+    // entry `tryIncrementalReparseInPlace` handles them directly on
+    // prev.arena and only delegates here for the non-symbol-free
+    // branch (compound_stmt / decl_stmt), which re-lowers the whole
+    // module from the spliced CST into the fresh arena.
+    std.debug.assert(!isSymbolFreeAnchor(anchor_kind));
 
-    // 9. Splice the CST. The spliced tree owns `new_all_tokens` now.
-    //    The new subtree lives at the same DFS index as the old anchor
-    //    (`Cst.spliceSubtree` contract), so `anchor_cursor.node` still
-    //    addresses it in `new_tree`.
+    // Splice the CST. The spliced tree owns `new_all_tokens` now. The
+    // new subtree lives at the same DFS index as the old anchor
+    // (`Cst.spliceSubtree` contract).
     var new_tree = try Cst.spliceSubtree(arena, &prev.cst, anchor_cursor.node, &new_sub, new_source, new_all_tokens);
 
-    // 10. Symbol-free anchors take a targeted add/sub delta path that
-    //     reuses prev.module's AST nodes in place. Scope-introducing
-    //     anchors (compound_stmt, decl_stmt) still fall through to the
-    //     whole-module re-lower below.
-    if (isSymbolFreeAnchor(anchor_kind)) {
-        return try tryAddSubSplice(
-            gpa,
-            prev,
-            arena_ptr,
-            new_source,
-            new_tree,
-            anchor_cursor.node,
-            anchor_kind,
-            old_anchor_span,
-        );
-    }
-
-    // 11. Scope-introducing anchors: re-lower the whole module from the
-    //     spliced CST. Allocates the fresh `Ast.Module` + symbols + scope
-    //     tree in the new arena.
     const module = try CstLower.lowerTree(gpa, arena, &new_tree);
 
     var result = ReparseResult{
@@ -657,155 +615,6 @@ fn isSymbolFreeAnchor(k: Cst.Kind) bool {
     };
 }
 
-/// Symbol-free add/sub hot path. The caller has already spliced the CST
-/// and captured the old anchor's byte span. Steps:
-///
-///   1. Locate the `*Ast.Stmt` or `*Ast.Expr` slot in `prev.module`
-///      whose span matches `old_anchor_span` and whose kind matches
-///      `anchor_kind`.
-///   2. Sub-walk that slot's contents against `prev.module.symbols` so
-///      every resolved ident's `use_count` decrements back to its
-///      pre-subtree value.
-///   3. Lower the new CST subtree into `prev.arena` (so its AST nodes
-///      sit alongside the rest of the module).
-///   4. Mutate the slot in place to point at the new subtree.
-///   5. Add-walk the new slot, positioning `ctx.scope` at the anchor's
-///      enclosing scope via `scopeAtCstNode` on the new tree.
-///   6. Transfer ownership of `prev.arena` into `result.retained_arenas`
-///      and install an empty stub arena in `prev` so `prev.deinit()`
-///      remains safe.
-fn tryAddSubSplice(
-    gpa: Allocator,
-    prev: *ReparseResult,
-    new_arena_ptr: *std.heap.ArenaAllocator,
-    new_source: [:0]const u8,
-    new_tree_in: Cst.Tree,
-    new_subtree_node: Cst.NodeIndex,
-    anchor_kind: Cst.Kind,
-    old_anchor_span: Ast.Span,
-) !ReparseResult {
-    var new_tree = new_tree_in;
-    const new_arena = new_arena_ptr.allocator();
-    const prev_arena = prev.arena.allocator();
-
-    // 1. Find the AST slot matching the old anchor.
-    const slot = findAstSlot(prev.module, old_anchor_span, anchor_kind) orelse return error.AstSlotNotFound;
-
-    // 2. Sub-walk: decrement use_counts for every resolved ident in the
-    //    old subtree. Uses `scopes_in_order = &.{}` because a symbol-free
-    //    anchor never enters or exits a nested scope during the walk.
-    var discard_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
-    defer discard_errors.deinit(prev_arena);
-    var sub_ctx = AstVisit.Context{
-        .arena = prev_arena,
-        .symbols = prev.module.symbols.items,
-        .scopes_in_order = &.{},
-        .scope = prev.module.scope,
-        .errors = &discard_errors,
-        .safety_budget = @max(64, prev.cst.tokens.len * 2),
-        .mode = .sub,
-    };
-    switch (slot) {
-        .stmt => |p| try AstVisit.visitSubtreeStmt(&sub_ctx, p.*),
-        .expr => |p| _ = try AstVisit.visitSubtreeExpr(&sub_ctx, p.*),
-    }
-
-    // 3. Shift downstream AST span/loc fields by delta so they reflect
-    //    new-source positions. Must happen BEFORE we lower the new
-    //    subtree and splice it in, because the new subtree's spans are
-    //    already in new-source coordinates — shifting afterward would
-    //    double-shift the spliced slot's descendants.
-    const old_len: u32 = old_anchor_span.end - old_anchor_span.start;
-    const new_node_span = new_tree.getNode(new_subtree_node);
-    const new_len: u32 = new_node_span.end - new_node_span.start;
-    const delta: i64 = @as(i64, new_len) - @as(i64, old_len);
-    shiftAstSpans(prev.module, old_anchor_span.end, delta);
-
-    // 4. Lower the new CST subtree into prev.arena. `CstLower.lowerSubtree`
-    //    leaves ident refs as `.none` — the add-walk below resolves them.
-    const new_lowered = try CstLower.lowerSubtree(prev_arena, &new_tree, new_subtree_node);
-
-    // 4. Splice AST in place. Kind must match (enforced — belt and braces).
-    switch (slot) {
-        .stmt => |p| switch (new_lowered) {
-            .stmt => |s| p.* = s,
-            .expr => return error.SlotKindMismatch,
-        },
-        .expr => |p| switch (new_lowered) {
-            .expr => |e| p.* = e,
-            .stmt => return error.SlotKindMismatch,
-        },
-    }
-
-    // 5. Build the scope-for-CST-node map against the new tree and a
-    //    temporary ReparseResult shell so we can reuse `scopeAtCstNode`.
-    //    The real result structure comes below.
-    var tmp_result = ReparseResult{
-        .gpa = gpa,
-        .arena = new_arena_ptr,
-        .source = new_source,
-        .module = prev.module,
-        .cst = new_tree,
-    };
-    try buildScopeForCstNodeMap(new_arena, &tmp_result);
-    const anchor_scope = scopeAtCstNode(&tmp_result, new_subtree_node);
-
-    //    Add-walk: resolve idents and increment use_counts in the new
-    //    subtree against the anchor's enclosing scope.
-    var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
-    defer add_errors.deinit(prev_arena);
-    var add_ctx = AstVisit.Context{
-        .arena = prev_arena,
-        .symbols = prev.module.symbols.items,
-        .scopes_in_order = &.{},
-        .scope = anchor_scope,
-        .errors = &add_errors,
-        .safety_budget = @max(64, new_tree.tokens.len * 2),
-        .mode = .add,
-    };
-    switch (slot) {
-        .stmt => |p| try AstVisit.visitSubtreeStmt(&add_ctx, p.*),
-        .expr => |p| p.* = try AstVisit.visitSubtreeExpr(&add_ctx, p.*),
-    }
-    // If the add-walk saw an E0102 ("used before declaration"), the hot
-    // path's diagnostic output diverges from the oracle. Bail so the
-    // full-parse fallback produces byte-identical errors.
-    if (add_errors.items.len > 0) return error.AddWalkRaisedErrors;
-
-    // 6. Update the prev module's source pointer to the new source, and
-    //    assemble the result. Transfer prev.arena into retained_arenas
-    //    and install an empty stub in prev.
-    prev.module.source = new_source;
-
-    var result = ReparseResult{
-        .gpa = gpa,
-        .arena = new_arena_ptr,
-        .source = new_source,
-        .module = prev.module,
-        .cst = new_tree,
-        .reused = true,
-        .scope_for_cst_node = tmp_result.scope_for_cst_node,
-    };
-    // Transfer prev's arena AND any arenas prev itself retained (from
-    // earlier chained reparses) into our `retained_arenas`. Failing to
-    // absorb prev.retained_arenas would leak them across repeated
-    // edits, since we replace prev's list with `.empty` below.
-    try result.retained_arenas.ensureUnusedCapacity(gpa, prev.retained_arenas.items.len + 1);
-    result.retained_arenas.appendSliceAssumeCapacity(prev.retained_arenas.items);
-    result.retained_arenas.appendAssumeCapacity(prev.arena);
-
-    // Install an empty stub arena in prev so `prev.deinit()` stays a
-    // safe no-op. `prev.module` / `prev.cst` / `prev.source` are now
-    // aliased by `result`; callers must not read `prev` again.
-    const stub = try gpa.create(std.heap.ArenaAllocator);
-    stub.* = std.heap.ArenaAllocator.init(gpa);
-    prev.arena = stub;
-    // Drop prev's ArrayList storage (entries moved to `result` above).
-    prev.retained_arenas.deinit(gpa);
-    prev.retained_arenas = .empty;
-
-    return result;
-}
 
 // =========================================================================
 // In-place hot-path variant (see `docs/arena-transfer-zero-alloc-plan.md`).
