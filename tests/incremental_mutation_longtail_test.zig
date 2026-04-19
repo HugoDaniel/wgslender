@@ -692,6 +692,110 @@ test "M6.c: break-if condition ident swap (ident_expr anchor)" {
     );
 }
 
+// =========================================================================
+// M7 — Member-access & call-argument chain mutations.
+//
+// `findSlotInExprField` (`src/Incremental.zig:1237`) descends through
+// `.member`, `.index`, `.call`, `.unary`, and `.paren`. M7 covers a deep
+// member chain, an inner index-expression edit, mid-call argument swap,
+// nested calls, unary, and nested parentheses — each picking a different
+// branch of the expression descent.
+// =========================================================================
+
+test "M7.a: chained member-access trailing field rename (member_expr anchor)" {
+    // Renaming the trailing field `.c` keeps the outermost member_expr
+    // shape; the change lands on the member-name token whose parent
+    // anchor is the outermost member_expr.
+    const src: [:0]const u8 =
+        "struct Inner { x: f32 } struct Mid { c: Inner } struct Outer { b: Mid } fn f(o: Outer) -> f32 { return o.b.c.x; }";
+    const new_src: []const u8 =
+        "struct Inner { x: f32 } struct Mid { c: Inner } struct Outer { b: Mid } fn f(o: Outer) -> f32 { return o.b.c.xx; }";
+    const off: u32 = at(src, "o.b.c.x;") + @as(u32, @intCast("o.b.c.".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "xx" },
+        new_src,
+        true,
+    );
+}
+
+test "M7.b: index-expr inner literal swap (literal_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn f(arr: array<i32, 4>, i: i32) -> i32 { return arr[i + 1]; }";
+    const new_src: []const u8 =
+        "fn f(arr: array<i32, 4>, i: i32) -> i32 { return arr[i + 2]; }";
+    const lit_off: u32 = at(src, "i + 1") + @as(u32, @intCast("i + ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = lit_off, .end = lit_off + 1, .new_text = "2" },
+        new_src,
+        true,
+    );
+}
+
+test "M7.c: third call-arg ident swap to sibling local (ident_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn g(a: i32, b: i32, c: i32) -> i32 { return a + b + c; } fn f() -> i32 { let x = 1; let y = 2; let z = 3; let w = 4; return g(x, y, z); }";
+    const new_src: []const u8 =
+        "fn g(a: i32, b: i32, c: i32) -> i32 { return a + b + c; } fn f() -> i32 { let x = 1; let y = 2; let z = 3; let w = 4; return g(x, y, w); }";
+    // The third arg is the trailing `z` before the `)`.
+    const arg_off: u32 = at(src, "g(x, y, z)") + @as(u32, @intCast("g(x, y, ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = arg_off, .end = arg_off + 1, .new_text = "w" },
+        new_src,
+        true,
+    );
+}
+
+test "M7.d: ident inside nested call argument (ident_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn g(a: i32) -> i32 { return a; } fn h(a: i32, b: i32) -> i32 { return a; } fn f() -> i32 { let x = 1; let xx = 2; let y = 3; return h(g(x), y); }";
+    const new_src: []const u8 =
+        "fn g(a: i32) -> i32 { return a; } fn h(a: i32, b: i32) -> i32 { return a; } fn f() -> i32 { let x = 1; let xx = 2; let y = 3; return h(g(xx), y); }";
+    const arg_off: u32 = at(src, "h(g(x), y)") + @as(u32, @intCast("h(g(".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = arg_off, .end = arg_off + 1, .new_text = "xx" },
+        new_src,
+        true,
+    );
+}
+
+test "M7.e: unary operand ident swap (ident_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn f() -> i32 { let a = 1; let aa = 2; return -a; }";
+    const new_src: []const u8 =
+        "fn f() -> i32 { let a = 1; let aa = 2; return -aa; }";
+    const id_off: u32 = at(src, "return -a;") + @as(u32, @intCast("return -".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = id_off, .end = id_off + 1, .new_text = "aa" },
+        new_src,
+        true,
+    );
+}
+
+test "M7.f: nested paren innermost ident swap (ident_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn f() -> i32 { let a = 1; let b = 2; let c = 3; let d = 4; return (a + (b + c)); }";
+    const new_src: []const u8 =
+        "fn f() -> i32 { let a = 1; let b = 2; let c = 3; let d = 4; return (a + (b + d)); }";
+    const id_off: u32 = at(src, "(b + c)") + @as(u32, @intCast("(b + ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = id_off, .end = id_off + 1, .new_text = "d" },
+        new_src,
+        true,
+    );
+}
+
 test "M6.d: 5 successive condition flips on a while keep hot path" {
     const gpa = std.testing.allocator;
     const src: [:0]const u8 =
