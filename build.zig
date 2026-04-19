@@ -175,6 +175,8 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/decl_span_test.zig", target, optimize, &.{w});
     // Incremental.reparse — bulk corpus over compute.toys + composition.
     _ = addTestStep(b, test_step, "tests/incremental_corpus_test.zig", target, optimize, &.{w});
+    // Incremental.reparse — symbol-free hot-path unit tests.
+    _ = addTestStep(b, test_step, "tests/incremental_mutation_test.zig", target, optimize, &.{w});
     // Incremental.reparse — long-tail edge cases (unicode, CRLF, token
     // tag flips, comment-break / comment-close, boundary edits, …).
     _ = addTestStep(b, test_step, "tests/incremental_longtail_test.zig", target, optimize, &.{w});

@@ -23,6 +23,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Cst = @import("Cst.zig");
+const CstLower = @import("CstLower.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 
@@ -195,9 +196,43 @@ pub fn parseFull(gpa: Allocator, source: []const u8) !ReparseResult {
     };
 }
 
-/// Apply `edit` to `prev.source` and return a fresh `ReparseResult` for
-/// the resulting source. Today this always splices + full-parses; the
-/// call site API is the stake.
+/// Kinds that qualify as a symbol-free anchor: their subtrees don't
+/// introduce, remove, or reorder any symbols, so the prev module's
+/// symbol table is structurally unchanged across the edit. Only the
+/// `Ast.Module` as a whole needs re-lowering (which `CstLower.lowerTree`
+/// does from the spliced CST). Other anchor kinds fall back to full
+/// parse this session; append-only / scope-changing paths ship later.
+fn isSymbolFreeAnchor(k: Cst.Kind) bool {
+    return switch (k) {
+        // Expressions never declare symbols.
+        .literal_expr,
+        .ident_expr,
+        .binary_expr,
+        .unary_expr,
+        .call_expr,
+        .index_expr,
+        .member_expr,
+        .paren_expr,
+        // Statements that do not open a scope and do not declare anything.
+        .return_stmt,
+        .assign_stmt,
+        .incr_decr_stmt,
+        .call_stmt,
+        .break_stmt,
+        .break_if_stmt,
+        .continue_stmt,
+        .discard_stmt,
+        => true,
+        else => false,
+    };
+}
+
+/// Apply `edit` to `prev.source` and return a fresh `ReparseResult`
+/// for the resulting source. Hot path: find a symbol-free anchor in
+/// `prev.cst`, re-parse only that subtree, splice the CST, and
+/// re-lower. Any failure mode falls back to `parseFull` (with
+/// `reused = false`), so correctness degrades gracefully into the
+/// known-good full-parse path.
 pub fn reparse(
     gpa: Allocator,
     prev: *const ReparseResult,
@@ -213,6 +248,8 @@ pub fn reparse(
         return parseFull(gpa, prev.source);
     }
 
+    // Build new source byte buffer. Needed both for the hot path and
+    // the fallback, so compute it up front.
     const new_len = prev.source.len - (edit.end - edit.start) + edit.new_text.len;
     const new_buf = try gpa.alloc(u8, new_len);
     defer gpa.free(new_buf);
@@ -223,7 +260,125 @@ pub fn reparse(
         prev.source[edit.end..],
     );
 
+    // Attempt the hot path. On any fallback trigger, fall through to
+    // `parseFull`. Wrapped in a small helper so every early return
+    // still frees the scratch builder; failures land on the common
+    // bottom path.
+    if (tryIncrementalReparse(gpa, prev, edit, new_buf)) |result| {
+        return result;
+    } else |_| {
+        // Any error (OOM, InvalidCst, kind mismatch, error_tree in the
+        // reparsed subtree) bails to full reparse. parseFull is also
+        // the correctness oracle, so this is safe.
+    }
+
     return parseFull(gpa, new_buf);
+}
+
+/// Actually attempts the symbol-free hot path. Errors = "fall back";
+/// callers wrap it in a `catch` to full-parse on failure.
+fn tryIncrementalReparse(
+    gpa: Allocator,
+    prev: *const ReparseResult,
+    edit: Edit,
+    new_buf: []const u8,
+) !ReparseResult {
+    // 1. Find a reparse anchor in prev.cst that fully contains the edit.
+    const anchor_cursor = findAnchor(&prev.cst, edit) orelse return error.NoAnchor;
+    if (!isSymbolFreeAnchor(anchor_cursor.kind())) return error.NotSymbolFree;
+    const anchor_kind = anchor_cursor.kind();
+
+    // 2. Allocate a fresh arena for the new ReparseResult. All new
+    //    memory — source, tokens, CST, module — lands here.
+    const arena_ptr = try gpa.create(std.heap.ArenaAllocator);
+    errdefer gpa.destroy(arena_ptr);
+    arena_ptr.* = std.heap.ArenaAllocator.init(gpa);
+    errdefer arena_ptr.deinit();
+    const arena = arena_ptr.allocator();
+
+    // 3. Copy the new source into the arena as a sentinel-terminated slice.
+    const new_source = try arena.allocSentinel(u8, new_buf.len, 0);
+    @memcpy(new_source, new_buf);
+
+    // 4. Re-lex new_source end-to-end. (A token-stability window could
+    //    avoid re-lexing the unchanged tail, but full re-lex is already
+    //    fast compared to parse and keeps the code simple.)
+    var new_all_tokens = try Lexer.tokenizeAll(arena, new_source);
+    const new_stream = try Parser.TokenStream.init(arena, &new_all_tokens);
+
+    // 5. Locate the non-trivia token that begins the anchor in the new
+    //    stream. Anchor's `range().start` can point at leading trivia
+    //    (a whitespace/comment attributed to the anchor's subtree
+    //    during a full parse), so we find the first non-trivia token
+    //    at or after that byte. Since bytes before `edit.start` are
+    //    identical in old and new, and the anchor's first non-trivia
+    //    byte is always <= edit.start (anchor contains the edit), this
+    //    non-trivia index is byte-stable across the edit.
+    const anchor_byte = anchor_cursor.range().start;
+    var nt_pos: u32 = 0;
+    while (nt_pos < new_stream.non_trivia_starts.len and
+        new_stream.non_trivia_starts[nt_pos] < anchor_byte) : (nt_pos += 1)
+    {}
+    if (nt_pos >= new_stream.non_trivia_starts.len) {
+        return error.AnchorBoundaryShifted;
+    }
+    // Verify that the non-trivia token landing here starts before or at
+    // edit.start — otherwise the anchor's first real token has moved
+    // past the edit boundary, which invalidates the hot-path premise.
+    if (new_stream.non_trivia_starts[nt_pos] > edit.start) {
+        return error.AnchorBoundaryShifted;
+    }
+
+    // 6. Re-parse the anchor's production into a fresh subtree.
+    var sub_builder = Cst.Builder.init(gpa);
+    defer sub_builder.deinit();
+    var sub_parser = try Parser.initWithCst(arena, new_source, new_stream, &sub_builder);
+    const parser_kind: Parser.AnchorKind = if (isStmtKind(anchor_kind)) .statement else .expression;
+    sub_parser.reparseAnchor(parser_kind, nt_pos) catch return error.AnchorParseFailed;
+    var new_sub = try sub_builder.finish(arena, new_all_tokens, new_source);
+
+    // 7. Validate the reparse: must have produced a root node, kind
+    //    must match, no errors.
+    if (new_sub.nodes.len == 0) return error.AnchorParseFailed;
+    if (new_sub.rootCursor().kind() != anchor_kind) return error.AnchorKindMismatch;
+    if (new_sub.errors.len > 0) return error.AnchorParseError;
+    // Anchor range must be non-empty (have at least one token) so the
+    // splice token remap has a well-defined range. Empty-range subtrees
+    // would indicate the reparse consumed nothing — treat as failure.
+    if (new_sub.rootCursor().range().start == new_sub.rootCursor().range().end) {
+        return error.AnchorParseFailed;
+    }
+
+    // 8. Splice the CST. The spliced tree owns `new_all_tokens` now.
+    var new_tree = try Cst.spliceSubtree(arena, &prev.cst, anchor_cursor.node, &new_sub, new_source, new_all_tokens);
+
+    // 9. Re-lower the whole module from the spliced CST. Allocates the
+    //    fresh `Ast.Module` + symbols + scope tree in the new arena.
+    const module = try CstLower.lowerTree(gpa, arena, &new_tree);
+
+    return .{
+        .gpa = gpa,
+        .arena = arena_ptr,
+        .source = new_source,
+        .module = module,
+        .cst = new_tree,
+        .reused = true,
+    };
+}
+
+fn isStmtKind(k: Cst.Kind) bool {
+    return switch (k) {
+        .return_stmt,
+        .assign_stmt,
+        .incr_decr_stmt,
+        .call_stmt,
+        .break_stmt,
+        .break_if_stmt,
+        .continue_stmt,
+        .discard_stmt,
+        => true,
+        else => false,
+    };
 }
 
 /// Compare the non-trivia token sequences of two sources and report
@@ -390,17 +545,39 @@ test "Incremental.reparse after inverse edit round-trips the source" {
     try testing.expectEqualStrings(base_source, back.source);
 }
 
-test "Incremental.reparse: reused flag is false on the MVP path" {
+test "Incremental.reparse: reused flag is true on hot-path literal edit" {
     var base = try Incremental.parseFull(testing.allocator, "const x = 1;");
     defer base.deinit();
     try testing.expect(!base.reused);
 
+    // Replace "1" with "42". Anchor is literal_expr, which is
+    // symbol-free; hot path fires.
     var updated = try Incremental.reparse(testing.allocator, &base, .{
         .start = 10,
         .end = 11,
         .new_text = "42",
     });
     defer updated.deinit();
+    try testing.expectEqualStrings("const x = 42;", updated.source);
+    try testing.expect(updated.reused);
+}
+
+test "Incremental.reparse: reused flag is false when fallback fires" {
+    // Top-level decl edit — the whole `const_decl` anchor is not in
+    // the symbol-free allowlist, so the hot path bails and we fall
+    // back to parseFull with `reused = false`.
+    const base_src: [:0]const u8 = "const x = 1;\nconst y = 2;";
+    var base = try Incremental.parseFull(testing.allocator, base_src);
+    defer base.deinit();
+
+    // Rename `y` → `yy` at its declaration site (byte 19).
+    var updated = try Incremental.reparse(testing.allocator, &base, .{
+        .start = 19,
+        .end = 20,
+        .new_text = "yy",
+    });
+    defer updated.deinit();
+    try testing.expectEqualStrings("const x = 1;\nconst yy = 2;", updated.source);
     try testing.expect(!updated.reused);
 }
 

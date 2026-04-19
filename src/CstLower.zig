@@ -1379,6 +1379,12 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         _ = w.eatToken(.l_brace);
         while (true) {
+            // Bail if the walker is past all children — protects against
+            // a malformed compound_stmt whose `r_brace` is missing. In
+            // practice this never fires for a full parse, but guards the
+            // incremental splice path where a bad CST shape would
+            // otherwise spin forever on peekElement() == null.
+            if (w.i >= w.children.len) break;
             if (w.peekTokenTag()) |t| {
                 if (t == .r_brace or t == .eof) break;
                 if (t == .semicolon) {
@@ -1388,8 +1394,10 @@ const LowerCtx = struct {
             }
             if (w.eatAnyNode()) |n| {
                 if (try self.lowerStmt(n)) |s| try stmt.stmts.append(self.arena, s);
+            } else if (w.eatAnyToken()) |_| {
+                // advanced one token
             } else {
-                _ = w.eatAnyToken();
+                break; // defensive — nothing eaten, so nothing would advance next iter
             }
         }
         _ = w.eatToken(.r_brace);
