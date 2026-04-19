@@ -526,10 +526,349 @@ pub const Tree = struct {
         return self.children[n.first_child .. n.first_child + n.child_count];
     }
 
+    /// Count how many nodes are in the subtree rooted at `idx`, including
+    /// the root itself. Because `Builder.finish` emits nodes in pre-order
+    /// DFS, the subtree occupies a contiguous index range starting at
+    /// `idx.raw()`, so we only need to count descendants once.
+    pub fn countSubtreeNodes(self: *const Tree, idx: NodeIndex) u32 {
+        var count: u32 = 1;
+        for (self.childrenOf(idx)) |el| {
+            if (el.asNode()) |child| {
+                count += self.countSubtreeNodes(child);
+            }
+        }
+        return count;
+    }
+
+    /// Compute the contiguous children-table range covering `idx`'s
+    /// subtree. `.start` is the smallest `first_child` among the subtree's
+    /// nodes; `.end` is `idx.first_child + idx.child_count` (the subtree
+    /// root's entries land last in post-order).
+    pub fn subtreeChildrenRange(self: *const Tree, idx: NodeIndex) struct { start: u32, end: u32 } {
+        const root_node = self.getNode(idx);
+        const end = root_node.first_child + root_node.child_count;
+        var min_start = root_node.first_child;
+        // Walk the subtree and take the minimum first_child. Leaves with
+        // zero children typically have first_child == 0, which would skew
+        // the minimum — skip zero-child nodes when determining the start.
+        const first_children = self.nodes.items(.first_child);
+        const child_counts = self.nodes.items(.child_count);
+        const subtree_size = self.countSubtreeNodes(idx);
+        const start_idx = idx.raw();
+        var i: u32 = start_idx;
+        while (i < start_idx + subtree_size) : (i += 1) {
+            if (child_counts[i] == 0) continue;
+            if (first_children[i] < min_start) min_start = first_children[i];
+        }
+        return .{ .start = min_start, .end = end };
+    }
+
+    /// Min and max all-stream token indices referenced anywhere in the
+    /// subtree rooted at `idx`. Asserts the subtree contains at least one
+    /// token — every reparse anchor in the symbol-free hot path does.
+    pub fn subtreeTokenRange(self: *const Tree, idx: NodeIndex) struct { first: u32, last: u32 } {
+        var first: u32 = std.math.maxInt(u32);
+        var last: u32 = 0;
+        var any: bool = false;
+        const subtree_size = self.countSubtreeNodes(idx);
+        const start_idx = idx.raw();
+        var i: u32 = start_idx;
+        while (i < start_idx + subtree_size) : (i += 1) {
+            const n = self.getNode(@enumFromInt(i));
+            var c: u32 = 0;
+            while (c < n.child_count) : (c += 1) {
+                const el = self.children[n.first_child + c];
+                if (el.asToken()) |tok_idx| {
+                    any = true;
+                    if (tok_idx < first) first = tok_idx;
+                    if (tok_idx > last) last = tok_idx;
+                }
+            }
+        }
+        std.debug.assert(any);
+        return .{ .first = first, .last = last };
+    }
+
     pub fn nodeCount(self: *const Tree) u32 {
         return @intCast(self.nodes.len);
     }
 };
+
+// =========================================================================
+// Subtree splice
+// =========================================================================
+
+/// Build a new `Tree` from `old` with the subtree rooted at `old_node`
+/// replaced by `new_sub.root()`. `new_source` and `new_tokens` are the
+/// fresh re-lex of the edited source; the caller retains ownership until
+/// the returned `Tree` takes over via `arena`.
+///
+/// Invariants assumed by the caller (verified upstream):
+/// * `new_sub.rootCursor().kind() == old.getNode(old_node).kind`
+/// * The anchor's first token is byte-identical in `old.source` and
+///   `new_source` (follows from `anchor.range().start <= edit.start`).
+/// * `new_sub.errors.len == 0`.
+///
+/// The green tree remains conceptually immutable — both `old` and
+/// `new_sub` are untouched. The resulting `Tree` allocates fresh
+/// `nodes`/`children`/`errors` slices from `arena`.
+pub fn spliceSubtree(
+    arena: std.mem.Allocator,
+    old: *const Tree,
+    old_node: NodeIndex,
+    new_sub: *const Tree,
+    new_source: [:0]const u8,
+    new_tokens: std.MultiArrayList(Lexer.Token),
+) !Tree {
+    const anchor_dfs_start: u32 = old_node.raw();
+    const anchor_subtree_size: u32 = old.countSubtreeNodes(old_node);
+    const anchor_dfs_end: u32 = anchor_dfs_start + anchor_subtree_size; // exclusive
+    const anchor_cr = old.subtreeChildrenRange(old_node);
+    const anchor_tok = old.subtreeTokenRange(old_node);
+
+    const new_sub_size: u32 = @intCast(new_sub.nodes.len);
+    const new_sub_cr_size: u32 = @intCast(new_sub.children.len);
+    const new_sub_tok = new_sub.subtreeTokenRange(.root);
+
+    const old_anchor_len: u32 = old.getNode(old_node).end - old.getNode(old_node).start;
+    const new_sub_len: u32 = new_sub.rootCursor().range().end - new_sub.rootCursor().range().start;
+    const delta: i64 = @as(i64, new_sub_len) - @as(i64, old_anchor_len);
+
+    const delta_nodes: i64 = @as(i64, new_sub_size) - @as(i64, anchor_subtree_size);
+    const delta_ct: i64 = @as(i64, new_sub_cr_size) - @as(i64, anchor_cr.end - anchor_cr.start);
+
+    const old_anchor_tok_count: u32 = anchor_tok.last - anchor_tok.first + 1;
+    const new_sub_tok_count: u32 = new_sub_tok.last - new_sub_tok.first + 1;
+    const delta_tok: i64 = @as(i64, new_sub_tok_count) - @as(i64, old_anchor_tok_count);
+
+    const old_total_nodes: u32 = @intCast(old.nodes.len);
+    const old_total_ct: u32 = @intCast(old.children.len);
+    const total_nodes: u32 = @intCast(@as(i64, old_total_nodes) + delta_nodes);
+    const total_ct: u32 = @intCast(@as(i64, old_total_ct) + delta_ct);
+
+    var nodes: std.MultiArrayList(Tree.Node) = .empty;
+    try nodes.ensureTotalCapacity(arena, total_nodes);
+    errdefer nodes.deinit(arena);
+    const children_buf = try arena.alloc(Tree.Element, total_ct);
+    errdefer arena.free(children_buf);
+
+    const old_starts = old.nodes.items(.start);
+    const old_ends = old.nodes.items(.end);
+    const old_kinds = old.nodes.items(.kind);
+    const old_parents = old.nodes.items(.parent);
+    const old_first_children = old.nodes.items(.first_child);
+    const old_child_counts = old.nodes.items(.child_count);
+
+    const anchor_byte_end = old.getNode(old_node).end;
+
+    // Remap a node index from old → new. Indices < dfs_start sit before
+    // the anchor and are unchanged. The index == dfs_start (the anchor
+    // itself) is kept because the new_sub root now lives in that slot —
+    // the anchor's parent's child-entry pointing there stays valid.
+    // Indices >= dfs_end (anchor's later siblings or their descendants)
+    // shift by delta_nodes. Indices strictly inside the anchor subtree
+    // (> dfs_start and < dfs_end) should never be referenced from
+    // outside the subtree; assert to catch bugs.
+    const remapNode = struct {
+        fn call(i: u32, dfs_start: u32, dfs_end: u32, dn: i64) u32 {
+            if (i < dfs_start) return i;
+            if (i == dfs_start) return dfs_start;
+            std.debug.assert(i >= dfs_end);
+            return @intCast(@as(i64, i) + dn);
+        }
+    }.call;
+
+    // Remap a token index from old-tokens → new-tokens for tokens that
+    // survive (before / after the anchor's token range).
+    const remapTok = struct {
+        fn call(i: u32, tok_first: u32, tok_last: u32, dt: i64) u32 {
+            if (i < tok_first) return i;
+            std.debug.assert(i > tok_last);
+            return @intCast(@as(i64, i) + dt);
+        }
+    }.call;
+
+    // ---- Children table ------------------------------------------------
+
+    // Region 1: [0, anchor_cr.start) — old children before the anchor's
+    // subtree. Their tok_idx/node_idx are entirely in the "before" space
+    // and need no remap.
+    @memcpy(children_buf[0..anchor_cr.start], old.children[0..anchor_cr.start]);
+
+    // Region 2: new_sub's children table, with node indices shifted by
+    // anchor_dfs_start (so new_sub node 0 lands at anchor_dfs_start) and
+    // token indices passed through (they're already into new_tokens).
+    {
+        var j: u32 = 0;
+        while (j < new_sub_cr_size) : (j += 1) {
+            const el = new_sub.children[j];
+            if (el.asNode()) |n| {
+                const new_idx: u32 = n.raw() + anchor_dfs_start;
+                children_buf[anchor_cr.start + j] = Tree.Element.fromNode(new_idx);
+            } else {
+                children_buf[anchor_cr.start + j] = el; // token: pass through
+            }
+        }
+    }
+
+    // Region 3: [anchor_cr.end, old.children.len) — old children after
+    // the anchor subtree. Token indices shift by delta_tok; node indices
+    // shift by delta_nodes (for those >= anchor_dfs_end; earlier node
+    // indices cannot appear here because nodes in this region belong to
+    // ancestors/sibling subtrees that were emitted post-anchor, whose
+    // child nodes all live in their own subtrees).
+    {
+        const dst_off = anchor_cr.start + new_sub_cr_size;
+        var k: u32 = 0;
+        while (k < old_total_ct - anchor_cr.end) : (k += 1) {
+            const el = old.children[anchor_cr.end + k];
+            if (el.asNode()) |n| {
+                const nraw = n.raw();
+                const new_idx = remapNode(nraw, anchor_dfs_start, anchor_dfs_end, delta_nodes);
+                children_buf[dst_off + k] = Tree.Element.fromNode(new_idx);
+            } else {
+                const tok = el.asToken().?;
+                const new_tok = remapTok(tok, anchor_tok.first, anchor_tok.last, delta_tok);
+                children_buf[dst_off + k] = Tree.Element.fromToken(new_tok);
+            }
+        }
+    }
+
+    // ---- Nodes ---------------------------------------------------------
+
+    // Region 1: old before nodes [0, anchor_dfs_start).
+    {
+        var i: u32 = 0;
+        while (i < anchor_dfs_start) : (i += 1) {
+            const old_parent = old_parents[i].raw();
+            // Parents of before-nodes are always earlier in DFS → before
+            // the anchor's subtree → kept at the same index. (The root's
+            // parent is itself = 0.)
+            std.debug.assert(old_parent < anchor_dfs_start or i == 0);
+            const new_first_child = if (old_child_counts[i] == 0) old_first_children[i] else blk: {
+                if (old_first_children[i] >= anchor_cr.end) {
+                    break :blk @as(u32, @intCast(@as(i64, old_first_children[i]) + delta_ct));
+                } else {
+                    break :blk old_first_children[i];
+                }
+            };
+            // Ancestors of the anchor need their `end` extended by delta.
+            const new_end: u32 = if (old_ends[i] >= anchor_byte_end)
+                @intCast(@as(i64, old_ends[i]) + delta)
+            else
+                old_ends[i];
+            nodes.appendAssumeCapacity(.{
+                .kind = old_kinds[i],
+                .start = old_starts[i],
+                .end = new_end,
+                .parent = old_parents[i],
+                .first_child = new_first_child,
+                .child_count = old_child_counts[i],
+            });
+        }
+    }
+
+    // Region 2: new_sub nodes, with parent/first_child/start remapped.
+    {
+        const ns_kinds = new_sub.nodes.items(.kind);
+        const ns_starts = new_sub.nodes.items(.start);
+        const ns_ends = new_sub.nodes.items(.end);
+        const ns_parents = new_sub.nodes.items(.parent);
+        const ns_first_children = new_sub.nodes.items(.first_child);
+        const ns_child_counts = new_sub.nodes.items(.child_count);
+        var i: u32 = 0;
+        while (i < new_sub_size) : (i += 1) {
+            const new_parent: NodeIndex = if (i == 0)
+                // Root of new_sub inherits the old anchor's parent.
+                old_parents[anchor_dfs_start]
+            else
+                @enumFromInt(ns_parents[i].raw() + anchor_dfs_start);
+            // new_sub's children live at offset anchor_cr.start in the
+            // spliced table.
+            const new_first_child: u32 = ns_first_children[i] + anchor_cr.start;
+            nodes.appendAssumeCapacity(.{
+                .kind = ns_kinds[i],
+                .start = ns_starts[i],
+                .end = ns_ends[i],
+                .parent = new_parent,
+                .first_child = if (ns_child_counts[i] == 0) 0 else new_first_child,
+                .child_count = ns_child_counts[i],
+            });
+        }
+    }
+
+    // Region 3: old after nodes [anchor_dfs_end, old.nodes.len).
+    {
+        var i: u32 = anchor_dfs_end;
+        while (i < old_total_nodes) : (i += 1) {
+            const new_parent_raw = blk: {
+                const p = old_parents[i].raw();
+                // Parents can be: earlier "before" nodes (idx < anchor_dfs_start,
+                // kept) — these are ancestors of anchor OR their earlier
+                // siblings; OR other "after" nodes (idx >= anchor_dfs_end).
+                if (p < anchor_dfs_start) {
+                    break :blk p;
+                }
+                std.debug.assert(p >= anchor_dfs_end);
+                break :blk @as(u32, @intCast(@as(i64, p) + delta_nodes));
+            };
+            const new_first_child: u32 = if (old_child_counts[i] == 0) 0 else blk: {
+                if (old_first_children[i] >= anchor_cr.end) {
+                    break :blk @as(u32, @intCast(@as(i64, old_first_children[i]) + delta_ct));
+                } else {
+                    break :blk old_first_children[i];
+                }
+            };
+            // After nodes have start >= anchor_byte_end → shift both ends.
+            const new_start: u32 = if (old_starts[i] >= anchor_byte_end)
+                @intCast(@as(i64, old_starts[i]) + delta)
+            else
+                old_starts[i];
+            const new_end: u32 = @intCast(@as(i64, old_ends[i]) + delta);
+            nodes.appendAssumeCapacity(.{
+                .kind = old_kinds[i],
+                .start = new_start,
+                .end = new_end,
+                .parent = @enumFromInt(new_parent_raw),
+                .first_child = new_first_child,
+                .child_count = old_child_counts[i],
+            });
+        }
+    }
+
+    // ---- Errors --------------------------------------------------------
+    //
+    // Carry forward old errors whose owning node survives (outside the
+    // anchor subtree); remap their NodeIndex.  new_sub is assumed error-
+    // free per the caller invariant, so we don't copy from there.
+    var error_count: usize = 0;
+    for (old.errors) |e| {
+        const n = e.node.raw();
+        if (n >= anchor_dfs_start and n < anchor_dfs_end) continue;
+        error_count += 1;
+    }
+    const errors_buf = try arena.alloc(Tree.ErrorEntry, error_count);
+    errdefer arena.free(errors_buf);
+    {
+        var w: usize = 0;
+        for (old.errors) |e| {
+            const n = e.node.raw();
+            if (n >= anchor_dfs_start and n < anchor_dfs_end) continue;
+            const new_raw = if (n < anchor_dfs_start) n else @as(u32, @intCast(@as(i64, n) + delta_nodes));
+            errors_buf[w] = .{ .node = @enumFromInt(new_raw), .message = e.message };
+            w += 1;
+        }
+    }
+
+    return .{
+        .arena = arena,
+        .source = new_source,
+        .tokens = new_tokens,
+        .nodes = nodes,
+        .children = children_buf,
+        .errors = errors_buf,
+    };
+}
 
 // =========================================================================
 // Cursor — red-tree navigation over a green tree.

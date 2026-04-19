@@ -184,6 +184,9 @@ pub fn build(b: *std.Build) void {
     // CST shape snapshots — S-expression assertions on grammar-ambiguity
     // cases (templates vs comparisons, attribute-with-call, parse recovery).
     _ = addTestStep(b, test_step, "tests/cst_shape_test.zig", target, optimize, &.{w});
+    // CST subtree splice unit tests — asserts spliceSubtree produces a
+    // structurally identical tree to a full parse of the edited source.
+    _ = addTestStep(b, test_step, "tests/cst_splice_test.zig", target, optimize, &.{w});
     // Property-based fuzz for Incremental.reparse — random edits must
     // produce the same AST / source as parseFull on the spliced source.
     _ = addTestStep(b, test_step, "tests/incremental_fuzz_test.zig", target, optimize, &.{w});

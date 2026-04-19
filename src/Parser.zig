@@ -214,11 +214,17 @@ pub fn reparseAnchor(
     std.debug.assert(start_nt_pos <= self.token_tags.len);
 
     self.pos = start_nt_pos;
-    if (start_nt_pos < self.cst_nt_to_all.len) {
-        self.cst_next_all = self.cst_nt_to_all[start_nt_pos];
-    } else {
-        self.cst_next_all = @intCast(self.cst_all_tags.len);
-    }
+    // Place `cst_next_all` at the first all-stream token that belongs
+    // inside the anchor: the token right after the previous non-trivia
+    // token. This way the leading trivia (whitespace / comments between
+    // the previous real token and the anchor's first real token) gets
+    // emitted as children of the anchor's first-opened inner node —
+    // matching how a full parse attributes trivia.
+    self.cst_next_all = blk: {
+        if (start_nt_pos == 0) break :blk 0;
+        std.debug.assert(start_nt_pos - 1 < self.cst_nt_to_all.len);
+        break :blk self.cst_nt_to_all[start_nt_pos - 1] + 1;
+    };
     self.cst_last_closed_expr = null;
 
     switch (kind) {
@@ -4147,10 +4153,11 @@ test "reparseAnchor: assignment statement produces assign_stmt root" {
     try std.testing.expectEqualStrings("x = 1;", root.text());
 }
 
-test "reparseAnchor: positioned at non-zero offset respects trivia skip" {
-    // Position the parser at the non-trivia token that starts "42",
-    // skipping the leading comment + whitespace. The resulting subtree's
-    // root.range().start must land on the '4' byte, not on the comment.
+test "reparseAnchor: at start_nt_pos=0 includes leading trivia in anchor" {
+    // When the anchor is the first non-trivia token of the source, any
+    // leading trivia (block comment, whitespace) is attributed to the
+    // anchor's first-opened inner node. This matches how a full parse
+    // places trivia that precedes the first real token.
     const source: [:0]const u8 = "/*skip*/ 42";
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -4159,14 +4166,36 @@ test "reparseAnchor: positioned at non-zero offset respects trivia skip" {
     var builder = Cst.Builder.init(std.testing.allocator);
     defer builder.deinit();
     var parser = try Parser.initWithCst(arena.allocator(), source, stream, &builder);
-    // Index 0 in non-trivia stream is the "42" literal (comment + ws are trivia).
     try parser.reparseAnchor(.expression, 0);
     var tree = try builder.finish(arena.allocator(), all_tokens, source);
 
     const root = tree.rootCursor();
     try std.testing.expectEqual(Cst.Kind.literal_expr, root.kind());
-    // The subtree must start at '4' (offset 9), not include the leading
-    // "/*skip*/ ".
-    try std.testing.expectEqual(@as(u32, 9), root.range().start);
-    try std.testing.expectEqualStrings("42", root.text());
+    // Subtree covers leading "/*skip*/ " trivia + "42".
+    try std.testing.expectEqual(@as(u32, 0), root.range().start);
+    try std.testing.expectEqualStrings(source, root.text());
+}
+
+test "reparseAnchor: at start_nt_pos>0 includes interior trivia only" {
+    // With a non-zero anchor position, only the trivia *between* the
+    // previous non-trivia token and the anchor is absorbed. Trivia and
+    // tokens earlier than that are untouched by the reparse.
+    const source: [:0]const u8 = "x /* gap */ 42";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var all_tokens = try Lexer.tokenizeAll(arena.allocator(), source);
+    const stream = try TokenStream.init(arena.allocator(), &all_tokens);
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var parser = try Parser.initWithCst(arena.allocator(), source, stream, &builder);
+    // Skip the leading "x" — parse starting at non-trivia index 1 ("42").
+    try parser.reparseAnchor(.expression, 1);
+    var tree = try builder.finish(arena.allocator(), all_tokens, source);
+
+    const root = tree.rootCursor();
+    try std.testing.expectEqual(Cst.Kind.literal_expr, root.kind());
+    // Subtree begins at the byte right after "x" (offset 1), covering
+    // " /* gap */ 42" including the gap trivia.
+    try std.testing.expectEqual(@as(u32, 1), root.range().start);
+    try std.testing.expectEqualStrings(" /* gap */ 42", root.text());
 }
