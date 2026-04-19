@@ -400,19 +400,35 @@ pub fn tokenize(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayL
 /// of every token's source slice is byte-identical to `source[0..source.len]`
 /// — this is the contract the CST builder relies on.
 pub fn tokenizeAll(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayList(Token) {
+    return tokenizeRange(arena, source, 0);
+}
+
+/// Trivia-preserving tokenize starting at `start_offset`. Used by the
+/// incremental re-lex path: the scanner resumes at the first byte of a
+/// reparse anchor's token range, producing tokens for the suffix. Token
+/// byte ranges are absolute (not relative to `start_offset`) so callers
+/// can splice them back into the original token array without remapping.
+/// `start_offset` of 0 is equivalent to starting at the beginning.
+pub fn tokenizeRange(
+    arena: std.mem.Allocator,
+    source: [:0]const u8,
+    start_offset: u32,
+) !std.MultiArrayList(Token) {
+    std.debug.assert(start_offset <= source.len);
+
     var lex = Lexer{
         .source = source,
-        .pos = 0,
+        .pos = start_offset,
         .tokens = .empty,
     };
 
-    // Trivia can double the token count; bias the estimate up.
-    const estimated = @max(source.len / 4, 16);
+    const remaining = source.len - start_offset;
+    const estimated = @max(remaining / 4, 16);
     try lex.tokens.ensureTotalCapacity(arena, estimated);
 
-    // An upper bound: every source byte can at worst produce a 1-byte trivia
-    // token plus a 0-length boundary token, plus the trailing `.eof`.
-    for (0..source.len * 2 + 2) |_| {
+    // Upper bound: every remaining byte can at worst produce a 1-byte
+    // trivia token plus a 0-length boundary token, plus the trailing `.eof`.
+    for (0..remaining * 2 + 2) |_| {
         const tok = lex.nextAny();
         try lex.tokens.append(arena, .{ .tag = tok.tag, .start = tok.start, .end = tok.end });
         if (tok.tag == .eof or tok.tag == .@"error") break;
@@ -1376,6 +1392,54 @@ test "lexer: tokenizeAll emits trivia tags adjacent to real tokens" {
     try std.testing.expectEqual(Tag.l_brace, tags[11]);
     try std.testing.expectEqual(Tag.r_brace, tags[12]);
     try std.testing.expectEqual(Tag.eof, tags[13]);
+}
+
+test "lexer: tokenizeRange offset 0 is identical to tokenizeAll" {
+    const src: [:0]const u8 = "const x = 1; fn f() { return; }";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = try tokenizeAll(arena.allocator(), src);
+    const b = try tokenizeRange(arena.allocator(), src, 0);
+    const a_tags = a.items(.tag);
+    const b_tags = b.items(.tag);
+    try std.testing.expectEqual(a_tags.len, b_tags.len);
+    const a_starts = a.items(.start);
+    const b_starts = b.items(.start);
+    const a_ends = a.items(.end);
+    const b_ends = b.items(.end);
+    for (a_tags, b_tags, a_starts, b_starts, a_ends, b_ends) |at, bt, as, bs, ae, be| {
+        try std.testing.expectEqual(at, bt);
+        try std.testing.expectEqual(as, bs);
+        try std.testing.expectEqual(ae, be);
+    }
+}
+
+test "lexer: tokenizeRange at nonzero offset yields the suffix" {
+    const src: [:0]const u8 = "const x = 1;\nconst y = 2;";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const full = try tokenizeAll(arena.allocator(), src);
+    // Start right after the first semicolon (absolute byte 12).
+    const offset: u32 = 12;
+    const suffix = try tokenizeRange(arena.allocator(), src, offset);
+
+    // Find where `full` catches up to `offset` (i.e., the first token whose
+    // start >= offset). The suffix stream should match from there onward.
+    const full_tags = full.items(.tag);
+    const full_starts = full.items(.start);
+    const full_ends = full.items(.end);
+    var base: usize = 0;
+    while (base < full_tags.len and full_starts[base] < offset) : (base += 1) {}
+
+    const s_tags = suffix.items(.tag);
+    const s_starts = suffix.items(.start);
+    const s_ends = suffix.items(.end);
+    try std.testing.expectEqual(full_tags.len - base, s_tags.len);
+    for (s_tags, s_starts, s_ends, 0..) |st, ss, se, i| {
+        try std.testing.expectEqual(full_tags[base + i], st);
+        try std.testing.expectEqual(full_starts[base + i], ss);
+        try std.testing.expectEqual(full_ends[base + i], se);
+    }
 }
 
 test "lexer: tokenize (skip_trivia) still yields no trivia tags" {

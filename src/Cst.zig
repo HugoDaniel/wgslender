@@ -580,6 +580,87 @@ pub const Cursor = struct {
             return cur;
         }
     }
+
+    /// Depth-first iterator over every token under this node (including
+    /// trivia). Yields absolute token indices into `tree.tokens`.
+    pub fn tokens(c: Cursor) TokenIter {
+        return TokenIter.init(c, .all);
+    }
+
+    /// Depth-first iterator over every non-trivia token under this node.
+    pub fn nonTriviaTokens(c: Cursor) TokenIter {
+        return TokenIter.init(c, .non_trivia);
+    }
+};
+
+/// Depth-first in-order iterator over tokens reachable from a subtree root.
+/// Maintains a small stack of (node, child-index) pairs so subtrees are
+/// traversed lazily without materializing intermediate arrays.
+pub const TokenIter = struct {
+    tree: *const Tree,
+    mode: Mode,
+    stack: [max_depth]Frame,
+    depth: u8,
+
+    /// Caps the stack at a CST depth that comfortably exceeds anything
+    /// WGSL can produce (expression nesting aside, real shaders stay under
+    /// ~20). Deeper trees degrade gracefully — the iterator stops early
+    /// rather than clobber memory.
+    pub const max_depth: u8 = 64;
+
+    pub const Mode = enum { all, non_trivia };
+
+    const Frame = struct {
+        node: NodeIndex,
+        next_child: u32,
+        child_count: u32,
+        first_child: u32,
+    };
+
+    fn init(cur: Cursor, mode: Mode) TokenIter {
+        var it: TokenIter = .{
+            .tree = cur.tree,
+            .mode = mode,
+            .stack = undefined,
+            .depth = 0,
+        };
+        it.push(cur.node);
+        return it;
+    }
+
+    fn push(self: *TokenIter, n: NodeIndex) void {
+        if (self.depth >= max_depth) return;
+        const node = self.tree.getNode(n);
+        self.stack[self.depth] = .{
+            .node = n,
+            .next_child = 0,
+            .child_count = node.child_count,
+            .first_child = node.first_child,
+        };
+        self.depth += 1;
+    }
+
+    /// Returns the next matching token index, or `null` when exhausted.
+    pub fn next(self: *TokenIter) ?u32 {
+        const token_tags = self.tree.tokens.items(.tag);
+        while (self.depth > 0) {
+            const top = &self.stack[self.depth - 1];
+            if (top.next_child >= top.child_count) {
+                self.depth -= 1;
+                continue;
+            }
+            const el = self.tree.children[top.first_child + top.next_child];
+            top.next_child += 1;
+            if (el.asNode()) |child| {
+                self.push(child);
+                continue;
+            }
+            const tok = el.asToken().?;
+            if (self.mode == .non_trivia and token_tags[tok].isTrivia()) continue;
+            return tok;
+        }
+        return null;
+    }
 };
 
 // =========================================================================
@@ -824,4 +905,65 @@ test "Cst.Cursor.findSmallestContaining drills to the tightest node" {
 
 test "Cst.Tree.Element packed layout is 4 bytes" {
     try testing.expectEqual(@as(usize, 4), @sizeOf(Tree.Element));
+}
+
+test "Cst.Cursor.tokens / nonTriviaTokens round-trip" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    // Source with trivia interleaved: "fn /*m*/ f ()".
+    const source: [:0]const u8 = "fn /*m*/ f ()";
+    const tokens = try makeTokenStream(arena.allocator(), &.{
+        .{ .tag = .keyword_fn, .start = 0, .end = 2 },
+        .{ .tag = .whitespace, .start = 2, .end = 3 },
+        .{ .tag = .block_comment, .start = 3, .end = 8 },
+        .{ .tag = .whitespace, .start = 8, .end = 9 },
+        .{ .tag = .ident, .start = 9, .end = 10 },
+        .{ .tag = .whitespace, .start = 10, .end = 11 },
+        .{ .tag = .l_paren, .start = 11, .end = 12 },
+        .{ .tag = .r_paren, .start = 12, .end = 13 },
+        .{ .tag = .eof, .start = 13, .end = 13 },
+    });
+
+    var b = Builder.init(testing.allocator);
+    defer b.deinit();
+
+    const module = try b.open();
+    const fn_decl = try b.open();
+    try b.token(0);
+    try b.token(1);
+    try b.token(2);
+    try b.token(3);
+    try b.token(4);
+    try b.token(5);
+    try b.token(6);
+    try b.token(7);
+    try b.close(fn_decl, .fn_decl);
+    try b.close(module, .module);
+
+    var tree = try b.finish(arena.allocator(), tokens, source);
+    defer tree.deinit();
+
+    const root = tree.rootCursor();
+
+    // tokens() yields every non-eof leaf in source order.
+    const starts = tree.tokens.items(.start);
+    const ends = tree.tokens.items(.end);
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(testing.allocator);
+    var it = root.tokens();
+    while (it.next()) |idx| {
+        try buf.appendSlice(testing.allocator, source[starts[idx]..ends[idx]]);
+    }
+    try testing.expectEqualStrings(source, buf.items);
+
+    // nonTriviaTokens() yields only semantic tokens.
+    var nt = root.nonTriviaTokens();
+    const expected_tags = [_]Lexer.Tag{ .keyword_fn, .ident, .l_paren, .r_paren };
+    var i: usize = 0;
+    while (nt.next()) |idx| : (i += 1) {
+        try testing.expect(i < expected_tags.len);
+        try testing.expectEqual(expected_tags[i], tree.tokens.items(.tag)[idx]);
+    }
+    try testing.expectEqual(expected_tags.len, i);
 }
