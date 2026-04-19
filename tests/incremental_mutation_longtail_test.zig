@@ -475,6 +475,28 @@ test "M4.d: case-body return value swap (return_stmt anchor)" {
     );
 }
 
+test "M4.f: edit spanning two top-level fns falls back" {
+    // No common compound_stmt enclosure — `findAnchor` walks up to the
+    // module root, which is not a hot-path anchor. Triggers full reparse.
+    const src: [:0]const u8 =
+        "fn f() { return; } fn g() { return; }";
+    const new_src: []const u8 =
+        "fn fz() { return; } fn gz() { return; }";
+    const start: u32 = at(src, "f() { return; } fn g(");
+    const old_chunk: []const u8 = "f() { return; } fn g(";
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = start,
+            .end = start + @as(u32, @intCast(old_chunk.len)),
+            .new_text = "fz() { return; } fn gz(",
+        },
+        new_src,
+        false,
+    );
+}
+
 test "M4.e: edit spanning two case boundaries collapses cases via compound_stmt re-lower" {
     // `findAnchor` cannot find a single switch-internal anchor for an edit
     // that crosses case boundaries — but it CAN promote to the enclosing
@@ -501,23 +523,102 @@ test "M4.e: edit spanning two case boundaries collapses cases via compound_stmt 
     );
 }
 
-test "M4.f: edit spanning two top-level fns falls back" {
-    // No common compound_stmt enclosure — `findAnchor` walks up to the
-    // module root, which is not a hot-path anchor. Triggers full reparse.
-    const src: [:0]const u8 =
-        "fn f() { return; } fn g() { return; }";
-    const new_src: []const u8 =
-        "fn fz() { return; } fn gz() { return; }";
-    // Replace `f() { return; } fn g(` → `fz() { return; } fn gz(`.
-    const start: u32 = at(src, "f() { return; } fn g(");
-    const old_chunk: []const u8 = "f() { return; } fn g(";
+// =========================================================================
+// M5 — `if` / `else if` / `else` condition mutations.
+//
+// `processOneStmt` for `.@"if"` (`src/AstVisit.zig:154`) visits the
+// condition in the enclosing scope and pushes the body / else compounds
+// (which open their own scopes). `findSlotInStmt`'s `.@"if"` arm
+// recurses through `else_branch` so nested `else if` chains stay
+// reachable. M5 covers each shape, plus the use-before-declaration
+// fallback path through `error.AddWalkRaisedErrors`
+// (`src/Incremental.zig:754`).
+// =========================================================================
+
+test "M5.a: if-condition operator flip (binary_expr anchor)" {
+    const src: [:0]const u8 = "fn f(x: i32) { if x > 0 { return; } }";
+    const new_src: []const u8 = "fn f(x: i32) { if x >= 0 { return; } }";
+    const cond_off: u32 = at(src, "x > 0");
     try runEdit(
         std.testing.allocator,
         src,
         .{
-            .start = start,
-            .end = start + @as(u32, @intCast(old_chunk.len)),
-            .new_text = "fz() { return; } fn gz(",
+            .start = cond_off,
+            .end = cond_off + @as(u32, @intCast("x > 0".len)),
+            .new_text = "x >= 0",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M5.b: else-if chain inner literal flip (literal_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn f(x: i32) { if x > 0 { return; } else if x == 0 { return; } else { return; } }";
+    const new_src: []const u8 =
+        "fn f(x: i32) { if x > 0 { return; } else if x == 1 { return; } else { return; } }";
+    const inner_lit: u32 = at(src, "x == 0") + 5;
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = inner_lit, .end = inner_lit + 1, .new_text = "1" },
+        new_src,
+        true,
+    );
+}
+
+test "M5.c: if-condition operand swap (binary_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn f(a: i32, b: i32) { if a > b { return; } }";
+    const new_src: []const u8 =
+        "fn f(a: i32, b: i32) { if b > a { return; } }";
+    const cond_off: u32 = at(src, "a > b");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = cond_off,
+            .end = cond_off + @as(u32, @intCast("a > b".len)),
+            .new_text = "b > a",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M5.d: edit return value inside if-body (return_stmt anchor)" {
+    const src: [:0]const u8 =
+        "fn f(x: i32) -> i32 { if x > 0 { return 1; } return 0; }";
+    const new_src: []const u8 =
+        "fn f(x: i32) -> i32 { if x > 0 { return 7; } return 0; }";
+    const ret_off: u32 = at(src, "return 1;");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = ret_off,
+            .end = ret_off + @as(u32, @intCast("return 1;".len)),
+            .new_text = "return 7;",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M5.e: condition references local declared later → AddWalkRaisedErrors fallback" {
+    const src: [:0]const u8 =
+        "fn f(x: i32) -> i32 { if x > 0 { return 1; } let y = 2; return y; }";
+    const new_src: []const u8 =
+        "fn f(x: i32) -> i32 { if x > 0 || y < 0 { return 1; } let y = 2; return y; }";
+    // Replace the binary subtree `x > 0` with `x > 0 || y < 0`.
+    const cond_off: u32 = at(src, "x > 0");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = cond_off,
+            .end = cond_off + @as(u32, @intCast("x > 0".len)),
+            .new_text = "x > 0 || y < 0",
         },
         new_src,
         false,
