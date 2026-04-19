@@ -189,6 +189,10 @@ pub fn build(b: *std.Build) void {
     // Incremental.reparse — long-tail edge cases (unicode, CRLF, token
     // tag flips, comment-break / comment-close, boundary edits, …).
     _ = addTestStep(b, test_step, "tests/incremental_longtail_test.zig", target, optimize, &.{w});
+    // Incremental.reparse — long-tail mutation scenarios (M1–M8): attribute
+    // args, type-expr fallback, for/switch/if/while compartments, member &
+    // call chains, and mixed-anchor churn / retained_arenas growth.
+    _ = addTestStep(b, test_step, "tests/incremental_mutation_longtail_test.zig", target, optimize, &.{w});
     // CST round-trip — concat of every leaf token equals source, on
     // handcrafted edge cases and the compute.toys corpus.
     _ = addTestStep(b, test_step, "tests/cst_roundtrip_test.zig", target, optimize, &.{w});
