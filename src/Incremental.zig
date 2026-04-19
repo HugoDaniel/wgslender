@@ -61,6 +61,11 @@ pub const ReparseResult = struct {
     source: [:0]const u8,
     module: *Ast.Module,
     cst: Cst.Tree,
+    /// True if this result came from a subtree-reuse hot path in
+    /// `reparse`. Always `false` today — the MVP full-parses every edit
+    /// — but the flag is part of the API so tests and telemetry can
+    /// start asserting on it ahead of the anchor-based implementation.
+    reused: bool = false,
 
     pub fn deinit(self: *ReparseResult) void {
         // All arena-owned: module, CST nodes/children/errors, source buffer.
@@ -68,6 +73,92 @@ pub const ReparseResult = struct {
         self.gpa.destroy(self.arena);
     }
 };
+
+/// Kinds that are valid targets for anchor-based re-parse: each one can be
+/// produced by a dedicated parser entry point given a token slice, without
+/// needing any surrounding context. Non-anchor kinds (attribute_list,
+/// parameter_list, struct_member_list, etc.) need to promote to a parent
+/// anchor when an edit lands inside them.
+pub fn isReparseAnchor(k: Cst.Kind) bool {
+    return switch (k) {
+        // Module items.
+        .const_decl,
+        .override_decl,
+        .var_decl,
+        .let_decl,
+        .fn_decl,
+        .struct_decl,
+        .alias_decl,
+        .const_assert_decl,
+        .directive,
+        // Statements.
+        .compound_stmt,
+        .return_stmt,
+        .if_stmt,
+        .switch_stmt,
+        .for_stmt,
+        .while_stmt,
+        .loop_stmt,
+        .break_stmt,
+        .break_if_stmt,
+        .continue_stmt,
+        .discard_stmt,
+        .assign_stmt,
+        .incr_decr_stmt,
+        .call_stmt,
+        .decl_stmt,
+        // Expressions.
+        .binary_expr,
+        .unary_expr,
+        .call_expr,
+        .index_expr,
+        .member_expr,
+        .paren_expr,
+        .ident_expr,
+        .literal_expr,
+        // Types.
+        .type_ident,
+        .type_vec,
+        .type_mat,
+        .type_array,
+        .type_ptr,
+        .type_atomic,
+        .type_sampler,
+        .type_texture,
+        // Attribute.
+        .attribute,
+        => true,
+        else => false,
+    };
+}
+
+/// Find the smallest reparse-anchor CST node whose old-source range fully
+/// covers `[edit.start, edit.end)`. Returns `null` when the edit straddles
+/// root-level boundaries (e.g. spans across two top-level decls) — callers
+/// must fall back to `parseFull` in that case. The current `reparse` still
+/// full-parses regardless; this function is the scaffolding the hot path
+/// will consume once subtree reuse lands.
+pub fn findAnchor(cst: *const Cst.Tree, edit: Edit) ?Cst.Cursor {
+    const needle = Cst.Span{ .start = edit.start, .end = edit.end };
+    const root = cst.rootCursor();
+    if (!root.range().contains(needle)) return null;
+
+    var best: ?Cst.Cursor = if (isReparseAnchor(root.kind())) root else null;
+    var cur = root;
+    descend: while (true) {
+        for (cur.childElements()) |el| {
+            const n = el.asNode() orelse continue;
+            const child = Cst.Cursor{ .tree = cur.tree, .node = n };
+            if (child.range().contains(needle)) {
+                if (isReparseAnchor(child.kind())) best = child;
+                cur = child;
+                continue :descend;
+            }
+        }
+        break;
+    }
+    return best;
+}
 
 /// Parse `source` from scratch into a `ReparseResult`. The result owns a
 /// private arena; `gpa` is used for arena allocations and the arena struct
@@ -297,4 +388,65 @@ test "Incremental.reparse after inverse edit round-trips the source" {
     defer back.deinit();
 
     try testing.expectEqualStrings(base_source, back.source);
+}
+
+test "Incremental.reparse: reused flag is false on the MVP path" {
+    var base = try Incremental.parseFull(testing.allocator, "const x = 1;");
+    defer base.deinit();
+    try testing.expect(!base.reused);
+
+    var updated = try Incremental.reparse(testing.allocator, &base, .{
+        .start = 10,
+        .end = 11,
+        .new_text = "42",
+    });
+    defer updated.deinit();
+    try testing.expect(!updated.reused);
+}
+
+test "Incremental.findAnchor: edit inside a literal lands on literal_expr" {
+    const src: [:0]const u8 = "const x = 1;";
+    var base = try Incremental.parseFull(testing.allocator, src);
+    defer base.deinit();
+
+    const one_off: u32 = @intCast(std.mem.indexOfScalar(u8, src, '1').?);
+    const anchor = Incremental.findAnchor(&base.cst, .{
+        .start = one_off,
+        .end = one_off + 1,
+        .new_text = "2",
+    }) orelse return error.TestUnexpectedNull;
+    try testing.expectEqual(Cst.Kind.literal_expr, anchor.kind());
+}
+
+test "Incremental.findAnchor: edit in identifier lands on ident_expr or a parent anchor" {
+    const src: [:0]const u8 = "fn f() { let x = y; }";
+    var base = try Incremental.parseFull(testing.allocator, src);
+    defer base.deinit();
+
+    const y_off: u32 = @intCast(std.mem.indexOfScalar(u8, src, 'y').?);
+    const anchor = Incremental.findAnchor(&base.cst, .{
+        .start = y_off,
+        .end = y_off + 1,
+        .new_text = "z",
+    }) orelse return error.TestUnexpectedNull;
+    // Narrow anchor: the ident_expr wrapping `y`.
+    try testing.expectEqual(Cst.Kind.ident_expr, anchor.kind());
+}
+
+test "Incremental.findAnchor: edit bridging two decls promotes to module" {
+    const src: [:0]const u8 = "const x = 1;\nconst y = 2;";
+    var base = try Incremental.parseFull(testing.allocator, src);
+    defer base.deinit();
+
+    // Edit spans from inside the first decl to inside the second — no
+    // single anchor covers it, so findAnchor must bail out (null) or at
+    // best return the module root, which is not itself a reparse anchor.
+    const anchor = Incremental.findAnchor(&base.cst, .{
+        .start = 5,
+        .end = 18,
+        .new_text = "//",
+    });
+    // Either no anchor, or the result is the module root but module is
+    // not itself a reparse anchor. Concretely: should be null.
+    try testing.expectEqual(@as(?Cst.Cursor, null), anchor);
 }
