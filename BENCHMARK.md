@@ -209,6 +209,24 @@ nevertheless gated by the test suite:
   comment-break / comment-close, keyword-flip, template-vs-comparison
   disambiguation, and CRLF normalization — each asserts the expected
   `EditKind` classification.
+- `tests/cst_roundtrip_test.zig` pins the lossless-CST contract on
+  both handcrafted edge cases and the full compute.toys corpus — every
+  leaf token concatenated must equal the source byte-for-byte.
+- `tests/cst_shape_test.zig` snapshots the tree skeleton on grammar
+  ambiguities (templates vs comparisons, attribute-with-call, nested
+  compound stmts, parse-error recovery).
+- `tests/incremental_fuzz_test.zig` asserts
+  `reparse(prev, edit).ast ≡ parseFull(apply(source, edit)).ast` on
+  deterministic seeds plus a Smith-driven continuous fuzz under
+  `--fuzz`.
+
+The anchor-based hot path itself isn't flipped on yet — the
+`Incremental.findAnchor` + `isReparseAnchor` scaffolding + the
+`ReparseResult.reused` flag are in place, but `reparse` still calls
+`parseFull` internally. When the subtree-splice / symbol-patch
+machinery lands, the existing correctness suite above covers it
+without any test changes (the invariant is stated over the output, not
+the code path).
 
 Future work: once a portable wall-clock primitive lands in Zig 0.16 (or
 we vendor one), add `tests/incremental_bench_test.zig` measuring:
