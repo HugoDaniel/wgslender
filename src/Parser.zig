@@ -178,6 +178,55 @@ pub fn initWithCst(
     };
 }
 
+// =========================================================================
+// Anchor re-entry for incremental reparse
+// =========================================================================
+
+/// Kind of grammar production that `reparseAnchor` can restart at.
+/// Matches the subset of `Cst.Kind` that the incremental driver treats
+/// as safe subtree-replacement anchors on the symbol-free hot path.
+pub const AnchorKind = enum {
+    /// Any `Ast.Expr` variant. Emits whichever `*_expr` kind the inner
+    /// expression helpers produce. The caller must verify the resulting
+    /// root kind against the old anchor's kind before splicing.
+    expression,
+    /// Any `Ast.Stmt` variant other than `compound_stmt`. `parseStatement`
+    /// opens its own CST marker and closes it with the specific stmt kind,
+    /// so the resulting subtree has exactly one root node.
+    statement,
+};
+
+/// Reposition the parser at `start_nt_pos` (an index into the non-trivia
+/// cursor built by `TokenStream.init`) and invoke the grammar entry point
+/// matching `kind`. Emits CST events into the attached builder so a call
+/// to `builder.finish(...)` afterwards yields a single-rooted subtree.
+///
+/// The parser's symbol table / scope are not meant to be reused after this
+/// call — any symbols declared by the inner production are throwaway. The
+/// caller lowers the resulting CST subtree into AST using the prev
+/// module's symbol table.
+pub fn reparseAnchor(
+    self: *Parser,
+    kind: AnchorKind,
+    start_nt_pos: u32,
+) error{ OutOfMemory, ParseFailed }!void {
+    std.debug.assert(self.cst != null);
+    std.debug.assert(start_nt_pos <= self.token_tags.len);
+
+    self.pos = start_nt_pos;
+    if (start_nt_pos < self.cst_nt_to_all.len) {
+        self.cst_next_all = self.cst_nt_to_all[start_nt_pos];
+    } else {
+        self.cst_next_all = @intCast(self.cst_all_tags.len);
+    }
+    self.cst_last_closed_expr = null;
+
+    switch (kind) {
+        .expression => _ = try self.parseExpression(),
+        .statement => _ = try self.parseStatement(),
+    }
+}
+
 /// Parse source into a Module. Caller owns the returned module via the arena.
 pub fn parse(self: *Parser) !*Ast.Module {
     std.debug.assert(self.pos == 0); // parse should only be called once
@@ -4019,3 +4068,105 @@ test "cst shadow: attributes emit attribute_list + attribute + attribute_args" {
     try expectCstKindAt(source, "(16, 16, 1)", .attribute_args);
 }
 
+// =========================================================================
+// reparseAnchor tests
+// =========================================================================
+
+/// Build a standalone CST subtree by running `reparseAnchor` against a
+/// fresh Parser positioned at `source`'s first non-trivia token. The
+/// returned tree has exactly one root node.
+fn runReparseAnchor(
+    arena: std.mem.Allocator,
+    source: [:0]const u8,
+    kind: AnchorKind,
+    builder: *Cst.Builder,
+) !Cst.Tree {
+    var all_tokens = try Lexer.tokenizeAll(arena, source);
+    const stream = try TokenStream.init(arena, &all_tokens);
+    var parser = try Parser.initWithCst(arena, source, stream, builder);
+    try parser.reparseAnchor(kind, 0);
+    return builder.finish(arena, all_tokens, source);
+}
+
+test "reparseAnchor: literal expression produces literal_expr root" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var tree = try runReparseAnchor(arena.allocator(), "42", .expression, &builder);
+    const root = tree.rootCursor();
+    try std.testing.expectEqual(Cst.Kind.literal_expr, root.kind());
+    try std.testing.expectEqualStrings("42", root.text());
+}
+
+test "reparseAnchor: identifier expression produces ident_expr root" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var tree = try runReparseAnchor(arena.allocator(), "foo", .expression, &builder);
+    const root = tree.rootCursor();
+    try std.testing.expectEqual(Cst.Kind.ident_expr, root.kind());
+    try std.testing.expectEqualStrings("foo", root.text());
+}
+
+test "reparseAnchor: binary expression left-associates and wraps primary" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var tree = try runReparseAnchor(arena.allocator(), "a + b + c", .expression, &builder);
+    const root = tree.rootCursor();
+    try std.testing.expectEqual(Cst.Kind.binary_expr, root.kind());
+    try std.testing.expectEqualStrings("a + b + c", root.text());
+    // First child node of the outer binary_expr is the left-fold (a + b).
+    const first = root.firstChildNode() orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqual(Cst.Kind.binary_expr, first.kind());
+    try std.testing.expectEqualStrings("a + b", first.text());
+}
+
+test "reparseAnchor: return statement produces return_stmt root" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var tree = try runReparseAnchor(arena.allocator(), "return 1;", .statement, &builder);
+    const root = tree.rootCursor();
+    try std.testing.expectEqual(Cst.Kind.return_stmt, root.kind());
+    try std.testing.expectEqualStrings("return 1;", root.text());
+}
+
+test "reparseAnchor: assignment statement produces assign_stmt root" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var tree = try runReparseAnchor(arena.allocator(), "x = 1;", .statement, &builder);
+    const root = tree.rootCursor();
+    try std.testing.expectEqual(Cst.Kind.assign_stmt, root.kind());
+    try std.testing.expectEqualStrings("x = 1;", root.text());
+}
+
+test "reparseAnchor: positioned at non-zero offset respects trivia skip" {
+    // Position the parser at the non-trivia token that starts "42",
+    // skipping the leading comment + whitespace. The resulting subtree's
+    // root.range().start must land on the '4' byte, not on the comment.
+    const source: [:0]const u8 = "/*skip*/ 42";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var all_tokens = try Lexer.tokenizeAll(arena.allocator(), source);
+    const stream = try TokenStream.init(arena.allocator(), &all_tokens);
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var parser = try Parser.initWithCst(arena.allocator(), source, stream, &builder);
+    // Index 0 in non-trivia stream is the "42" literal (comment + ws are trivia).
+    try parser.reparseAnchor(.expression, 0);
+    var tree = try builder.finish(arena.allocator(), all_tokens, source);
+
+    const root = tree.rootCursor();
+    try std.testing.expectEqual(Cst.Kind.literal_expr, root.kind());
+    // The subtree must start at '4' (offset 9), not include the leading
+    // "/*skip*/ ".
+    try std.testing.expectEqual(@as(u32, 9), root.range().start);
+    try std.testing.expectEqualStrings("42", root.text());
+}

@@ -277,9 +277,17 @@ pub const Builder = struct {
 
         // Open-stack entry: the node being built and the slice of its
         // children accumulated so far (we copy into `children` at close-time).
+        // `touched` is false until a `.token` or child `.start` contributes
+        // a real byte range; the first contribution overwrites the
+        // speculative `start` value that `.start` seeded from the
+        // then-current `next_tok_idx`. Without this flag, a subtree built
+        // by `Parser.reparseAnchor` starting mid-stream would pin its root
+        // to offset 0 because the initial `next_tok_idx = 0` guess was
+        // emitted before any real token arrived.
         const OpenNode = struct {
             node_idx: u32,
             pending_children: std.ArrayListUnmanaged(Tree.Element),
+            touched: bool,
         };
         var stack: std.ArrayListUnmanaged(OpenNode) = .empty;
         defer stack.deinit(self.gpa);
@@ -335,6 +343,7 @@ pub const Builder = struct {
                         try stack.append(self.gpa, .{
                             .node_idx = node_idx,
                             .pending_children = .empty,
+                            .touched = false,
                         });
 
                         // Record the child in the parent, if any.
@@ -366,6 +375,23 @@ pub const Builder = struct {
                     // Never contract below start (handles empty nodes cleanly).
                     const final_end = if (end < node_start) node_start else end;
                     nodes.items(.end)[top.node_idx] = final_end;
+
+                    // Propagate this node's resolved start to the enclosing
+                    // parent. A parent that only contains child subtrees
+                    // (no direct `.token` events) would otherwise keep its
+                    // speculative start from open-time — wrong whenever a
+                    // child resolves to a later offset, as happens when
+                    // `reparseAnchor` begins mid-stream.
+                    if (stack.items.len > 0 and top.touched) {
+                        const parent_top = &stack.items[stack.items.len - 1];
+                        const parent_start = &nodes.items(.start)[parent_top.node_idx];
+                        if (!parent_top.touched) {
+                            parent_start.* = node_start;
+                            parent_top.touched = true;
+                        } else if (parent_start.* > node_start) {
+                            parent_start.* = node_start;
+                        }
+                    }
                 },
                 .token => |tok_idx| {
                     std.debug.assert(stack.items.len > 0);
@@ -373,11 +399,14 @@ pub const Builder = struct {
                     const top = &stack.items[stack.items.len - 1];
                     try top.pending_children.append(self.gpa, Tree.Element.fromToken(tok_idx));
                     next_tok_idx = @max(next_tok_idx, tok_idx + 1);
-                    // If the enclosing node hasn't absorbed a real start byte
-                    // yet (nothing consumed before it opened), back-fill.
+                    // First real contribution to this node's range wins; the
+                    // speculative `.start` seed based on `next_tok_idx` at
+                    // open-time can be wrong when subsequent events skip
+                    // tokens (e.g. reparseAnchor starting mid-stream).
                     const node_start = &nodes.items(.start)[top.node_idx];
-                    if (node_start.* == 0 and tok_idx == 0) {
-                        // No-op: start was correctly set to 0 already.
+                    if (!top.touched) {
+                        node_start.* = tok_starts[tok_idx];
+                        top.touched = true;
                     } else if (node_start.* > tok_starts[tok_idx]) {
                         node_start.* = tok_starts[tok_idx];
                     }
