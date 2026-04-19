@@ -153,6 +153,49 @@ fn isScopeOpener(k: Cst.Kind) bool {
     };
 }
 
+/// For a `compound_stmt` or `decl_stmt` anchor, return the `compound_stmt`
+/// CST node we will revisit.
+///
+///   - compound_stmt → the anchor itself
+///   - decl_stmt     → the nearest `compound_stmt` ancestor
+///
+/// Returns null if the decl_stmt's nearest statement container is NOT a
+/// compound_stmt (legal positions: `for_stmt` init/update, where the
+/// DeclStmt is stored by value inside `ForStmt` and the in-place
+/// slot-replace story does not apply). Caller falls back to parseFull.
+fn enclosingCompoundCst(cst: *const Cst.Tree, node: Cst.NodeIndex) ?Cst.NodeIndex {
+    const start_kind = cst.getNode(node).kind;
+    if (start_kind == .compound_stmt) return node;
+
+    // decl_stmt anchor: walk parents until we hit compound_stmt or run
+    // out of parents. Any intervening scope-opener that is NOT a
+    // compound_stmt (only for_stmt qualifies today) means we are inside
+    // a for-init/update slot — bail.
+    var cur = node;
+    while (true) {
+        const n = cst.getNode(cur);
+        if (n.parent == cur) return null; // reached root without a compound_stmt
+        cur = n.parent;
+        const k = cst.getNode(cur).kind;
+        if (k == .compound_stmt) return cur;
+        if (k == .for_stmt) return null;
+    }
+}
+
+/// DFS-collect every descendant scope of `root` into `out` in creation
+/// (AST-append) order. Used to reconstruct `scopes_in_order` for a
+/// targeted `AstVisit` over a previously-lowered subtree (sub-walk path).
+fn collectScopeSubtreeDfs(
+    arena: Allocator,
+    root: *Ast.Scope,
+    out: *std.ArrayListUnmanaged(*Ast.Scope),
+) error{OutOfMemory}!void {
+    for (root.children.items) |c| {
+        try out.append(arena, c);
+        try collectScopeSubtreeDfs(arena, c, out);
+    }
+}
+
 fn collectCstOpeners(
     gpa: Allocator,
     cst: *const Cst.Tree,
