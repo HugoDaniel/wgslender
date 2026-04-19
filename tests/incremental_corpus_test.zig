@@ -250,3 +250,108 @@ test "incremental corpus: reparse composes over repeated trivia-only inserts" {
     try std.testing.expect(std.mem.endsWith(u8, prev.source, base_src));
     try std.testing.expectEqual(@as(usize, 1), prev.module.declarations.items.len);
 }
+
+// =========================================================================
+// F-CORPUS — error fixup over the compute.toys corpus.
+//
+// For every shader, take the first integer literal token, swap a digit
+// (length-preserving so the literal_expr anchor's kind stays stable),
+// reparse via the hot path, and assert that `updated.errors` matches a
+// fresh `parseFull(updated.source)` byte for byte. Catches subtle
+// drop/shift/copy bugs on real-world shapes.
+// =========================================================================
+
+test "F-CORPUS: literal swap on compute.toys preserves error oracle equality" {
+    const io = std.Options.debug_io;
+    const dir_path = "tests/testdata/compute.toys";
+
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound or err == error.NotFound) {
+            std.debug.print("skip: compute.toys directory missing\n", .{});
+            return;
+        }
+        return err;
+    };
+    defer dir.close(io);
+
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+
+    var n_shaders: usize = 0;
+    var n_edits: usize = 0;
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".wgsl")) continue;
+
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        const source_bytes = entry.dir.readFileAlloc(io, entry.basename, alloc, .unlimited) catch {
+            continue;
+        };
+        const source_z = try makeSentinel(alloc, source_bytes);
+
+        // Tokenize to find the first int_literal (cheap; reused tokens).
+        var toks = try wgslender.Lexer.tokenizeAll(gpa, source_z);
+        defer toks.deinit(gpa);
+        const tags = toks.items(.tag);
+        const starts = toks.items(.start);
+        const ends = toks.items(.end);
+
+        var lit_idx: ?usize = null;
+        for (tags, 0..) |t, i| {
+            if (t == .int_literal) {
+                lit_idx = i;
+                break;
+            }
+        }
+        if (lit_idx == null) continue;
+
+        const lit_start = starts[lit_idx.?];
+        const lit_end = ends[lit_idx.?];
+        if (lit_end - lit_start < 1) continue;
+
+        // Length-preserving digit swap on the leading character.
+        const replacement: []const u8 = switch (source_z[lit_start]) {
+            '0', '1', '2', '3', '4' => "9",
+            else => "0",
+        };
+
+        var base = try Incremental.parseFull(gpa, source_z);
+        defer base.deinit();
+
+        var updated = try Incremental.reparse(gpa, &base, .{
+            .start = lit_start,
+            .end = lit_start + 1,
+            .new_text = replacement,
+        });
+        defer updated.deinit();
+
+        // The first int_literal in some shaders sits inside an
+        // attribute-arg context (e.g., `@workgroup_size(8)`), which can
+        // hit fallback paths. Either path is fine — both populate
+        // `errors` from the same parseFull oracle this test compares
+        // against.
+        var oracle = try Incremental.parseFull(gpa, updated.source);
+        defer oracle.deinit();
+        try std.testing.expectEqual(oracle.errors.len, updated.errors.len);
+        for (updated.errors, oracle.errors) |g, o| {
+            try std.testing.expectEqualStrings(o.code, g.code);
+            try std.testing.expectEqual(o.pos, g.pos);
+            try std.testing.expectEqual(o.end, g.end);
+        }
+
+        n_shaders += 1;
+        n_edits += 1;
+    }
+
+    std.debug.print(
+        "F-CORPUS error fixup: {d} compute.toys shaders, {d} edits — oracle equality OK\n",
+        .{ n_shaders, n_edits },
+    );
+}

@@ -80,6 +80,61 @@ test "F1: every literal edit reaches the hot path (reused = true)" {
     }
 }
 
+test "F-PROP: every literal swap leaves errors equal to a parseFull oracle" {
+    // Property test for the error-fixup path. A no-op literal swap
+    // (e.g. `0` → `9`) is a kind-stable hot edit on a literal_expr
+    // anchor. Whatever errors the source had before must shift cleanly
+    // (or stay put) and equal what a fresh full parse would produce.
+    const gpa = std.testing.allocator;
+
+    const FixupCheck = struct {
+        gpa: std.mem.Allocator,
+        source: [:0]const u8,
+        steps: u32 = 0,
+
+        fn onLiteral(self: *@This(), lit_start: u32, lit_end: u32) !void {
+            self.steps += 1;
+            var base = try Incremental.parseFull(self.gpa, self.source);
+            defer base.deinit();
+            const replacement: []const u8 = switch (self.source[lit_start]) {
+                '0', '1', '2', '3', '4' => "9",
+                else => "0",
+            };
+            var upd = try Incremental.reparse(self.gpa, &base, .{
+                .start = lit_start,
+                .end = lit_start + 1,
+                .new_text = replacement,
+            });
+            defer upd.deinit();
+            _ = lit_end;
+            try std.testing.expect(upd.reused);
+
+            var oracle = try Incremental.parseFull(self.gpa, upd.source);
+            defer oracle.deinit();
+            try std.testing.expectEqual(oracle.errors.len, upd.errors.len);
+            for (upd.errors, oracle.errors) |g, o| {
+                try std.testing.expectEqualStrings(o.code, g.code);
+                try std.testing.expectEqual(o.pos, g.pos);
+                try std.testing.expectEqual(o.end, g.end);
+            }
+        }
+    };
+
+    // Sources designed so each literal swap exercises a different
+    // fixup case: clean (no errors), errors strictly downstream, errors
+    // strictly upstream.
+    const sources = [_][:0]const u8{
+        "fn f() -> i32 { return 0; }",
+        "fn f() -> i32 { return 0; } fn g() -> i32 { return q; let q: i32 = 1; return q; }",
+        "fn g() -> i32 { return q; let q: i32 = 1; return q; } fn f() -> i32 { return 0; }",
+    };
+    for (sources) |s| {
+        var check: FixupCheck = .{ .gpa = gpa, .source = s };
+        try forEachLiteral(gpa, s, &check, FixupCheck.onLiteral);
+        try std.testing.expect(check.steps > 0);
+    }
+}
+
 test "F4: reused path preserves symbol indices (same name + kind by index)" {
     const gpa = std.testing.allocator;
 
