@@ -67,13 +67,113 @@ pub const ReparseResult = struct {
     /// — but the flag is part of the API so tests and telemetry can
     /// start asserting on it ahead of the anchor-based implementation.
     reused: bool = false,
+    /// Side-table mapping scope-opener CST nodes (fn_decl, compound_stmt,
+    /// for_stmt) to the AST scope they correspond to. Populated by
+    /// `buildScopeForCstNodeMap` after every full parse so the add/sub
+    /// hot path can locate an anchor's enclosing scope in O(CST depth)
+    /// via `scopeAtCstNode`.
+    ///
+    /// Key is the raw `@intFromEnum(Cst.NodeIndex)` to keep the map
+    /// storage `*Ast.Module`-agnostic. Lives on `ReparseResult` (not
+    /// `Ast.Module`) so non-incremental consumers — `validate`,
+    /// `minify`, `reflect` — pay no extra allocation.
+    scope_for_cst_node: std.AutoHashMapUnmanaged(u32, *Ast.Scope) = .empty,
 
     pub fn deinit(self: *ReparseResult) void {
-        // All arena-owned: module, CST nodes/children/errors, source buffer.
+        // All arena-owned: module, CST nodes/children/errors, source
+        // buffer, scope_for_cst_node backing. Arena deinit releases it.
         self.arena.deinit();
         self.gpa.destroy(self.arena);
     }
 };
+
+/// Walk a CST node's ancestor chain until we find one that has a
+/// registered scope in `result.scope_for_cst_node`, and return that scope.
+/// Falls back to `result.module.scope` if none is found (e.g., when the
+/// map is empty because the caller bypassed `buildScopeForCstNodeMap`).
+///
+/// Used by the add/sub hot path to position `AstVisit.Context.scope` at
+/// the anchor's enclosing scope before an add-walk.
+pub fn scopeAtCstNode(result: *const ReparseResult, node: Cst.NodeIndex) *Ast.Scope {
+    var cur = node;
+    while (true) {
+        if (result.scope_for_cst_node.get(@intFromEnum(cur))) |s| return s;
+        const n = result.cst.getNode(cur);
+        if (n.parent == cur) return result.module.scope; // reached the root
+        cur = n.parent;
+    }
+}
+
+/// True when this CST kind opens an AST scope during lowering. Kept in
+/// lockstep with the `pushScope` call sites in `Parser` and `CstLower`.
+fn isScopeOpener(k: Cst.Kind) bool {
+    return switch (k) {
+        .fn_decl, .compound_stmt, .for_stmt => true,
+        else => false,
+    };
+}
+
+fn collectCstOpeners(
+    gpa: Allocator,
+    cst: *const Cst.Tree,
+    node: Cst.NodeIndex,
+    out: *std.ArrayListUnmanaged(Cst.NodeIndex),
+) error{OutOfMemory}!void {
+    const n = cst.getNode(node);
+    if (isScopeOpener(n.kind)) try out.append(gpa, node);
+    for (cst.children[n.first_child .. n.first_child + n.child_count]) |el| {
+        if (el.asNode()) |child| {
+            try collectCstOpeners(gpa, cst, child, out);
+        }
+    }
+}
+
+fn collectAstScopes(
+    gpa: Allocator,
+    scope: *Ast.Scope,
+    out: *std.ArrayListUnmanaged(*Ast.Scope),
+) error{OutOfMemory}!void {
+    for (scope.children.items) |c| {
+        try out.append(gpa, c);
+        try collectAstScopes(gpa, c, out);
+    }
+}
+
+/// Populate `result.scope_for_cst_node` by pairing CST scope-openers
+/// (fn_decl, compound_stmt, for_stmt) with non-root AST scopes in the same
+/// DFS-open order. Both front-ends (Parser and CstLower) push scopes in
+/// the exact order the CST nodes are opened, so index-zip yields a
+/// correct mapping.
+///
+/// Idempotent: re-runs clear the existing map first. Called from
+/// `parseFull` at the end of each full parse and from the hot path after
+/// a successful splice.
+pub fn buildScopeForCstNodeMap(
+    arena: Allocator,
+    result: *ReparseResult,
+) !void {
+    result.scope_for_cst_node.clearRetainingCapacity();
+
+    var cst_openers: std.ArrayListUnmanaged(Cst.NodeIndex) = .empty;
+    defer cst_openers.deinit(arena);
+    try collectCstOpeners(arena, &result.cst, result.cst.root(), &cst_openers);
+
+    var ast_scopes: std.ArrayListUnmanaged(*Ast.Scope) = .empty;
+    defer ast_scopes.deinit(arena);
+    try collectAstScopes(arena, result.module.scope, &ast_scopes);
+
+    // Parser/CstLower and the CST emit scope-openers in the same DFS-open
+    // order, so cardinalities match. If they ever diverge, fall back to
+    // an empty map — `scopeAtCstNode` still returns a valid scope (the
+    // module) and the hot path's correctness degrades to a full
+    // re-lower, not a crash.
+    if (cst_openers.items.len != ast_scopes.items.len) return;
+
+    try result.scope_for_cst_node.ensureTotalCapacity(arena, @intCast(cst_openers.items.len));
+    for (cst_openers.items, ast_scopes.items) |opener, scope| {
+        result.scope_for_cst_node.putAssumeCapacity(@intFromEnum(opener), scope);
+    }
+}
 
 /// Kinds that are valid targets for anchor-based re-parse: each one can be
 /// produced by a dedicated parser entry point given a token slice, without
@@ -222,13 +322,17 @@ pub fn parseFull(gpa: Allocator, source: []const u8) !ReparseResult {
 
     const tree = try builder.finish(arena, all_tokens, owned_source);
 
-    return .{
+    // Pair CST scope-opener nodes with the AST scopes produced in the
+    // same DFS order, so `scopeAtCstNode` resolves in O(CST depth).
+    var result = ReparseResult{
         .gpa = gpa,
         .arena = arena_ptr,
         .source = owned_source,
         .module = module,
         .cst = tree,
     };
+    try buildScopeForCstNodeMap(arena, &result);
+    return result;
 }
 
 /// Anchor kinds the parser can re-enter at via `reparseAnchor` and whose
@@ -423,7 +527,7 @@ fn tryIncrementalReparse(
     //    fresh `Ast.Module` + symbols + scope tree in the new arena.
     const module = try CstLower.lowerTree(gpa, arena, &new_tree);
 
-    return .{
+    var result = ReparseResult{
         .gpa = gpa,
         .arena = arena_ptr,
         .source = new_source,
@@ -431,6 +535,8 @@ fn tryIncrementalReparse(
         .cst = new_tree,
         .reused = true,
     };
+    try buildScopeForCstNodeMap(arena, &result);
+    return result;
 }
 
 fn isStmtKind(k: Cst.Kind) bool {
@@ -695,4 +801,45 @@ test "Incremental.findAnchor: edit bridging two decls promotes to module" {
     // Either no anchor, or the result is the module root but module is
     // not itself a reparse anchor. Concretely: should be null.
     try testing.expectEqual(@as(?Cst.Cursor, null), anchor);
+}
+
+test "Incremental.scopeAtCstNode: literal inside fn body resolves to block scope" {
+    const src: [:0]const u8 = "fn f() { let x = 7; return x; }";
+    var base = try Incremental.parseFull(testing.allocator, src);
+    defer base.deinit();
+
+    // Locate the literal expression `7` — an anchor somewhere deep
+    // inside the function body.
+    const off: u32 = @intCast(std.mem.indexOfScalar(u8, src, '7').?);
+    const anchor = Incremental.findAnchor(&base.cst, .{
+        .start = off,
+        .end = off + 1,
+        .new_text = "8",
+    }) orelse return error.TestUnexpectedNull;
+
+    const scope = Incremental.scopeAtCstNode(&base, anchor.node);
+    // The anchor's enclosing scope must be a block (the fn body), parent
+    // must be a function scope, and grandparent must be the module.
+    try testing.expectEqual(Ast.ScopeKind.block, scope.kind);
+    const parent = scope.parent orelse return error.TestUnexpectedNull;
+    try testing.expectEqual(Ast.ScopeKind.function, parent.kind);
+    const gp = parent.parent orelse return error.TestUnexpectedNull;
+    try testing.expectEqual(Ast.ScopeKind.module, gp.kind);
+    try testing.expect(gp.parent == null);
+}
+
+test "Incremental.scopeAtCstNode: module-level anchor falls through to module.scope" {
+    const src: [:0]const u8 = "const x = 1;";
+    var base = try Incremental.parseFull(testing.allocator, src);
+    defer base.deinit();
+
+    const off: u32 = @intCast(std.mem.indexOfScalar(u8, src, '1').?);
+    const anchor = Incremental.findAnchor(&base.cst, .{
+        .start = off,
+        .end = off + 1,
+        .new_text = "2",
+    }) orelse return error.TestUnexpectedNull;
+
+    const scope = Incremental.scopeAtCstNode(&base, anchor.node);
+    try testing.expectEqual(base.module.scope, scope);
 }
