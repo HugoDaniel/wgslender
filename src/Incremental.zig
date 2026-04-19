@@ -642,6 +642,21 @@ fn tryIncrementalReparseInPlace(
     edit: Edit,
     new_buf: []const u8,
 ) !ReparseResult {
+    // 0. Compaction watermark. The in-place hot path extends prev.arena
+    //    forever; left unchecked, a long editing session accumulates
+    //    stale CST splices, old source copies, and dead token arrays in
+    //    that arena. Before committing to another in-place edit, bail
+    //    when prev.arena's live capacity has drifted past 8× the prev
+    //    source size (floor 256 KiB to absorb the initial parse's
+    //    overhead and to give short edit bursts on small sources room
+    //    to run purely on the hot path). `reparse()` catches the error
+    //    and falls through to `parseFull`, which allocates a clean
+    //    arena and starts a new growth window.
+    const compaction_floor: usize = 256 * 1024;
+    const compaction_ratio: usize = 8;
+    const threshold = @max(compaction_floor, prev.source.len * compaction_ratio);
+    if (prev.arena.queryCapacity() > threshold) return error.ArenaWatermarkTripped;
+
     // 1. Anchor lookup — same as the fresh-arena path. Reads only
     //    prev.cst, no allocation into prev.arena yet.
     var anchor_cursor = findAnchor(&prev.cst, edit) orelse return error.NoAnchor;

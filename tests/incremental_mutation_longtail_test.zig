@@ -1147,3 +1147,134 @@ test "M9.e: interleaved edits across two functions keep the chain flat" {
     try expectUseCountsMatch(prev.module, oracle.module);
 }
 
+// =========================================================================
+// M10 — Compaction watermark: the in-place hot path grows prev.arena
+// forever, so the reparse driver trips a full-parse fallback once live
+// arena capacity passes 8× source size (floor 16 KiB). M10 validates
+// that (a) sustained churn eventually trips at least once, (b) a large
+// insert trips quickly, and (c) the chain resets to a fresh arena on
+// the trip.
+// =========================================================================
+
+test "M10.a: sustained literal churn trips the watermark at least once" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 1 + 2; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const lit_off: u32 = at(base_src, "1 + 2") + 4;
+    var trip_count: u32 = 0;
+    var i: u32 = 0;
+    // 500 iterations on a 31-byte base: threshold = max(256 KiB, 31*8)
+    // = 256 KiB. Each hot-path edit adds a new source copy, re-lexed
+    // token array, CST splice, and lowered AST subtree — enough to
+    // trip at least once across 500 edits.
+    while (i < 500) : (i += 1) {
+        const ch: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+        if (!next.reused) trip_count += 1;
+        prev.deinit();
+        prev = next;
+    }
+    try std.testing.expect(trip_count >= 1);
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+test "M10.b: a large insert makes the next edit trip the watermark" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 1 + 2; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    // Craft a single hot-path edit whose prev-arena cost exceeds the
+    // watermark on the *next* iteration. We insert a 200 KiB integer
+    // literal so after one edit prev.arena's capacity is already past
+    // the 256 KiB floor; the second edit immediately falls back.
+    const padding_len: usize = 200 * 1024;
+    const big_lit = try gpa.alloc(u8, padding_len);
+    defer gpa.free(big_lit);
+    @memset(big_lit, '1');
+
+    const lit_off: u32 = at(base_src, "1 + 2") + 4;
+    const first = try Incremental.reparse(gpa, &prev, .{
+        .start = lit_off,
+        .end = lit_off + 1,
+        .new_text = big_lit,
+    });
+    prev.deinit();
+    prev = first;
+    try std.testing.expect(prev.reused);
+
+    const next = try Incremental.reparse(gpa, &prev, .{
+        .start = lit_off,
+        .end = lit_off + @as(u32, @intCast(padding_len)),
+        .new_text = "7",
+    });
+    try std.testing.expect(!next.reused);
+
+    var oracle = try Incremental.parseFull(gpa, next.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, next.module, oracle.module);
+    try expectUseCountsMatch(next.module, oracle.module);
+
+    prev.deinit();
+    prev = next;
+}
+
+test "M10.c: a watermark trip resets the arena and re-enables the hot path" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 1 + 2; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const padding_len: usize = 200 * 1024;
+    const big_lit = try gpa.alloc(u8, padding_len);
+    defer gpa.free(big_lit);
+    @memset(big_lit, '1');
+
+    const lit_off: u32 = at(base_src, "1 + 2") + 4;
+    const first = try Incremental.reparse(gpa, &prev, .{
+        .start = lit_off,
+        .end = lit_off + 1,
+        .new_text = big_lit,
+    });
+    prev.deinit();
+    prev = first;
+
+    // Trip the watermark with a shrinking edit.
+    const tripped = try Incremental.reparse(gpa, &prev, .{
+        .start = lit_off,
+        .end = lit_off + @as(u32, @intCast(padding_len)),
+        .new_text = "7",
+    });
+    try std.testing.expect(!tripped.reused);
+    // Full-parse fallback allocates a fresh arena and retains none.
+    try std.testing.expectEqual(@as(usize, 0), tripped.retained_arenas.items.len);
+    prev.deinit();
+    prev = tripped;
+
+    // Next hot-path edit should take the in-place path on the fresh
+    // arena and keep retained_arenas at 0. Post-trip source is
+    // `"fn f() -> i32 { return 1 + 7; }"` — flip the `7` to `9`.
+    const post_lit_off: u32 = at(prev.source, "+ 7") + 2;
+    const follow = try Incremental.reparse(gpa, &prev, .{
+        .start = post_lit_off,
+        .end = post_lit_off + 1,
+        .new_text = "9",
+    });
+    try std.testing.expect(follow.reused);
+    try std.testing.expectEqual(@as(usize, 0), follow.retained_arenas.items.len);
+
+    prev.deinit();
+    prev = follow;
+}
+
