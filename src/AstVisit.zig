@@ -13,6 +13,23 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Parser = @import("Parser.zig");
 
+/// Direction of a subtree walk.
+///
+/// `.add` — today's behavior: resolve idents against scopes, set `ref`,
+/// increment `symbols[ref].use_count`, emit `E0102` on misresolution,
+/// mark expression purity in post-order.
+///
+/// `.sub` — read-only on scopes/errors. Walks a subtree whose idents are
+/// ALREADY bound (`ref` set by a previous Pass 2) and DECREMENTS
+/// `symbols[ref].use_count` by one per resolved reference. No lookup, no
+/// error emission, no purity marking — the subtree is about to be
+/// discarded from the module.
+///
+/// Used by `Incremental.reparse`'s hot path to apply a targeted delta
+/// when a subtree is spliced out and a new one spliced in, avoiding a
+/// whole-module revisit.
+pub const Mode = enum { add, sub };
+
 /// Everything Pass 2 needs to read or mutate. The caller owns all slices
 /// and lists; `visit` never allocates into them (it only mutates in place:
 /// `use_count`, ident `ref`, expression purity flags).
@@ -37,6 +54,9 @@ pub const Context = struct {
     /// supplies `token_tags.len * 2`; CstLower supplies an equivalent
     /// bound derived from CST node count. Purely a safety guard.
     safety_budget: usize,
+    /// Direction of the walk (see `Mode` doc comment). Default `.add`
+    /// preserves every pre-existing caller's behavior byte-for-byte.
+    mode: Mode = .add,
 };
 
 pub fn visit(ctx: *Context, module: *Ast.Module) error{OutOfMemory}!void {
@@ -97,7 +117,14 @@ fn visitCompoundStmt(ctx: *Context, stmt: *Ast.CompoundStmt) error{OutOfMemory}!
     var stack: std.ArrayListUnmanaged(Work) = .empty;
     defer stack.deinit(ctx.arena);
     try stack.append(ctx.arena, .{ .compound = stmt });
+    try drainStmtStack(ctx, &stack);
+}
 
+/// Drives the Work stack until it empties. Shared by `visitCompoundStmt`
+/// (seeded with a `.compound`) and `visitSubtreeStmt` (seeded with a
+/// single `.stmt`). Mode-sensitivity is entirely inside `processOneStmt`
+/// and `visitExpr`, so this loop is mode-agnostic.
+fn drainStmtStack(ctx: *Context, stack: *std.ArrayListUnmanaged(Work)) error{OutOfMemory}!void {
     for (0..ctx.safety_budget) |_| {
         const work = stack.pop() orelse break;
         switch (work) {
@@ -111,7 +138,7 @@ fn visitCompoundStmt(ctx: *Context, stmt: *Ast.CompoundStmt) error{OutOfMemory}!
                     try stack.append(ctx.arena, .{ .stmt = body.stmts.items[i] });
                 }
             },
-            .stmt => |s| try processOneStmt(ctx, s, &stack),
+            .stmt => |s| try processOneStmt(ctx, s, stack),
         }
     } else unreachable;
 }
@@ -201,27 +228,47 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
     for (0..ctx.safety_budget) |_| {
         const work = stack.pop() orelse break;
         switch (work) {
-            .mark => |me| Ast.markExprPurity(me, ctx.symbols),
+            .mark => |me| {
+                // Sub mode walks a subtree whose purity flags we do not
+                // want to re-touch: the subtree is being discarded from
+                // the module, so marking is pure waste work at best.
+                if (ctx.mode == .add) Ast.markExprPurity(me, ctx.symbols);
+            },
             .visit => |ve| {
                 // Push mark first (popped last = post-order)
                 try stack.append(ctx.arena, .{ .mark = ve });
 
                 switch (ve) {
-                    .ident => |expr| {
-                        ctx.current_loc = expr.loc;
-                        if (lookupSymbol(ctx, expr.name)) |ref| {
-                            expr.ref = ref;
-                            if (ref.isValid()) {
-                                const idx = ref.index();
-                                if (idx < ctx.symbols.len) {
-                                    ctx.symbols[idx].use_count += 1;
+                    .ident => |expr| switch (ctx.mode) {
+                        .add => {
+                            ctx.current_loc = expr.loc;
+                            if (lookupSymbol(ctx, expr.name)) |ref| {
+                                expr.ref = ref;
+                                if (ref.isValid()) {
+                                    const idx = ref.index();
+                                    if (idx < ctx.symbols.len) {
+                                        ctx.symbols[idx].use_count += 1;
+                                    }
+                                }
+                            } else if (lookupSymbolAnyLoc(ctx, expr.name)) |ref| {
+                                const msg = try std.fmt.allocPrint(ctx.arena, "'{s}' is used before its declaration", .{expr.name});
+                                try ctx.errors.append(ctx.arena, .{ .message = msg, .pos = expr.loc, .code = "E0102" });
+                                expr.ref = ref;
+                            }
+                        },
+                        .sub => {
+                            // Subtree carries pre-bound refs from a prior
+                            // Pass 2. Decrement the use_count for each one
+                            // we can still index into. No lookup, no scope
+                            // access, no error emission — the subtree is
+                            // going away.
+                            if (expr.ref.isValid()) {
+                                const idx = expr.ref.index();
+                                if (idx < ctx.symbols.len and ctx.symbols[idx].use_count > 0) {
+                                    ctx.symbols[idx].use_count -= 1;
                                 }
                             }
-                        } else if (lookupSymbolAnyLoc(ctx, expr.name)) |ref| {
-                            const msg = try std.fmt.allocPrint(ctx.arena, "'{s}' is used before its declaration", .{expr.name});
-                            try ctx.errors.append(ctx.arena, .{ .message = msg, .pos = expr.loc, .code = "E0102" });
-                            expr.ref = ref;
-                        }
+                        },
                     },
                     .literal => {},
                     .binary => |expr| {
@@ -262,18 +309,29 @@ pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
     var current = t;
     for (0..32) |_| {
         switch (current) {
-            .ident => |typ| {
-                ctx.current_loc = 0; // Types don't have text-order restrictions at module scope
-                if (lookupSymbol(ctx, typ.name)) |ref| {
-                    typ.ref = ref;
-                    if (ref.isValid()) {
-                        const idx = ref.index();
-                        if (idx < ctx.symbols.len) {
-                            ctx.symbols[idx].use_count += 1;
+            .ident => |typ| switch (ctx.mode) {
+                .add => {
+                    ctx.current_loc = 0; // Types don't have text-order restrictions at module scope
+                    if (lookupSymbol(ctx, typ.name)) |ref| {
+                        typ.ref = ref;
+                        if (ref.isValid()) {
+                            const idx = ref.index();
+                            if (idx < ctx.symbols.len) {
+                                ctx.symbols[idx].use_count += 1;
+                            }
                         }
                     }
-                }
-                break;
+                    break;
+                },
+                .sub => {
+                    if (typ.ref.isValid()) {
+                        const idx = typ.ref.index();
+                        if (idx < ctx.symbols.len and ctx.symbols[idx].use_count > 0) {
+                            ctx.symbols[idx].use_count -= 1;
+                        }
+                    }
+                    break;
+                },
             },
             .vec => |typ| current = typ.elem_type orelse break,
             .mat => |typ| current = typ.elem_type orelse break,
@@ -287,6 +345,35 @@ pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
             .texture => |typ| current = typ.sampled_type orelse break,
         }
     } else unreachable;
+}
+
+// =========================================================================
+// Subtree entry points (incremental hot path).
+//
+// `visitSubtreeStmt` and `visitSubtreeExpr` drive the same walker used by
+// `visit`, but seeded with a single statement or expression instead of
+// the whole module. `ctx.mode` controls direction:
+//   - `.add`: caller is about to splice `subtree` into the module. Resolve
+//     idents against `ctx.scope` (which the caller must position at the
+//     anchor's enclosing scope), increment `use_count`, mark purity.
+//   - `.sub`: caller is about to splice `subtree` OUT of the module. Read
+//     pre-bound `ref` fields and decrement `use_count`.
+//
+// Callers take the `LoweredSubtree` union returned by
+// `CstLower.lowerSubtree` and dispatch on its tag into these two entry
+// points. AstVisit deliberately avoids importing CstLower to keep the
+// module dependency acyclic.
+// =========================================================================
+
+pub fn visitSubtreeStmt(ctx: *Context, stmt: Ast.Stmt) error{OutOfMemory}!void {
+    var stack: std.ArrayListUnmanaged(Work) = .empty;
+    defer stack.deinit(ctx.arena);
+    try stack.append(ctx.arena, .{ .stmt = stmt });
+    try drainStmtStack(ctx, &stack);
+}
+
+pub fn visitSubtreeExpr(ctx: *Context, expr: Ast.Expr) error{OutOfMemory}!Ast.Expr {
+    return visitExpr(ctx, expr);
 }
 
 fn lookupSymbol(ctx: *const Context, name: []const u8) ?Ast.SymbolIndex {
