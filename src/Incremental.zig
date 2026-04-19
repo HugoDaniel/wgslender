@@ -140,9 +140,8 @@ pub fn isReparseAnchor(k: Cst.Kind) bool {
 /// full-parses regardless; this function is the scaffolding the hot path
 /// will consume once subtree reuse lands.
 pub fn findAnchor(cst: *const Cst.Tree, edit: Edit) ?Cst.Cursor {
-    const needle = Cst.Span{ .start = edit.start, .end = edit.end };
     const root = cst.rootCursor();
-    if (!root.range().contains(needle)) return null;
+    if (!containsEditForDescent(root, edit)) return null;
 
     var best: ?Cst.Cursor = if (isReparseAnchor(root.kind())) root else null;
     var cur = root;
@@ -150,15 +149,51 @@ pub fn findAnchor(cst: *const Cst.Tree, edit: Edit) ?Cst.Cursor {
         for (cur.childElements()) |el| {
             const n = el.asNode() orelse continue;
             const child = Cst.Cursor{ .tree = cur.tree, .node = n };
-            if (child.range().contains(needle)) {
-                if (isReparseAnchor(child.kind())) best = child;
-                cur = child;
-                continue :descend;
-            }
+            if (!containsEditForDescent(child, edit)) continue;
+            if (isReparseAnchor(child.kind())) best = child;
+            cur = child;
+            continue :descend;
         }
         break;
     }
     return best;
+}
+
+/// Like `Span.contains(edit_range)` but treats pure insertions at the
+/// non-trivia boundary of a node as *not contained* — they belong to
+/// the parent. Rationale:
+///   - a pure insert `[P, P)` at `P == node.end` appends bytes outside
+///     the node; reparsing it would leave them dangling.
+///   - a pure insert at `P == first_non_trivia_start` prepends bytes
+///     before the node's first real token. For a single-statement node
+///     like `decl_stmt`, the inserted text might be a sibling statement,
+///     which the enclosing container (compound_stmt) can absorb but the
+///     node itself cannot.
+/// For non-empty edits we keep the existing half-open containment — the
+/// edit has at least one byte in the node, so the reparse is well-defined.
+fn containsEditForDescent(cursor: Cst.Cursor, edit: Edit) bool {
+    const r = cursor.range();
+    if (edit.start == edit.end) {
+        const nt_start = firstNonTriviaStart(cursor) orelse r.start;
+        return edit.start > nt_start and edit.end < r.end;
+    }
+    return edit.start >= r.start and edit.end <= r.end;
+}
+
+/// First non-trivia token's start byte inside a node's subtree, or null
+/// if the subtree has no non-trivia tokens (e.g., all whitespace).
+fn firstNonTriviaStart(cursor: Cst.Cursor) ?u32 {
+    const tree = cursor.tree;
+    const tags = tree.tokens.items(.tag);
+    const starts = tree.tokens.items(.start);
+    for (tree.childrenOf(cursor.node)) |el| {
+        if (el.asToken()) |t| {
+            if (!tags[t].isTrivia()) return starts[t];
+        } else if (el.asNode()) |n| {
+            if (firstNonTriviaStart(.{ .tree = tree, .node = n })) |s| return s;
+        }
+    }
+    return null;
 }
 
 /// Parse `source` from scratch into a `ReparseResult`. The result owns a
@@ -196,13 +231,14 @@ pub fn parseFull(gpa: Allocator, source: []const u8) !ReparseResult {
     };
 }
 
-/// Kinds that qualify as a symbol-free anchor: their subtrees don't
-/// introduce, remove, or reorder any symbols, so the prev module's
-/// symbol table is structurally unchanged across the edit. Only the
-/// `Ast.Module` as a whole needs re-lowering (which `CstLower.lowerTree`
-/// does from the spliced CST). Other anchor kinds fall back to full
-/// parse this session; append-only / scope-changing paths ship later.
-fn isSymbolFreeAnchor(k: Cst.Kind) bool {
+/// Anchor kinds the parser can re-enter at via `reparseAnchor` and whose
+/// lowering we trust on the incremental hot path. Symbol introduction
+/// (e.g. inside `compound_stmt` or `decl_stmt`) is fine because the hot
+/// path re-lowers the whole module via `CstLower.lowerTree`, which
+/// rebuilds `module.symbols` and the scope tree from the spliced CST.
+/// Surgical symbol-table patching (append-without-relower) is a later
+/// optimization.
+fn isHotPathAnchor(k: Cst.Kind) bool {
     return switch (k) {
         // Expressions never declare symbols.
         .literal_expr,
@@ -222,6 +258,10 @@ fn isSymbolFreeAnchor(k: Cst.Kind) bool {
         .break_if_stmt,
         .continue_stmt,
         .discard_stmt,
+        // Scope-introducing / declaring statements. Safe because we
+        // re-lower the whole module after splice.
+        .compound_stmt,
+        .decl_stmt,
         => true,
         else => false,
     };
@@ -284,8 +324,16 @@ fn tryIncrementalReparse(
     new_buf: []const u8,
 ) !ReparseResult {
     // 1. Find a reparse anchor in prev.cst that fully contains the edit.
-    const anchor_cursor = findAnchor(&prev.cst, edit) orelse return error.NoAnchor;
-    if (!isSymbolFreeAnchor(anchor_cursor.kind())) return error.NotSymbolFree;
+    //    `findAnchor` returns the narrowest reparse-anchor kind. That may
+    //    be a kind we can't restart the parser at on its own (e.g. a
+    //    `let_decl` inside a compound, where the outer `decl_stmt` is
+    //    what `parseStatement` opens when reparsing). Walk up the parent
+    //    chain until we land on a hot-path anchor; bail if we reach the
+    //    root without finding one.
+    var anchor_cursor = findAnchor(&prev.cst, edit) orelse return error.NoAnchor;
+    while (!isHotPathAnchor(anchor_cursor.kind())) {
+        anchor_cursor = anchor_cursor.parent() orelse return error.NotHotPathAnchor;
+    }
     const anchor_kind = anchor_cursor.kind();
 
     // 2. Allocate a fresh arena for the new ReparseResult. All new
@@ -335,6 +383,12 @@ fn tryIncrementalReparse(
     var sub_parser = try Parser.initWithCst(arena, new_source, new_stream, &sub_builder);
     const parser_kind: Parser.AnchorKind = if (isStmtKind(anchor_kind)) .statement else .expression;
     sub_parser.reparseAnchor(parser_kind, nt_pos) catch return error.AnchorParseFailed;
+    // The parser writes soft diagnostics (missing token, redeclaration,
+    // etc.) to `Parser.errors` rather than the CST builder's error list.
+    // A diagnostic means the grammar recovered with a partial/elided CST,
+    // which invalidates the splice assumption that token ranges line up.
+    // Bail to full parse so the oracle handles recovery uniformly.
+    if (sub_parser.errors.items.len > 0) return error.AnchorParseError;
     var new_sub = try sub_builder.finish(arena, new_all_tokens, new_source);
 
     // 7. Validate the reparse: must have produced a root node, kind
@@ -347,6 +401,19 @@ fn tryIncrementalReparse(
     // would indicate the reparse consumed nothing — treat as failure.
     if (new_sub.rootCursor().range().start == new_sub.rootCursor().range().end) {
         return error.AnchorParseFailed;
+    }
+    // The reparse must cover [anchor.start, anchor.end + delta) in new
+    // source coordinates. If the parser stopped short (e.g. the anchor
+    // is a `decl_stmt` but the edit injected MORE statements that would
+    // become siblings of the decl_stmt in a full parse), those extra
+    // bytes fall outside the spliced subtree and get lost. Promoting to
+    // the enclosing `compound_stmt` would fix this; today we bail and
+    // full-parse.
+    const old_anchor = anchor_cursor.range();
+    const delta: i64 = @as(i64, @intCast(edit.new_text.len)) - @as(i64, edit.end - edit.start);
+    const expected_new_end: u32 = @intCast(@as(i64, old_anchor.end) + delta);
+    if (new_sub.rootCursor().range().end != expected_new_end) {
+        return error.AnchorParseDidNotCoverEdit;
     }
 
     // 8. Splice the CST. The spliced tree owns `new_all_tokens` now.
@@ -376,6 +443,8 @@ fn isStmtKind(k: Cst.Kind) bool {
         .break_if_stmt,
         .continue_stmt,
         .discard_stmt,
+        .compound_stmt,
+        .decl_stmt,
         => true,
         else => false,
     };
