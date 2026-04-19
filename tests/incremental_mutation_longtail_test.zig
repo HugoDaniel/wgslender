@@ -1410,3 +1410,131 @@ test "M11.c: AddWalkRaisedErrors fallback allows a follow-up hot edit" {
     try expectUseCountsMatch(hot.module, oracle.module);
 }
 
+// =========================================================================
+// M12 — Trivia-only shortcut: zero-delta edits that leave every
+// non-trivia token tag/length/text unchanged must bypass the hot
+// path entirely and reuse prev.module + prev.cst byte-for-byte. The
+// distinguishing observable is pointer-equality on module and on the
+// underlying CST node store. Edits that fail the zero-delta-trivia
+// precondition fall through to the regular path without firing.
+// =========================================================================
+
+test "M12.a: zero-delta line-comment body swap reuses module + CST" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "// abc\nfn f() {}";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const prev_module_ptr = prev.module;
+    const prev_cst_nodes_bytes = prev.cst.nodes.bytes;
+
+    // Replace `abc` with `xyz` — same length, inside a line comment.
+    const body_off: u32 = at(base_src, "abc");
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = body_off,
+        .end = body_off + 3,
+        .new_text = "xyz",
+    });
+    defer updated.deinit();
+
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqualStrings("// xyz\nfn f() {}", updated.source);
+
+    // Shortcut fingerprint: the Module pointer is byte-identical and
+    // the CST's node-store backing pointer is unchanged.
+    try std.testing.expectEqual(prev_module_ptr, updated.module);
+    try std.testing.expectEqual(prev_cst_nodes_bytes, updated.cst.nodes.bytes);
+}
+
+test "M12.b: zero-delta whitespace swap reuses module + CST" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() {   return 0; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const prev_module_ptr = prev.module;
+    const prev_cst_nodes_bytes = prev.cst.nodes.bytes;
+
+    // Replace three spaces with tab+space+space (same length, all trivia).
+    const ws_off: u32 = at(base_src, "{   ") + 1;
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = ws_off,
+        .end = ws_off + 3,
+        .new_text = "\t  ",
+    });
+    defer updated.deinit();
+
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqual(prev_module_ptr, updated.module);
+    try std.testing.expectEqual(prev_cst_nodes_bytes, updated.cst.nodes.bytes);
+}
+
+test "M12.c: zero-delta block-comment body swap reuses module + CST" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "/* old */ fn f() {}";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const prev_module_ptr = prev.module;
+    const prev_cst_nodes_bytes = prev.cst.nodes.bytes;
+
+    const body_off: u32 = at(base_src, "old");
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = body_off,
+        .end = body_off + 3,
+        .new_text = "new",
+    });
+    defer updated.deinit();
+
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqual(prev_module_ptr, updated.module);
+    try std.testing.expectEqual(prev_cst_nodes_bytes, updated.cst.nodes.bytes);
+}
+
+test "M12.d: non-zero-delta trivia insert falls through to regular path" {
+    // A comment insertion is trivia-only but has non-zero delta; the
+    // shortcut must NOT fire, and the regular reparse must still
+    // produce the correctly-spliced source.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 1; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    // Replace `return` with `return /* x */`. Non-zero-delta trivia
+    // insertion — shortcut condition fails on the delta check.
+    const ret_off: u32 = at(base_src, "return");
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = ret_off,
+        .end = ret_off + @as(u32, @intCast("return".len)),
+        .new_text = "return /* x */",
+    });
+    defer updated.deinit();
+
+    try std.testing.expectEqualStrings("fn f() -> i32 { return /* x */ 1; }", updated.source);
+}
+
+test "M12.e: zero-delta trivia swap across several tokens reuses module" {
+    // Replace a span inside a comment that sits between two real
+    // decls. Still zero-delta, still trivia-only, still
+    // shortcut-eligible.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "const x = 1; // abc def\nconst y = 2;";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const prev_module_ptr = prev.module;
+    const prev_cst_nodes_bytes = prev.cst.nodes.bytes;
+
+    const body_off: u32 = at(base_src, "abc");
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = body_off,
+        .end = body_off + 7,
+        .new_text = "zzz qqq",
+    });
+    defer updated.deinit();
+
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqual(prev_module_ptr, updated.module);
+    try std.testing.expectEqual(prev_cst_nodes_bytes, updated.cst.nodes.bytes);
+}
+

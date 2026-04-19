@@ -427,9 +427,10 @@ pub fn reparse(
     }
 
     // Build new source byte buffer. Needed both for the hot path and
-    // the fallback, so compute it up front.
+    // the fallback, so compute it up front. Sentinel-terminated so it
+    // can flow straight into `classifyEdit`.
     const new_len = prev.source.len - (edit.end - edit.start) + edit.new_text.len;
-    const new_buf = try gpa.alloc(u8, new_len);
+    const new_buf = try gpa.allocSentinel(u8, new_len, 0);
     defer gpa.free(new_buf);
     @memcpy(new_buf[0..edit.start], prev.source[0..edit.start]);
     @memcpy(new_buf[edit.start .. edit.start + edit.new_text.len], edit.new_text);
@@ -437,6 +438,25 @@ pub fn reparse(
         new_buf[edit.start + edit.new_text.len ..],
         prev.source[edit.end..],
     );
+
+    // Trivia-only fast path. A zero-delta edit (new_text.len equals
+    // the replaced byte range) that leaves every non-trivia token
+    // tag/length/text unchanged cannot affect the AST or the CST's
+    // node ranges — just the source bytes and trivia content. Swap
+    // the source pointer in place and reuse prev's module + CST
+    // without re-lex, re-parse, or re-lower. Non-zero-delta trivia
+    // edits (whitespace insert/delete, comment length changes) still
+    // require shifting CST ranges and AST spans — they fall through
+    // to the regular path.
+    if (edit.new_text.len == (edit.end - edit.start)) {
+        if (classifyEdit(gpa, prev.source, new_buf)) |kind| {
+            if (kind == .trivia_only) {
+                return tryTriviaOnlyShortcut(gpa, prev, new_buf);
+            }
+        } else |_| {
+            // classifyEdit OOM'd — fall through to the regular path.
+        }
+    }
 
     // Attempt the hot path. On any fallback trigger, fall through to
     // `parseFull`. Wrapped in a small helper so every early return
@@ -451,6 +471,43 @@ pub fn reparse(
     }
 
     return parseFull(gpa, new_buf);
+}
+
+/// Zero-delta trivia-only shortcut. Copies the new source into
+/// prev.arena, repoints `prev.module.source` at it, and transfers
+/// prev's arena + retained list + scope map into the result. prev's
+/// module pointer, CST struct, and symbol table are reused byte-for-
+/// byte — callers can compare `result.module == prev_module_pointer`
+/// to confirm the shortcut fired.
+fn tryTriviaOnlyShortcut(
+    gpa: Allocator,
+    prev: *ReparseResult,
+    new_buf: []const u8,
+) !ReparseResult {
+    const arena = prev.arena.allocator();
+    const owned = try arena.allocSentinel(u8, new_buf.len, 0);
+    @memcpy(owned, new_buf);
+
+    prev.module.source = owned;
+
+    const result = ReparseResult{
+        .gpa = gpa,
+        .arena = prev.arena,
+        .source = owned,
+        .module = prev.module,
+        .cst = prev.cst,
+        .reused = true,
+        .scope_for_cst_node = prev.scope_for_cst_node,
+        .retained_arenas = prev.retained_arenas,
+    };
+
+    const stub = try gpa.create(std.heap.ArenaAllocator);
+    stub.* = std.heap.ArenaAllocator.init(gpa);
+    prev.arena = stub;
+    prev.retained_arenas = .empty;
+    prev.scope_for_cst_node = .empty;
+
+    return result;
 }
 
 /// Actually attempts the symbol-free hot path. Errors = "fall back";
