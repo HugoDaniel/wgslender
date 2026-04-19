@@ -193,6 +193,10 @@ pub fn build(b: *std.Build) void {
     // args, type-expr fallback, for/switch/if/while compartments, member &
     // call chains, and mixed-anchor churn / retained_arenas growth.
     _ = addTestStep(b, test_step, "tests/incremental_mutation_longtail_test.zig", target, optimize, &.{w});
+    // Incremental.reparse — error-list fixup across the splice (drop entries
+    // inside the old anchor, shift downstream by delta, append add-walk
+    // E0102s) verified against a parseFull oracle on the new source.
+    _ = addTestStep(b, test_step, "tests/incremental_error_fixup_test.zig", target, optimize, &.{w});
     // CST round-trip — concat of every leaf token equals source, on
     // handcrafted edge cases and the compute.toys corpus.
     _ = addTestStep(b, test_step, "tests/cst_roundtrip_test.zig", target, optimize, &.{w});

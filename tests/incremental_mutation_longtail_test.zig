@@ -605,12 +605,15 @@ test "M5.d: edit return value inside if-body (return_stmt anchor)" {
     );
 }
 
-test "M5.e: condition references local declared later → AddWalkRaisedErrors fallback" {
+test "M5.e: condition references local declared later → hot path with E0102" {
+    // The add-walk encounters `y` referenced before its declaration,
+    // emits E0102, and surfaces it on the result. Since the bidirectional
+    // error-fixup landing, this is no longer a fallback — the hot path
+    // succeeds and `result.errors` matches a fresh full parse.
     const src: [:0]const u8 =
         "fn f(x: i32) -> i32 { if x > 0 { return 1; } let y = 2; return y; }";
     const new_src: []const u8 =
         "fn f(x: i32) -> i32 { if x > 0 || y < 0 { return 1; } let y = 2; return y; }";
-    // Replace the binary subtree `x > 0` with `x > 0 || y < 0`.
     const cond_off: u32 = at(src, "x > 0");
     try runEdit(
         std.testing.allocator,
@@ -621,7 +624,7 @@ test "M5.e: condition references local declared later → AddWalkRaisedErrors fa
             .new_text = "x > 0 || y < 0",
         },
         new_src,
-        false,
+        true,
     );
 }
 
@@ -1368,21 +1371,17 @@ test "M11.b: AnchorParseError fallback allows a follow-up hot edit" {
     try expectUseCountsMatch(hot.module, oracle.module);
 }
 
-test "M11.c: AddWalkRaisedErrors fallback allows a follow-up hot edit" {
-    // Use-before-declaration inside a condition: the add-walk's E0102
-    // raises and the hot path bails after already writing into
-    // prev.arena. The fallback must still produce a correct result,
-    // and a clean subsequent edit must hot-path.
+test "M11.c: kind-mismatch fallback allows a follow-up hot edit" {
+    // Replacing `false` with `x < 1` flips the anchor kind from
+    // literal_expr to binary_expr — a kind mismatch, distinct from any
+    // add-walk concern, so the hot path bails to a full re-parse.
+    // Verifies that a subsequent clean edit still hot-paths cleanly.
     const gpa = std.testing.allocator;
     const base_src: [:0]const u8 =
         "fn f() -> i32 { if (false) { return 1; } let x = 7; return x; }";
     var base = try Incremental.parseFull(gpa, base_src);
     defer base.deinit();
 
-    // Replace `false` with `x < 1`. `x` is declared *after* the if, so
-    // the add-walk should raise E0102. Hot path writes into prev.arena
-    // before the add-walk fires, proving the failure doesn't corrupt
-    // prev.
     const cond_off: u32 = at(base_src, "(false)") + 1;
     var fallback = try Incremental.reparse(gpa, &base, .{
         .start = cond_off,
