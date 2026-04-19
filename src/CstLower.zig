@@ -544,15 +544,18 @@ const LowerCtx = struct {
                 }
             }
             var param_attrs: std.ArrayListUnmanaged(Ast.Attribute) = .empty;
+            var param_start: ?u32 = null;
             if (w.peekNodeKind()) |k| {
                 if (k == .attribute_list) {
                     const an = w.eatAnyNode().?;
+                    param_start = self.nonTriviaSpan(an).start;
                     param_attrs = try self.lowerAttributeList(self.nodeCursor(an));
                 }
             }
             const name_tok = w.eatToken(.ident) orelse w.eatToken(.reserved_ident) orelse break;
             const text = self.tokenText(name_tok);
             const loc = self.tokenStart(name_tok);
+            if (param_start == null) param_start = loc;
             const name = try self.declareSymbol(text, .parameter, .{}, loc);
             _ = w.eatToken(.colon);
             var typ: Ast.Type = undefined;
@@ -564,7 +567,14 @@ const LowerCtx = struct {
                 ident.* = .{ .name = "", .ref = .none, .loc = loc, .span = .empty };
                 typ = .{ .ident = ident };
             }
-            try params.append(self.arena, .{ .attributes = param_attrs, .name = name, .typ = typ });
+            const type_end = typ.span().end;
+            const param_end = if (type_end != 0) type_end else self.tokenEnd(name_tok);
+            try params.append(self.arena, .{
+                .attributes = param_attrs,
+                .name = name,
+                .typ = typ,
+                .span = .{ .start = param_start.?, .end = param_end },
+            });
         }
         return params;
     }
@@ -590,15 +600,18 @@ const LowerCtx = struct {
                 }
             }
             var member_attrs: std.ArrayListUnmanaged(Ast.Attribute) = .empty;
+            var member_start: ?u32 = null;
             if (w.peekNodeKind()) |k| {
                 if (k == .attribute_list) {
                     const an = w.eatAnyNode().?;
+                    member_start = self.nonTriviaSpan(an).start;
                     member_attrs = try self.lowerAttributeList(self.nodeCursor(an));
                 }
             }
             const name_tok = w.eatToken(.ident) orelse w.eatToken(.reserved_ident) orelse break;
             const text = self.tokenText(name_tok);
             const loc = self.tokenStart(name_tok);
+            if (member_start == null) member_start = loc;
             const name = try self.declareSymbolNoScope(text, .member, .{}, loc);
             _ = w.eatToken(.colon);
             var typ: Ast.Type = undefined;
@@ -609,7 +622,14 @@ const LowerCtx = struct {
                 ident.* = .{ .name = "", .ref = .none, .loc = loc, .span = .empty };
                 typ = .{ .ident = ident };
             }
-            try decl.members.append(self.arena, .{ .attributes = member_attrs, .name = name, .typ = typ });
+            const type_end = typ.span().end;
+            const member_end = if (type_end != 0) type_end else self.tokenEnd(name_tok);
+            try decl.members.append(self.arena, .{
+                .attributes = member_attrs,
+                .name = name,
+                .typ = typ,
+                .span = .{ .start = member_start.?, .end = member_end },
+            });
         }
         _ = w.eatToken(.r_brace);
         return decl;
@@ -677,7 +697,7 @@ const LowerCtx = struct {
 
     fn lowerAttribute(self: *LowerCtx, cur: Cst.Cursor) !Ast.Attribute {
         var w = self.walker(cur);
-        var attr = Ast.Attribute{ .name = "", .args = .empty, .loc = 0 };
+        var attr = Ast.Attribute{ .name = "", .args = .empty, .loc = 0, .span = self.nonTriviaSpan(cur.node) };
         if (w.eatToken(.at)) |tok| attr.loc = self.tokenStart(tok);
         if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
             attr.name = self.tokenText(tok);
@@ -965,7 +985,7 @@ const LowerCtx = struct {
             else => self.tokenText(tok),
         };
         const node = try self.arena.create(Ast.LiteralExpr);
-        node.* = .{ .loc = loc, .kind = tag, .value = value };
+        node.* = .{ .loc = loc, .kind = tag, .value = value, .span = self.nonTriviaSpan(cur.node) };
         return .{ .literal = node };
     }
 
@@ -1014,7 +1034,12 @@ const LowerCtx = struct {
         // `vec3<f32>` without `(...)` — Parser accepts this as a lenient
         // ident reference; we mirror that and ignore the template_args.
         const node = try self.arena.create(Ast.IdentExpr);
-        node.* = .{ .loc = self.tokenStart(tok), .name = self.tokenText(tok), .ref = .none };
+        node.* = .{
+            .loc = self.tokenStart(tok),
+            .name = self.tokenText(tok),
+            .ref = .none,
+            .span = self.nonTriviaSpan(cur.node),
+        };
         return .{ .ident = node };
     }
 
@@ -1030,6 +1055,7 @@ const LowerCtx = struct {
             .op = op,
             .left = try self.lowerExpr(lhs_n),
             .right = try self.lowerExpr(rhs_n),
+            .span = self.nonTriviaSpan(cur.node),
         };
         return .{ .binary = node };
     }
@@ -1044,6 +1070,7 @@ const LowerCtx = struct {
             .loc = self.tokenStart(op_tok),
             .op = op,
             .operand = try self.lowerExpr(operand_n),
+            .span = self.nonTriviaSpan(cur.node),
         };
         return .{ .unary = node };
     }
@@ -1139,6 +1166,7 @@ const LowerCtx = struct {
             .func = func,
             .template_type = template_type,
             .args = args,
+            .span = self.nonTriviaSpan(cur.node),
         };
         return .{ .call = node };
     }
@@ -1230,6 +1258,7 @@ const LowerCtx = struct {
             .end_loc = end_loc,
             .base = try self.lowerExpr(base_n),
             .idx = try self.lowerExpr(idx_n),
+            .span = self.nonTriviaSpan(cur.node),
         };
         return .{ .index = node };
     }
@@ -1246,6 +1275,7 @@ const LowerCtx = struct {
             .loc = dot_loc,
             .base = try self.lowerExpr(base_n),
             .member_name = member,
+            .span = self.nonTriviaSpan(cur.node),
         };
         return .{ .member = node };
     }
@@ -1256,7 +1286,7 @@ const LowerCtx = struct {
         const inner = w.eatAnyNode() orelse return error.InvalidCst;
         _ = w.eatToken(.r_paren);
         const node = try self.arena.create(Ast.ParenExpr);
-        node.* = .{ .expr = try self.lowerExpr(inner) };
+        node.* = .{ .expr = try self.lowerExpr(inner), .span = self.nonTriviaSpan(cur.node) };
         return .{ .paren = node };
     }
 

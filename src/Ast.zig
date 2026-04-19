@@ -308,6 +308,10 @@ pub const Parameter = struct {
     attributes: std.ArrayListUnmanaged(Attribute),
     name: SymbolIndex,
     typ: Type,
+    /// Byte span from the first attribute or name token through the end of
+    /// the type expression. Populated by `CstLower`; `.empty` from the
+    /// legacy `Parser` construction path.
+    span: Span = .empty,
 };
 
 pub const StructDecl = struct {
@@ -322,6 +326,10 @@ pub const StructMember = struct {
     attributes: std.ArrayListUnmanaged(Attribute),
     name: SymbolIndex,
     typ: Type,
+    /// Byte span from the first attribute or name token through the end of
+    /// the type expression. Populated by `CstLower`; `.empty` from the
+    /// legacy `Parser` construction path.
+    span: Span = .empty,
 };
 
 pub const AliasDecl = struct {
@@ -386,6 +394,9 @@ pub const Attribute = struct {
     name: []const u8,
     args: std.ArrayListUnmanaged(Expr),
     loc: u32 = 0,
+    /// Byte span from the `@` through the closing `)` (or the identifier
+    /// end for argument-less attributes). Populated by `CstLower`.
+    span: Span = .empty,
 };
 
 // =========================================================================
@@ -500,6 +511,15 @@ pub const Expr = union(enum) {
     index: *IndexExpr,
     member: *MemberExpr,
     paren: *ParenExpr,
+
+    /// Byte range covering the full expression as written in source.
+    /// Populated by `CstLower`; `.empty` on nodes produced by the legacy
+    /// `Parser` path that does not yet stamp expression spans.
+    pub fn span(self: Expr) Span {
+        return switch (self) {
+            inline else => |ptr| ptr.span,
+        };
+    }
 };
 
 pub const IdentExpr = struct {
@@ -507,6 +527,7 @@ pub const IdentExpr = struct {
     name: []const u8,
     ref: SymbolIndex = .none,
     flags: ExprFlags = .{},
+    span: Span = .empty,
 };
 
 pub const LiteralExpr = struct {
@@ -514,6 +535,7 @@ pub const LiteralExpr = struct {
     kind: Lexer.Tag,
     value: []const u8,
     flags: ExprFlags = .{},
+    span: Span = .empty,
 };
 
 pub const BinaryExpr = struct {
@@ -522,6 +544,7 @@ pub const BinaryExpr = struct {
     left: Expr,
     right: Expr,
     flags: ExprFlags = .{},
+    span: Span = .empty,
 };
 
 pub const BinaryOp = enum(u8) {
@@ -573,6 +596,7 @@ pub const UnaryExpr = struct {
     op: UnaryOp,
     operand: Expr,
     flags: ExprFlags = .{},
+    span: Span = .empty,
 };
 
 pub const UnaryOp = enum(u8) {
@@ -600,6 +624,7 @@ pub const CallExpr = struct {
     template_type: ?Type = null,
     args: std.ArrayListUnmanaged(Expr),
     flags: ExprFlags = .{},
+    span: Span = .empty,
 };
 
 pub const IndexExpr = struct {
@@ -608,6 +633,7 @@ pub const IndexExpr = struct {
     base: Expr,
     idx: Expr,
     flags: ExprFlags = .{},
+    span: Span = .empty,
 };
 
 pub const MemberExpr = struct {
@@ -615,11 +641,13 @@ pub const MemberExpr = struct {
     base: Expr,
     member_name: []const u8,
     flags: ExprFlags = .{},
+    span: Span = .empty,
 };
 
 pub const ParenExpr = struct {
     expr: Expr,
     flags: ExprFlags = .{},
+    span: Span = .empty,
 };
 
 /// Flags that drive dead-code elimination for expressions.
