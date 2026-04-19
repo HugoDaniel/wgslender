@@ -1452,13 +1452,17 @@ const LowerCtx = struct {
         // `if_stmt` marker — so children are flat:
         //     keyword_if, cond, body, keyword_else, keyword_if, cond, body,
         //     keyword_else, final-body-or-if …
-        // Parser only sets `.span` on the outermost IfStmt (via
-        // `setStmtSpan` in `parseStatement`); every nested else-if IfStmt
-        // keeps `.span = .empty`. Mirror that here.
+        // Each inner else-if becomes its own `Ast.IfStmt` (linked via
+        // `else_branch`); every link in the chain shares the same end byte
+        // (the end of the final body or final `else` compound), so we
+        // backfill spans after walking the chain.
         var w = self.walker(cur);
-        const span = self.nonTriviaSpan(cur.node);
+        const chain_span = self.nonTriviaSpan(cur.node);
 
-        _ = w.eatToken(.keyword_if);
+        var starts: std.ArrayListUnmanaged(struct { start: u32, ptr: *Ast.IfStmt }) = .empty;
+        defer starts.deinit(self.arena);
+
+        const root_if_tok = w.eatToken(.keyword_if) orelse return error.InvalidCst;
         const cond_n = w.eatAnyNode() orelse return error.InvalidCst;
         const body_n = w.eatNodeKind(.compound_stmt) orelse return error.InvalidCst;
 
@@ -1467,12 +1471,13 @@ const LowerCtx = struct {
             .condition = try self.lowerExpr(cond_n),
             .body = try self.lowerCompoundStmt(self.nodeCursor(body_n)),
             .else_branch = null,
-            .span = span,
+            .span = chain_span,
         };
+        try starts.append(self.arena, .{ .start = self.tokenStart(root_if_tok), .ptr = root });
 
         var current = root;
         while (w.eatToken(.keyword_else) != null) {
-            if (w.eatToken(.keyword_if) != null) {
+            if (w.eatToken(.keyword_if)) |inner_if_tok| {
                 const c = w.eatAnyNode() orelse break;
                 const b = w.eatNodeKind(.compound_stmt) orelse break;
                 const next = try self.arena.create(Ast.IfStmt);
@@ -1484,10 +1489,15 @@ const LowerCtx = struct {
                 };
                 current.else_branch = .{ .@"if" = next };
                 current = next;
+                try starts.append(self.arena, .{ .start = self.tokenStart(inner_if_tok), .ptr = next });
             } else if (w.eatNodeKind(.compound_stmt)) |b| {
                 current.else_branch = .{ .compound = try self.lowerCompoundStmt(self.nodeCursor(b)) };
                 break;
             } else break;
+        }
+
+        for (starts.items) |s| {
+            s.ptr.span = .{ .start = s.start, .end = chain_span.end };
         }
         return root;
     }

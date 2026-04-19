@@ -2021,6 +2021,14 @@ fn parseReturnStmt(self: *Parser) !*Ast.ReturnStmt {
 
 /// Iteratively parses an if/else-if/else chain without recursion.
 fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
+    // Track each `if` / `else if` start so we can backfill `span` at the
+    // end of the chain. Every IfStmt in the chain ends at the same byte
+    // (the end of the final body or final `else` compound) — they all
+    // wrap one another via `else_branch`.
+    var starts: std.ArrayListUnmanaged(struct { start: u32, ptr: *Ast.IfStmt }) = .empty;
+    defer starts.deinit(self.arena);
+
+    const root_start = self.currentStart();
     _ = self.expect(.keyword_if);
     self.expr_context = "in if condition";
     const root = try self.arena.create(Ast.IfStmt);
@@ -2028,9 +2036,12 @@ fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
         .condition = (try self.parseExpression()) orelse return error.ParseFailed,
         .body = try self.parseCompoundStmt(),
     };
+    try starts.append(self.arena, .{ .start = root_start, .ptr = root });
+
     var current = root;
     while (self.eat(.keyword_else)) {
         if (self.currentTag() == .keyword_if) {
+            const inner_start = self.currentStart();
             _ = self.expect(.keyword_if);
             self.expr_context = "in if condition";
             const next = try self.arena.create(Ast.IfStmt);
@@ -2040,10 +2051,16 @@ fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
             };
             current.else_branch = .{ .@"if" = next };
             current = next;
+            try starts.append(self.arena, .{ .start = inner_start, .ptr = next });
         } else {
             current.else_branch = .{ .compound = try self.parseCompoundStmt() };
             break;
         }
+    }
+
+    const chain_end = self.prevTokenEnd();
+    for (starts.items) |s| {
+        s.ptr.span = .{ .start = s.start, .end = chain_end };
     }
     return root;
 }
