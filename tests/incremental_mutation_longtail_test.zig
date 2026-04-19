@@ -825,3 +825,199 @@ test "M6.d: 5 successive condition flips on a while keep hot path" {
     }
 }
 
+// =========================================================================
+// M8 — Mixed-anchor mutation churn + retained_arenas growth.
+//
+// Each successful symbol-free reparse moves `prev.arena` into
+// `result.retained_arenas` (`src/Incremental.zig:774`). M8 stresses the
+// retention bookkeeping under (a) cross-anchor-kind edit cycles, (b) long
+// hot-path bursts that monotonically grow `retained_arenas`, (c) bursts
+// that alternate hot path with fallback (each fallback resets retention
+// to zero), and (d) per-symbol use_count round-trips on multi-ident
+// expressions.
+// =========================================================================
+
+test "M8.a: 4-edit round-trip across literal/binary/return/attribute returns to base" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "@compute @workgroup_size(8) fn f() -> i32 { let a = 1; return a + 2; }";
+
+    var step0 = try Incremental.parseFull(gpa, base_src);
+    defer step0.deinit();
+
+    // 1. Flip the return-value literal `2` → `5`. Anchor: literal_expr.
+    const lit_off: u32 = at(base_src, "a + 2") + 4;
+    var step1 = try Incremental.reparse(gpa, &step0, .{
+        .start = lit_off,
+        .end = lit_off + 1,
+        .new_text = "5",
+    });
+    defer step1.deinit();
+    try std.testing.expect(step1.reused);
+
+    // 2. Inverse: flip back `5` → `2` on the same byte. Anchor: literal_expr.
+    var step2 = try Incremental.reparse(gpa, &step1, .{
+        .start = lit_off,
+        .end = lit_off + 1,
+        .new_text = "2",
+    });
+    defer step2.deinit();
+    try std.testing.expect(step2.reused);
+
+    // 3. Flip the workgroup_size literal `8` → `16`. Anchor: literal_expr
+    //    inside attribute_args.
+    const wg_off: u32 = at(step2.source, "@workgroup_size(") + @as(u32, @intCast("@workgroup_size(".len));
+    var step3 = try Incremental.reparse(gpa, &step2, .{
+        .start = wg_off,
+        .end = wg_off + 1,
+        .new_text = "16",
+    });
+    defer step3.deinit();
+    try std.testing.expect(step3.reused);
+
+    // 4. Inverse: flip workgroup_size back to `8`. Source returns to base.
+    var step4 = try Incremental.reparse(gpa, &step3, .{
+        .start = wg_off,
+        .end = wg_off + 2,
+        .new_text = "8",
+    });
+    defer step4.deinit();
+    try std.testing.expect(step4.reused);
+    try std.testing.expectEqualStrings(base_src, step4.source);
+
+    // Final shape + per-symbol use_counts match a fresh parse of base.
+    var oracle = try Incremental.parseFull(gpa, base_src);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, step4.module, oracle.module);
+    try expectUseCountsMatch(step4.module, oracle.module);
+}
+
+test "M8.b: 30 successive symbol-free edits grow retained_arenas linearly" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f() -> i32 { return 1 + 2; }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+    try std.testing.expectEqual(@as(usize, 0), prev.retained_arenas.items.len);
+
+    const lit_off: u32 = at(base_src, "1 + 2") + 4;
+    var i: u32 = 0;
+    while (i < 30) : (i += 1) {
+        const ch: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+        try std.testing.expect(next.reused);
+        // Every successful symbol-free hot-path step absorbs prev's arena
+        // (and any arenas prev itself retained). Count grows by 1 each
+        // step, starting from 0.
+        try std.testing.expectEqual(@as(usize, i + 1), next.retained_arenas.items.len);
+
+        prev.deinit();
+        prev = next;
+    }
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+test "M8.c: alternating hot-path / fallback edits reset retained_arenas" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "struct S { x: vec3<f32> } fn f() -> i32 { return 1 + 2; }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+    try std.testing.expectEqual(@as(usize, 0), prev.retained_arenas.items.len);
+
+    var lit_off: u32 = at(base_src, "1 + 2") + 4;
+    const vec_off: u32 = at(base_src, "vec3") + 3;
+
+    var hot_toggle: u8 = 0;
+    var vec_toggle: bool = false;
+    var i: u32 = 0;
+    while (i < 6) : (i += 1) {
+        if (i % 2 == 0) {
+            const ch: u8 = '0' + @as(u8, @intCast((hot_toggle + 1) % 10));
+            hot_toggle = (hot_toggle + 1) % 10;
+            const new_text = [_]u8{ch};
+            const next = try Incremental.reparse(gpa, &prev, .{
+                .start = lit_off,
+                .end = lit_off + 1,
+                .new_text = &new_text,
+            });
+            try std.testing.expect(next.reused);
+            // Hot-path step adds exactly one entry on top of prev's
+            // retained list. After every fallback we reset to 0, so the
+            // post-hot count is always 1.
+            try std.testing.expectEqual(@as(usize, 1), next.retained_arenas.items.len);
+            prev.deinit();
+            prev = next;
+        } else {
+            const new_digit: u8 = if (vec_toggle) '3' else '4';
+            vec_toggle = !vec_toggle;
+            const new_text = [_]u8{new_digit};
+            const next = try Incremental.reparse(gpa, &prev, .{
+                .start = vec_off,
+                .end = vec_off + 1,
+                .new_text = &new_text,
+            });
+            try std.testing.expectEqual(false, next.reused);
+            // Full-parse fallback always allocates a fresh arena and
+            // does not retain prev's.
+            try std.testing.expectEqual(@as(usize, 0), next.retained_arenas.items.len);
+            prev.deinit();
+            prev = next;
+            // `vec3` and `vec4` are both 4 bytes — recompute defensively.
+            lit_off = at(prev.source, "1 + ") + 4;
+        }
+    }
+}
+
+test "M8.d: edit + inverse on multi-symbol expression preserves use_counts" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f() -> i32 { let a = 1; let b = 2; let c = 3; return a + b * c; }";
+
+    var step0 = try Incremental.parseFull(gpa, base_src);
+    defer step0.deinit();
+
+    const a_uc0 = useCountOf(step0.module, "a");
+    const b_uc0 = useCountOf(step0.module, "b");
+    const c_uc0 = useCountOf(step0.module, "c");
+
+    // Replace the whole return value with a permuted form. Anchor:
+    // binary_expr.
+    const ret_off: u32 = at(base_src, "a + b * c");
+    var step1 = try Incremental.reparse(gpa, &step0, .{
+        .start = ret_off,
+        .end = ret_off + @as(u32, @intCast("a + b * c".len)),
+        .new_text = "c + b * a",
+    });
+    defer step1.deinit();
+    try std.testing.expect(step1.reused);
+
+    const ret_off2: u32 = at(step1.source, "c + b * a");
+    var step2 = try Incremental.reparse(gpa, &step1, .{
+        .start = ret_off2,
+        .end = ret_off2 + @as(u32, @intCast("c + b * a".len)),
+        .new_text = "a + b * c",
+    });
+    defer step2.deinit();
+    try std.testing.expect(step2.reused);
+
+    try std.testing.expectEqualStrings(base_src, step2.source);
+    // Per-symbol use_counts match the pre-edit state exactly. A sub/add
+    // inversion bug that swaps a's count with c's would slip past an
+    // aggregate-only check but fail here.
+    try std.testing.expectEqual(a_uc0, useCountOf(step2.module, "a"));
+    try std.testing.expectEqual(b_uc0, useCountOf(step2.module, "b"));
+    try std.testing.expectEqual(c_uc0, useCountOf(step2.module, "c"));
+}
+
