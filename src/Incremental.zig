@@ -54,24 +54,36 @@ pub const EditKind = enum {
     semantic,
 };
 
-/// Result of a parse or reparse. Owns an arena that holds the module, CST,
-/// and source bytes. Dropping a `ReparseResult` frees the lot.
+/// Result of a parse or reparse. Owns one or more arenas that hold the
+/// module, CST, source bytes, and the scope-map. Dropping frees the lot.
+///
+/// **Ownership model.** `arena` always points to the "current" arena
+/// from which fresh allocations happen. `retained_arenas` holds any
+/// arenas whose storage the result also relies on — populated by the
+/// add/sub hot path, which reuses prev's AST nodes in place rather than
+/// deep-copying them into a fresh arena. The hot path *moves* prev's
+/// arena into `retained_arenas` and replaces prev's own `arena` with an
+/// empty stub so prev's subsequent `deinit` is a harmless no-op.
 pub const ReparseResult = struct {
     gpa: Allocator,
     arena: *std.heap.ArenaAllocator,
+    /// Arenas whose backing storage this result still references. Empty
+    /// on full-parse paths (`parseFull` always allocates everything in
+    /// `arena`). Populated only by the add/sub hot path when it reuses
+    /// prev module's declarations / symbols / scopes in place.
+    retained_arenas: std.ArrayListUnmanaged(*std.heap.ArenaAllocator) = .empty,
     source: [:0]const u8,
     module: *Ast.Module,
     cst: Cst.Tree,
     /// True if this result came from a subtree-reuse hot path in
-    /// `reparse`. Always `false` today — the MVP full-parses every edit
-    /// — but the flag is part of the API so tests and telemetry can
-    /// start asserting on it ahead of the anchor-based implementation.
+    /// `reparse`. Tests and telemetry gate on this to measure hot-path
+    /// coverage; callers treat it as informational only.
     reused: bool = false,
     /// Side-table mapping scope-opener CST nodes (fn_decl, compound_stmt,
     /// for_stmt) to the AST scope they correspond to. Populated by
-    /// `buildScopeForCstNodeMap` after every full parse so the add/sub
-    /// hot path can locate an anchor's enclosing scope in O(CST depth)
-    /// via `scopeAtCstNode`.
+    /// `buildScopeForCstNodeMap` after every full parse, and by the
+    /// add/sub hot path after splice, so the hot path can locate an
+    /// anchor's enclosing scope in O(CST depth) via `scopeAtCstNode`.
     ///
     /// Key is the raw `@intFromEnum(Cst.NodeIndex)` to keep the map
     /// storage `*Ast.Module`-agnostic. Lives on `ReparseResult` (not
@@ -80,8 +92,14 @@ pub const ReparseResult = struct {
     scope_for_cst_node: std.AutoHashMapUnmanaged(u32, *Ast.Scope) = .empty,
 
     pub fn deinit(self: *ReparseResult) void {
-        // All arena-owned: module, CST nodes/children/errors, source
-        // buffer, scope_for_cst_node backing. Arena deinit releases it.
+        // Drop retained arenas first (they were handed off to us by a
+        // prior `reparse` call whose prev we absorbed), then our own.
+        for (self.retained_arenas.items) |a| {
+            a.deinit();
+            self.gpa.destroy(a);
+        }
+        self.retained_arenas.deinit(self.gpa);
+
         self.arena.deinit();
         self.gpa.destroy(self.arena);
     }
@@ -373,13 +391,21 @@ fn isHotPathAnchor(k: Cst.Kind) bool {
 
 /// Apply `edit` to `prev.source` and return a fresh `ReparseResult`
 /// for the resulting source. Hot path: find a symbol-free anchor in
-/// `prev.cst`, re-parse only that subtree, splice the CST, and
-/// re-lower. Any failure mode falls back to `parseFull` (with
-/// `reused = false`), so correctness degrades gracefully into the
+/// `prev.cst`, re-parse only that subtree, splice the CST, and re-lower.
+///
+/// **Note.** `prev` is taken by mutable pointer because the add/sub hot
+/// path transfers ownership of prev's arena into the new result. After
+/// a successful hot-path `reparse`, prev's own arena pointer references
+/// an empty stub, so its subsequent `deinit` is still safe but frees
+/// nothing material. Callers that `defer prev.deinit()` keep working
+/// without code changes.
+///
+/// Any hot-path failure falls back to `parseFull` (with `reused = false`
+/// and an untouched prev), so correctness degrades gracefully into the
 /// known-good full-parse path.
 pub fn reparse(
     gpa: Allocator,
-    prev: *const ReparseResult,
+    prev: *ReparseResult,
     edit: Edit,
 ) !ReparseResult {
     std.debug.assert(edit.start <= edit.end);
@@ -421,9 +447,14 @@ pub fn reparse(
 
 /// Actually attempts the symbol-free hot path. Errors = "fall back";
 /// callers wrap it in a `catch` to full-parse on failure.
+///
+/// Takes `prev` by mutable pointer so the success path can steal prev's
+/// arena (moving it into `result.retained_arenas`) and install an empty
+/// stub arena in prev to keep `prev.deinit()` safe. On failure, prev is
+/// left untouched.
 fn tryIncrementalReparse(
     gpa: Allocator,
-    prev: *const ReparseResult,
+    prev: *ReparseResult,
     edit: Edit,
     new_buf: []const u8,
 ) !ReparseResult {
