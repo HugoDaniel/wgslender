@@ -252,7 +252,7 @@ pub fn parse(self: *Parser) !*Ast.Module {
         .errors = &self.errors,
         .safety_budget = self.token_tags.len * 2,
     };
-    AstVisit.visit(&ctx, module);
+    try AstVisit.visit(&ctx, module);
 
     // Copy symbols to module
     module.symbols = self.symbols;

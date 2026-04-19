@@ -83,7 +83,7 @@ pub fn lowerTree(
         .errors = &ctx.errors,
         .safety_budget = @as(usize, @max(64, cst.tokens.len * 2)),
     };
-    AstVisit.visit(&visit_ctx, module);
+    try AstVisit.visit(&visit_ctx, module);
 
     return module;
 }

@@ -39,51 +39,51 @@ pub const Context = struct {
     safety_budget: usize,
 };
 
-pub fn visit(ctx: *Context, module: *Ast.Module) void {
+pub fn visit(ctx: *Context, module: *Ast.Module) error{OutOfMemory}!void {
     ctx.scope = module.scope;
     ctx.scope_index = 0;
 
     for (module.declarations.items) |decl| {
-        visitDecl(ctx, decl);
+        try visitDecl(ctx, decl);
     }
 }
 
-fn visitDecl(ctx: *Context, d: Ast.Decl) void {
+fn visitDecl(ctx: *Context, d: Ast.Decl) error{OutOfMemory}!void {
     switch (d) {
         .@"const" => |decl| {
-            if (decl.typ) |t| visitType(ctx, t);
-            if (decl.initializer) |init_expr| decl.initializer = visitExpr(ctx, init_expr);
+            if (decl.typ) |t| try visitType(ctx, t);
+            if (decl.initializer) |init_expr| decl.initializer = try visitExpr(ctx, init_expr);
         },
         .override => |decl| {
-            if (decl.typ) |t| visitType(ctx, t);
-            if (decl.initializer) |init_expr| decl.initializer = visitExpr(ctx, init_expr);
+            if (decl.typ) |t| try visitType(ctx, t);
+            if (decl.initializer) |init_expr| decl.initializer = try visitExpr(ctx, init_expr);
         },
         .@"var" => |decl| {
-            if (decl.typ) |t| visitType(ctx, t);
-            if (decl.initializer) |init_expr| decl.initializer = visitExpr(ctx, init_expr);
+            if (decl.typ) |t| try visitType(ctx, t);
+            if (decl.initializer) |init_expr| decl.initializer = try visitExpr(ctx, init_expr);
         },
         .let => |decl| {
-            if (decl.typ) |t| visitType(ctx, t);
-            if (decl.initializer) |init_expr| decl.initializer = visitExpr(ctx, init_expr);
+            if (decl.typ) |t| try visitType(ctx, t);
+            if (decl.initializer) |init_expr| decl.initializer = try visitExpr(ctx, init_expr);
         },
-        .function => |decl| visitFunctionDecl(ctx, decl),
+        .function => |decl| try visitFunctionDecl(ctx, decl),
         .@"struct" => |decl| {
             for (decl.members.items) |member| {
-                visitType(ctx, member.typ);
+                try visitType(ctx, member.typ);
             }
         },
-        .alias => |decl| visitType(ctx, decl.typ),
-        .const_assert => |decl| decl.expr = visitExpr(ctx, decl.expr),
+        .alias => |decl| try visitType(ctx, decl.typ),
+        .const_assert => |decl| decl.expr = try visitExpr(ctx, decl.expr),
     }
 }
 
-fn visitFunctionDecl(ctx: *Context, decl: *Ast.FunctionDecl) void {
+fn visitFunctionDecl(ctx: *Context, decl: *Ast.FunctionDecl) error{OutOfMemory}!void {
     for (decl.parameters.items) |param| {
-        visitType(ctx, param.typ);
+        try visitType(ctx, param.typ);
     }
-    if (decl.return_type) |rt| visitType(ctx, rt);
+    if (decl.return_type) |rt| try visitType(ctx, rt);
     enterNextScope(ctx);
-    if (decl.body) |body| visitCompoundStmt(ctx, body);
+    if (decl.body) |body| try visitCompoundStmt(ctx, body);
     exitScope(ctx);
 }
 
@@ -93,10 +93,10 @@ const Work = union(enum) {
     exit_scope,
 };
 
-fn visitCompoundStmt(ctx: *Context, stmt: *Ast.CompoundStmt) void {
+fn visitCompoundStmt(ctx: *Context, stmt: *Ast.CompoundStmt) error{OutOfMemory}!void {
     var stack: std.ArrayListUnmanaged(Work) = .empty;
     defer stack.deinit(ctx.arena);
-    stack.append(ctx.arena, .{ .compound = stmt }) catch return;
+    try stack.append(ctx.arena, .{ .compound = stmt });
 
     for (0..ctx.safety_budget) |_| {
         const work = stack.pop() orelse break;
@@ -104,91 +104,91 @@ fn visitCompoundStmt(ctx: *Context, stmt: *Ast.CompoundStmt) void {
             .exit_scope => exitScope(ctx),
             .compound => |body| {
                 enterNextScope(ctx);
-                stack.append(ctx.arena, .exit_scope) catch {};
+                try stack.append(ctx.arena, .exit_scope);
                 var i = body.stmts.items.len;
                 while (i > 0) {
                     i -= 1;
-                    stack.append(ctx.arena, .{ .stmt = body.stmts.items[i] }) catch {};
+                    try stack.append(ctx.arena, .{ .stmt = body.stmts.items[i] });
                 }
             },
-            .stmt => |s| processOneStmt(ctx, s, &stack),
+            .stmt => |s| try processOneStmt(ctx, s, &stack),
         }
     } else unreachable;
 }
 
 /// Process a single statement, pushing child work items onto the stack.
 /// Expression visits are done inline (already iterative).
-fn processOneStmt(ctx: *Context, s: Ast.Stmt, stack: *std.ArrayListUnmanaged(Work)) void {
+fn processOneStmt(ctx: *Context, s: Ast.Stmt, stack: *std.ArrayListUnmanaged(Work)) error{OutOfMemory}!void {
     switch (s) {
-        .compound => |stmt| stack.append(ctx.arena, .{ .compound = stmt }) catch {},
+        .compound => |stmt| try stack.append(ctx.arena, .{ .compound = stmt }),
         .@"return" => |stmt| {
-            if (stmt.value) |v| stmt.value = visitExpr(ctx, v);
+            if (stmt.value) |v| stmt.value = try visitExpr(ctx, v);
         },
         .@"if" => |stmt| {
-            stmt.condition = visitExpr(ctx, stmt.condition);
+            stmt.condition = try visitExpr(ctx, stmt.condition);
             // Push else branch first (processed after body), then body
-            if (stmt.else_branch) |eb| stack.append(ctx.arena, .{ .stmt = eb }) catch {};
-            stack.append(ctx.arena, .{ .compound = stmt.body }) catch {};
+            if (stmt.else_branch) |eb| try stack.append(ctx.arena, .{ .stmt = eb });
+            try stack.append(ctx.arena, .{ .compound = stmt.body });
         },
         .@"switch" => |stmt| {
-            stmt.expr = visitExpr(ctx, stmt.expr);
+            stmt.expr = try visitExpr(ctx, stmt.expr);
             // Push case bodies in reverse order
             var i = stmt.cases.items.len;
             while (i > 0) {
                 i -= 1;
                 const c = &stmt.cases.items[i];
-                stack.append(ctx.arena, .{ .compound = c.body }) catch {};
+                try stack.append(ctx.arena, .{ .compound = c.body });
             }
             // Visit selectors inline
             for (stmt.cases.items) |*c| {
                 for (c.selectors.items, 0..) |sel, j| {
-                    c.selectors.items[j] = visitExpr(ctx, sel);
+                    c.selectors.items[j] = try visitExpr(ctx, sel);
                 }
             }
         },
         .@"for" => |stmt| {
             // For has its own scope wrapping init/condition/update/body
             enterNextScope(ctx);
-            if (stmt.init_stmt) |is| processOneStmt(ctx, is, stack);
-            if (stmt.condition) |cond| stmt.condition = visitExpr(ctx, cond);
-            if (stmt.update) |upd| processOneStmt(ctx, upd, stack);
+            if (stmt.init_stmt) |is| try processOneStmt(ctx, is, stack);
+            if (stmt.condition) |cond| stmt.condition = try visitExpr(ctx, cond);
+            if (stmt.update) |upd| try processOneStmt(ctx, upd, stack);
             // Push exit_scope (for-scope), then body (which adds its own scope)
-            stack.append(ctx.arena, .exit_scope) catch {};
-            stack.append(ctx.arena, .{ .compound = stmt.body }) catch {};
+            try stack.append(ctx.arena, .exit_scope);
+            try stack.append(ctx.arena, .{ .compound = stmt.body });
         },
         .@"while" => |stmt| {
-            stmt.condition = visitExpr(ctx, stmt.condition);
-            stack.append(ctx.arena, .{ .compound = stmt.body }) catch {};
+            stmt.condition = try visitExpr(ctx, stmt.condition);
+            try stack.append(ctx.arena, .{ .compound = stmt.body });
         },
         .loop => |stmt| {
-            if (stmt.continuing) |c| stack.append(ctx.arena, .{ .compound = c }) catch {};
-            stack.append(ctx.arena, .{ .compound = stmt.body }) catch {};
+            if (stmt.continuing) |c| try stack.append(ctx.arena, .{ .compound = c });
+            try stack.append(ctx.arena, .{ .compound = stmt.body });
         },
         .break_if => |stmt| {
-            stmt.condition = visitExpr(ctx, stmt.condition);
+            stmt.condition = try visitExpr(ctx, stmt.condition);
         },
         .assign => |stmt| {
-            stmt.left = visitExpr(ctx, stmt.left);
-            stmt.right = visitExpr(ctx, stmt.right);
+            stmt.left = try visitExpr(ctx, stmt.left);
+            stmt.right = try visitExpr(ctx, stmt.right);
         },
         .incr_decr => |stmt| {
-            stmt.expr = visitExpr(ctx, stmt.expr);
+            stmt.expr = try visitExpr(ctx, stmt.expr);
         },
         .call => |stmt| {
-            if (stmt.call.func) |f| stmt.call.func = visitExpr(ctx, f);
-            if (stmt.call.template_type) |tt| visitType(ctx, tt);
+            if (stmt.call.func) |f| stmt.call.func = try visitExpr(ctx, f);
+            if (stmt.call.template_type) |tt| try visitType(ctx, tt);
             for (stmt.call.args.items, 0..) |arg, j| {
-                stmt.call.args.items[j] = visitExpr(ctx, arg);
+                stmt.call.args.items[j] = try visitExpr(ctx, arg);
             }
         },
-        .decl => |stmt| visitDecl(ctx, stmt.decl),
+        .decl => |stmt| try visitDecl(ctx, stmt.decl),
         .@"break", .@"continue", .discard => {},
     }
 }
 
 /// Iteratively visits an expression tree using a two-phase worklist.
 /// Pushes mark(e) before children so purity marking happens in post-order.
-pub fn visitExpr(ctx: *Context, e: Ast.Expr) Ast.Expr {
+pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
     const ExprWork = union(enum) {
         visit: Ast.Expr,
         mark: Ast.Expr,
@@ -196,7 +196,7 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) Ast.Expr {
 
     var stack: std.ArrayListUnmanaged(ExprWork) = .empty;
     defer stack.deinit(ctx.arena);
-    stack.append(ctx.arena, .{ .visit = e }) catch return e;
+    try stack.append(ctx.arena, .{ .visit = e });
 
     for (0..ctx.safety_budget) |_| {
         const work = stack.pop() orelse break;
@@ -204,7 +204,7 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) Ast.Expr {
             .mark => |me| Ast.markExprPurity(me, ctx.symbols),
             .visit => |ve| {
                 // Push mark first (popped last = post-order)
-                stack.append(ctx.arena, .{ .mark = ve }) catch {};
+                try stack.append(ctx.arena, .{ .mark = ve });
 
                 switch (ve) {
                     .ident => |expr| {
@@ -218,37 +218,37 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) Ast.Expr {
                                 }
                             }
                         } else if (lookupSymbolAnyLoc(ctx, expr.name)) |ref| {
-                            const msg = std.fmt.allocPrint(ctx.arena, "'{s}' is used before its declaration", .{expr.name}) catch "identifier used before declaration";
-                            ctx.errors.append(ctx.arena, .{ .message = msg, .pos = expr.loc, .code = "E0102" }) catch {};
+                            const msg = try std.fmt.allocPrint(ctx.arena, "'{s}' is used before its declaration", .{expr.name});
+                            try ctx.errors.append(ctx.arena, .{ .message = msg, .pos = expr.loc, .code = "E0102" });
                             expr.ref = ref;
                         }
                     },
                     .literal => {},
                     .binary => |expr| {
-                        stack.append(ctx.arena, .{ .visit = expr.right }) catch {};
-                        stack.append(ctx.arena, .{ .visit = expr.left }) catch {};
+                        try stack.append(ctx.arena, .{ .visit = expr.right });
+                        try stack.append(ctx.arena, .{ .visit = expr.left });
                     },
                     .unary => |expr| {
-                        stack.append(ctx.arena, .{ .visit = expr.operand }) catch {};
+                        try stack.append(ctx.arena, .{ .visit = expr.operand });
                     },
                     .call => |expr| {
                         var i = expr.args.items.len;
                         while (i > 0) {
                             i -= 1;
-                            stack.append(ctx.arena, .{ .visit = expr.args.items[i] }) catch {};
+                            try stack.append(ctx.arena, .{ .visit = expr.args.items[i] });
                         }
-                        if (expr.template_type) |tt| visitType(ctx, tt);
-                        if (expr.func) |f| stack.append(ctx.arena, .{ .visit = f }) catch {};
+                        if (expr.template_type) |tt| try visitType(ctx, tt);
+                        if (expr.func) |f| try stack.append(ctx.arena, .{ .visit = f });
                     },
                     .index => |expr| {
-                        stack.append(ctx.arena, .{ .visit = expr.idx }) catch {};
-                        stack.append(ctx.arena, .{ .visit = expr.base }) catch {};
+                        try stack.append(ctx.arena, .{ .visit = expr.idx });
+                        try stack.append(ctx.arena, .{ .visit = expr.base });
                     },
                     .member => |expr| {
-                        stack.append(ctx.arena, .{ .visit = expr.base }) catch {};
+                        try stack.append(ctx.arena, .{ .visit = expr.base });
                     },
                     .paren => |expr| {
-                        stack.append(ctx.arena, .{ .visit = expr.expr }) catch {};
+                        try stack.append(ctx.arena, .{ .visit = expr.expr });
                     },
                 }
             },
@@ -258,7 +258,7 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) Ast.Expr {
 }
 
 /// Iteratively visits a type, following single-child chains.
-pub fn visitType(ctx: *Context, t: Ast.Type) void {
+pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
     var current = t;
     for (0..32) |_| {
         switch (current) {
@@ -278,7 +278,7 @@ pub fn visitType(ctx: *Context, t: Ast.Type) void {
             .vec => |typ| current = typ.elem_type orelse break,
             .mat => |typ| current = typ.elem_type orelse break,
             .array => |typ| {
-                if (typ.size) |s| _ = visitExpr(ctx, s);
+                if (typ.size) |s| _ = try visitExpr(ctx, s);
                 current = typ.elem_type orelse break;
             },
             .ptr => |typ| current = typ.elem_type,
