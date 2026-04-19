@@ -625,3 +625,99 @@ test "M5.e: condition references local declared later → AddWalkRaisedErrors fa
     );
 }
 
+// =========================================================================
+// M6 — `loop` / `while` continuing & condition mutations.
+//
+// Neither `loop_stmt` nor `while_stmt` opens its own scope — only the
+// nested compound bodies do. `findSlotInStmt` for `.loop`
+// (`src/Incremental.zig:1208`) walks `body` then `continuing`. M6 covers
+// while-condition, loop-continuing assign-RHS, break_if condition, and a
+// 5-iteration burst.
+// =========================================================================
+
+test "M6.a: while-condition RHS ident swap (binary_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn f(i: i32) { let limit = 10; while i < 0 { } }";
+    const new_src: []const u8 =
+        "fn f(i: i32) { let limit = 10; while i < limit { } }";
+    const cond_off: u32 = at(src, "i < 0");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = cond_off,
+            .end = cond_off + @as(u32, @intCast("i < 0".len)),
+            .new_text = "i < limit",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M6.b: loop continuing assign-RHS swap (binary_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn f(i: i32) { var k: i32 = 0; loop { continuing { k = k + 1; break if k > 5; } } }";
+    const new_src: []const u8 =
+        "fn f(i: i32) { var k: i32 = 0; loop { continuing { k = k + 2; break if k > 5; } } }";
+    const bin_off: u32 = at(src, "k = k + 1") + @as(u32, @intCast("k = ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = bin_off,
+            .end = bin_off + @as(u32, @intCast("k + 1".len)),
+            .new_text = "k + 2",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M6.c: break-if condition ident swap (ident_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn f() { var done: bool = false; var stop: bool = true; loop { continuing { break if done; } } }";
+    const new_src: []const u8 =
+        "fn f() { var done: bool = false; var stop: bool = true; loop { continuing { break if stop; } } }";
+    const id_off: u32 = at(src, "break if done") + @as(u32, @intCast("break if ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = id_off,
+            .end = id_off + @as(u32, @intCast("done".len)),
+            .new_text = "stop",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M6.d: 5 successive condition flips on a while keep hot path" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 =
+        "fn f(i: i32) { let a = 1; let b = 2; while i < 0 { } }";
+    var prev = try Incremental.parseFull(gpa, src);
+    defer prev.deinit();
+
+    // Cycle the trailing `0` through `0..4` each iteration; offset is
+    // stable because the literal stays one byte wide.
+    const lit_off: u32 = at(src, "while i < 0") + @as(u32, @intCast("while i < ".len));
+    var i: u8 = 0;
+    while (i < 5) : (i += 1) {
+        const ch: u8 = '0' + ((i + 1) % 5);
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+        try std.testing.expect(next.reused);
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectShapesMatch(gpa, next.module, oracle.module);
+        try expectUseCountsMatch(next.module, oracle.module);
+        prev.deinit();
+        prev = next;
+    }
+}
+
