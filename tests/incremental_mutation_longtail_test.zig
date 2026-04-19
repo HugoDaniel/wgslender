@@ -182,3 +182,93 @@ test "M1.f: @location literal flip on an entry-point return attribute" {
         true,
     );
 }
+
+// =========================================================================
+// M2 — Type-expression mutation falls back gracefully.
+//
+// `findSlotInDecl` (`src/Incremental.zig:1088–1119`) intentionally does NOT
+// descend into `typ` / `return_type` fields. Any edit whose innermost
+// reparse anchor lives inside a type expression must therefore promote up
+// the parent chain until it either finds a hot-path anchor (none exists
+// at module scope) or hits the root → fallback.
+//
+// These tests pin that contract: a future "improvement" to the slot
+// finder that recurses into types would silently produce wrong AST state
+// without an oracle here.
+// =========================================================================
+
+test "M2.a: array<f32, N> size-expr ident swap falls back" {
+    const src: [:0]const u8 = "const N: u32 = 8; const K: u32 = 16; var<private> u: array<f32, N>;";
+    const new_src: []const u8 = "const N: u32 = 8; const K: u32 = 16; var<private> u: array<f32, K>;";
+    // The `N` we want lives inside `array<f32, N>` — last `N` in the source.
+    const n_off: u32 = @intCast(std.mem.lastIndexOfScalar(u8, src, 'N').?);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = n_off, .end = n_off + 1, .new_text = "K" },
+        new_src,
+        false,
+    );
+}
+
+test "M2.b: struct member vec3 → vec4 falls back" {
+    const src: [:0]const u8 = "struct S { x: vec3<f32>, y: i32 }";
+    const new_src: []const u8 = "struct S { x: vec4<f32>, y: i32 }";
+    const off: u32 = at(src, "vec3") + 3; // index of '3' in 'vec3'
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "4" },
+        new_src,
+        false,
+    );
+}
+
+test "M2.c: ptr<storage, …> → ptr<workgroup, …> on a struct member falls back" {
+    // ptrs are uncommon as struct-member types but still parseable and the
+    // type-span machinery handles them. The point of this test is that a
+    // pure address-space token swap inside a `type_ptr` falls back.
+    const src: [:0]const u8 = "struct S { p: ptr<storage, f32, read_write> }";
+    const new_src: []const u8 = "struct S { p: ptr<workgroup, f32, read_write> }";
+    const off: u32 = at(src, "storage");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + @as(u32, @intCast("storage".len)), .new_text = "workgroup" },
+        new_src,
+        false,
+    );
+}
+
+test "M2.d: function return type f32 → vec2<f32> falls back" {
+    const src: [:0]const u8 = "fn f() -> f32 { return 0.0; }";
+    const new_src: []const u8 = "fn f() -> vec2<f32> { return vec2<f32>(0.0); }";
+    // Replace " f32 { return 0.0;" → " vec2<f32> { return vec2<f32>(0.0);"
+    const ret_arrow: u32 = at(src, "-> f32 {");
+    const old_chunk: []const u8 = "-> f32 { return 0.0;";
+    const new_chunk: []const u8 = "-> vec2<f32> { return vec2<f32>(0.0);";
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = ret_arrow,
+            .end = ret_arrow + @as(u32, @intCast(old_chunk.len)),
+            .new_text = new_chunk,
+        },
+        new_src,
+        false,
+    );
+}
+
+test "M2.e: nested array<vec3<f32>, 4> → array<vec4<f32>, 4> falls back" {
+    const src: [:0]const u8 = "var<private> u: array<vec3<f32>, 4>;";
+    const new_src: []const u8 = "var<private> u: array<vec4<f32>, 4>;";
+    const off: u32 = at(src, "vec3") + 3;
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "4" },
+        new_src,
+        false,
+    );
+}
