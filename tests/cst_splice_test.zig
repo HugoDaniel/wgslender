@@ -11,9 +11,11 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Cst = wgslender.Cst;
+const CstLower = wgslender.CstLower;
 const Incremental = wgslender.Incremental;
 const Lexer = wgslender.Lexer;
 const Parser = wgslender.Parser;
+const Ast = wgslender.Ast;
 
 /// Render the tree as a compact S-expression (kinds + leaf spans). Used
 /// as a structural oracle — two trees that render identically are
@@ -305,4 +307,104 @@ test "spliceSubtree: ident in second of several decls shifts later offsets" {
         .expression,
         .literal_expr,
     );
+}
+
+// =========================================================================
+// CstLower.lowerSubtree tests
+// =========================================================================
+
+test "lowerSubtree: literal_expr produces Ast.LiteralExpr" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const src: [:0]const u8 = "42";
+    var all_tokens = try Lexer.tokenizeAll(aa, src);
+    const stream = try Parser.TokenStream.init(aa, &all_tokens);
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var parser = try Parser.initWithCst(aa, src, stream, &builder);
+    try parser.reparseAnchor(.expression, 0);
+    var tree = try builder.finish(aa, all_tokens, src);
+
+    const lowered = try CstLower.lowerSubtree(aa, &tree, tree.root());
+    switch (lowered) {
+        .expr => |e| {
+            const lit = e.literal;
+            try std.testing.expectEqualStrings("42", lit.value);
+            try std.testing.expectEqual(Lexer.Tag.int_literal, lit.kind);
+        },
+        else => return error.TestUnexpectedSubtreeVariant,
+    }
+}
+
+test "lowerSubtree: ident_expr has unresolved ref" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const src: [:0]const u8 = "foo";
+    var all_tokens = try Lexer.tokenizeAll(aa, src);
+    const stream = try Parser.TokenStream.init(aa, &all_tokens);
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var parser = try Parser.initWithCst(aa, src, stream, &builder);
+    try parser.reparseAnchor(.expression, 0);
+    var tree = try builder.finish(aa, all_tokens, src);
+
+    const lowered = try CstLower.lowerSubtree(aa, &tree, tree.root());
+    switch (lowered) {
+        .expr => |e| {
+            const id = e.ident;
+            try std.testing.expectEqualStrings("foo", id.name);
+            // Unresolved on the hot path — caller's visitSubtree binds it.
+            try std.testing.expect(!id.ref.isValid());
+        },
+        else => return error.TestUnexpectedSubtreeVariant,
+    }
+}
+
+test "lowerSubtree: return statement" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const src: [:0]const u8 = "return 1;";
+    var all_tokens = try Lexer.tokenizeAll(aa, src);
+    const stream = try Parser.TokenStream.init(aa, &all_tokens);
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var parser = try Parser.initWithCst(aa, src, stream, &builder);
+    try parser.reparseAnchor(.statement, 0);
+    var tree = try builder.finish(aa, all_tokens, src);
+
+    const lowered = try CstLower.lowerSubtree(aa, &tree, tree.root());
+    switch (lowered) {
+        .stmt => |s| {
+            try std.testing.expect(s == .@"return");
+            const ret = s.@"return";
+            try std.testing.expect(ret.value != null);
+        },
+        else => return error.TestUnexpectedSubtreeVariant,
+    }
+}
+
+test "lowerSubtree: compound_stmt and control-flow bail with InvalidCst" {
+    // compound_stmt and if_stmt / for_stmt etc. introduce scope; the
+    // symbol-free hot path must NOT lower them.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    // compound_stmt is parsed via a full parse since reparseAnchor
+    // doesn't have a .compound_stmt entry. Use parseFull and pick the
+    // compound node off a function body.
+    var result = try Incremental.parseFull(std.testing.allocator, "fn f() { return 1; }");
+    defer result.deinit();
+
+    const compound = result.cst.rootCursor().findSmallestContaining(.{ .start = 7, .end = 20 });
+    try std.testing.expectEqual(Cst.Kind.compound_stmt, compound.kind());
+
+    const err = CstLower.lowerSubtree(aa, &result.cst, compound.node);
+    try std.testing.expectError(error.InvalidCst, err);
 }

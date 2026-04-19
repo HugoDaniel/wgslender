@@ -89,6 +89,82 @@ pub fn lowerTree(
 }
 
 // =========================================================================
+// Subtree lowering (for `Incremental.reparse`'s hot path)
+// =========================================================================
+
+/// Discriminated result of `lowerSubtree`. Callers dispatch on this to
+/// splice the right slot in the prev `Ast.Module`.
+pub const LoweredSubtree = union(enum) {
+    stmt: Ast.Stmt,
+    expr: Ast.Expr,
+};
+
+/// Lower a single anchor-kind subtree into its AST form. Intended for
+/// the symbol-free incremental hot path: the subtree kinds that
+/// `Incremental` classifies as `.symbol_free` (expression anchors and
+/// non-scope-introducing statement anchors). The lowered output has
+/// ident references left as `.none` — a subsequent targeted re-visit
+/// resolves them against the prev module's symbol table.
+///
+/// Allocates from `arena` (the prev module's arena on the hot path so
+/// nodes are reachable from `Module`). Uses an empty throwaway symbol
+/// table / scope because no new symbols are introduced by
+/// symbol-free anchors; if a symbol IS introduced (e.g. decl_stmt), the
+/// caller must classify as non-symbol-free and fall back.
+pub fn lowerSubtree(
+    arena: Allocator,
+    cst: *const Cst.Tree,
+    node: Cst.NodeIndex,
+) error{ OutOfMemory, InvalidCst }!LoweredSubtree {
+    const throwaway_scope = try arena.create(Ast.Scope);
+    throwaway_scope.* = Ast.Scope.init(null, .block);
+
+    var ctx = LowerCtx{
+        .arena = arena,
+        .cst = cst,
+        .token_tags = cst.tokens.items(.tag),
+        .token_starts = cst.tokens.items(.start),
+        .token_ends = cst.tokens.items(.end),
+        .symbols = .empty,
+        .scope = throwaway_scope,
+        .scopes_in_order = .empty,
+        .errors = .empty,
+    };
+
+    const kind = ctx.nodeKind(node);
+    switch (kind) {
+        // Expression anchors.
+        .literal_expr,
+        .ident_expr,
+        .binary_expr,
+        .unary_expr,
+        .call_expr,
+        .index_expr,
+        .member_expr,
+        .paren_expr,
+        => return .{ .expr = try ctx.lowerExpr(node) },
+
+        // Statement anchors (non-scope-introducing). `compound_stmt`
+        // and control-flow statements deliberately fall through to
+        // InvalidCst so callers classify them as non-symbol-free.
+        .return_stmt,
+        .assign_stmt,
+        .incr_decr_stmt,
+        .call_stmt,
+        .break_stmt,
+        .break_if_stmt,
+        .continue_stmt,
+        .discard_stmt,
+        => {
+            const stmt = (try ctx.lowerStmt(node)) orelse return error.InvalidCst;
+            return .{ .stmt = stmt };
+        },
+
+        else => return error.InvalidCst,
+    }
+}
+
+// =========================================================================
 // LowerCtx — shared state for the walk.
 // =========================================================================
 
