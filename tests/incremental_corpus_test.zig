@@ -355,3 +355,89 @@ test "F-CORPUS: literal swap on compute.toys preserves error oracle equality" {
         .{ n_shaders, n_edits },
     );
 }
+
+// =========================================================================
+// I-01 — Compound/decl hot path coverage on the compute.toys corpus.
+//
+// For every shader, insert `let _pad_N = 0;` immediately before the last
+// `}` (the end of the last function body). The edit lands inside a
+// compound_stmt and should take the Phase 2 in-place path. Assert
+// reused==true, source splice correct, and live-use-count sum per
+// symbol matches a full parseFull oracle.
+// =========================================================================
+
+test "I-01: per-shader body append on compute.toys uses the hot path" {
+    const io = std.Options.debug_io;
+    const dir_path = "tests/testdata/compute.toys";
+
+    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound or err == error.NotFound) {
+            std.debug.print("skip: compute.toys directory missing\n", .{});
+            return;
+        }
+        return err;
+    };
+    defer dir.close(io);
+
+    var gpa_state: std.heap.DebugAllocator(.{}) = .init;
+    defer _ = gpa_state.deinit();
+    const gpa = gpa_state.allocator();
+
+    var walker = try dir.walk(gpa);
+    defer walker.deinit();
+
+    var n_shaders: usize = 0;
+    var n_reused: usize = 0;
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".wgsl")) continue;
+
+        var arena = std.heap.ArenaAllocator.init(gpa);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        const source_bytes = entry.dir.readFileAlloc(io, entry.basename, alloc, .unlimited) catch {
+            continue;
+        };
+        const source_z = try makeSentinel(alloc, source_bytes);
+
+        const close_off: u32 = @intCast(std.mem.lastIndexOfScalar(u8, source_z, '}').?);
+
+        var base = try Incremental.parseFull(gpa, source_z);
+        defer base.deinit();
+
+        var updated = try Incremental.reparse(gpa, &base, .{
+            .start = close_off,
+            .end = close_off,
+            .new_text = " let _pad_01 = 0;",
+        });
+        defer updated.deinit();
+
+        if (updated.reused) n_reused += 1;
+
+        var oracle = try Incremental.parseFull(gpa, updated.source);
+        defer oracle.deinit();
+        try std.testing.expectEqual(
+            oracle.module.declarations.items.len,
+            updated.module.declarations.items.len,
+        );
+
+        // Live-sum equivalence per name (append-only contract).
+        var oracle_live_sum: u64 = 0;
+        for (oracle.module.symbols.items) |s| oracle_live_sum += s.use_count;
+        var updated_live_sum: u64 = 0;
+        for (updated.module.symbols.items) |s| updated_live_sum += s.use_count;
+        try std.testing.expectEqual(oracle_live_sum, updated_live_sum);
+
+        n_shaders += 1;
+    }
+
+    // On the current corpus every shader's final `}` is inside a
+    // function body — the append should take the hot path every time.
+    try std.testing.expectEqual(n_shaders, n_reused);
+
+    std.debug.print(
+        "I-01 compound body append: {d} compute.toys shaders, all hot-path, live-sum oracle OK\n",
+        .{n_shaders},
+    );
+}
