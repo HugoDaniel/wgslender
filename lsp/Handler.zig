@@ -24,6 +24,11 @@ pub const Document = struct {
     /// Sentinel-terminated source used by the analysis. Must stay alive
     /// as long as the analysis result since the AST holds slices into it.
     analysis_source: ?[:0]u8 = null,
+    /// Persistent parse state (source + AST + CST) kept fresh across
+    /// `didChange` edits via `Incremental.reparse`. Enables future
+    /// anchor-based incremental reparse without touching this struct
+    /// again. `null` if initial parse failed.
+    parse: ?wgslender.Incremental.ReparseResult = null,
 };
 
 // =========================================================================
@@ -97,6 +102,9 @@ pub fn deinit(self: *Handler) void {
         if (entry.value_ptr.analysis_source) |s| {
             self.gpa.free(s);
         }
+        if (entry.value_ptr.parse) |*p| {
+            p.deinit();
+        }
         self.gpa.free(entry.key_ptr.*);
         self.gpa.free(entry.value_ptr.source);
     }
@@ -116,6 +124,18 @@ fn invalidateAnalysis(self: *Handler, uri: []const u8) void {
     }
 }
 
+/// (Re)build the persistent `doc.parse` from `doc.source`. Best-effort:
+/// on failure (e.g. OOM) leaves `doc.parse = null` and returns. The LSP
+/// continues to work via the full-reparse path in `analyzeDocument`.
+fn rebuildParse(self: *Handler, doc: *Document) void {
+    if (doc.parse) |*p| {
+        p.deinit();
+        doc.parse = null;
+    }
+    const result = wgslender.Incremental.parseFull(self.gpa, doc.source) catch return;
+    doc.parse = result;
+}
+
 // =========================================================================
 // Document management
 // =========================================================================
@@ -127,11 +147,15 @@ pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: 
 
     const gop = try self.documents.getOrPut(self.gpa, uri);
     if (gop.found_existing) {
+        if (gop.value_ptr.parse) |*p| {
+            p.deinit();
+        }
         self.gpa.free(gop.value_ptr.source);
     } else {
         gop.key_ptr.* = try self.gpa.dupe(u8, uri);
     }
     gop.value_ptr.* = .{ .source = new_source, .version = version };
+    self.rebuildParse(gop.value_ptr);
 }
 
 /// Replaces the source text of an already-open document.
@@ -141,14 +165,19 @@ pub fn changeDocument(self: *Handler, uri: []const u8, text: []const u8) !void {
     const new_source = try self.gpa.dupe(u8, text);
     self.gpa.free(doc.source);
     doc.source = new_source;
+    self.rebuildParse(doc);
 }
 
 /// Removes a document and frees its source and URI.
 pub fn closeDocument(self: *Handler, uri: []const u8) void {
     self.invalidateAnalysis(uri);
     const entry = self.documents.fetchRemove(uri) orelse return;
+    var value = entry.value;
+    if (value.parse) |*p| {
+        p.deinit();
+    }
     self.gpa.free(entry.key);
-    self.gpa.free(entry.value.source);
+    self.gpa.free(value.source);
 }
 
 pub fn getDocumentSource(self: *const Handler, uri: []const u8) ?[]const u8 {
@@ -2561,6 +2590,33 @@ pub fn changeDocumentIncremental(self: *Handler, uri: []const u8, range: Range, 
             doc.source = new_source;
         },
     }
+
+    // Keep `doc.parse` (CST + AST) in sync with `doc.source` so downstream
+    // anchor-based reparse can consume it. Uses `Incremental.reparse` when
+    // we have a prior parse so later stages can short-circuit to subtree
+    // reuse; otherwise rebuilds from scratch.
+    self.updateParseAfterEdit(doc, .{
+        .start = @intCast(start),
+        .end = @intCast(end),
+        .new_text = text,
+    });
+}
+
+fn updateParseAfterEdit(self: *Handler, doc: *Document, edit: wgslender.Incremental.Edit) void {
+    if (doc.parse) |*prev| {
+        const updated = wgslender.Incremental.reparse(self.gpa, prev, edit) catch {
+            // Reparse failed — drop the stale tree. `doc.source` is already
+            // canonical, so the next `analyzeDocument` call still works via
+            // the legacy path.
+            prev.deinit();
+            doc.parse = null;
+            return;
+        };
+        prev.deinit();
+        doc.parse = updated;
+        return;
+    }
+    self.rebuildParse(doc);
 }
 
 // =========================================================================

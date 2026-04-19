@@ -173,3 +173,53 @@ test "incremental sync: unknown document no crash" {
         .end = .{ .line = 0, .character = 0 },
     }, "text");
 }
+
+// =========================================================================
+// Persistent parse state (doc.parse)
+// =========================================================================
+
+test "incremental sync: doc.parse is populated after openDocument" {
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    const parse = doc.parse orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqualStrings("fn f() {}", parse.source);
+    try std.testing.expectEqual(@as(usize, 1), parse.module.declarations.items.len);
+}
+
+test "incremental sync: doc.parse tracks source after incremental edit" {
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 9 },
+        .end = .{ .line = 0, .character = 9 },
+    }, "\nfn g() {}");
+    const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    const parse = doc.parse orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqualStrings("fn f() {}\nfn g() {}", parse.source);
+    try std.testing.expectEqualStrings(parse.source, doc.source);
+    try std.testing.expectEqual(@as(usize, 2), parse.module.declarations.items.len);
+}
+
+test "incremental sync: doc.parse tracks source after full replace" {
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    try ctx.handler.changeDocument("test://file.wgsl", "const X = 1;");
+    const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    const parse = doc.parse orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqualStrings("const X = 1;", parse.source);
+    try std.testing.expectEqualStrings(parse.source, doc.source);
+}
+
+test "incremental sync: doc.parse survives trivia-only edit" {
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = 0 },
+    }, "// header\n");
+    const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    const parse = doc.parse orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqualStrings("// header\nfn f() {}", parse.source);
+    try std.testing.expectEqualStrings(parse.source, doc.source);
+}
