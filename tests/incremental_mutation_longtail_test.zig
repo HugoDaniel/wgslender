@@ -272,3 +272,130 @@ test "M2.e: nested array<vec3<f32>, 4> → array<vec4<f32>, 4> falls back" {
         false,
     );
 }
+
+// =========================================================================
+// M3 — `for`-loop compartment mutations exercise the for-scope map.
+//
+// `for_stmt` is a scope opener (`isScopeOpener`,
+// `src/Incremental.zig:128`); its CST node maps to an AST scope holding
+// the for-init local. A hot-path anchor inside the condition or update
+// must therefore resolve via `scopeAtCstNode` → for-scope so the local is
+// visible. `findSlotInStmt` for `.@"for"` (`src/Incremental.zig:1179`)
+// descends into init/condition/update/body — these tests pin down each
+// compartment.
+// =========================================================================
+
+test "M3.a: for-condition operator flip (binary_expr anchor)" {
+    const src: [:0]const u8 =
+        "fn f() { let limit = 5; for (var i = 0; i < limit; i = i + 1) {} }";
+    const new_src: []const u8 =
+        "fn f() { let limit = 5; for (var i = 0; i <= limit; i = i + 1) {} }";
+    // Replace the entire `i < limit` binary expression so the new subtree
+    // is also a binary_expr (kind-stable hot path).
+    const cond_off: u32 = at(src, "i < limit");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = cond_off,
+            .end = cond_off + @as(u32, @intCast("i < limit".len)),
+            .new_text = "i <= limit",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M3.b: for-condition RHS literal swap (literal_expr anchor)" {
+    const src: [:0]const u8 = "fn f() { for (var i = 0; i < 10; i = i + 1) {} }";
+    const new_src: []const u8 = "fn f() { for (var i = 0; i < 5; i = i + 1) {} }";
+    const lit_off: u32 = at(src, "< 10") + 2;
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = lit_off, .end = lit_off + 2, .new_text = "5" },
+        new_src,
+        true,
+    );
+}
+
+test "M3.c: for-condition RHS ident swap to sibling const (ident_expr anchor)" {
+    const src: [:0]const u8 =
+        "const N: i32 = 8; const K: i32 = 16; fn f() { for (var i = 0; i < N; i = i + 1) {} }";
+    const new_src: []const u8 =
+        "const N: i32 = 8; const K: i32 = 16; fn f() { for (var i = 0; i < K; i = i + 1) {} }";
+    // The `N` we want is the one inside `i < N`.
+    const probe_off: u32 = at(src, "< N") + 2;
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = probe_off, .end = probe_off + 1, .new_text = "K" },
+        new_src,
+        true,
+    );
+}
+
+test "M3.d: for-update binary RHS swap to sibling local (binary_expr anchor)" {
+    // `step` is declared before the `for`, so text-order visibility allows
+    // resolving it from inside the for-update's RHS.
+    const src: [:0]const u8 =
+        "fn f() { let step = 2; for (var i = 0; i < 10; i = i + 1) {} }";
+    const new_src: []const u8 =
+        "fn f() { let step = 2; for (var i = 0; i < 10; i = i + step) {} }";
+    // Replace the binary `i + 1` so the new subtree stays binary_expr.
+    const bin_off: u32 = at(src, "i + 1");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = bin_off,
+            .end = bin_off + @as(u32, @intCast("i + 1".len)),
+            .new_text = "i + step",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M3.e: for-init initializer literal swap (literal_expr anchor)" {
+    const src: [:0]const u8 = "fn f() { for (var i = 0; i < 10; i = i + 1) {} }";
+    const new_src: []const u8 = "fn f() { for (var i = 5; i < 10; i = i + 1) {} }";
+    const init_lit: u32 = at(src, "var i = 0") + @as(u32, @intCast("var i = ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = init_lit, .end = init_lit + 1, .new_text = "5" },
+        new_src,
+        true,
+    );
+}
+
+test "M3.f: 10 successive literal flips on for-update keep hot path" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 = "fn f() { for (var i = 0; i < 10; i = i + 1) {} }";
+    var prev = try Incremental.parseFull(gpa, src);
+    defer prev.deinit();
+
+    // Position of the trailing `1` in `i + 1` (the for-update RHS literal).
+    // Length stays at 1 byte through every cycle so the offset is stable.
+    const lit_off: u32 = at(src, "i + 1") + 4;
+    var i: u8 = 0;
+    while (i < 10) : (i += 1) {
+        const ch: u8 = '0' + ((i + 1) % 10);
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+        try std.testing.expect(next.reused);
+        // Spot-check: declarations + symbol set match the oracle on every step.
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectShapesMatch(gpa, next.module, oracle.module);
+        try expectUseCountsMatch(next.module, oracle.module);
+
+        prev.deinit();
+        prev = next;
+    }
+}
