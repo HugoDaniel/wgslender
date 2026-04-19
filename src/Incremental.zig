@@ -26,6 +26,7 @@ const Cst = @import("Cst.zig");
 const CstLower = @import("CstLower.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
+const AstVisit = @import("AstVisit.zig");
 
 const Incremental = @This();
 
@@ -336,9 +337,14 @@ pub fn parseFull(gpa: Allocator, source: []const u8) !ReparseResult {
     defer builder.deinit();
 
     var parser = try Parser.initWithCst(arena, owned_source, stream, &builder);
-    const module = try parser.parse();
-
+    _ = try parser.parse(); // drive the CST builder; discard Parser's AST
     const tree = try builder.finish(arena, all_tokens, owned_source);
+
+    // Lower the AST from the CST. Using CstLower (not Parser.parse's
+    // direct AST) means every `Ast.Expr` gains a populated `span`, which
+    // the incremental add/sub hot path relies on to locate the AST slot
+    // corresponding to a CST anchor.
+    const module = try CstLower.lowerTree(gpa, arena, &tree);
 
     // Pair CST scope-opener nodes with the AST scopes produced in the
     // same DFS order, so `scopeAtCstNode` resolves in O(CST depth).
@@ -551,11 +557,43 @@ fn tryIncrementalReparse(
         return error.AnchorParseDidNotCoverEdit;
     }
 
-    // 8. Splice the CST. The spliced tree owns `new_all_tokens` now.
+    // 8. Capture the old anchor's byte range BEFORE splicing — we need
+    //    it to locate the corresponding AST slot in prev.module. The CST
+    //    range is authoritative: Ast spans are built from non-trivia
+    //    tokens, and the raw CST range contains the non-trivia span, so
+    //    slot lookup by "kind + span fully contained in old_anchor_range"
+    //    is stable.
+    const old_anchor_span: Ast.Span = .{
+        .start = anchor_cursor.range().start,
+        .end = anchor_cursor.range().end,
+    };
+
+    // 9. Splice the CST. The spliced tree owns `new_all_tokens` now.
+    //    The new subtree lives at the same DFS index as the old anchor
+    //    (`Cst.spliceSubtree` contract), so `anchor_cursor.node` still
+    //    addresses it in `new_tree`.
     var new_tree = try Cst.spliceSubtree(arena, &prev.cst, anchor_cursor.node, &new_sub, new_source, new_all_tokens);
 
-    // 9. Re-lower the whole module from the spliced CST. Allocates the
-    //    fresh `Ast.Module` + symbols + scope tree in the new arena.
+    // 10. Symbol-free anchors take a targeted add/sub delta path that
+    //     reuses prev.module's AST nodes in place. Scope-introducing
+    //     anchors (compound_stmt, decl_stmt) still fall through to the
+    //     whole-module re-lower below.
+    if (isSymbolFreeAnchor(anchor_kind)) {
+        return try tryAddSubSplice(
+            gpa,
+            prev,
+            arena_ptr,
+            new_source,
+            new_tree,
+            anchor_cursor.node,
+            anchor_kind,
+            old_anchor_span,
+        );
+    }
+
+    // 11. Scope-introducing anchors: re-lower the whole module from the
+    //     spliced CST. Allocates the fresh `Ast.Module` + symbols + scope
+    //     tree in the new arena.
     const module = try CstLower.lowerTree(gpa, arena, &new_tree);
 
     var result = ReparseResult{
@@ -568,6 +606,701 @@ fn tryIncrementalReparse(
     };
     try buildScopeForCstNodeMap(arena, &result);
     return result;
+}
+
+/// True for the anchor kinds where the add/sub hot path is safe:
+/// expressions (which never declare symbols) and non-scope-introducing
+/// statements. `compound_stmt` and `decl_stmt` are hot-path anchors but
+/// NOT symbol-free — they introduce scopes and/or symbols and stay on
+/// the whole-module re-lower path in Phase 1.
+fn isSymbolFreeAnchor(k: Cst.Kind) bool {
+    return switch (k) {
+        // Expressions.
+        .literal_expr,
+        .ident_expr,
+        .binary_expr,
+        .unary_expr,
+        .call_expr,
+        .index_expr,
+        .member_expr,
+        .paren_expr,
+        // Statements that neither open a scope nor declare symbols.
+        .return_stmt,
+        .assign_stmt,
+        .incr_decr_stmt,
+        .call_stmt,
+        .break_stmt,
+        .break_if_stmt,
+        .continue_stmt,
+        .discard_stmt,
+        => true,
+        else => false,
+    };
+}
+
+/// Symbol-free add/sub hot path. The caller has already spliced the CST
+/// and captured the old anchor's byte span. Steps:
+///
+///   1. Locate the `*Ast.Stmt` or `*Ast.Expr` slot in `prev.module`
+///      whose span matches `old_anchor_span` and whose kind matches
+///      `anchor_kind`.
+///   2. Sub-walk that slot's contents against `prev.module.symbols` so
+///      every resolved ident's `use_count` decrements back to its
+///      pre-subtree value.
+///   3. Lower the new CST subtree into `prev.arena` (so its AST nodes
+///      sit alongside the rest of the module).
+///   4. Mutate the slot in place to point at the new subtree.
+///   5. Add-walk the new slot, positioning `ctx.scope` at the anchor's
+///      enclosing scope via `scopeAtCstNode` on the new tree.
+///   6. Transfer ownership of `prev.arena` into `result.retained_arenas`
+///      and install an empty stub arena in `prev` so `prev.deinit()`
+///      remains safe.
+fn tryAddSubSplice(
+    gpa: Allocator,
+    prev: *ReparseResult,
+    new_arena_ptr: *std.heap.ArenaAllocator,
+    new_source: [:0]const u8,
+    new_tree_in: Cst.Tree,
+    new_subtree_node: Cst.NodeIndex,
+    anchor_kind: Cst.Kind,
+    old_anchor_span: Ast.Span,
+) !ReparseResult {
+    var new_tree = new_tree_in;
+    const new_arena = new_arena_ptr.allocator();
+    const prev_arena = prev.arena.allocator();
+
+    // 1. Find the AST slot matching the old anchor.
+    const slot = findAstSlot(prev.module, old_anchor_span, anchor_kind) orelse return error.AstSlotNotFound;
+
+    // 2. Sub-walk: decrement use_counts for every resolved ident in the
+    //    old subtree. Uses `scopes_in_order = &.{}` because a symbol-free
+    //    anchor never enters or exits a nested scope during the walk.
+    var discard_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer discard_errors.deinit(prev_arena);
+    var sub_ctx = AstVisit.Context{
+        .arena = prev_arena,
+        .symbols = prev.module.symbols.items,
+        .scopes_in_order = &.{},
+        .scope = prev.module.scope,
+        .errors = &discard_errors,
+        .safety_budget = @max(64, prev.cst.tokens.len * 2),
+        .mode = .sub,
+    };
+    switch (slot) {
+        .stmt => |p| try AstVisit.visitSubtreeStmt(&sub_ctx, p.*),
+        .expr => |p| _ = try AstVisit.visitSubtreeExpr(&sub_ctx, p.*),
+    }
+
+    // 3. Shift downstream AST span/loc fields by delta so they reflect
+    //    new-source positions. Must happen BEFORE we lower the new
+    //    subtree and splice it in, because the new subtree's spans are
+    //    already in new-source coordinates — shifting afterward would
+    //    double-shift the spliced slot's descendants.
+    const old_len: u32 = old_anchor_span.end - old_anchor_span.start;
+    const new_node_span = new_tree.getNode(new_subtree_node);
+    const new_len: u32 = new_node_span.end - new_node_span.start;
+    const delta: i64 = @as(i64, new_len) - @as(i64, old_len);
+    shiftAstSpans(prev.module, old_anchor_span.end, delta);
+
+    // 4. Lower the new CST subtree into prev.arena. `CstLower.lowerSubtree`
+    //    leaves ident refs as `.none` — the add-walk below resolves them.
+    const new_lowered = try CstLower.lowerSubtree(prev_arena, &new_tree, new_subtree_node);
+
+    // 4. Splice AST in place. Kind must match (enforced — belt and braces).
+    switch (slot) {
+        .stmt => |p| switch (new_lowered) {
+            .stmt => |s| p.* = s,
+            .expr => return error.SlotKindMismatch,
+        },
+        .expr => |p| switch (new_lowered) {
+            .expr => |e| p.* = e,
+            .stmt => return error.SlotKindMismatch,
+        },
+    }
+
+    // 5. Build the scope-for-CST-node map against the new tree and a
+    //    temporary ReparseResult shell so we can reuse `scopeAtCstNode`.
+    //    The real result structure comes below.
+    var tmp_result = ReparseResult{
+        .gpa = gpa,
+        .arena = new_arena_ptr,
+        .source = new_source,
+        .module = prev.module,
+        .cst = new_tree,
+    };
+    try buildScopeForCstNodeMap(new_arena, &tmp_result);
+    const anchor_scope = scopeAtCstNode(&tmp_result, new_subtree_node);
+
+    //    Add-walk: resolve idents and increment use_counts in the new
+    //    subtree against the anchor's enclosing scope.
+    var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer add_errors.deinit(prev_arena);
+    var add_ctx = AstVisit.Context{
+        .arena = prev_arena,
+        .symbols = prev.module.symbols.items,
+        .scopes_in_order = &.{},
+        .scope = anchor_scope,
+        .errors = &add_errors,
+        .safety_budget = @max(64, new_tree.tokens.len * 2),
+        .mode = .add,
+    };
+    switch (slot) {
+        .stmt => |p| try AstVisit.visitSubtreeStmt(&add_ctx, p.*),
+        .expr => |p| p.* = try AstVisit.visitSubtreeExpr(&add_ctx, p.*),
+    }
+    // If the add-walk saw an E0102 ("used before declaration"), the hot
+    // path's diagnostic output diverges from the oracle. Bail so the
+    // full-parse fallback produces byte-identical errors.
+    if (add_errors.items.len > 0) return error.AddWalkRaisedErrors;
+
+    // 6. Update the prev module's source pointer to the new source, and
+    //    assemble the result. Transfer prev.arena into retained_arenas
+    //    and install an empty stub in prev.
+    prev.module.source = new_source;
+
+    var result = ReparseResult{
+        .gpa = gpa,
+        .arena = new_arena_ptr,
+        .source = new_source,
+        .module = prev.module,
+        .cst = new_tree,
+        .reused = true,
+        .scope_for_cst_node = tmp_result.scope_for_cst_node,
+    };
+    // Transfer prev's arena AND any arenas prev itself retained (from
+    // earlier chained reparses) into our `retained_arenas`. Failing to
+    // absorb prev.retained_arenas would leak them across repeated
+    // edits, since we replace prev's list with `.empty` below.
+    try result.retained_arenas.ensureUnusedCapacity(gpa, prev.retained_arenas.items.len + 1);
+    result.retained_arenas.appendSliceAssumeCapacity(prev.retained_arenas.items);
+    result.retained_arenas.appendAssumeCapacity(prev.arena);
+
+    // Install an empty stub arena in prev so `prev.deinit()` stays a
+    // safe no-op. `prev.module` / `prev.cst` / `prev.source` are now
+    // aliased by `result`; callers must not read `prev` again.
+    const stub = try gpa.create(std.heap.ArenaAllocator);
+    stub.* = std.heap.ArenaAllocator.init(gpa);
+    prev.arena = stub;
+    // Drop prev's ArrayList storage (entries moved to `result` above).
+    prev.retained_arenas.deinit(gpa);
+    prev.retained_arenas = .empty;
+
+    return result;
+}
+
+/// Shift every `span` / `loc` field in the module by `delta` bytes when
+/// its current value is `>= splice_end_old`. Called after an add/sub
+/// splice so AST spans on decls/stmts/exprs downstream of the edit
+/// reflect new-source positions — matching what a fresh full parse would
+/// produce.
+///
+/// `splice_end_old` is the anchor's END byte in OLD-source coordinates
+/// (i.e., before the splice). Spans/locs whose current value is below
+/// it sit entirely before the edit and are unaffected.
+fn shiftAstSpans(module: *Ast.Module, splice_end_old: u32, delta: i64) void {
+    if (delta == 0) return;
+    for (module.directives.items) |*dir_ptr| {
+        shiftDirectiveSpan(dir_ptr, splice_end_old, delta);
+    }
+    for (module.declarations.items) |*decl_ptr| {
+        shiftDeclSpans(decl_ptr, splice_end_old, delta);
+    }
+    // The module's symbol table holds `loc` byte offsets for every
+    // declared symbol. Shift those too so use-before-declaration checks
+    // and StableId `Range` values stay accurate.
+    for (module.symbols.items) |*sym| {
+        if (sym.loc >= splice_end_old) sym.loc = @intCast(@as(i64, sym.loc) + delta);
+    }
+    shiftScopeMembers(module.scope, splice_end_old, delta);
+}
+
+fn shiftScopeMembers(scope: *Ast.Scope, splice_end_old: u32, delta: i64) void {
+    var it = scope.members.iterator();
+    while (it.next()) |e| {
+        if (e.value_ptr.loc >= splice_end_old) {
+            e.value_ptr.loc = @intCast(@as(i64, e.value_ptr.loc) + delta);
+        }
+    }
+    for (scope.children.items) |c| shiftScopeMembers(c, splice_end_old, delta);
+}
+
+fn shiftSpan(sp: *Ast.Span, splice_end_old: u32, delta: i64) void {
+    if (sp.start >= splice_end_old) sp.start = @intCast(@as(i64, sp.start) + delta);
+    if (sp.end >= splice_end_old) sp.end = @intCast(@as(i64, sp.end) + delta);
+}
+
+fn shiftLoc(loc: *u32, splice_end_old: u32, delta: i64) void {
+    if (loc.* >= splice_end_old) loc.* = @intCast(@as(i64, loc.*) + delta);
+}
+
+/// Shift any `span`/`loc`/`end_loc` fields present on `node` (comptime).
+/// AST structs have heterogeneous shapes — some carry only `span`, some
+/// only `loc`, some both, some additionally `end_loc`. This helper papers
+/// over the differences without a match arm per struct.
+fn shiftNodeOffsets(node: anytype, splice_end_old: u32, delta: i64) void {
+    const T = @TypeOf(node.*);
+    if (@hasField(T, "span")) shiftSpan(&node.span, splice_end_old, delta);
+    if (@hasField(T, "loc")) shiftLoc(&node.loc, splice_end_old, delta);
+    if (@hasField(T, "decl_span")) shiftSpan(&node.decl_span, splice_end_old, delta);
+    if (@hasField(T, "end_loc")) shiftLoc(&node.end_loc, splice_end_old, delta);
+}
+
+fn shiftDirectiveSpan(dir: *Ast.Directive, splice_end_old: u32, delta: i64) void {
+    switch (dir.*) {
+        inline else => |*d| shiftNodeOffsets(d, splice_end_old, delta),
+    }
+}
+
+fn shiftDeclSpans(decl: *Ast.Decl, splice_end_old: u32, delta: i64) void {
+    switch (decl.*) {
+        .@"const" => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .override => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+        },
+        .@"var" => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+        },
+        .let => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .function => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            for (d.parameters.items) |*p| {
+                shiftNodeOffsets(p, splice_end_old, delta);
+                shiftTypeSpans(p.typ, splice_end_old, delta);
+                for (p.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            }
+            if (d.return_type) |t| shiftTypeSpans(t, splice_end_old, delta);
+            for (d.return_attr.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            if (d.body) |body| shiftCompoundStmtSpans(body, splice_end_old, delta);
+        },
+        .@"struct" => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            for (d.members.items) |*m| {
+                shiftNodeOffsets(m, splice_end_old, delta);
+                shiftTypeSpans(m.typ, splice_end_old, delta);
+                for (m.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            }
+        },
+        .alias => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            shiftTypeSpans(d.typ, splice_end_old, delta);
+        },
+        .const_assert => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            shiftExprSpans(d.expr, splice_end_old, delta);
+        },
+    }
+}
+
+fn shiftAttributeSpans(attr: *Ast.Attribute, splice_end_old: u32, delta: i64) void {
+    shiftNodeOffsets(attr, splice_end_old, delta);
+    for (attr.args.items) |e| shiftExprSpans(e, splice_end_old, delta);
+}
+
+fn shiftCompoundStmtSpans(body: *Ast.CompoundStmt, splice_end_old: u32, delta: i64) void {
+    shiftNodeOffsets(body, splice_end_old, delta);
+    for (body.stmts.items) |*s| shiftStmtSpans(s, splice_end_old, delta);
+}
+
+fn shiftStmtSpans(stmt: *Ast.Stmt, splice_end_old: u32, delta: i64) void {
+    switch (stmt.*) {
+        .compound => |s| shiftCompoundStmtSpans(s, splice_end_old, delta),
+        .@"return" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            if (s.value) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .@"if" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.condition, splice_end_old, delta);
+            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+            if (s.else_branch) |_| shiftStmtSpans(&s.else_branch.?, splice_end_old, delta);
+        },
+        .@"switch" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.expr, splice_end_old, delta);
+            for (s.cases.items) |*c| {
+                for (c.selectors.items) |e| shiftExprSpans(e, splice_end_old, delta);
+                shiftCompoundStmtSpans(c.body, splice_end_old, delta);
+            }
+        },
+        .@"for" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            if (s.init_stmt) |_| shiftStmtSpans(&s.init_stmt.?, splice_end_old, delta);
+            if (s.condition) |e| shiftExprSpans(e, splice_end_old, delta);
+            if (s.update) |_| shiftStmtSpans(&s.update.?, splice_end_old, delta);
+            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+        },
+        .@"while" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.condition, splice_end_old, delta);
+            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+        },
+        .loop => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+            if (s.continuing) |c| shiftCompoundStmtSpans(c, splice_end_old, delta);
+        },
+        .@"break" => |s| shiftNodeOffsets(s, splice_end_old, delta),
+        .break_if => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.condition, splice_end_old, delta);
+        },
+        .@"continue" => |s| shiftNodeOffsets(s, splice_end_old, delta),
+        .discard => |s| shiftNodeOffsets(s, splice_end_old, delta),
+        .assign => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.left, splice_end_old, delta);
+            shiftExprSpans(s.right, splice_end_old, delta);
+        },
+        .incr_decr => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.expr, splice_end_old, delta);
+        },
+        .call => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            if (s.call.func) |f| shiftExprSpans(f, splice_end_old, delta);
+            if (s.call.template_type) |t| shiftTypeSpans(t, splice_end_old, delta);
+            for (s.call.args.items) |a| shiftExprSpans(a, splice_end_old, delta);
+        },
+        .decl => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            var inner = s.decl;
+            shiftDeclSpans(&inner, splice_end_old, delta);
+            s.decl = inner;
+        },
+    }
+}
+
+fn shiftExprSpans(expr: Ast.Expr, splice_end_old: u32, delta: i64) void {
+    switch (expr) {
+        .literal => |e| shiftNodeOffsets(e, splice_end_old, delta),
+        .ident => |e| shiftNodeOffsets(e, splice_end_old, delta),
+        .paren => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.expr, splice_end_old, delta);
+        },
+        .binary => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.left, splice_end_old, delta);
+            shiftExprSpans(e.right, splice_end_old, delta);
+        },
+        .unary => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.operand, splice_end_old, delta);
+        },
+        .call => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            if (e.func) |f| shiftExprSpans(f, splice_end_old, delta);
+            if (e.template_type) |t| shiftTypeSpans(t, splice_end_old, delta);
+            for (e.args.items) |a| shiftExprSpans(a, splice_end_old, delta);
+        },
+        .index => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.base, splice_end_old, delta);
+            shiftExprSpans(e.idx, splice_end_old, delta);
+        },
+        .member => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.base, splice_end_old, delta);
+        },
+    }
+}
+
+fn shiftTypeSpans(typ: Ast.Type, splice_end_old: u32, delta: i64) void {
+    switch (typ) {
+        .ident => |t| shiftNodeOffsets(t, splice_end_old, delta),
+        .sampler => |t| shiftNodeOffsets(t, splice_end_old, delta),
+        .vec => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
+        },
+        .mat => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
+        },
+        .array => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
+            if (t.size) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .ptr => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            shiftTypeSpans(t.elem_type, splice_end_old, delta);
+        },
+        .atomic => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            shiftTypeSpans(t.elem_type, splice_end_old, delta);
+        },
+        .texture => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            if (t.sampled_type) |st| shiftTypeSpans(st, splice_end_old, delta);
+        },
+    }
+}
+
+/// Mutable reference to a statement- or expression-slot inside an AST.
+/// Returned by `findAstSlot` so the hot path can rewrite the slot in
+/// place without re-walking the parent.
+const AstSlot = union(enum) {
+    stmt: *Ast.Stmt,
+    expr: *Ast.Expr,
+};
+
+/// Walks the module's AST looking for the slot whose span equals
+/// `target` and whose kind matches `kind`. `kind` is the CST anchor kind
+/// — we map it to the expected Ast.Stmt / Ast.Expr tag and return the
+/// first slot that matches both.
+///
+/// Returns null if no matching slot exists (e.g., edit boundaries
+/// crossed an Ast node the walker doesn't descend into, or the span was
+/// empty). Caller falls back to `parseFull` on null.
+fn findAstSlot(module: *Ast.Module, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+    for (module.declarations.items) |*decl_ptr| {
+        const decl = decl_ptr.*;
+        if (findSlotInDecl(decl, target, kind)) |s| return s;
+    }
+    return null;
+}
+
+fn spanEq(a: Ast.Span, b: Ast.Span) bool {
+    return a.start == b.start and a.end == b.end;
+}
+
+/// Does `outer` fully contain `inner`?
+fn spanContains(outer: Ast.Span, inner: Ast.Span) bool {
+    return outer.start <= inner.start and inner.end <= outer.end;
+}
+
+fn findSlotInDecl(decl: Ast.Decl, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+    return switch (decl) {
+        .@"const" => |d| if (d.initializer != null) findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind) else null,
+        .override => |d| blk: {
+            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
+            if (d.initializer != null) break :blk findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind);
+            break :blk null;
+        },
+        .@"var" => |d| blk: {
+            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
+            if (d.initializer != null) break :blk findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind);
+            break :blk null;
+        },
+        .let => |d| if (d.initializer != null) findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind) else null,
+        .function => |d| blk: {
+            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
+            for (d.parameters.items) |*p| {
+                for (p.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
+            }
+            for (d.return_attr.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
+            if (d.body) |body| break :blk findSlotInCompound(body, target, kind);
+            break :blk null;
+        },
+        .@"struct" => |d| blk: {
+            for (d.members.items) |*m| {
+                for (m.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |match| break :blk match;
+            }
+            break :blk null;
+        },
+        .alias => null,
+        .const_assert => |d| findSlotInExprField(&d.expr, d.expr, target, kind),
+    };
+}
+
+fn findSlotInAttribute(attr: *Ast.Attribute, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+    if (!spanContains(attr.span, target)) return null;
+    for (attr.args.items) |*arg| {
+        if (findSlotInExprField(arg, arg.*, target, kind)) |m| return m;
+    }
+    return null;
+}
+
+fn findSlotInCompound(body: *Ast.CompoundStmt, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+    for (body.stmts.items) |*stmt_ptr| {
+        if (findSlotInStmt(stmt_ptr, target, kind)) |s| return s;
+    }
+    return null;
+}
+
+fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+    const stmt = stmt_ptr.*;
+    const stmt_span = stmt.span();
+
+    // Three span relationships to consider:
+    //  - stmt is entirely inside target (`target` covers this stmt + leading
+    //    trivia): candidate for stmt-kind anchor if kind matches.
+    //  - target is entirely inside stmt: descend.
+    //  - disjoint: skip.
+    const stmt_fits_in_target = spanContains(target, stmt_span);
+    const target_fits_in_stmt = spanContains(stmt_span, target);
+    if (!stmt_fits_in_target and !target_fits_in_stmt) return null;
+
+    if (stmt_fits_in_target and matchesStmtKind(stmt, kind)) {
+        return .{ .stmt = stmt_ptr };
+    }
+
+    // Descend into nested exprs and child compounds.
+    switch (stmt) {
+        .compound => |s| return findSlotInCompound(s, target, kind),
+        .@"return" => |s| {
+            if (s.value) |v| return findSlotInExprField(&s.value.?, v, target, kind) orelse null;
+            return null;
+        },
+        .@"if" => |s| {
+            if (findSlotInExprField(&s.condition, s.condition, target, kind)) |m| return m;
+            if (findSlotInCompound(s.body, target, kind)) |m| return m;
+            if (s.else_branch != null) {
+                return findSlotInStmt(&s.else_branch.?, target, kind);
+            }
+            return null;
+        },
+        .@"switch" => |s| {
+            if (findSlotInExprField(&s.expr, s.expr, target, kind)) |m| return m;
+            for (s.cases.items) |*c| {
+                for (c.selectors.items) |*sel| {
+                    if (findSlotInExprField(sel, sel.*, target, kind)) |m| return m;
+                }
+                if (findSlotInCompound(c.body, target, kind)) |m| return m;
+            }
+            return null;
+        },
+        .@"for" => |s| {
+            if (s.init_stmt) |is| {
+                // init_stmt is stored by value in ForStmt — we can't take
+                // its mutable slot pointer through the union here, so
+                // only descend if init_stmt itself contains target by
+                // span. If the target IS the init_stmt, bail (non-anchor
+                // position in Phase 1).
+                if (spanContains(is.span(), target)) {
+                    if (spanEq(is.span(), target)) return null;
+                    if (findSlotInStmt(&s.init_stmt.?, target, kind)) |m| return m;
+                }
+            }
+            if (s.condition) |cond| {
+                if (findSlotInExprField(&s.condition.?, cond, target, kind)) |m| return m;
+            }
+            if (s.update) |upd| {
+                if (spanContains(upd.span(), target)) {
+                    if (spanEq(upd.span(), target)) return null;
+                    if (findSlotInStmt(&s.update.?, target, kind)) |m| return m;
+                }
+            }
+            if (findSlotInCompound(s.body, target, kind)) |m| return m;
+            return null;
+        },
+        .@"while" => |s| {
+            if (findSlotInExprField(&s.condition, s.condition, target, kind)) |m| return m;
+            if (findSlotInCompound(s.body, target, kind)) |m| return m;
+            return null;
+        },
+        .loop => |s| {
+            if (findSlotInCompound(s.body, target, kind)) |m| return m;
+            if (s.continuing) |c| if (findSlotInCompound(c, target, kind)) |m| return m;
+            return null;
+        },
+        .break_if => |s| return findSlotInExprField(&s.condition, s.condition, target, kind),
+        .assign => |s| {
+            if (findSlotInExprField(&s.left, s.left, target, kind)) |m| return m;
+            if (findSlotInExprField(&s.right, s.right, target, kind)) |m| return m;
+            return null;
+        },
+        .incr_decr => |s| return findSlotInExprField(&s.expr, s.expr, target, kind),
+        .call => |s| {
+            if (s.call.func) |f| if (findSlotInExprField(&s.call.func.?, f, target, kind)) |m| return m;
+            for (s.call.args.items) |*arg| {
+                if (findSlotInExprField(arg, arg.*, target, kind)) |m| return m;
+            }
+            return null;
+        },
+        .decl => |s| {
+            // decl_stmt itself is not a symbol-free anchor, but the
+            // initializer expression inside `let b = x;` is — descend
+            // into the inner Decl to reach Expr slots.
+            return findSlotInDecl(s.decl, target, kind);
+        },
+        .@"break", .@"continue", .discard => return null,
+    }
+}
+
+fn findSlotInExprField(slot: *Ast.Expr, expr: Ast.Expr, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+    const expr_span = expr.span();
+
+    const expr_fits_in_target = spanContains(target, expr_span);
+    const target_fits_in_expr = spanContains(expr_span, target);
+    if (!expr_fits_in_target and !target_fits_in_expr) return null;
+
+    // If this expression's span is inside the anchor's CST range (which
+    // may include leading trivia) AND the kind matches, this is our
+    // slot. Parser/CstLower emits Ast spans from non-trivia token
+    // boundaries while the CST raw range can start on trivia — use
+    // containment to bridge.
+    if (expr_fits_in_target and matchesExprKind(expr, kind)) {
+        return .{ .expr = slot };
+    }
+    switch (expr) {
+        .literal, .ident => return null,
+        .binary => |e| {
+            if (findSlotInExprField(&e.left, e.left, target, kind)) |m| return m;
+            if (findSlotInExprField(&e.right, e.right, target, kind)) |m| return m;
+            return null;
+        },
+        .unary => |e| return findSlotInExprField(&e.operand, e.operand, target, kind),
+        .call => |e| {
+            if (e.func) |f| if (findSlotInExprField(&e.func.?, f, target, kind)) |m| return m;
+            for (e.args.items) |*arg| {
+                if (findSlotInExprField(arg, arg.*, target, kind)) |m| return m;
+            }
+            return null;
+        },
+        .index => |e| {
+            if (findSlotInExprField(&e.base, e.base, target, kind)) |m| return m;
+            if (findSlotInExprField(&e.idx, e.idx, target, kind)) |m| return m;
+            return null;
+        },
+        .member => |e| return findSlotInExprField(&e.base, e.base, target, kind),
+        .paren => |e| return findSlotInExprField(&e.expr, e.expr, target, kind),
+    }
+}
+
+fn matchesStmtKind(s: Ast.Stmt, k: Cst.Kind) bool {
+    return switch (k) {
+        .return_stmt => s == .@"return",
+        .assign_stmt => s == .assign,
+        .incr_decr_stmt => s == .incr_decr,
+        .call_stmt => s == .call,
+        .break_stmt => s == .@"break",
+        .break_if_stmt => s == .break_if,
+        .continue_stmt => s == .@"continue",
+        .discard_stmt => s == .discard,
+        .compound_stmt => s == .compound,
+        else => false,
+    };
+}
+
+fn matchesExprKind(e: Ast.Expr, k: Cst.Kind) bool {
+    return switch (k) {
+        .literal_expr => e == .literal,
+        .ident_expr => e == .ident,
+        .binary_expr => e == .binary,
+        .unary_expr => e == .unary,
+        .call_expr => e == .call,
+        .index_expr => e == .index,
+        .member_expr => e == .member,
+        .paren_expr => e == .paren,
+        else => false,
+    };
 }
 
 fn isStmtKind(k: Cst.Kind) bool {
