@@ -429,6 +429,52 @@ test "L-append-06: append into a body that starts with a block comment" {
     try std.testing.expectEqualStrings("fn f() { /* body */ let a = 1; }", updated.source);
 }
 
+test "L-append-demo: 20 appends into a real compute.toys entry point" {
+    // Demo from the plan: load `circle_sample.wgsl`, find the entry
+    // point's body, and append 20 `let dbg_<N> = <N>.0;` statements in
+    // a row. Every iteration must take the hot path, and the final
+    // module shape must match a full parse of the accumulated source.
+    const gpa = std.testing.allocator;
+    const source = @embedFile("testdata/compute.toys/circle_sample.wgsl");
+    const sentinel = try makeSentinel(gpa, source);
+    defer gpa.free(sentinel);
+
+    var cur = try Incremental.parseFull(gpa, sentinel);
+    defer cur.deinit();
+    const prev_decls = cur.module.declarations.items.len;
+
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        // `main_image` is the last top-level decl; its body's final `}`
+        // is the last `}` byte in the source.
+        const close_off: u32 = @intCast(std.mem.lastIndexOfScalar(u8, cur.source, '}').?);
+        var buf: [64]u8 = undefined;
+        const payload = try std.fmt.bufPrint(&buf, "    let dbg_{} = {}.0;\n", .{ i, i });
+        const next = try Incremental.reparse(gpa, &cur, .{
+            .start = close_off,
+            .end = close_off,
+            .new_text = payload,
+        });
+        cur.deinit();
+        cur = next;
+        try std.testing.expect(cur.reused);
+    }
+
+    try std.testing.expectEqual(prev_decls, cur.module.declarations.items.len);
+
+    // Final state must match a fresh full parse byte-for-symbol.
+    var oracle = try Incremental.parseFull(gpa, cur.source);
+    defer oracle.deinit();
+    try std.testing.expectEqual(
+        oracle.module.declarations.items.len,
+        cur.module.declarations.items.len,
+    );
+    try std.testing.expectEqual(
+        oracle.module.symbols.items.len,
+        cur.module.symbols.items.len,
+    );
+}
+
 test "L-append-07: append followed by inverse delete round-trips" {
     const gpa = std.testing.allocator;
     const base_src: [:0]const u8 = "fn f() { let a = 1; }";
