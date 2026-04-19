@@ -943,3 +943,207 @@ test "M8.d: edit + inverse on multi-symbol expression preserves use_counts" {
     try std.testing.expectEqual(c_uc0, useCountOf(step2.module, "c"));
 }
 
+// =========================================================================
+// M9 — In-place hot-path arena reuse: `retained_arenas` stays at 0
+// across any length of symbol-free hot-path churn.
+//
+// Prior to `in_place_hot_path = true` in `src/Incremental.zig`, each
+// successful hot-path reparse appended prev's arena to the new
+// result's `retained_arenas`, growing the chain monotonically. The
+// in-place path extends prev.arena in place instead, so the chain stays
+// empty. M9 covers single-anchor bursts (a/d), anchor-kind alternation
+// (b/c), and cross-function interleaving (e), each verified against a
+// `parseFull` oracle on the final source.
+// =========================================================================
+
+test "M9.a: 30 literal churns keep retained_arenas at 0" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 1 + 2; }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+    try std.testing.expectEqual(@as(usize, 0), prev.retained_arenas.items.len);
+
+    const lit_off: u32 = at(base_src, "1 + 2") + 4;
+    var i: u32 = 0;
+    while (i < 30) : (i += 1) {
+        const ch: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+        try std.testing.expect(next.reused);
+        try std.testing.expectEqual(@as(usize, 0), next.retained_arenas.items.len);
+
+        prev.deinit();
+        prev = next;
+    }
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+test "M9.b: alternating ident_expr refs across two module-scope consts" {
+    // Base module has `a` and `b` at module scope; the return value
+    // alternates between `1 + a` and `1 + b`. Each edit's anchor is
+    // ident_expr (the swapped operand). In-place path must preserve
+    // per-symbol use_count exactly on each iteration.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "const a: i32 = 1; const b: i32 = 2; fn f() -> i32 { return 1 + a; }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    var cur_name: []const u8 = "a";
+    const ident_off_init: u32 = at(base_src, "1 + a") + 4;
+    var ident_off = ident_off_init;
+
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        const next_name: []const u8 = if (std.mem.eql(u8, cur_name, "a")) "b" else "a";
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = ident_off,
+            .end = ident_off + 1,
+            .new_text = next_name,
+        });
+        try std.testing.expect(next.reused);
+        try std.testing.expectEqual(@as(usize, 0), next.retained_arenas.items.len);
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectUseCountsMatch(next.module, oracle.module);
+
+        cur_name = next_name;
+        prev.deinit();
+        prev = next;
+        ident_off = at(prev.source, if (std.mem.eql(u8, cur_name, "a")) "1 + a" else "1 + b") + 4;
+    }
+}
+
+test "M9.c: 20 binary_expr operator flips keep retained_arenas at 0" {
+    // Covers the binary_expr anchor variant of the in-place arena
+    // invariant. Every edit stays on the same anchor kind (binary_expr)
+    // and re-lowers the whole RHS so the add/sub walk exercises multi-
+    // operand symbol resolution. Kind-flip scenarios (ident_expr ↔
+    // binary_expr) legitimately fall back — S8 documents why — so they
+    // are not part of the in-place-arena contract tested here.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f() -> i32 { let a = 1; return a + 0; }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    var use_plus: bool = true;
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        // Swap the operator inside `a + 0` ↔ `a - 0`. Anchor: binary_expr.
+        const op_needle: []const u8 = if (use_plus) "a + 0" else "a - 0";
+        const op_off: u32 = at(prev.source, op_needle) + 2;
+        const new_op: []const u8 = if (use_plus) "-" else "+";
+
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = op_off,
+            .end = op_off + 1,
+            .new_text = new_op,
+        });
+        try std.testing.expect(next.reused);
+        try std.testing.expectEqual(@as(usize, 0), next.retained_arenas.items.len);
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectUseCountsMatch(next.module, oracle.module);
+
+        use_plus = !use_plus;
+        prev.deinit();
+        prev = next;
+    }
+}
+
+test "M9.d: 20 attribute-arg literal flips keep retained_arenas at 0" {
+    // The attribute-arg path (`findSlotInAttribute`) is structurally
+    // distinct from statement/expression slot lookup — M1 exercises
+    // correctness; M9.d exercises arena bookkeeping on that code path.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "@compute @workgroup_size(8) fn main() {}";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const lit_off: u32 = at(base_src, "@workgroup_size(") + @as(u32, @intCast("@workgroup_size(".len));
+    var prev_len: u32 = 1;
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        // Cycle "8" → "16" → "32" → "64" → "128" → back to "8". Constant
+        // length per group keeps lit_off stable; we just track the
+        // current digit count.
+        const digits: []const u8 = switch (i % 5) {
+            0 => "16",
+            1 => "32",
+            2 => "64",
+            3 => "128",
+            4 => "8",
+            else => unreachable,
+        };
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + prev_len,
+            .new_text = digits,
+        });
+        try std.testing.expect(next.reused);
+        try std.testing.expectEqual(@as(usize, 0), next.retained_arenas.items.len);
+        prev_len = @intCast(digits.len);
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectUseCountsMatch(next.module, oracle.module);
+
+        prev.deinit();
+        prev = next;
+    }
+}
+
+test "M9.e: interleaved edits across two functions keep the chain flat" {
+    // Two fns, each with its own scope. Edits alternate between them
+    // so the add-walk repeatedly positions `ctx.scope` at different
+    // anchor scopes (via `scopeAtCstNode`). Arena invariant must hold
+    // across scope switches.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn fa() -> i32 { return 1; } fn fb() -> i32 { return 2; }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        const target: []const u8 = if (i % 2 == 0) "fn fa" else "fn fb";
+        const fn_start: u32 = at(prev.source, target);
+        const body_open: u32 = fn_start + @as(u32, @intCast(std.mem.indexOf(u8, prev.source[fn_start..], "return ").?)) + @as(u32, @intCast("return ".len));
+        // The literal following `return ` is a single digit — flip it.
+        const new_digit: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
+        const new_text = [_]u8{new_digit};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = body_open,
+            .end = body_open + 1,
+            .new_text = &new_text,
+        });
+        try std.testing.expect(next.reused);
+        try std.testing.expectEqual(@as(usize, 0), next.retained_arenas.items.len);
+
+        prev.deinit();
+        prev = next;
+    }
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
