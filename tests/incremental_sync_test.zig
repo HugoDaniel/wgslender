@@ -99,6 +99,45 @@ test "incremental sync: trivia-only edit keeps analysis cache hot" {
     try std.testing.expectEqualStrings("// comment\nfn f() {}", doc2.source);
 }
 
+test "L1: literal edit in a function body sets doc.parse.reused = true" {
+    const ctx = try setup("fn f() -> i32 { return 42; }");
+    defer teardown(ctx);
+
+    // Precondition: initial parse was full (reused=false).
+    const doc0 = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expect(doc0.parse != null);
+    try std.testing.expect(!doc0.parse.?.reused);
+
+    // Replace "42" (chars 23..25 on line 0) with "137". Anchor =
+    // literal_expr, symbol-free → hot path → reused = true.
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 23 },
+        .end = .{ .line = 0, .character = 25 },
+    }, "137");
+
+    const doc1 = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expectEqualStrings("fn f() -> i32 { return 137; }", doc1.source);
+    try std.testing.expect(doc1.parse != null);
+    try std.testing.expect(doc1.parse.?.reused);
+}
+
+test "L2: decl-level rename edit falls back; doc.parse.reused = false" {
+    const ctx = try setup("const a = 1;\nconst b = 2;");
+    defer teardown(ctx);
+
+    // Rename the declarator `b` on line 1 → `bb`. Anchor bubbles up to
+    // `let_decl`/`const_decl`, which is not symbol-free → fallback.
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 1, .character = 6 },
+        .end = .{ .line = 1, .character = 7 },
+    }, "bb");
+
+    const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expectEqualStrings("const a = 1;\nconst bb = 2;", doc.source);
+    try std.testing.expect(doc.parse != null);
+    try std.testing.expect(!doc.parse.?.reused);
+}
+
 test "incremental sync: edit at start of file" {
     const ctx = try setup("fn f() {}");
     defer teardown(ctx);

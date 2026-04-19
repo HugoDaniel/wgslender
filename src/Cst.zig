@@ -564,9 +564,11 @@ pub const Tree = struct {
     }
 
     /// Min and max all-stream token indices referenced anywhere in the
-    /// subtree rooted at `idx`. Asserts the subtree contains at least one
-    /// token — every reparse anchor in the symbol-free hot path does.
-    pub fn subtreeTokenRange(self: *const Tree, idx: NodeIndex) struct { first: u32, last: u32 } {
+    /// subtree rooted at `idx`. Returns `null` if the subtree contains
+    /// no tokens — a pathological but reachable state on malformed
+    /// reparsed subtrees; callers upstream (e.g. `Incremental.reparse`)
+    /// should treat this as a fallback trigger rather than panic.
+    pub fn subtreeTokenRange(self: *const Tree, idx: NodeIndex) ?struct { first: u32, last: u32 } {
         var first: u32 = std.math.maxInt(u32);
         var last: u32 = 0;
         var any: bool = false;
@@ -585,7 +587,7 @@ pub const Tree = struct {
                 }
             }
         }
-        std.debug.assert(any);
+        if (!any) return null;
         return .{ .first = first, .last = last };
     }
 
@@ -624,11 +626,11 @@ pub fn spliceSubtree(
     const anchor_subtree_size: u32 = old.countSubtreeNodes(old_node);
     const anchor_dfs_end: u32 = anchor_dfs_start + anchor_subtree_size; // exclusive
     const anchor_cr = old.subtreeChildrenRange(old_node);
-    const anchor_tok = old.subtreeTokenRange(old_node);
+    const anchor_tok = old.subtreeTokenRange(old_node) orelse return error.AnchorHasNoTokens;
 
     const new_sub_size: u32 = @intCast(new_sub.nodes.len);
     const new_sub_cr_size: u32 = @intCast(new_sub.children.len);
-    const new_sub_tok = new_sub.subtreeTokenRange(.root);
+    const new_sub_tok = new_sub.subtreeTokenRange(.root) orelse return error.NewSubHasNoTokens;
 
     const old_anchor_len: u32 = old.getNode(old_node).end - old.getNode(old_node).start;
     const new_sub_len: u32 = new_sub.rootCursor().range().end - new_sub.rootCursor().range().start;
@@ -663,17 +665,17 @@ pub fn spliceSubtree(
 
     // Remap a node index from old → new. Indices < dfs_start sit before
     // the anchor and are unchanged. The index == dfs_start (the anchor
-    // itself) is kept because the new_sub root now lives in that slot —
-    // the anchor's parent's child-entry pointing there stays valid.
+    // itself) is kept because the new_sub root now lives in that slot.
     // Indices >= dfs_end (anchor's later siblings or their descendants)
     // shift by delta_nodes. Indices strictly inside the anchor subtree
-    // (> dfs_start and < dfs_end) should never be referenced from
-    // outside the subtree; assert to catch bugs.
+    // should never be referenced from outside the subtree; if one ever
+    // is, the tree is malformed — return an error so the caller falls
+    // back rather than panics.
     const remapNode = struct {
-        fn call(i: u32, dfs_start: u32, dfs_end: u32, dn: i64) u32 {
+        fn call(i: u32, dfs_start: u32, dfs_end: u32, dn: i64) !u32 {
             if (i < dfs_start) return i;
             if (i == dfs_start) return dfs_start;
-            std.debug.assert(i >= dfs_end);
+            if (i < dfs_end) return error.MalformedCst;
             return @intCast(@as(i64, i) + dn);
         }
     }.call;
@@ -681,9 +683,9 @@ pub fn spliceSubtree(
     // Remap a token index from old-tokens → new-tokens for tokens that
     // survive (before / after the anchor's token range).
     const remapTok = struct {
-        fn call(i: u32, tok_first: u32, tok_last: u32, dt: i64) u32 {
+        fn call(i: u32, tok_first: u32, tok_last: u32, dt: i64) !u32 {
             if (i < tok_first) return i;
-            std.debug.assert(i > tok_last);
+            if (i <= tok_last) return error.MalformedCst;
             return @intCast(@as(i64, i) + dt);
         }
     }.call;
@@ -724,11 +726,11 @@ pub fn spliceSubtree(
             const el = old.children[anchor_cr.end + k];
             if (el.asNode()) |n| {
                 const nraw = n.raw();
-                const new_idx = remapNode(nraw, anchor_dfs_start, anchor_dfs_end, delta_nodes);
+                const new_idx = try remapNode(nraw, anchor_dfs_start, anchor_dfs_end, delta_nodes);
                 children_buf[dst_off + k] = Tree.Element.fromNode(new_idx);
             } else {
                 const tok = el.asToken().?;
-                const new_tok = remapTok(tok, anchor_tok.first, anchor_tok.last, delta_tok);
+                const new_tok = try remapTok(tok, anchor_tok.first, anchor_tok.last, delta_tok);
                 children_buf[dst_off + k] = Tree.Element.fromToken(new_tok);
             }
         }
@@ -809,7 +811,7 @@ pub fn spliceSubtree(
                 if (p < anchor_dfs_start) {
                     break :blk p;
                 }
-                std.debug.assert(p >= anchor_dfs_end);
+                if (p < anchor_dfs_end) return error.MalformedCst;
                 break :blk @as(u32, @intCast(@as(i64, p) + delta_nodes));
             };
             const new_first_child: u32 = if (old_child_counts[i] == 0) 0 else blk: {
