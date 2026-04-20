@@ -837,10 +837,20 @@ fn tryAddSubSpliceInPlace(
     const prev_arena = prev.arena.allocator();
 
     // 1. Find the AST slot matching the old anchor.
-    const slot = findAstSlot(prev.module, old_anchor_span, anchor_kind) orelse return error.AstSlotNotFound;
+    const info = findAstSlot(prev.module, old_anchor_span, anchor_kind) orelse return error.AstSlotNotFound;
+    const slot = info.slot;
 
     // 2. Sub-walk: decrement use_counts for every resolved ident in the
-    //    old subtree.
+    //    old subtree. Skipped when the slot sits inside an attribute:
+    //    `AstVisit.visitDecl` never descends into `attr.args`, so a
+    //    full-parse Pass 2 never bumps `use_count` for attr-arg idents —
+    //    and thus never sets `flags.use_count_incremented` either.
+    //    Sub-walking would be a no-op in the clean case, but keeping the
+    //    walks in lockstep with the add-walk makes the parity property
+    //    symmetric and robust to any stale bit that slipped in from
+    //    pre-fix in-place runs (a follow-up edit whose add-walk was
+    //    skipped will leave the stale bit undisturbed, awaiting the
+    //    eventual `parseFull` coalesce to clear).
     var discard_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
     defer discard_errors.deinit(prev_arena);
     var sub_ctx = AstVisit.Context{
@@ -852,10 +862,10 @@ fn tryAddSubSpliceInPlace(
         .safety_budget = @max(64, prev.cst.tokens.len * 2),
         .mode = .sub,
     };
-    switch (slot) {
+    if (!info.in_attribute) switch (slot) {
         .stmt => |p| try AstVisit.visitSubtreeStmt(&sub_ctx, p.*),
         .expr => |p| _ = try AstVisit.visitSubtreeExpr(&sub_ctx, p.*),
-    }
+    };
 
     // 3. Shift downstream AST spans by delta before splicing in the new
     //    subtree — same ordering as `tryAddSubSplice`.
@@ -891,7 +901,12 @@ fn tryAddSubSpliceInPlace(
     try buildScopeForCstNodeMap(prev_arena, &tmp_result);
     const anchor_scope = scopeAtCstNode(&tmp_result, new_subtree_node);
 
-    // 7. Add-walk.
+    // 7. Add-walk. Skipped for attr-arg slots — see the step-2 comment on
+    //    `info.in_attribute`. Full-parse's Pass 2 never resolves idents
+    //    inside `attr.args`, so the hot path must not either; leaving the
+    //    walk in place would bump `use_count` on sibling symbols that the
+    //    oracle leaves at zero (e.g., a `const N` referenced only from
+    //    `@workgroup_size(N)`).
     var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
     defer add_errors.deinit(prev_arena);
     var add_ctx = AstVisit.Context{
@@ -903,10 +918,10 @@ fn tryAddSubSpliceInPlace(
         .safety_budget = @max(64, new_tree.tokens.len * 2),
         .mode = .add,
     };
-    switch (slot) {
+    if (!info.in_attribute) switch (slot) {
         .stmt => |p| try AstVisit.visitSubtreeStmt(&add_ctx, p.*),
         .expr => |p| p.* = try AstVisit.visitSubtreeExpr(&add_ctx, p.*),
-    }
+    };
     // Add-walk errors are not a fallback signal — typing an unresolved
     // identifier is a normal editing state. They get merged into the
     // result's error list below alongside prev's spliced-through errors.
@@ -1513,6 +1528,16 @@ const AstSlot = union(enum) {
     expr: *Ast.Expr,
 };
 
+/// Slot lookup result. `in_attribute` is true when the slot was reached
+/// via `findSlotInAttribute` (i.e., it sits inside an `Ast.Attribute`'s
+/// `args`). The hot-path add/sub walks skip such slots to match
+/// `AstVisit.visitDecl`'s behavior of never descending into attributes
+/// during a full parse's Pass 2.
+const AstSlotInfo = struct {
+    slot: AstSlot,
+    in_attribute: bool,
+};
+
 /// Walks the module's AST looking for the slot whose span equals
 /// `target` and whose kind matches `kind`. `kind` is the CST anchor kind
 /// — we map it to the expected Ast.Stmt / Ast.Expr tag and return the
@@ -1521,13 +1546,13 @@ const AstSlot = union(enum) {
 /// Returns null if no matching slot exists (e.g., edit boundaries
 /// crossed an Ast node the walker doesn't descend into, or the span was
 /// empty). Caller falls back to `parseFull` on null.
-fn findAstSlot(module: *Ast.Module, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+fn findAstSlot(module: *Ast.Module, target: Ast.Span, kind: Cst.Kind) ?AstSlotInfo {
     // Absorb bias on the owning decl so descendants' spans match the
     // coordinate system of `target` (from the freshly-spliced CST).
     module.absorbOwnerFor(target);
     for (module.declarations.items) |*decl_ptr| {
         const decl = decl_ptr.*;
-        if (findSlotInDecl(decl, target, kind)) |s| return s;
+        if (findSlotInDecl(decl, target, kind)) |info| return info;
     }
     return null;
 }
@@ -1541,37 +1566,45 @@ fn spanContains(outer: Ast.Span, inner: Ast.Span) bool {
     return outer.start <= inner.start and inner.end <= outer.end;
 }
 
-fn findSlotInDecl(decl: Ast.Decl, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+fn bareSlot(s: ?AstSlot) ?AstSlotInfo {
+    return if (s) |slot| .{ .slot = slot, .in_attribute = false } else null;
+}
+
+fn attrSlot(s: ?AstSlot) ?AstSlotInfo {
+    return if (s) |slot| .{ .slot = slot, .in_attribute = true } else null;
+}
+
+fn findSlotInDecl(decl: Ast.Decl, target: Ast.Span, kind: Cst.Kind) ?AstSlotInfo {
     return switch (decl) {
-        .@"const" => |d| if (d.initializer != null) findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind) else null,
+        .@"const" => |d| if (d.initializer != null) bareSlot(findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind)) else null,
         .override => |d| blk: {
-            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
-            if (d.initializer != null) break :blk findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind);
+            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
+            if (d.initializer != null) break :blk bareSlot(findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind));
             break :blk null;
         },
         .@"var" => |d| blk: {
-            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
-            if (d.initializer != null) break :blk findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind);
+            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
+            if (d.initializer != null) break :blk bareSlot(findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind));
             break :blk null;
         },
-        .let => |d| if (d.initializer != null) findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind) else null,
+        .let => |d| if (d.initializer != null) bareSlot(findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind)) else null,
         .function => |d| blk: {
-            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
+            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
             for (d.parameters.items) |*p| {
-                for (p.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
+                for (p.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
             }
-            for (d.return_attr.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk m;
+            for (d.return_attr.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
             if (d.body) |body| break :blk findSlotInCompound(body, target, kind);
             break :blk null;
         },
         .@"struct" => |d| blk: {
             for (d.members.items) |*m| {
-                for (m.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |match| break :blk match;
+                for (m.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |match| break :blk attrSlot(match);
             }
             break :blk null;
         },
         .alias => null,
-        .const_assert => |d| findSlotInExprField(&d.expr, d.expr, target, kind),
+        .const_assert => |d| bareSlot(findSlotInExprField(&d.expr, d.expr, target, kind)),
     };
 }
 
@@ -1583,14 +1616,14 @@ fn findSlotInAttribute(attr: *Ast.Attribute, target: Ast.Span, kind: Cst.Kind) ?
     return null;
 }
 
-fn findSlotInCompound(body: *Ast.CompoundStmt, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+fn findSlotInCompound(body: *Ast.CompoundStmt, target: Ast.Span, kind: Cst.Kind) ?AstSlotInfo {
     for (body.stmts.items) |*stmt_ptr| {
         if (findSlotInStmt(stmt_ptr, target, kind)) |s| return s;
     }
     return null;
 }
 
-fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlotInfo {
     const stmt = stmt_ptr.*;
     const stmt_span = stmt.span();
 
@@ -1604,18 +1637,18 @@ fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlo
     if (!stmt_fits_in_target and !target_fits_in_stmt) return null;
 
     if (stmt_fits_in_target and matchesStmtKind(stmt, kind)) {
-        return .{ .stmt = stmt_ptr };
+        return .{ .slot = .{ .stmt = stmt_ptr }, .in_attribute = false };
     }
 
     // Descend into nested exprs and child compounds.
     switch (stmt) {
         .compound => |s| return findSlotInCompound(s, target, kind),
         .@"return" => |s| {
-            if (s.value) |v| return findSlotInExprField(&s.value.?, v, target, kind) orelse null;
+            if (s.value) |v| return bareSlot(findSlotInExprField(&s.value.?, v, target, kind));
             return null;
         },
         .@"if" => |s| {
-            if (findSlotInExprField(&s.condition, s.condition, target, kind)) |m| return m;
+            if (findSlotInExprField(&s.condition, s.condition, target, kind)) |m| return bareSlot(m);
             if (findSlotInCompound(s.body, target, kind)) |m| return m;
             if (s.else_branch != null) {
                 return findSlotInStmt(&s.else_branch.?, target, kind);
@@ -1623,10 +1656,10 @@ fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlo
             return null;
         },
         .@"switch" => |s| {
-            if (findSlotInExprField(&s.expr, s.expr, target, kind)) |m| return m;
+            if (findSlotInExprField(&s.expr, s.expr, target, kind)) |m| return bareSlot(m);
             for (s.cases.items) |*c| {
                 for (c.selectors.items) |*sel| {
-                    if (findSlotInExprField(sel, sel.*, target, kind)) |m| return m;
+                    if (findSlotInExprField(sel, sel.*, target, kind)) |m| return bareSlot(m);
                 }
                 if (findSlotInCompound(c.body, target, kind)) |m| return m;
             }
@@ -1645,7 +1678,7 @@ fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlo
                 }
             }
             if (s.condition) |cond| {
-                if (findSlotInExprField(&s.condition.?, cond, target, kind)) |m| return m;
+                if (findSlotInExprField(&s.condition.?, cond, target, kind)) |m| return bareSlot(m);
             }
             if (s.update) |upd| {
                 if (spanContains(upd.span(), target)) {
@@ -1657,7 +1690,7 @@ fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlo
             return null;
         },
         .@"while" => |s| {
-            if (findSlotInExprField(&s.condition, s.condition, target, kind)) |m| return m;
+            if (findSlotInExprField(&s.condition, s.condition, target, kind)) |m| return bareSlot(m);
             if (findSlotInCompound(s.body, target, kind)) |m| return m;
             return null;
         },
@@ -1666,24 +1699,26 @@ fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlo
             if (s.continuing) |c| if (findSlotInCompound(c, target, kind)) |m| return m;
             return null;
         },
-        .break_if => |s| return findSlotInExprField(&s.condition, s.condition, target, kind),
+        .break_if => |s| return bareSlot(findSlotInExprField(&s.condition, s.condition, target, kind)),
         .assign => |s| {
-            if (findSlotInExprField(&s.left, s.left, target, kind)) |m| return m;
-            if (findSlotInExprField(&s.right, s.right, target, kind)) |m| return m;
+            if (findSlotInExprField(&s.left, s.left, target, kind)) |m| return bareSlot(m);
+            if (findSlotInExprField(&s.right, s.right, target, kind)) |m| return bareSlot(m);
             return null;
         },
-        .incr_decr => |s| return findSlotInExprField(&s.expr, s.expr, target, kind),
+        .incr_decr => |s| return bareSlot(findSlotInExprField(&s.expr, s.expr, target, kind)),
         .call => |s| {
-            if (s.call.func) |f| if (findSlotInExprField(&s.call.func.?, f, target, kind)) |m| return m;
+            if (s.call.func) |f| if (findSlotInExprField(&s.call.func.?, f, target, kind)) |m| return bareSlot(m);
             for (s.call.args.items) |*arg| {
-                if (findSlotInExprField(arg, arg.*, target, kind)) |m| return m;
+                if (findSlotInExprField(arg, arg.*, target, kind)) |m| return bareSlot(m);
             }
             return null;
         },
         .decl => |s| {
             // decl_stmt itself is not a symbol-free anchor, but the
             // initializer expression inside `let b = x;` is — descend
-            // into the inner Decl to reach Expr slots.
+            // into the inner Decl to reach Expr slots. The inner decl
+            // may have its own attributes (stmt-level attribute lists);
+            // propagate `in_attribute` as findSlotInDecl sees fit.
             return findSlotInDecl(s.decl, target, kind);
         },
         .@"break", .@"continue", .discard => return null,

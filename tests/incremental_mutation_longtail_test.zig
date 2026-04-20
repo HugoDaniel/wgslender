@@ -205,16 +205,358 @@ test "M1.f: @location literal flip on an entry-point return attribute" {
     );
 }
 
-// Note — M1.g (attribute-arg ident swap, "inert for the error bucket")
-// is intentionally omitted. The full-parse path's Pass-2 skips
-// `attr.args` (no `.attribute` case in `src/AstVisit.zig`), so the
-// oracle sees zero `use_count` contribution from attr-arg idents. The
-// incremental hot path's add-walk, however, does bump `use_count`
-// when it re-binds an attr-arg ident on a spliced subtree — which
-// diverges from the oracle and trips the per-symbol use_count check
-// in `runEdit`. The divergence is latent today (M1.a–M1.f use
-// literal↔literal edits that have no idents to bump), and fixing it
-// is out of scope for this test-only pass.
+// M1.g — Attribute-argument IDENT swaps (the bug that M1.a–M1.f couldn't
+// reach). `AstVisit.visitDecl` never descends into `attr.args` during the
+// full-parse Pass 2, so the oracle records zero `use_count` contribution
+// from attr-arg idents. The incremental hot path's add-walk previously
+// diverged: it ran `AstVisit.visitSubtreeExpr(.add)` over the spliced
+// subtree and bumped every resolved ident. Fix lives in
+// `findAstSlot`/`tryAddSubSpliceInPlace` — slot info now carries an
+// `in_attribute` flag and both sub/add walks skip when it's set. These
+// scenarios lock that parity in with a per-symbol `use_count` oracle.
+
+test "M1.g.1: @workgroup_size ident→ident swap (hot path exercises the fix)" {
+    // Two sibling consts, both unreferenced outside the attribute. Swap
+    // the one currently named in `@workgroup_size` for the other. Anchor
+    // is `ident_expr` in both old and new, so kind-match succeeds and
+    // `tryAddSubSpliceInPlace` runs — the exact branch that the fix
+    // gates on `info.in_attribute`. Pre-fix: `B.use_count` would land at
+    // 1 after the edit while the oracle keeps it at 0.
+    const src: [:0]const u8 = "const A: u32 = 8; const B: u32 = 16; @compute @workgroup_size(A) fn main() {}";
+    const new_src: []const u8 = "const A: u32 = 8; const B: u32 = 16; @compute @workgroup_size(B) fn main() {}";
+    const off: u32 = at(src, "@workgroup_size(") + @as(u32, @intCast("@workgroup_size(".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "B" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.1b: literal→ident attr-arg edit falls back (AnchorKindMismatch), oracle still matches" {
+    // Kind-changing attr-arg edit: `literal_expr` → `ident_expr`.
+    // `tryAddSubSpliceInPlace`'s kind check triggers `AnchorKindMismatch`
+    // and `reparse()` falls back to `parseFull`. The fix doesn't alter
+    // this path, but we pin that the fallback route keeps producing
+    // oracle-correct `use_count` when attribute idents are in play.
+    const src: [:0]const u8 = "const N: u32 = 8; @compute @workgroup_size(8) fn main() {}";
+    const new_src: []const u8 = "const N: u32 = 8; @compute @workgroup_size(N) fn main() {}";
+    const lit_off: u32 = at(src, "@workgroup_size(") + @as(u32, @intCast("@workgroup_size(".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = lit_off, .end = lit_off + 1, .new_text = "N" },
+        new_src,
+        false,
+    );
+}
+
+test "M1.g.2: @group(ident) ident↔ident swap (two sibling consts)" {
+    const src: [:0]const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @group(A) @binding(0) var<uniform> u: f32;";
+    const new_src: []const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @group(B) @binding(0) var<uniform> u: f32;";
+    const off: u32 = at(src, "@group(") + @as(u32, @intCast("@group(".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "B" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.3: @binding(ident) ident↔ident swap" {
+    // Mirror of M1.g.2 — exercises the second attribute on the same decl.
+    const src: [:0]const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @group(0) @binding(A) var<uniform> u: f32;";
+    const new_src: []const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @group(0) @binding(B) var<uniform> u: f32;";
+    const off: u32 = at(src, "@binding(") + @as(u32, @intCast("@binding(".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "B" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.4: struct-member @align(ident) swap routes through struct branch" {
+    // Hits `findSlotInDecl`'s `.@"struct"` branch.
+    const src: [:0]const u8 =
+        "const A: u32 = 16; const B: u32 = 8; struct S { @align(A) x: f32, y: i32 }";
+    const new_src: []const u8 =
+        "const A: u32 = 16; const B: u32 = 8; struct S { @align(B) x: f32, y: i32 }";
+    const off: u32 = at(src, "@align(") + @as(u32, @intCast("@align(".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "B" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.5: parameter @location(ident) ident→ident swap routes through parameter branch" {
+    // Hits `findSlotInDecl`'s parameter-attribute loop. Two sibling
+    // override consts — @location requires a `const` integer, overrides
+    // are not allowed, so we use module-scope `const`s with distinct
+    // values.
+    const src: [:0]const u8 =
+        "const L0: u32 = 0; const L1: u32 = 1; @fragment fn f(@location(L0) x: vec4<f32>) -> @location(2) vec4<f32> { return x; }";
+    const new_src: []const u8 =
+        "const L0: u32 = 0; const L1: u32 = 1; @fragment fn f(@location(L1) x: vec4<f32>) -> @location(2) vec4<f32> { return x; }";
+    // The first `@location(` in the source is on the parameter.
+    const off: u32 = at(src, "@location(") + @as(u32, @intCast("@location(L".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "1" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.6: return-attribute @location(ident) ident→ident swap routes through return_attr branch" {
+    // Hits `findSlotInDecl`'s `return_attr` loop. The parameter's
+    // @location stays a literal so the parameter-attribute loop doesn't
+    // short-circuit the search — the target slot lives in
+    // `decl.return_attr`.
+    const src: [:0]const u8 =
+        "const L0: u32 = 0; const L1: u32 = 1; @fragment fn f() -> @location(L0) vec4<f32> { return vec4<f32>(0.0); }";
+    const new_src: []const u8 =
+        "const L0: u32 = 0; const L1: u32 = 1; @fragment fn f() -> @location(L1) vec4<f32> { return vec4<f32>(0.0); }";
+    const off: u32 = at(src, "-> @location(") + @as(u32, @intCast("-> @location(L".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "1" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.7: @workgroup_size(A, B, 1) second-arg ident↔ident swap keeps first arg's use_count still" {
+    // Multi-arg attribute; edit hits only the second arg ident. Both A
+    // and B are module-const scalars unreferenced outside the attribute,
+    // so the oracle keeps both at `use_count == 0`. The first arg's
+    // ident token is untouched by the splice, so this scenario pins that
+    // only the edited slot's ident-resolution is skipped (the fix is
+    // scoped to the spliced subtree, not the whole attribute).
+    const src: [:0]const u8 =
+        "const A: u32 = 8; const B: u32 = 16; const C: u32 = 32; @compute @workgroup_size(A, B, 1) fn main() {}";
+    const new_src: []const u8 =
+        "const A: u32 = 8; const B: u32 = 16; const C: u32 = 32; @compute @workgroup_size(A, C, 1) fn main() {}";
+    const ws_at: u32 = at(src, "@workgroup_size(A,");
+    const second_arg: u32 = ws_at + @as(u32, @intCast("@workgroup_size(A, ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = second_arg, .end = second_arg + 1, .new_text = "C" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.8: call_expr anchor inside attr-args — whole callee swap stays hot" {
+    // Swap the entire `a()` for `b()` — the edit range covers the whole
+    // call, so `findAnchor` settles on `call_expr` rather than the inner
+    // `ident_expr` (which would greedily re-parse past itself and trip
+    // `AnchorKindMismatch`). Both sides are `call_expr`, kind matches,
+    // hot path runs — and the inner ident (`a` or `b`) must not bump its
+    // callee's `use_count` under the fix.
+    const src: [:0]const u8 =
+        "fn a() -> u32 { return 8u; } fn b() -> u32 { return 16u; } @compute @workgroup_size(a()) fn main() {}";
+    const new_src: []const u8 =
+        "fn a() -> u32 { return 8u; } fn b() -> u32 { return 16u; } @compute @workgroup_size(b()) fn main() {}";
+    const off: u32 = at(src, "@workgroup_size(") + @as(u32, @intCast("@workgroup_size(".len));
+    const call_len: u32 = @intCast("a()".len);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + call_len, .new_text = "b()" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.9: binary_expr inside attr-args — operator flip leaves use_counts put" {
+    // `@workgroup_size(N * 2)` → `@workgroup_size(N + 2)`. Anchor is the
+    // binary_expr inside attribute_args. Full-parse leaves N at 0; pre-fix
+    // the add-walk bumped N on every reparse.
+    const src: [:0]const u8 =
+        "const N: u32 = 4; @compute @workgroup_size(N * 2) fn main() {}";
+    const new_src: []const u8 =
+        "const N: u32 = 4; @compute @workgroup_size(N + 2) fn main() {}";
+    const off: u32 = at(src, "N * 2") + 2;
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "+" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.10: paren_expr inside attr-args — innermost ident swap is oracle-quiet" {
+    const src: [:0]const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @group((A)) @binding(0) var<uniform> u: f32;";
+    const new_src: []const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @group((B)) @binding(0) var<uniform> u: f32;";
+    const off: u32 = at(src, "@group((") + @as(u32, @intCast("@group((".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "B" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.11: ident↔ident round-trip leaves source and use_counts pristine" {
+    // Apply ident swap A→B then inverse B→A on the `@group` arg. Both
+    // edits stay on the hot path (ident_expr both sides). The parseFull
+    // oracle on the final source pins no drift accumulates across the
+    // round-trip — a single forward bump with no matching decrement (or
+    // vice versa) would be caught by `expectUseCountsMatch`.
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @group(A) @binding(0) var<uniform> u: f32;";
+
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+
+    const off: u32 = at(base, "@group(") + @as(u32, @intCast("@group(".len));
+
+    // Forward: A → B
+    var after1 = try Incremental.reparse(gpa, &prev, .{
+        .start = off,
+        .end = off + 1,
+        .new_text = "B",
+    });
+    defer after1.deinit();
+    try std.testing.expect(after1.reused);
+
+    // Inverse: B → A
+    var after2 = try Incremental.reparse(gpa, &after1, .{
+        .start = off,
+        .end = off + 1,
+        .new_text = "A",
+    });
+    defer after2.deinit();
+    try std.testing.expect(after2.reused);
+    try std.testing.expectEqualStrings(base, after2.source);
+
+    var oracle = try Incremental.parseFull(gpa, base);
+    defer oracle.deinit();
+    try expectUseCountsMatch(after2.module, oracle.module);
+}
+
+test "M1.g.12: 20-edit ident↔ident chain on @workgroup_size(A|B) holds oracle every step" {
+    // Alternates `A` ↔ `B` in `@workgroup_size`. Pre-fix, each iteration
+    // would introduce constant +1 drift relative to the oracle (the
+    // sub-walk would decrement from the previous incorrect bump, then
+    // the add-walk would re-bump). Post-fix: both walks skip and the
+    // oracle matches after every reparse.
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 =
+        "const A: u32 = 8; const B: u32 = 16; @compute @workgroup_size(A) fn main() {}";
+
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+
+    const off: u32 = at(base, "@workgroup_size(") + @as(u32, @intCast("@workgroup_size(".len));
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        const new_text: []const u8 = if (i % 2 == 0) "B" else "A";
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = off,
+            .end = off + 1,
+            .new_text = new_text,
+        });
+        try std.testing.expect(next.reused);
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectUseCountsMatch(next.module, oracle.module);
+
+        prev.deinit();
+        prev = next;
+    }
+}
+
+test "M1.g.13: 20-edit ident↔ident chain on @group(A|B) holds zeros throughout" {
+    // Both A and B must stay at use_count == 0 across all 20 iterations;
+    // pre-fix one of them would grow without bound as the chain drifted.
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @group(A) @binding(0) var<uniform> u: f32;";
+
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+
+    const off: u32 = at(base, "@group(") + @as(u32, @intCast("@group(".len));
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        const new_text: []const u8 = if (i % 2 == 0) "B" else "A";
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = off,
+            .end = off + 1,
+            .new_text = new_text,
+        });
+        try std.testing.expect(next.reused);
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectUseCountsMatch(next.module, oracle.module);
+        // Spot-check: both module-const symbols are dead regardless of
+        // which one is currently named in the attribute arg.
+        try std.testing.expectEqual(@as(u32, 0), useCountOf(next.module, "A"));
+        try std.testing.expectEqual(@as(u32, 0), useCountOf(next.module, "B"));
+
+        prev.deinit();
+        prev = next;
+    }
+}
+
+test "M1.g.14: attr-arg shape-changing edit still falls back (guard against over-eager fix)" {
+    // Add a new comma-separated argument to a single-arg attribute.
+    // Before the fix, this edit already fell back because the anchor had
+    // to promote past `attribute_args` (not a hot-path kind). We pin that
+    // it KEEPS falling back after the fix — guarding against a future
+    // change that accidentally admits shape-changing attr-arg edits.
+    const src: [:0]const u8 = "@compute @workgroup_size(8) fn main() {}";
+    const new_src: []const u8 = "@compute @workgroup_size(8, 8) fn main() {}";
+    const end_paren: u32 = at(src, "8)") + 1;
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = end_paren, .end = end_paren, .new_text = ", 8" },
+        new_src,
+        false,
+    );
+}
+
+test "M1.g.15: zero-delta whitespace swap inside attr-args takes the trivia shortcut" {
+    // `classifyEdit` reports `.trivia_only` only for zero-delta edits
+    // (new_text.len == end - start). Swap a single space for a single
+    // tab inside `@workgroup_size( A )` — the attribute's non-trivia
+    // token sequence is unchanged, so the module + errors stay pinned.
+    const src: [:0]const u8 =
+        "const A: u32 = 8; @compute @workgroup_size( A ) fn main() {}";
+    const new_src: []const u8 =
+        "const A: u32 = 8; @compute @workgroup_size(\tA ) fn main() {}";
+    const space_off: u32 = at(src, "@workgroup_size(") + @as(u32, @intCast("@workgroup_size(".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = space_off, .end = space_off + 1, .new_text = "\t" },
+        new_src,
+        true,
+    );
+}
 
 // =========================================================================
 // M2 — Type-expression mutation falls back gracefully.
@@ -1986,6 +2328,51 @@ test "M14.a: M1 attr-arg 300-edit chain holds invariants and coalesces" {
     defer oracle.deinit();
     try expectShapesMatch(gpa, prev.module, oracle.module);
     try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+test "M14.a.ident: M1 attr-arg ident-swap 300-edit chain holds invariants and coalesces" {
+    // `@binding(A|B)` ident flips `A`↔`B` 300×. Anchor: ident_expr
+    // inside attribute args (M1.g path — post-fix). Mirrors M14.a's
+    // literal-churn but flips the knob that would have leaked +1 drift
+    // per iteration under the pre-fix add-walk, so every iteration
+    // pressure-tests the `info.in_attribute` gate in addition to the
+    // arena / coalesce bookkeeping.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @group(0) @binding(A) var<uniform> u: f32;";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const off: u32 = at(base_src, "@binding(") + @as(u32, @intCast("@binding(".len));
+
+    var coalesce_count: u32 = 0;
+    var i: u32 = 0;
+    while (i < 300) : (i += 1) {
+        const ch: u8 = if (i % 2 == 0) 'B' else 'A';
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = off,
+            .end = off + 1,
+            .new_text = &new_text,
+        });
+        try expectChainInvariants(&next);
+        if (!next.reused) coalesce_count += 1;
+
+        prev.deinit();
+        prev = next;
+    }
+    try std.testing.expect(coalesce_count >= 1);
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+    // Both sibling consts are only ever named inside the attribute, so
+    // the oracle holds them at `use_count == 0` — pinning that the chain
+    // did not leak any residual +1 onto either symbol.
+    try std.testing.expectEqual(@as(u32, 0), useCountOf(prev.module, "A"));
+    try std.testing.expectEqual(@as(u32, 0), useCountOf(prev.module, "B"));
 }
 
 test "M14.b: M3 for-loop cond 300-edit chain holds invariants and coalesces" {
