@@ -67,21 +67,18 @@ pub const EditKind = enum {
 /// module, CST, source bytes, and the scope-map. Dropping frees the lot.
 ///
 /// **Ownership model.** `arena` always points to the "current" arena
-/// from which fresh allocations happen. On the symbol-free hot path
-/// this is simply `prev.arena` — extended in place, not replaced — and
-/// `prev` receives an empty stub arena so `prev.deinit()` stays a safe
-/// no-op. `retained_arenas` holds any arenas whose storage the result
-/// also relies on. It is populated only when a non-symbol-free hot-path
-/// edit (compound_stmt / decl_stmt) re-lowers the whole module into a
-/// fresh arena: prev's arena moves into `retained_arenas` and a stub
-/// replaces it.
+/// from which fresh allocations happen. On every hot path (symbol-free,
+/// `compound_stmt`, `decl_stmt`) this is simply `prev.arena` — extended
+/// in place, not replaced — and `prev` receives an empty stub arena so
+/// `prev.deinit()` stays a safe no-op. `retained_arenas` is reserved
+/// for a future non-in-place path; today it is **always empty** after
+/// any `reparse` or `parseFull` return. The field is kept so
+/// `arenaBytes()` sums defensively and external telemetry readers
+/// don't break if the invariant is ever relaxed.
 pub const ReparseResult = struct {
     gpa: Allocator,
     arena: *std.heap.ArenaAllocator,
-    /// Arenas whose backing storage this result still references. Empty
-    /// on full-parse and on symbol-free-only edit sequences. Grown by
-    /// non-symbol-free hot-path reparses that allocate a fresh arena
-    /// while keeping prev's module/symbols/scopes live.
+    /// Invariant: always empty. See the ownership-model block above.
     retained_arenas: std.ArrayListUnmanaged(*std.heap.ArenaAllocator) = .empty,
     source: [:0]const u8,
     module: *Ast.Module,
@@ -610,144 +607,6 @@ fn tryTriviaOnlyShortcut(
     return result;
 }
 
-/// Actually attempts the symbol-free hot path. Errors = "fall back";
-/// callers wrap it in a `catch` to full-parse on failure.
-///
-/// Takes `prev` by mutable pointer so the success path can steal prev's
-/// arena (moving it into `result.retained_arenas`) and install an empty
-/// stub arena in prev to keep `prev.deinit()` safe. On failure, prev is
-/// left untouched.
-fn tryIncrementalReparse(
-    gpa: Allocator,
-    prev: *ReparseResult,
-    edit: Edit,
-    new_buf: []const u8,
-) !ReparseResult {
-    // 1. Find a reparse anchor in prev.cst that fully contains the edit.
-    //    `findAnchor` returns the narrowest reparse-anchor kind. That may
-    //    be a kind we can't restart the parser at on its own (e.g. a
-    //    `let_decl` inside a compound, where the outer `decl_stmt` is
-    //    what `parseStatement` opens when reparsing). Walk up the parent
-    //    chain until we land on a hot-path anchor; bail if we reach the
-    //    root without finding one.
-    var anchor_cursor = findAnchor(&prev.cst, edit) orelse return error.NoAnchor;
-    while (!isHotPathAnchor(anchor_cursor.kind())) {
-        anchor_cursor = anchor_cursor.parent() orelse return error.NotHotPathAnchor;
-    }
-    const anchor_kind = anchor_cursor.kind();
-
-    // 2. Allocate a fresh arena for the new ReparseResult. All new
-    //    memory — source, tokens, CST, module — lands here.
-    const arena_ptr = try gpa.create(std.heap.ArenaAllocator);
-    errdefer gpa.destroy(arena_ptr);
-    arena_ptr.* = std.heap.ArenaAllocator.init(gpa);
-    errdefer arena_ptr.deinit();
-    const arena = arena_ptr.allocator();
-
-    // 3. Copy the new source into the arena as a sentinel-terminated slice.
-    const new_source = try arena.allocSentinel(u8, new_buf.len, 0);
-    @memcpy(new_source, new_buf);
-
-    // 4. Re-lex new_source end-to-end. (A token-stability window could
-    //    avoid re-lexing the unchanged tail, but full re-lex is already
-    //    fast compared to parse and keeps the code simple.)
-    var new_all_tokens = try Lexer.tokenizeAll(arena, new_source);
-    const new_stream = try Parser.TokenStream.init(arena, &new_all_tokens);
-
-    // 5. Locate the non-trivia token that begins the anchor in the new
-    //    stream. Anchor's `range().start` can point at leading trivia
-    //    (a whitespace/comment attributed to the anchor's subtree
-    //    during a full parse), so we find the first non-trivia token
-    //    at or after that byte. Since bytes before `edit.start` are
-    //    identical in old and new, and the anchor's first non-trivia
-    //    byte is always <= edit.start (anchor contains the edit), this
-    //    non-trivia index is byte-stable across the edit.
-    const anchor_byte = anchor_cursor.range().start;
-    var nt_pos: u32 = 0;
-    while (nt_pos < new_stream.non_trivia_starts.len and
-        new_stream.non_trivia_starts[nt_pos] < anchor_byte) : (nt_pos += 1)
-    {}
-    if (nt_pos >= new_stream.non_trivia_starts.len) {
-        return error.AnchorBoundaryShifted;
-    }
-    // Verify that the non-trivia token landing here starts before or at
-    // edit.start — otherwise the anchor's first real token has moved
-    // past the edit boundary, which invalidates the hot-path premise.
-    if (new_stream.non_trivia_starts[nt_pos] > edit.start) {
-        return error.AnchorBoundaryShifted;
-    }
-
-    // 6. Re-parse the anchor's production into a fresh subtree.
-    var sub_builder = Cst.Builder.init(gpa);
-    defer sub_builder.deinit();
-    var sub_parser = try Parser.initWithCst(arena, new_source, new_stream, &sub_builder);
-    const parser_kind: Parser.AnchorKind = if (isStmtKind(anchor_kind)) .statement else .expression;
-    sub_parser.reparseAnchor(parser_kind, nt_pos) catch return error.AnchorParseFailed;
-    // The parser writes soft diagnostics (missing token, redeclaration,
-    // etc.) to `Parser.errors` rather than the CST builder's error list.
-    // A diagnostic means the grammar recovered with a partial/elided CST,
-    // which invalidates the splice assumption that token ranges line up.
-    // Bail to full parse so the oracle handles recovery uniformly.
-    if (sub_parser.errors.items.len > 0) return error.AnchorParseError;
-    var new_sub = try sub_builder.finish(arena, new_all_tokens, new_source);
-
-    // 7. Validate the reparse: must have produced a root node, kind
-    //    must match, no errors.
-    if (new_sub.nodes.len == 0) return error.AnchorParseFailed;
-    if (new_sub.rootCursor().kind() != anchor_kind) return error.AnchorKindMismatch;
-    if (new_sub.errors.len > 0) return error.AnchorParseError;
-    // Anchor range must be non-empty (have at least one token) so the
-    // splice token remap has a well-defined range. Empty-range subtrees
-    // would indicate the reparse consumed nothing — treat as failure.
-    if (new_sub.rootCursor().range().start == new_sub.rootCursor().range().end) {
-        return error.AnchorParseFailed;
-    }
-    // The reparse must cover [anchor.start, anchor.end + delta) in new
-    // source coordinates. If the parser stopped short (e.g. the anchor
-    // is a `decl_stmt` but the edit injected MORE statements that would
-    // become siblings of the decl_stmt in a full parse), those extra
-    // bytes fall outside the spliced subtree and get lost. Promoting to
-    // the enclosing `compound_stmt` would fix this; today we bail and
-    // full-parse.
-    const old_anchor = anchor_cursor.range();
-    const delta: i64 = @as(i64, @intCast(edit.new_text.len)) - @as(i64, edit.end - edit.start);
-    const expected_new_end: u32 = @intCast(@as(i64, old_anchor.end) + delta);
-    if (new_sub.rootCursor().range().end != expected_new_end) {
-        return error.AnchorParseDidNotCoverEdit;
-    }
-
-    // Symbol-free anchors never reach this function — the in-place
-    // entry `tryIncrementalReparseInPlace` handles them directly on
-    // prev.arena and only delegates here for the non-symbol-free
-    // branch (compound_stmt / decl_stmt), which re-lowers the whole
-    // module from the spliced CST into the fresh arena.
-    std.debug.assert(!isSymbolFreeAnchor(anchor_kind));
-
-    // Splice the CST. The spliced tree owns `new_all_tokens` now. The
-    // new subtree lives at the same DFS index as the old anchor
-    // (`Cst.spliceSubtree` contract).
-    var new_tree = try Cst.spliceSubtree(arena, &prev.cst, anchor_cursor.node, &new_sub, new_source, new_all_tokens);
-
-    var visit_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
-    const module = try CstLower.lowerTreeWithErrors(gpa, arena, &new_tree, &visit_errors);
-    // Sub-parser errors were already gated to zero by the
-    // `error.AnchorParseError` bail above. Visit-pass errors from the
-    // fresh whole-module re-lower are the result's complete error set.
-    const errors_slice = try mergeErrorsByPos(arena, &.{}, visit_errors.items);
-
-    var result = ReparseResult{
-        .gpa = gpa,
-        .arena = arena_ptr,
-        .source = new_source,
-        .module = module,
-        .cst = new_tree,
-        .errors = errors_slice,
-        .reused = true,
-    };
-    try buildScopeForCstNodeMap(arena, &result);
-    return result;
-}
-
 /// True for the anchor kinds where the add/sub hot path is safe:
 /// expressions (which never declare symbols) and non-scope-introducing
 /// statements. `compound_stmt` and `decl_stmt` are hot-path anchors but
@@ -824,14 +683,12 @@ fn tryIncrementalReparseInPlace(
     const anchor_kind = anchor_cursor.kind();
 
     // Route compound_stmt and decl_stmt anchors through the Phase 2
-    // in-place scope-splice paths. Any other non-symbol-free anchor
-    // kind (none exist today but guarded defensively) stays on the
-    // fresh-arena re-lower path.
+    // in-place scope-splice paths. `isHotPathAnchor` (checked above)
+    // admits exactly the union of symbol-free + compound_stmt +
+    // decl_stmt kinds, so any other kind here would be a routing bug.
     const is_compound_inplace = anchor_kind == .compound_stmt;
     const is_decl_stmt_inplace = anchor_kind == .decl_stmt;
-    if (!isSymbolFreeAnchor(anchor_kind) and !is_compound_inplace and !is_decl_stmt_inplace) {
-        return try tryIncrementalReparse(gpa, prev, edit, new_buf);
-    }
+    std.debug.assert(isSymbolFreeAnchor(anchor_kind) or is_compound_inplace or is_decl_stmt_inplace);
 
     // 0. Compaction watermark. The in-place hot path extends prev.arena
     //    forever; left unchecked, a long editing session accumulates
