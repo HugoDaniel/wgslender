@@ -719,3 +719,101 @@ test "LA19: large paste then literal flip — both match oracle" {
     _ = try handler.analyzeDocument(uri);
     try expectConsistencyOracle(handler, uri);
 }
+
+// =========================================================================
+// LA20 — Stable-ID preservation across a compound_stmt edit.
+//
+// A compound_stmt hot-path edit inside one function must not perturb the
+// stable IDs of any OTHER top-level decl. Stable IDs are the handle
+// layer-above consumers (refactorings, external tools) use to pin
+// symbols across reparses, so any reorder/rename of `module.symbols`
+// would show up here as a mismatch before it breaks anything else.
+// =========================================================================
+
+test "LA20: compound_stmt edit preserves stable IDs of other top-level decls" {
+    const handler = try setup(
+        \\const K: i32 = 42;
+        \\struct Thing { a: i32, b: i32, }
+        \\fn f() -> i32 { let x: i32 = 1; return x; }
+        \\fn g() -> i32 { return K; }
+    );
+    defer teardown(handler);
+    const uri = "test://file.wgsl";
+
+    _ = try handler.analyzeDocument(uri);
+
+    // Snapshot stable IDs of every top-level decl by name.
+    const Names = enum { K, Thing, f, g };
+    var before: [4]?[]u8 = .{ null, null, null, null };
+    defer {
+        for (before) |b| if (b) |s| std.testing.allocator.free(s);
+    }
+
+    {
+        const doc = handler.documents.getPtr(uri).?;
+        const module = doc.parse.?.module;
+        var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena_inst.deinit();
+        const a = arena_inst.allocator();
+        for (module.declarations.items) |d| {
+            const sym = d.nameRef();
+            if (!sym.isValid()) continue;
+            const s = module.symbols.items[sym.index()];
+            const which: Names = blk: {
+                if (std.mem.eql(u8, s.original_name, "K")) break :blk .K;
+                if (std.mem.eql(u8, s.original_name, "Thing")) break :blk .Thing;
+                if (std.mem.eql(u8, s.original_name, "f")) break :blk .f;
+                if (std.mem.eql(u8, s.original_name, "g")) break :blk .g;
+                continue;
+            };
+            const sid = (try wgslender.StableId.stableIdFor(a, module, sym)) orelse continue;
+            before[@intFromEnum(which)] = try std.testing.allocator.dupe(u8, sid.bytes);
+        }
+    }
+
+    // Every top-level decl must have produced a stable ID.
+    for (before) |b| try std.testing.expect(b != null);
+
+    // Compound_stmt hot-path edit inside `fn f`'s body only: append a
+    // new statement before the existing `return x;`. This routes
+    // through `tryCompoundSpliceInPlace` and mutates the symbol table
+    // (the new `let y` symbol gets appended), but must not perturb any
+    // existing decl's index or the owning scope of K / Thing / f / g.
+    const doc = handler.documents.getPtr(uri).?;
+    const ret_off = at(doc.source, "return x;");
+    try handler.changeDocumentIncremental(
+        uri,
+        rangeFor(doc.source, ret_off, ret_off),
+        "let y: i32 = 2; ",
+    );
+
+    _ = try handler.analyzeDocument(uri);
+
+    // Compute stable IDs after the edit; each of K, Thing, f, g must
+    // round-trip to the same bytes as before.
+    const doc2 = handler.documents.getPtr(uri).?;
+    const module2 = doc2.parse.?.module;
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const a = arena_inst.allocator();
+    var seen: [4]bool = .{ false, false, false, false };
+    for (module2.declarations.items) |d| {
+        const sym = d.nameRef();
+        if (!sym.isValid()) continue;
+        const s = module2.symbols.items[sym.index()];
+        const which: Names = blk: {
+            if (std.mem.eql(u8, s.original_name, "K")) break :blk .K;
+            if (std.mem.eql(u8, s.original_name, "Thing")) break :blk .Thing;
+            if (std.mem.eql(u8, s.original_name, "f")) break :blk .f;
+            if (std.mem.eql(u8, s.original_name, "g")) break :blk .g;
+            continue;
+        };
+        const sid = (try wgslender.StableId.stableIdFor(a, module2, sym)) orelse continue;
+        try std.testing.expectEqualStrings(before[@intFromEnum(which)].?, sid.bytes);
+        seen[@intFromEnum(which)] = true;
+    }
+    for (seen) |v| try std.testing.expect(v);
+
+    // And the full analysis still matches a fresh oracle.
+    try expectConsistencyOracle(handler, uri);
+}
