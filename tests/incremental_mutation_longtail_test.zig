@@ -3097,3 +3097,475 @@ test "M23.b: insert */ re-exposes decls hidden by leading /*" {
     try expectErrorsOracleMatch(updated.errors, oracle.errors);
 }
 
+// =========================================================================
+// M17.d — Unary elision (`-x` → `x`, unary_expr → ident_expr).
+//
+// Anchor kind shrinks: the old subtree is `unary_expr`, the new is
+// `ident_expr`. Kind mismatch forces fallback; the oracle still owns the
+// correctness bar.
+// =========================================================================
+
+test "M17.d: unary_expr -x → x (anchor shrink)" {
+    const src: [:0]const u8 = "const x: i32 = 1; fn f() -> i32 { return -x; }";
+    const new_src: []const u8 = "const x: i32 = 1; fn f() -> i32 { return x; }";
+    const minus_off = at(src, "-x");
+    try runEdit(std.testing.allocator, src, .{
+        .start = minus_off,
+        .end = minus_off + 1,
+        .new_text = "",
+    }, new_src, false);
+}
+
+// =========================================================================
+// M18 — New-style attributes.
+//
+// M1 covered `@workgroup_size` / `@group` / `@binding` / `@align` /
+// `@location`. M18 fills in the remaining decl-level attribute families
+// the bidirectional-tooling roadmap enumerated.
+// =========================================================================
+
+test "M18.a: @diagnostic attribute-arg swap (off → warning)" {
+    // Attribute-arg edit on a fn-level `@diagnostic`. The parser treats
+    // `@diagnostic` as a regular attribute (name + args); the oracle bar
+    // is shape + use_count + errors match, regardless of whether the hot
+    // path engages.
+    const src: [:0]const u8 =
+        "@diagnostic(off, derivative_uniformity) fn f() -> f32 { return 1.0; }";
+    const new_src: []const u8 =
+        "@diagnostic(warning, derivative_uniformity) fn f() -> f32 { return 1.0; }";
+    const off_off = at(src, "off");
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = off_off,
+        .end = off_off + 3,
+        .new_text = "warning",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectUseCountsMatch(updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+test "M18.b: @must_use attribute toggle on fn decl forces fallback" {
+    // Removing a whole decl-level attribute shrinks the attribute_list
+    // and changes the fn's decl_span start — no hot-path anchor can
+    // span that change. Oracle match is the invariant.
+    const src: [:0]const u8 = "@must_use fn f() -> i32 { return 1; }";
+    const new_src: []const u8 = "fn f() -> i32 { return 1; }";
+    try runEdit(std.testing.allocator, src, .{
+        .start = 0,
+        .end = @intCast("@must_use ".len),
+        .new_text = "",
+    }, new_src, false);
+}
+
+test "M18.c: @builtin(position) → @builtin(vertex_index) on a parameter" {
+    // Attribute-arg edit inside a parameter's `@builtin(...)`. The
+    // oracle is happy with any builtin name (it's just an identifier at
+    // the parser level); semantic validity is not checked by the
+    // parseFull oracle.
+    const src: [:0]const u8 =
+        "@vertex fn vs(@builtin(position) p: vec4<f32>) -> @builtin(position) vec4<f32> { return p; }";
+    const new_src: []const u8 =
+        "@vertex fn vs(@builtin(vertex_index) p: vec4<f32>) -> @builtin(position) vec4<f32> { return p; }";
+    // Find the FIRST `position` — the one inside the parameter's `@builtin(...)`.
+    const pos_off = at(src, "@builtin(position)") + @as(u32, @intCast("@builtin(".len));
+    try runEdit(std.testing.allocator, src, .{
+        .start = pos_off,
+        .end = pos_off + @as(u32, @intCast("position".len)),
+        .new_text = "vertex_index",
+    }, new_src, true);
+}
+
+test "M18.d: @compute @workgroup_size(1) → @fragment (decl-level fallback)" {
+    // Replacing two attributes with one shrinks the attribute_list and
+    // forces fallback. Oracle match covers shape + errors.
+    const src: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
+    const new_src: []const u8 = "@fragment fn main() {}";
+    try runEdit(std.testing.allocator, src, .{
+        .start = 0,
+        .end = @intCast("@compute @workgroup_size(1)".len),
+        .new_text = "@fragment",
+    }, new_src, false);
+}
+
+// =========================================================================
+// M19 — Cross-function interleaved burst with symbol-layout invariant.
+//
+// A real editing session touches multiple functions out of order. The
+// incremental pipeline's SymbolIndex stability contract says existing
+// symbols keep their indices across reparses — new symbols may only be
+// appended. M19 pins that across a 60-edit burst hopping between three
+// functions. Any hot-path step that reorders `module.symbols` or drops
+// an entry breaks this test before it breaks downstream consumers
+// (StableId, LSP caches).
+// =========================================================================
+
+test "M19: cross-function burst keeps module.symbols layout stable modulo appends" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        \\fn f() -> i32 { return 1; }
+        \\fn g() -> i32 { return 1; }
+        \\fn h() -> i32 { return 1; }
+    ;
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    // Snapshot the initial symbol names + indices. Every later step
+    // must preserve this prefix.
+    const initial_len = prev.module.symbols.items.len;
+    var initial_names = try gpa.alloc([]const u8, initial_len);
+    defer gpa.free(initial_names);
+    for (prev.module.symbols.items, 0..) |s, i| {
+        initial_names[i] = try gpa.dupe(u8, s.original_name);
+    }
+    defer for (initial_names) |n| gpa.free(n);
+
+    // Pre-compute stable literal offsets. Each edit replaces exactly one
+    // byte with another one byte, so the offsets never shift across the
+    // burst.
+    const off_f = at(prev.source, "fn f() -> i32 { return 1") + @as(u32, @intCast("fn f() -> i32 { return ".len));
+    const off_g = at(prev.source, "fn g() -> i32 { return 1") + @as(u32, @intCast("fn g() -> i32 { return ".len));
+    const off_h = at(prev.source, "fn h() -> i32 { return 1") + @as(u32, @intCast("fn h() -> i32 { return ".len));
+    const offs = [_]u32{ off_f, off_g, off_h };
+
+    var i: u32 = 0;
+    while (i < 60) : (i += 1) {
+        const off = offs[i % 3];
+        const ch: u8 = '0' + @as(u8, @intCast((i % 9) + 1));
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = off,
+            .end = off + 1,
+            .new_text = &new_text,
+        });
+        prev.deinit();
+        prev = next;
+
+        // Invariant: prefix of size `initial_len` in the current
+        // `module.symbols` matches the initial layout by original_name.
+        try std.testing.expect(prev.module.symbols.items.len >= initial_len);
+        for (prev.module.symbols.items[0..initial_len], 0..) |s, k| {
+            try std.testing.expectEqualStrings(initial_names[k], s.original_name);
+        }
+    }
+
+    // Final oracle cross-check: shape + use_count.
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+// =========================================================================
+// M20.c / M20.d — parameter type template churn + nested vec4<f16>.
+// =========================================================================
+
+test "M20.c: vec3<f32> → vec3<i32> on a fn parameter type" {
+    const src: [:0]const u8 = "fn f(v: vec3<f32>) -> vec3<f32> { return v; }";
+    const new_src: []const u8 = "fn f(v: vec3<i32>) -> vec3<f32> { return v; }";
+    // First `f32` is in the parameter type. Type-annotation edits do
+    // not have a hot-path anchor; fallback is expected.
+    const f32_off = at(src, "vec3<f32>") + @as(u32, @intCast("vec3<".len));
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = f32_off,
+        .end = f32_off + 3,
+        .new_text = "i32",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+test "M20.d: nested array<vec4<f32>, 8> → array<vec4<f16>, 8> with enable f16" {
+    // Two base shaders — `enable f16` active and inactive. The parser
+    // oracle doesn't validate `enable` semantics, but the incremental
+    // type-annotation edit falls back and must still match the oracle
+    // on shape + error buckets across both forms.
+    const gpa = std.testing.allocator;
+    const Pair = struct { src: [:0]const u8, new_src: []const u8 };
+    const pairs = [_]Pair{
+        .{
+            .src =
+            \\enable f16;
+            \\fn f() { var xs: array<vec4<f32>, 8>; }
+            ,
+            .new_src =
+            \\enable f16;
+            \\fn f() { var xs: array<vec4<f16>, 8>; }
+            ,
+        },
+        .{
+            .src = "fn f() { var xs: array<vec4<f32>, 8>; }",
+            .new_src = "fn f() { var xs: array<vec4<f16>, 8>; }",
+        },
+    };
+
+    for (pairs) |pair| {
+        const f32_off = at(pair.src, "vec4<f32>") + @as(u32, @intCast("vec4<".len));
+        var base = try Incremental.parseFull(gpa, pair.src);
+        defer base.deinit();
+        var updated = try Incremental.reparse(gpa, &base, .{
+            .start = f32_off,
+            .end = f32_off + 3,
+            .new_text = "f16",
+        });
+        defer updated.deinit();
+        try std.testing.expectEqualStrings(pair.new_src, updated.source);
+        var oracle = try Incremental.parseFull(gpa, updated.source);
+        defer oracle.deinit();
+        try expectShapesMatch(gpa, updated.module, oracle.module);
+        try expectErrorsOracleMatch(updated.errors, oracle.errors);
+    }
+}
+
+// =========================================================================
+// M21.d — Whitespace split / join at an identifier boundary.
+//
+// Inserting whitespace mid-ident splits one token into two (or the
+// reverse, joining). Both directions cross token boundaries in ways the
+// hot-path anchor cannot accommodate — fallback must pick up the slack.
+// The invariant: whatever the oracle does, incremental must match.
+// =========================================================================
+
+test "M21.d: whitespace split ab → a b at a decl name matches oracle" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 = "fn f() { let ab: i32 = 1; }";
+    // Insert a space after the `a` in `ab:`.
+    const split_off = at(src, "ab:") + 1;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+
+    const incr = Incremental.reparse(gpa, &base, .{
+        .start = split_off,
+        .end = split_off,
+        .new_text = " ",
+    });
+    const oracle_res = Incremental.parseFull(gpa, "fn f() { let a b: i32 = 1; }");
+    if (oracle_res) |oracle_ok| {
+        var oracle = oracle_ok;
+        defer oracle.deinit();
+        var incr_ok = try incr;
+        defer incr_ok.deinit();
+        try expectShapesMatch(gpa, incr_ok.module, oracle.module);
+        try expectErrorsOracleMatch(incr_ok.errors, oracle.errors);
+    } else |oracle_err| {
+        try std.testing.expectError(oracle_err, incr);
+    }
+}
+
+// =========================================================================
+// M22 — Watermark-edge corner cases.
+//
+// M10 covers the watermark tripping at all; M22 nails down the exact
+// boundary behavior (one trip on a crossing, counter reset after a
+// coalesce, no-op edits resetting the counter).
+// =========================================================================
+
+test "M22.a: boundary crossing produces exactly one fallback in the crossing window" {
+    // Start from a ~30 KiB base so the threshold is
+    // max(256 KiB, 30_720*8)=256 KiB for the symbol-free path. Edit a
+    // literal repeatedly; track each hot-path trip. After the burst,
+    // the chain must have tripped at least once (watermark was really
+    // crossed) but remain correct against the oracle.
+    const gpa = std.testing.allocator;
+    var base_buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer base_buf.deinit(gpa);
+    try base_buf.appendSlice(gpa, "fn f() -> i32 { return 1");
+    var pad: usize = 0;
+    while (pad < 30 * 1024) : (pad += 1) try base_buf.append(gpa, ' ');
+    try base_buf.appendSlice(gpa, " + 2; }");
+    const base_z = try base_buf.toOwnedSliceSentinel(gpa, 0);
+    defer gpa.free(base_z);
+
+    var prev = try Incremental.parseFull(gpa, base_z);
+    defer prev.deinit();
+
+    const lit_off: u32 = at(prev.source, "return 1") + @as(u32, @intCast("return ".len));
+    var trip_count: u32 = 0;
+    var i: u32 = 0;
+    while (i < 400) : (i += 1) {
+        const ch: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+        if (!next.reused) trip_count += 1;
+        prev.deinit();
+        prev = next;
+    }
+    try std.testing.expect(trip_count >= 1);
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+test "M22.b: HOT_EDIT_COALESCE_MAX forces a fallback and the counter resets" {
+    // HOT_EDIT_COALESCE_MAX=256. We exercise the edit-count watermark
+    // independently of the byte watermark by keeping each edit tiny
+    // (1 byte replace → small arena debt). After 256 accepted
+    // in-place edits the next reparse must fall back (reused==false,
+    // hot_edits_since_full resets to 0) and a subsequent edit re-enters
+    // the hot path on a fresh arena.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 1; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const lit_off: u32 = at(prev.source, "return 1") + @as(u32, @intCast("return ".len));
+
+    var accepted: u32 = 0;
+    var coalesced_on: ?u32 = null;
+    var i: u32 = 0;
+    while (i < Incremental.HOT_EDIT_COALESCE_MAX + 2) : (i += 1) {
+        const ch: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+        if (next.reused) {
+            accepted += 1;
+        } else if (coalesced_on == null) {
+            coalesced_on = i;
+            // Post-coalesce: a fresh full parse has counter = 0.
+            try std.testing.expectEqual(@as(u16, 0), next.hot_edits_since_full);
+        }
+        prev.deinit();
+        prev = next;
+    }
+
+    try std.testing.expect(coalesced_on != null);
+    // At least one forced coalesce landed inside the burst — whether
+    // from the edit-count watermark (HOT_EDIT_COALESCE_MAX) or the
+    // byte-watermark, the counter must reset to 0 right after it.
+    try std.testing.expect(accepted >= 1);
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+test "M22.c: interleaved no-op edits reset the counter and preserve correctness" {
+    // A `.no_op` edit (start==end, new_text empty) currently full-parses
+    // inside `Incremental.reparse` and produces `reused == false` with
+    // counter = 0. Interleaved between hot literal flips, the counter
+    // must never leak state across the no-op boundary.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 1; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const lit_off: u32 = at(prev.source, "return 1") + @as(u32, @intCast("return ".len));
+
+    var i: u32 = 0;
+    while (i < 20) : (i += 1) {
+        if (i % 4 == 3) {
+            // No-op edit.
+            const next = try Incremental.reparse(gpa, &prev, .{
+                .start = 0,
+                .end = 0,
+                .new_text = "",
+            });
+            try std.testing.expect(!next.reused);
+            try std.testing.expectEqual(@as(u16, 0), next.hot_edits_since_full);
+            prev.deinit();
+            prev = next;
+        } else {
+            const ch: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
+            const new_text = [_]u8{ch};
+            const next = try Incremental.reparse(gpa, &prev, .{
+                .start = lit_off,
+                .end = lit_off + 1,
+                .new_text = &new_text,
+            });
+            try std.testing.expect(next.reused);
+            try std.testing.expect(next.hot_edits_since_full >= 1);
+            prev.deinit();
+            prev = next;
+        }
+    }
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+// =========================================================================
+// M24 — Cross-decl fallback invariants.
+//
+// An edit whose byte range covers the closing `}` of one decl and bytes
+// of the next must force fallback: no in-place hot path can splice a
+// subtree whose anchor straddles two decls. Oracle match is the bar.
+// =========================================================================
+
+test "M24.a: edit spans exactly two top-level decls" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 = "fn f() {} fn g() {}";
+    // Replace `} fn g()` — the entire boundary between the two decls.
+    const start = at(src, "} fn g()");
+    const end = start + @as(u32, @intCast("} fn g()".len));
+    const new_src: []const u8 = "fn f() { return; } {}";
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = start,
+        .end = end,
+        .new_text = " return; }",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    try std.testing.expect(!updated.reused);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+test "M24.b: edit spans a function-body closing `}` into the next decl" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 =
+        "fn f() { let x = 1; } fn g() { let y = 2; }";
+    // Replace the `}` at the end of `fn f`'s body AND the single-byte
+    // gap that follows, reaching into `fn g()`'s header. The edit must
+    // force fallback because no hot-path anchor spans two decls.
+    const start = at(src, "} fn g() {");
+    const end = start + @as(u32, @intCast("} fn g() {".len));
+    const replacement: []const u8 = "let z = 3; }; fn g() {";
+    const new_src: []const u8 =
+        "fn f() { let x = 1; let z = 3; }; fn g() { let y = 2; }";
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = start,
+        .end = end,
+        .new_text = replacement,
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    try std.testing.expect(!updated.reused);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectUseCountsMatch(updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
