@@ -219,7 +219,14 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
 
 /// Analyze a parsed WGSL module, retaining semantic state.
 /// Returns an enriched result with resolved types, struct layouts, etc.
+///
+/// If `module` was produced by `Incremental.reparse`, any non-owner
+/// decls may carry deferred `interior_pending` bias. We drain it up
+/// front so every span/loc read inside the validator (diagnostic
+/// ranges, attribute positions, etc.) sees current coordinates.
 pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !AnalysisResult {
+    module.absorbInteriors();
+
     const diags = try arena.create(Diagnostic);
     diags.* = try Diagnostic.init(arena, module.source);
     diags.line_offset = options.line_offset;

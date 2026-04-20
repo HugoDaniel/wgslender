@@ -251,6 +251,10 @@ pub fn reflectWithRenamer(
     module: *Ast.Module,
     renamer: ?*const Printer.Renamer,
 ) Allocator.Error!ReflectResult {
+    // Drain any deferred incremental-splice bias so `.loc` and `.span`
+    // reads below see current coordinates.
+    module.absorbInteriors();
+
     var result = ReflectResult{};
 
     var lc = LayoutComputer.init(arena, module, renamer);

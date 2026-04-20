@@ -111,9 +111,13 @@ pub fn stableIdFor(
 
 /// Convenience: byte offset → stable ID (via `Edits.symbolAtOffset`).
 /// Returns null if no symbol covers that offset.
+///
+/// Mutable receiver because `Edits.symbolAtOffset` walks decl interiors
+/// to resolve the offset to a symbol and needs to drain any deferred
+/// incremental bias first.
 pub fn stableIdAtOffset(
     arena: Allocator,
-    module: *const Ast.Module,
+    module: *Ast.Module,
     offset: u32,
 ) Error!?StableId {
     const sym = Edits.symbolAtOffset(module, offset);
@@ -233,10 +237,15 @@ pub fn locateDeclaration(
 ///   - `var`/`const`/`override`/`let` with an explicit `: T` annotation
 /// Returns null if the ID does not resolve or the target has no type
 /// annotation.
+///
+/// Mutable receiver because type spans live in decl interiors — if the
+/// module carries deferred incremental bias (`interior_pending`), it is
+/// drained before the read.
 pub fn locateType(
-    module: *const Ast.Module,
+    module: *Ast.Module,
     id_bytes: []const u8,
 ) ?Range {
+    module.absorbInteriors();
     const sym = symbolForStableId(module, id_bytes);
     if (!sym.isValid()) return null;
 

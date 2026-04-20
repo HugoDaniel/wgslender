@@ -78,7 +78,10 @@ pub fn isValidWgslIdentifier(name: []const u8) bool {
 /// Does not match struct member declaration names — member-access sites
 /// carry a string, not a SymbolIndex, so renaming struct fields is not
 /// a safe operation with the current AST.
-pub fn symbolAtOffset(module: *const Ast.Module, offset: u32) Ast.SymbolIndex {
+pub fn symbolAtOffset(module: *Ast.Module, offset: u32) Ast.SymbolIndex {
+    // Drain any deferred incremental bias so the ident/expr-level `.loc`
+    // reads inside `SymbolFinder` see current coordinates.
+    module.absorbInteriors();
     var v = SymbolFinder{ .module = module, .offset = offset };
     return v.findInModule();
 }
@@ -246,10 +249,11 @@ const SymbolFinder = struct {
 /// (as `is_write = true`). Caller owns the slice — free with `gpa.free`.
 pub fn findReferences(
     gpa: Allocator,
-    module: *const Ast.Module,
+    module: *Ast.Module,
     target: Ast.SymbolIndex,
     include_declaration: bool,
 ) Allocator.Error![]Reference {
+    module.absorbInteriors();
     var refs: std.ArrayListUnmanaged(Reference) = .empty;
     defer refs.deinit(gpa);
 
@@ -442,13 +446,14 @@ fn collectInExpr(
 /// from last to first without offset-shift bookkeeping.
 pub fn renameEdits(
     gpa: Allocator,
-    module: *const Ast.Module,
+    module: *Ast.Module,
     target: Ast.SymbolIndex,
     new_name: []const u8,
 ) Allocator.Error!?[]TextEdit {
     if (!isValidWgslIdentifier(new_name)) return null;
     if (!target.isValid()) return null;
 
+    // `findReferences` absorbs any deferred bias for us.
     const refs = try findReferences(gpa, module, target, true);
     defer gpa.free(refs);
 
@@ -618,12 +623,16 @@ fn isPlausibleTypeText(text: []const u8) bool {
 /// caller's buffer must outlive the edits (consistent with `renameEdits`).
 pub fn changeTypeEdit(
     gpa: Allocator,
-    module: *const Ast.Module,
+    module: *Ast.Module,
     target: Ast.SymbolIndex,
     new_type_text: []const u8,
 ) Allocator.Error!?[]TextEdit {
     if (!target.isValid()) return null;
     if (!isPlausibleTypeText(new_type_text)) return null;
+
+    // Type spans live inside decl interiors — drain any deferred
+    // incremental bias before reading `typ.span()` below.
+    module.absorbInteriors();
 
     // For functions, `changeTypeEdit` targets the return type.
     const site = findOwningDecl(module, target, true);
@@ -673,10 +682,12 @@ pub fn insertAt(offset: u32, text: []const u8) TextEdit {
 pub fn setWorkgroupSize(
     gpa: Allocator,
     source: []const u8,
-    module: *const Ast.Module,
+    module: *Ast.Module,
     entry_point_name: []const u8,
     xyz: [3]u32,
 ) Allocator.Error!?[]TextEdit {
+    // `attr.loc` is an interior field — absorb before reading.
+    module.absorbInteriors();
     for (module.declarations.items) |decl| {
         const f = switch (decl) {
             .function => |fn_decl| fn_decl,
