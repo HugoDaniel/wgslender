@@ -2720,3 +2720,380 @@ test "M15: retained_arenas stays empty across every mutation fixture" {
     }
 }
 
+// =========================================================================
+// M16 — Boundary-exact edits.
+//
+// An edit whose `[start, end)` aligns exactly on the first/last non-trivia
+// token boundary of a hot-path anchor must still hit that anchor. Off-by-
+// one on either side demotes the match to the enclosing anchor; these
+// tests pin the exact-match behavior so a future boundary-rounding bug
+// becomes visible instead of silently degrading perf.
+// =========================================================================
+
+test "M16.a: literal_expr byte-exact replacement hits hot path" {
+    const src: [:0]const u8 = "fn f() -> i32 { return 42; }";
+    const new_src: []const u8 = "fn f() -> i32 { return 137; }";
+    const lit_off = at(src, "42");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = lit_off, .end = lit_off + 2, .new_text = "137" },
+        new_src,
+        true,
+    );
+}
+
+test "M16.b: ident_expr byte-exact replacement same-length swap" {
+    const src: [:0]const u8 = "const a: i32 = 1; const b: i32 = 2; fn f() -> i32 { return a; }";
+    const new_src: []const u8 = "const a: i32 = 1; const b: i32 = 2; fn f() -> i32 { return b; }";
+    const ident_off = at(src, "return a;") + 7;
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = ident_off, .end = ident_off + 1, .new_text = "b" },
+        new_src,
+        true,
+    );
+}
+
+test "M16.c: return_stmt exact-range replacement" {
+    const src: [:0]const u8 = "fn f() -> i32 { return 0; }";
+    const new_src: []const u8 = "fn f() -> i32 { return 1 + 2; }";
+    const stmt_off = at(src, "return 0;");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = stmt_off, .end = stmt_off + 9, .new_text = "return 1 + 2;" },
+        new_src,
+        true,
+    );
+}
+
+test "M16.d: binary_expr adjacent-operand swap" {
+    const src: [:0]const u8 = "const a = 1; const b = 2; fn f() -> i32 { return a + b; }";
+    const new_src: []const u8 = "const a = 1; const b = 2; fn f() -> i32 { return b + a; }";
+    // Two sequential edits. After each `reparse`, prev is left with a
+    // stub arena — safe to `deinit` without double-free. We keep a
+    // single `current` variable and replace it end-to-end.
+    const gpa = std.testing.allocator;
+    var current = try Incremental.parseFull(gpa, src);
+
+    const a_off = at(src, "return a") + 7;
+    {
+        const next = try Incremental.reparse(gpa, &current, .{
+            .start = a_off,
+            .end = a_off + 1,
+            .new_text = "b",
+        });
+        current.deinit();
+        current = next;
+    }
+
+    const b_off = at(current.source, "b + b") + 4;
+    {
+        const next = try Incremental.reparse(gpa, &current, .{
+            .start = b_off,
+            .end = b_off + 1,
+            .new_text = "a",
+        });
+        current.deinit();
+        current = next;
+    }
+    defer current.deinit();
+
+    try std.testing.expectEqualStrings(new_src, current.source);
+
+    var oracle = try Incremental.parseFull(gpa, current.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, current.module, oracle.module);
+    try expectUseCountsMatch(current.module, oracle.module);
+}
+
+// =========================================================================
+// M17 — Anchor-kind flips in one byte.
+//
+// Edits that change what `isSymbolFreeAnchor` returns between old and new
+// subtree. Either side may take a different hot path (or fall back); the
+// invariant is oracle match, not hot-path hits on either side.
+// =========================================================================
+
+test "M17.a: literal_expr 42 → ident x (literal → ident)" {
+    const src: [:0]const u8 = "const x: i32 = 1; fn f() -> i32 { return 42; }";
+    const new_src: []const u8 = "const x: i32 = 1; fn f() -> i32 { return x; }";
+    const lit_off = at(src, "42");
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = lit_off,
+        .end = lit_off + 2,
+        .new_text = "x",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectUseCountsMatch(updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+test "M17.b: ident x → literal 42 (ident → literal)" {
+    // Anchor-kind mismatch (ident_expr ≠ literal_expr) may force fallback;
+    // the correctness bar is oracle match, not hot-path reuse.
+    const src: [:0]const u8 = "const x: i32 = 1; fn f() -> i32 { return x; }";
+    const new_src: []const u8 = "const x: i32 = 1; fn f() -> i32 { return 42; }";
+    const id_off = at(src, "return x") + 7;
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = id_off,
+        .end = id_off + 1,
+        .new_text = "42",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectUseCountsMatch(updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+test "M17.c: paren_expr (x) → x (anchor elision)" {
+    // Parens disappear — old anchor is paren_expr, new is ident_expr.
+    // Kind mismatch falls back; oracle match is the invariant.
+    const src: [:0]const u8 = "const x: i32 = 1; fn f() -> i32 { return (x); }";
+    const new_src: []const u8 = "const x: i32 = 1; fn f() -> i32 { return x; }";
+    const paren_off = at(src, "(x)");
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = paren_off,
+        .end = paren_off + 3,
+        .new_text = "x",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectUseCountsMatch(updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+// =========================================================================
+// M20 — Template / generic churn.
+//
+// M2 covered type-expression fallback behavior; these tests focus on the
+// use_count oracle inside template args, where idents inside template
+// brackets do affect resolution. An edit swapping `array<f32, N>` ident
+// `N` for `M` must decrement N's use_count and increment M's.
+// =========================================================================
+
+test "M20.a: array size-expr ident swap N → M updates use_counts" {
+    const src: [:0]const u8 =
+        \\const N: u32 = 4;
+        \\const M: u32 = 8;
+        \\fn f() { var xs: array<f32, N>; }
+    ;
+    const new_src: []const u8 =
+        \\const N: u32 = 4;
+        \\const M: u32 = 8;
+        \\fn f() { var xs: array<f32, M>; }
+    ;
+    const n_off = at(src, "array<f32, N>") + 11;
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = n_off,
+        .end = n_off + 1,
+        .new_text = "M",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectUseCountsMatch(updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+test "M20.b: template arg edited to use-before-decl ident emits E0102" {
+    const src: [:0]const u8 =
+        \\const N: u32 = 4;
+        \\fn f() { var xs: array<f32, N>; let Z: u32 = 8; }
+    ;
+    const new_src: []const u8 =
+        \\const N: u32 = 4;
+        \\fn f() { var xs: array<f32, Z>; let Z: u32 = 8; }
+    ;
+    const n_off = at(src, "array<f32, N>") + 11;
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = n_off,
+        .end = n_off + 1,
+        .new_text = "Z",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+// =========================================================================
+// M21 — Mid-token split / join edits.
+//
+// Edits that cut an identifier into two, join two identifiers into one, or
+// flip between keyword and identifier. Most of these force fallback (token
+// tag changes invalidate the anchor boundaries), but the fallback path
+// must still produce a correct oracle-matching AST + error buckets.
+// =========================================================================
+
+test "M21.a: identifier mid-token split with underscore insert" {
+    const src: [:0]const u8 = "const myFunction: i32 = 1; fn f() -> i32 { return myFunction; }";
+    const new_src: []const u8 = "const myFu_nction: i32 = 1; fn f() -> i32 { return myFunction; }";
+    // Insert `_` at offset of 'F' in the DECLARATION's name. Original
+    // `myFunction` becomes `myFu_nction`; call site keeps old name, now
+    // unresolved → E0102.
+    const split_off = at(src, "myFunction:") + 4;
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = split_off,
+        .end = split_off,
+        .new_text = "_",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+test "M21.b: keyword → identifier fn → fnx forces fallback" {
+    const src: [:0]const u8 = "fn f() {}";
+    const new_src: []const u8 = "fnx f() {}";
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = 2,
+        .end = 2,
+        .new_text = "x",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    // Must fall back — the root decl structure is invalid.
+    try std.testing.expect(!updated.reused);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+test "M21.c: identifier → keyword fnx → fn surfaces parser error" {
+    // Deleting the trailing `x` of an identifier `fnx` that happens to
+    // overlap a keyword puts the tokenizer into a state the grammar
+    // refuses (reserved-word as a const name). Both the incremental
+    // path and the oracle propagate error.ParseFailed — we pin that
+    // parity so a future change that makes one graceful while leaving
+    // the other fatal is caught.
+    const src: [:0]const u8 = "const fnx: i32 = 1;";
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    const x_off = at(src, "fnx") + 2;
+    const incr = Incremental.reparse(gpa, &base, .{
+        .start = x_off,
+        .end = x_off + 1,
+        .new_text = "",
+    });
+    try std.testing.expectError(error.ParseFailed, incr);
+    const oracle = Incremental.parseFull(gpa, "const fn: i32 = 1;");
+    try std.testing.expectError(error.ParseFailed, oracle);
+}
+
+// =========================================================================
+// M23 — Block-comment insert / delete that hides / exposes code.
+//
+// Inserting `/*` turns subsequent code into trivia. Inserting `*/` closes
+// a leading `/*` and exposes code. Both are extreme AST deltas — the
+// fallback must still produce an oracle-matching tree.
+// =========================================================================
+
+test "M23.a: insert /* hiding three decls collapses module to zero" {
+    const src: [:0]const u8 =
+        \\const a = 1;
+        \\const b = 2;
+        \\const c = 3;
+        \\
+    ;
+    const new_src: []const u8 =
+        \\/*const a = 1;
+        \\const b = 2;
+        \\const c = 3;
+        \\
+    ;
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    try std.testing.expectEqual(@as(usize, 3), base.module.declarations.items.len);
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = 0,
+        .end = 0,
+        .new_text = "/*",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    // With no closing `*/`, everything downstream is swallowed by the
+    // unterminated block comment → zero decls in the oracle too.
+    try std.testing.expectEqual(oracle.module.declarations.items.len, updated.module.declarations.items.len);
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+test "M23.b: insert */ re-exposes decls hidden by leading /*" {
+    const src: [:0]const u8 =
+        \\/*
+        \\const a = 1;
+        \\const b = 2;
+        \\
+    ;
+    const new_src: []const u8 =
+        \\/*
+        \\*/const a = 1;
+        \\const b = 2;
+        \\
+    ;
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+    try std.testing.expectEqual(@as(usize, 0), base.module.declarations.items.len);
+    // Insert `*/` after `/*\n` (offset 3).
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = 3,
+        .end = 3,
+        .new_text = "*/",
+    });
+    defer updated.deinit();
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    // Oracle should now see two decls.
+    try std.testing.expectEqual(@as(usize, 2), oracle.module.declarations.items.len);
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
