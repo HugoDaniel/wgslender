@@ -198,6 +198,50 @@ Oracle: `parseFull(updated.source)` shape + per-symbol `use_count`.
 `arena_bytes < 16 × source.len` throughout, proving the watermark bounds
 growth rather than only triggering at the end.
 
+### Edit-count coalescing
+
+The byte-watermark above is necessary but not sufficient. On a tiny
+shader (< ~100 bytes) where per-edit arena cost stays small relative
+to the 256 KiB floor, the byte bound can lag hundreds of edits before
+it trips. `HOT_EDIT_COALESCE_MAX = 256` (`src/Incremental.zig`) caps
+the number of successful in-place reparses per arena refill cycle:
+`tryIncrementalReparseInPlace` raises `error.EditCountWatermarkTripped`
+when `prev.hot_edits_since_full` reaches the bound, `reparse()` falls
+through to `parseFull`, and the counter resets. On realistic shaders
+the byte-watermark trips first and the edit-count bound never
+activates; it is a defense-in-depth backstop, not a primary bound.
+
+Threshold rationale: 256 is safely above typical IDE paste bursts
+(~100-200 contiguous edits) yet disciplined enough to bound tiny-shader
+growth well before the 256 KiB floor would otherwise be reached.
+Power-of-two keeps it visible in telemetry. No benchmarking required
+because coalescing only decides *when* a full parse runs; the full
+parse is already the correctness oracle tested by M11/M13.
+
+### M14 — Chained-reparse invariants across mutation sections
+
+One test per mutation section asserting `retained_arenas.items.len == 0`
+on every iteration and correct `hot_edits_since_full` increment/reset
+semantics. Long bursts also gate on `coalesce_count >= 1` (or >= 2 for
+M14.d/M14.g). M14.e observes counter monotonicity directly.
+
+| ID    | Section       | Fixture                                                     | Edits | Assertion                          |
+|-------|---------------|-------------------------------------------------------------|-------|------------------------------------|
+| M14.a | M1 attr arg   | `@group(0) @binding(0) var<uniform> u: f32;`                | 300   | invariants + coalesce_count >= 1  |
+| M14.b | M3 for-loop   | `fn f() { for (var i=0; i<10; i=i+1) {} }`                  | 300   | invariants + coalesce_count >= 1  |
+| M14.c | M4 switch     | `fn f(x:i32) { switch(x) { case 0: {} case 1: {} default: {} } }` | 300 | invariants + coalesce_count >= 1 |
+| M14.d | M5 if/else    | `fn f(x:i32)->i32 { if (x>0) { return 1; } else { return 2; } }` | 600 | invariants + coalesce_count >= 2 |
+| M14.e | M6 loop/while | `fn f() { var i=0; loop { if (i>5) { break; } i=i+1; } }`   | 200   | monotonic counter + correct reset |
+| M14.f | M7 member     | `struct S { a: f32 } fn f(s: S) -> f32 { return s.a; }`     | 300   | invariants + post-coalesce reuse  |
+| M14.g | M9 extended   | `fn f() -> i32 { return 1 + 2; }`                           | 512   | invariants + coalesce_count >= 2  |
+
+### M15 — Cross-section sentinel
+
+One test that runs every M14 fixture through a 60-edit burst and
+asserts `retained_arenas.items.len == 0` on every result. Catches any
+future commit that introduces a new growth site on any mutation
+section without going through the edit-count coalesce path.
+
 ## Files touched
 
 | File                                                   | Change                                                                       |

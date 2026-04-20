@@ -256,4 +256,17 @@ pre-arena-transfer implementation.
 `ReparseResult.retained_arenas.items.len` stays at 0 across any length
 of symbol-free edit churn (M9), and resets to 0 on every `parseFull`
 fallback, so retained-arena overhead does not accumulate across watermark
-trips.
+trips. `ReparseResult.deinit` asserts this invariant in debug builds
+(`src/Incremental.zig`) so any future commit that reintroduces a
+growth site trips an assertion rather than silently regressing memory
+bounds.
+
+A second, orthogonal bound — `HOT_EDIT_COALESCE_MAX = 256` — caps the
+number of successful in-place hot-path reparses per arena refill
+cycle. On mid-size shaders the byte-watermark trips first and the
+edit-count bound never activates. On tiny shaders where per-edit arena
+cost stays below the 256 KiB floor growth rate, the edit-count bound
+forces a `parseFull` every 256 edits. M14.a–g lock the invariants and
+at-least-one-coalesce property per mutation section; M15 is a
+cross-section sentinel asserting `retained_arenas.items.len == 0` on
+every fixture.
