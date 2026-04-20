@@ -1587,3 +1587,384 @@ test "M13: 100-edit literal churn on circle_sample keeps arena bounded" {
     try expectUseCountsMatch(prev.module, oracle.module);
 }
 
+// =========================================================================
+// M14 — Chained-reparse invariants across mutation sections.
+//
+// The edit-count bound (HOT_EDIT_COALESCE_MAX = 256) is a defense-in-
+// depth backstop. The byte-watermark (M10) typically trips first on
+// realistic shaders because per-edit arena cost (~KB/edit for tokens +
+// CST splice + lowered subtree) reaches the 256 KiB floor well before
+// 256 edits. M14 covers one chained test per mutation section (M1, M3,
+// M4, M5, M6, M7) exercising two invariants that MUST hold regardless
+// of which watermark fires:
+//   (a) `retained_arenas.items.len == 0` on every result (commit-3
+//       invariant, locks the always-empty guarantee),
+//   (b) `hot_edits_since_full <= HOT_EDIT_COALESCE_MAX` when
+//       `reused == true`; equals 0 when `reused == false` (coalesce
+//       reset).
+// Long bursts also assert at least one coalesce fires, which proves
+// the reclamation path activates and correctly returns control to
+// `parseFull`.
+// =========================================================================
+
+const HOT_MAX = Incremental.HOT_EDIT_COALESCE_MAX;
+
+/// Shared per-iteration assertions for every M14 chain.
+fn expectChainInvariants(r: *const Incremental.ReparseResult) !void {
+    try std.testing.expectEqual(@as(usize, 0), r.retained_arenas.items.len);
+    if (r.reused) {
+        try std.testing.expect(r.hot_edits_since_full >= 1);
+        try std.testing.expect(r.hot_edits_since_full <= HOT_MAX);
+    } else {
+        try std.testing.expectEqual(@as(u16, 0), r.hot_edits_since_full);
+    }
+}
+
+test "M14.a: M1 attr-arg 300-edit chain holds invariants and coalesces" {
+    // `@binding(0)` literal flips `0`↔`1` 300×. Anchor: literal_expr
+    // inside attribute args (M1 path).
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "@group(0) @binding(0) var<uniform> u: f32;";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const first_paren = at(base_src, "(0)");
+    const second_paren = at(base_src[first_paren + 1 ..], "(0)") + first_paren + 1;
+    const lit_off: u32 = second_paren + 1;
+
+    var coalesce_count: u32 = 0;
+    var i: u32 = 0;
+    while (i < 300) : (i += 1) {
+        const ch: u8 = if (i % 2 == 0) '1' else '0';
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+        try expectChainInvariants(&next);
+        if (!next.reused) coalesce_count += 1;
+
+        prev.deinit();
+        prev = next;
+    }
+    try std.testing.expect(coalesce_count >= 1);
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+test "M14.b: M3 for-loop cond 300-edit chain holds invariants and coalesces" {
+    // For-loop condition RHS `<10`↔`<11`. M3 path.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() { for (var i=0; i<10; i=i+1) {} }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    var cur_ten: bool = true;
+    var coalesce_count: u32 = 0;
+    var i: u32 = 0;
+    while (i < 300) : (i += 1) {
+        const needle: []const u8 = if (cur_ten) "i<10" else "i<11";
+        const off: u32 = at(prev.source, needle) + 2;
+        const new_text: []const u8 = if (cur_ten) "11" else "10";
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = off,
+            .end = off + 2,
+            .new_text = new_text,
+        });
+        try expectChainInvariants(&next);
+        if (!next.reused) coalesce_count += 1;
+
+        cur_ten = !cur_ten;
+        prev.deinit();
+        prev = next;
+    }
+    try std.testing.expect(coalesce_count >= 1);
+}
+
+test "M14.c: M4 switch case-selector 300-edit chain holds invariants" {
+    // Case selector `0`↔`2`.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f(x:i32) { switch(x) { case 0: {} case 1: {} default: {} } }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    var cur_zero: bool = true;
+    var coalesce_count: u32 = 0;
+    var i: u32 = 0;
+    while (i < 300) : (i += 1) {
+        const needle: []const u8 = if (cur_zero) "case 0:" else "case 2:";
+        const off: u32 = at(prev.source, needle) + 5;
+        const new_text: []const u8 = if (cur_zero) "2" else "0";
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = off,
+            .end = off + 1,
+            .new_text = new_text,
+        });
+        try expectChainInvariants(&next);
+        if (!next.reused) coalesce_count += 1;
+
+        cur_zero = !cur_zero;
+        prev.deinit();
+        prev = next;
+    }
+    try std.testing.expect(coalesce_count >= 1);
+}
+
+test "M14.d: M5 if/else 600-edit chain holds invariants with multiple coalesces" {
+    // return literal `1`↔`3`.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f(x:i32)->i32 { if (x>0) { return 1; } else { return 2; } }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    var cur_one: bool = true;
+    var coalesce_count: u32 = 0;
+    var i: u32 = 0;
+    while (i < 600) : (i += 1) {
+        const needle: []const u8 = if (cur_one) "return 1" else "return 3";
+        const off: u32 = at(prev.source, needle) + @as(u32, @intCast("return ".len));
+        const new_text: []const u8 = if (cur_one) "3" else "1";
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = off,
+            .end = off + 1,
+            .new_text = new_text,
+        });
+        try expectChainInvariants(&next);
+        if (!next.reused) coalesce_count += 1;
+
+        cur_one = !cur_one;
+        prev.deinit();
+        prev = next;
+    }
+    // Long burst fires at least 2 coalesces (one per arena refill cycle).
+    try std.testing.expect(coalesce_count >= 2);
+}
+
+test "M14.e: hot_edits_since_full is monotonic within an in-place run" {
+    // Directly observe the counter: every successful in-place edit
+    // increments it by 1; a coalesce resets it to 0. Sub-HOT_MAX bursts
+    // may still coalesce via the byte-watermark; when they do, counter
+    // resets and starts climbing again.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() { var i=0; loop { if (i>5) { break; } i=i+1; } }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+    try std.testing.expectEqual(@as(u16, 0), prev.hot_edits_since_full);
+
+    var cur_five: bool = true;
+    var last_counter: u16 = 0;
+    var observed_increment: bool = false;
+    var observed_reset: bool = false;
+    var i: u32 = 0;
+    while (i < 200) : (i += 1) {
+        const needle: []const u8 = if (cur_five) "i>5" else "i>6";
+        const off: u32 = at(prev.source, needle) + 2;
+        const new_text: []const u8 = if (cur_five) "6" else "5";
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = off,
+            .end = off + 1,
+            .new_text = new_text,
+        });
+        try expectChainInvariants(&next);
+        if (next.reused) {
+            if (next.hot_edits_since_full == last_counter + 1) observed_increment = true;
+            last_counter = next.hot_edits_since_full;
+        } else {
+            try std.testing.expectEqual(@as(u16, 0), next.hot_edits_since_full);
+            observed_reset = true;
+            last_counter = 0;
+        }
+        cur_five = !cur_five;
+        prev.deinit();
+        prev = next;
+    }
+    try std.testing.expect(observed_increment);
+    // Reset may or may not fire in 200 edits depending on per-edit cost;
+    // `observed_reset` is informational, not a gate. The counter-never-
+    // exceeding-HOT_MAX invariant is enforced inside `expectChainInvariants`
+    // on every iteration above.
+    if (observed_reset) {
+        try std.testing.expect(prev.hot_edits_since_full < HOT_MAX);
+    }
+}
+
+test "M14.f: M7 member-access 300-edit chain holds invariants" {
+    // Toggle `s.a`↔`s.a*1.0`. Anchor: member_expr.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "struct S { a: f32 } fn f(s: S) -> f32 { return s.a; }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    var plain: bool = true;
+    var coalesce_count: u32 = 0;
+    var last_was_coalesce: bool = false;
+    var post_coalesce_reused: bool = false;
+    var i: u32 = 0;
+    while (i < 300) : (i += 1) {
+        const old_needle: []const u8 = if (plain) "return s.a;" else "return s.a*1.0;";
+        const new_text: []const u8 = if (plain) "return s.a*1.0;" else "return s.a;";
+        const off: u32 = at(prev.source, old_needle);
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = off,
+            .end = off + @as(u32, @intCast(old_needle.len)),
+            .new_text = new_text,
+        });
+        try expectChainInvariants(&next);
+        if (!next.reused) {
+            coalesce_count += 1;
+            last_was_coalesce = true;
+        } else if (last_was_coalesce) {
+            post_coalesce_reused = true;
+            last_was_coalesce = false;
+        }
+        plain = !plain;
+        prev.deinit();
+        prev = next;
+    }
+    try std.testing.expect(coalesce_count >= 1);
+    try std.testing.expect(post_coalesce_reused);
+}
+
+test "M14.g: M9 extended — 512-edit literal churn holds invariants" {
+    // Extends M9.a's 30-edit scope; final oracle match proves chained
+    // reparses across multiple coalesce cycles converge on the ground
+    // truth a fresh parseFull would produce.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn f() -> i32 { return 1 + 2; }";
+
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const lit_off: u32 = at(base_src, "1 + 2") + 4;
+    var coalesce_count: u32 = 0;
+    var i: u32 = 0;
+    while (i < 512) : (i += 1) {
+        const ch: u8 = '0' + @as(u8, @intCast((i + 1) % 10));
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+        try expectChainInvariants(&next);
+        if (!next.reused) coalesce_count += 1;
+        prev.deinit();
+        prev = next;
+    }
+    try std.testing.expect(coalesce_count >= 2);
+
+    var oracle = try Incremental.parseFull(gpa, prev.source);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, prev.module, oracle.module);
+    try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+// =========================================================================
+// M15 — Cross-section retained_arenas sentinel.
+//
+// Runs every M14 fixture through a short burst (well below HOT_MAX)
+// and asserts `retained_arenas.items.len == 0` on every result. Catches
+// any future commit that introduces a new growth site on any mutation
+// section without going through the edit-count coalesce path.
+// =========================================================================
+
+const M15Fixture = struct {
+    base_src: [:0]const u8,
+    needle: []const u8,
+    old_byte: []const u8,
+    new_byte: []const u8,
+    needle_offset: u32,
+};
+
+test "M15: retained_arenas stays empty across every mutation fixture" {
+    const gpa = std.testing.allocator;
+    const fixtures = [_]M15Fixture{
+        // M1 attr arg
+        .{
+            .base_src = "@group(0) @binding(0) var<uniform> u: f32;",
+            .needle = "@binding(",
+            .old_byte = "0",
+            .new_byte = "1",
+            .needle_offset = @intCast("@binding(".len),
+        },
+        // M3 for-loop cond
+        .{
+            .base_src = "fn f() { for (var i=0; i<9; i=i+1) {} }",
+            .needle = "i<",
+            .old_byte = "9",
+            .new_byte = "8",
+            .needle_offset = @intCast("i<".len),
+        },
+        // M4 switch case
+        .{
+            .base_src = "fn f(x:i32) { switch(x) { case 0: {} default: {} } }",
+            .needle = "case ",
+            .old_byte = "0",
+            .new_byte = "1",
+            .needle_offset = @intCast("case ".len),
+        },
+        // M5 if-body return
+        .{
+            .base_src = "fn f(x:i32)->i32 { if (x>0) { return 1; } else { return 2; } }",
+            .needle = "return ",
+            .old_byte = "1",
+            .new_byte = "3",
+            .needle_offset = @intCast("return ".len),
+        },
+        // M6 loop cond
+        .{
+            .base_src = "fn f() { var i=0; loop { if (i>5) { break; } i=i+1; } }",
+            .needle = "i>",
+            .old_byte = "5",
+            .new_byte = "6",
+            .needle_offset = @intCast("i>".len),
+        },
+        // M9 literal flip
+        .{
+            .base_src = "fn f() -> i32 { return 1 + 2; }",
+            .needle = "+ ",
+            .old_byte = "2",
+            .new_byte = "3",
+            .needle_offset = @intCast("+ ".len),
+        },
+    };
+
+    for (fixtures) |fx| {
+        var prev = try Incremental.parseFull(gpa, fx.base_src);
+        defer prev.deinit();
+        try std.testing.expectEqual(@as(usize, 0), prev.retained_arenas.items.len);
+
+        var cur_old: bool = true;
+        var i: u32 = 0;
+        while (i < 60) : (i += 1) {
+            const needle_start: u32 = at(prev.source, fx.needle) + fx.needle_offset;
+            const ch_old = if (cur_old) fx.old_byte else fx.new_byte;
+            const ch_new = if (cur_old) fx.new_byte else fx.old_byte;
+            // Sanity: the byte at needle_start must be ch_old[0] before the edit.
+            try std.testing.expectEqual(ch_old[0], prev.source[needle_start]);
+
+            const next = try Incremental.reparse(gpa, &prev, .{
+                .start = needle_start,
+                .end = needle_start + 1,
+                .new_text = ch_new,
+            });
+            try std.testing.expectEqual(@as(usize, 0), next.retained_arenas.items.len);
+            cur_old = !cur_old;
+            prev.deinit();
+            prev = next;
+        }
+    }
+}
+
