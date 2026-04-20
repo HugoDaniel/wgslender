@@ -131,8 +131,13 @@ pub const ReparseResult = struct {
     }
 
     pub fn deinit(self: *ReparseResult) void {
-        // Drop retained arenas first (they were handed off to us by a
-        // prior `reparse` call whose prev we absorbed), then our own.
+        // Invariant lock: the retained list should always be empty after
+        // any `reparse` / `parseFull` return. This assertion catches any
+        // future commit that reintroduces a growth site.
+        std.debug.assert(self.retained_arenas.items.len == 0);
+
+        // Drop retained arenas first (if any slipped through in a
+        // non-debug build), then our own.
         for (self.retained_arenas.items) |a| {
             a.deinit();
             self.gpa.destroy(a);
@@ -501,6 +506,18 @@ fn isHotPathAnchor(k: Cst.Kind) bool {
 /// and an untouched prev), so correctness degrades gracefully into the
 /// known-good full-parse path.
 pub fn reparse(
+    gpa: Allocator,
+    prev: *ReparseResult,
+    edit: Edit,
+) !ReparseResult {
+    const result = try reparseImpl(gpa, prev, edit);
+    // Invariant lock: every successful path must return a result with
+    // zero retained arenas (see ReparseResult.retained_arenas doc).
+    std.debug.assert(result.retained_arenas.items.len == 0);
+    return result;
+}
+
+fn reparseImpl(
     gpa: Allocator,
     prev: *ReparseResult,
     edit: Edit,
