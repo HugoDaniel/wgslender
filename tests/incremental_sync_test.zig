@@ -77,25 +77,52 @@ test "incremental sync: semantic edit invalidates analysis cache" {
     try std.testing.expect(doc2.analysis == null);
 }
 
-test "incremental sync: trivia-only edit keeps analysis cache hot" {
-    const ctx = try setup("fn f() {}");
+test "incremental sync: zero-delta trivia edit keeps analysis cache hot" {
+    // Only zero-delta trivia edits preserve the analysis cache: the
+    // non-trivia token stream, AST spans, and symbol table are all
+    // byte-for-byte identical, so the cached `AnalysisResult` stays
+    // valid. Non-zero-delta trivia edits (insert/delete/length-changing
+    // modifications) shift spans and therefore invalidate the cache
+    // even though token *content* is unchanged.
+    const ctx = try setup("// hello\nfn f() {}");
     defer teardown(ctx);
     const before = try ctx.handler.analyzeDocument("test://file.wgsl");
     const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
     try std.testing.expect(doc.analysis != null);
 
-    // Insert a line comment + newline at the top — no non-trivia tokens
-    // change, so the cached analysis must survive.
+    // Replace "hello" with "world" inside the comment — same byte count.
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 3 },
+        .end = .{ .line = 0, .character = 8 },
+    }, "world");
+
+    const doc2 = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expect(doc2.analysis != null);
+    // Cached pointer is unchanged — trivia shortcut preserves
+    // `module_version`, so `analyzeDocument` returns the same object.
+    try std.testing.expectEqual(before, doc2.analysis.?);
+    try std.testing.expectEqualStrings("// world\nfn f() {}", doc2.source);
+}
+
+test "incremental sync: non-zero-delta trivia edit invalidates cache" {
+    // Inserting a new trivia token shifts every downstream span — the
+    // cached analysis's type/expr maps index off offsets that no longer
+    // match. `module_version` bumps on the reparse and the handler drops
+    // the cache. The next `analyzeDocument` call produces a fresh one.
+    const ctx = try setup("fn f() {}");
+    defer teardown(ctx);
+    const before = try ctx.handler.analyzeDocument("test://file.wgsl");
+    const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expect(doc.analysis != null);
+    try std.testing.expectEqual(before, doc.analysis.?);
+
     try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
         .end = .{ .line = 0, .character = 0 },
     }, "// comment\n");
 
     const doc2 = ctx.handler.documents.getPtr("test://file.wgsl").?;
-    try std.testing.expect(doc2.analysis != null);
-    // The cached pointer is unchanged.
-    try std.testing.expectEqual(before, doc2.analysis.?);
-    // Source was updated.
+    try std.testing.expect(doc2.analysis == null);
     try std.testing.expectEqualStrings("// comment\nfn f() {}", doc2.source);
 }
 

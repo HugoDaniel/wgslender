@@ -21,13 +21,24 @@ pub const Document = struct {
     version: i32,
     /// Cached analysis result. Invalidated on document change/close.
     analysis: ?*wgslender.Validator.AnalysisResult = null,
-    /// Sentinel-terminated source used by the analysis. Must stay alive
-    /// as long as the analysis result since the AST holds slices into it.
+    /// Sentinel-terminated source used by the analysis. Written only by
+    /// the slow fallback path in `analyzeDocument` (when `doc.parse` is
+    /// unavailable and we must re-tokenize + re-parse from scratch). The
+    /// fast path pulls a live sentinel-terminated source straight out of
+    /// `doc.parse.?.source`, which is arena-owned and stable for as long
+    /// as `doc.parse` stays put.
     analysis_source: ?[:0]u8 = null,
+    /// `parse.module_version` captured at the moment `doc.analysis` was
+    /// computed. The cache is hot iff `analysis != null`, `parse != null`,
+    /// and this field matches the current `parse.module_version`. Any
+    /// mismatch signals that the module's symbol table, AST nodes, or
+    /// expression offsets have moved and the cached type/expr/const maps
+    /// are stale.
+    analysis_module_version: u32 = 0,
     /// Persistent parse state (source + AST + CST) kept fresh across
-    /// `didChange` edits via `Incremental.reparse`. Enables future
-    /// anchor-based incremental reparse without touching this struct
-    /// again. `null` if initial parse failed.
+    /// `didChange` edits via `Incremental.reparse`. Consumed directly by
+    /// `analyzeDocument` to skip re-tokenize + re-parse when valid.
+    /// `null` if initial parse failed.
     parse: ?wgslender.Incremental.ReparseResult = null,
 };
 
@@ -113,6 +124,10 @@ pub fn deinit(self: *Handler) void {
 
 fn invalidateAnalysis(self: *Handler, uri: []const u8) void {
     const doc = self.documents.getPtr(uri) orelse return;
+    self.invalidateAnalysisAt(doc);
+}
+
+fn invalidateAnalysisAt(self: *Handler, doc: *Document) void {
     if (doc.analysis) |a| {
         a.deinit(self.gpa);
         self.gpa.destroy(a);
@@ -122,6 +137,7 @@ fn invalidateAnalysis(self: *Handler, uri: []const u8) void {
         self.gpa.free(s);
         doc.analysis_source = null;
     }
+    doc.analysis_module_version = 0;
 }
 
 /// (Re)build the persistent `doc.parse` from `doc.source`. Best-effort:
@@ -188,19 +204,101 @@ pub fn getDocumentSource(self: *const Handler, uri: []const u8) ?[]const u8 {
 /// Returns cached analysis result for a document, running analysis if needed.
 /// The returned pointer is owned by the Handler and valid until the document
 /// is changed or closed.
+///
+/// Fast path: when `doc.parse` is populated and its `module_version` matches
+/// the cached analysis's version, returns the cache untouched. Otherwise
+/// runs `Validator.analyze` directly against `doc.parse.module`, skipping
+/// the full Lexer + Parser pipeline. Only when `doc.parse` is unavailable
+/// (initial parse OOM, reparse error) does the fallback path do a scratch
+/// `analyzeWithOptions` run against a duped source buffer.
 pub fn analyzeDocument(self: *Handler, uri: []const u8) !*wgslender.Validator.AnalysisResult {
     const doc = self.documents.getPtr(uri) orelse return error.DocumentNotFound;
-    if (doc.analysis) |a| return a;
 
-    // The sentinel-terminated source must stay alive as long as the analysis
-    // result, because the AST holds slices into it.
+    // Cache hit: the parse the cache was computed against is still current.
+    if (doc.analysis) |a| {
+        if (doc.parse) |*p| {
+            if (doc.analysis_module_version == p.module_version) return a;
+        } else {
+            // No parse to compare against — treat as hot (legacy fallback
+            // cache, valid until something explicitly invalidates).
+            return a;
+        }
+        self.invalidateAnalysisAt(doc);
+    }
+
+    if (doc.parse == null) self.rebuildParse(doc);
+
+    if (doc.parse) |*p| {
+        return self.analyzeFromParse(doc, p);
+    }
+
+    return self.analyzeFromScratch(doc);
+}
+
+/// Fast path: run Validator directly against the live CST-lowered AST.
+/// The AnalysisResult's arena holds only diagnostics + type caches; the
+/// module itself lives in `parse.arena` and outlives the cache only until
+/// the next `prev.deinit()` in `updateParseAfterEdit`, which always calls
+/// `invalidateAnalysisAt` before tearing down.
+fn analyzeFromParse(
+    self: *Handler,
+    doc: *Document,
+    parse: *wgslender.Incremental.ReparseResult,
+) !*wgslender.Validator.AnalysisResult {
+    var arena = std.heap.ArenaAllocator.init(self.gpa);
+    errdefer arena.deinit();
+    const alloc = arena.allocator();
+
+    var analyzed = try wgslender.Validator.analyze(alloc, parse.module, .{});
+
+    // Merge parser + visit-pass errors (E0001/E0004/E0101/E0102/E0401)
+    // into the validator's diagnostics. Mirrors the slow path at
+    // src/root.zig:179-187 so both entry points produce identical sets.
+    for (parse.errors) |err| {
+        const end = if (err.end > err.pos) err.end else err.pos + 1;
+        if (err.code.len > 0) {
+            analyzed.diagnostics.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
+        } else {
+            analyzed.diagnostics.addErrorRange(alloc, err.pos, end, err.message);
+        }
+        analyzed.valid = false;
+    }
+
+    // DCE writes `is_live` flags on module.symbols. Reset first so
+    // repeated analyze calls on the same module don't accumulate
+    // incorrect liveness (e.g., a symbol that became unreachable after
+    // an edit must see its prior `is_live = true` cleared).
+    for (parse.module.symbols.items) |*sym| {
+        sym.flags.is_live = false;
+    }
+    _ = wgslender.Dce.mark(parse.arena.allocator(), parse.module) catch {};
+
+    analyzed._arena = arena;
+
+    const result = try self.gpa.create(wgslender.Validator.AnalysisResult);
+    errdefer self.gpa.destroy(result);
+    result.* = analyzed;
+
+    doc.analysis = result;
+    doc.analysis_module_version = parse.module_version;
+    // `analysis_source` intentionally left null — the live source is
+    // parse.source, which outlives this cache.
+    return result;
+}
+
+/// Slow fallback: used only when `doc.parse` is unavailable (initial
+/// parse OOM'd or a reparse failure dropped it and the subsequent
+/// rebuild also failed). Behavior matches the pre-wiring path exactly.
+fn analyzeFromScratch(
+    self: *Handler,
+    doc: *Document,
+) !*wgslender.Validator.AnalysisResult {
     const source_z = try self.gpa.dupeZ(u8, doc.source);
     errdefer self.gpa.free(source_z);
 
     const result = try self.gpa.create(wgslender.Validator.AnalysisResult);
     errdefer self.gpa.destroy(result);
     result.* = try wgslender.analyzeWithOptions(self.gpa, source_z, .{});
-    // Run DCE to compute is_live flags for dead code diagnostics.
     if (result.module) |module| {
         if (result._arena) |*arena| {
             _ = wgslender.Dce.mark(arena.allocator(), module) catch {};
@@ -208,6 +306,9 @@ pub fn analyzeDocument(self: *Handler, uri: []const u8) !*wgslender.Validator.An
     }
     doc.analysis = result;
     doc.analysis_source = source_z;
+    // No parse to key against; leave analysis_module_version at its
+    // default (0). `analyzeDocument`'s cache-hit branch handles the
+    // "no parse" case by returning the cache unconditionally.
     return result;
 }
 
@@ -2576,25 +2677,34 @@ pub fn changeDocumentIncremental(self: *Handler, uri: []const u8, range: Range, 
 
     switch (classification) {
         .no_op => {
-            // Textually identical — discard the (byte-identical) new buffer.
+            // Textually identical — discard the (byte-identical) new buffer
+            // and skip the reparse pipeline entirely. `doc.parse` stays
+            // pointing at the unchanged tree; cache stays hot.
             self.gpa.free(new_source);
+            return;
         },
         .trivia_only => {
-            // Keep the cached analysis; just swap in the new source bytes.
+            // Keep the cached analysis — module_version preservation in
+            // `updateParseAfterEdit` will honor this when the trivia
+            // shortcut fires. If the reparse takes a non-shortcut path,
+            // the version bump will invalidate the cache.
             self.gpa.free(doc.source);
             doc.source = new_source;
         },
         .semantic => {
-            self.invalidateAnalysis(uri);
+            // Analysis invalidation is handled by `updateParseAfterEdit`
+            // (it runs before `prev.deinit` so cached pointers into
+            // `prev.arena` get freed at the right time). Just swap the
+            // source bytes here.
             self.gpa.free(doc.source);
             doc.source = new_source;
         },
     }
 
-    // Keep `doc.parse` (CST + AST) in sync with `doc.source` so downstream
-    // anchor-based reparse can consume it. Uses `Incremental.reparse` when
-    // we have a prior parse so later stages can short-circuit to subtree
-    // reuse; otherwise rebuilds from scratch.
+    // Keep `doc.parse` (CST + AST) in sync with `doc.source`. The
+    // `module_version` on the returned result tells us whether the
+    // cached analysis can survive (trivia shortcut → preserved; any
+    // other path → invalidated before `prev` is torn down).
     self.updateParseAfterEdit(doc, .{
         .start = @intCast(start),
         .end = @intCast(end),
@@ -2604,14 +2714,44 @@ pub fn changeDocumentIncremental(self: *Handler, uri: []const u8, range: Range, 
 
 fn updateParseAfterEdit(self: *Handler, doc: *Document, edit: wgslender.Incremental.Edit) void {
     if (doc.parse) |*prev| {
+        const prev_version = prev.module_version;
         const updated = wgslender.Incremental.reparse(self.gpa, prev, edit) catch {
-            // Reparse failed — drop the stale tree. `doc.source` is already
-            // canonical, so the next `analyzeDocument` call still works via
-            // the legacy path.
+            // Reparse failed — the analysis (if any) held pointers into
+            // `prev.arena`, which is about to be deinit'd. Invalidate
+            // first so we don't leave a dangling cache.
+            self.invalidateAnalysisAt(doc);
             prev.deinit();
             doc.parse = null;
             return;
         };
+
+        if (updated.module_version != prev_version) {
+            // Any non-trivia-shortcut path bumps module_version. The
+            // cached symbol/struct/expr types all index off the module
+            // whose layout has changed; drop the cache before `prev`
+            // (and therefore prev.arena) is torn down.
+            self.invalidateAnalysisAt(doc);
+        } else if (doc.analysis) |a| {
+            // Trivia shortcut fired. `module.source` got repointed at
+            // the new arena-owned bytes (see `tryTriviaOnlyShortcut`),
+            // but the cached diagnostics still reference the pre-edit
+            // bytes for line/column rendering. Rebuild the line index
+            // against the new source so future diagnostic formatting
+            // produces correct coordinates.
+            if (a._arena) |*ana_arena| {
+                const ana_alloc = ana_arena.allocator();
+                a.diagnostics.source = updated.module.source;
+                a.diagnostics.line_index.deinit(ana_alloc);
+                if (wgslender.Diagnostic.LineIndex.init(ana_alloc, updated.module.source)) |idx| {
+                    a.diagnostics.line_index = idx;
+                } else |_| {
+                    // Line-index rebuild failed — safest to drop the
+                    // cache rather than leave a half-updated one.
+                    self.invalidateAnalysisAt(doc);
+                }
+            }
+        }
+
         prev.deinit();
         doc.parse = updated;
         return;
