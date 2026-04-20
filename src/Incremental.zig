@@ -87,6 +87,19 @@ pub const ReparseResult = struct {
     /// `reparse`. Tests and telemetry gate on this to measure hot-path
     /// coverage; callers treat it as informational only.
     reused: bool = false,
+    /// Monotonic counter over "module has been mutated in a way that
+    /// invalidates semantic caches (types, expr_types, struct_types,
+    /// symbol_types, const_values, diagnostic line index)". Preserved
+    /// by `tryTriviaOnlyShortcut` (zero-delta trivia cannot affect any
+    /// of the above). Bumped by every other successful path, including
+    /// symbol-free anchors (which mutate AST pointers), compound_stmt
+    /// and decl_stmt (symbol table mutations), and `parseFull` (fresh
+    /// module). Consumers that cache analysis results keyed off a
+    /// `ReparseResult` compare the stored version against the current
+    /// one to decide cache validity — pointer equality on `module` is
+    /// insufficient because every hot path preserves the pointer by
+    /// design. Wraps on overflow; callers must compare with `!=`.
+    module_version: u32 = 0,
     /// Successful in-place hot-path reparses since the last full parse
     /// (either an initial `parseFull` or a coalescing fallback). The
     /// byte-watermark (`prev.arena.queryCapacity() > 8 * source.len`)
@@ -529,7 +542,9 @@ fn reparseImpl(
         // Pure no-op: still full-parse to return an independent result.
         // Callers that want to avoid the cost should short-circuit before
         // calling reparse.
-        return parseFull(gpa, prev.source);
+        var result = try parseFull(gpa, prev.source);
+        result.module_version = prev.module_version +% 1;
+        return result;
     }
 
     // Build new source byte buffer. Needed both for the hot path and
@@ -576,7 +591,9 @@ fn reparseImpl(
         // the correctness oracle, so this is safe.
     }
 
-    return parseFull(gpa, new_buf);
+    var result = try parseFull(gpa, new_buf);
+    result.module_version = prev.module_version +% 1;
+    return result;
 }
 
 /// Zero-delta trivia-only shortcut. Copies the new source into
@@ -612,6 +629,10 @@ fn tryTriviaOnlyShortcut(
         .retained_arenas = prev.retained_arenas,
         .errors = prev.errors,
         .hot_edits_since_full = prev.hot_edits_since_full,
+        // Trivia-only zero-delta: non-trivia tokens are byte-identical,
+        // spans unchanged, symbol table unchanged. Analysis caches keyed
+        // off this version stay valid without a Validator re-run.
+        .module_version = prev.module_version,
     };
 
     const stub = try gpa.create(std.heap.ArenaAllocator);
@@ -950,6 +971,7 @@ fn tryAddSubSpliceInPlace(
         .retained_arenas = prev.retained_arenas,
         .errors = merged,
         .hot_edits_since_full = prev.hot_edits_since_full + 1,
+        .module_version = prev.module_version +% 1,
     };
 
     const stub = try gpa.create(std.heap.ArenaAllocator);
@@ -1133,6 +1155,7 @@ fn tryCompoundSpliceInPlace(
         .retained_arenas = prev.retained_arenas,
         .errors = merged,
         .hot_edits_since_full = prev.hot_edits_since_full + 1,
+        .module_version = prev.module_version +% 1,
     };
 
     const stub = try gpa.create(std.heap.ArenaAllocator);
@@ -1331,6 +1354,7 @@ fn tryDeclStmtSpliceInPlace(
         .retained_arenas = prev.retained_arenas,
         .errors = merged,
         .hot_edits_since_full = prev.hot_edits_since_full + 1,
+        .module_version = prev.module_version +% 1,
     };
 
     const stub = try gpa.create(std.heap.ArenaAllocator);
