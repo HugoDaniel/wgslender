@@ -175,6 +175,10 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/decl_span_test.zig", target, optimize, &.{w});
     // Incremental.reparse — bulk corpus over compute.toys + composition.
     _ = addTestStep(b, test_step, "tests/incremental_corpus_test.zig", target, optimize, &.{w});
+    // Incremental.reparse — corpus × mutation-section add/sub coverage
+    // with per-symbol use_count oracle (complements the aggregate-sum
+    // I-01 in incremental_corpus_test.zig).
+    _ = addTestStep(b, test_step, "tests/incremental_corpus_addsub_test.zig", target, optimize, &.{w});
     // Non-gating perf smoke for the Phase 2 compound_stmt hot path. Reports
     // a speedup ratio over parseFull on bridge.wgsl and asserts a loose
     // floor so regressions surface in CI logs.
