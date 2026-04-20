@@ -579,3 +579,188 @@ test "D-09: decl in nested compound" {
         true,
     );
 }
+
+// =========================================================================
+// S-E0102-* — sub-walk must not decrement use_count for idents whose ref
+// was set by the E0102 "use-before-decl" branch.
+//
+// Bug shape: `.add` at src/AstVisit.zig:253 sets `expr.ref` but skips
+// `use_count += 1` on the E0102 branch; `.sub` used to gate on
+// `ref.isValid()` alone and over-decremented on removal. The
+// per-symbol oracle (`expectUseCountsMatch`) catches the drift.
+//
+// Every symbol used below has a unique name (`fwd`, `lateZ`, `earlyZ`)
+// so the oracle's sum-by-name comparison is not masked by aliasing a
+// module-scope decl with a local one.
+// =========================================================================
+
+test "S-E0102-REMOVE: remove an E0102 forward-ref does not leak a decrement" {
+    // Base: `fwd` has one resolved use (the second `return fwd;`) plus
+    // one E0102 forward-ref (the first `return fwd;`). `fwd.use_count`
+    // is 1 — the forward-ref contributed nothing.
+    //
+    // Edit replaces the first `return fwd;` with `return 0;`. Sub-walk
+    // traverses the E0102 ident. With the flag-based gate it skips;
+    // without the fix it would decrement to 0 while the oracle still
+    // reports 1.
+    const src: [:0]const u8 =
+        "fn f() -> i32 { return fwd; let fwd: i32 = 1; return fwd; }";
+    const new_src: []const u8 =
+        "fn f() -> i32 { return 0; let fwd: i32 = 1; return fwd; }";
+    const needle: []const u8 = "return fwd;";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = pos, .end = pos + @as(u32, @intCast(needle.len)), .new_text = "return 0;" },
+        new_src,
+        true,
+    );
+}
+
+test "S-E0102-ADD: introduce an E0102 forward-ref does not leak an increment" {
+    // Base has NO E0102 issues. Edit introduces a forward-ref in a
+    // previously-clean return_stmt. Add-walk must take the E0102 branch
+    // (ref set, no bump, `use_count_incremented` stays false). Oracle
+    // agrees at use_count == 1.
+    const src: [:0]const u8 =
+        "fn f() -> i32 { return 0; let fwd: i32 = 1; return fwd; }";
+    const new_src: []const u8 =
+        "fn f() -> i32 { return fwd; let fwd: i32 = 1; return fwd; }";
+    const needle: []const u8 = "return 0;";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = pos, .end = pos + @as(u32, @intCast(needle.len)), .new_text = "return fwd;" },
+        new_src,
+        true,
+    );
+}
+
+test "S-E0102-COMPOUND: compound_stmt anchor replacing a block with an E0102 ident" {
+    // The `fwd` inside the inner block is use-before-decl against the
+    // outer `let fwd`. Replacing the whole inner compound exercises the
+    // compound_stmt sub+add path (Incremental.zig:1006) with an E0102
+    // ident to skip over in the sub-walk.
+    const src: [:0]const u8 =
+        "fn f() -> i32 { { let bad: i32 = fwd; } let fwd: i32 = 1; return fwd; }";
+    const new_src: []const u8 =
+        "fn f() -> i32 { { } let fwd: i32 = 1; return fwd; }";
+    const needle: []const u8 = "{ let bad: i32 = fwd; }";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = pos, .end = pos + @as(u32, @intCast(needle.len)), .new_text = "{ }" },
+        new_src,
+        true,
+    );
+}
+
+test "S-E0102-ALTERNATE: 10-step alternation keeps per-symbol use_count matched to oracle" {
+    // Long-tail pin: the bug only compounds across repeated sub-walks
+    // that traverse an E0102 ident. F-SUP-04 checks only errors; this
+    // version asserts `expectUseCountsMatch` every step.
+    //
+    // Use a single-letter forward-ref so `return q;` and `return 0;`
+    // are the same byte length — the edit offset/length then stays
+    // stable across iterations, keeping the hot path engaged on
+    // every step.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f() -> i32 { return 0; let q: i32 = 1; return q; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const ret_start: u32 = @intCast(std.mem.indexOf(u8, base_src, "return 0;").?);
+    const ret_len: u32 = @intCast("return 0;".len);
+    var i: u8 = 0;
+    while (i < 10) : (i += 1) {
+        const new_text: []const u8 = if (i % 2 == 0) "return q;" else "return 0;";
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = ret_start,
+            .end = ret_start + ret_len,
+            .new_text = new_text,
+        });
+        try std.testing.expect(next.reused);
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectUseCountsMatch(next.module, oracle.module);
+
+        prev.deinit();
+        prev = next;
+    }
+}
+
+test "S-E0102-TO-RESOLVED: E0102 ident becomes a counted use after the decl moves up" {
+    // Base: first `return lateZ;` is E0102 (decl comes later). Second
+    // `return lateZ;` resolves. `lateZ.use_count == 1`.
+    //
+    // Edit replaces the compound body so the `let lateZ` moves above
+    // both returns. Oracle: `lateZ.use_count == 2`. Hits the
+    // compound_stmt path and exposes the interaction between an E0102
+    // ref vanishing from the old subtree and a counted ref appearing
+    // in the new subtree at the same byte position.
+    const src: [:0]const u8 =
+        "fn f() -> i32 { return lateZ; let lateZ: i32 = 1; return lateZ; }";
+    const new_src: []const u8 =
+        "fn f() -> i32 { let lateZ: i32 = 1; return lateZ; return lateZ; }";
+    const needle: []const u8 = "{ return lateZ; let lateZ: i32 = 1; return lateZ; }";
+    const replacement: []const u8 = "{ let lateZ: i32 = 1; return lateZ; return lateZ; }";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = pos, .end = pos + @as(u32, @intCast(needle.len)), .new_text = replacement },
+        new_src,
+        true,
+    );
+}
+
+test "S-E0102-RESOLVED-TO: counted uses become E0102 after the decl moves down" {
+    // Mirror of S-E0102-TO-RESOLVED: both `return earlyZ;` are
+    // counted in the base (`earlyZ.use_count == 2`). Moving the
+    // `let earlyZ = 1;` below both returns turns both uses into
+    // E0102 forward-refs (oracle: use_count == 0). Sub-walk must
+    // decrement both counted refs; add-walk must NOT re-count them.
+    // Guards against a sloppy fix that simply stops decrementing.
+    const src: [:0]const u8 =
+        "fn f() -> i32 { let earlyZ: i32 = 1; return earlyZ; return earlyZ; }";
+    const new_src: []const u8 =
+        "fn f() -> i32 { return earlyZ; return earlyZ; let earlyZ: i32 = 1; }";
+    const needle: []const u8 = "{ let earlyZ: i32 = 1; return earlyZ; return earlyZ; }";
+    const replacement: []const u8 = "{ return earlyZ; return earlyZ; let earlyZ: i32 = 1; }";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = pos, .end = pos + @as(u32, @intCast(needle.len)), .new_text = replacement },
+        new_src,
+        true,
+    );
+}
+
+test "S-E0102-MANY: removing some of several E0102 refs to the same symbol decrements zero" {
+    // Three E0102 refs in `return fwd + fwd + fwd;` plus one counted
+    // use in `return fwd;`. `fwd.use_count == 1` pre-edit.
+    //
+    // Edit drops one `+ fwd` term. Sub-walk must decrement ZERO
+    // (all three refs in the old subtree were E0102), not three,
+    // even though all three had `ref.isValid()`.
+    const src: [:0]const u8 =
+        "fn f() -> i32 { return fwd + fwd + fwd; let fwd: i32 = 1; return fwd; }";
+    const new_src: []const u8 =
+        "fn f() -> i32 { return fwd + fwd; let fwd: i32 = 1; return fwd; }";
+    const needle: []const u8 = "return fwd + fwd + fwd;";
+    const replacement: []const u8 = "return fwd + fwd;";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = pos, .end = pos + @as(u32, @intCast(needle.len)), .new_text = replacement },
+        new_src,
+        true,
+    );
+}

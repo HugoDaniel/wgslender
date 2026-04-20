@@ -928,7 +928,15 @@ pub const ExprFlags = packed struct(u8) {
     call_can_be_unwrapped_if_unused: bool = false,
     is_constant: bool = false,
     from_pure_function: bool = false,
-    _padding: u4 = 0,
+    // Set on an `IdentExpr` at the exact moment the `.add` pass bumps
+    // `symbols[ref.index()].use_count`. The `.sub` pass gates its
+    // decrement on this bit, not on `ref.isValid()`, so an ident
+    // resolved by the E0102 "use-before-decl" branch — where `ref` is
+    // set for IDE goto-def but `use_count` is intentionally not
+    // bumped — is correctly skipped on subtree removal. Meaningful
+    // only on `IdentExpr`; other variants leave it at `false`.
+    use_count_incremented: bool = false,
+    _padding: u3 = 0,
 };
 
 // =========================================================================

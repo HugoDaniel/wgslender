@@ -248,25 +248,35 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
                                     const idx = ref.index();
                                     if (idx < ctx.symbols.len) {
                                         ctx.symbols[idx].use_count += 1;
+                                        // Pair the bump with the flag so
+                                        // `.sub` can tell this ident from
+                                        // an E0102 ref that was set but
+                                        // never counted.
+                                        expr.flags.use_count_incremented = true;
                                     }
                                 }
                             } else if (lookupSymbolAnyLoc(ctx, expr.name)) |ref| {
                                 const msg = try std.fmt.allocPrint(ctx.arena, "'{s}' is used before its declaration", .{expr.name});
                                 try ctx.errors.append(ctx.arena, .{ .message = msg, .pos = expr.loc, .code = "E0102" });
                                 expr.ref = ref;
+                                // use_count_incremented stays false — the
+                                // E0102 branch sets `ref` for IDE goto-def
+                                // but intentionally skips the bump.
                             }
                         },
                         .sub => {
                             // Subtree carries pre-bound refs from a prior
-                            // Pass 2. Decrement the use_count for each one
-                            // we can still index into. No lookup, no scope
-                            // access, no error emission — the subtree is
-                            // going away.
-                            if (expr.ref.isValid()) {
+                            // Pass 2. Decrement only idents that `.add`
+                            // actually bumped; E0102 refs have
+                            // `ref.isValid()` without the paired
+                            // increment. No lookup, no scope access, no
+                            // error emission — the subtree is going away.
+                            if (expr.flags.use_count_incremented) {
                                 const idx = expr.ref.index();
                                 if (idx < ctx.symbols.len and ctx.symbols[idx].use_count > 0) {
                                     ctx.symbols[idx].use_count -= 1;
                                 }
+                                expr.flags.use_count_incremented = false;
                             }
                         },
                     },
