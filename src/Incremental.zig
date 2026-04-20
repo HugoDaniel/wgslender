@@ -30,6 +30,14 @@ const AstVisit = @import("AstVisit.zig");
 
 const Incremental = @This();
 
+/// Maximum successful in-place hot-path reparses before the driver
+/// forces a coalescing full parse. Pairs with the byte-watermark in
+/// `tryIncrementalReparseInPlace`: the byte bound catches long sessions
+/// on mid-size shaders, this count bound catches long sessions on tiny
+/// shaders where arena capacity drifts slower than the keystroke rate.
+/// Exposed for tests that assert exact coalesce boundaries.
+pub const HOT_EDIT_COALESCE_MAX: u16 = 256;
+
 /// A single contiguous byte-level edit, in OLD-source coordinates.
 /// `[start, end)` is the range being replaced (may be empty for pure
 /// inserts), `new_text` is the replacement (may be empty for pure deletes).
@@ -82,6 +90,18 @@ pub const ReparseResult = struct {
     /// `reparse`. Tests and telemetry gate on this to measure hot-path
     /// coverage; callers treat it as informational only.
     reused: bool = false,
+    /// Successful in-place hot-path reparses since the last full parse
+    /// (either an initial `parseFull` or a coalescing fallback). The
+    /// byte-watermark (`prev.arena.queryCapacity() > 8 * source.len`)
+    /// bounds memory growth per edit, but can lag hundreds of edits on
+    /// a tiny shader before the 256 KiB floor is passed. This counter
+    /// backstops that: `tryIncrementalReparseInPlace` bails with
+    /// `error.EditCountWatermarkTripped` when it reaches
+    /// `HOT_EDIT_COALESCE_MAX`, yielding one forced `parseFull` per
+    /// 256-edit burst. `parseFull` resets the counter to 0; the
+    /// trivia-only shortcut preserves it (trivia costs nothing but also
+    /// doesn't discharge accumulated debt on prev.arena).
+    hot_edits_since_full: u16 = 0,
     /// Side-table mapping scope-opener CST nodes (fn_decl, compound_stmt,
     /// for_stmt) to the AST scope they correspond to. Populated by
     /// `buildScopeForCstNodeMap` after every full parse, and by the
@@ -565,6 +585,8 @@ fn tryTriviaOnlyShortcut(
     // Trivia-only shortcut runs only when new_text.len == (end - start)
     // (zero-delta). No anchor is replaced, so prev's errors pass through
     // unchanged — same byte positions are still valid in the new source.
+    // `hot_edits_since_full` is preserved: trivia doesn't allocate new
+    // arena bytes but also doesn't discharge existing debt.
     const result = ReparseResult{
         .gpa = gpa,
         .arena = prev.arena,
@@ -575,6 +597,7 @@ fn tryTriviaOnlyShortcut(
         .scope_for_cst_node = prev.scope_for_cst_node,
         .retained_arenas = prev.retained_arenas,
         .errors = prev.errors,
+        .hot_edits_since_full = prev.hot_edits_since_full,
     };
 
     const stub = try gpa.create(std.heap.ArenaAllocator);
@@ -822,6 +845,12 @@ fn tryIncrementalReparseInPlace(
     //    compound_stmt and decl_stmt re-lower and re-visit the entire
     //    enclosing body plus append symbols, so realistic edit bursts
     //    on typical module sizes need more headroom before compacting.
+    // Edit-count coalesce. On tiny shaders the byte-watermark below
+    // can take hundreds of edits to trip; this bound forces a fresh
+    // parseFull every `HOT_EDIT_COALESCE_MAX` in-place extensions so
+    // arena debt never accumulates without bound.
+    if (prev.hot_edits_since_full >= HOT_EDIT_COALESCE_MAX) return error.EditCountWatermarkTripped;
+
     const big_floor: bool = is_compound_inplace or is_decl_stmt_inplace;
     const compaction_floor: usize = if (big_floor) 4 * 1024 * 1024 else 256 * 1024;
     const compaction_ratio: usize = 8;
@@ -1031,6 +1060,7 @@ fn tryAddSubSpliceInPlace(
         .scope_for_cst_node = tmp_result.scope_for_cst_node,
         .retained_arenas = prev.retained_arenas,
         .errors = merged,
+        .hot_edits_since_full = prev.hot_edits_since_full + 1,
     };
 
     const stub = try gpa.create(std.heap.ArenaAllocator);
@@ -1213,6 +1243,7 @@ fn tryCompoundSpliceInPlace(
         .scope_for_cst_node = tmp_result.scope_for_cst_node,
         .retained_arenas = prev.retained_arenas,
         .errors = merged,
+        .hot_edits_since_full = prev.hot_edits_since_full + 1,
     };
 
     const stub = try gpa.create(std.heap.ArenaAllocator);
@@ -1410,6 +1441,7 @@ fn tryDeclStmtSpliceInPlace(
         .scope_for_cst_node = tmp_result.scope_for_cst_node,
         .retained_arenas = prev.retained_arenas,
         .errors = merged,
+        .hot_edits_since_full = prev.hot_edits_since_full + 1,
     };
 
     const stub = try gpa.create(std.heap.ArenaAllocator);
