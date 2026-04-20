@@ -269,6 +269,11 @@ pub fn build(b: *std.Build) void {
     // on the document's current source (the strongest consistency check
     // for the incremental wiring).
     _ = addTestStep(b, test_step, "tests/lsp_analysis_cache_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // LSP analyze perf smoke: records Lexer.tokenize invocations
+    // across a 200-keystroke burst against bridge.wgsl. Enforces a
+    // generous upper bound so a reintroduced tokenize path in
+    // analyzeDocument surfaces before it ships.
+    _ = addTestStep(b, test_step, "tests/lsp_analyze_perf_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/formatting_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/semantic_tokens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/selection_range_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });

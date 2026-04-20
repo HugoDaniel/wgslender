@@ -10,6 +10,13 @@ const Ast = @import("Ast.zig");
 
 const Lexer = @This();
 
+/// Process-global counter of `tokenize` calls. Bumped by the trivia-free
+/// full-tokenize entry point used by the classic `Parser.init` path. Used
+/// by the LSP perf smoke test (`tests/lsp_analyze_perf_test.zig`) to
+/// prove that `analyzeDocument` on a live `doc.parse` skips tokenize.
+/// Not thread-safe; tests are single-threaded.
+pub var tokenize_count: u64 = 0;
+
 source: [:0]const u8,
 pos: u32,
 tokens: std.MultiArrayList(Token),
@@ -376,6 +383,7 @@ pub fn init(source: [:0]const u8) Lexer {
 /// contains only real tokens followed by an `.eof` sentinel, matching the
 /// pre-trivia-era layout. Every token carries a valid `[start, end)` range.
 pub fn tokenize(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayList(Token) {
+    tokenize_count += 1;
     var lex = Lexer{
         .source = source,
         .pos = 0,
