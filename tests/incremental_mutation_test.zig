@@ -709,3 +709,334 @@ test "A32: alternating appends across two function bodies" {
     }
     try std.testing.expectEqual(@as(usize, 2), cur.module.declarations.items.len);
 }
+
+// =========================================================================
+// SS-series: sentinel-stub-sharing scenarios
+//
+// These tests mirror the four hot-path categories (trivia-only,
+// symbol-free add/sub, compound_stmt, decl_stmt) that now share the
+// module-scope `Incremental.sentinel_stub`. Every scenario verifies the
+// three invariants in one go:
+//
+//   1. Edit result matches a full re-parse (shape + symbols) — reused
+//      by `applyEditAndVerify`.
+//   2. After the reparse, the *old* `prev.arena` equals
+//      `&Incremental.sentinel_stub` (hot-path transfer).
+//   3. `Incremental.sentinel_stub.queryCapacity()` stays 0 — no bytes
+//      accidentally allocated into the shared sentinel.
+//
+// `applySingleEditAndAssertSentinel` is the per-test helper; bursts use
+// a local loop and assert the sentinel invariants on every step.
+// =========================================================================
+
+fn applySingleEditAndAssertSentinel(
+    gpa: std.mem.Allocator,
+    base_src: [:0]const u8,
+    edit: Incremental.Edit,
+    expected_src: []const u8,
+) !void {
+    var base = try Incremental.parseFull(gpa, base_src);
+    defer base.deinit();
+
+    // Sentinel capacity must be 0 before the hot path runs — it's
+    // pre-declared empty and nothing should ever allocate into it.
+    try std.testing.expectEqual(@as(usize, 0), Incremental.sentinel_stub.queryCapacity());
+
+    const captured_base_arena = base.arena;
+    var updated = try Incremental.reparse(gpa, &base, edit);
+    defer updated.deinit();
+
+    try std.testing.expect(updated.reused);
+    try std.testing.expectEqualStrings(expected_src, updated.source);
+
+    // Hot-path transfer: updated inherits base's original real arena;
+    // base now holds the sentinel.
+    try std.testing.expectEqual(captured_base_arena, updated.arena);
+    try std.testing.expectEqual(&Incremental.sentinel_stub, base.arena);
+    try std.testing.expectEqual(@as(usize, 0), Incremental.sentinel_stub.queryCapacity());
+
+    var oracle = try Incremental.parseFull(gpa, expected_src);
+    defer oracle.deinit();
+    try expectShapesMatch(gpa, updated.module, oracle.module);
+    try expectSymbolsMatch(updated.module, oracle.module);
+}
+
+// -------------------------------------------------------------------------
+// SS-T: trivia-only path (`tryTriviaOnlyShortcut`)
+//
+// Zero-delta (same length new_text) edits confined to whitespace or
+// comment content never alter non-trivia tokens, so the shortcut
+// returns with the sentinel installed and the cached analysis hot.
+// -------------------------------------------------------------------------
+
+test "SS-T1: comment-body rewrite, same length" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "// old_tag\nconst X = 1;",
+        .{ .start = 3, .end = 10, .new_text = "new_tag" },
+        "// new_tag\nconst X = 1;",
+    );
+}
+
+test "SS-T2: block comment body rewrite, same length" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "/* aaa */ const X = 1;",
+        .{ .start = 3, .end = 6, .new_text = "bbb" },
+        "/* bbb */ const X = 1;",
+    );
+}
+
+test "SS-T3: whitespace swap (two spaces to two tabs)" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "const X =  1;",
+        .{ .start = 9, .end = 11, .new_text = "\t\t" },
+        "const X =\t\t1;",
+    );
+}
+
+test "SS-T4: single-char replacement inside a line comment" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "// abc\nconst X = 1;",
+        .{ .start = 5, .end = 6, .new_text = "d" },
+        "// abd\nconst X = 1;",
+    );
+}
+
+test "SS-T5: trivia-only burst of 50 comment rewrites" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "// tag_00\nconst X = 1;";
+    var cur = try Incremental.parseFull(gpa, base);
+    defer cur.deinit();
+
+    var i: u32 = 1;
+    while (i <= 50) : (i += 1) {
+        // Rewrite the 2-digit number inside `tag_NN` with a new 2-digit
+        // number. Zero-delta every iteration.
+        const off: u32 = @intCast(std.mem.indexOf(u8, cur.source, "tag_").? + "tag_".len);
+        var buf: [2]u8 = undefined;
+        _ = try std.fmt.bufPrint(&buf, "{d:0>2}", .{i % 100});
+        const next = try Incremental.reparse(gpa, &cur, .{
+            .start = off,
+            .end = off + 2,
+            .new_text = &buf,
+        });
+        try std.testing.expect(next.reused);
+        try std.testing.expectEqual(&Incremental.sentinel_stub, cur.arena);
+        try std.testing.expectEqual(@as(usize, 0), Incremental.sentinel_stub.queryCapacity());
+        cur.deinit();
+        cur = next;
+    }
+}
+
+// -------------------------------------------------------------------------
+// SS-A: symbol-free add/sub path (`tryAddSubSpliceInPlace`)
+//
+// Edits inside expression anchors — literal/operator/ident/call/index/
+// member/unary — never introduce or destroy symbols. The driver reuses
+// prev.arena, runs sub/add walks over the replaced subtree, and hands
+// the sentinel back on prev.
+// -------------------------------------------------------------------------
+
+test "SS-A1: literal bump inside return expression" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() -> f32 { return 3.14; }",
+        .{ .start = 23, .end = 27, .new_text = "3.15" },
+        "fn f() -> f32 { return 3.15; }",
+    );
+}
+
+test "SS-A2: binary operator flip (+ → *)" {
+    const src: [:0]const u8 = "const x = 1; const y = 2; fn f() { var z = 0; z = x + y; }";
+    const plus_off: u32 = @intCast(std.mem.indexOfPos(u8, src, 50, "+").?);
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        src,
+        .{ .start = plus_off, .end = plus_off + 1, .new_text = "*" },
+        "const x = 1; const y = 2; fn f() { var z = 0; z = x * y; }",
+    );
+}
+
+test "SS-A3: identifier swap at a use site" {
+    // `let a = 1; let b = 2;` are both in scope; swap `a` in `return a;`
+    // to `b` — pure symbol-free ident_expr rewrite.
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() -> i32 { let a = 1; let b = 2; return a; }",
+        .{ .start = 45, .end = 46, .new_text = "b" },
+        "fn f() -> i32 { let a = 1; let b = 2; return b; }",
+    );
+}
+
+test "SS-A4: call argument literal swap" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn g(a: i32, b: i32) -> i32 { return a + b; } fn f() -> i32 { return g(1, 2); }",
+        // Replace the `2` in the call.
+        .{ .start = 74, .end = 75, .new_text = "5" },
+        "fn g(a: i32, b: i32) -> i32 { return a + b; } fn f() -> i32 { return g(1, 5); }",
+    );
+}
+
+test "SS-A5: unary negation operand swap (-x → -y)" {
+    // WGSL has no unary `+`, so we exercise the unary_expr path by
+    // swapping its operand identifier instead.
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() -> i32 { let x = 1; let y = 2; return -x; }",
+        .{ .start = 46, .end = 47, .new_text = "y" },
+        "fn f() -> i32 { let x = 1; let y = 2; return -y; }",
+    );
+}
+
+test "SS-A6: 50-edit literal burst on the same return expression" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "fn f() -> i32 { return 0; }";
+    var cur = try Incremental.parseFull(gpa, base);
+    defer cur.deinit();
+
+    var i: u32 = 0;
+    var hot_count: u32 = 0;
+    while (i < 50) : (i += 1) {
+        // Flip between single-digit literals.
+        const off: u32 = @intCast(std.mem.indexOf(u8, cur.source, "return ").?);
+        const digit_off: u32 = off + @as(u32, @intCast("return ".len));
+        var buf: [1]u8 = .{ @as(u8, '0') + @as(u8, @intCast(i % 10)) };
+        const next = try Incremental.reparse(gpa, &cur, .{
+            .start = digit_off,
+            .end = digit_off + 1,
+            .new_text = &buf,
+        });
+        if (next.reused) {
+            hot_count += 1;
+            try std.testing.expectEqual(&Incremental.sentinel_stub, cur.arena);
+        } else {
+            try std.testing.expect(cur.arena != &Incremental.sentinel_stub);
+        }
+        try std.testing.expectEqual(@as(usize, 0), Incremental.sentinel_stub.queryCapacity());
+        cur.deinit();
+        cur = next;
+    }
+    // 50 edits on a tiny source stay well below both the edit-count
+    // (256) and the byte-watermark (256 KiB) coalesce thresholds.
+    try std.testing.expect(hot_count >= 45);
+}
+
+// -------------------------------------------------------------------------
+// SS-C: compound_stmt path (`tryCompoundSpliceInPlace`)
+//
+// Adding / removing / reordering statements inside a function body.
+// The driver re-lowers the compound, patches the symbol table (append-
+// only), and hands the sentinel back.
+// -------------------------------------------------------------------------
+
+test "SS-C1: append a new statement at the end of a function body" {
+    // Insert immediately before the closing `}` (index 20). The source
+    // already has a trailing space at index 19, so the new_text starts
+    // with a plain `let` and ends with `; ` to preserve formatting.
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() { let a = 1; }",
+        .{ .start = 20, .end = 20, .new_text = "let b = 2; " },
+        "fn f() { let a = 1; let b = 2; }",
+    );
+}
+
+test "SS-C2: insert a statement in the middle of a function body" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() { let a = 1; let c = 3; }",
+        .{ .start = 19, .end = 19, .new_text = " let b = 2;" },
+        "fn f() { let a = 1; let b = 2; let c = 3; }",
+    );
+}
+
+test "SS-C3: insert a statement between two existing ones" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() { let a = 1; let c = 3; }",
+        // Insert ` let b = 2;` right after the `;` of `let a = 1;`.
+        .{ .start = 19, .end = 19, .new_text = " let b = 2;" },
+        "fn f() { let a = 1; let b = 2; let c = 3; }",
+    );
+}
+
+test "SS-C4: 20 appends in a row to the same function body" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 = "fn f() {}";
+    var cur = try Incremental.parseFull(gpa, base);
+    defer cur.deinit();
+
+    var i: u32 = 0;
+    var hot_count: u32 = 0;
+    while (i < 20) : (i += 1) {
+        const close_off: u32 = @intCast(std.mem.lastIndexOfScalar(u8, cur.source, '}').?);
+        var buf: [32]u8 = undefined;
+        const payload = try std.fmt.bufPrint(&buf, " let v{d} = {d};", .{ i, i });
+        const next = try Incremental.reparse(gpa, &cur, .{
+            .start = close_off,
+            .end = close_off,
+            .new_text = payload,
+        });
+        if (next.reused) {
+            hot_count += 1;
+            try std.testing.expectEqual(&Incremental.sentinel_stub, cur.arena);
+        } else {
+            try std.testing.expect(cur.arena != &Incremental.sentinel_stub);
+        }
+        try std.testing.expectEqual(@as(usize, 0), Incremental.sentinel_stub.queryCapacity());
+        cur.deinit();
+        cur = next;
+    }
+    try std.testing.expect(hot_count >= 18);
+}
+
+// -------------------------------------------------------------------------
+// SS-D: decl_stmt path (`tryDeclStmtSpliceInPlace`)
+//
+// Edits confined to a single declaration statement inside a function
+// body — even ones that mutate the symbol table (rename the LHS
+// identifier) — still transfer the sentinel onto prev.
+// -------------------------------------------------------------------------
+
+test "SS-D1: let initializer literal swap" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() { let x = 1; }",
+        .{ .start = 17, .end = 18, .new_text = "9" },
+        "fn f() { let x = 9; }",
+    );
+}
+
+test "SS-D2: let with explicit type annotation, literal swap" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() { let x: f32 = 1.0; }",
+        .{ .start = 22, .end = 25, .new_text = "2.5" },
+        "fn f() { let x: f32 = 2.5; }",
+    );
+}
+
+test "SS-D3: var initializer literal swap" {
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() { var y = 0; }",
+        .{ .start = 17, .end = 18, .new_text = "9" },
+        "fn f() { var y = 9; }",
+    );
+}
+
+test "SS-D4: rename the LHS identifier of a let binding" {
+    // Renaming the LHS mutates the symbol table. The decl_stmt path
+    // handles it by appending a new symbol and marking the old one
+    // removed; sentinel identity and emptiness still hold.
+    try applySingleEditAndAssertSentinel(
+        std.testing.allocator,
+        "fn f() { let x = 1; }",
+        .{ .start = 13, .end = 14, .new_text = "z" },
+        "fn f() { let z = 1; }",
+    );
+}

@@ -38,6 +38,17 @@ const Incremental = @This();
 /// Exposed for tests that assert exact coalesce boundaries.
 pub const HOT_EDIT_COALESCE_MAX: u16 = 256;
 
+/// Shared sentinel stub. Every hot-path return installs this on
+/// `prev.arena` so `prev.deinit()` has something valid to call; no bytes
+/// are ever allocated into it. `ReparseResult.deinit` detects this
+/// pointer by identity and skips teardown. Backed by `page_allocator`
+/// for process-lifetime independence from any caller's gpa — since
+/// nothing ever allocates, `page_allocator` is never actually invoked.
+/// Exposed for tests that assert sentinel identity after hot-path
+/// returns.
+pub var sentinel_stub: std.heap.ArenaAllocator =
+    std.heap.ArenaAllocator.init(std.heap.page_allocator);
+
 /// A single contiguous byte-level edit, in OLD-source coordinates.
 /// `[start, end)` is the range being replaced (may be empty for pure
 /// inserts), `new_text` is the replacement (may be empty for pure deletes).
@@ -157,8 +168,14 @@ pub const ReparseResult = struct {
         }
         self.retained_arenas.deinit(self.gpa);
 
-        self.arena.deinit();
-        self.gpa.destroy(self.arena);
+        // Sentinel guard: hot-path returns leave the *old* ReparseResult
+        // pointing at the shared `sentinel_stub`. That arena is
+        // process-lifetime and must never be deinit'd or destroyed —
+        // doing so would poison every subsequent hot-path return.
+        if (self.arena != &sentinel_stub) {
+            self.arena.deinit();
+            self.gpa.destroy(self.arena);
+        }
     }
 };
 
@@ -635,9 +652,7 @@ fn tryTriviaOnlyShortcut(
         .module_version = prev.module_version,
     };
 
-    const stub = try gpa.create(std.heap.ArenaAllocator);
-    stub.* = std.heap.ArenaAllocator.init(gpa);
-    prev.arena = stub;
+    prev.arena = &sentinel_stub;
     prev.retained_arenas = .empty;
     prev.scope_for_cst_node = .empty;
     prev.errors = &.{};
@@ -974,9 +989,7 @@ fn tryAddSubSpliceInPlace(
         .module_version = prev.module_version +% 1,
     };
 
-    const stub = try gpa.create(std.heap.ArenaAllocator);
-    stub.* = std.heap.ArenaAllocator.init(gpa);
-    prev.arena = stub;
+    prev.arena = &sentinel_stub;
     prev.retained_arenas = .empty;
     prev.errors = &.{};
 
@@ -1158,9 +1171,7 @@ fn tryCompoundSpliceInPlace(
         .module_version = prev.module_version +% 1,
     };
 
-    const stub = try gpa.create(std.heap.ArenaAllocator);
-    stub.* = std.heap.ArenaAllocator.init(gpa);
-    prev.arena = stub;
+    prev.arena = &sentinel_stub;
     prev.retained_arenas = .empty;
     prev.errors = &.{};
 
@@ -1357,9 +1368,7 @@ fn tryDeclStmtSpliceInPlace(
         .module_version = prev.module_version +% 1,
     };
 
-    const stub = try gpa.create(std.heap.ArenaAllocator);
-    stub.* = std.heap.ArenaAllocator.init(gpa);
-    prev.arena = stub;
+    prev.arena = &sentinel_stub;
     prev.retained_arenas = .empty;
     prev.errors = &.{};
 

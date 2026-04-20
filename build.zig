@@ -192,6 +192,9 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/incremental_addsub_test.zig", target, optimize, &.{w});
     // Incremental.reparse — symbol-free hot-path unit tests.
     _ = addTestStep(b, test_step, "tests/incremental_mutation_test.zig", target, optimize, &.{w});
+    // Incremental.reparse — shared sentinel stub arena identity /
+    // deinit-safety contract across every hot-path return.
+    _ = addTestStep(b, test_step, "tests/incremental_stub_sentinel_test.zig", target, optimize, &.{w});
     // Incremental.reparse — hot-path targeted fuzz / property tests.
     _ = addTestStep(b, test_step, "tests/incremental_mutation_fuzz_test.zig", target, optimize, &.{w});
     // Incremental.reparse — long-tail edge cases (unicode, CRLF, token
