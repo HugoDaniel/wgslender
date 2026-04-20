@@ -201,6 +201,9 @@ pub fn build(b: *std.Build) void {
     // inside the old anchor, shift downstream by delta, append add-walk
     // E0102s) verified against a parseFull oracle on the new source.
     _ = addTestStep(b, test_step, "tests/incremental_error_fixup_test.zig", target, optimize, &.{w});
+    // Per-decl `interior_pending` bias mechanism — bias state assertions,
+    // burst amortization, and reader absorption contracts.
+    _ = addTestStep(b, test_step, "tests/incremental_interior_pending_test.zig", target, optimize, &.{w});
     // CST round-trip — concat of every leaf token equals source, on
     // handcrafted edge cases and the compute.toys corpus.
     _ = addTestStep(b, test_step, "tests/cst_roundtrip_test.zig", target, optimize, &.{w});
