@@ -169,7 +169,256 @@ pub const Module = struct {
             .scope = scope,
         };
     }
+
+    /// Absorb every top-level decl's `interior_pending` bias into its inner
+    /// spans (stmt/expr/type/attr/parameter/struct-member). No-op for decls
+    /// whose bias is already zero. After this returns, all AST spans are in
+    /// current source coordinates — callers can read `.span` / `.loc`
+    /// without applying any bias.
+    ///
+    /// External readers (Validator, LSP features, StableId, Edits, Printer,
+    /// Reflect) MUST call this at their entry. Callers *inside* the
+    /// incremental hot path generally do NOT — they thread the owning
+    /// decl's bias through find walks via the read-only `bias` parameter,
+    /// avoiding the mutation cost.
+    ///
+    /// Amortized O(1) per edit: each bump is O(1); each absorption is
+    /// O(decl interior) but only happens once per analyze cycle after a
+    /// burst.
+    pub fn absorbInteriors(self: *Module) void {
+        for (self.declarations.items) |*d| absorbDeclInterior(d);
+    }
+
+    /// Debug-mode invariant: true when every decl's `interior_pending == 0`.
+    /// Trips if an external reader forgot to call `absorbInteriors`.
+    pub fn assertInteriorsAbsorbed(self: *const Module) void {
+        if (comptime @import("builtin").mode == .Debug) {
+            for (self.declarations.items) |d| {
+                std.debug.assert(declInteriorPending(d) == 0);
+            }
+        }
+    }
+
+    /// Apply a single incremental edit's effect to all module span/loc
+    /// fields. The interior of the top-level decl containing `splice_end_old`
+    /// (the "owner") is walked eagerly — O(owner_decl_size). Non-owner
+    /// decls strictly after the edit get `interior_pending += delta` and a
+    /// `decl_span` bump — O(1) per decl. Symbols, scope members and
+    /// directives are shifted eagerly (flat iteration, cheap).
+    ///
+    /// Call this AFTER the splice has resolved `old_anchor_span` but BEFORE
+    /// the NEW subtree is written into the AST — the owner's old interior
+    /// (still in pre-this-edit coords) is the thing being shifted. After
+    /// the splice replaces the owner's compound body with NEW contents,
+    /// the NEW contents (already in current coords) coexist with the rest
+    /// of the owner's interior (now also in current coords). Interior
+    /// coherence preserved.
+    ///
+    /// If the owner already had a non-zero `interior_pending` from earlier
+    /// edits (this decl was "after" a prior edit elsewhere), that bias is
+    /// absorbed in the same walk before applying this edit's delta.
+    pub fn shiftModuleForEdit(self: *Module, splice_end_old: u32, delta: i64) void {
+        if (delta == 0) {
+            // Even zero-delta can happen for pure-text edits (e.g. let↔var
+            // rename with equal length). No shifts to apply anywhere.
+            return;
+        }
+
+        // Directives are few and always module-level — shift eagerly.
+        for (self.directives.items) |*d| shiftDirectiveSpan(d, splice_end_old, delta);
+
+        // Find the owning top-level decl. It's the one whose effective
+        // span (decl_span, or expr.span() for const_assert) contains
+        // `splice_end_old`. Linear scan; top-level decl count is O(100s).
+        var owner_idx: ?usize = null;
+        for (self.declarations.items, 0..) |d, i| {
+            const eff = declEffectiveSpan(d);
+            if (eff.start <= splice_end_old and splice_end_old <= eff.end) {
+                owner_idx = i;
+                break;
+            }
+        }
+
+        for (self.declarations.items, 0..) |*d_ptr, i| {
+            if (owner_idx != null and owner_idx.? == i) {
+                // OWNER: absorb any existing bias, then shift interior for
+                // this edit. Two passes are cheaper than a fused pass with
+                // different thresholds because the bias absorb phase uses
+                // threshold 0 (shift everything) while the edit phase uses
+                // splice_end_old.
+                const existing_bias: i32 = declInteriorPending(d_ptr.*);
+                if (existing_bias != 0) {
+                    // Absorb interior only; decl_span was shifted at bump
+                    // time so it already sits in current coordinates.
+                    shiftDeclInteriorBy(d_ptr, @as(i64, existing_bias));
+                    clearDeclInteriorPending(d_ptr);
+                }
+                shiftDeclInteriorPart(d_ptr, splice_end_old, delta);
+                // Shift decl_span boundary: owner's end extends past the
+                // edit (owner.decl_span.end >= splice_end_old).
+                shiftDeclSpanBoundary(d_ptr, splice_end_old, delta);
+            } else {
+                const eff = declEffectiveSpan(d_ptr.*);
+                if (eff.start >= splice_end_old) {
+                    // Strictly AFTER the edit — defer interior walk via
+                    // bias bump, and shift the external decl_span.
+                    bumpDeclInteriorPending(d_ptr, delta);
+                    shiftDeclSpanBoundary(d_ptr, splice_end_old, delta);
+                }
+                // Strictly BEFORE: leave untouched.
+            }
+        }
+
+        // Symbol table: shift eagerly. Typical shader has ~1000 symbols;
+        // a flat loop is cheap and avoids needing a per-decl association.
+        for (self.symbols.items) |*sym| {
+            if (sym.loc >= splice_end_old) sym.loc = @intCast(@as(i64, sym.loc) + delta);
+        }
+
+        // Scope tree: eager, the structure is small.
+        shiftScopeMembers(self.scope, splice_end_old, delta);
+    }
+
+    /// Absorb one top-level decl's interior bias, if any. Intended for the
+    /// incremental find path (`findCompoundBySpan`, `findAstSlot`) to make
+    /// the owner decl's interior spans match `target` coords (in current
+    /// source) before descending.
+    ///
+    /// Identifying the owner by `target.start` (the edit's start byte) is
+    /// robust: whatever decl contains the edit's start byte is the one
+    /// whose interior we're about to walk.
+    pub fn absorbOwnerFor(self: *Module, target: Span) void {
+        for (self.declarations.items) |*d_ptr| {
+            const eff = declEffectiveSpan(d_ptr.*);
+            if (eff.start <= target.start and target.end <= eff.end) {
+                absorbDeclInterior(d_ptr);
+                return;
+            }
+        }
+    }
 };
+
+/// Read a decl's interior bias regardless of variant.
+pub fn declInteriorPending(decl: Decl) i32 {
+    return switch (decl) {
+        inline else => |d| d.interior_pending,
+    };
+}
+
+/// Add `delta` to a decl's interior bias. Does not mutate inner spans.
+pub fn bumpDeclInteriorPending(decl: *Decl, delta: i64) void {
+    switch (decl.*) {
+        inline else => |d| d.interior_pending = @intCast(@as(i64, d.interior_pending) + delta),
+    }
+}
+
+/// Set a decl's interior bias to zero. Does not mutate inner spans.
+pub fn clearDeclInteriorPending(decl: *Decl) void {
+    switch (decl.*) {
+        inline else => |d| d.interior_pending = 0,
+    }
+}
+
+/// Walk a decl's interior once, adding `bias` to every inner span/loc.
+/// Leaves `decl_span` alone (that's always in current coords). Idempotent
+/// when `bias == 0`.
+///
+/// Used by `absorbInteriors` to drain a decl's pending bias, and by the
+/// incremental hot path to shift the owning decl's interior in one pass
+/// (absorbing any prior bias + applying this edit's delta).
+pub fn shiftDeclInteriorBy(decl: *Decl, bias: i64) void {
+    if (bias == 0) return;
+    // Pass `splice_end_old = 0` so every inner span shifts (we want a
+    // uniform absorbed bias, not a splice-end-thresholded shift).
+    shiftDeclInteriorPart(decl, 0, bias);
+}
+
+/// Shift a decl's interior spans whose value is `>= splice_end_old` by
+/// `delta`. Used by the incremental splice to shift the owning decl's
+/// interior for this edit (in combination with an absorbing `+bias` pass).
+pub fn shiftDeclInteriorPart(decl: *Decl, splice_end_old: u32, delta: i64) void {
+    if (delta == 0) return;
+    switch (decl.*) {
+        .@"const" => |d| {
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .override => |d| {
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+        },
+        .@"var" => |d| {
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+        },
+        .let => |d| {
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .function => |d| {
+            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            for (d.parameters.items) |*p| {
+                shiftNodeOffsets(p, splice_end_old, delta);
+                shiftTypeSpans(p.typ, splice_end_old, delta);
+                for (p.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            }
+            if (d.return_type) |t| shiftTypeSpans(t, splice_end_old, delta);
+            for (d.return_attr.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            if (d.body) |body| shiftCompoundStmtSpans(body, splice_end_old, delta);
+        },
+        .@"struct" => |d| {
+            for (d.members.items) |*m| {
+                shiftNodeOffsets(m, splice_end_old, delta);
+                shiftTypeSpans(m.typ, splice_end_old, delta);
+                for (m.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            }
+        },
+        .alias => |d| {
+            shiftTypeSpans(d.typ, splice_end_old, delta);
+        },
+        .const_assert => |d| {
+            shiftExprSpans(d.expr, splice_end_old, delta);
+        },
+    }
+}
+
+/// Drain a single decl's `interior_pending` by applying it to the inner
+/// spans (stmt/expr/type/attr/parameter/struct-member) and resetting to
+/// 0. No-op when bias is zero.
+///
+/// Does NOT touch `decl_span` — that field is shifted eagerly at bump
+/// time (by `Module.shiftModuleForEdit`) and always sits in current
+/// coordinates, regardless of interior_pending.
+pub fn absorbDeclInterior(decl: *Decl) void {
+    const bias_i32: i32 = declInteriorPending(decl.*);
+    if (bias_i32 == 0) return;
+    shiftDeclInteriorBy(decl, @as(i64, bias_i32));
+    clearDeclInteriorPending(decl);
+}
+
+/// Return the effective span used for owner-detection:
+/// `decl_span` for most decl kinds, `expr.span()` for `const_assert`
+/// (which has no `decl_span`).
+pub fn declEffectiveSpan(decl: Decl) Span {
+    return switch (decl) {
+        .const_assert => |d| d.expr.span(),
+        else => decl.declSpan(),
+    };
+}
+
+/// Threshold-aware `decl_span` shift: only shifts endpoints `>= splice_end_old`
+/// by `delta`. Used by `shiftModuleForEdit` on the OWNER (only `end`
+/// typically qualifies because `start < splice_end_old`) and on non-owner
+/// decls strictly after the edit (both endpoints qualify).
+fn shiftDeclSpanBoundary(decl: *Decl, splice_end_old: u32, delta: i64) void {
+    if (delta == 0) return;
+    switch (decl.*) {
+        .const_assert => {},
+        inline else => |d| shiftSpan(&d.decl_span, splice_end_old, delta),
+    }
+}
 
 // =========================================================================
 // Directives
@@ -259,6 +508,11 @@ pub const ConstDecl = struct {
     /// Full syntactic span: from the `const` keyword through the
     /// terminating `;`. Empty on parse-error recovery.
     decl_span: Span = .empty,
+    /// Deferred bias applied to inner spans (on `typ`, `initializer`,
+    /// etc.). Drained by `absorbDeclInterior` / `Module.absorbInteriors`.
+    /// Zero after a fresh parse. Populated by the incremental hot path
+    /// for decls strictly after an edit.
+    interior_pending: i32 = 0,
 };
 
 pub const OverrideDecl = struct {
@@ -269,6 +523,8 @@ pub const OverrideDecl = struct {
     /// Full syntactic span: from the first `@` attribute (if any) or
     /// `override` keyword through the terminating `;`.
     decl_span: Span = .empty,
+    /// See `ConstDecl.interior_pending`.
+    interior_pending: i32 = 0,
 };
 
 pub const VarDecl = struct {
@@ -281,6 +537,8 @@ pub const VarDecl = struct {
     /// Full syntactic span: from the first `@` attribute (if any) or
     /// `var` keyword through the terminating `;`.
     decl_span: Span = .empty,
+    /// See `ConstDecl.interior_pending`.
+    interior_pending: i32 = 0,
 };
 
 pub const LetDecl = struct {
@@ -290,6 +548,8 @@ pub const LetDecl = struct {
     /// Full syntactic span: from the `let` keyword through the
     /// terminating `;`.
     decl_span: Span = .empty,
+    /// See `ConstDecl.interior_pending`.
+    interior_pending: i32 = 0,
 };
 
 pub const FunctionDecl = struct {
@@ -302,6 +562,8 @@ pub const FunctionDecl = struct {
     /// Full syntactic span: from the first `@` attribute (if any) or
     /// `fn` keyword through the closing `}` of the body.
     decl_span: Span = .empty,
+    /// See `ConstDecl.interior_pending`.
+    interior_pending: i32 = 0,
 };
 
 pub const Parameter = struct {
@@ -320,6 +582,8 @@ pub const StructDecl = struct {
     /// Full syntactic span: from the `struct` keyword through the
     /// closing `}`.
     decl_span: Span = .empty,
+    /// See `ConstDecl.interior_pending`.
+    interior_pending: i32 = 0,
 };
 
 pub const StructMember = struct {
@@ -338,10 +602,14 @@ pub const AliasDecl = struct {
     /// Full syntactic span: from the `alias` keyword through the
     /// terminating `;`.
     decl_span: Span = .empty,
+    /// See `ConstDecl.interior_pending`.
+    interior_pending: i32 = 0,
 };
 
 pub const ConstAssertDecl = struct {
     expr: Expr,
+    /// See `ConstDecl.interior_pending`.
+    interior_pending: i32 = 0,
 };
 
 // =========================================================================
@@ -1073,6 +1341,257 @@ pub fn markExprPurity(e: Expr, symbols: []const Symbol) void {
 }
 
 // =========================================================================
+// Span-shift walks (used by Module.flushShifts)
+// =========================================================================
+//
+// Pure structural traversal of every span/loc field. Kept private to
+// `Ast.zig` because the journal is the only legitimate caller — every
+// other consumer should go through `Module.flushShifts` /
+// `Module.applyPending`.
+//
+// Boundary convention: `>=` (a span whose `start == splice_end_old`
+// shifts). Matches the eager `shiftAstSpans` semantics this replaced.
+
+fn shiftSpan(sp: *Span, splice_end_old: u32, delta: i64) void {
+    if (sp.start >= splice_end_old) sp.start = @intCast(@as(i64, sp.start) + delta);
+    if (sp.end >= splice_end_old) sp.end = @intCast(@as(i64, sp.end) + delta);
+}
+
+fn shiftLoc(loc: *u32, splice_end_old: u32, delta: i64) void {
+    if (loc.* >= splice_end_old) loc.* = @intCast(@as(i64, loc.*) + delta);
+}
+
+/// Shift any `span`/`loc`/`decl_span`/`end_loc` field present on `node`
+/// (comptime). AST structs have heterogeneous shapes — some carry only
+/// `span`, some only `loc`, some both, some additionally `end_loc`.
+/// This helper papers over the differences without a match arm per
+/// struct.
+fn shiftNodeOffsets(node: anytype, splice_end_old: u32, delta: i64) void {
+    const T = @TypeOf(node.*);
+    if (@hasField(T, "span")) shiftSpan(&node.span, splice_end_old, delta);
+    if (@hasField(T, "loc")) shiftLoc(&node.loc, splice_end_old, delta);
+    if (@hasField(T, "decl_span")) shiftSpan(&node.decl_span, splice_end_old, delta);
+    if (@hasField(T, "end_loc")) shiftLoc(&node.end_loc, splice_end_old, delta);
+}
+
+fn shiftScopeMembers(scope: *Scope, splice_end_old: u32, delta: i64) void {
+    var it = scope.members.iterator();
+    while (it.next()) |e| {
+        if (e.value_ptr.loc >= splice_end_old) {
+            e.value_ptr.loc = @intCast(@as(i64, e.value_ptr.loc) + delta);
+        }
+    }
+    for (scope.children.items) |c| shiftScopeMembers(c, splice_end_old, delta);
+}
+
+fn shiftDirectiveSpan(dir: *Directive, splice_end_old: u32, delta: i64) void {
+    switch (dir.*) {
+        inline else => |*d| shiftNodeOffsets(d, splice_end_old, delta),
+    }
+}
+
+fn shiftDeclSpans(decl: *Decl, splice_end_old: u32, delta: i64) void {
+    switch (decl.*) {
+        .@"const" => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .override => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+        },
+        .@"var" => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+        },
+        .let => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
+            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .function => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            for (d.parameters.items) |*p| {
+                shiftNodeOffsets(p, splice_end_old, delta);
+                shiftTypeSpans(p.typ, splice_end_old, delta);
+                for (p.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            }
+            if (d.return_type) |t| shiftTypeSpans(t, splice_end_old, delta);
+            for (d.return_attr.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            if (d.body) |body| shiftCompoundStmtSpans(body, splice_end_old, delta);
+        },
+        .@"struct" => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            for (d.members.items) |*m| {
+                shiftNodeOffsets(m, splice_end_old, delta);
+                shiftTypeSpans(m.typ, splice_end_old, delta);
+                for (m.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            }
+        },
+        .alias => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            shiftTypeSpans(d.typ, splice_end_old, delta);
+        },
+        .const_assert => |d| {
+            shiftNodeOffsets(d, splice_end_old, delta);
+            shiftExprSpans(d.expr, splice_end_old, delta);
+        },
+    }
+}
+
+fn shiftAttributeSpans(attr: *Attribute, splice_end_old: u32, delta: i64) void {
+    shiftNodeOffsets(attr, splice_end_old, delta);
+    for (attr.args.items) |e| shiftExprSpans(e, splice_end_old, delta);
+}
+
+fn shiftCompoundStmtSpans(body: *CompoundStmt, splice_end_old: u32, delta: i64) void {
+    shiftNodeOffsets(body, splice_end_old, delta);
+    for (body.stmts.items) |*s| shiftStmtSpans(s, splice_end_old, delta);
+}
+
+fn shiftStmtSpans(stmt: *Stmt, splice_end_old: u32, delta: i64) void {
+    switch (stmt.*) {
+        .compound => |s| shiftCompoundStmtSpans(s, splice_end_old, delta),
+        .@"return" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            if (s.value) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .@"if" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.condition, splice_end_old, delta);
+            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+            if (s.else_branch) |_| shiftStmtSpans(&s.else_branch.?, splice_end_old, delta);
+        },
+        .@"switch" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.expr, splice_end_old, delta);
+            for (s.cases.items) |*c| {
+                for (c.selectors.items) |e| shiftExprSpans(e, splice_end_old, delta);
+                shiftCompoundStmtSpans(c.body, splice_end_old, delta);
+            }
+        },
+        .@"for" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            if (s.init_stmt) |_| shiftStmtSpans(&s.init_stmt.?, splice_end_old, delta);
+            if (s.condition) |e| shiftExprSpans(e, splice_end_old, delta);
+            if (s.update) |_| shiftStmtSpans(&s.update.?, splice_end_old, delta);
+            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+        },
+        .@"while" => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.condition, splice_end_old, delta);
+            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+        },
+        .loop => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+            if (s.continuing) |c| shiftCompoundStmtSpans(c, splice_end_old, delta);
+        },
+        .@"break" => |s| shiftNodeOffsets(s, splice_end_old, delta),
+        .break_if => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.condition, splice_end_old, delta);
+        },
+        .@"continue" => |s| shiftNodeOffsets(s, splice_end_old, delta),
+        .discard => |s| shiftNodeOffsets(s, splice_end_old, delta),
+        .assign => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.left, splice_end_old, delta);
+            shiftExprSpans(s.right, splice_end_old, delta);
+        },
+        .incr_decr => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.expr, splice_end_old, delta);
+        },
+        .call => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            if (s.call.func) |f| shiftExprSpans(f, splice_end_old, delta);
+            if (s.call.template_type) |t| shiftTypeSpans(t, splice_end_old, delta);
+            for (s.call.args.items) |a| shiftExprSpans(a, splice_end_old, delta);
+        },
+        .decl => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            var inner = s.decl;
+            shiftDeclSpans(&inner, splice_end_old, delta);
+            s.decl = inner;
+        },
+    }
+}
+
+fn shiftExprSpans(expr: Expr, splice_end_old: u32, delta: i64) void {
+    switch (expr) {
+        .literal => |e| shiftNodeOffsets(e, splice_end_old, delta),
+        .ident => |e| shiftNodeOffsets(e, splice_end_old, delta),
+        .paren => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.expr, splice_end_old, delta);
+        },
+        .binary => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.left, splice_end_old, delta);
+            shiftExprSpans(e.right, splice_end_old, delta);
+        },
+        .unary => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.operand, splice_end_old, delta);
+        },
+        .call => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            if (e.func) |f| shiftExprSpans(f, splice_end_old, delta);
+            if (e.template_type) |t| shiftTypeSpans(t, splice_end_old, delta);
+            for (e.args.items) |a| shiftExprSpans(a, splice_end_old, delta);
+        },
+        .index => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.base, splice_end_old, delta);
+            shiftExprSpans(e.idx, splice_end_old, delta);
+        },
+        .member => |e| {
+            shiftNodeOffsets(e, splice_end_old, delta);
+            shiftExprSpans(e.base, splice_end_old, delta);
+        },
+    }
+}
+
+fn shiftTypeSpans(typ: Type, splice_end_old: u32, delta: i64) void {
+    switch (typ) {
+        .ident => |t| shiftNodeOffsets(t, splice_end_old, delta),
+        .sampler => |t| shiftNodeOffsets(t, splice_end_old, delta),
+        .vec => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
+        },
+        .mat => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
+        },
+        .array => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
+            if (t.size) |e| shiftExprSpans(e, splice_end_old, delta);
+        },
+        .ptr => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            shiftTypeSpans(t.elem_type, splice_end_old, delta);
+        },
+        .atomic => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            shiftTypeSpans(t.elem_type, splice_end_old, delta);
+        },
+        .texture => |t| {
+            shiftNodeOffsets(t, splice_end_old, delta);
+            if (t.sampled_type) |st| shiftTypeSpans(st, splice_end_old, delta);
+        },
+    }
+}
+
+// =========================================================================
 // Comptime assertions
 // =========================================================================
 
@@ -1512,4 +2031,226 @@ test "markExprPurity: paren with pure inner" {
     var paren = ParenExpr{ .expr = .{ .literal = &inner } };
     markExprPurity(.{ .paren = &paren }, &.{});
     try std.testing.expect(paren.flags.can_be_removed_if_unused);
+}
+
+// =========================================================================
+// interior_pending / absorbInteriors tests
+// =========================================================================
+
+fn newTestModule(arena: std.mem.Allocator) !Module {
+    const root = try arena.create(Scope);
+    root.* = Scope.init(null, .module);
+    return Module.init(root, "");
+}
+
+test "interior_pending: fresh decls start at zero bias" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var m = try newTestModule(arena.allocator());
+
+    const let = try arena.allocator().create(LetDecl);
+    let.* = .{ .name = .none, .decl_span = .{ .start = 10, .end = 30 } };
+    try m.declarations.append(arena.allocator(), .{ .let = let });
+
+    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[0]));
+}
+
+test "interior_pending: bump adds to stored bias without touching inner spans" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var m = try newTestModule(arena.allocator());
+
+    // LetDecl with an inner literal at offset 100.
+    const lit = try arena.allocator().create(LiteralExpr);
+    lit.* = .{ .kind = .int_literal, .value = "42", .loc = 100 };
+    const let = try arena.allocator().create(LetDecl);
+    let.* = .{
+        .name = .none,
+        .initializer = .{ .literal = lit },
+        .decl_span = .{ .start = 50, .end = 110 },
+    };
+    try m.declarations.append(arena.allocator(), .{ .let = let });
+
+    bumpDeclInteriorPending(&m.declarations.items[0], 5);
+    try std.testing.expectEqual(@as(i32, 5), declInteriorPending(m.declarations.items[0]));
+    // Inner loc untouched — bias is stored, not applied.
+    try std.testing.expectEqual(@as(u32, 100), lit.loc);
+}
+
+test "interior_pending: absorbDeclInterior drains bias and shifts inner loc" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var m = try newTestModule(arena.allocator());
+
+    const lit = try arena.allocator().create(LiteralExpr);
+    lit.* = .{ .kind = .int_literal, .value = "42", .loc = 100 };
+    const let = try arena.allocator().create(LetDecl);
+    let.* = .{
+        .name = .none,
+        .initializer = .{ .literal = lit },
+        .decl_span = .{ .start = 50, .end = 110 },
+    };
+    try m.declarations.append(arena.allocator(), .{ .let = let });
+    bumpDeclInteriorPending(&m.declarations.items[0], 5);
+
+    absorbDeclInterior(&m.declarations.items[0]);
+    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[0]));
+    try std.testing.expectEqual(@as(u32, 105), lit.loc);
+}
+
+test "interior_pending: absorb is idempotent after drain" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var m = try newTestModule(arena.allocator());
+
+    const lit = try arena.allocator().create(LiteralExpr);
+    lit.* = .{ .kind = .int_literal, .value = "42", .loc = 100 };
+    const let = try arena.allocator().create(LetDecl);
+    let.* = .{
+        .name = .none,
+        .initializer = .{ .literal = lit },
+        .decl_span = .{ .start = 50, .end = 110 },
+    };
+    try m.declarations.append(arena.allocator(), .{ .let = let });
+    bumpDeclInteriorPending(&m.declarations.items[0], 5);
+
+    absorbDeclInterior(&m.declarations.items[0]);
+    absorbDeclInterior(&m.declarations.items[0]);
+    // Only shifted once.
+    try std.testing.expectEqual(@as(u32, 105), lit.loc);
+}
+
+test "interior_pending: absorb with zero bias is no-op" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var m = try newTestModule(arena.allocator());
+
+    const lit = try arena.allocator().create(LiteralExpr);
+    lit.* = .{ .kind = .int_literal, .value = "42", .loc = 100 };
+    const let = try arena.allocator().create(LetDecl);
+    let.* = .{
+        .name = .none,
+        .initializer = .{ .literal = lit },
+        .decl_span = .{ .start = 50, .end = 110 },
+    };
+    try m.declarations.append(arena.allocator(), .{ .let = let });
+
+    absorbDeclInterior(&m.declarations.items[0]);
+    try std.testing.expectEqual(@as(u32, 100), lit.loc);
+    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[0]));
+}
+
+test "interior_pending: Module.absorbInteriors drains every decl" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var m = try newTestModule(arena.allocator());
+
+    const lit_a = try arena.allocator().create(LiteralExpr);
+    lit_a.* = .{ .kind = .int_literal, .value = "1", .loc = 100 };
+    const let_a = try arena.allocator().create(LetDecl);
+    let_a.* = .{
+        .name = .none,
+        .initializer = .{ .literal = lit_a },
+        .decl_span = .{ .start = 50, .end = 110 },
+    };
+
+    const lit_b = try arena.allocator().create(LiteralExpr);
+    lit_b.* = .{ .kind = .int_literal, .value = "2", .loc = 300 };
+    const let_b = try arena.allocator().create(LetDecl);
+    let_b.* = .{
+        .name = .none,
+        .initializer = .{ .literal = lit_b },
+        .decl_span = .{ .start = 250, .end = 310 },
+    };
+
+    try m.declarations.append(arena.allocator(), .{ .let = let_a });
+    try m.declarations.append(arena.allocator(), .{ .let = let_b });
+
+    bumpDeclInteriorPending(&m.declarations.items[0], 3);
+    bumpDeclInteriorPending(&m.declarations.items[1], 7);
+
+    m.absorbInteriors();
+
+    try std.testing.expectEqual(@as(u32, 103), lit_a.loc);
+    try std.testing.expectEqual(@as(u32, 307), lit_b.loc);
+    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[0]));
+    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[1]));
+}
+
+test "interior_pending: bump composition accumulates before absorb" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var m = try newTestModule(arena.allocator());
+
+    const lit = try arena.allocator().create(LiteralExpr);
+    lit.* = .{ .kind = .int_literal, .value = "42", .loc = 100 };
+    const let = try arena.allocator().create(LetDecl);
+    let.* = .{
+        .name = .none,
+        .initializer = .{ .literal = lit },
+        .decl_span = .{ .start = 50, .end = 110 },
+    };
+    try m.declarations.append(arena.allocator(), .{ .let = let });
+
+    // Three bumps: +5, -2, +4 → net +7.
+    bumpDeclInteriorPending(&m.declarations.items[0], 5);
+    bumpDeclInteriorPending(&m.declarations.items[0], -2);
+    bumpDeclInteriorPending(&m.declarations.items[0], 4);
+    try std.testing.expectEqual(@as(i32, 7), declInteriorPending(m.declarations.items[0]));
+    try std.testing.expectEqual(@as(u32, 100), lit.loc);
+
+    absorbDeclInterior(&m.declarations.items[0]);
+    try std.testing.expectEqual(@as(u32, 107), lit.loc);
+}
+
+test "interior_pending: shiftDeclInteriorPart only touches spans >= splice_end_old" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var m = try newTestModule(arena.allocator());
+
+    // Function with a body containing two statements at different offsets.
+    const left_lit = try arena.allocator().create(LiteralExpr);
+    left_lit.* = .{ .kind = .int_literal, .value = "1", .loc = 80 };
+    const right_lit = try arena.allocator().create(LiteralExpr);
+    right_lit.* = .{ .kind = .int_literal, .value = "2", .loc = 140 };
+    const ret1 = try arena.allocator().create(ReturnStmt);
+    ret1.* = .{ .loc = 75, .value = .{ .literal = left_lit }, .span = .{ .start = 75, .end = 90 } };
+    const ret2 = try arena.allocator().create(ReturnStmt);
+    ret2.* = .{ .loc = 135, .value = .{ .literal = right_lit }, .span = .{ .start = 135, .end = 150 } };
+    const body = try arena.allocator().create(CompoundStmt);
+    body.* = .{
+        .stmts = .empty,
+        .span = .{ .start = 60, .end = 160 },
+    };
+    try body.stmts.append(arena.allocator(), .{ .@"return" = ret1 });
+    try body.stmts.append(arena.allocator(), .{ .@"return" = ret2 });
+
+    const fn_decl = try arena.allocator().create(FunctionDecl);
+    fn_decl.* = .{
+        .attributes = .empty,
+        .name = .none,
+        .parameters = .empty,
+        .return_attr = .empty,
+        .body = body,
+        .decl_span = .{ .start = 50, .end = 160 },
+    };
+    try m.declarations.append(arena.allocator(), .{ .function = fn_decl });
+
+    // Shift only spans >= 100 by +5. The first return (at 75–90) is
+    // untouched; the second (at 135–150) shifts to 140–155.
+    shiftDeclInteriorPart(&m.declarations.items[0], 100, 5);
+
+    try std.testing.expectEqual(@as(u32, 80), left_lit.loc);
+    try std.testing.expectEqual(@as(u32, 75), ret1.loc);
+    try std.testing.expectEqual(@as(u32, 75), ret1.span.start);
+    try std.testing.expectEqual(@as(u32, 90), ret1.span.end);
+
+    try std.testing.expectEqual(@as(u32, 145), right_lit.loc);
+    try std.testing.expectEqual(@as(u32, 140), ret2.loc);
+    try std.testing.expectEqual(@as(u32, 140), ret2.span.start);
+    try std.testing.expectEqual(@as(u32, 155), ret2.span.end);
+
+    // Compound span: start 60 (< 100, unchanged), end 160 (≥ 100, +5).
+    try std.testing.expectEqual(@as(u32, 60), body.span.start);
+    try std.testing.expectEqual(@as(u32, 165), body.span.end);
 }

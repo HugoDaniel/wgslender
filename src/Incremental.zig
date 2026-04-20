@@ -960,7 +960,7 @@ fn tryAddSubSpliceInPlace(
     const new_node_span = new_tree.getNode(new_subtree_node);
     const new_len: u32 = new_node_span.end - new_node_span.start;
     const delta: i64 = @as(i64, new_len) - @as(i64, old_len);
-    shiftAstSpans(prev.module, old_anchor_span.end, delta);
+    prev.module.shiftModuleForEdit(old_anchor_span.end, delta);
 
     // 4. Lower the new CST subtree into prev.arena.
     const new_lowered = try CstLower.lowerSubtree(prev_arena, &new_tree, new_subtree_node);
@@ -1126,7 +1126,7 @@ fn tryCompoundSpliceInPlace(
     const new_node = new_tree.getNode(new_subtree_node);
     const new_len: u32 = new_node.end - new_node.start;
     const delta: i64 = @as(i64, new_len) - @as(i64, old_len);
-    shiftAstSpans(prev.module, old_anchor_span.end, delta);
+    prev.module.shiftModuleForEdit(old_anchor_span.end, delta);
 
     // 5. Lower the new subtree under `parent_scope`, appending new
     //    symbols and pushing fresh scopes.
@@ -1346,7 +1346,7 @@ fn tryDeclStmtSpliceInPlace(
     const new_anchor_node = new_tree.getNode(new_subtree_node);
     const new_len: u32 = new_anchor_node.end - new_anchor_node.start;
     const delta: i64 = @as(i64, new_len) - @as(i64, old_len);
-    shiftAstSpans(prev.module, old_anchor_span.end, delta);
+    prev.module.shiftModuleForEdit(old_anchor_span.end, delta);
 
     // 7. Lower the new decl_stmt into prev.arena. `lowerSubtreeInScope`
     //    appends a fresh symbol to `module.symbols`, puts its entry into
@@ -1431,6 +1431,11 @@ fn tryDeclStmtSpliceInPlace(
 /// bodies, standalone compound statements, if/switch/loop/for/while
 /// bodies, plus for-init/update stmt positions.
 fn findCompoundBySpan(module: *Ast.Module, target: Ast.Span) ?*Ast.CompoundStmt {
+    // A prior splice may have left `interior_pending` on the decl that
+    // contains this edit (as a "non-owner" decl for that earlier edit).
+    // Absorb that bias now so the descendants' spans are in coordinates
+    // that match `target` (which comes from the newly spliced CST).
+    module.absorbOwnerFor(target);
     for (module.declarations.items) |decl| {
         if (findCompoundInDecl(decl, target)) |c| return c;
     }
@@ -1594,270 +1599,6 @@ fn mergeErrorsByPos(
     return out;
 }
 
-/// Shift every `span` / `loc` field in the module by `delta` bytes when
-/// its current value is `>= splice_end_old`. Called after an add/sub
-/// splice so AST spans on decls/stmts/exprs downstream of the edit
-/// reflect new-source positions — matching what a fresh full parse would
-/// produce.
-///
-/// `splice_end_old` is the anchor's END byte in OLD-source coordinates
-/// (i.e., before the splice). Spans/locs whose current value is below
-/// it sit entirely before the edit and are unaffected.
-fn shiftAstSpans(module: *Ast.Module, splice_end_old: u32, delta: i64) void {
-    if (delta == 0) return;
-    for (module.directives.items) |*dir_ptr| {
-        shiftDirectiveSpan(dir_ptr, splice_end_old, delta);
-    }
-    for (module.declarations.items) |*decl_ptr| {
-        shiftDeclSpans(decl_ptr, splice_end_old, delta);
-    }
-    // The module's symbol table holds `loc` byte offsets for every
-    // declared symbol. Shift those too so use-before-declaration checks
-    // and StableId `Range` values stay accurate.
-    for (module.symbols.items) |*sym| {
-        if (sym.loc >= splice_end_old) sym.loc = @intCast(@as(i64, sym.loc) + delta);
-    }
-    shiftScopeMembers(module.scope, splice_end_old, delta);
-}
-
-fn shiftScopeMembers(scope: *Ast.Scope, splice_end_old: u32, delta: i64) void {
-    var it = scope.members.iterator();
-    while (it.next()) |e| {
-        if (e.value_ptr.loc >= splice_end_old) {
-            e.value_ptr.loc = @intCast(@as(i64, e.value_ptr.loc) + delta);
-        }
-    }
-    for (scope.children.items) |c| shiftScopeMembers(c, splice_end_old, delta);
-}
-
-fn shiftSpan(sp: *Ast.Span, splice_end_old: u32, delta: i64) void {
-    if (sp.start >= splice_end_old) sp.start = @intCast(@as(i64, sp.start) + delta);
-    if (sp.end >= splice_end_old) sp.end = @intCast(@as(i64, sp.end) + delta);
-}
-
-fn shiftLoc(loc: *u32, splice_end_old: u32, delta: i64) void {
-    if (loc.* >= splice_end_old) loc.* = @intCast(@as(i64, loc.*) + delta);
-}
-
-/// Shift any `span`/`loc`/`end_loc` fields present on `node` (comptime).
-/// AST structs have heterogeneous shapes — some carry only `span`, some
-/// only `loc`, some both, some additionally `end_loc`. This helper papers
-/// over the differences without a match arm per struct.
-fn shiftNodeOffsets(node: anytype, splice_end_old: u32, delta: i64) void {
-    const T = @TypeOf(node.*);
-    if (@hasField(T, "span")) shiftSpan(&node.span, splice_end_old, delta);
-    if (@hasField(T, "loc")) shiftLoc(&node.loc, splice_end_old, delta);
-    if (@hasField(T, "decl_span")) shiftSpan(&node.decl_span, splice_end_old, delta);
-    if (@hasField(T, "end_loc")) shiftLoc(&node.end_loc, splice_end_old, delta);
-}
-
-fn shiftDirectiveSpan(dir: *Ast.Directive, splice_end_old: u32, delta: i64) void {
-    switch (dir.*) {
-        inline else => |*d| shiftNodeOffsets(d, splice_end_old, delta),
-    }
-}
-
-fn shiftDeclSpans(decl: *Ast.Decl, splice_end_old: u32, delta: i64) void {
-    switch (decl.*) {
-        .@"const" => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
-        },
-        .override => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
-            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
-        },
-        .@"var" => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
-            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
-        },
-        .let => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
-        },
-        .function => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
-            for (d.parameters.items) |*p| {
-                shiftNodeOffsets(p, splice_end_old, delta);
-                shiftTypeSpans(p.typ, splice_end_old, delta);
-                for (p.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
-            }
-            if (d.return_type) |t| shiftTypeSpans(t, splice_end_old, delta);
-            for (d.return_attr.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
-            if (d.body) |body| shiftCompoundStmtSpans(body, splice_end_old, delta);
-        },
-        .@"struct" => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            for (d.members.items) |*m| {
-                shiftNodeOffsets(m, splice_end_old, delta);
-                shiftTypeSpans(m.typ, splice_end_old, delta);
-                for (m.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
-            }
-        },
-        .alias => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            shiftTypeSpans(d.typ, splice_end_old, delta);
-        },
-        .const_assert => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            shiftExprSpans(d.expr, splice_end_old, delta);
-        },
-    }
-}
-
-fn shiftAttributeSpans(attr: *Ast.Attribute, splice_end_old: u32, delta: i64) void {
-    shiftNodeOffsets(attr, splice_end_old, delta);
-    for (attr.args.items) |e| shiftExprSpans(e, splice_end_old, delta);
-}
-
-fn shiftCompoundStmtSpans(body: *Ast.CompoundStmt, splice_end_old: u32, delta: i64) void {
-    shiftNodeOffsets(body, splice_end_old, delta);
-    for (body.stmts.items) |*s| shiftStmtSpans(s, splice_end_old, delta);
-}
-
-fn shiftStmtSpans(stmt: *Ast.Stmt, splice_end_old: u32, delta: i64) void {
-    switch (stmt.*) {
-        .compound => |s| shiftCompoundStmtSpans(s, splice_end_old, delta),
-        .@"return" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            if (s.value) |e| shiftExprSpans(e, splice_end_old, delta);
-        },
-        .@"if" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.condition, splice_end_old, delta);
-            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
-            if (s.else_branch) |_| shiftStmtSpans(&s.else_branch.?, splice_end_old, delta);
-        },
-        .@"switch" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.expr, splice_end_old, delta);
-            for (s.cases.items) |*c| {
-                for (c.selectors.items) |e| shiftExprSpans(e, splice_end_old, delta);
-                shiftCompoundStmtSpans(c.body, splice_end_old, delta);
-            }
-        },
-        .@"for" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            if (s.init_stmt) |_| shiftStmtSpans(&s.init_stmt.?, splice_end_old, delta);
-            if (s.condition) |e| shiftExprSpans(e, splice_end_old, delta);
-            if (s.update) |_| shiftStmtSpans(&s.update.?, splice_end_old, delta);
-            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
-        },
-        .@"while" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.condition, splice_end_old, delta);
-            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
-        },
-        .loop => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
-            if (s.continuing) |c| shiftCompoundStmtSpans(c, splice_end_old, delta);
-        },
-        .@"break" => |s| shiftNodeOffsets(s, splice_end_old, delta),
-        .break_if => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.condition, splice_end_old, delta);
-        },
-        .@"continue" => |s| shiftNodeOffsets(s, splice_end_old, delta),
-        .discard => |s| shiftNodeOffsets(s, splice_end_old, delta),
-        .assign => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.left, splice_end_old, delta);
-            shiftExprSpans(s.right, splice_end_old, delta);
-        },
-        .incr_decr => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.expr, splice_end_old, delta);
-        },
-        .call => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            if (s.call.func) |f| shiftExprSpans(f, splice_end_old, delta);
-            if (s.call.template_type) |t| shiftTypeSpans(t, splice_end_old, delta);
-            for (s.call.args.items) |a| shiftExprSpans(a, splice_end_old, delta);
-        },
-        .decl => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            var inner = s.decl;
-            shiftDeclSpans(&inner, splice_end_old, delta);
-            s.decl = inner;
-        },
-    }
-}
-
-fn shiftExprSpans(expr: Ast.Expr, splice_end_old: u32, delta: i64) void {
-    switch (expr) {
-        .literal => |e| shiftNodeOffsets(e, splice_end_old, delta),
-        .ident => |e| shiftNodeOffsets(e, splice_end_old, delta),
-        .paren => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.expr, splice_end_old, delta);
-        },
-        .binary => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.left, splice_end_old, delta);
-            shiftExprSpans(e.right, splice_end_old, delta);
-        },
-        .unary => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.operand, splice_end_old, delta);
-        },
-        .call => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            if (e.func) |f| shiftExprSpans(f, splice_end_old, delta);
-            if (e.template_type) |t| shiftTypeSpans(t, splice_end_old, delta);
-            for (e.args.items) |a| shiftExprSpans(a, splice_end_old, delta);
-        },
-        .index => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.base, splice_end_old, delta);
-            shiftExprSpans(e.idx, splice_end_old, delta);
-        },
-        .member => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.base, splice_end_old, delta);
-        },
-    }
-}
-
-fn shiftTypeSpans(typ: Ast.Type, splice_end_old: u32, delta: i64) void {
-    switch (typ) {
-        .ident => |t| shiftNodeOffsets(t, splice_end_old, delta),
-        .sampler => |t| shiftNodeOffsets(t, splice_end_old, delta),
-        .vec => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
-        },
-        .mat => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
-        },
-        .array => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
-            if (t.size) |e| shiftExprSpans(e, splice_end_old, delta);
-        },
-        .ptr => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            shiftTypeSpans(t.elem_type, splice_end_old, delta);
-        },
-        .atomic => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            shiftTypeSpans(t.elem_type, splice_end_old, delta);
-        },
-        .texture => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            if (t.sampled_type) |st| shiftTypeSpans(st, splice_end_old, delta);
-        },
-    }
-}
-
 /// Mutable reference to a statement- or expression-slot inside an AST.
 /// Returned by `findAstSlot` so the hot path can rewrite the slot in
 /// place without re-walking the parent.
@@ -1875,6 +1616,9 @@ const AstSlot = union(enum) {
 /// crossed an Ast node the walker doesn't descend into, or the span was
 /// empty). Caller falls back to `parseFull` on null.
 fn findAstSlot(module: *Ast.Module, target: Ast.Span, kind: Cst.Kind) ?AstSlot {
+    // Absorb bias on the owning decl so descendants' spans match the
+    // coordinate system of `target` (from the freshly-spliced CST).
+    module.absorbOwnerFor(target);
     for (module.declarations.items) |*decl_ptr| {
         const decl = decl_ptr.*;
         if (findSlotInDecl(decl, target, kind)) |s| return s;
