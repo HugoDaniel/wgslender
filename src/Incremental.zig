@@ -86,6 +86,28 @@ pub const EditKind = enum {
 /// any `reparse` or `parseFull` return. The field is kept so
 /// `arenaBytes()` sums defensively and external telemetry readers
 /// don't break if the invariant is ever relaxed.
+///
+/// **Lifecycle.** A `ReparseResult` is in one of three states:
+///
+///   1. **Fresh.** Returned by `parseFull` or by a successful
+///      `reparse`. Owns its arena; every field is read-safe.
+///      `moved == false`.
+///   2. **Moved-from.** The `prev` argument to a successful `reparse`
+///      call. Ownership of the arena, module pointer, CST, source,
+///      scope map, and errors has been transferred to the returned
+///      result. Only `deinit()` and reading `moved` are legal. Reading
+///      any of `source`, `module`, `cst`, `scope_for_cst_node`,
+///      `errors`, `retained_arenas`, or calling `arenaBytes` /
+///      `scopeAtCstNode` is UB once the recipient's `deinit` fires,
+///      and returns inconsistent state even before. `moved == true`,
+///      `arena == &sentinel_stub`.
+///   3. **Deinit'd.** `deinit()` has run. The struct is dead storage.
+///
+/// The state machine is one-way: Fresh → Moved-from (via `reparse`) →
+/// Deinit'd (via `deinit`). A moved-from value can be `deinit`'d
+/// directly — the sentinel-stub guard makes that a no-op. A moved-from
+/// value cannot be reparsed again: `reparse` rejects it with
+/// `error.PrevAlreadyMoved`.
 pub const ReparseResult = struct {
     gpa: Allocator,
     arena: *std.heap.ArenaAllocator,
@@ -98,6 +120,19 @@ pub const ReparseResult = struct {
     /// `reparse`. Tests and telemetry gate on this to measure hot-path
     /// coverage; callers treat it as informational only.
     reused: bool = false,
+    /// True once another `reparse` call has taken ownership of this
+    /// result's arena, module pointer, CST, source, scope map, and
+    /// errors. A moved value is *legally inert*: the only safe
+    /// operations are `deinit()` (a no-op on the sentinel arena) and
+    /// reading `moved` itself. Every other field points at storage now
+    /// co-owned by the recipient `ReparseResult` and may be freed by
+    /// the recipient's `deinit` at any time.
+    ///
+    /// Set by every commit block in `tryTriviaOnlyShortcut`,
+    /// `tryAddSubSpliceInPlace`, `tryCompoundSpliceInPlace`, and
+    /// `tryDeclStmtSpliceInPlace`. Never set by `parseFull` or the
+    /// fallback path — those leave `prev` untouched.
+    moved: bool = false,
     /// Monotonic counter over "module has been mutated in a way that
     /// invalidates semantic caches (types, expr_types, struct_types,
     /// symbol_types, const_values, diagnostic line index)". Preserved
@@ -149,6 +184,7 @@ pub const ReparseResult = struct {
     /// references, in bytes. Used by telemetry and the compaction
     /// watermark smoke test (M13) to bound long-session memory drift.
     pub fn arenaBytes(self: *const ReparseResult) usize {
+        std.debug.assert(!self.moved);
         var bytes: usize = self.arena.queryCapacity();
         for (self.retained_arenas.items) |a| bytes += a.queryCapacity();
         return bytes;
@@ -187,6 +223,7 @@ pub const ReparseResult = struct {
 /// Used by the add/sub hot path to position `AstVisit.Context.scope` at
 /// the anchor's enclosing scope before an add-walk.
 pub fn scopeAtCstNode(result: *const ReparseResult, node: Cst.NodeIndex) *Ast.Scope {
+    std.debug.assert(!result.moved);
     var cur = node;
     while (true) {
         if (result.scope_for_cst_node.get(@intFromEnum(cur))) |s| return s;
@@ -525,12 +562,19 @@ fn isHotPathAnchor(k: Cst.Kind) bool {
 /// for the resulting source. Hot path: find a symbol-free anchor in
 /// `prev.cst`, re-parse only that subtree, splice the CST, and re-lower.
 ///
+/// **Precondition.** `prev.moved == false`. Passing a moved-from result
+/// (one that was itself `prev` to an earlier successful `reparse`) is
+/// rejected with `error.PrevAlreadyMoved` rather than silently reading
+/// from a sentinel-stub arena. See `ReparseResult`'s lifecycle doc.
+///
 /// **Note.** `prev` is taken by mutable pointer because the add/sub hot
 /// path transfers ownership of prev's arena into the new result. After
-/// a successful hot-path `reparse`, prev's own arena pointer references
-/// an empty stub, so its subsequent `deinit` is still safe but frees
-/// nothing material. Callers that `defer prev.deinit()` keep working
-/// without code changes.
+/// a successful hot-path `reparse`, `prev.moved` is true, `prev.arena`
+/// points at the shared sentinel stub, and every other field of `prev`
+/// becomes UB to read. `prev.deinit()` remains safe (the sentinel guard
+/// short-circuits it), so callers that `defer prev.deinit()` keep
+/// working without code changes — they just must not read `prev` after
+/// the call returns.
 ///
 /// Any hot-path failure falls back to `parseFull` (with `reused = false`
 /// and an untouched prev), so correctness degrades gracefully into the
@@ -540,10 +584,12 @@ pub fn reparse(
     prev: *ReparseResult,
     edit: Edit,
 ) !ReparseResult {
+    if (prev.moved) return error.PrevAlreadyMoved;
     const result = try reparseImpl(gpa, prev, edit);
     // Invariant lock: every successful path must return a result with
     // zero retained arenas (see ReparseResult.retained_arenas doc).
     std.debug.assert(result.retained_arenas.items.len == 0);
+    std.debug.assert(!result.moved);
     return result;
 }
 
@@ -656,6 +702,7 @@ fn tryTriviaOnlyShortcut(
     prev.retained_arenas = .empty;
     prev.scope_for_cst_node = .empty;
     prev.errors = &.{};
+    prev.moved = true;
 
     return result;
 }
@@ -992,6 +1039,7 @@ fn tryAddSubSpliceInPlace(
     prev.arena = &sentinel_stub;
     prev.retained_arenas = .empty;
     prev.errors = &.{};
+    prev.moved = true;
 
     return result;
 }
@@ -1174,6 +1222,7 @@ fn tryCompoundSpliceInPlace(
     prev.arena = &sentinel_stub;
     prev.retained_arenas = .empty;
     prev.errors = &.{};
+    prev.moved = true;
 
     return result;
 }
@@ -1371,6 +1420,7 @@ fn tryDeclStmtSpliceInPlace(
     prev.arena = &sentinel_stub;
     prev.retained_arenas = .empty;
     prev.errors = &.{};
+    prev.moved = true;
 
     return result;
 }

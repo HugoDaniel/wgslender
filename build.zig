@@ -195,6 +195,10 @@ pub fn build(b: *std.Build) void {
     // Incremental.reparse — shared sentinel stub arena identity /
     // deinit-safety contract across every hot-path return.
     _ = addTestStep(b, test_step, "tests/incremental_stub_sentinel_test.zig", target, optimize, &.{w});
+    // Incremental.reparse — moved-from state contract: hot paths flip
+    // `prev.moved = true`, fallbacks don't, and a second `reparse` on a
+    // moved prev returns `error.PrevAlreadyMoved`.
+    _ = addTestStep(b, test_step, "tests/incremental_moved_guard_test.zig", target, optimize, &.{w});
     // Incremental.reparse — hot-path targeted fuzz / property tests.
     _ = addTestStep(b, test_step, "tests/incremental_mutation_fuzz_test.zig", target, optimize, &.{w});
     // Incremental.reparse — long-tail edge cases (unicode, CRLF, token
