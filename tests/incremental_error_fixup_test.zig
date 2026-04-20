@@ -302,6 +302,96 @@ test "F-NEW-03: new E0102 entries appear in DFS / source order" {
 }
 
 // =========================================================================
+// F-SUP — suppression: edits that eliminate a pre-existing E0102, so the
+//         result bucket shrinks. Complement of F-NEW. These exercise the
+//         contract that the splice fixup's drop phase + the add-walk's
+//         lack of emission combine to produce byte-identical bucket
+//         contents relative to a fresh `parseFull` oracle.
+// =========================================================================
+
+test "F-SUP-01: replacing a use-before-decl ident with a literal drops its E0102" {
+    // Inverse of F-NEW-01: base has one E0102; edit removes it.
+    const src: [:0]const u8 =
+        "fn f() -> i32 { return q; let q: i32 = 1; return q; }";
+    const start: u32 = at(src, "return q;");
+    try runEditWithErrors(
+        std.testing.allocator,
+        src,
+        .{ .start = start, .end = start + @as(u32, "return q;".len), .new_text = "return 0;" },
+        "fn f() -> i32 { return 0; let q: i32 = 1; return q; }",
+        true,
+    );
+}
+
+test "F-SUP-02: replacing a use-before-decl with a resolvable sibling drops the E0102" {
+    // The new ident resolves at the anchor's location (no before-decl),
+    // so the add-walk produces no new E0102.
+    const src: [:0]const u8 =
+        "fn f() -> i32 { let a = 1; return q; let q: i32 = 1; return q; }";
+    const start: u32 = at(src, "return q;");
+    try runEditWithErrors(
+        std.testing.allocator,
+        src,
+        .{ .start = start, .end = start + @as(u32, "return q;".len), .new_text = "return a;" },
+        "fn f() -> i32 { let a = 1; return a; let q: i32 = 1; return q; }",
+        true,
+    );
+}
+
+test "F-SUP-03: deleting the later declaration turns before-decl into truly-unknown — no error" {
+    // Remove `let q: i32 = 1; return q;` from the tail. The remaining
+    // `return q;` is now a truly-undefined ident (`lookupSymbolAnyLoc`
+    // also misses) — E0102 does not fire. Proves suppression depends
+    // on symbol-table state, not just textual splice.
+    const src: [:0]const u8 =
+        "fn f() -> i32 { return q; let q: i32 = 1; return q; }";
+    const start: u32 = at(src, " let q: i32 = 1; return q;");
+    try runEditWithErrors(
+        std.testing.allocator,
+        src,
+        .{
+            .start = start,
+            .end = start + @as(u32, " let q: i32 = 1; return q;".len),
+            .new_text = "",
+        },
+        "fn f() -> i32 { return q; }",
+        true,
+    );
+}
+
+test "F-SUP-04: 10-step alternation between a use-before-decl and a clean return" {
+    // Anchor-kind-stable hot edit on the same return_stmt. Every even
+    // step introduces an E0102; every odd step suppresses it. The bucket
+    // must track the count exactly — `parseFull` is re-run each step as
+    // the oracle.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f() -> i32 { return 0; let z: i32 = 1; return z; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const ret_start: u32 = at(base_src, "return 0;");
+    const ret_len: u32 = @intCast("return 0;".len);
+    var i: u8 = 0;
+    while (i < 10) : (i += 1) {
+        const new_text: []const u8 = if (i % 2 == 0) "return z;" else "return 0;";
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = ret_start,
+            .end = ret_start + ret_len,
+            .new_text = new_text,
+        });
+        try std.testing.expect(next.reused);
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectErrorsMatch(next.errors, oracle.errors);
+
+        prev.deinit();
+        prev = next;
+    }
+}
+
+// =========================================================================
 // F-MIX — drop + shift + new in one edit.
 // =========================================================================
 

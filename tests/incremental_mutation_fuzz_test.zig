@@ -425,6 +425,33 @@ fn runExactScenario(
     defer oracle.deinit();
 
     try expectPerSymbolUseCountsExact(gpa, label, updated.module, oracle.module);
+    try expectErrorsExact(label, updated.errors, oracle.errors);
+}
+
+/// Position-and-code equality on the error bucket. F-EXACT scenarios are
+/// the strictest oracle — they assert per-symbol use_count AND per-entry
+/// error parity. A subtle bug where the hot path's add-walk produces one
+/// fewer E0102 than a fresh parseFull would would slip past shape/use_count
+/// checks but trip here.
+fn expectErrorsExact(
+    label: []const u8,
+    got: []const wgslender.Parser.ParseError,
+    oracle: []const wgslender.Parser.ParseError,
+) !void {
+    if (got.len != oracle.len) {
+        std.debug.print(
+            "{s}: error count mismatch: got={d} oracle={d}\n",
+            .{ label, got.len, oracle.len },
+        );
+        for (got) |g| std.debug.print("  got    {s} pos={d} end={d}: {s}\n", .{ g.code, g.pos, g.end, g.message });
+        for (oracle) |o| std.debug.print("  oracle {s} pos={d} end={d}: {s}\n", .{ o.code, o.pos, o.end, o.message });
+        return error.ErrorCountMismatch;
+    }
+    for (got, oracle) |g, o| {
+        try std.testing.expectEqualStrings(o.code, g.code);
+        try std.testing.expectEqual(o.pos, g.pos);
+        try std.testing.expectEqual(o.end, g.end);
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -698,4 +725,121 @@ test "F-EXACT E15: twins — append `let w = i + i;` to fn a body" {
             .new_text = " let w = i + i;",
         },
     );
+}
+
+// -------------------------------------------------------------------------
+// E16 — add-walk emits a NEW E0102 at a spliced new position; the hot
+//       path surfaces it alongside correct per-symbol use_counts.
+// -------------------------------------------------------------------------
+
+test "F-EXACT E16: add-walk emits a new E0102 at the spliced position" {
+    // Edit introduces a before-decl reference to `q` by replacing
+    // `return 0;` with `return q;`. After the edit: one E0102 at the
+    // new `q` ident, and the `q` symbol's live use_count stays at 1
+    // (only the downstream `return q;` counts — the E0102 branch
+    // sets `ref` but does NOT bump use_count, per src/AstVisit.zig).
+    const src: [:0]const u8 =
+        "fn f() -> i32 { return 0; let q: i32 = 1; return q; }";
+    const off = at(src, "return 0;");
+    try runExactScenario(
+        std.testing.allocator,
+        "F-EXACT E16",
+        src,
+        .{ .start = off, .end = off + @as(u32, @intCast("return 0;".len)), .new_text = "return q;" },
+    );
+}
+
+// -------------------------------------------------------------------------
+// E17 — extending a condition adds a fresh use-before-decl alongside an
+//       existing one; the bucket grows by exactly one, use_counts unchanged.
+// -------------------------------------------------------------------------
+
+test "F-EXACT E17: a second E0102 in the if-body coexists with one in the cond" {
+    // Base carries one E0102 (`y` in the if-cond). Edit replaces the
+    // if-body's `return 1;` with `return z;`, introducing a second
+    // use-before-decl on `z`. The sub-walk only touches the old
+    // `return 1;` subtree (no idents) — so neither the y-E0102 ident
+    // nor its ref is visited; use_counts stay correct per the oracle.
+    // Post-edit: 2 E0102 entries (cond's y + body's z).
+    const src: [:0]const u8 =
+        "fn f(x: i32) -> i32 { if x > 0 || y < 0 { return 1; } let y = 2; let z = 3; return y + z; }";
+    const off = at(src, "return 1;");
+    try runExactScenario(
+        std.testing.allocator,
+        "F-EXACT E17",
+        src,
+        .{
+            .start = off,
+            .end = off + @as(u32, @intCast("return 1;".len)),
+            .new_text = "return z;",
+        },
+    );
+}
+
+// -------------------------------------------------------------------------
+// E18 — round-trip on the same anchor: introduce E0102 then introduce
+//       another. Oracle parity at each step.
+// -------------------------------------------------------------------------
+
+test "F-EXACT E18: literal→use-before-decl then literal→use-before-decl on same anchor" {
+    // Single-step scenario: swap the `0` arg inside `g(0)` for a use-
+    // before-decl ident `late`. Oracle parity on use_counts + errors.
+    // (A sub→add round-trip that removes `late` would hit the sub-walk
+    // vs E0102-ref use_count bug documented near M5.f; we stay on the
+    // introduction side here.)
+    const src: [:0]const u8 =
+        "fn g(x: i32) -> i32 { return x; } fn f() -> i32 { let r: i32 = g(0); let late: i32 = 7; return r + late; }";
+    const off = at(src, "g(0)") + 2;
+    try runExactScenario(
+        std.testing.allocator,
+        "F-EXACT E18",
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "late" },
+    );
+}
+
+// -------------------------------------------------------------------------
+// E19 — 20-iteration alternation burst on an emissible anchor.
+// -------------------------------------------------------------------------
+
+test "F-EXACT E19: 20-iteration literal churn on the same literal inside a use-before-decl body" {
+    // Base carries a single E0102 on the early `return q;`. The
+    // burst churns the *late-return's literal* — a totally unrelated
+    // return_stmt far downstream from the E0102 ident. Each step:
+    //   - sub-walk runs on a single literal (no idents, no E0102 refs).
+    //   - add-walk runs on a single literal (no idents).
+    //   - the existing E0102 stays put; its position shifts through
+    //     fixupErrors as needed.
+    //
+    // This isolates the 20-edit burst's oracle-parity contract from the
+    // latent sub-walk-vs-E0102-ref use_count bug (see M5.f note).
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f(p: i32) -> i32 { let dummy: i32 = 0; return p + dummy; } fn g() -> i32 { return q; let q: i32 = 1; return q; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+    try std.testing.expectEqual(@as(usize, 1), prev.errors.len);
+    try std.testing.expectEqualStrings("E0102", prev.errors[0].code);
+
+    // Flip the `0` literal in `let dummy: i32 = 0;` each iteration.
+    // That's in a separate fn from the E0102-carrying `g`.
+    const lit_off: u32 = at(base_src, "= 0;") + 2;
+    var i: u8 = 0;
+    while (i < 20) : (i += 1) {
+        const ch: u8 = '0' + (i % 10);
+        const new_text = [_]u8{ch};
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = lit_off,
+            .end = lit_off + 1,
+            .new_text = &new_text,
+        });
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectPerSymbolUseCountsExact(gpa, "F-EXACT E19", next.module, oracle.module);
+        try expectErrorsExact("F-EXACT E19", next.errors, oracle.errors);
+
+        prev.deinit();
+        prev = next;
+    }
 }

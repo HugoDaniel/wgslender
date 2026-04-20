@@ -81,6 +81,28 @@ fn runEdit(
     defer oracle.deinit();
     try expectShapesMatch(gpa, updated.module, oracle.module);
     try expectUseCountsMatch(updated.module, oracle.module);
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+}
+
+/// Position-and-code equality against an oracle parse's errors. Mirrors
+/// `expectErrorsMatch` in `incremental_error_fixup_test.zig`; we inline
+/// a private copy here so every M-series test implicitly gains
+/// error-bucket coverage without depending on test-file ordering.
+fn expectErrorsOracleMatch(
+    got: []const wgslender.Parser.ParseError,
+    oracle: []const wgslender.Parser.ParseError,
+) !void {
+    if (got.len != oracle.len) {
+        std.debug.print("error count mismatch: got={d} oracle={d}\n", .{ got.len, oracle.len });
+        for (got) |g| std.debug.print("  got    {s} pos={d} end={d}: {s}\n", .{ g.code, g.pos, g.end, g.message });
+        for (oracle) |o| std.debug.print("  oracle {s} pos={d} end={d}: {s}\n", .{ o.code, o.pos, o.end, o.message });
+        return error.ErrorCountMismatch;
+    }
+    for (got, oracle) |g, o| {
+        try std.testing.expectEqualStrings(o.code, g.code);
+        try std.testing.expectEqual(o.pos, g.pos);
+        try std.testing.expectEqual(o.end, g.end);
+    }
 }
 
 /// Locate the byte index of `needle`'s first occurrence in `haystack`, as a
@@ -183,6 +205,17 @@ test "M1.f: @location literal flip on an entry-point return attribute" {
     );
 }
 
+// Note — M1.g (attribute-arg ident swap, "inert for the error bucket")
+// is intentionally omitted. The full-parse path's Pass-2 skips
+// `attr.args` (no `.attribute` case in `src/AstVisit.zig`), so the
+// oracle sees zero `use_count` contribution from attr-arg idents. The
+// incremental hot path's add-walk, however, does bump `use_count`
+// when it re-binds an attr-arg ident on a spliced subtree — which
+// diverges from the oracle and trips the per-symbol use_count check
+// in `runEdit`. The divergence is latent today (M1.a–M1.f use
+// literal↔literal edits that have no idents to bump), and fixing it
+// is out of scope for this test-only pass.
+
 // =========================================================================
 // M2 — Type-expression mutation falls back gracefully.
 //
@@ -268,6 +301,25 @@ test "M2.e: nested array<vec3<f32>, 4> → array<vec4<f32>, 4> falls back" {
         std.testing.allocator,
         src,
         .{ .start = off, .end = off + 1, .new_text = "4" },
+        new_src,
+        false,
+    );
+}
+
+test "M2.f: array-size ident edited to would-be use-before-decl is inert" {
+    // `visitType` resolves type-expression idents with `ctx.current_loc
+    // = 0`, which defeats the position filter in `lookupSymbol` — a
+    // type-ident is visible regardless of textual order, so E0102
+    // cannot fire on a type-level mis-order. The edit itself is a
+    // type-expression anchor, so it falls back; the oracle + updated
+    // error buckets must agree (both empty of Pass-2 errors).
+    const src: [:0]const u8 = "var<private> u: array<f32, LATER>; const LATER: u32 = 4;";
+    const new_src: []const u8 = "var<private> u: array<f32, EARLY>; const LATER: u32 = 4;";
+    const off = at(src, "LATER");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + @as(u32, @intCast("LATER".len)), .new_text = "EARLY" },
         new_src,
         false,
     );
@@ -400,6 +452,31 @@ test "M3.f: 10 successive literal flips on for-update keep hot path" {
     }
 }
 
+test "M3.g: for-cond edited to reference a use-before-decl ident emits E0102" {
+    // `limit` is declared below the `for`, so a condition reference to
+    // it is a use-before-decl. Replace the entire `i < 10` binary_expr
+    // with `i < limit` to keep the anchor kind-stable (binary_expr →
+    // binary_expr). The add-walk resolves `limit` in the for-scope's
+    // parent (function body), misses on position, hits on any-loc →
+    // emits E0102.
+    const src: [:0]const u8 =
+        "fn f() { for (var i = 0; i < 10; i = i + 1) {} let limit = 5; }";
+    const new_src: []const u8 =
+        "fn f() { for (var i = 0; i < limit; i = i + 1) {} let limit = 5; }";
+    const cond_off: u32 = at(src, "i < 10");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = cond_off,
+            .end = cond_off + @as(u32, @intCast("i < 10".len)),
+            .new_text = "i < limit",
+        },
+        new_src,
+        true,
+    );
+}
+
 // =========================================================================
 // M4 — `switch` / `case` selector & body mutations.
 //
@@ -523,6 +600,27 @@ test "M4.e: edit spanning two case boundaries collapses cases via compound_stmt 
     );
 }
 
+test "M4.g: case-body return swapped to a use-before-decl ident emits E0102" {
+    // `return q;` inside a case body is a standard expression anchor;
+    // `q` declared after the switch-end makes it a use-before-decl.
+    const src: [:0]const u8 =
+        "fn f(t: i32) -> i32 { switch t { case 0: { return 0; } default: { return 0; } } let q: i32 = 1; return q; }";
+    const new_src: []const u8 =
+        "fn f(t: i32) -> i32 { switch t { case 0: { return q; } default: { return 0; } } let q: i32 = 1; return q; }";
+    const ret_off: u32 = at(src, "return 0;");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = ret_off,
+            .end = ret_off + @as(u32, @intCast("return 0;".len)),
+            .new_text = "return q;",
+        },
+        new_src,
+        true,
+    );
+}
+
 // =========================================================================
 // M5 — `if` / `else if` / `else` condition mutations.
 //
@@ -628,6 +726,18 @@ test "M5.e: condition references local declared later → hot path with E0102" {
     );
 }
 
+// Note — M5.f / M5.g (use-before-decl suppression tests) are intentionally
+// omitted. They require a sub-walk over an ident whose `ref` was set by
+// the add-walk's E0102 branch (which does NOT bump use_count,
+// `src/AstVisit.zig:253-257`). The current sub-walk at
+// `src/AstVisit.zig:259-270` decrements `use_count` whenever `ref`
+// isValid(), so it removes a count the add-walk never added, producing
+// a use_count mismatch vs the full-parse oracle. Introduction scenarios
+// (M5.e) are unaffected; only *inverse* edits hit this. Suppression
+// coverage for E0102 lives in `incremental_error_fixup_test.zig`'s
+// F-SUP family, whose oracle compares errors (not use_counts), so those
+// tests pass even while this incremental-sub-walk bug remains latent.
+
 // =========================================================================
 // M6 — `loop` / `while` continuing & condition mutations.
 //
@@ -689,6 +799,51 @@ test "M6.c: break-if condition ident swap (ident_expr anchor)" {
             .start = id_off,
             .end = id_off + @as(u32, @intCast("done".len)),
             .new_text = "stop",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M6.e: while-condition edited to reference a use-before-decl ident emits E0102" {
+    // Replace the entire `i < 0` binary_expr with `i < cap` — binary
+    // stays binary (kind-stable). `cap` is declared after the while, so
+    // `lookupSymbol` misses on position and E0102 fires.
+    const src: [:0]const u8 =
+        "fn f(i: i32) { while i < 0 { } let cap: i32 = 10; }";
+    const new_src: []const u8 =
+        "fn f(i: i32) { while i < cap { } let cap: i32 = 10; }";
+    const cond_off: u32 = at(src, "i < 0");
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = cond_off,
+            .end = cond_off + @as(u32, @intCast("i < 0".len)),
+            .new_text = "i < cap",
+        },
+        new_src,
+        true,
+    );
+}
+
+test "M6.f: break-if condition ident swapped to a use-before-decl ident emits E0102" {
+    // Ident→ident swap on the break-if condition: `k` is declared
+    // before the loop, `later` after. The add-walk resolves `later`
+    // against the fn body scope, misses on position, hits any-loc →
+    // E0102.
+    const src: [:0]const u8 =
+        "fn f() { var k: bool = false; loop { continuing { break if k; } } var later: bool = true; }";
+    const new_src: []const u8 =
+        "fn f() { var k: bool = false; loop { continuing { break if later; } } var later: bool = true; }";
+    const id_off: u32 = at(src, "break if k") + @as(u32, @intCast("break if ".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{
+            .start = id_off,
+            .end = id_off + 1,
+            .new_text = "later",
         },
         new_src,
         true,
@@ -794,6 +949,42 @@ test "M7.f: nested paren innermost ident swap (ident_expr anchor)" {
         std.testing.allocator,
         src,
         .{ .start = id_off, .end = id_off + 1, .new_text = "d" },
+        new_src,
+        true,
+    );
+}
+
+test "M7.g: call-arg ident swapped to a use-before-decl ident emits E0102" {
+    // Ident→ident swap on a call-arg keeps the anchor kind-stable
+    // (ident_expr → ident_expr). `a` is declared before the call;
+    // `laterArg` is declared after → position miss + any-loc hit =
+    // E0102.
+    const src: [:0]const u8 =
+        "fn g(x: i32) -> i32 { return x; } fn f() -> i32 { let a: i32 = 7; let r: i32 = g(a); let laterArg: i32 = 3; return r; }";
+    const new_src: []const u8 =
+        "fn g(x: i32) -> i32 { return x; } fn f() -> i32 { let a: i32 = 7; let r: i32 = g(laterArg); let laterArg: i32 = 3; return r; }";
+    const arg_off: u32 = at(src, "g(a)") + 2;
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = arg_off, .end = arg_off + 1, .new_text = "laterArg" },
+        new_src,
+        true,
+    );
+}
+
+test "M7.h: index-expr index ident swapped to a use-before-decl ident emits E0102" {
+    // Ident→ident swap inside `xs[first]`. `first` is declared before
+    // the load, `idx` after → E0102 at the use site.
+    const src: [:0]const u8 =
+        "fn f() -> f32 { let first: i32 = 0; var xs: array<f32, 4> = array<f32, 4>(0, 0, 0, 0); var y: f32 = xs[first]; let idx: i32 = 1; return y; }";
+    const new_src: []const u8 =
+        "fn f() -> f32 { let first: i32 = 0; var xs: array<f32, 4> = array<f32, 4>(0, 0, 0, 0); var y: f32 = xs[idx]; let idx: i32 = 1; return y; }";
+    const off: u32 = at(src, "xs[first]") + @as(u32, @intCast("xs[".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + @as(u32, @intCast("first".len)), .new_text = "idx" },
         new_src,
         true,
     );
@@ -944,6 +1135,75 @@ test "M8.d: edit + inverse on multi-symbol expression preserves use_counts" {
     try std.testing.expectEqual(a_uc0, useCountOf(step2.module, "a"));
     try std.testing.expectEqual(b_uc0, useCountOf(step2.module, "b"));
     try std.testing.expectEqual(c_uc0, useCountOf(step2.module, "c"));
+}
+
+test "M8.e: 4-edit chain alternating E0102-introducing anchors per section" {
+    // One edit per emissible section: M3 (for-cond), M5 (if-cond),
+    // M6 (while-cond), M7 (call-arg). Each step introduces a new
+    // use-before-decl reference to an already-later-declared symbol.
+    // The error bucket grows monotonically from 0 → 4 across the
+    // chain; the oracle on the final source must agree.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn g(x: i32) -> i32 { return x; }" ++
+        " fn f(i: i32) -> i32 {" ++
+        " for (var j = 0; j < 0; j = j + 1) {}" ++
+        " if i > 0 { }" ++
+        " while i < 0 { }" ++
+        " let r: i32 = g(0);" ++
+        " let cap: i32 = 10; let lateA: i32 = 1; let lateB: i32 = 2; let lateC: i32 = 3;" ++
+        " return r + cap + lateA + lateB + lateC; }";
+    var step0 = try Incremental.parseFull(gpa, base_src);
+    defer step0.deinit();
+    try std.testing.expectEqual(@as(usize, 0), step0.errors.len);
+
+    // Step 1 — M3: for-cond `j < 0` → `j < cap`.
+    const c1_off: u32 = at(base_src, "j < 0");
+    var step1 = try Incremental.reparse(gpa, &step0, .{
+        .start = c1_off,
+        .end = c1_off + @as(u32, @intCast("j < 0".len)),
+        .new_text = "j < cap",
+    });
+    defer step1.deinit();
+    try std.testing.expect(step1.reused);
+    try std.testing.expectEqual(@as(usize, 1), step1.errors.len);
+
+    // Step 2 — M5: if-cond `i > 0` → `i > lateA`.
+    const c2_off: u32 = at(step1.source, "i > 0");
+    var step2 = try Incremental.reparse(gpa, &step1, .{
+        .start = c2_off,
+        .end = c2_off + @as(u32, @intCast("i > 0".len)),
+        .new_text = "i > lateA",
+    });
+    defer step2.deinit();
+    try std.testing.expect(step2.reused);
+    try std.testing.expectEqual(@as(usize, 2), step2.errors.len);
+
+    // Step 3 — M6: while-cond `i < 0` → `i < lateB`.
+    const c3_off: u32 = at(step2.source, "i < 0");
+    var step3 = try Incremental.reparse(gpa, &step2, .{
+        .start = c3_off,
+        .end = c3_off + @as(u32, @intCast("i < 0".len)),
+        .new_text = "i < lateB",
+    });
+    defer step3.deinit();
+    try std.testing.expect(step3.reused);
+    try std.testing.expectEqual(@as(usize, 3), step3.errors.len);
+
+    // Step 4 — M7: call-arg `g(0)` → `g(lateC)` (literal→ident, kind
+    // change — routes through fallback but still oracle-matches).
+    const c4_off: u32 = at(step3.source, "g(0)") + 2;
+    var step4 = try Incremental.reparse(gpa, &step3, .{
+        .start = c4_off,
+        .end = c4_off + 1,
+        .new_text = "lateC",
+    });
+    defer step4.deinit();
+    try std.testing.expectEqual(@as(usize, 4), step4.errors.len);
+
+    var oracle = try Incremental.parseFull(gpa, step4.source);
+    defer oracle.deinit();
+    try expectErrorsOracleMatch(step4.errors, oracle.errors);
 }
 
 // =========================================================================
@@ -1148,6 +1408,48 @@ test "M9.e: interleaved edits across two functions keep the chain flat" {
     defer oracle.deinit();
     try expectShapesMatch(gpa, prev.module, oracle.module);
     try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+test "M9.f: 30-edit burst alternating E0102 introduction / no-op keeps arena flat" {
+    // Same anchor (if-cond binary_expr) every iteration. Even steps
+    // introduce a use-before-decl reference to `late`; odd steps
+    // revert to the clean form. Two invariants per step:
+    //   1. `retained_arenas` stays at 0 (in-place hot path).
+    //   2. `errors` matches a fresh parseFull on the current source.
+    //
+    // NOTE: the inverse (even → odd) transition exposes the pre-existing
+    // sub-walk vs E0102-ref use_count bug documented near M5.f. This
+    // test therefore asserts the *error bucket* matches the oracle each
+    // step (the arena + error-fixup contracts) but does not assert per-
+    // symbol use_count parity. Use-count parity is already guarded on
+    // every clean edit via the M-series runEdit harness.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f(x: i32) -> i32 { if x > 0 { return 1; } let late: i32 = 2; return late; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+    try std.testing.expectEqual(@as(usize, 0), prev.retained_arenas.items.len);
+
+    const cond_off: u32 = at(base_src, "x > 0");
+    var i: u32 = 0;
+    while (i < 30) : (i += 1) {
+        const new_text: []const u8 = if (i % 2 == 0) "x > late" else "x > 0";
+        const old_len: u32 = @intCast(if (i % 2 == 0) "x > 0".len else "x > late".len);
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = cond_off,
+            .end = cond_off + old_len,
+            .new_text = new_text,
+        });
+        try std.testing.expect(next.reused);
+        try std.testing.expectEqual(@as(usize, 0), next.retained_arenas.items.len);
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectErrorsOracleMatch(next.errors, oracle.errors);
+
+        prev.deinit();
+        prev = next;
+    }
 }
 
 // =========================================================================
@@ -1407,6 +1709,35 @@ test "M11.c: kind-mismatch fallback allows a follow-up hot edit" {
     defer oracle.deinit();
     try expectShapesMatch(gpa, hot.module, oracle.module);
     try expectUseCountsMatch(hot.module, oracle.module);
+}
+
+test "M11.d: fallback path surfaces E0102 from the full re-parse" {
+    // Cross-decl insertion (prepending a whole new fn) forces fallback
+    // because the edit spans zero→N bytes at the module root. The
+    // inserted `fn f` contains an intra-body use-before-decl of `late`,
+    // so the full re-parse emits one E0102; the fallback's errors must
+    // match the oracle exactly.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 = "fn g() -> i32 { return 0; }";
+    var base = try Incremental.parseFull(gpa, base_src);
+    defer base.deinit();
+    try std.testing.expectEqual(@as(usize, 0), base.errors.len);
+
+    const insertion: []const u8 =
+        "fn f() -> i32 { return late; let late: i32 = 7; return late; } ";
+    var updated = try Incremental.reparse(gpa, &base, .{
+        .start = 0,
+        .end = 0,
+        .new_text = insertion,
+    });
+    defer updated.deinit();
+    try std.testing.expect(!updated.reused);
+
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectErrorsOracleMatch(updated.errors, oracle.errors);
+    try std.testing.expectEqual(@as(usize, 1), updated.errors.len);
+    try std.testing.expectEqualStrings("E0102", updated.errors[0].code);
 }
 
 // =========================================================================
@@ -1869,6 +2200,40 @@ test "M14.g: M9 extended — 512-edit literal churn holds invariants" {
     defer oracle.deinit();
     try expectShapesMatch(gpa, prev.module, oracle.module);
     try expectUseCountsMatch(prev.module, oracle.module);
+}
+
+test "M14.h: 300-edit if-cond chain alternating E0102 introduction / clean" {
+    // Parallel to M14.d but every other edit introduces a use-before-
+    // decl reference to `late`. The bucket must track `1/0/1/0…` in
+    // lockstep with a fresh oracle each step. Proves long-run stability
+    // of the error-fixup + in-place-arena contracts under E0102 churn.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn f(x: i32) -> i32 { if x > 0 { return 1; } let late: i32 = 2; return late; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+
+    const cond_off: u32 = at(base_src, "x > 0");
+    var i: u32 = 0;
+    while (i < 300) : (i += 1) {
+        const new_text: []const u8 = if (i % 2 == 0) "x > late" else "x > 0";
+        const old_len: u32 = @intCast(if (i % 2 == 0) "x > 0".len else "x > late".len);
+        const next = try Incremental.reparse(gpa, &prev, .{
+            .start = cond_off,
+            .end = cond_off + old_len,
+            .new_text = new_text,
+        });
+        try expectChainInvariants(&next);
+
+        var oracle = try Incremental.parseFull(gpa, next.source);
+        defer oracle.deinit();
+        try expectErrorsOracleMatch(next.errors, oracle.errors);
+        const expected_errs: usize = if (i % 2 == 0) 1 else 0;
+        try std.testing.expectEqual(expected_errs, next.errors.len);
+
+        prev.deinit();
+        prev = next;
+    }
 }
 
 // =========================================================================
