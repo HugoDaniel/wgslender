@@ -4,12 +4,16 @@
 //! Complements `incremental_corpus_test.zig` (aggregate-sum I-01) and
 //! `incremental_mutation_longtail_test.zig` (hand-crafted M1–M8 snippets)
 //! by driving each mutation family over every shader in
-//! `tests/testdata/compute.toys/` and asserting a per-symbol
-//! `use_count` oracle against a fresh `parseFull(new_source)`.
+//! `tests/testdata/compute.toys/` and asserting both a per-name-sum
+//! oracle AND a positional per-symbol `use_count` oracle against a
+//! fresh `parseFull(new_source)`.
 //!
-//! Why this matters: a subtractive bug that flips `a`'s count with
-//! `b`'s passes an aggregate-sum check, because the global sum is
-//! preserved. The per-name-sum oracle here fails on that drift.
+//! Why both oracles: the per-name-sum check catches cross-name drift
+//! (a count leaking from `a` to `b`), while the positional per-symbol
+//! check catches same-name shadowing drift (a count leaking between
+//! two differently-scoped `i` locals). Compute.toys shaders routinely
+//! shadow identifiers across scopes, so the per-name sum alone can
+//! miss real mode-dispatch corruption.
 //!
 //! Every driver uses the append-only contract — the in-place compound
 //! and decl hot paths (`src/Incremental.zig:842-909, 949-1100,
@@ -73,6 +77,118 @@ fn expectUseCountsMatchAppendOnly(
     }
 }
 
+/// Per-symbol `use_count` oracle, identity-keyed on the declaration
+/// byte offset — strictly stronger than `expectUseCountsMatchAppendOnly`.
+///
+/// Motivation: compute.toys shaders shadow the same identifier across
+/// scopes (multiple `let i`, `let x`, `uv`, …). A mode-dispatch bug
+/// that over-increments symbol A's `use_count` and under-decrements
+/// symbol B's — where A and B share a name — passes the name-sum
+/// oracle because the global sum is preserved. This oracle matches
+/// each live symbol by `(original_name, kind, loc)`, which is unique
+/// per declaration in a byte-identical source, and asserts
+/// `use_count` equality at the matched pair.
+///
+/// Why `loc` as the disambiguator: every live declaration has a unique
+/// byte offset in the new source. Both the incremental path and the
+/// oracle's `parseFull` populate `Symbol.loc` from the same byte
+/// offset, so matching by `loc` is stable even when the incremental
+/// path re-appends a replaced symbol at a different raw index than the
+/// oracle's in-source-order layout. A `loc` mismatch is itself a
+/// separate bug class (span-shift regressions); the `SymbolNotFound`
+/// diagnostic here still surfaces it.
+fn expectPerSymbolUseCountsExact(
+    gpa: std.mem.Allocator,
+    label: []const u8,
+    got: *const Ast.Module,
+    oracle: *const Ast.Module,
+) !void {
+    var got_live: std.ArrayListUnmanaged(usize) = .empty;
+    defer got_live.deinit(gpa);
+    for (got.symbols.items, 0..) |s, i| {
+        if (s.use_count > 0) try got_live.append(gpa, i);
+    }
+
+    var oracle_live: std.ArrayListUnmanaged(usize) = .empty;
+    defer oracle_live.deinit(gpa);
+    for (oracle.symbols.items, 0..) |s, i| {
+        if (s.use_count > 0) try oracle_live.append(gpa, i);
+    }
+
+    if (got_live.items.len != oracle_live.items.len) {
+        std.debug.print(
+            "{s}: live-symbol count mismatch: got={d} oracle={d}\n",
+            .{ label, got_live.items.len, oracle_live.items.len },
+        );
+        dumpLiveSideBySide(label, got, got_live.items, oracle, oracle_live.items);
+        return error.LiveSymbolCountMismatch;
+    }
+
+    // Match each oracle live symbol to exactly one got live symbol by
+    // `(name, kind, loc)`. A missing match is a structural defect; a
+    // use_count delta at a matched pair is the target failure mode.
+    for (oracle_live.items) |oi| {
+        const o = oracle.symbols.items[oi];
+        var matched: ?usize = null;
+        for (got_live.items) |gi| {
+            const g = got.symbols.items[gi];
+            if (g.kind == o.kind and g.loc == o.loc and std.mem.eql(u8, g.original_name, o.original_name)) {
+                matched = gi;
+                break;
+            }
+        }
+        const gi = matched orelse {
+            std.debug.print(
+                "{s}: oracle live symbol ('{s}',{s},loc={d},uc={d}) has no matching live symbol in got\n",
+                .{ label, o.original_name, @tagName(o.kind), o.loc, o.use_count },
+            );
+            dumpLiveSideBySide(label, got, got_live.items, oracle, oracle_live.items);
+            return error.LiveSymbolNotFound;
+        };
+        const g = got.symbols.items[gi];
+        if (g.use_count != o.use_count) {
+            std.debug.print(
+                "{s}: use_count mismatch for ('{s}',{s},loc={d}): got={d} oracle={d}\n",
+                .{ label, o.original_name, @tagName(o.kind), o.loc, g.use_count, o.use_count },
+            );
+            dumpLiveSideBySide(label, got, got_live.items, oracle, oracle_live.items);
+            return error.PerSymbolUseCountMismatch;
+        }
+    }
+}
+
+fn dumpLiveSideBySide(
+    label: []const u8,
+    got: *const Ast.Module,
+    got_live: []const usize,
+    oracle: *const Ast.Module,
+    oracle_live: []const usize,
+) void {
+    std.debug.print("{s}: live symbol table (got | oracle):\n", .{label});
+    const n = @max(got_live.len, oracle_live.len);
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        if (i < got_live.len) {
+            const g = got.symbols.items[got_live[i]];
+            std.debug.print(
+                "  got[{d:>3}] raw={d:>3} name={s:<24} kind={s:<10} loc={d:>4} uc={d}",
+                .{ i, got_live[i], g.original_name, @tagName(g.kind), g.loc, g.use_count },
+            );
+        } else {
+            std.debug.print("  got[{d:>3}] --", .{i});
+        }
+        if (i < oracle_live.len) {
+            const o = oracle.symbols.items[oracle_live[i]];
+            std.debug.print(
+                "  |  oracle[{d:>3}] raw={d:>3} name={s:<24} kind={s:<10} loc={d:>4} uc={d}\n",
+                .{ i, oracle_live[i], o.original_name, @tagName(o.kind), o.loc, o.use_count },
+            );
+        } else {
+            std.debug.print("  |  oracle[{d:>3}] --\n", .{i});
+        }
+    }
+}
+
 /// Length-preserving leading-digit swap. Used by integer-literal edits
 /// to keep subsequent byte offsets stable across the splice.
 fn flipDigit(byte: u8) []const u8 {
@@ -127,6 +243,7 @@ fn runCorpusEdit(
     }
 
     try expectUseCountsMatchAppendOnly(label, updated.module, oracle.module);
+    try expectPerSymbolUseCountsExact(gpa, label, updated.module, oracle.module);
 }
 
 /// Walk the compute.toys directory once, invoking `visit(entry_name,
