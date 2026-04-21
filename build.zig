@@ -331,6 +331,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/inference/texture_overload_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/abstract_promotion_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/load_rule_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/inference/overload_engine_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference_corpus_pinning_test.zig", target, optimize, &.{w});
 }
 

@@ -18,6 +18,7 @@ pub const Printer = @import("Printer.zig");
 pub const Renamer = @import("Renamer.zig");
 pub const Dce = @import("Dce.zig");
 pub const Builtins = @import("Builtins.zig");
+pub const Overload = @import("Overload.zig");
 pub const Diagnostic = @import("Diagnostic.zig");
 pub const Types = @import("Types.zig");
 pub const Validator = @import("Validator.zig");
@@ -377,6 +378,7 @@ comptime {
     _ = Parser;
     _ = Renamer;
     _ = Builtins;
+    _ = Overload;
     _ = Diagnostic;
     _ = Types;
     _ = Validator;

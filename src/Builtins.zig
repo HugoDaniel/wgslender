@@ -4,6 +4,8 @@
 //! supporting overload resolution and validation of builtin function calls.
 
 const std = @import("std");
+const Overload = @import("Overload.zig");
+const Types = @import("Types.zig");
 
 const Builtins = @This();
 
@@ -67,6 +69,12 @@ pub const Builtin = struct {
     max_args: u8, // Maximum argument count for overload resolution stub
     return_pattern: ReturnPattern,
     must_use: bool, // Return value must be consumed (not called as statement)
+    /// Declarative overload signatures — when non-empty, the validator uses
+    /// `Overload.resolve` for argument matching and return-type inference
+    /// instead of the legacy string-matched ad-hoc path. Phase 1 of Task #9
+    /// populates this for a subset (non-texture `.custom` builtins); the
+    /// remaining entries still ride the legacy path via `return_pattern`.
+    overloads: []const Overload.OverloadSig = &.{},
 
     /// Returns true if this builtin requires uniform control flow.
     pub fn requiresUniform(self: *const Builtin) bool {
@@ -91,9 +99,19 @@ pub const Builtin = struct {
 /// Comptime-built lookup table mapping builtin function names to definitions.
 const table = std.StaticStringMap(Builtin).initComptime(builtin_entries);
 
+/// Side table of declarative overload signatures (Task #9 / Phase 1). Kept
+/// separate from `table` so the core entries remain simple tuples; lookup()
+/// merges in the signatures when present. See `Overload.zig` for the
+/// signature DSL and solver.
+const sig_table = std.StaticStringMap([]const Overload.OverloadSig).initComptime(sig_entries);
+
 /// Look up a builtin function by name, or return null if not found.
 pub fn lookup(name: []const u8) ?Builtin {
-    return table.get(name);
+    var b = table.get(name) orelse return null;
+    if (sig_table.get(name)) |sigs| {
+        b.overloads = sigs;
+    }
+    return b;
 }
 
 /// Returns true if the given name is a builtin function.
@@ -689,6 +707,194 @@ const subgroup_doc = [_]struct { []const u8, BuiltinDoc }{
     docEntry("quadSwapDiagonal", "fn quadSwapDiagonal(e: T) -> T", "Returns the value of e from the diagonally opposite quad invocation.", T_NUMERIC),
     docEntry("quadSwapX", "fn quadSwapX(e: T) -> T", "Returns the value of e from the horizontally adjacent quad invocation.", T_NUMERIC),
     docEntry("quadSwapY", "fn quadSwapY(e: T) -> T", "Returns the value of e from the vertically adjacent quad invocation.", T_NUMERIC),
+};
+
+// =========================================================================
+// Overload Signatures (Task #9 / Phase 1)
+// =========================================================================
+//
+// Declarative overload sets for the 18 non-texture `.custom` builtins.
+// Each entry is keyed by the builtin's name and contains one or more
+// `Overload.OverloadSig` values. The validator calls `Overload.resolve`
+// when a looked-up Builtin has a non-empty `overloads` slice; otherwise
+// the legacy `return_pattern` switch still runs. See `docs/` for the
+// Phase 2–4 roadmap (same_as_arg family, texture overloads, bitcast).
+
+// Common alias to keep signature tables short and readable.
+const O = Overload;
+
+/// Builds a single-overload `(ptr<AS, atomic<T>, AM>) -> T` signature,
+/// used by `atomicLoad` (the only one-arg atomic).
+const atomic_load_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 3,
+        .params = &.{
+            .{ .tparam_ptr_atomic = .{ .as_idx = 1, .am_idx = 2, .elem_idx = 0, .elem_family = .integer } },
+        },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+};
+
+/// `(ptr<AS, atomic<T>, AM>, T) -> T` for atomicAdd/Sub/Max/Min/And/Or/Xor/Exchange.
+const atomic_rmw_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 3,
+        .params = &.{
+            .{ .tparam_ptr_atomic = .{ .as_idx = 1, .am_idx = 2, .elem_idx = 0, .elem_family = .integer } },
+            .{ .bound_scalar = 0 },
+        },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+};
+
+/// `(ptr<AS, atomic<T>, AM>, T, T) -> __atomic_compare_exchange_result<T>`.
+const atomic_cmp_xchg_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 3,
+        .params = &.{
+            .{ .tparam_ptr_atomic = .{ .as_idx = 1, .am_idx = 2, .elem_idx = 0, .elem_family = .integer } },
+            .{ .bound_scalar = 0 },
+            .{ .bound_scalar = 0 },
+        },
+        .result = .{ .synth_atomic_cmp_xchg = 0 },
+    },
+};
+
+/// frexp / modf — scalar and vector float forms. The validator's
+/// `synthesizeFrexpResult` / `synthesizeModfResult` build the result
+/// struct from the bound element type + (for vectors) bound width.
+const frexp_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_scalar = .{ .idx = 0, .family = .float } }},
+        .result = .{ .synth_frexp = 0 },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .float, .n_idx = 1 } }},
+        .result = .{ .synth_frexp = 0 },
+    },
+};
+
+const modf_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_scalar = .{ .idx = 0, .family = .float } }},
+        .result = .{ .synth_modf = 0 },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .float, .n_idx = 1 } }},
+        .result = .{ .synth_modf = 0 },
+    },
+};
+
+/// Packed-format unpacks — each returns a fixed vector type. These vector
+/// singletons have static storage so `.{ .vector = &...}` is always valid.
+const vec4_i32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_i32_ptr };
+const vec4_u32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_u32_ptr };
+const vec4_f32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_f32_ptr };
+const vec2_f32_singleton = Types.Vector{ .width = 2, .element = Types.scalar_f32_ptr };
+
+const vec4_i32_type: Types.Type = .{ .vector = &vec4_i32_singleton };
+const vec4_u32_type: Types.Type = .{ .vector = &vec4_u32_singleton };
+const vec4_f32_type: Types.Type = .{ .vector = &vec4_f32_singleton };
+const vec2_f32_type: Types.Type = .{ .vector = &vec2_f32_singleton };
+
+const unpack4xI8_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = Types.U32 }},
+        .result = .{ .fixed = vec4_i32_type },
+    },
+};
+const unpack4xU8_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = Types.U32 }},
+        .result = .{ .fixed = vec4_u32_type },
+    },
+};
+const unpack4x8_float_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = Types.U32 }},
+        .result = .{ .fixed = vec4_f32_type },
+    },
+};
+const unpack2x16_float_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = Types.U32 }},
+        .result = .{ .fixed = vec2_f32_type },
+    },
+};
+
+/// subgroupBallot: `()` or `(bool) -> vec4<u32>`.
+const subgroup_ballot_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{},
+        .result = .{ .fixed = vec4_u32_type },
+    },
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = Types.Bool }},
+        .result = .{ .fixed = vec4_u32_type },
+    },
+};
+
+/// workgroupUniformLoad: `(ptr<workgroup, T, read_write>) -> T`.
+const wg_uniform_load_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_ptr = .{ .as_fixed = .workgroup, .am_idx = 1, .elem_idx = 0 } }},
+        .result = .{ .bound_scalar_as_type = 0 },
+    },
+};
+
+/// transpose: `matCxR<T>` → `matRxC<T>` with T ∈ float family.
+const transpose_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 3,
+        .params = &.{.{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } }},
+        .result = .{ .pattern = .{ .bound_matrix_transposed = .{ .elem_idx = 0, .cols_idx = 1, .rows_idx = 2 } } },
+    },
+};
+
+/// Side-table entries — built at comptime to keep lookup O(1).
+const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
+    // Atomic operations (§17.9)
+    .{ "atomicLoad", atomic_load_sigs },
+    .{ "atomicAdd", atomic_rmw_sigs },
+    .{ "atomicSub", atomic_rmw_sigs },
+    .{ "atomicMax", atomic_rmw_sigs },
+    .{ "atomicMin", atomic_rmw_sigs },
+    .{ "atomicAnd", atomic_rmw_sigs },
+    .{ "atomicOr", atomic_rmw_sigs },
+    .{ "atomicXor", atomic_rmw_sigs },
+    .{ "atomicExchange", atomic_rmw_sigs },
+    .{ "atomicCompareExchangeWeak", atomic_cmp_xchg_sigs },
+
+    // Numeric special (§17.5)
+    .{ "frexp", frexp_sigs },
+    .{ "modf", modf_sigs },
+    .{ "transpose", transpose_sigs },
+
+    // Packing (§17.10)
+    .{ "unpack4xI8", unpack4xI8_sigs },
+    .{ "unpack4xU8", unpack4xU8_sigs },
+    .{ "unpack4x8snorm", unpack4x8_float_sigs },
+    .{ "unpack4x8unorm", unpack4x8_float_sigs },
+    .{ "unpack2x16snorm", unpack2x16_float_sigs },
+    .{ "unpack2x16unorm", unpack2x16_float_sigs },
+    .{ "unpack2x16float", unpack2x16_float_sigs },
+
+    // Synchronization (§17.11)
+    .{ "workgroupUniformLoad", wg_uniform_load_sigs },
+
+    // Subgroup (§17.12)
+    .{ "subgroupBallot", subgroup_ballot_sigs },
 };
 
 // =========================================================================

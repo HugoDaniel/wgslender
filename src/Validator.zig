@@ -14,6 +14,7 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 const Types = @import("Types.zig");
 const Builtins = @import("Builtins.zig");
+const Overload = @import("Overload.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const Suggest = @import("Suggest.zig");
 const Dce = @import("Dce.zig");
@@ -3378,9 +3379,92 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         }
     }
 
+    // Declarative overload resolution (Task #9 / Phase 1). Active only for
+    // builtins with populated `overloads`; legacy `.custom` string-dispatch
+    // still runs for everyone else. The solver binds type parameters from
+    // the arg types and the caller builds the return from `ResultRule`.
+    if (builtin_fn.overloads.len > 0) {
+        const argc = @min(e.args.items.len, 8);
+        const res = Overload.resolve(builtin_fn.overloads, arg_types[0..argc]);
+        switch (res) {
+            .err => |err| {
+                // Arity was already validated above via `checkArgCount`, so
+                // a count mismatch here means the builtin's per-overload
+                // arity differs from min/max — treat it as a no-match.
+                const bad_idx = if (err.kind == .no_matching_overload) err.first_bad_arg else 0;
+                const bad_type_str: []const u8 = if (bad_idx < argc)
+                    if (arg_types[bad_idx]) |bt| bt.string() else "<unknown>"
+                else
+                    "<missing>";
+                v.addErrorWithCodeR(
+                    exprRange(.{ .call = e }),
+                    Diagnostic.Code.invalid_arg_type,
+                    v.fmtError(
+                        "no matching overload for '{s}': argument {d} has type '{s}'",
+                        .{ callee_name, bad_idx + 1, bad_type_str },
+                    ),
+                );
+                return InferResult.fail;
+            },
+            .ok => |ok| {
+                const sig = builtin_fn.overloads[ok.sig_index];
+                const ret = try v.buildOverloadResult(sig.result, &ok.bindings, arg_types) orelse
+                    return .{ .typ = null, .stage = call_stage };
+                return InferResult.some(ret, call_stage);
+            },
+        }
+    }
+
     const ret = v.inferBuiltinReturnType(builtin_fn, callee_name, arg_types) orelse
         return .{ .typ = null, .stage = call_stage };
     return InferResult.some(ret, call_stage);
+}
+
+/// Materialize the return type for an overload-resolved builtin call.
+/// Dispatches on the signature's `ResultRule` — pattern-driven types go
+/// through `Overload.buildPatternType`; struct-synthesizing builtins call
+/// the existing `synthesize{Frexp,Modf,AtomicExchange}Result` helpers so
+/// the cached `__frexp_result_*` / `__modf_result_*` structs stay shared
+/// with any legacy-path call site.
+fn buildOverloadResult(
+    v: *Validator,
+    rule: Overload.ResultRule,
+    bindings: *const [Overload.max_tparams]Overload.Binding,
+    arg_types: [8]?Types.Type,
+) Allocator.Error!?Types.Type {
+    switch (rule) {
+        .pattern => |p| return Overload.buildPatternType(v.arena, p, bindings),
+        .fixed => |t| return t,
+        .synth_frexp => |arg_idx| {
+            const at = arg_types[arg_idx] orelse return null;
+            return try v.synthesizeFrexpResult(at);
+        },
+        .synth_modf => |arg_idx| {
+            const at = arg_types[arg_idx] orelse return null;
+            return try v.synthesizeModfResult(at);
+        },
+        .synth_atomic_cmp_xchg => |arg_idx| {
+            const at = arg_types[arg_idx] orelse return null;
+            if (at != .pointer) return null;
+            if (at.pointer.element != .atomic) return null;
+            const elem = at.pointer.element.atomic.element;
+            return try v.synthesizeAtomicExchangeResult(elem);
+        },
+        .bound_scalar_as_type => |tp_idx| {
+            const b = bindings[tp_idx];
+            if (!b.bound) return null;
+            const kind = b.scalar_kind orelse return null;
+            return .{ .scalar = switch (kind) {
+                .bool => Types.scalar_bool_ptr,
+                .i32 => Types.scalar_i32_ptr,
+                .u32 => Types.scalar_u32_ptr,
+                .f32 => Types.scalar_f32_ptr,
+                .f16 => Types.scalar_f16_ptr,
+                .abstract_int => Types.scalar_abstract_int_ptr,
+                .abstract_float => Types.scalar_abstract_float_ptr,
+            } };
+        },
+    }
 }
 
 /// Returns true when `coord` has the scalar/vector width the texture
@@ -3715,80 +3799,15 @@ fn inferTextureDimsType(v: *Validator, arg_types: [8]?Types.Type) ?Types.Type {
 }
 
 fn inferCustomBuiltin(v: *Validator, name: []const u8, arg_types: [8]?Types.Type) ?Types.Type {
-    // transpose: swap cols/rows
-    if (std.mem.eql(u8, name, "transpose")) {
-        if (arg_types[0]) |at| {
-            if (at == .matrix) {
-                const m = at.matrix;
-                const result = v.arena.create(Types.Matrix) catch return null;
-                result.* = .{ .cols = m.rows, .rows = m.cols, .element = m.element };
-                return .{ .matrix = result };
-            }
-        }
-        return null;
-    }
-
-    // workgroupUniformLoad: returns element type of pointer arg
-    if (std.mem.eql(u8, name, "workgroupUniformLoad")) {
-        if (arg_types[0]) |at| {
-            if (at == .pointer) return at.pointer.element;
-        }
-        return null;
-    }
-
-    // subgroupBallot: returns vec4<u32>
-    if (std.mem.eql(u8, name, "subgroupBallot")) {
-        return .{ .vector = &vec4_u32_singleton };
-    }
-
-    // atomicCompareExchangeWeak returns __atomic_compare_exchange_result<T>
-    // per spec §17.9.7 where T is the underlying atomic scalar. Field
-    // layout: { old_value: T, exchanged: bool }.
-    if (std.mem.eql(u8, name, "atomicCompareExchangeWeak")) {
-        const at = arg_types[0] orelse return null;
-        if (at != .pointer) return null;
-        if (at.pointer.element != .atomic) return null;
-        const elem = at.pointer.element.atomic.element;
-        return v.synthesizeAtomicExchangeResult(elem) catch null;
-    }
-
-    // frexp(e) returns __frexp_result_* per spec §17.5.33 where the
-    // struct carries {fract: T, exp: i32-or-vecN<i32>} depending on
-    // whether the operand is a scalar float or vector of floats.
-    if (std.mem.eql(u8, name, "frexp")) {
-        if (arg_types[0]) |at| return v.synthesizeFrexpResult(at) catch null;
-        return null;
-    }
-
-    // modf(e) returns __modf_result_* per spec §17.5.49 with fields
-    // {fract: T, whole: T}.
-    if (std.mem.eql(u8, name, "modf")) {
-        if (arg_types[0]) |at| return v.synthesizeModfResult(at) catch null;
-        return null;
-    }
-
-    // Atomic ops: extract element type from atomic pointer
-    if (std.mem.startsWith(u8, name, "atomic")) {
-        if (arg_types[0]) |at| {
-            if (at == .pointer) {
-                if (at.pointer.element == .atomic) {
-                    return .{ .scalar = at.pointer.element.atomic.element };
-                }
-            }
-        }
-        return Types.U32; // fallback
-    }
-
-    // Unpack functions
-    if (std.mem.startsWith(u8, name, "unpack")) {
-        if (std.mem.eql(u8, name, "unpack4xI8")) return .{ .vector = &vec4_i32_singleton };
-        if (std.mem.eql(u8, name, "unpack4xU8")) return .{ .vector = &vec4_u32_singleton };
-        if (std.mem.startsWith(u8, name, "unpack2x16")) return .{ .vector = &vec2_f32_singleton };
-        // unpack4x8snorm, unpack4x8unorm → vec4<f32>
-        return .{ .vector = &vec4_f32_singleton };
-    }
-
-    // bitcast: return type from template (handled by template_type check before reaching here)
+    _ = v;
+    _ = name;
+    _ = arg_types;
+    // Phase 1 of Task #9 moved transpose / workgroupUniformLoad / subgroupBallot
+    // / atomicCompareExchangeWeak / frexp / modf / atomic* / unpack* to the
+    // declarative `Overload.resolve` path (see `Builtins.sig_entries`).
+    // The remaining `.custom`-pattern builtins (`bitcast`, `dot4I8Packed`,
+    // `dot4U8Packed`) are handled directly in `checkExprCall` / via their
+    // dedicated call-site logic — none reach this function today.
     return null;
 }
 
