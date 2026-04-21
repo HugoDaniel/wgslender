@@ -267,10 +267,14 @@ pub fn deinit(self: *Diagnostic, allocator: Allocator) void {
 
 /// Add a diagnostic entry.
 pub fn add(self: *Diagnostic, allocator: Allocator, entry: Entry) void {
+    var e = entry;
+    if (e.spec_ref.len == 0 and e.code.len > 0) {
+        e.spec_ref = specRefFor(e.code);
+    }
     // Diagnostics are best-effort: silently drop if OOM rather than
     // propagating allocation failure through every parse/validate call site.
-    self.diagnostics.append(allocator, entry) catch {};
-    if (entry.severity == .@"error") {
+    self.diagnostics.append(allocator, e) catch {};
+    if (e.severity == .@"error") {
         self.has_errors = true;
     }
 }
@@ -661,6 +665,28 @@ pub const Code = struct {
     // Warnings (W01xx)
     pub const shadowing: []const u8 = "W0100";
 };
+
+/// Map a diagnostic code to a WGSL spec section slug.
+/// Empty string if the code is unknown or does not belong to a known
+/// category — callers may still set `spec_ref` explicitly on `Entry`.
+pub fn specRefFor(code: []const u8) []const u8 {
+    if (code.len < 5) return "";
+    // Uniformity-analysis errors get a dedicated slug — the rule identifiers
+    // in `rule_derivative_uniformity` / `rule_subgroup_uniformity` map to the
+    // spec's "Uniformity" section and users search for it by that name.
+    if (std.mem.startsWith(u8, code, "E07")) return "uniformity";
+    if (std.mem.startsWith(u8, code, "E00")) return "shader-creation";
+    if (std.mem.startsWith(u8, code, "E01")) return "module-scope-declarations";
+    if (std.mem.startsWith(u8, code, "E02")) return "types";
+    if (std.mem.startsWith(u8, code, "E03")) return "variable-and-value-declarations";
+    if (std.mem.startsWith(u8, code, "E04")) return "attributes";
+    if (std.mem.startsWith(u8, code, "E05")) return "statements";
+    if (std.mem.startsWith(u8, code, "E06")) return "entry-points";
+    if (std.mem.startsWith(u8, code, "E08")) return "memory-model";
+    if (std.mem.startsWith(u8, code, "E09")) return "directives";
+    if (std.mem.startsWith(u8, code, "W01")) return "module-scope-declarations";
+    return "";
+}
 
 // =========================================================================
 // Standard diagnostic rules (from WGSL spec)
