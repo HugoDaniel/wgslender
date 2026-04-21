@@ -599,6 +599,8 @@ pub const Code = struct {
     pub const ambiguous_precedence: []const u8 = "E0213";
     pub const deref_requires_pointer: []const u8 = "E0214";
     pub const addr_of_requires_reference: []const u8 = "E0215";
+    pub const addr_of_vector_component: []const u8 = "E0216";
+    pub const addr_of_handle: []const u8 = "E0217";
 
     // Declaration errors (E03xx)
     pub const missing_initializer: []const u8 = "E0300";

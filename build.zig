@@ -324,6 +324,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/inference/operator_types_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/struct_return_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/swizzle_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/inference/pointer_reference_test.zig", target, optimize, &.{w});
 }
 
 fn addTestStep(

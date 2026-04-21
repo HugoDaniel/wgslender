@@ -88,6 +88,14 @@ pub const ExprTypeInfo = struct {
     end_offset: u32,
 };
 
+/// Per-var declaration metadata: records the address-space / access-mode of
+/// each `var` symbol so that `&v` can produce a pointer whose AS/AM matches
+/// the variable's actual storage class (not a hardcoded default).
+pub const VarInfo = struct {
+    address_space: Ast.AddressSpace,
+    access_mode: Ast.AccessMode,
+};
+
 pub const AnalysisResult = struct {
     valid: bool,
     diagnostics: *Diagnostic,
@@ -157,6 +165,10 @@ const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
 
 // Enabled features from 'enable' directives
 enabled_features: std.StringHashMapUnmanaged(void) = .{},
+
+// Per-var declaration metadata: populated during validateVarDecl. See
+// `VarInfo` above for details on what's recorded and why.
+var_info: std.AutoHashMapUnmanaged(u32, VarInfo) = .{},
 
 // =========================================================================
 // Public API
@@ -915,6 +927,19 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
     try v.validateBindingAttributes(d, name, r);
 
     try v.setSymbolType(d.name, decl_type);
+
+    // Record the variable's address space and access mode for `&` so that
+    // the resulting pointer type carries the actual storage class instead of
+    // a hardcoded `function` / `read_write`. We normalize `.none` here with
+    // the spec defaults per address space (WGSL §8).
+    const as_norm: Ast.AddressSpace = if (d.address_space == .none) .function else d.address_space;
+    const am_norm: Ast.AccessMode = if (d.access_mode != .none) d.access_mode else switch (as_norm) {
+        .uniform => .read,
+        .storage => .read,
+        .handle => .read,
+        else => .read_write,
+    };
+    try v.var_info.put(v.arena, d.name.index(), .{ .address_space = as_norm, .access_mode = am_norm });
 }
 
 fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u8, r: LocRange) Allocator.Error!void {
@@ -2806,6 +2831,45 @@ fn addrOfOperandLooksAddressable(operand: Ast.Expr) bool {
     };
 }
 
+/// Walks a parenthesized chain, returning the first non-paren inner expr.
+fn stripParens(operand: Ast.Expr) Ast.Expr {
+    var cur = operand;
+    while (cur == .paren) cur = cur.paren.expr;
+    return cur;
+}
+
+/// Walks an addressable chain (ident / *p / member-access / index) back to
+/// the root variable symbol. Returns `.none` if the chain doesn't terminate
+/// in an ident — which means the root is some other form of reference
+/// (e.g. `*param_ptr.field`) whose AS/AM we can't look up directly.
+fn rootVarSymbol(expr: Ast.Expr) Ast.SymbolIndex {
+    var cur = expr;
+    while (true) {
+        switch (cur) {
+            .ident => |id| return id.ref,
+            .paren => |p| cur = p.expr,
+            .member => |m| cur = m.base,
+            .index => |ix| cur = ix.base,
+            .unary => |u| {
+                if (u.op == .deref) return .none;
+                return .none;
+            },
+            else => return .none,
+        }
+    }
+}
+
+/// `&` / `*` diagnostics helper: returns true when `base_type` is a vector,
+/// so `&base.x` / `&base[i]` can be rejected per WGSL "Texel shader values
+/// and vector components are not references" (§10554+).
+fn isVectorOrVectorRef(t: Types.Type) bool {
+    return switch (t) {
+        .vector => true,
+        .reference => |r| r.element == .vector,
+        else => false,
+    };
+}
+
 fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
     const operand_type = (try v.checkExpr(e.operand)) orelse return null;
     const er = exprRange(.{ .unary = e });
@@ -2847,12 +2911,21 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
             }
         },
         .addr => {
-            // The operand of `&` must denote a reference (a memory view) —
-            // in practice, something you could read or write. Pure values like
-            // literals and computed expression results have no address. We do
-            // not yet flow reference types through the expression checker, so
-            // use a syntactic approximation: reject any operand whose shape
-            // cannot possibly carry a reference.
+            // `&` produces a pointer to the reference denoted by its operand.
+            // The spec restricts what can be addressed:
+            //   1. The operand must syntactically denote a memory location —
+            //      an ident, member, index, `*p`, or paren-wrapping of one
+            //      of these. Literals / calls / arithmetic produce values
+            //      with no address.
+            //   2. Vector components and sub-vector swizzles are *values*,
+            //      never references, so `&v.x` and `&v[i]` (where `v` is a
+            //      vector) are forbidden. See "Reference types" in §6.5 and
+            //      the detailed rule-out in §10.4 ("Address-of").
+            //   3. Handles (textures, samplers) are not first-class memory
+            //      locations — `&my_texture` is also forbidden.
+            // If the root is a plain variable, the resulting pointer carries
+            // that variable's address space and access mode rather than the
+            // historical `function` / `read_write` defaults.
             if (!addrOfOperandLooksAddressable(e.operand)) {
                 v.addErrorWithCodeR(
                     er,
@@ -2861,11 +2934,65 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
                 );
                 return null;
             }
+
+            // Reject `&vector.x` / `&vector[i]` — vector components are not
+            // references.
+            const inner = stripParens(e.operand);
+            switch (inner) {
+                .member => |m| {
+                    if (try v.checkExpr(m.base)) |base_ty| {
+                        if (isVectorOrVectorRef(base_ty)) {
+                            v.addErrorWithCodeR(
+                                er,
+                                Diagnostic.Code.addr_of_vector_component,
+                                v.fmtError("cannot take the address of '.{s}': vector components are not references", .{m.member_name}),
+                            );
+                            return null;
+                        }
+                    }
+                },
+                .index => |ix| {
+                    if (try v.checkExpr(ix.base)) |base_ty| {
+                        if (isVectorOrVectorRef(base_ty)) {
+                            v.addErrorWithCodeR(
+                                er,
+                                Diagnostic.Code.addr_of_vector_component,
+                                "cannot take the address of a vector component: vector components are not references",
+                            );
+                            return null;
+                        }
+                    }
+                },
+                else => {},
+            }
+
+            // Reject `&handle_var` — textures/samplers have no memory
+            // location users can form pointers to.
+            if (Types.isTexture(operand_type) or Types.isSampler(operand_type)) {
+                v.addErrorWithCodeR(
+                    er,
+                    Diagnostic.Code.addr_of_handle,
+                    v.fmtError("cannot take the address of handle type '{s}': textures and samplers are not references", .{operand_type.string()}),
+                );
+                return null;
+            }
+
+            // Choose AS/AM from the root variable if we can identify it.
+            var addr_space: Ast.AddressSpace = .function;
+            var access_mode: Ast.AccessMode = .read_write;
+            const root = rootVarSymbol(e.operand);
+            if (root.isValid()) {
+                if (v.var_info.get(root.index())) |info| {
+                    addr_space = info.address_space;
+                    access_mode = info.access_mode;
+                }
+            }
+
             const p = v.arena.create(Types.Pointer) catch return null;
             p.* = .{
-                .address_space = .function,
+                .address_space = addr_space,
                 .element = operand_type,
-                .access_mode = .read_write,
+                .access_mode = access_mode,
             };
             return .{ .pointer = p };
         },
