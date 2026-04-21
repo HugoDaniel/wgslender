@@ -7,3 +7,9 @@
 [submodule "external/lsp-client"]
 	path = external/lsp-client
 	url = git@github.com:codemirror/lsp-client.git
+[submodule "external/wgsl-analyzer"]
+	path = external/wgsl-analyzer
+	url = git@github.com:wgsl-analyzer/wgsl-analyzer.git
+[submodule "external/naga"]
+	path = external/naga
+	url = git@github.com:gogpu/naga.git
