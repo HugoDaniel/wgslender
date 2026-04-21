@@ -3128,12 +3128,38 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
     // Type check arguments based on builtin kind
     switch (builtin_fn.kind) {
         .numeric, .derivative => {
+            const domain = mathBuiltinDomain(callee_name);
             for (0..max_check) |i| {
                 if (arg_types[i]) |at| {
                     if (!Types.isNumeric(at) and !Types.isFloat(at) and !Types.isMatrix(at)) {
                         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires numeric argument, got '{s}'", .{ callee_name, at.string() }));
                         return null;
                     }
+                    // Float-only and int-only builtins further restrict the
+                    // element type. Matrix args only appear as first args of
+                    // matrix builtins (handled by .custom return rule), so
+                    // the scalar-family check is safe here.
+                    if (i == 0) switch (domain) {
+                        .float_only => {
+                            // Float-only builtins accept f16/f32 scalars,
+                            // float vectors, float matrices (for transpose/
+                            // determinant), or abstract numerics. The
+                            // float-matrix check is the one `Types.isFloat`
+                            // does not cover on its own.
+                            const is_float_mat = at == .matrix and at.matrix.element.isFloat();
+                            if (!Types.isFloat(at) and !isAbstractNumeric(at) and !is_float_mat) {
+                                v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires a float-typed argument, got '{s}'", .{ callee_name, at.string() }));
+                                return null;
+                            }
+                        },
+                        .int_only => {
+                            if (!Types.isInteger(at)) {
+                                v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires an integer argument, got '{s}'", .{ callee_name, at.string() }));
+                                return null;
+                            }
+                        },
+                        .numeric_any, .unknown => {},
+                    };
                 }
             }
         },
@@ -3222,6 +3248,72 @@ fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr,
 /// first incompatible arg (e.g. the bool predicate of `select`) and
 /// returns the type unified so far — which matches the WGSL spec's
 /// overload-resolution outcome for the first-two-numeric-args family.
+/// Scalar-family restriction for a numeric-category builtin. Driven by
+/// the WGSL spec's per-builtin overload sets; we keep the classification
+/// localized here rather than extending `Builtins.Builtin` because the
+/// domain only matters at the validator's argument-type check and is not
+/// used by any other consumer of the builtins table.
+const MathDomain = enum {
+    /// Accepts f32/f16 scalars, matching vectors, or matching matrices
+    /// (plus abstract-float). Covers all transcendentals and most
+    /// numeric-analysis builtins.
+    float_only,
+    /// Accepts i32/u32 scalars or matching vectors. Covers bit-manipulation
+    /// builtins (countOneBits, reverseBits, ...).
+    int_only,
+    /// Accepts int OR float (abs/sign/min/max/clamp).
+    numeric_any,
+    /// Builtin is outside the numeric category (e.g. `all`/`select`) or
+    /// delegates its own checking (e.g. `.custom`).
+    unknown,
+};
+
+fn mathBuiltinDomain(name: []const u8) MathDomain {
+    // Float-only transcendentals, exponentials, rounding, interpolation.
+    // `dot` is deliberately omitted — per §17.5.15 it accepts any numeric
+    // element type (i32, u32, f32, f16, plus abstract), so it falls into
+    // the generic numeric path.
+    const float_only = [_][]const u8{
+        "sin",         "cos",        "tan",      "asin",        "acos",
+        "atan",        "sinh",       "cosh",     "tanh",        "asinh",
+        "acosh",       "atanh",      "atan2",    "exp",         "exp2",
+        "log",         "log2",       "pow",      "sqrt",        "inverseSqrt",
+        "floor",       "ceil",       "round",    "trunc",       "fract",
+        "mix",         "step",       "smoothstep","fma",        "degrees",
+        "radians",     "saturate",   "length",   "distance",
+        "cross",       "normalize",  "reflect",  "refract",     "faceForward",
+        "quantizeToF16","determinant","transpose","modf",        "frexp",
+        "ldexp",
+    };
+    for (float_only) |n| {
+        if (std.mem.eql(u8, n, name)) return .float_only;
+    }
+    // Integer-only bit-manipulation.
+    const int_only = [_][]const u8{
+        "countOneBits",      "countLeadingZeros",  "countTrailingZeros",
+        "reverseBits",       "firstLeadingBit",    "firstTrailingBit",
+        "extractBits",       "insertBits",
+    };
+    for (int_only) |n| {
+        if (std.mem.eql(u8, n, name)) return .int_only;
+    }
+    // abs/sign/min/max/clamp accept either domain.
+    const numeric_any = [_][]const u8{ "abs", "sign", "min", "max", "clamp" };
+    for (numeric_any) |n| {
+        if (std.mem.eql(u8, n, name)) return .numeric_any;
+    }
+    return .unknown;
+}
+
+fn isAbstractNumeric(t: Types.Type) bool {
+    return switch (t) {
+        .scalar => |s| s.kind == .abstract_int or s.kind == .abstract_float,
+        .vector => |vv| vv.element.kind == .abstract_int or vv.element.kind == .abstract_float,
+        .matrix => |mm| mm.element.kind == .abstract_float,
+        else => false,
+    };
+}
+
 fn sameAsArgResult(arg_types: [8]?Types.Type) ?Types.Type {
     var unified = arg_types[0] orelse return null;
     var i: usize = 1;
