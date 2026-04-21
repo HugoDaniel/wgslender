@@ -2725,6 +2725,17 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires numeric operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
                 return null;
             }
+            // WGSL §17.1 "Comparison Expressions": operands must share a
+            // common numeric type. Mixing signed and unsigned integers
+            // (`1i < 2u`) has no matching overload — reject rather than
+            // silently picking a winner via implicit conversion.
+            if (!left_type.eql(right_type) and
+                !Types.canConvertTo(left_type, right_type) and
+                !Types.canConvertTo(right_type, left_type))
+            {
+                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
+                return null;
+            }
             // Vector comparisons return vec<N, bool>
             if (left_type == .vector) {
                 const bvec = v.arena.create(Types.Vector) catch return Types.Bool;

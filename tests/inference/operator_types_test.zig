@@ -182,6 +182,91 @@ test "§8.8: vector comparison returns vecN<bool>" {
     }
 }
 
+// --- Mixed-signedness comparison: §17.1 requires common type ---
+
+test "§17.1: 1i < 2u rejected (no common type)" {
+    var r = try validate("fn f() { let x = 1i < 2u; }");
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "compatible types")) {
+        dump("expected mixed-sign rejection on i32 < u32", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.1: 1u > 2i rejected (no common type)" {
+    var r = try validate("fn f() { let x = 1u > 2i; }");
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "compatible types")) {
+        dump("expected mixed-sign rejection on u32 > i32", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.1: 1i <= 2u rejected" {
+    var r = try validate("fn f() { let x = 1i <= 2u; }");
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "compatible types")) {
+        dump("expected mixed-sign rejection on <=", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.1: 1u >= 2i rejected" {
+    var r = try validate("fn f() { let x = 1u >= 2i; }");
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "compatible types")) {
+        dump("expected mixed-sign rejection on >=", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.1: i32 < i32 still valid" {
+    var r = try validate("fn f() { let x = 1i < 2i; }");
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("i32 < i32 must stay valid", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.1: i32 < abstract-int valid (abstract widens to i32)" {
+    var r = try validate("fn f() { let x = 1i < 2; }");
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("i32 < abstract must stay valid", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.1: u32 < abstract-int valid" {
+    var r = try validate("fn f() { let x = 1u < 2; }");
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("u32 < abstract must stay valid", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.1: f32 < abstract-float valid" {
+    var r = try validate("fn f() { let x = 1.0f < 2.0; }");
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("f32 < abstract-float must stay valid", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.1: vec3<i32> < vec3<u32> rejected" {
+    var r = try validate(
+        \\fn f() { let x = vec3<i32>(1) < vec3<u32>(2u); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "compatible types")) {
+        dump("expected rejection on mixed-sign vector comparison", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
 // --- Negation / boolean NOT ---
 
 test "§8.7: unary - on abstract-int is valid" {
