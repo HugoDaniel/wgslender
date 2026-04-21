@@ -3236,8 +3236,29 @@ fn inferCustomBuiltin(v: *Validator, name: []const u8, arg_types: [8]?Types.Type
         return .{ .vector = &vec4_u32_singleton };
     }
 
-    // atomicCompareExchangeWeak returns a struct — simplified to null
+    // atomicCompareExchangeWeak returns __atomic_compare_exchange_result<T>
+    // per spec §17.9.7 where T is the underlying atomic scalar. Field
+    // layout: { old_value: T, exchanged: bool }.
     if (std.mem.eql(u8, name, "atomicCompareExchangeWeak")) {
+        const at = arg_types[0] orelse return null;
+        if (at != .pointer) return null;
+        if (at.pointer.element != .atomic) return null;
+        const elem = at.pointer.element.atomic.element;
+        return v.synthesizeAtomicExchangeResult(elem) catch null;
+    }
+
+    // frexp(e) returns __frexp_result_* per spec §17.5.33 where the
+    // struct carries {fract: T, exp: i32-or-vecN<i32>} depending on
+    // whether the operand is a scalar float or vector of floats.
+    if (std.mem.eql(u8, name, "frexp")) {
+        if (arg_types[0]) |at| return v.synthesizeFrexpResult(at) catch null;
+        return null;
+    }
+
+    // modf(e) returns __modf_result_* per spec §17.5.49 with fields
+    // {fract: T, whole: T}.
+    if (std.mem.eql(u8, name, "modf")) {
+        if (arg_types[0]) |at| return v.synthesizeModfResult(at) catch null;
         return null;
     }
 
@@ -3263,8 +3284,73 @@ fn inferCustomBuiltin(v: *Validator, name: []const u8, arg_types: [8]?Types.Type
     }
 
     // bitcast: return type from template (handled by template_type check before reaching here)
-    // frexp/modf: return structs — simplified to null
     return null;
+}
+
+// Cache synthesized structs so repeated calls to frexp/modf/
+// atomicCompareExchangeWeak with the same operand type return the
+// same *Struct pointer (lets downstream member-access / eq work).
+fn getOrSynthStruct(v: *Validator, name: []const u8, build: *const fn (*Validator, []const u8) Allocator.Error!*Types.Struct) Allocator.Error!*Types.Struct {
+    if (v.struct_types.get(name)) |st| return st;
+    const st = try build(v, name);
+    try v.struct_types.put(v.arena, st.name, st);
+    return st;
+}
+
+fn synthesizeAtomicExchangeResult(v: *Validator, elem: *const Types.Scalar) Allocator.Error!Types.Type {
+    const name = try std.fmt.allocPrint(v.arena, "__atomic_compare_exchange_result_{s}", .{elem.string()});
+    if (v.struct_types.get(name)) |st| return .{ .@"struct" = st };
+
+    const fields = try v.arena.alloc(Types.StructField, 2);
+    fields[0] = .{ .name = "old_value", .typ = .{ .scalar = elem }, .offset = 0 };
+    fields[1] = .{ .name = "exchanged", .typ = Types.Bool, .offset = 0 };
+    const st = try v.arena.create(Types.Struct);
+    st.* = .{ .name = name, .fields = fields, .size_bytes = 0, .align_bytes = 0, .has_runtime_array = false };
+    st.computeLayout();
+    try v.struct_types.put(v.arena, name, st);
+    return .{ .@"struct" = st };
+}
+
+fn frexpExpType(v: *Validator, operand: Types.Type) Allocator.Error!Types.Type {
+    switch (operand) {
+        .scalar => return Types.I32,
+        .vector => |vv| {
+            const result = try v.arena.create(Types.Vector);
+            result.* = .{ .width = vv.width, .element = Types.scalar_i32_ptr };
+            return .{ .vector = result };
+        },
+        else => return Types.I32,
+    }
+}
+
+fn synthesizeFrexpResult(v: *Validator, operand: Types.Type) Allocator.Error!?Types.Type {
+    if (!Types.isFloat(operand)) return null;
+    const name = try std.fmt.allocPrint(v.arena, "__frexp_result_{s}", .{operand.string()});
+    if (v.struct_types.get(name)) |st| return .{ .@"struct" = st };
+
+    const fields = try v.arena.alloc(Types.StructField, 2);
+    fields[0] = .{ .name = "fract", .typ = operand, .offset = 0 };
+    fields[1] = .{ .name = "exp", .typ = try v.frexpExpType(operand), .offset = 0 };
+    const st = try v.arena.create(Types.Struct);
+    st.* = .{ .name = name, .fields = fields, .size_bytes = 0, .align_bytes = 0, .has_runtime_array = false };
+    st.computeLayout();
+    try v.struct_types.put(v.arena, name, st);
+    return .{ .@"struct" = st };
+}
+
+fn synthesizeModfResult(v: *Validator, operand: Types.Type) Allocator.Error!?Types.Type {
+    if (!Types.isFloat(operand)) return null;
+    const name = try std.fmt.allocPrint(v.arena, "__modf_result_{s}", .{operand.string()});
+    if (v.struct_types.get(name)) |st| return .{ .@"struct" = st };
+
+    const fields = try v.arena.alloc(Types.StructField, 2);
+    fields[0] = .{ .name = "fract", .typ = operand, .offset = 0 };
+    fields[1] = .{ .name = "whole", .typ = operand, .offset = 0 };
+    const st = try v.arena.create(Types.Struct);
+    st.* = .{ .name = name, .fields = fields, .size_bytes = 0, .align_bytes = 0, .has_runtime_array = false };
+    st.computeLayout();
+    try v.struct_types.put(v.arena, name, st);
+    return .{ .@"struct" = st };
 }
 
 // Singleton vectors for common return types
