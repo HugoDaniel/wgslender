@@ -249,3 +249,56 @@ test "§17.5: mix(vec3f, vec3f, f32) valid — scalar blend" {
         return error.TestUnexpectedResult;
     }
 }
+
+// =========================================================================
+// select condition — must be bool or vecN<bool>, NOT an arbitrary numeric
+// =========================================================================
+
+test "§17.10: select(i32, i32, i32) rejects non-bool condition" {
+    var r = try validate("fn f() { let x = select(1i, 2i, 3i); }");
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "select")) {
+        dump("expected select non-bool-cond rejection", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.10: select(f32, f32, f32) rejects non-bool condition" {
+    var r = try validate("fn f() { let x = select(1.0f, 2.0f, 0.5f); }");
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "select")) {
+        dump("expected select non-bool-cond rejection on f32", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.10: select(vec3i, vec3i, vec3<i32>) rejects non-bool-vec condition" {
+    var r = try validate(
+        \\fn f() { let x = select(vec3<i32>(1), vec3<i32>(2), vec3<i32>(0)); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "select")) {
+        dump("expected select non-bool-vec-cond rejection", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.10: select(i32, i32, true) valid" {
+    var r = try validate("fn f() { let x = select(1i, 2i, true); }");
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("select bool cond should be valid", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.10: select(vec3i, vec3i, vec3<bool>) valid" {
+    var r = try validate(
+        \\fn f() { let x = select(vec3<i32>(1), vec3<i32>(2), vec3<bool>(true)); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("select vec<bool> cond should be valid", r);
+        return error.TestUnexpectedResult;
+    }
+}

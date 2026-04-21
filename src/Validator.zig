@@ -3175,8 +3175,21 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
             }
         },
         .logical => {
-            // all/any require bool args; select has (T, T, bool) signature
-            if (!std.mem.eql(u8, callee_name, "select")) {
+            // all/any require bool args; select has (T, T, bool_or_vecN<bool>) signature
+            if (std.mem.eql(u8, callee_name, "select")) {
+                if (arg_types[2]) |cond| {
+                    const is_bool = cond.eql(Types.Bool);
+                    const is_bool_vec = cond == .vector and cond.vector.element.kind == .bool;
+                    if (!is_bool and !is_bool_vec) {
+                        v.addErrorWithCodeR(
+                            exprRange(.{ .call = e }),
+                            Diagnostic.Code.invalid_arg_type,
+                            v.fmtError("'select' condition must be 'bool' or 'vecN<bool>', got '{s}'", .{cond.string()}),
+                        );
+                        return null;
+                    }
+                }
+            } else {
                 if (arg_types[0]) |at| {
                     if (!at.eql(Types.Bool) and !Types.isVector(at)) {
                         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires 'bool' argument, got '{s}'", .{ callee_name, at.string() }));
