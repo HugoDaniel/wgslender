@@ -9,6 +9,7 @@ const Ast = @import("Ast.zig");
 const Lexer = @import("Lexer.zig");
 const Cst = @import("Cst.zig");
 const AstVisit = @import("AstVisit.zig");
+const Suggest = @import("Suggest.zig");
 
 const Parser = @This();
 
@@ -1214,8 +1215,19 @@ fn parseAddressSpace(self: *Parser) Ast.AddressSpace {
     });
     if (self.currentTag() == .ident) {
         const text = self.currentText();
+        const pos = self.currentStart();
         self.advance();
-        return map.get(text) orelse .none;
+        if (map.get(text)) |as| return as;
+        // Only flag a typo when the token is close to a known address space;
+        // leave unknown-but-distant identifiers (e.g. extension address spaces
+        // like `pixel_local`) silently accepted as `.none` to preserve
+        // forward-compat behavior.
+        if (Suggest.suggestName(text, &Suggest.address_spaces, 3)) |s| {
+            const end = pos +| @as(u32, @intCast(text.len));
+            const msg = std.fmt.allocPrint(self.arena, "unknown address space '{s}'; did you mean '{s}'?", .{ text, s }) catch "unknown address space";
+            self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0304" }) catch {};
+        }
+        return .none;
     }
     return .none;
 }
@@ -1228,8 +1240,15 @@ fn parseAccessMode(self: *Parser) Ast.AccessMode {
     });
     if (self.currentTag() == .ident) {
         const text = self.currentText();
+        const pos = self.currentStart();
         self.advance();
-        return map.get(text) orelse .none;
+        if (map.get(text)) |am| return am;
+        if (Suggest.suggestName(text, &Suggest.access_modes, 3)) |s| {
+            const end = pos +| @as(u32, @intCast(text.len));
+            const msg = std.fmt.allocPrint(self.arena, "unknown access mode '{s}'; did you mean '{s}'?", .{ text, s }) catch "unknown access mode";
+            self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0305" }) catch {};
+        }
+        return .none;
     }
     return .none;
 }

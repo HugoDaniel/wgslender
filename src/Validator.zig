@@ -15,6 +15,7 @@ const Ast = @import("Ast.zig");
 const Types = @import("Types.zig");
 const Builtins = @import("Builtins.zig");
 const Diagnostic = @import("Diagnostic.zig");
+const Suggest = @import("Suggest.zig");
 const Dce = @import("Dce.zig");
 const Allocator = std.mem.Allocator;
 
@@ -297,7 +298,11 @@ fn processDirectives(v: *Validator) Allocator.Error!void {
                         }
                     }
                     if (!is_known) {
-                        v.addErrorWithCodeR(.{ .start = 0, .end = 1 }, Diagnostic.Code.unknown_feature, v.fmtError("unknown enable feature '{s}'", .{feature}));
+                        const msg = if (suggestName(feature, &known_enable_features, 3)) |s|
+                            v.fmtError("unknown enable feature '{s}'; did you mean '{s}'?", .{ feature, s })
+                        else
+                            v.fmtError("unknown enable feature '{s}'", .{feature});
+                        v.addErrorWithCodeR(.{ .start = 0, .end = 1 }, Diagnostic.Code.unknown_feature, msg);
                     }
                     try v.enabled_features.put(v.arena, feature, {});
                 }
@@ -3267,7 +3272,11 @@ fn validateSwizzle(v: *Validator, name: []const u8, vec_width: u8, loc: u32, bas
         const xyzw_idx = std.mem.indexOfScalar(u8, xyzw, c);
         const rgba_idx = std.mem.indexOfScalar(u8, rgba, c);
         if (xyzw_idx == null and rgba_idx == null) {
-            v.addErrorWithCodeR(r, Diagnostic.Code.no_such_member, v.fmtError("invalid swizzle '.{s}' on type '{s}'; valid components are xyzw or rgba", .{ name, base_type.string() }));
+            const msg = if (v.suggestSwizzle(name, vec_width)) |s|
+                v.fmtError("invalid swizzle '.{s}' on type '{s}'; valid components are xyzw or rgba; did you mean '.{s}'?", .{ name, base_type.string(), s })
+            else
+                v.fmtError("invalid swizzle '.{s}' on type '{s}'; valid components are xyzw or rgba", .{ name, base_type.string() });
+            v.addErrorWithCodeR(r, Diagnostic.Code.no_such_member, msg);
             return false;
         }
         if (xyzw_idx != null) has_xyzw = true;
@@ -3280,10 +3289,47 @@ fn validateSwizzle(v: *Validator, name: []const u8, vec_width: u8, loc: u32, bas
         }
     }
     if (has_xyzw and has_rgba) {
-        v.addErrorWithCodeR(r, Diagnostic.Code.no_such_member, v.fmtError("swizzle '.{s}' mixes xyzw and rgba groups", .{name}));
+        const msg = if (v.suggestSwizzle(name, vec_width)) |s|
+            v.fmtError("swizzle '.{s}' mixes xyzw and rgba groups; did you mean '.{s}'?", .{ name, s })
+        else
+            v.fmtError("swizzle '.{s}' mixes xyzw and rgba groups", .{name});
+        v.addErrorWithCodeR(r, Diagnostic.Code.no_such_member, msg);
         return false;
     }
     return true;
+}
+
+/// Build a best-guess valid swizzle name. The dominant group (xyzw or rgba)
+/// wins ties; invalid / out-of-bounds chars are replaced with the group's
+/// first in-bounds component. Returns null when no change is needed, when
+/// the name is empty, or when the vector width is zero.
+fn suggestSwizzle(v: *Validator, name: []const u8, vec_width: u8) ?[]const u8 {
+    if (name.len == 0 or name.len > 4 or vec_width == 0) return null;
+    var xyzw_count: u8 = 0;
+    var rgba_count: u8 = 0;
+    for (name) |c| {
+        if (std.mem.indexOfScalar(u8, "xyzw", c)) |_| xyzw_count += 1;
+        if (std.mem.indexOfScalar(u8, "rgba", c)) |_| rgba_count += 1;
+    }
+    const group: []const u8 = if (xyzw_count >= rgba_count) "xyzw" else "rgba";
+    const max_w: u8 = @min(vec_width, 4);
+    var buf = v.arena.alloc(u8, name.len) catch return null;
+    var changed = false;
+    for (name, 0..) |c, i| {
+        if (std.mem.indexOfScalar(u8, group, c)) |idx| {
+            if (idx < max_w) {
+                buf[i] = c;
+            } else {
+                buf[i] = group[max_w - 1];
+                changed = true;
+            }
+        } else {
+            buf[i] = group[0];
+            changed = true;
+        }
+    }
+    if (!changed) return null;
+    return buf;
 }
 
 fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!?Types.Type {
@@ -4058,47 +4104,8 @@ fn suggestType(v: *Validator, name: []const u8, arg_count: ?usize) ?[]const u8 {
     return best;
 }
 
-/// Levenshtein distance with early termination at `max`.
-fn levenshteinBounded(a: []const u8, b: []const u8, max: usize) usize {
-    if (a.len > max and b.len > max and
-        (if (a.len > b.len) a.len - b.len else b.len - a.len) >= max)
-        return max;
-    if (a.len == 0) return b.len;
-    if (b.len == 0) return a.len;
-    // Use a single row of the DP matrix (stack-allocated, bounded).
-    const width = b.len + 1;
-    if (width > 128) return max; // don't bother with very long names
-    var row: [128]usize = undefined;
-    for (0..width) |j| row[j] = j;
-    for (a, 0..) |ca, i| {
-        var prev = i;
-        row[0] = i + 1;
-        for (b, 0..) |cb, j| {
-            const cost: usize = if (ca == cb) 0 else 1;
-            const ins = row[j + 1] + 1;
-            const del = row[j] + 1;
-            const sub = prev + cost;
-            prev = row[j + 1];
-            row[j + 1] = @min(ins, @min(del, sub));
-        }
-    }
-    return row[b.len];
-}
-
-/// Find the closest name within Levenshtein distance `max_dist` (exclusive).
-/// Returns null if no candidate is close enough.
-fn suggestName(name: []const u8, candidates: []const []const u8, max_dist: usize) ?[]const u8 {
-    var best: ?[]const u8 = null;
-    var best_dist: usize = max_dist;
-    for (candidates) |candidate| {
-        const d = levenshteinBounded(name, candidate, best_dist);
-        if (d < best_dist) {
-            best = candidate;
-            best_dist = d;
-        }
-    }
-    return best;
-}
+const levenshteinBounded = Suggest.levenshteinBounded;
+const suggestName = Suggest.suggestName;
 
 /// Suggest a close match for an undeclared identifier from all visible symbols and builtin functions.
 fn suggestIdentifier(v: *Validator, name: []const u8) ?[]const u8 {
