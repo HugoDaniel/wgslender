@@ -181,6 +181,9 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     // Phase 0: Process directives (enable, diagnostic)
     try v.processDirectives();
 
+    // Phase 0.5: Reject reserved identifiers (WGSL spec: `_` alone, `__`-prefixed)
+    v.checkReservedIdentifiers();
+
     // Phase 1: Collect type declarations (structs, aliases)
     try v.collectTypeDeclarations();
 
@@ -246,6 +249,7 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
     v.multi_entry_point = countEntryPoints(module) >= 2;
 
     try v.processDirectives();
+    v.checkReservedIdentifiers();
     try v.collectTypeDeclarations();
     try v.resolveStructLayouts();
     v.checkRecursiveStructs();
@@ -340,6 +344,37 @@ fn processDirectives(v: *Validator) Allocator.Error!void {
             },
             .requires => {},
         }
+    }
+}
+
+// =========================================================================
+// Phase 0.5: Reserved identifier check (E0105)
+// =========================================================================
+
+/// WGSL spec (§2.4): identifiers consisting of a single `_`, or beginning
+/// with `__`, are reserved. The former is only allowed as the left-hand side
+/// of a phony assignment — the parser does not build a `Symbol` for that
+/// case, so every surviving `_` symbol here is an invalid declaration.
+fn checkReservedIdentifiers(v: *Validator) void {
+    for (v.module.symbols.items, 0..) |sym, i| {
+        switch (sym.kind) {
+            .unbound, .builtin => continue,
+            else => {},
+        }
+        const name = sym.original_name;
+        if (name.len == 0) continue;
+
+        const is_bare_underscore = name.len == 1 and name[0] == '_';
+        const has_double_underscore_prefix = name.len >= 2 and name[0] == '_' and name[1] == '_';
+        if (!is_bare_underscore and !has_double_underscore_prefix) continue;
+
+        const sym_idx: Ast.SymbolIndex = @enumFromInt(@as(u32, @intCast(i)));
+        const range = v.symbolRange(sym_idx);
+        const msg = if (is_bare_underscore)
+            "identifier '_' is reserved: it may only appear as the left-hand side of a phony assignment"
+        else
+            v.fmtError("identifier '{s}' is reserved: names beginning with '__' may not be declared", .{name});
+        v.addErrorWithCodeR(range, Diagnostic.Code.reserved_identifier, msg);
     }
 }
 

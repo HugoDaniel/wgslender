@@ -580,6 +580,7 @@ pub const Code = struct {
     pub const use_before_decl: []const u8 = "E0102";
     pub const recursive_function: []const u8 = "E0103";
     pub const recursive_type: []const u8 = "E0104";
+    pub const reserved_identifier: []const u8 = "E0105";
 
     // Type errors (E02xx)
     pub const type_mismatch: []const u8 = "E0200";

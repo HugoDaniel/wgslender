@@ -4,6 +4,7 @@
 //!     that re-uses a name visible from an outer scope.
 //!   - W0101 redundant cast: a type constructor call whose single
 //!     argument is already of the target concrete type.
+//!   - E0105 reserved identifier: `_` alone, or any `__`-prefixed name.
 //!
 //! DIAGNOSTICS_ROADMAP.md item 10, Phase C.
 
@@ -26,6 +27,13 @@ fn hasWarningContaining(r: wgslender.Validator.Result, code: []const u8, needle:
         if (d.severity != .warning) continue;
         if (!std.mem.eql(u8, d.code, code)) continue;
         if (std.mem.indexOf(u8, d.message, needle) != null) return true;
+    }
+    return false;
+}
+
+fn hasErrorWithCode(r: wgslender.Validator.Result, code: []const u8) bool {
+    for (r.diagnostics.items()) |d| {
+        if (d.severity == .@"error" and std.mem.eql(u8, d.code, code)) return true;
     }
     return false;
 }
@@ -161,5 +169,109 @@ test "W0101: u32(u32) is redundant" {
     if (!hasWarningWithCode(r, "W0101")) {
         dumpDiags("no W0101 redundant u32 cast", r);
         return error.TestUnexpectedResult;
+    }
+}
+
+// -------------------------------------------------------------------------
+// E0105 reserved identifier
+// -------------------------------------------------------------------------
+
+test "E0105: let __tmp is reserved" {
+    var r = try validateSource(
+        \\fn main() -> f32 {
+        \\  let __tmp: f32 = 1.0;
+        \\  return __tmp;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0105")) {
+        dumpDiags("no E0105 for let __tmp", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0105: fn __main is reserved" {
+    var r = try validateSource(
+        \\fn __main() -> f32 { return 0.0; }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0105")) {
+        dumpDiags("no E0105 for fn __main", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0105: struct __S is reserved" {
+    var r = try validateSource(
+        \\struct __S { x: f32 }
+        \\fn main() -> f32 {
+        \\  let s: __S = __S(1.0);
+        \\  return s.x;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0105")) {
+        dumpDiags("no E0105 for struct __S", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0105: parameter __p is reserved" {
+    var r = try validateSource(
+        \\fn helper(__p: f32) -> f32 { return __p; }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0105")) {
+        dumpDiags("no E0105 for parameter __p", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0105: struct member __x is reserved" {
+    var r = try validateSource(
+        \\struct S { __x: f32 }
+        \\fn main() -> f32 {
+        \\  let s: S = S(1.0);
+        \\  return s.__x;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0105")) {
+        dumpDiags("no E0105 for struct member __x", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0105: single-underscore leading name is OK" {
+    // `_x` (single leading underscore followed by chars) is a valid WGSL identifier.
+    var r = try validateSource(
+        \\fn main() -> f32 {
+        \\  let _x: f32 = 1.0;
+        \\  return _x;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    for (r.diagnostics.items()) |d| {
+        if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0105")) {
+            dumpDiags("unexpected E0105 on '_x'", r);
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "E0105: x__y (internal double underscore) is OK" {
+    // Only a leading `__` prefix is reserved.
+    var r = try validateSource(
+        \\fn main() -> f32 {
+        \\  let x__y: f32 = 1.0;
+        \\  return x__y;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    for (r.diagnostics.items()) |d| {
+        if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0105")) {
+            dumpDiags("unexpected E0105 on 'x__y'", r);
+            return error.TestUnexpectedResult;
+        }
     }
 }
