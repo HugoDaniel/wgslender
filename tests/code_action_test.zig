@@ -470,6 +470,640 @@ test "code action: W0001 unused produces remove action" {
     try std.testing.expect(std.mem.indexOf(u8, actions[0].title, "unused_var") != null);
 }
 
+test "code action: W0001 offers rename to '_name' action alongside remove" {
+    const handler = try std.testing.allocator.create(Handler);
+    handler.* = Handler.init(std.testing.allocator);
+    defer {
+        handler.deinit();
+        std.testing.allocator.destroy(handler);
+    }
+
+    const diag = Handler.LspDiagnostic{
+        .range = .{
+            .start = .{ .line = 0, .character = 4 },
+            .end = .{ .line = 0, .character = 14 },
+        },
+        .severity = .warning,
+        .message = "'unused_var' is declared but never used",
+        .code = "W0001",
+    };
+    const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
+    defer std.testing.allocator.free(diags);
+    diags[0] = diag;
+
+    const actions = try handler.computeCodeActions(diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| {
+                if (e.new_text.len > 0) std.testing.allocator.free(e.new_text);
+            }
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    // Both actions should be emitted
+    const remove = findActionByTitle(actions, "Remove unused 'unused_var'") orelse
+        return error.TestUnexpectedResult;
+    _ = remove;
+    const rename = findActionByTitle(actions, "Rename to '_unused_var'") orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("_unused_var", rename.edits[0].new_text);
+    try std.testing.expectEqualStrings("quickfix", rename.kind);
+}
+
+test "code action: W0001 rename action is not preferred" {
+    const handler = try std.testing.allocator.create(Handler);
+    handler.* = Handler.init(std.testing.allocator);
+    defer {
+        handler.deinit();
+        std.testing.allocator.destroy(handler);
+    }
+
+    const diag = Handler.LspDiagnostic{
+        .range = .{
+            .start = .{ .line = 0, .character = 4 },
+            .end = .{ .line = 0, .character = 7 },
+        },
+        .severity = .warning,
+        .message = "'foo' is declared but never used",
+        .code = "W0001",
+    };
+    const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
+    defer std.testing.allocator.free(diags);
+    diags[0] = diag;
+
+    const actions = try handler.computeCodeActions(diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| {
+                if (e.new_text.len > 0) std.testing.allocator.free(e.new_text);
+            }
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    const rename = findActionByTitle(actions, "Rename to '_foo'") orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expect(!rename.is_preferred);
+}
+
+test "code action: W0001 skips underscore-rename when name already starts with _" {
+    const handler = try std.testing.allocator.create(Handler);
+    handler.* = Handler.init(std.testing.allocator);
+    defer {
+        handler.deinit();
+        std.testing.allocator.destroy(handler);
+    }
+
+    const diag = Handler.LspDiagnostic{
+        .range = .{
+            .start = .{ .line = 0, .character = 4 },
+            .end = .{ .line = 0, .character = 8 },
+        },
+        .severity = .warning,
+        .message = "'_tmp' is declared but never used",
+        .code = "W0001",
+    };
+    const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
+    defer std.testing.allocator.free(diags);
+    diags[0] = diag;
+
+    const actions = try handler.computeCodeActions(diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| {
+                if (e.new_text.len > 0) std.testing.allocator.free(e.new_text);
+            }
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    // Remove action still exists
+    try std.testing.expect(findActionByTitle(actions, "Remove unused '_tmp'") != null);
+    // But no underscore-prefix rename (would produce '__tmp')
+    try std.testing.expect(findActionByTitle(actions, "Rename to '__tmp'") == null);
+    try std.testing.expect(findActionByTitle(actions, "Rename to ") == null);
+}
+
+test "code action: W0001 rename edit spans exactly the identifier" {
+    const source: [:0]const u8 = "let unused_var: f32 = 1.0;";
+
+    const handler = try std.testing.allocator.create(Handler);
+    handler.* = Handler.init(std.testing.allocator);
+    defer {
+        handler.deinit();
+        std.testing.allocator.destroy(handler);
+    }
+
+    // The identifier "unused_var" starts at offset 4, length 10.
+    const diag = Handler.LspDiagnostic{
+        .range = .{
+            .start = .{ .line = 0, .character = 4 },
+            .end = .{ .line = 0, .character = 14 },
+        },
+        .severity = .warning,
+        .message = "'unused_var' is declared but never used",
+        .code = "W0001",
+    };
+    const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
+    defer std.testing.allocator.free(diags);
+    diags[0] = diag;
+
+    const actions = try handler.computeCodeActions(diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| {
+                if (e.new_text.len > 0) std.testing.allocator.free(e.new_text);
+            }
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    const rename = findActionByTitle(actions, "Rename to '_unused_var'") orelse
+        return error.TestUnexpectedResult;
+
+    // The edit range should cover exactly "unused_var"
+    const start = Handler.lspPositionToOffset(source, rename.edits[0].range.start) orelse
+        return error.TestUnexpectedResult;
+    const end = Handler.lspPositionToOffset(source, rename.edits[0].range.end) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("unused_var", source[start..end]);
+
+    // Applying the rename produces "let _unused_var: f32 = 1.0;"
+    const fixed = try applyEdit(source, rename.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "let _unused_var") != null);
+}
+
+// =========================================================================
+// Code actions: insert cast on type mismatch (E0200)
+// =========================================================================
+
+test "code action: extractTypeMismatch parses the three validator message shapes" {
+    // Assignment form.
+    {
+        const tm = Handler.extractTypeMismatch("cannot assign 'vec3f' to 'vec4f'") orelse
+            return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings("vec3f", tm.actual);
+        try std.testing.expectEqualStrings("vec4f", tm.expected);
+    }
+    // Return form.
+    {
+        const tm = Handler.extractTypeMismatch("cannot return 'i32' from function expecting 'f32'") orelse
+            return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings("i32", tm.actual);
+        try std.testing.expectEqualStrings("f32", tm.expected);
+    }
+    // Call-arg form (E0203 — helper parses it, dispatch still skips it).
+    {
+        const tm = Handler.extractTypeMismatch("argument 1 of 'myFn' has type 'vec3f', expected 'vec4f'") orelse
+            return error.TestUnexpectedResult;
+        // The 'myFn' pair comes first; the helper is purely positional. This
+        // documents the behavior — the dispatch gates by diagnostic code so the
+        // E0203 form never reaches isSafeCastTarget with a function name.
+        try std.testing.expectEqualStrings("myFn", tm.actual);
+        try std.testing.expectEqualStrings("vec3f", tm.expected);
+    }
+}
+
+test "code action: extractTypeMismatch returns null on messages without two quoted tokens" {
+    try std.testing.expect(Handler.extractTypeMismatch("type error") == null);
+    try std.testing.expect(Handler.extractTypeMismatch("'only one'") == null);
+    try std.testing.expect(Handler.extractTypeMismatch("") == null);
+}
+
+test "code action: isSafeCastTarget accepts scalar-to-scalar and same-shape vector casts" {
+    try std.testing.expect(Handler.isSafeCastTarget("i32", "f32"));
+    try std.testing.expect(Handler.isSafeCastTarget("f32", "i32"));
+    try std.testing.expect(Handler.isSafeCastTarget("bool", "u32"));
+    try std.testing.expect(Handler.isSafeCastTarget("vec3i", "vec3f"));
+    try std.testing.expect(Handler.isSafeCastTarget("vec4f", "vec4u"));
+    // Long-form vectors (the shape the validator actually emits).
+    try std.testing.expect(Handler.isSafeCastTarget("vec3<i32>", "vec3<f32>"));
+    try std.testing.expect(Handler.isSafeCastTarget("vec4<f16>", "vec4<f32>"));
+    // Mixed spellings still pass as long as the shape matches.
+    try std.testing.expect(Handler.isSafeCastTarget("vec3i", "vec3<f32>"));
+}
+
+test "code action: isSafeCastTarget rejects shape-changing and non-whitelisted targets" {
+    // Shape-changing: vec3 → vec4 is not a safe constructor call.
+    try std.testing.expect(!Handler.isSafeCastTarget("vec3f", "vec4f"));
+    try std.testing.expect(!Handler.isSafeCastTarget("vec2i", "vec3i"));
+    try std.testing.expect(!Handler.isSafeCastTarget("vec3<f32>", "vec4<f32>"));
+    // Scalar ↔ vector: not safe.
+    try std.testing.expect(!Handler.isSafeCastTarget("f32", "vec3f"));
+    try std.testing.expect(!Handler.isSafeCastTarget("vec4f", "f32"));
+    // User struct / unknown types.
+    try std.testing.expect(!Handler.isSafeCastTarget("f32", "MyStruct"));
+    try std.testing.expect(!Handler.isSafeCastTarget("S", "T"));
+    // Matrices are intentionally out-of-scope.
+    try std.testing.expect(!Handler.isSafeCastTarget("mat2x2f", "mat2x2i"));
+    // Abstract types don't appear in this spelling but any unrecognized form returns false.
+    try std.testing.expect(!Handler.isSafeCastTarget("AbstractFloat", "f32"));
+}
+
+test "code action: E0200 scalar return mismatch offers cast" {
+    const source: [:0]const u8 =
+        \\fn f() -> f32 { let x: i32 = 1; return x; }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Cast to 'f32'") orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("quickfix", action.kind);
+    try std.testing.expectEqual(@as(usize, 1), action.edits.len);
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "return f32(x);") != null);
+}
+
+test "code action: E0200 same-shape vector mismatch offers cast" {
+    // The validator formats vector types in long form (`vec3<f32>`) in messages,
+    // so the cast title and edit text match that spelling. Short-form aliases
+    // would be equivalent WGSL; the implementation keeps the validator's spelling.
+    const source: [:0]const u8 =
+        \\fn f() -> vec3f { let v: vec3i = vec3i(1, 2, 3); return v; }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Cast to 'vec3<f32>'") orelse
+        return error.TestUnexpectedResult;
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "return vec3<f32>(v);") != null);
+}
+
+test "code action: E0200 assignment mismatch offers cast on RHS" {
+    const source: [:0]const u8 =
+        \\fn f() { var a: f32 = 0.0; let b: i32 = 1; a = b; }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Cast to 'f32'") orelse
+        return error.TestUnexpectedResult;
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "a = f32(b);") != null);
+}
+
+test "code action: E0200 shape-changing mismatch offers no cast" {
+    const source: [:0]const u8 =
+        \\fn f() -> vec4f { let v: vec3f = vec3f(0.0); return v; }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    // No naive cast — vec4f(vec3f_value) is not a valid WGSL constructor call.
+    try std.testing.expect(findActionByTitle(result.actions, "Cast to 'vec4f'") == null);
+    try std.testing.expect(findActionByTitle(result.actions, "Cast to 'vec4<f32>'") == null);
+}
+
+test "code action: E0200 expected type is a user struct — no cast" {
+    const source: [:0]const u8 =
+        \\struct S { x: f32 }
+        \\fn f() -> S { let x: f32 = 1.0; return x; }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    try std.testing.expect(findActionByTitle(result.actions, "Cast to 'S'") == null);
+    try std.testing.expect(findActionByTitle(result.actions, "Cast to ") == null);
+}
+
+test "code action: E0203 call-arg mismatch offers no cast in v1" {
+    // E0203's diagnostic range is the whole call expression, not just the arg.
+    // Until the validator narrows this range, the cast quickfix is scoped to E0200.
+    // This test locks the behavior so regressions surface if dispatch widens prematurely.
+    const source: [:0]const u8 =
+        \\fn g(x: f32) -> f32 { return x; }
+        \\fn f() -> f32 { let y: i32 = 1; return g(y); }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    try std.testing.expect(findActionByTitle(result.actions, "Cast to ") == null);
+}
+
+test "code action: E0200 round-trip — applied cast suppresses the original diagnostic" {
+    const source: [:0]const u8 =
+        \\fn f() -> f32 { let x: i32 = 1; return x; }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Cast to 'f32'") orelse
+        return error.TestUnexpectedResult;
+
+    const fixed_slice = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed_slice);
+
+    const fixed_z = try std.testing.allocator.alloc(u8, fixed_slice.len + 1);
+    defer std.testing.allocator.free(fixed_z);
+    @memcpy(fixed_z[0..fixed_slice.len], fixed_slice);
+    fixed_z[fixed_slice.len] = 0;
+    const fixed: [:0]const u8 = fixed_z[0..fixed_slice.len :0];
+
+    var handler2 = Handler.init(std.testing.allocator);
+    defer handler2.deinit();
+    const diags2 = try handler2.validateDocument(fixed);
+    defer Handler.freeDiagnostics(std.testing.allocator, diags2);
+
+    // No E0200 about a mismatch between i32/f32 should remain.
+    for (diags2) |d| {
+        if (std.mem.eql(u8, d.code, "E0200") and
+            std.mem.indexOf(u8, d.message, "i32") != null and
+            std.mem.indexOf(u8, d.message, "f32") != null)
+        {
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "code action: E0200 cast coexists with did-you-mean rename when message has both" {
+    // Synthesize a diagnostic that carries both patterns. Both branches should fire.
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument("test://file.wgsl", "let x = y;\n", 1);
+
+    const diags = [_]Handler.LspDiagnostic{.{
+        .range = .{ .start = .{ .line = 0, .character = 8 }, .end = .{ .line = 0, .character = 9 } },
+        .severity = .@"error",
+        .message = "cannot assign 'i32' to 'f32'; did you mean 'z'?",
+        .code = "E0200",
+    }};
+
+    const actions = try handler.computeCodeActions(&diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| std.testing.allocator.free(e.new_text);
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    // Both a rename and a cast action should be present.
+    try std.testing.expect(findActionByTitle(actions, "Replace with 'z'") != null);
+    try std.testing.expect(findActionByTitle(actions, "Cast to 'f32'") != null);
+}
+
+// =========================================================================
+// Code actions: insert @builtin(position) for vertex entry point (E0600)
+// =========================================================================
+
+test "code action: E0600 plain vec4f return type inserts @builtin(position) before type" {
+    const source: [:0]const u8 =
+        \\@vertex fn vs() -> vec4f { return vec4f(0); }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Add @builtin(position) to return type") orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expect(action.is_preferred);
+    try std.testing.expectEqualStrings("quickfix", action.kind);
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    // The return type is now annotated with @builtin(position).
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "-> @builtin(position) vec4f") != null);
+}
+
+test "code action: E0600 plain return, existing contents are preserved" {
+    const source: [:0]const u8 =
+        \\@vertex fn vs() -> vec4f { return vec4f(0); }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Add @builtin(position) to return type") orelse
+        return error.TestUnexpectedResult;
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    // Nothing else should be disturbed.
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "@vertex fn vs()") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "return vec4f(0); }") != null);
+}
+
+test "code action: E0600 struct return type inserts @builtin(position) member" {
+    const source: [:0]const u8 =
+        \\struct Out { @location(0) color: vec4f, }
+        \\@vertex fn vs() -> Out { return Out(vec4f(0)); }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Add @builtin(position) member to 'Out'") orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expect(action.is_preferred);
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    // New member lands inside the struct body.
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "@builtin(position) position: vec4f,") != null);
+    // Existing member still present.
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "@location(0) color: vec4f,") != null);
+    // The struct still closes with `}`.
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "}") != null);
+}
+
+test "code action: E0600 struct declared AFTER the function still resolves" {
+    // Declaration order doesn't matter for WGSL validation; the quickfix
+    // should find the struct regardless of where it appears in the file.
+    const source: [:0]const u8 =
+        \\@vertex fn vs() -> Out { return Out(vec4f(0)); }
+        \\struct Out { @location(0) color: vec4f, }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Add @builtin(position) member to 'Out'") orelse
+        return error.TestUnexpectedResult;
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "@builtin(position) position: vec4f,") != null);
+}
+
+test "code action: E0600 multi-member struct — insertion preserves all existing members" {
+    const source: [:0]const u8 =
+        \\struct Out { @location(0) color: vec4f, @location(1) uv: vec2f, }
+        \\@vertex fn vs() -> Out { return Out(vec4f(0), vec2f(0)); }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Add @builtin(position) member to 'Out'") orelse
+        return error.TestUnexpectedResult;
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    // All three members are present after the fix.
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "@location(0) color: vec4f,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "@location(1) uv: vec2f,") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "@builtin(position) position: vec4f,") != null);
+}
+
+test "code action: E0600 round-trip — applied plain fix makes the shader validate" {
+    const source: [:0]const u8 =
+        \\@vertex fn vs() -> vec4f { return vec4f(0); }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Add @builtin(position) to return type") orelse
+        return error.TestUnexpectedResult;
+
+    const fixed_slice = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed_slice);
+
+    const fixed_z = try std.testing.allocator.alloc(u8, fixed_slice.len + 1);
+    defer std.testing.allocator.free(fixed_z);
+    @memcpy(fixed_z[0..fixed_slice.len], fixed_slice);
+    fixed_z[fixed_slice.len] = 0;
+    const fixed: [:0]const u8 = fixed_z[0..fixed_slice.len :0];
+
+    var handler2 = Handler.init(std.testing.allocator);
+    defer handler2.deinit();
+    const diags2 = try handler2.validateDocument(fixed);
+    defer Handler.freeDiagnostics(std.testing.allocator, diags2);
+
+    for (diags2) |d| {
+        if (std.mem.eql(u8, d.code, "E0600") and
+            std.mem.indexOf(u8, d.message, "must include @builtin(position)") != null)
+        {
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "code action: E0600 round-trip — applied struct fix makes the shader validate" {
+    const source: [:0]const u8 =
+        \\struct Out { @location(0) color: vec4f, }
+        \\@vertex fn vs() -> Out { return Out(vec4f(0)); }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Add @builtin(position) member to 'Out'") orelse
+        return error.TestUnexpectedResult;
+
+    const fixed_slice = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed_slice);
+
+    const fixed_z = try std.testing.allocator.alloc(u8, fixed_slice.len + 1);
+    defer std.testing.allocator.free(fixed_z);
+    @memcpy(fixed_z[0..fixed_slice.len], fixed_slice);
+    fixed_z[fixed_slice.len] = 0;
+    const fixed: [:0]const u8 = fixed_z[0..fixed_slice.len :0];
+
+    var handler2 = Handler.init(std.testing.allocator);
+    defer handler2.deinit();
+    const diags2 = try handler2.validateDocument(fixed);
+    defer Handler.freeDiagnostics(std.testing.allocator, diags2);
+
+    for (diags2) |d| {
+        if (std.mem.eql(u8, d.code, "E0600") and
+            std.mem.indexOf(u8, d.message, "must include @builtin(position)") != null)
+        {
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "code action: E0600 is ignored when message is not the missing-position variant" {
+    // Synthesize an E0600 with a different message (e.g. a compute-shader
+    // invalid entry point). No builtin-position action should be emitted.
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument("test://file.wgsl", "@compute fn cs() {}\n", 1);
+
+    const diags = [_]Handler.LspDiagnostic{.{
+        .range = .{ .start = .{ .line = 0, .character = 12 }, .end = .{ .line = 0, .character = 14 } },
+        .severity = .@"error",
+        .message = "compute entry point 'cs' requires @workgroup_size",
+        .code = "E0600",
+    }};
+
+    const actions = try handler.computeCodeActions(&diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| std.testing.allocator.free(e.new_text);
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    try std.testing.expect(findActionByTitle(actions, "@builtin(position)") == null);
+}
+
+test "code action: E0600 with no open document returns no actions" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+
+    const diags = [_]Handler.LspDiagnostic{.{
+        .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 2 } },
+        .severity = .@"error",
+        .message = "vertex entry point 'vs' must include @builtin(position) output",
+        .code = "E0600",
+    }};
+
+    const actions = try handler.computeCodeActions(&diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| std.testing.allocator.free(e.new_text);
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), actions.len);
+}
+
+test "code action: E0600 malformed source with no '->' returns no action" {
+    // Synthesize a diagnostic on a signature-less function. The helper should
+    // bail cleanly rather than emit a garbage edit.
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument("test://file.wgsl", "@vertex fn vs() { }\n", 1);
+
+    const diags = [_]Handler.LspDiagnostic{.{
+        .range = .{ .start = .{ .line = 0, .character = 11 }, .end = .{ .line = 0, .character = 13 } },
+        .severity = .@"error",
+        .message = "vertex entry point 'vs' must include @builtin(position) output",
+        .code = "E0600",
+    }};
+
+    const actions = try handler.computeCodeActions(&diags);
+    defer {
+        for (actions) |a| {
+            std.testing.allocator.free(a.title);
+            for (a.edits) |e| std.testing.allocator.free(e.new_text);
+            std.testing.allocator.free(a.edits);
+        }
+        std.testing.allocator.free(actions);
+    }
+
+    try std.testing.expect(findActionByTitle(actions, "@builtin(position)") == null);
+}
+
 // =========================================================================
 // Code actions: enable f16 (E0900)
 // =========================================================================
