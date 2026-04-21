@@ -2915,7 +2915,14 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
 
     // Check if it's a type constructor
     if (v.lookupType(callee_name)) |t| {
-        return v.checkTypeConstructor(e, callee_name, t, constructor_arg_types.items);
+        // Bare vec/mat constructors (`vec2`, `mat3x3`, …) infer their
+        // element type from the argument list per WGSL §14.462 rather than
+        // defaulting to f32. parseVectorShorthand / parseMatrixShorthand
+        // return a f32-default type; swap its element with the arg-unified
+        // scalar before validation so `let x = vec2(1, 2)` is vec2<i32>
+        // (or vec2<abstract-int> in contexts that retain abstractness).
+        const effective_t = v.inferGenericCtorElement(callee_name, t, constructor_arg_types.items) orelse t;
+        return v.checkTypeConstructor(e, callee_name, effective_t, constructor_arg_types.items);
     }
 
     // Check if it's a user-defined function
@@ -3054,6 +3061,59 @@ fn sameAsArgResult(arg_types: [8]?Types.Type) ?Types.Type {
         unified = common;
     }
     return unified;
+}
+
+/// Bare `vec2`/`vec3`/`vec4` and `matCxR` accept any scalar element type
+/// that's common to the arguments. `lookupType` hands back an f32 default
+/// so other call paths stay simple; here we replace the element with the
+/// unified scalar across the args (AbstractInt/AbstractFloat propagate
+/// unless a concrete arg is present). Returns null when the name is not
+/// a bare numeric constructor or when we fail to pick an element.
+fn inferGenericCtorElement(v: *Validator, name: []const u8, default: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
+    const is_bare_vec = std.mem.eql(u8, name, "vec2") or
+        std.mem.eql(u8, name, "vec3") or
+        std.mem.eql(u8, name, "vec4");
+    const is_bare_mat = name.len == 6 and
+        std.mem.startsWith(u8, name, "mat") and
+        name[4] == 'x';
+    if (!is_bare_vec and !is_bare_mat) return null;
+
+    var elem: ?*const Types.Scalar = null;
+    for (arg_types) |at_opt| {
+        const at = at_opt orelse continue;
+        const scalar_ptr: *const Types.Scalar = switch (at) {
+            .scalar => |s| s,
+            .vector => |vv| vv.element,
+            .matrix => |mm| mm.element,
+            else => continue,
+        };
+        elem = unifyScalarKinds(elem, scalar_ptr);
+    }
+
+    const chosen = elem orelse return null;
+    if (is_bare_vec) {
+        const result = v.arena.create(Types.Vector) catch return null;
+        result.* = .{ .width = default.vector.width, .element = chosen };
+        return .{ .vector = result };
+    }
+    // Matrices carry a float element only; fall back to default if an
+    // integer sneaks in — checkTypeConstructor reports the real error.
+    if (!chosen.isFloat()) return null;
+    const result = v.arena.create(Types.Matrix) catch return null;
+    result.* = .{ .cols = default.matrix.cols, .rows = default.matrix.rows, .element = chosen };
+    return .{ .matrix = result };
+}
+
+fn unifyScalarKinds(a: ?*const Types.Scalar, b: *const Types.Scalar) ?*const Types.Scalar {
+    const prev = a orelse return b;
+    if (prev.kind == b.kind) return prev;
+    // Abstract operands yield to concrete of a compatible family.
+    if (prev.kind == .abstract_int and b.kind != .bool) return b;
+    if (b.kind == .abstract_int and prev.kind != .bool) return prev;
+    if (prev.kind == .abstract_float and b.isFloat()) return b;
+    if (b.kind == .abstract_float and prev.isFloat()) return prev;
+    // Incompatible concrete kinds — keep prev; validation will report it.
+    return prev;
 }
 
 fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8) void {
@@ -3210,7 +3270,16 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8
     const range = exprRange(.{ .call = e });
 
     // Spec: only constructible types can be used as value constructors.
-    if (!t.isConstructible() and !std.mem.eql(u8, callee_name, "bitcast")) {
+    // Vectors/matrices with an abstract element type are transient results
+    // of bare `vec2(...)` / `matCxR(...)` element inference — they will be
+    // concretized at the enclosing use site, so we permit them here even
+    // though `isConstructible` rejects abstract-typed containers.
+    const is_transient_abstract = switch (t) {
+        .vector => |vv| !vv.element.isConcrete(),
+        .matrix => |mm| !mm.element.isConcrete(),
+        else => false,
+    };
+    if (!t.isConstructible() and !is_transient_abstract and !std.mem.eql(u8, callee_name, "bitcast")) {
         v.addErrorWithCodeR(range, Diagnostic.Code.type_mismatch, v.fmtError("type '{s}' is not constructible", .{t.string()}));
         return null;
     }
