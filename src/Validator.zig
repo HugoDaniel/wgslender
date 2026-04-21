@@ -3188,7 +3188,45 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         else => {},
     }
 
+    // Per-builtin cross-arg consistency: for the "all numeric args share T"
+    // family (min/max/clamp/step/pow/atan2/smoothstep/fma) every pair must
+    // have a common type. Without this check, `min(1i, 2u)` silently picks
+    // the first arg's type even though WGSL has no matching overload.
+    if (unifyAllArgsBuiltin(callee_name)) {
+        const count = @min(e.args.items.len, 8);
+        var i: usize = 1;
+        while (i < count) : (i += 1) {
+            const a0 = arg_types[0] orelse break;
+            const ai = arg_types[i] orelse break;
+            if (Types.commonType(a0, ai) == null) {
+                v.addErrorWithCodeR(
+                    exprRange(.{ .call = e }),
+                    Diagnostic.Code.invalid_arg_type,
+                    v.fmtError(
+                        "no matching overload for '{s}': argument types '{s}' and '{s}' have no common type",
+                        .{ callee_name, a0.string(), ai.string() },
+                    ),
+                );
+                return null;
+            }
+        }
+    }
+
     return v.inferBuiltinReturnType(builtin_fn, callee_name, arg_types);
+}
+
+/// Returns true when every argument of `name` is required by spec to share
+/// a common type with the first. Builtins whose later args intentionally
+/// diverge (refract's scalar eta, select's bool cond, ldexp's i32 exponent,
+/// mix's scalar blend) are deliberately excluded.
+fn unifyAllArgsBuiltin(name: []const u8) bool {
+    const all_share = [_][]const u8{
+        "min",       "max",        "clamp",
+        "step",      "pow",        "atan2",
+        "smoothstep","fma",        "faceForward",
+    };
+    for (all_share) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
 }
 
 fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr, callee_name: []const u8) Allocator.Error!?Types.Type {
