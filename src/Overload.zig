@@ -12,11 +12,13 @@
 //! lowest total wins. Ties are broken by declaration order (first wins),
 //! which matches Naga/Tint.
 //!
-//! The engine is deliberately small: texture and `bitcast<T>` complexity
-//! is deferred to later Phase 3 steps, so the Pattern grammar covers only
-//! the shapes Phases 1-3a need (scalar, vector, matrix, pointer<atomic<T>>,
-//! concrete singleton refs). Expanding it later is a matter of adding
-//! new `Pattern` variants and `unifyArg` cases.
+//! The engine is deliberately small: texture complexity is deferred to a
+//! later Phase 3 step, so the Pattern grammar covers only the shapes
+//! Phases 1-3b need (scalar, vector, matrix, pointer<atomic<T>>, concrete
+//! singleton refs). Phase 3b introduced `resolveSeeded` for `bitcast<T>`
+//! where the template pre-binds the element scalar kind (and width for
+//! vector templates) before the solver unifies the value arg. Expanding
+//! later is a matter of adding new `Pattern` variants and `unifyArg` cases.
 
 const std = @import("std");
 const Ast = @import("Ast.zig");
@@ -48,6 +50,10 @@ pub const ScalarFamily = enum {
     /// bool only — used by `all`/`any`/subgroupAll/subgroupAny for their
     /// `vecN<bool>` overloads.
     bool,
+    /// Concrete 32-bit numerics only (i32, u32, f32). Used by bitcast, whose
+    /// spec domain excludes f16 (not 32 bits) and abstract numerics (the
+    /// validator concretizes them before the sig runs).
+    concrete_32,
 
     pub fn accepts(self: ScalarFamily, kind: Types.ScalarKind) bool {
         return switch (self) {
@@ -57,6 +63,7 @@ pub const ScalarFamily = enum {
             .abstract_int => kind == .abstract_int,
             .any => true,
             .bool => kind == .bool,
+            .concrete_32 => kind == .i32 or kind == .u32 or kind == .f32,
         };
     }
 };
@@ -201,6 +208,21 @@ pub const ResolveResult = union(enum) {
 /// On success, returns the winning sig index and the tparam bindings; the
 /// caller then uses `buildResult` to construct the return type.
 pub fn resolve(sigs: []const OverloadSig, arg_types: []const ?Types.Type) ResolveResult {
+    return resolveSeeded(sigs, @splat(.{}), arg_types);
+}
+
+/// Like `resolve`, but starts each candidate's bindings from `seed` instead
+/// of the empty binding set. Used by `bitcast<T>` (Phase 3b): the validator
+/// pre-binds slot 0 to the template's element `ScalarKind` and (for vector
+/// templates) slot 1 to the template's width, then the solver unifies the
+/// value arg against a shape pattern that references those slots.
+/// `bindScalar` / `bindWidth` already implement the "previously-bound —
+/// check compatibility" branch, so seeded slots enforce equality for free.
+pub fn resolveSeeded(
+    sigs: []const OverloadSig,
+    seed: [max_tparams]Binding,
+    arg_types: []const ?Types.Type,
+) ResolveResult {
     // Arity filter.
     var arity_ok: bool = false;
     for (sigs) |s| {
@@ -215,7 +237,7 @@ pub fn resolve(sigs: []const OverloadSig, arg_types: []const ?Types.Type) Resolv
 
     var best_idx: ?usize = null;
     var best_rank: u32 = std.math.maxInt(u32);
-    var best_bindings: [max_tparams]Binding = @splat(.{});
+    var best_bindings: [max_tparams]Binding = seed;
     var last_bad_arg: u8 = 0;
 
     // Tie-break by declaration order — on strict less-than we take the
@@ -224,7 +246,7 @@ pub fn resolve(sigs: []const OverloadSig, arg_types: []const ?Types.Type) Resolv
     // reserved for later phases and not triggered by Phase 1 signatures.
     for (sigs, 0..) |s, idx| {
         if (s.params.len != arg_types.len) continue;
-        var bindings: [max_tparams]Binding = @splat(.{});
+        var bindings: [max_tparams]Binding = seed;
         var total_rank: u32 = 0;
         var ok = true;
         var bad_arg: u8 = 0;
@@ -722,4 +744,101 @@ test "resolve: null arg is feasible, preserves rank across other args" {
     const args = [_]?Types.Type{ Types.I32, null };
     const r = resolve(&sigs, &args);
     try std.testing.expect(r == .ok);
+}
+
+// =========================================================================
+// Phase 3b — resolveSeeded + ScalarFamily.concrete_32
+// =========================================================================
+
+test "ScalarFamily.concrete_32 accepts i32/u32/f32, rejects f16/bool/abstract" {
+    try std.testing.expect(ScalarFamily.concrete_32.accepts(.i32));
+    try std.testing.expect(ScalarFamily.concrete_32.accepts(.u32));
+    try std.testing.expect(ScalarFamily.concrete_32.accepts(.f32));
+    try std.testing.expect(!ScalarFamily.concrete_32.accepts(.f16));
+    try std.testing.expect(!ScalarFamily.concrete_32.accepts(.bool));
+    try std.testing.expect(!ScalarFamily.concrete_32.accepts(.abstract_int));
+    try std.testing.expect(!ScalarFamily.concrete_32.accepts(.abstract_float));
+}
+
+test "resolveSeeded: seeded scalar kind binds slot 0, solver binds slot 2" {
+    // Bitcast-style sig: (scalar_32 S) → T where T is pre-seeded in slot 0.
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 3,
+        .params = &.{.{ .tparam_scalar = .{ .idx = 2, .family = .concrete_32 } }},
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    }};
+    var seed: [max_tparams]Binding = @splat(.{});
+    seed[0] = .{ .bound = true, .scalar_kind = .f32 };
+    const args = [_]?Types.Type{Types.U32};
+    const r = resolveSeeded(&sigs, seed, &args);
+    try std.testing.expect(r == .ok);
+    // Seeded slot 0 preserved:
+    try std.testing.expectEqual(Types.ScalarKind.f32, r.ok.bindings[0].scalar_kind.?);
+    // Solver-bound slot 2:
+    try std.testing.expectEqual(Types.ScalarKind.u32, r.ok.bindings[2].scalar_kind.?);
+}
+
+test "resolveSeeded: seeded width forces arg width to match" {
+    // vecN<concrete_32> where N is pre-seeded. arg must have same width.
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 3,
+        .params = &.{.{ .tparam_vector = .{ .elem_idx = 2, .elem_family = .concrete_32, .n_idx = 1 } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    }};
+    var seed: [max_tparams]Binding = @splat(.{});
+    seed[0] = .{ .bound = true, .scalar_kind = .i32 };
+    seed[1] = .{ .bound = true, .width = 3 };
+
+    const v3_u32 = Types.Vector{ .width = 3, .element = Types.scalar_u32_ptr };
+    const ok_r = resolveSeeded(&sigs, seed, &[_]?Types.Type{.{ .vector = &v3_u32 }});
+    try std.testing.expect(ok_r == .ok);
+    try std.testing.expectEqual(@as(u8, 3), ok_r.ok.bindings[1].width.?);
+
+    const v2_u32 = Types.Vector{ .width = 2, .element = Types.scalar_u32_ptr };
+    const bad_r = resolveSeeded(&sigs, seed, &[_]?Types.Type{.{ .vector = &v2_u32 }});
+    try std.testing.expect(bad_r == .err);
+}
+
+test "resolveSeeded: concrete param works without touching seeded slots" {
+    // (vec2<f16>) → T where T is pre-seeded. Param is concrete, no binding.
+    const vec2_f16 = Types.Vector{ .width = 2, .element = Types.scalar_f16_ptr };
+    const vec2_f16_type: Types.Type = .{ .vector = &vec2_f16 };
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 1,
+        .params = &.{.{ .concrete = vec2_f16_type }},
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    }};
+    var seed: [max_tparams]Binding = @splat(.{});
+    seed[0] = .{ .bound = true, .scalar_kind = .i32 };
+    const r = resolveSeeded(&sigs, seed, &[_]?Types.Type{vec2_f16_type});
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(Types.ScalarKind.i32, r.ok.bindings[0].scalar_kind.?);
+}
+
+test "resolveSeeded: rejects arg outside concrete_32 family (f16)" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 3,
+        .params = &.{.{ .tparam_scalar = .{ .idx = 2, .family = .concrete_32 } }},
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    }};
+    var seed: [max_tparams]Binding = @splat(.{});
+    seed[0] = .{ .bound = true, .scalar_kind = .f32 };
+    const r = resolveSeeded(&sigs, seed, &[_]?Types.Type{Types.F16});
+    try std.testing.expect(r == .err);
+    try std.testing.expectEqual(ResolveError.no_matching_overload, r.err.kind);
+}
+
+test "resolveSeeded: empty seed is equivalent to resolve()" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_scalar = .{ .idx = 0, .family = .integer } }},
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    }};
+    const args = [_]?Types.Type{Types.I32};
+    const seeded = resolveSeeded(&sigs, @splat(.{}), &args);
+    const plain = resolve(&sigs, &args);
+    try std.testing.expect(seeded == .ok);
+    try std.testing.expect(plain == .ok);
+    try std.testing.expectEqual(plain.ok.sig_index, seeded.ok.sig_index);
+    try std.testing.expectEqual(plain.ok.bindings[0].scalar_kind.?, seeded.ok.bindings[0].scalar_kind.?);
 }

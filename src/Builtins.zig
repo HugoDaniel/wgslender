@@ -796,10 +796,15 @@ const vec4_u32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_u32
 const vec4_f32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_f32_ptr };
 const vec2_f32_singleton = Types.Vector{ .width = 2, .element = Types.scalar_f32_ptr };
 
+const vec2_f16_singleton = Types.Vector{ .width = 2, .element = Types.scalar_f16_ptr };
+const vec4_f16_singleton = Types.Vector{ .width = 4, .element = Types.scalar_f16_ptr };
+
 const vec4_i32_type: Types.Type = .{ .vector = &vec4_i32_singleton };
 const vec4_u32_type: Types.Type = .{ .vector = &vec4_u32_singleton };
 const vec4_f32_type: Types.Type = .{ .vector = &vec4_f32_singleton };
 const vec2_f32_type: Types.Type = .{ .vector = &vec2_f32_singleton };
+pub const vec2_f16_type: Types.Type = .{ .vector = &vec2_f16_singleton };
+pub const vec4_f16_type: Types.Type = .{ .vector = &vec4_f16_singleton };
 
 const unpack4xI8_sigs = &[_]O.OverloadSig{
     .{
@@ -846,6 +851,71 @@ const dot4U8Packed_sigs = &[_]O.OverloadSig{
         .tparam_count = 0,
         .params = &.{ .{ .concrete = Types.U32 }, .{ .concrete = Types.U32 } },
         .result = .{ .fixed = Types.U32 },
+    },
+};
+
+/// Bitcast (§17.9.5) — Phase 3b template seeding.
+///
+/// Bitcast is the only template-taking builtin: the caller writes
+/// `bitcast<T>(e)`, and the template T is already resolved to a concrete
+/// type before the solver runs. The validator pre-seeds slot 0 with T's
+/// element scalar kind and (for vector templates) slot 1 with T's width,
+/// then calls `Overload.resolveSeeded` against the sig array matching
+/// T's shape. Slot 2 is the solver-bound source scalar S.
+///
+/// Post-resolution, the validator runs a size-compatibility check so the
+/// cross-shape sigs (vecN<32>↔vec4<f16> etc.) can't produce an
+/// ill-sized pair even when the solver considers them feasible.
+///
+/// The four arrays here are `pub` because bitcast dispatches from a
+/// bespoke block in `Validator.checkExprCall` (template-shape selection
+/// is local to that call site) rather than via `builtin_fn.overloads`.
+pub const bitcast_to_scalar_sigs = &[_]O.OverloadSig{
+    // (scalar S) → T, S ∈ {i32, u32, f32}
+    .{
+        .tparam_count = 3,
+        .params = &.{.{ .tparam_scalar = .{ .idx = 2, .family = .concrete_32 } }},
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    // (vec2<f16>) → T
+    .{
+        .tparam_count = 3,
+        .params = &.{.{ .concrete = vec2_f16_type }},
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+};
+
+pub const bitcast_to_vecN_32_sigs = &[_]O.OverloadSig{
+    // (vecN<S>) → vecN<T>, N seeded, S ∈ {i32, u32, f32}
+    .{
+        .tparam_count = 3,
+        .params = &.{.{ .tparam_vector = .{ .elem_idx = 2, .elem_family = .concrete_32, .n_idx = 1 } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+    // (vec4<f16>) → vec2<T>. Solver accepts regardless of seeded N; the
+    // validator's post-resolution size check rejects N≠2 (96/128 ≠ 64 bits).
+    .{
+        .tparam_count = 3,
+        .params = &.{.{ .concrete = vec4_f16_type }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+pub const bitcast_to_vec2_f16_sigs = &[_]O.OverloadSig{
+    // (scalar S) → vec2<f16>, S ∈ {i32, u32, f32}
+    .{
+        .tparam_count = 3,
+        .params = &.{.{ .tparam_scalar = .{ .idx = 2, .family = .concrete_32 } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+pub const bitcast_to_vec4_f16_sigs = &[_]O.OverloadSig{
+    // (vec2<S>) → vec4<f16>, S ∈ {i32, u32, f32}
+    .{
+        .tparam_count = 3,
+        .params = &.{.{ .tparam_vector = .{ .elem_idx = 2, .elem_family = .concrete_32, .n_fixed = 2 } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
     },
 };
 

@@ -3110,45 +3110,17 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
         }
     }
 
-    // bitcast<T>(expr) — WGSL §17.9.5. The spec defines six overload forms
-    // over concrete 32-bit numerics and f16 vectors:
-    //   • scalar ↔ scalar (i32 ↔ u32 ↔ f32),
-    //   • vecN<T> ↔ vecN<S> (T,S ∈ {i32,u32,f32}),
-    //   • 32-bit ↔ vec2<f16>,
-    //   • vec2 of 32-bit ↔ vec4<f16>.
-    // Abstract-numeric inputs concretize automatically before the cast
-    // (AbstractInt → i32, AbstractFloat → f32) — this mirrors the spec's
-    // automatic conversion at argument sites. Bool, pointer, struct,
-    // matrix, array, atomic, and handle operands are rejected.
+    // bitcast<T>(expr) — WGSL §17.9.5. Phase 3b of Task #9: the template T
+    // is resolved to a concrete Types.Type by `resolveType`, then we pick
+    // the matching sig array in `Builtins` based on T's shape, pre-seed
+    // slot 0 (element kind) and — for vector templates — slot 1 (width),
+    // and dispatch to `Overload.resolveSeeded` for arg validation. Size
+    // compatibility is verified post-resolution so cross-shape sigs can't
+    // produce ill-sized pairs. See `checkBitcastCall` below.
     if (std.mem.eql(u8, callee_name, "bitcast")) {
         if (e.template_type) |tt| {
             const dest_type = v.resolveType(tt) orelse return InferResult.fail;
-            const range = exprRange(.{ .call = e });
-
-            if (e.args.items.len != 1) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'bitcast' requires exactly 1 argument, got {d}", .{e.args.items.len}));
-                return InferResult.fail;
-            }
-
-            // Evaluate the source argument; promote abstract numerics.
-            const arg_r = try v.checkExpr(e.args.items[0]);
-            const raw_src = arg_r.typ orelse return InferResult.some(dest_type, arg_r.stage);
-            const src_type = Types.concreteType(raw_src);
-
-            const src_size = bitcastSize(src_type);
-            const dst_size = bitcastSize(dest_type);
-            if (src_size == 0) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast from '{s}'; must be a numeric scalar or vector of numeric scalars", .{raw_src.string()}));
-                return InferResult.some(dest_type, arg_r.stage);
-            }
-            if (dst_size == 0) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast to '{s}'; must be a numeric scalar or vector of numeric scalars", .{dest_type.string()}));
-                return InferResult.some(dest_type, arg_r.stage);
-            }
-            if (src_size != dst_size) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("bitcast source type '{s}' ({d} bits) and destination type '{s}' ({d} bits) must have the same bit-width", .{ src_type.string(), src_size, dest_type.string(), dst_size }));
-            }
-            return InferResult.some(dest_type, arg_r.stage);
+            return try v.checkBitcastCall(e, dest_type);
         }
     }
 
@@ -3287,12 +3259,16 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         }
     }
 
-    // Declarative overload resolution (Task #9 / Phases 1-3a). Active for
+    // Declarative overload resolution (Task #9 / Phases 1-3b). Active for
     // any builtin with populated `overloads`. The solver binds type
     // parameters from the arg types and the caller builds the return from
-    // `ResultRule`. Builtins without overloads (bitcast, texture/atomic-store,
-    // arrayLength, barriers) still ride the legacy `inferBuiltinReturnType`
-    // fallback — later Phase 3 steps migrate the remaining set.
+    // `ResultRule`. `bitcast<T>` dispatches via `checkBitcastCall` above
+    // because its sig set is template-shape-selected and its slot-0/slot-1
+    // bindings are seeded from the template — but the solver and
+    // signature DSL it uses are the same. Builtins without overloads
+    // (texture/atomic-store, arrayLength, barriers) still ride the legacy
+    // `inferBuiltinReturnType` fallback — the texture phase of Task #9
+    // migrates the remaining set.
     if (builtin_fn.overloads.len > 0) {
         const argc = @min(e.args.items.len, 8);
         const res = Overload.resolve(builtin_fn.overloads, arg_types[0..argc]);
@@ -3612,12 +3588,12 @@ fn inferCustomBuiltin(v: *Validator, name: []const u8, arg_types: [8]?Types.Type
     _ = v;
     _ = name;
     _ = arg_types;
-    // Phases 1-3a of Task #9 moved transpose / workgroupUniformLoad /
-    // subgroupBallot / atomicCompareExchangeWeak / frexp / modf / atomic* /
-    // unpack* / dot4I8Packed / dot4U8Packed to the declarative
-    // `Overload.resolve` path (see `Builtins.sig_entries`). `bitcast` is the
-    // sole remaining `.custom`-pattern builtin and is handled by its
-    // dedicated call-site logic in `checkExprCall` — nothing reaches here.
+    // Phases 1-3b of Task #9 migrated every live `.custom` builtin to the
+    // declarative engine: atomic*, frexp, modf, transpose, subgroupBallot,
+    // workgroupUniformLoad, unpack*, dot4I8Packed, dot4U8Packed via
+    // `Builtins.sig_entries`; `bitcast` via `checkBitcastCall` above. No
+    // `.custom`-pattern builtin reaches this function any more — the body
+    // and the `ReturnPattern.custom` variant can be retired in a follow-up.
     return null;
 }
 
@@ -3958,6 +3934,115 @@ fn bitcastSize(t: Types.Type) u32 {
         },
         else => return 0,
     }
+}
+
+/// Template-shape classification for `bitcast<T>(e)` dispatch. Selects
+/// which sig array in `Builtins.bitcast_to_*_sigs` matches T's structure.
+const BitcastTemplateShape = enum { scalar_32, vecN_32, vec2_f16, vec4_f16, invalid };
+
+fn bitcastTemplateShape(t: Types.Type) BitcastTemplateShape {
+    switch (t) {
+        .scalar => |s| return switch (s.kind) {
+            .i32, .u32, .f32 => .scalar_32,
+            else => .invalid,
+        },
+        .vector => |ve| {
+            switch (ve.element.kind) {
+                .i32, .u32, .f32 => return .vecN_32,
+                .f16 => return switch (ve.width) {
+                    2 => .vec2_f16,
+                    4 => .vec4_f16,
+                    else => .invalid,
+                },
+                else => return .invalid,
+            }
+        },
+        else => return .invalid,
+    }
+}
+
+/// Phase 3b: declarative bitcast validation. The template type is already
+/// resolved; pick its sig array, pre-seed bindings from the template, then
+/// run the solver over the (1-arg) value arg. Size compat is post-checked.
+fn checkBitcastCall(
+    v: *Validator,
+    e: *Ast.CallExpr,
+    dest_type: Types.Type,
+) Allocator.Error!InferResult {
+    const range = exprRange(.{ .call = e });
+
+    if (e.args.items.len != 1) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'bitcast' requires exactly 1 argument, got {d}", .{e.args.items.len}));
+        return InferResult.fail;
+    }
+
+    // Reject templates outside the bitcast domain up-front (bool scalar,
+    // matrix, atomic, pointer, f16 scalar, vec3<f16>, …). This keeps the
+    // "cannot bitcast to …" wording identical to the pre-Phase-3b path.
+    const shape = bitcastTemplateShape(dest_type);
+    const dst_size = bitcastSize(dest_type);
+    if (shape == .invalid or dst_size == 0) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast to '{s}'; must be a numeric scalar or vector of numeric scalars", .{dest_type.string()}));
+        // Still evaluate the arg for downstream type-checking; return dest_type.
+        const arg_r = try v.checkExpr(e.args.items[0]);
+        return InferResult.some(dest_type, arg_r.stage);
+    }
+
+    // Evaluate the source argument; concretize abstract numerics per §6.7.2.
+    const arg_r = try v.checkExpr(e.args.items[0]);
+    const raw_src = arg_r.typ orelse return InferResult.some(dest_type, arg_r.stage);
+    const src_type = Types.concreteType(raw_src);
+
+    // Domain check first: source must be a numeric scalar or vector of
+    // numeric scalars. `bitcastSize` returns 0 for bool/pointer/matrix/
+    // atomic/struct/handle — same gate as the pre-3b ad-hoc path.
+    const src_size = bitcastSize(src_type);
+    if (src_size == 0) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast from '{s}'; must be a numeric scalar or vector of numeric scalars", .{raw_src.string()}));
+        return InferResult.some(dest_type, arg_r.stage);
+    }
+
+    // Size compatibility. Rejecting this before the solver preserves the
+    // "must have the same bit-width" wording for cases where both operands
+    // are individually valid numerics but their shapes don't line up.
+    if (src_size != dst_size) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("bitcast source type '{s}' ({d} bits) and destination type '{s}' ({d} bits) must have the same bit-width", .{ src_type.string(), src_size, dest_type.string(), dst_size }));
+        return InferResult.some(dest_type, arg_r.stage);
+    }
+
+    // Pre-seed slot 0 with the template's element scalar kind; for vector
+    // templates also seed slot 1 with the width. `bindScalar`/`bindWidth`
+    // in the solver then enforce equality when sigs reference those slots.
+    var seed: [Overload.max_tparams]Overload.Binding = @splat(.{});
+    switch (dest_type) {
+        .scalar => |s| seed[0] = .{ .bound = true, .scalar_kind = s.kind },
+        .vector => |ve| {
+            seed[0] = .{ .bound = true, .scalar_kind = ve.element.kind };
+            seed[1] = .{ .bound = true, .width = ve.width };
+        },
+        else => unreachable, // filtered by bitcastTemplateShape above
+    }
+
+    const sigs = switch (shape) {
+        .scalar_32 => Builtins.bitcast_to_scalar_sigs,
+        .vecN_32 => Builtins.bitcast_to_vecN_32_sigs,
+        .vec2_f16 => Builtins.bitcast_to_vec2_f16_sigs,
+        .vec4_f16 => Builtins.bitcast_to_vec4_f16_sigs,
+        .invalid => unreachable,
+    };
+
+    // Declarative shape-domain check: with sizes already matched, the
+    // solver enforces that (src shape, dst shape) is one of the spec's
+    // permitted combinations. Exotic same-size pairs that aren't in the
+    // sig table (e.g. vec3<f16>↔vec3<f16> identity) would fall through
+    // here as "cannot bitcast from"; none of those are currently tested
+    // or reachable because `bitcastTemplateShape` rejects vec3<f16>
+    // templates up-front.
+    const res = Overload.resolveSeeded(sigs, seed, &[_]?Types.Type{src_type});
+    if (res == .err) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast from '{s}'; must be a numeric scalar or vector of numeric scalars", .{raw_src.string()}));
+    }
+    return InferResult.some(dest_type, arg_r.stage);
 }
 
 /// Suggest a vector type name matching `total_components` by replacing the

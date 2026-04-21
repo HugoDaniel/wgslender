@@ -813,3 +813,152 @@ test "dot4I8Packed arity: one arg rejected" {
     defer r.deinit(std.testing.allocator);
     try std.testing.expect(anyError(r));
 }
+
+// =========================================================================
+// 14. bitcast template seeding (§17.9.5) — Phase 3b migration
+// =========================================================================
+//
+// The end-to-end `bitcast<T>(e)` pipeline is heavily covered by
+// `tests/inference/bitcast_test.zig` (38+ blocks, all must stay green).
+// The blocks below target the Phase 3b solver seam specifically:
+// slot-0 / slot-1 seeding, `concrete_32` family gating, and the
+// four sig-array dispatch. One positive test per sig array, plus a
+// couple of invariants (seed preservation, width-seeded enforcement)
+// that the engine tests alone can't pin because they exercise the
+// validator-side seeding step.
+
+test "bitcast<f32>(1u) → f32 (scalar_32 sig, slot 0 seeded f32)" {
+    var r = try analyze("fn f() { let x = bitcast<f32>(1u); }");
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "f32");
+}
+
+test "bitcast<i32>(1u) → i32 (cross-type scalar)" {
+    var r = try analyze("fn f() { let x = bitcast<i32>(1u); }");
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "i32");
+}
+
+test "bitcast<vec2u>(vec2i(1,2)) → vec2<u32> (vecN_32 sig, N=2 seeded)" {
+    var r = try analyze("fn f() { let x = bitcast<vec2u>(vec2i(1, 2)); }");
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "vec2<u32>");
+}
+
+test "bitcast<vec3f>(vec3i(1,2,3)) → vec3<f32> (vecN_32 sig, N=3 seeded)" {
+    var r = try analyze("fn f() { let x = bitcast<vec3f>(vec3i(1, 2, 3)); }");
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "vec3<f32>");
+}
+
+test "bitcast<vec2h>(1u) → vec2<f16> (vec2_f16 sig, T=f16/N=2 seeded)" {
+    var r = try analyze(
+        \\enable f16;
+        \\fn f() { let x = bitcast<vec2h>(1u); }
+    );
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "vec2<f16>");
+}
+
+test "bitcast<u32>(vec2h) → u32 (scalar_32 sig, concrete vec2<f16> param)" {
+    var r = try analyze(
+        \\enable f16;
+        \\fn f() { let y = bitcast<vec2h>(1u); let x = bitcast<u32>(y); }
+    );
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "u32");
+}
+
+test "bitcast<vec4h>(vec2u(1u, 2u)) → vec4<f16> (vec4_f16 sig)" {
+    var r = try analyze(
+        \\enable f16;
+        \\fn f() { let x = bitcast<vec4h>(vec2u(1u, 2u)); }
+    );
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "vec4<f16>");
+}
+
+test "bitcast<vec2f>(vec4h(…)) → vec2<f32> (vecN_32 sig via concrete vec4<f16>)" {
+    var r = try analyze(
+        \\enable f16;
+        \\fn f() {
+        \\    let p = vec4h(1.0h, 2.0h, 3.0h, 4.0h);
+        \\    let x = bitcast<vec2f>(p);
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "vec2<f32>");
+}
+
+test "bitcast seed preservation: T=f32 returned even when arg is u32" {
+    // Confirms the return comes from the seeded slot 0 (= template T),
+    // not from the solver-bound slot 2 (= source scalar S).
+    var r = try analyze("fn f() { let x = bitcast<f32>(0xFFFFFFFFu); }");
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "f32");
+}
+
+test "bitcast width seeding rejects wrong-N vector (vec3 template vs vec2 arg)" {
+    // Template vec3<u32> seeds N=3; the vecN_32 sig's tparam_vector
+    // binds the arg's width against the seed. vec2<i32> binds N=2 ≠ 3,
+    // so the solver rejects; size-check runs first (96 vs 64 bits) and
+    // emits the bit-width diagnostic. Either rejection path is a fail,
+    // so we just assert an error.
+    var r = try validate("fn f() { let x = bitcast<vec3u>(vec2i(1, 2)); }");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(anyError(r));
+}
+
+test "bitcast concrete_32 family rejects f16 scalar source" {
+    // vec2<f16> template has vec2_f16 sig that only takes scalar_32
+    // args (via family .concrete_32). f16 is excluded from that family
+    // even though f16 would fit size-wise (16-bit scalar). Size check
+    // catches this first (16 vs 32 bits).
+    var r = try validate(
+        \\enable f16;
+        \\fn f() { let x = bitcast<vec2h>(1.0h); }
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(anyError(r));
+}
+
+test "bitcast invalid template shape (vec3<f16>) produces 'cannot bitcast to'" {
+    // bitcastTemplateShape returns .invalid for vec3<f16>; validator
+    // emits the destination-domain error without running the solver.
+    var r = try validate(
+        \\enable f16;
+        \\fn f() {
+        \\    let p = vec3h(1.0h, 2.0h, 3.0h);
+        \\    let x = bitcast<vec3h>(p);
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(anyError(r));
+}
+
+test "bitcast arity: zero args rejected" {
+    var r = try validate("fn f() { let x = bitcast<u32>(); }");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasErrorContaining(r, "bitcast"));
+}
+
+test "bitcast arity: two args rejected" {
+    var r = try validate("fn f() { let x = bitcast<u32>(1u, 2u); }");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasErrorContaining(r, "bitcast"));
+}
+
+test "bitcast abstract-int concretizes before seeding" {
+    var r = try analyze("fn f() { let x = bitcast<f32>(42); }");
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "f32");
+}
+
+test "bitcast nested: outer f32 seeded even when inner is vec2<f16>" {
+    var r = try analyze(
+        \\enable f16;
+        \\fn f() { let x = bitcast<f32>(bitcast<vec2h>(1u)); }
+    );
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "f32");
+}
