@@ -215,6 +215,9 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     // Phase 6: Scope-tree shadow detection (W0100)
     v.detectShadowing();
 
+    // Phase 7: Ambiguous operator-precedence combinations (E0213)
+    v.checkOperatorPrecedence();
+
     // Remove duplicate diagnostics produced by overlapping phases
     diags.deduplicate();
 
@@ -261,6 +264,7 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
     v.checkSuspiciousBindingPatterns();
     v.analyzeUniformity();
     v.detectShadowing();
+    v.checkOperatorPrecedence();
     diags.deduplicate();
 
     return .{
@@ -2414,6 +2418,146 @@ fn walkScopesForShadow(v: *Validator, scope: *Ast.Scope) void {
 fn symbolKind(v: *Validator, sym_idx: Ast.SymbolIndex) Ast.Symbol.Kind {
     if (!sym_idx.isValid()) return .unbound;
     return v.module.symbols.items[sym_idx.index()].kind;
+}
+
+// =========================================================================
+// Phase 7: Ambiguous operator-precedence mixing (E0213)
+// =========================================================================
+
+/// Operator family for precedence-mixing checks. Ops within the same family
+/// generally compose freely; ops across the pairs listed in `precedenceConflicts`
+/// must be explicitly parenthesised by the author.
+const OpClass = enum { arithmetic, shift, relational, equality, bitwise, logical, other };
+
+fn classOfBinaryOp(op: Ast.BinaryOp) OpClass {
+    return switch (op) {
+        .add, .sub, .mul, .div, .mod => .arithmetic,
+        .shl, .shr => .shift,
+        .lt, .le, .gt, .ge => .relational,
+        .eq, .ne => .equality,
+        .@"and", .@"or", .xor => .bitwise,
+        .logical_and, .logical_or => .logical,
+    };
+}
+
+/// Returns true when a binary op applied to a non-parenthesised binary child
+/// of this parent-and-child-op pair produces an expression whose intended
+/// grouping is ambiguous under WGSL §8.18 and must be explicitly parenthesised.
+/// The check is op-pair-aware for bitwise and logical families (where identical
+/// ops are associative and fine, but mixed ones are not).
+fn isAmbiguousNesting(parent: Ast.BinaryOp, child: Ast.BinaryOp) bool {
+    const p = classOfBinaryOp(parent);
+    const c = classOfBinaryOp(child);
+    if (p == .shift and (c == .arithmetic or c == .relational or c == .equality or c == .shift)) return true;
+    if ((p == .relational or p == .equality) and c == .shift) return true;
+    // Bitwise `&`, `|`, `^`: each is associative with itself, but mixing any
+    // two of them without parens is ambiguous.
+    if (p == .bitwise and c == .bitwise and parent != child) return true;
+    // Short-circuit `&&` and `||` cannot be mixed without parens.
+    if (p == .logical and c == .logical and parent != child) return true;
+    return false;
+}
+
+fn checkOperatorPrecedence(v: *Validator) void {
+    for (v.module.declarations.items) |decl| {
+        switch (decl) {
+            .function => |d| if (d.body) |body| v.walkStmtForPrecedence(.{ .compound = body }),
+            .@"const" => |d| if (d.initializer) |e| v.walkExprForPrecedence(e),
+            .override => |d| if (d.initializer) |e| v.walkExprForPrecedence(e),
+            .@"var" => |d| if (d.initializer) |e| v.walkExprForPrecedence(e),
+            .let => |d| if (d.initializer) |e| v.walkExprForPrecedence(e),
+            .const_assert => |d| v.walkExprForPrecedence(d.expr),
+            else => {},
+        }
+    }
+}
+
+fn walkStmtForPrecedence(v: *Validator, stmt: Ast.Stmt) void {
+    switch (stmt) {
+        .compound => |s| for (s.stmts.items) |sub| v.walkStmtForPrecedence(sub),
+        .@"return" => |s| if (s.value) |e| v.walkExprForPrecedence(e),
+        .@"if" => |s| {
+            v.walkExprForPrecedence(s.condition);
+            v.walkStmtForPrecedence(.{ .compound = s.body });
+            if (s.else_branch) |eb| v.walkStmtForPrecedence(eb);
+        },
+        .@"switch" => |s| {
+            v.walkExprForPrecedence(s.expr);
+            for (s.cases.items) |case| {
+                for (case.selectors.items) |sel| v.walkExprForPrecedence(sel);
+                v.walkStmtForPrecedence(.{ .compound = case.body });
+            }
+        },
+        .@"for" => |s| {
+            if (s.init_stmt) |init| v.walkStmtForPrecedence(init);
+            if (s.condition) |c| v.walkExprForPrecedence(c);
+            if (s.update) |u| v.walkStmtForPrecedence(u);
+            v.walkStmtForPrecedence(.{ .compound = s.body });
+        },
+        .@"while" => |s| {
+            v.walkExprForPrecedence(s.condition);
+            v.walkStmtForPrecedence(.{ .compound = s.body });
+        },
+        .loop => |s| v.walkStmtForPrecedence(.{ .compound = s.body }),
+        .break_if => |s| v.walkExprForPrecedence(s.condition),
+        .assign => |s| {
+            v.walkExprForPrecedence(s.left);
+            v.walkExprForPrecedence(s.right);
+        },
+        .incr_decr => |s| v.walkExprForPrecedence(s.expr),
+        .call => |s| v.walkExprForPrecedence(.{ .call = s.call }),
+        .decl => |s| switch (s.decl) {
+            .@"const" => |d| if (d.initializer) |e| v.walkExprForPrecedence(e),
+            .@"var" => |d| if (d.initializer) |e| v.walkExprForPrecedence(e),
+            .let => |d| if (d.initializer) |e| v.walkExprForPrecedence(e),
+            else => {},
+        },
+        .@"break", .@"continue", .discard => {},
+    }
+}
+
+fn walkExprForPrecedence(v: *Validator, expr: Ast.Expr) void {
+    switch (expr) {
+        .binary => |b| {
+            v.checkBinaryPrecedence(b);
+            v.walkExprForPrecedence(b.left);
+            v.walkExprForPrecedence(b.right);
+        },
+        .unary => |u| v.walkExprForPrecedence(u.operand),
+        .call => |c| {
+            if (c.func) |f| v.walkExprForPrecedence(f);
+            for (c.args.items) |a| v.walkExprForPrecedence(a);
+        },
+        .index => |i| {
+            v.walkExprForPrecedence(i.base);
+            v.walkExprForPrecedence(i.idx);
+        },
+        .member => |m| v.walkExprForPrecedence(m.base),
+        .paren => |p| v.walkExprForPrecedence(p.expr),
+        .ident, .literal => {},
+    }
+}
+
+fn checkBinaryPrecedence(v: *Validator, b: *Ast.BinaryExpr) void {
+    checkOneSide(v, b, b.left);
+    checkOneSide(v, b, b.right);
+}
+
+fn checkOneSide(v: *Validator, b: *Ast.BinaryExpr, side: Ast.Expr) void {
+    const child = switch (side) {
+        .binary => |cb| cb,
+        else => return,
+    };
+    if (!isAmbiguousNesting(b.op, child.op)) return;
+    const range: LocRange = .{ .start = b.loc, .end = b.loc +| @as(u32, @intCast(b.op.string().len)) };
+    v.addErrorWithCodeR(
+        range,
+        Diagnostic.Code.ambiguous_precedence,
+        v.fmtError(
+            "'{s}' and '{s}' mix without parentheses; WGSL requires explicit grouping",
+            .{ b.op.string(), child.op.string() },
+        ),
+    );
 }
 
 fn checkF16Enabled(v: *Validator, loc: u32) void {

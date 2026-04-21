@@ -275,3 +275,126 @@ test "E0105: x__y (internal double underscore) is OK" {
         }
     }
 }
+
+// -------------------------------------------------------------------------
+// E0213 ambiguous operator precedence
+// -------------------------------------------------------------------------
+
+test "E0213: shift nested in comparison without parens" {
+    var r = try validateSource(
+        \\fn main() -> bool {
+        \\  let a: u32 = 1u;
+        \\  let b: u32 = 2u;
+        \\  let c: u32 = 3u;
+        \\  return a < b << c;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0213")) {
+        dumpDiags("no E0213 for 'a < b << c'", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0213: && and || mixed without parens" {
+    var r = try validateSource(
+        \\fn main() -> bool {
+        \\  let a: bool = true;
+        \\  let b: bool = false;
+        \\  let c: bool = true;
+        \\  return a && b || c;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0213")) {
+        dumpDiags("no E0213 for '&& ||'", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0213: bitwise & and | mixed without parens" {
+    var r = try validateSource(
+        \\fn main() -> u32 {
+        \\  let a: u32 = 1u;
+        \\  let b: u32 = 2u;
+        \\  let c: u32 = 3u;
+        \\  return a & b | c;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0213")) {
+        dumpDiags("no E0213 for '& |'", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0213: shift nested in arithmetic without parens" {
+    var r = try validateSource(
+        \\fn main() -> u32 {
+        \\  let a: u32 = 1u;
+        \\  let b: u32 = 2u;
+        \\  let c: u32 = 3u;
+        \\  return a + b << c;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0213")) {
+        dumpDiags("no E0213 for '+ <<'", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0213: parentheses silence the check" {
+    var r = try validateSource(
+        \\fn main() -> bool {
+        \\  let a: bool = true;
+        \\  let b: bool = false;
+        \\  let c: bool = true;
+        \\  return (a && b) || c;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    for (r.diagnostics.items()) |d| {
+        if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0213")) {
+            dumpDiags("unexpected E0213 inside parens", r);
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "E0213: associative same-op chains are OK" {
+    // `a & b & c` is unambiguous — all operands are bitwise-and.
+    var r = try validateSource(
+        \\fn main() -> u32 {
+        \\  let a: u32 = 1u;
+        \\  let b: u32 = 2u;
+        \\  let c: u32 = 3u;
+        \\  return a & b & c;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    for (r.diagnostics.items()) |d| {
+        if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0213")) {
+            dumpDiags("unexpected E0213 on associative chain", r);
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "E0213: arithmetic within arithmetic is OK" {
+    var r = try validateSource(
+        \\fn main() -> u32 {
+        \\  let a: u32 = 1u;
+        \\  let b: u32 = 2u;
+        \\  let c: u32 = 3u;
+        \\  return a + b * c;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    for (r.diagnostics.items()) |d| {
+        if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0213")) {
+            dumpDiags("unexpected E0213 on arithmetic", r);
+            return error.TestUnexpectedResult;
+        }
+    }
+}

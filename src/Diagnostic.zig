@@ -596,6 +596,7 @@ pub const Code = struct {
     pub const invalid_assignment: []const u8 = "E0210";
     pub const index_out_of_bounds: []const u8 = "E0211";
     pub const must_use_ignored: []const u8 = "E0212";
+    pub const ambiguous_precedence: []const u8 = "E0213";
 
     // Declaration errors (E03xx)
     pub const missing_initializer: []const u8 = "E0300";
