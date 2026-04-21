@@ -3204,6 +3204,40 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         else => {},
     }
 
+    // Storage-texture access-mode enforcement: textureStore needs `write`
+    // or `read_write`; textureLoad on a storage texture needs `read` or
+    // `read_write`. Silently dispatching on a `read`-only texture would
+    // produce a WebGPU validation error at runtime.
+    if (std.mem.eql(u8, callee_name, "textureStore")) {
+        if (arg_types[0]) |at| {
+            if (at == .texture and at.texture.kind == .storage) {
+                const am = at.texture.access_mode;
+                if (am != .write and am != .read_write) {
+                    v.addErrorWithCodeR(
+                        exprRange(.{ .call = e }),
+                        Diagnostic.Code.invalid_arg_type,
+                        v.fmtError("'textureStore' requires 'write' or 'read_write' access, got 'read'", .{}),
+                    );
+                    return null;
+                }
+            }
+        }
+    } else if (std.mem.eql(u8, callee_name, "textureLoad")) {
+        if (arg_types[0]) |at| {
+            if (at == .texture and at.texture.kind == .storage) {
+                const am = at.texture.access_mode;
+                if (am != .read and am != .read_write) {
+                    v.addErrorWithCodeR(
+                        exprRange(.{ .call = e }),
+                        Diagnostic.Code.invalid_arg_type,
+                        v.fmtError("'textureLoad' requires 'read' or 'read_write' access on a storage texture, got 'write'", .{}),
+                    );
+                    return null;
+                }
+            }
+        }
+    }
+
     // Per-builtin cross-arg consistency: for the "all numeric args share T"
     // family (min/max/clamp/step/pow/atan2/smoothstep/fma) every pair must
     // have a common type. Without this check, `min(1i, 2u)` silently picks

@@ -379,3 +379,89 @@ test "§17.7: textureSample without enough args rejected" {
         return error.TestUnexpectedResult;
     }
 }
+
+// -------------------------------------------------------------------------
+// Storage-texture access mode enforcement — §17.7.11 / §17.7.13.
+// textureLoad requires read/read_write; textureStore requires write/read_write.
+// -------------------------------------------------------------------------
+
+fn hasMessage(r: wgslender.Validator.Result, needle: []const u8) bool {
+    for (r.diagnostics.items()) |d| {
+        if (d.severity != .@"error") continue;
+        if (std.mem.indexOf(u8, d.message, needle) != null) return true;
+    }
+    return false;
+}
+
+test "§17.7.11: textureStore on read-only storage rejected" {
+    var r = try validate(
+        \\@group(0) @binding(0) var tex: texture_storage_2d<rgba8unorm, read>;
+        \\fn f() {
+        \\  textureStore(tex, vec2<i32>(0), vec4f(0.0));
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasMessage(r, "textureStore")) {
+        dump("expected textureStore access error on read-only storage", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.7.11: textureStore on write storage valid" {
+    try validMustPass(
+        \\@group(0) @binding(0) var tex: texture_storage_2d<rgba8unorm, write>;
+        \\fn f() {
+        \\  textureStore(tex, vec2<i32>(0), vec4f(0.0));
+        \\}
+    , "textureStore write storage");
+}
+
+test "§17.7.11: textureStore on read_write storage valid" {
+    try validMustPass(
+        \\@group(0) @binding(0) var tex: texture_storage_2d<rgba8unorm, read_write>;
+        \\fn f() {
+        \\  textureStore(tex, vec2<i32>(0), vec4f(0.0));
+        \\}
+    , "textureStore read_write storage");
+}
+
+test "§17.7.13: textureLoad on write-only storage rejected" {
+    var r = try validate(
+        \\@group(0) @binding(0) var tex: texture_storage_2d<rgba8unorm, write>;
+        \\fn f() -> vec4f {
+        \\  return textureLoad(tex, vec2<i32>(0));
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasMessage(r, "textureLoad")) {
+        dump("expected textureLoad access error on write-only storage", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.7.13: textureLoad on read storage valid" {
+    try validMustPass(
+        \\@group(0) @binding(0) var tex: texture_storage_2d<rgba8unorm, read>;
+        \\fn f() -> vec4f {
+        \\  return textureLoad(tex, vec2<i32>(0));
+        \\}
+    , "textureLoad read storage");
+}
+
+test "§17.7.13: textureLoad on read_write storage valid" {
+    try validMustPass(
+        \\@group(0) @binding(0) var tex: texture_storage_2d<rgba8unorm, read_write>;
+        \\fn f() -> vec4f {
+        \\  return textureLoad(tex, vec2<i32>(0));
+        \\}
+    , "textureLoad read_write storage");
+}
+
+test "§17.7.13: textureLoad on sampled texture unaffected (no access mode)" {
+    try validMustPass(
+        \\@group(0) @binding(0) var tex: texture_2d<f32>;
+        \\fn f() -> vec4f {
+        \\  return textureLoad(tex, vec2<i32>(0), 0);
+        \\}
+    , "textureLoad on sampled texture");
+}
