@@ -302,3 +302,65 @@ test "§17.10: select(vec3i, vec3i, vec3<bool>) valid" {
         return error.TestUnexpectedResult;
     }
 }
+
+// =========================================================================
+// all / any — accept bool or vecN<bool> ONLY
+// =========================================================================
+
+test "§17.10: all(vec3<i32>) rejected — not a bool vec" {
+    var r = try validate("fn f() { let x = all(vec3<i32>(1)); }");
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "bool")) {
+        dump("expected all(vec<i32>) rejection", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.10: any(vec3<f32>) rejected" {
+    var r = try validate("fn f() { let x = any(vec3<f32>(1.0)); }");
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "bool")) {
+        dump("expected any(vec<f32>) rejection", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.10: all(i32) rejected" {
+    var r = try validate("fn f() { let x = all(1i); }");
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorContaining(r, "bool")) {
+        dump("expected all(i32) rejection", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.10: all(true) valid" {
+    var r = try validate("fn f() { let x = all(true); }");
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("all(true) should be valid", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.10: all(vec3<bool>) valid" {
+    var r = try validate(
+        \\fn f() { let x = all(vec3<bool>(true)); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("all(vec3<bool>) should be valid", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.10: any(vec4<bool>) valid" {
+    var r = try validate(
+        \\fn f() { let x = any(vec4<bool>(false)); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("any(vec4<bool>) should be valid", r);
+        return error.TestUnexpectedResult;
+    }
+}

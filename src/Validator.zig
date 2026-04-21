@@ -3190,9 +3190,12 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                     }
                 }
             } else {
+                // all / any accept bool or vecN<bool> only.
                 if (arg_types[0]) |at| {
-                    if (!at.eql(Types.Bool) and !Types.isVector(at)) {
-                        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires 'bool' argument, got '{s}'", .{ callee_name, at.string() }));
+                    const is_bool = at.eql(Types.Bool);
+                    const is_bool_vec = at == .vector and at.vector.element.kind == .bool;
+                    if (!is_bool and !is_bool_vec) {
+                        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires 'bool' or 'vecN<bool>' argument, got '{s}'", .{ callee_name, at.string() }));
                         return null;
                     }
                 }
