@@ -862,6 +862,319 @@ const transpose_sigs = &[_]O.OverloadSig{
     },
 };
 
+// =========================================================================
+// Phase 2 Overload Signatures (Task #9 — `same_as_arg` family)
+// =========================================================================
+//
+// Declarative replacements for every numeric/derivative/subgroup builtin
+// that previously used `.same_as_arg`. Each shape (scalar, vecN<T>) is a
+// separate overload; the solver picks the lowest-rank match. When the
+// shared shapes appear many times, they're factored into the helpers
+// below to keep the per-builtin lines short.
+//
+// Notation:
+//   - `T` = scalar tparam (slot 0)
+//   - `N` = vector-width tparam (slot 1)
+//   - cols / rows for matrices occupy slots 1-2 (2 when square via same slot).
+
+/// Single-param pattern `tparam_scalar{idx=0, family}`.
+fn scalarParam(comptime family: O.ScalarFamily) O.Pattern {
+    return .{ .tparam_scalar = .{ .idx = 0, .family = family } };
+}
+
+/// Single-param pattern `tparam_vector{elem=0, family, n_idx=1}`.
+fn vectorParam(comptime family: O.ScalarFamily) O.Pattern {
+    return .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = family, .n_idx = 1 } };
+}
+
+fn vectorParamFixed(comptime family: O.ScalarFamily, comptime n: u8) O.Pattern {
+    return .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = family, .n_fixed = n } };
+}
+
+/// `(T) -> T` and `(vecN<T>) -> vecN<T>` for a given scalar family.
+fn unarySigs(comptime family: O.ScalarFamily) []const O.OverloadSig {
+    return &.{
+        .{
+            .tparam_count = 1,
+            .params = &.{scalarParam(family)},
+            .result = .{ .pattern = .{ .bound_scalar = 0 } },
+        },
+        .{
+            .tparam_count = 2,
+            .params = &.{vectorParam(family)},
+            .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+        },
+    };
+}
+
+/// `(T, T) -> T` and `(vecN<T>, vecN<T>) -> vecN<T>`. Every arg unifies to T.
+fn binarySigs(comptime family: O.ScalarFamily) []const O.OverloadSig {
+    return &.{
+        .{
+            .tparam_count = 1,
+            .params = &.{ scalarParam(family), scalarParam(family) },
+            .result = .{ .pattern = .{ .bound_scalar = 0 } },
+        },
+        .{
+            .tparam_count = 2,
+            .params = &.{ vectorParam(family), vectorParam(family) },
+            .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+        },
+    };
+}
+
+/// `(T, T, T) -> T` and `(vecN<T>, vecN<T>, vecN<T>) -> vecN<T>`.
+fn ternarySigs(comptime family: O.ScalarFamily) []const O.OverloadSig {
+    return &.{
+        .{
+            .tparam_count = 1,
+            .params = &.{ scalarParam(family), scalarParam(family), scalarParam(family) },
+            .result = .{ .pattern = .{ .bound_scalar = 0 } },
+        },
+        .{
+            .tparam_count = 2,
+            .params = &.{ vectorParam(family), vectorParam(family), vectorParam(family) },
+            .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+        },
+    };
+}
+
+// -------------------------------------------------------------------------
+// Built from the helpers above. One `const` per shape × family combination
+// the spec actually uses.
+// -------------------------------------------------------------------------
+
+const unary_float_sigs = unarySigs(.float);
+const unary_int_sigs = unarySigs(.integer);
+const unary_numeric_sigs = unarySigs(.numeric);
+const binary_float_sigs = binarySigs(.float);
+const binary_numeric_sigs = binarySigs(.numeric);
+const ternary_float_sigs = ternarySigs(.float);
+const ternary_numeric_sigs = ternarySigs(.numeric);
+
+/// mix has a third overload where the blend factor is a scalar that
+/// matches the vectors' element type: `(vecN<T>, vecN<T>, T) -> vecN<T>`.
+const mix_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{ scalarParam(.float), scalarParam(.float), scalarParam(.float) },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.float), vectorParam(.float), vectorParam(.float) },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.float), vectorParam(.float), .{ .bound_scalar = 0 } },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// `length(T) -> T` and `length(vecN<T>) -> T` (T ∈ float).
+const length_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{scalarParam(.float)},
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{vectorParam(.float)},
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+};
+
+/// `distance(T, T) -> T` and `distance(vecN<T>, vecN<T>) -> T` (T ∈ float).
+const distance_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{ scalarParam(.float), scalarParam(.float) },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.float), vectorParam(.float) },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+};
+
+/// `dot(vecN<T>, vecN<T>) -> T` — numeric-any per §17.5.15; no scalar form.
+const dot_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.numeric), vectorParam(.numeric) },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+};
+
+/// `cross(vec3<T>, vec3<T>) -> vec3<T>` — float only, width pinned to 3.
+const cross_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{ vectorParamFixed(.float, 3), vectorParamFixed(.float, 3) },
+        .result = .{ .pattern = vectorParamFixed(.float, 3) },
+    },
+};
+
+/// `normalize(vecN<T>) -> vecN<T>` — vector-only float.
+const normalize_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 2,
+        .params = &.{vectorParam(.float)},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// `reflect(vecN<T>, vecN<T>) -> vecN<T>` — float, vector-only.
+const reflect_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.float), vectorParam(.float) },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// `refract(vecN<T>, vecN<T>, T) -> vecN<T>` — float, third arg is scalar eta.
+const refract_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.float), vectorParam(.float), .{ .bound_scalar = 0 } },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// `faceForward(vecN<T>, vecN<T>, vecN<T>) -> vecN<T>` — float only.
+const faceForward_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.float), vectorParam(.float), vectorParam(.float) },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// `determinant(matNxN<T>) -> T` — square float matrix. Squareness is
+/// enforced by binding cols and rows to the same tparam slot: the second
+/// `bindWidth` call fails if cols != rows.
+const determinant_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 1 } }},
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+};
+
+/// `ldexp(T, J) -> T` where T ∈ float and J ∈ int. Spec is stricter (J must
+/// be i32/abstract-int, not u32) but WGSL let-default will concretize an
+/// abstract-int arg to i32 at the use site, so .integer family is a safe
+/// over-approximation here.
+const ldexp_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 2, // slot 0 = T float, slot 1 = J int
+        .params = &.{
+            scalarParam(.float),
+            .{ .tparam_scalar = .{ .idx = 1, .family = .integer } },
+        },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    .{
+        .tparam_count = 3, // slot 0 = T float, slot 1 = N, slot 2 = J int
+        .params = &.{
+            vectorParam(.float),
+            .{ .tparam_vector = .{ .elem_idx = 2, .elem_family = .integer, .n_idx = 1 } },
+        },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// `extractBits(e: T, offset: u32, count: u32) -> T` where T ∈ int.
+const extractBits_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{ scalarParam(.integer), .{ .concrete = Types.U32 }, .{ .concrete = Types.U32 } },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.integer), .{ .concrete = Types.U32 }, .{ .concrete = Types.U32 } },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// `insertBits(e: T, newbits: T, offset: u32, count: u32) -> T` where T ∈ int.
+const insertBits_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            scalarParam(.integer),
+            .{ .bound_scalar = 0 },
+            .{ .concrete = Types.U32 },
+            .{ .concrete = Types.U32 },
+        },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{
+            vectorParam(.integer),
+            .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .integer, .n_idx = 1 } },
+            .{ .concrete = Types.U32 },
+            .{ .concrete = Types.U32 },
+        },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// `select(a: T, b: T, cond: bool) -> T` — any scalar or vecN of any scalar.
+/// Vector forms also accept `vecN<bool>` for componentwise selection.
+const select_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{ scalarParam(.any), scalarParam(.any), .{ .concrete = Types.Bool } },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.any), vectorParam(.any), .{ .concrete = Types.Bool } },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{
+            vectorParam(.any),
+            vectorParam(.any),
+            .{ .tparam_vector = .{ .elem_idx = 2, .elem_family = .any, .n_idx = 1 } },
+        },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// Subgroup / quad ops taking one numeric scalar-or-vector arg. Same shape
+/// as `unarySigs(.numeric)` plus accept-bool variants where the spec needs
+/// them. The numeric-only forms cover Add/Mul/And/Or/Xor/Min/Max/Inclusive*/
+/// Exclusive* and quadSwap*.
+const subgroup_unary_numeric_sigs = unary_numeric_sigs;
+
+/// `subgroupBroadcast(e: T, id: u32) -> T` / `subgroupShuffle*(e, id-or-mask)`.
+/// T ∈ {numeric scalar, numeric vector}; id is u32.
+const subgroup_shuffle_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{ scalarParam(.numeric), .{ .concrete = Types.U32 } },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{ vectorParam(.numeric), .{ .concrete = Types.U32 } },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
+/// `quadBroadcast(e: T, id: u32) -> T` with T ∈ numeric. Shape identical
+/// to subgroupBroadcast.
+const quad_broadcast_sigs = subgroup_shuffle_sigs;
+
 /// Side-table entries — built at comptime to keep lookup O(1).
 const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
     // Atomic operations (§17.9)
@@ -895,6 +1208,118 @@ const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
 
     // Subgroup (§17.12)
     .{ "subgroupBallot", subgroup_ballot_sigs },
+
+    // -------------------------------------------------------------------
+    // Phase 2 — `same_as_arg` family (§17.3 / §17.5 / §17.6 / §17.12)
+    // -------------------------------------------------------------------
+
+    // Logical (§17.3) — select is polymorphic across any scalar.
+    .{ "select", select_sigs },
+
+    // Trigonometric (§17.5.1–17.5.6, §17.5.44–17.5.49).
+    .{ "sin", unary_float_sigs },
+    .{ "cos", unary_float_sigs },
+    .{ "tan", unary_float_sigs },
+    .{ "asin", unary_float_sigs },
+    .{ "acos", unary_float_sigs },
+    .{ "atan", unary_float_sigs },
+    .{ "sinh", unary_float_sigs },
+    .{ "cosh", unary_float_sigs },
+    .{ "tanh", unary_float_sigs },
+    .{ "asinh", unary_float_sigs },
+    .{ "acosh", unary_float_sigs },
+    .{ "atanh", unary_float_sigs },
+    .{ "atan2", binary_float_sigs },
+
+    // Exponential (§17.5.16–17.5.18, §17.5.37, §17.5.45).
+    .{ "exp", unary_float_sigs },
+    .{ "exp2", unary_float_sigs },
+    .{ "log", unary_float_sigs },
+    .{ "log2", unary_float_sigs },
+    .{ "pow", binary_float_sigs },
+    .{ "sqrt", unary_float_sigs },
+    .{ "inverseSqrt", unary_float_sigs },
+
+    // Misc math (§17.5 — abs/sign/floor/ceil/round/trunc/fract/min/max/clamp/
+    // saturate/mix/step/smoothstep/fma/degrees/radians).
+    .{ "abs", unary_numeric_sigs },
+    .{ "sign", unary_numeric_sigs },
+    .{ "floor", unary_float_sigs },
+    .{ "ceil", unary_float_sigs },
+    .{ "round", unary_float_sigs },
+    .{ "trunc", unary_float_sigs },
+    .{ "fract", unary_float_sigs },
+    .{ "min", binary_numeric_sigs },
+    .{ "max", binary_numeric_sigs },
+    .{ "clamp", ternary_numeric_sigs },
+    .{ "saturate", unary_float_sigs },
+    .{ "mix", mix_sigs },
+    .{ "step", binary_float_sigs },
+    .{ "smoothstep", ternary_float_sigs },
+    .{ "fma", ternary_float_sigs },
+    .{ "degrees", unary_float_sigs },
+    .{ "radians", unary_float_sigs },
+
+    // Vector operations (§17.5.15, §17.5.19, §17.5.22–17.5.24, §17.5.37–39).
+    .{ "dot", dot_sigs },
+    .{ "cross", cross_sigs },
+    .{ "length", length_sigs },
+    .{ "distance", distance_sigs },
+    .{ "normalize", normalize_sigs },
+    .{ "reflect", reflect_sigs },
+    .{ "refract", refract_sigs },
+    .{ "faceForward", faceForward_sigs },
+
+    // Bit manipulation (§17.5.10–17.5.14, §17.5.22–23, §17.5.41).
+    .{ "countOneBits", unary_int_sigs },
+    .{ "countLeadingZeros", unary_int_sigs },
+    .{ "countTrailingZeros", unary_int_sigs },
+    .{ "reverseBits", unary_int_sigs },
+    .{ "firstLeadingBit", unary_int_sigs },
+    .{ "firstTrailingBit", unary_int_sigs },
+    .{ "extractBits", extractBits_sigs },
+    .{ "insertBits", insertBits_sigs },
+
+    // Matrix-reducing (§17.5.21).
+    .{ "determinant", determinant_sigs },
+
+    // Special (§17.5.32, §17.5.40).
+    .{ "ldexp", ldexp_sigs },
+    .{ "quantizeToF16", unary_float_sigs },
+
+    // Derivatives (§17.6).
+    .{ "dpdx", unary_float_sigs },
+    .{ "dpdy", unary_float_sigs },
+    .{ "fwidth", unary_float_sigs },
+    .{ "dpdxCoarse", unary_float_sigs },
+    .{ "dpdyCoarse", unary_float_sigs },
+    .{ "fwidthCoarse", unary_float_sigs },
+    .{ "dpdxFine", unary_float_sigs },
+    .{ "dpdyFine", unary_float_sigs },
+    .{ "fwidthFine", unary_float_sigs },
+
+    // Subgroup / quad ops (§17.12 / §17.13).
+    .{ "subgroupBroadcast", subgroup_shuffle_sigs },
+    .{ "subgroupBroadcastFirst", subgroup_unary_numeric_sigs },
+    .{ "subgroupShuffle", subgroup_shuffle_sigs },
+    .{ "subgroupShuffleDown", subgroup_shuffle_sigs },
+    .{ "subgroupShuffleUp", subgroup_shuffle_sigs },
+    .{ "subgroupShuffleXor", subgroup_shuffle_sigs },
+    .{ "subgroupAdd", subgroup_unary_numeric_sigs },
+    .{ "subgroupMul", subgroup_unary_numeric_sigs },
+    .{ "subgroupAnd", subgroup_unary_numeric_sigs },
+    .{ "subgroupOr", subgroup_unary_numeric_sigs },
+    .{ "subgroupXor", subgroup_unary_numeric_sigs },
+    .{ "subgroupMin", subgroup_unary_numeric_sigs },
+    .{ "subgroupMax", subgroup_unary_numeric_sigs },
+    .{ "subgroupInclusiveAdd", subgroup_unary_numeric_sigs },
+    .{ "subgroupInclusiveMul", subgroup_unary_numeric_sigs },
+    .{ "subgroupExclusiveAdd", subgroup_unary_numeric_sigs },
+    .{ "subgroupExclusiveMul", subgroup_unary_numeric_sigs },
+    .{ "quadBroadcast", quad_broadcast_sigs },
+    .{ "quadSwapDiagonal", subgroup_unary_numeric_sigs },
+    .{ "quadSwapX", subgroup_unary_numeric_sigs },
+    .{ "quadSwapY", subgroup_unary_numeric_sigs },
 };
 
 // =========================================================================

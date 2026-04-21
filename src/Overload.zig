@@ -42,6 +42,9 @@ pub const ScalarFamily = enum {
     /// abstract-int only — used to pin packed-dot callers that must be u32 via
     /// the load rule; not currently needed but keeps the enum honest.
     abstract_int,
+    /// every scalar kind including bool. Used by `select` and a few subgroup
+    /// ops where T is "any scalar or vector of any scalar".
+    any,
 
     pub fn accepts(self: ScalarFamily, kind: Types.ScalarKind) bool {
         return switch (self) {
@@ -49,6 +52,7 @@ pub const ScalarFamily = enum {
             .integer => kind == .i32 or kind == .u32 or kind == .abstract_int,
             .numeric => kind != .bool,
             .abstract_int => kind == .abstract_int,
+            .any => true,
         };
     }
 };
@@ -276,7 +280,7 @@ fn unifyArg(p: *const Pattern, arg: Types.Type, bindings: *[max_tparams]Binding)
         },
         .tparam_scalar => |ts| {
             if (a != .scalar) return error.Mismatch;
-            const sk = a.scalar.kind;
+            const sk = promoteForFamily(a.scalar.kind, ts.family);
             if (!ts.family.accepts(sk)) return error.Mismatch;
             return try bindScalar(bindings, ts.idx, sk, ts.family);
         },
@@ -288,8 +292,9 @@ fn unifyArg(p: *const Pattern, arg: Types.Type, bindings: *[max_tparams]Binding)
             } else if (tv.n_idx != Pattern.no_tparam) {
                 if (!try bindWidth(bindings, tv.n_idx, v.width)) return error.Mismatch;
             }
-            if (!tv.elem_family.accepts(v.element.kind)) return error.Mismatch;
-            return try bindScalar(bindings, tv.elem_idx, v.element.kind, tv.elem_family);
+            const elem_kind = promoteForFamily(v.element.kind, tv.elem_family);
+            if (!tv.elem_family.accepts(elem_kind)) return error.Mismatch;
+            return try bindScalar(bindings, tv.elem_idx, elem_kind, tv.elem_family);
         },
         .tparam_matrix => |tm| {
             if (a != .matrix) return error.Mismatch;
@@ -372,6 +377,17 @@ fn bindScalar(
         return @max(ra, rb);
     }
     return error.Mismatch;
+}
+
+/// When an abstract scalar meets a tparam whose family expects a different
+/// abstract domain, promote to the family-native abstract. Per WGSL §8.7.1
+/// (conversion rank table §8.2), AbstractInt → AbstractFloat is a legal
+/// promotion when matching a float overload — that's how `sin(1)` picks the
+/// f32 overload without an explicit cast. Concrete kinds pass through
+/// unchanged; family-incompatible kinds get rejected by `accepts`.
+fn promoteForFamily(kind: Types.ScalarKind, family: ScalarFamily) Types.ScalarKind {
+    if (kind == .abstract_int and family == .float) return .abstract_float;
+    return kind;
 }
 
 fn unifyScalarKinds(a: Types.ScalarKind, b: Types.ScalarKind, family: ScalarFamily) ?Types.ScalarKind {
