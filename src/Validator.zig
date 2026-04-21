@@ -209,6 +209,9 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     // Phase 5: Uniformity analysis
     v.analyzeUniformity();
 
+    // Phase 6: Scope-tree shadow detection (W0100)
+    v.detectShadowing();
+
     // Remove duplicate diagnostics produced by overlapping phases
     diags.deduplicate();
 
@@ -253,6 +256,7 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
     try v.validatePerEntryPointBindings();
     v.checkSuspiciousBindingPatterns();
     v.analyzeUniformity();
+    v.detectShadowing();
     diags.deduplicate();
 
     return .{
@@ -1267,7 +1271,6 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
             }
         }
         v.validateParameterAttributes(param);
-        v.checkShadowing(param.name);
     }
 
     // Register function type in symbol_types so calls can resolve it
@@ -2249,18 +2252,9 @@ fn validateCallStmt(v: *Validator, s: *Ast.CallStmt) Allocator.Error!void {
 
 fn validateDeclStmt(v: *Validator, s: *Ast.DeclStmt) Allocator.Error!void {
     switch (s.decl) {
-        .@"const" => |d| {
-            try v.validateConstDecl(d);
-            v.checkShadowing(d.name);
-        },
-        .let => |d| {
-            try v.validateLetDecl(d);
-            v.checkShadowing(d.name);
-        },
-        .@"var" => |d| {
-            try v.validateVarDecl(d);
-            v.checkShadowing(d.name);
-        },
+        .@"const" => |d| try v.validateConstDecl(d),
+        .let => |d| try v.validateLetDecl(d),
+        .@"var" => |d| try v.validateVarDecl(d),
         .const_assert => |d| try v.validateConstAssert(d),
         else => {},
     }
@@ -2343,21 +2337,48 @@ fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) ?Types.Type {
     return Types.AbstractInt;
 }
 
-/// Warn when a local declaration or parameter shadows a module-scope name.
-fn checkShadowing(v: *Validator, sym_idx: Ast.SymbolIndex) void {
-    if (!sym_idx.isValid()) return;
-    const name = v.symbolName(sym_idx);
-    if (name.len == 0) return;
-    // Check against module-scope declarations
-    for (v.module.declarations.items) |decl| {
-        const decl_name_idx = decl.nameRef();
-        if (!decl_name_idx.isValid()) continue;
-        if (decl_name_idx.index() == sym_idx.index()) continue; // same symbol
-        if (std.mem.eql(u8, v.symbolName(decl_name_idx), name)) {
-            v.addWarningR(v.symbolRange(sym_idx), v.fmtError("'{s}' shadows a module-scope declaration", .{name}));
-            return;
+/// Walk the scope tree once and emit W0100 for every symbol declared in a
+/// non-module scope whose name is also visible in an ancestor scope.
+fn detectShadowing(v: *Validator) void {
+    v.walkScopesForShadow(v.module.scope);
+}
+
+fn walkScopesForShadow(v: *Validator, scope: *Ast.Scope) void {
+    for (scope.children.items) |child| {
+        var it = child.members.iterator();
+        while (it.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const member = entry.value_ptr.*;
+            if (!member.ref.isValid()) continue;
+            var ancestor: ?*Ast.Scope = child.parent;
+            while (ancestor) |a| {
+                if (a.members.get(name)) |outer| {
+                    if (outer.ref.isValid() and outer.ref.index() != member.ref.index()) {
+                        const kind = v.symbolKind(outer.ref);
+                        const label = if (a.kind == .module)
+                            "a module-scope declaration"
+                        else switch (kind) {
+                            .parameter => "a function parameter",
+                            else => "an earlier declaration",
+                        };
+                        v.addWarningWithCodeR(
+                            v.symbolRange(member.ref),
+                            Diagnostic.Code.shadowing,
+                            v.fmtError("'{s}' shadows {s}", .{ name, label }),
+                        );
+                        break;
+                    }
+                }
+                ancestor = a.parent;
+            }
         }
+        v.walkScopesForShadow(child);
     }
+}
+
+fn symbolKind(v: *Validator, sym_idx: Ast.SymbolIndex) Ast.Symbol.Kind {
+    if (!sym_idx.isValid()) return .unbound;
+    return v.module.symbols.items[sym_idx.index()].kind;
 }
 
 fn checkF16Enabled(v: *Validator, loc: u32) void {
@@ -2964,6 +2985,11 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8
                     if (at != .scalar) {
                         v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
                         return null;
+                    }
+                    // W0101: argument's concrete scalar type already matches
+                    // the constructor target — the cast is a no-op.
+                    if (at.scalar.kind == t.scalar.kind and t.scalar.isConcrete()) {
+                        v.addWarningWithCodeR(range, Diagnostic.Code.redundant_cast, v.fmtError("redundant cast: '{s}' is already '{s}'", .{ at.string(), t.string() }));
                     }
                 }
             }
@@ -4417,6 +4443,15 @@ fn addWarningR(v: *Validator, r: LocRange, message: []const u8) void {
     } else {
         v.diags.addWarningRange(v.arena, r.start, r.end, message);
     }
+}
+
+fn addWarningWithCodeR(v: *Validator, r: LocRange, code: []const u8, message: []const u8) void {
+    v.diags.add(v.arena, .{
+        .severity = if (v.options.strict_mode) .@"error" else .warning,
+        .code = code,
+        .message = message,
+        .range = v.diags.makeRange(r.start, r.end),
+    });
 }
 
 fn makeRelatedR(v: *Validator, r: LocRange, message: []const u8) []const Diagnostic.RelatedInfo {

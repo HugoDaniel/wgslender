@@ -162,6 +162,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/validation_range_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/validation_spec_ref_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/validation_suggestions_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/lint_warnings_test.zig", target, optimize, &.{w});
     // Collision tests
     _ = addTestStep(b, test_step, "tests/collision_test.zig", target, optimize, &.{w});
     // Regression tests

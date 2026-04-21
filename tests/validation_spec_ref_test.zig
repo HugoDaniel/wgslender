@@ -87,6 +87,7 @@ const all_codes = [_][]const u8{
     Diagnostic.Code.invalid_diagnostic_rule,
     Diagnostic.Code.invalid_diagnostic_severity,
     Diagnostic.Code.shadowing,
+    Diagnostic.Code.redundant_cast,
 };
 
 test "specRefFor: every known code has a non-empty spec_ref" {

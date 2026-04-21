@@ -664,6 +664,7 @@ pub const Code = struct {
 
     // Warnings (W01xx)
     pub const shadowing: []const u8 = "W0100";
+    pub const redundant_cast: []const u8 = "W0101";
 };
 
 /// Map a diagnostic code to a WGSL spec section slug.
