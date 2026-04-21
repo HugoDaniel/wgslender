@@ -824,6 +824,15 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error!voi
         }
     }
 
+    // Per WGSL §5475–5559 an override initializer must be a const- or
+    // override-expression — references to runtime state (let/var/param)
+    // are not permitted.
+    if (d.initializer) |init| {
+        if (v.classifyExprStage(init) == .runtime_expr) {
+            v.addErrorWithCodeR(exprRange(init), Diagnostic.Code.expression_not_const, v.fmtError("'override {s}' initializer must be a const- or override-expression", .{name}));
+        }
+    }
+
     // Validate @id attribute: must be 0..65535, unique
     try v.validateOverrideId(d, name);
 
@@ -1125,7 +1134,14 @@ fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
 }
 
 fn validateConstAssert(v: *Validator, d: *Ast.ConstAssertDecl) Allocator.Error!void {
-    // Spec: const_assert expression must be of type bool.
+    // Per WGSL §11.9 a const_assert expression must be a const-expression.
+    // Override- and runtime-expressions are rejected up front so we don't
+    // emit a misleading "not bool" error when the real problem is staging.
+    if (v.classifyExprStage(d.expr) != .const_expr) {
+        v.addErrorWithCodeR(exprSpan(d.expr), Diagnostic.Code.expression_not_const, "const_assert expression must be a const-expression");
+        return;
+    }
+
     const expr_type = (try v.checkExpr(d.expr)) orelse return;
     if (!expr_type.eql(Types.Bool)) {
         v.addErrorWithCodeR(exprSpan(d.expr), Diagnostic.Code.invalid_const_expr, v.fmtError("const_assert expression must be 'bool', got '{s}'", .{expr_type.string()}));
