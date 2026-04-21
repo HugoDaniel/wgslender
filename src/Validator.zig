@@ -96,6 +96,33 @@ pub const VarInfo = struct {
     access_mode: Ast.AccessMode,
 };
 
+/// Expression evaluation stage per WGSL spec sections 6.7-6.9.
+const ExprStage = enum(u2) {
+    const_expr, // Evaluable at shader creation time from const declarations
+    override_expr, // Evaluable at pipeline creation time (references overrides)
+    runtime_expr, // Only evaluable at runtime
+
+    fn combine(a: ExprStage, b: ExprStage) ExprStage {
+        return @enumFromInt(@max(@intFromEnum(a), @intFromEnum(b)));
+    }
+};
+
+/// Type + staging classification inferred for an expression in a single
+/// traversal. `typ == null` signals inference failure (diagnostic already
+/// emitted); `stage` is still populated conservatively so downstream
+/// staging checks don't misreport. Callers that only care about type do
+/// `(try v.checkExpr(e)).typ`; callers that need staging use `.stage`.
+const InferResult = struct {
+    typ: ?Types.Type,
+    stage: ExprStage,
+
+    const fail: InferResult = .{ .typ = null, .stage = .runtime_expr };
+
+    fn some(t: Types.Type, s: ExprStage) InferResult {
+        return .{ .typ = t, .stage = s };
+    }
+};
+
 pub const AnalysisResult = struct {
     valid: bool,
     diagnostics: *Diagnostic,
@@ -731,8 +758,9 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) Allocator.Error!void {
         return;
     }
 
-    // Infer or check type
-    const init_type = (try v.checkExpr(d.initializer.?)) orelse return;
+    // Infer or check type (and capture staging for the const-expression rule).
+    const init_r = try v.checkExpr(d.initializer.?);
+    const init_type = init_r.typ orelse return;
 
     var decl_type: ?Types.Type = null;
     if (d.typ) |ast_type| {
@@ -751,8 +779,8 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) Allocator.Error!void {
     }
 
     // const initializer must be a const-expression (not override or runtime).
-    if (d.initializer) |init| {
-        const stage = v.classifyExprStage(init);
+    if (d.initializer) |_| {
+        const stage = init_r.stage;
         if (stage == .override_expr) {
             v.addErrorWithCodeR(r, Diagnostic.Code.invalid_const_expr, v.fmtError("const '{s}' initializer references an override; use 'override' instead of 'const'", .{name}));
             return;
@@ -789,12 +817,18 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error!voi
     const r = v.symbolRange(d.name);
     const name = v.symbolName(d.name);
 
-    // override must be concrete scalar type
+    // override must be concrete scalar type. Infer the type (and cache
+    // staging) from the initializer when the user didn't write an
+    // explicit type annotation — the second checkExpr below would be a
+    // redundant re-traversal otherwise.
     var decl_type: ?Types.Type = null;
+    var init_r: ?InferResult = null;
     if (d.typ) |ast_type| {
         decl_type = v.resolveType(ast_type);
     } else if (d.initializer) |init| {
-        decl_type = try v.checkExpr(init);
+        const r_init = try v.checkExpr(init);
+        init_r = r_init;
+        decl_type = r_init.typ;
     }
 
     if (decl_type == null) {
@@ -819,8 +853,10 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error!voi
     }
 
     if (d.initializer) |init| {
-        const init_type = try v.checkExpr(init);
-        if (init_type) |it| {
+        // Re-check only when we didn't already infer from the initializer.
+        const r_init = init_r orelse try v.checkExpr(init);
+        init_r = r_init;
+        if (r_init.typ) |it| {
             if (!Types.canConvertTo(it, dt)) {
                 if (d.typ) |ast_type| {
                     const type_range = astTypeRange(ast_type);
@@ -840,7 +876,8 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error!voi
     // override-expression — references to runtime state (let/var/param)
     // are not permitted.
     if (d.initializer) |init| {
-        if (v.classifyExprStage(init) == .runtime_expr) {
+        const stage = if (init_r) |r_init| r_init.stage else v.classifyExprStage(init);
+        if (stage == .runtime_expr) {
             v.addErrorWithCodeR(exprRange(init), Diagnostic.Code.expression_not_const, v.fmtError("'override {s}' initializer must be a const- or override-expression", .{name}));
         }
     }
@@ -883,12 +920,16 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
     const r = v.symbolRange(d.name);
     const name = v.symbolName(d.name);
 
-    // Determine type
+    // Determine type (and cache the initializer's inference so the
+    // compatibility check below doesn't walk the expression twice).
     var decl_type: ?Types.Type = null;
+    var init_r: ?InferResult = null;
     if (d.typ) |ast_type| {
         decl_type = v.resolveType(ast_type);
     } else if (d.initializer) |init| {
-        decl_type = try v.checkExpr(init);
+        const r_init = try v.checkExpr(init);
+        init_r = r_init;
+        decl_type = r_init.typ;
         // Convert abstract types to concrete for var declarations
         if (decl_type) |dt| decl_type = Types.concreteType(dt);
     }
@@ -907,8 +948,8 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
 
     // Check initializer compatibility
     if (d.initializer) |init| {
-        const init_type = try v.checkExpr(init);
-        if (init_type) |it| {
+        const r_init = init_r orelse try v.checkExpr(init);
+        if (r_init.typ) |it| {
             if (!Types.canConvertTo(it, dt)) {
                 if (d.typ) |ast_type| {
                     const type_range = astTypeRange(ast_type);
@@ -1132,7 +1173,7 @@ fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
         return;
     }
 
-    const init_type = (try v.checkExpr(d.initializer.?)) orelse return;
+    const init_type = (try v.checkExpr(d.initializer.?)).typ orelse return;
 
     if (!init_type.isConstructible() and init_type != .pointer and init_type.isConcrete()) {
         v.addErrorWithCodeR(r, Diagnostic.Code.type_mismatch, v.fmtError("'let {s}' requires a constructible or pointer type, got '{s}'", .{ name, init_type.string() }));
@@ -1162,12 +1203,17 @@ fn validateConstAssert(v: *Validator, d: *Ast.ConstAssertDecl) Allocator.Error!v
     // Per WGSL §11.9 a const_assert expression must be a const-expression.
     // Override- and runtime-expressions are rejected up front so we don't
     // emit a misleading "not bool" error when the real problem is staging.
-    if (v.classifyExprStage(d.expr) != .const_expr) {
+    // Single checkExpr run carries both the inferred type and stage; the
+    // staging check only fires when inference succeeded so that a type
+    // error isn't shadowed by a spurious staging error.
+    const result = try v.checkExpr(d.expr);
+    if (result.typ == null) return;
+    if (result.stage != .const_expr) {
         v.addErrorWithCodeR(exprSpan(d.expr), Diagnostic.Code.expression_not_const, "const_assert expression must be a const-expression");
         return;
     }
 
-    const expr_type = (try v.checkExpr(d.expr)) orelse return;
+    const expr_type = result.typ.?;
     if (!expr_type.eql(Types.Bool)) {
         v.addErrorWithCodeR(exprSpan(d.expr), Diagnostic.Code.invalid_const_expr, v.fmtError("const_assert expression must be 'bool', got '{s}'", .{expr_type.string()}));
         return;
@@ -2044,7 +2090,7 @@ fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!void {
         return;
     }
 
-    const expr_type = (try v.checkExpr(s.value.?)) orelse return;
+    const expr_type = (try v.checkExpr(s.value.?)).typ orelse return;
 
     if (expr_type.isRuntimeSizedArray()) {
         v.addErrorWithCodeR(exprSpan(s.value.?), Diagnostic.Code.type_mismatch, "cannot return a runtime-sized array");
@@ -2072,7 +2118,7 @@ fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!void {
 fn validateIfStmt(v: *Validator, s: *Ast.IfStmt) Allocator.Error!void {
     var current: *Ast.IfStmt = s;
     for (0..65536) |_| {
-        const cond_type = try v.checkExpr(current.condition);
+        const cond_type = (try v.checkExpr(current.condition)).typ;
         if (cond_type) |ct| {
             if (!ct.eql(Types.Bool)) {
                 v.addErrorWithCodeR(exprSpan(current.condition), Diagnostic.Code.type_mismatch, v.fmtError("if condition must be 'bool', got '{s}'", .{ct.string()}));
@@ -2092,7 +2138,7 @@ fn validateIfStmt(v: *Validator, s: *Ast.IfStmt) Allocator.Error!void {
 }
 
 fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!void {
-    const selector_type = try v.checkExpr(s.expr);
+    const selector_type = (try v.checkExpr(s.expr)).typ;
     if (selector_type) |st| {
         if (!Types.isInteger(st)) {
             v.addErrorWithCodeR(exprSpan(s.expr), Diagnostic.Code.type_mismatch, v.fmtError("switch selector must be integer, got '{s}'", .{st.string()}));
@@ -2114,14 +2160,15 @@ fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!void {
             }
         }
         for (case.selectors.items) |sel| {
-            const sel_type = try v.checkExpr(sel);
+            const sel_r = try v.checkExpr(sel);
+            const sel_type = sel_r.typ;
             if (sel_type != null and selector_type != null) {
                 if (!Types.canConvertTo(sel_type.?, selector_type.?)) {
                     v.addErrorWithRelatedR(exprRange(sel), Diagnostic.Code.type_mismatch, v.fmtError("case selector '{s}' doesn't match switch type '{s}'", .{ sel_type.?.string(), selector_type.?.string() }), v.makeRelatedR(exprRange(s.expr), v.fmtError("switch expression has type '{s}'", .{selector_type.?.string()})));
                 }
             }
             // Switch case selectors must be const-expressions
-            if (v.classifyExprStage(sel) != .const_expr) {
+            if (sel_r.stage != .const_expr) {
                 v.addErrorWithCodeR(exprRange(sel), Diagnostic.Code.expression_not_const, "case selector must be a const-expression");
             }
             // Check for duplicate case selector values
@@ -2173,7 +2220,7 @@ fn validateLoopStmt(v: *Validator, s: *Ast.LoopStmt) Allocator.Error!void {
 }
 
 fn validateWhileStmt(v: *Validator, s: *Ast.WhileStmt) Allocator.Error!void {
-    const cond_type = try v.checkExpr(s.condition);
+    const cond_type = (try v.checkExpr(s.condition)).typ;
     if (cond_type) |ct| {
         if (!ct.eql(Types.Bool)) {
             v.addErrorWithCodeR(exprSpan(s.condition), Diagnostic.Code.type_mismatch, v.fmtError("while condition must be 'bool', got '{s}'", .{ct.string()}));
@@ -2191,7 +2238,7 @@ fn validateForStmt(v: *Validator, s: *Ast.ForStmt) Allocator.Error!void {
         try v.validateStmt(init);
     }
     if (s.condition) |cond| {
-        const cond_type = try v.checkExpr(cond);
+        const cond_type = (try v.checkExpr(cond)).typ;
         if (cond_type) |ct| {
             if (!ct.eql(Types.Bool)) {
                 v.addErrorWithCodeR(exprSpan(cond), Diagnostic.Code.type_mismatch, v.fmtError("for condition must be 'bool', got '{s}'", .{ct.string()}));
@@ -2218,7 +2265,7 @@ fn validateBreakStmt(v: *Validator, s: *Ast.BreakStmt) void {
 }
 
 fn validateBreakIfStmt(v: *Validator, s: *Ast.BreakIfStmt) Allocator.Error!void {
-    const cond_type = try v.checkExpr(s.condition);
+    const cond_type = (try v.checkExpr(s.condition)).typ;
     if (cond_type) |ct| {
         if (!ct.eql(Types.Bool)) {
             v.addErrorWithCodeR(exprSpan(s.condition), Diagnostic.Code.type_mismatch, v.fmtError("break if condition must be 'bool', got '{s}'", .{ct.string()}));
@@ -2241,8 +2288,8 @@ fn validateDiscardStmt(v: *Validator, s: *Ast.DiscardStmt) void {
 }
 
 fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
-    const lhs_type = (try v.checkExpr(s.left)) orelse return;
-    const rhs_type = (try v.checkExpr(s.right)) orelse return;
+    const lhs_type = (try v.checkExpr(s.left)).typ orelse return;
+    const rhs_type = (try v.checkExpr(s.right)).typ orelse return;
 
     // Check for assignment to immutable bindings (WGSL spec section 9.4).
     if (s.left == .ident) {
@@ -2328,7 +2375,7 @@ fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
 }
 
 fn validateIncrDecrStmt(v: *Validator, s: *Ast.IncrDecrStmt) Allocator.Error!void {
-    const expr_type = (try v.checkExpr(s.expr)) orelse return;
+    const expr_type = (try v.checkExpr(s.expr)).typ orelse return;
     // Spec: operand must be a concrete integer scalar (i32 or u32 only).
     const is_concrete_int_scalar = switch (expr_type) {
         .scalar => |sc| sc.kind == .i32 or sc.kind == .u32,
@@ -2373,11 +2420,11 @@ fn validateDeclStmt(v: *Validator, s: *Ast.DeclStmt) Allocator.Error!void {
 
 const max_expr_depth: u32 = 256;
 
-fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!?Types.Type {
-    if (v.expr_depth >= max_expr_depth) return null;
+fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!InferResult {
+    if (v.expr_depth >= max_expr_depth) return .fail;
     v.expr_depth += 1;
     defer v.expr_depth -= 1;
-    const result: ?Types.Type = switch (expr) {
+    const result: InferResult = switch (expr) {
         .literal => |e| v.checkLiteral(e),
         .ident => |e| v.checkIdent(e),
         .binary => |e| try v.checkBinary(e),
@@ -2387,7 +2434,7 @@ fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!?Types.Type {
         .member => |e| try v.checkMember(e),
         .paren => |e| try v.checkExpr(e.expr),
     };
-    if (result) |typ| {
+    if (result.typ) |typ| {
         // Key on each expression's own loc (operator for binary, open-paren
         // for call, etc.) so nested expressions that share the same start
         // offset don't collide in the hash map.
@@ -2408,13 +2455,13 @@ fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!?Types.Type {
     return result;
 }
 
-fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) ?Types.Type {
+fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) InferResult {
     const val = e.value;
-    if (val.len == 0) return Types.AbstractInt;
+    if (val.len == 0) return InferResult.some(Types.AbstractInt, .const_expr);
 
     // Boolean literals
     if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "false")) {
-        return Types.Bool;
+        return InferResult.some(Types.Bool, .const_expr);
     }
 
     // Check for float indicators
@@ -2422,26 +2469,26 @@ fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) ?Types.Type {
         v.checkFloatLiteralValue(e);
         if (val[val.len - 1] == 'h') {
             v.checkF16Enabled(e.loc);
-            return Types.F16;
+            return InferResult.some(Types.F16, .const_expr);
         }
-        if (val[val.len - 1] == 'f') return Types.F32;
-        return Types.AbstractFloat;
+        if (val[val.len - 1] == 'f') return InferResult.some(Types.F32, .const_expr);
+        return InferResult.some(Types.AbstractFloat, .const_expr);
     }
 
     // Suffix-based typing
     if (val[val.len - 1] == 'h') {
         v.checkFloatLiteralValue(e);
         v.checkF16Enabled(e.loc);
-        return Types.F16;
+        return InferResult.some(Types.F16, .const_expr);
     }
     if (val[val.len - 1] == 'f') {
         v.checkFloatLiteralValue(e);
-        return Types.F32;
+        return InferResult.some(Types.F32, .const_expr);
     }
-    if (val[val.len - 1] == 'u') return Types.U32;
-    if (val[val.len - 1] == 'i') return Types.I32;
+    if (val[val.len - 1] == 'u') return InferResult.some(Types.U32, .const_expr);
+    if (val[val.len - 1] == 'i') return InferResult.some(Types.I32, .const_expr);
 
-    return Types.AbstractInt;
+    return InferResult.some(Types.AbstractInt, .const_expr);
 }
 
 /// Walk the scope tree once and emit W0100 for every symbol declared in a
@@ -2650,22 +2697,44 @@ fn checkFloatLiteralValue(v: *Validator, e: *Ast.LiteralExpr) void {
     }
 }
 
-fn checkIdent(v: *Validator, e: *Ast.IdentExpr) ?Types.Type {
+fn checkIdent(v: *Validator, e: *Ast.IdentExpr) InferResult {
+    // Staging follows the declaration kind. Unresolved idents (attribute
+    // arguments still being wired up) fall back to a by-name classifier.
+    // Stage is always computed — even when type inference fails — so that
+    // enclosing staging checks don't see a spurious `.runtime_expr`.
+    const stage: ExprStage = blk: {
+        if (e.ref.isValid()) {
+            const idx = e.ref.index();
+            if (idx < v.module.symbols.items.len) {
+                break :blk switch (v.module.symbols.items[idx].kind) {
+                    .@"const" => .const_expr,
+                    .override => .override_expr,
+                    .let, .@"var", .parameter => .runtime_expr,
+                    .@"struct", .alias => .const_expr,
+                    .function, .builtin => .const_expr,
+                    else => .runtime_expr,
+                };
+            }
+        }
+        break :blk v.classifyIdentByName(e.name);
+    };
+
     // Check if it's a type name being used as expression (constructor)
     if (v.lookupType(e.name)) |t| {
-        return t;
+        return InferResult.some(t, stage);
     }
 
     // Check symbol table
     if (e.ref.isValid()) {
         if (v.symbol_types.get(e.ref.index())) |t| {
-            return t;
+            return InferResult.some(t, stage);
         }
     }
 
-    // Check if it's a builtin function — return null, type comes from call resolution
+    // Check if it's a builtin function — type is resolved at the call site.
+    // Stage still propagates so enclosing expressions classify correctly.
     if (Builtins.isBuiltin(e.name)) {
-        return null;
+        return .{ .typ = null, .stage = stage };
     }
 
     // Check if it's a user-defined function (by looking up symbols in module)
@@ -2674,10 +2743,10 @@ fn checkIdent(v: *Validator, e: *Ast.IdentExpr) ?Types.Type {
         if (idx < v.module.symbols.items.len) {
             const kind = v.module.symbols.items[idx].kind;
             // Function type resolved at call site
-            if (kind == .function) return null;
+            if (kind == .function) return .{ .typ = null, .stage = stage };
             // Symbol exists but type not yet assigned — use-before-decl
             // (parser already emitted E0102, don't also report E0100)
-            if (kind != .unbound) return null;
+            if (kind != .unbound) return .{ .typ = null, .stage = stage };
         }
     }
 
@@ -2687,12 +2756,19 @@ fn checkIdent(v: *Validator, e: *Ast.IdentExpr) ?Types.Type {
     } else {
         v.addErrorWithCodeR(exprRange(.{ .ident = e }), Diagnostic.Code.undefined_symbol, v.fmtError("use of undeclared identifier '{s}'", .{e.name}));
     }
-    return null;
+    return InferResult.fail;
 }
 
-fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
-    const left_type = (try v.checkExpr(e.left)) orelse return null;
-    const right_type = (try v.checkExpr(e.right)) orelse return null;
+fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!InferResult {
+    const lr = try v.checkExpr(e.left);
+    const rr = try v.checkExpr(e.right);
+    // Stage is computed from both children regardless of type inference
+    // success so enclosing staging checks (const decls, const_assert,
+    // switch selectors, …) don't mis-report a subtree that merely had a
+    // type error as "not a const-expression".
+    const stage = ExprStage.combine(lr.stage, rr.stage);
+    const left_type = lr.typ orelse return .{ .typ = null, .stage = stage };
+    const right_type = rr.typ orelse return .{ .typ = null, .stage = stage };
 
     const er = exprRange(.{ .binary = e }); // operator range
     const op_str = e.op.string();
@@ -2700,9 +2776,9 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
         .logical_and, .logical_or => {
             if (!left_type.eql(Types.Bool) or !right_type.eql(Types.Bool)) {
                 v.addErrorWithCodeR(exprRange(.{ .binary = e }), Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires 'bool' operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-                return null;
+                return InferResult.fail;
             }
-            return Types.Bool;
+            return InferResult.some(Types.Bool, stage);
         },
         .eq, .ne => {
             if (!left_type.eql(right_type) and
@@ -2710,20 +2786,20 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
                 !Types.canConvertTo(right_type, left_type))
             {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-                return null;
+                return InferResult.fail;
             }
             // Vector comparisons return vec<N, bool>
             if (left_type == .vector) {
-                const bvec = v.arena.create(Types.Vector) catch return Types.Bool;
+                const bvec = v.arena.create(Types.Vector) catch return InferResult.some(Types.Bool, stage);
                 bvec.* = .{ .width = left_type.vector.width, .element = Types.scalar_bool_ptr };
-                return .{ .vector = bvec };
+                return InferResult.some(.{ .vector = bvec }, stage);
             }
-            return Types.Bool;
+            return InferResult.some(Types.Bool, stage);
         },
         .lt, .le, .gt, .ge => {
             if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type)) {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires numeric operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-                return null;
+                return InferResult.fail;
             }
             // WGSL §17.1 "Comparison Expressions": operands must share a
             // common numeric type. Mixing signed and unsigned integers
@@ -2734,34 +2810,34 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
                 !Types.canConvertTo(right_type, left_type))
             {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-                return null;
+                return InferResult.fail;
             }
             // Vector comparisons return vec<N, bool>
             if (left_type == .vector) {
-                const bvec = v.arena.create(Types.Vector) catch return Types.Bool;
+                const bvec = v.arena.create(Types.Vector) catch return InferResult.some(Types.Bool, stage);
                 bvec.* = .{ .width = left_type.vector.width, .element = Types.scalar_bool_ptr };
-                return .{ .vector = bvec };
+                return InferResult.some(.{ .vector = bvec }, stage);
             }
-            return Types.Bool;
+            return InferResult.some(Types.Bool, stage);
         },
         .add, .sub => {
-            const result = Types.addSubResultType(v.arena, left_type, right_type) catch return null;
+            const result = Types.addSubResultType(v.arena, left_type, right_type) catch return InferResult.fail;
             if (result) |r| {
-                return r;
+                return InferResult.some(r, stage);
             }
             v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires numeric types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-            return null;
+            return InferResult.fail;
         },
         .mul => {
-            const result = Types.multiplyResultType(v.arena, left_type, right_type) catch return null;
+            const result = Types.multiplyResultType(v.arena, left_type, right_type) catch return InferResult.fail;
             if (result) |r| {
-                return r;
+                return InferResult.some(r, stage);
             }
             v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot multiply '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
-            return null;
+            return InferResult.fail;
         },
         .div => {
-            const result = Types.divResultType(v.arena, left_type, right_type) catch return null;
+            const result = Types.divResultType(v.arena, left_type, right_type) catch return InferResult.fail;
             if (result) |r| {
                 // Const division by zero
                 if (v.tryExtractIntValue(e.right)) |rhs_val| {
@@ -2769,16 +2845,16 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
                         v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
                     }
                 }
-                return r;
+                return InferResult.some(r, stage);
             }
             v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot divide '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
-            return null;
+            return InferResult.fail;
         },
         .mod => {
             // WGSL % works on both integers and floats (unlike C where fmod is separate).
             if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type)) {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '%' requires numeric operands, got '{s}' and '{s}'", .{ left_type.string(), right_type.string() }));
-                return null;
+                return InferResult.fail;
             }
             // Const modulo by zero
             if (v.tryExtractIntValue(e.right)) |rhs_val| {
@@ -2786,26 +2862,28 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
                     v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
                 }
             }
-            return Types.commonType(left_type, right_type);
+            const common = Types.commonType(left_type, right_type) orelse return InferResult.fail;
+            return InferResult.some(common, stage);
         },
         .@"and", .@"or", .xor => {
             if (left_type.eql(Types.Bool) and right_type.eql(Types.Bool)) {
-                return Types.Bool;
+                return InferResult.some(Types.Bool, stage);
             }
             if (Types.isInteger(left_type) and Types.isInteger(right_type)) {
-                return Types.commonType(left_type, right_type);
+                const common = Types.commonType(left_type, right_type) orelse return InferResult.fail;
+                return InferResult.some(common, stage);
             }
             v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer or bool, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-            return null;
+            return InferResult.fail;
         },
         .shl, .shr => {
             if (!Types.isInteger(left_type)) {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer left operand, got '{s}'", .{ op_str, left_type.string() }));
-                return null;
+                return InferResult.fail;
             }
             if (!right_type.eql(Types.U32) and !Types.canConvertTo(right_type, Types.U32)) {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'u32', got '{s}'", .{right_type.string()}));
-                return null;
+                return InferResult.fail;
             }
             // Shift amount must be less than the bit width of the LHS type (WGSL spec section 8.7).
             // AbstractInt LHS has no in-source bit width (`Scalar.size()` is 0);
@@ -2822,7 +2900,7 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
                     v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.invalid_operand, v.fmtError("shift amount {d} exceeds bit width of {d}", .{ shift_val, bit_width }));
                 }
             }
-            return left_type;
+            return InferResult.some(left_type, stage);
         },
     }
 }
@@ -2881,43 +2959,45 @@ fn isVectorOrVectorRef(t: Types.Type) bool {
     };
 }
 
-fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
-    const operand_type = (try v.checkExpr(e.operand)) orelse return null;
+fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!InferResult {
+    const or_ = try v.checkExpr(e.operand);
+    const stage = or_.stage;
+    const operand_type = or_.typ orelse return .{ .typ = null, .stage = stage };
     const er = exprRange(.{ .unary = e });
 
     switch (e.op) {
         .neg => {
             if (!Types.isNumeric(operand_type)) {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("unary '-' requires numeric type, got '{s}'", .{operand_type.string()}));
-                return null;
+                return InferResult.fail;
             }
-            return operand_type;
+            return InferResult.some(operand_type, stage);
         },
         .not => {
             if (!operand_type.eql(Types.Bool)) {
                 // Also allow vector<bool>
                 if (operand_type == .vector and operand_type.vector.element.kind == .bool) {
-                    return operand_type;
+                    return InferResult.some(operand_type, stage);
                 }
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("unary '!' requires 'bool', got '{s}'", .{operand_type.string()}));
-                return null;
+                return InferResult.fail;
             }
-            return Types.Bool;
+            return InferResult.some(Types.Bool, stage);
         },
         .bit_not => {
             if (!Types.isInteger(operand_type)) {
                 v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("unary '~' requires integer type, got '{s}'", .{operand_type.string()}));
-                return null;
+                return InferResult.fail;
             }
-            return operand_type;
+            return InferResult.some(operand_type, stage);
         },
         .deref => {
             switch (operand_type) {
-                .pointer => |p| return p.element,
-                .reference => |r| return r.element,
+                .pointer => |p| return InferResult.some(p.element, stage),
+                .reference => |r| return InferResult.some(r.element, stage),
                 else => {
                     v.addErrorWithCodeR(er, Diagnostic.Code.deref_requires_pointer, v.fmtError("unary '*' requires a pointer, got '{s}'", .{operand_type.string()}));
-                    return null;
+                    return InferResult.fail;
                 },
             }
         },
@@ -2943,7 +3023,7 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
                     Diagnostic.Code.addr_of_requires_reference,
                     "unary '&' requires a reference (e.g. a variable or member access); the operand has no address",
                 );
-                return null;
+                return InferResult.fail;
             }
 
             // Reject `&vector.x` / `&vector[i]` — vector components are not
@@ -2951,26 +3031,26 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
             const inner = stripParens(e.operand);
             switch (inner) {
                 .member => |m| {
-                    if (try v.checkExpr(m.base)) |base_ty| {
+                    if ((try v.checkExpr(m.base)).typ) |base_ty| {
                         if (isVectorOrVectorRef(base_ty)) {
                             v.addErrorWithCodeR(
                                 er,
                                 Diagnostic.Code.addr_of_vector_component,
                                 v.fmtError("cannot take the address of '.{s}': vector components are not references", .{m.member_name}),
                             );
-                            return null;
+                            return InferResult.fail;
                         }
                     }
                 },
                 .index => |ix| {
-                    if (try v.checkExpr(ix.base)) |base_ty| {
+                    if ((try v.checkExpr(ix.base)).typ) |base_ty| {
                         if (isVectorOrVectorRef(base_ty)) {
                             v.addErrorWithCodeR(
                                 er,
                                 Diagnostic.Code.addr_of_vector_component,
                                 "cannot take the address of a vector component: vector components are not references",
                             );
-                            return null;
+                            return InferResult.fail;
                         }
                     }
                 },
@@ -2985,7 +3065,7 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
                     Diagnostic.Code.addr_of_handle,
                     v.fmtError("cannot take the address of handle type '{s}': textures and samplers are not references", .{operand_type.string()}),
                 );
-                return null;
+                return InferResult.fail;
             }
 
             // Choose AS/AM from the root variable if we can identify it.
@@ -2999,18 +3079,18 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
                 }
             }
 
-            const p = v.arena.create(Types.Pointer) catch return null;
+            const p = v.arena.create(Types.Pointer) catch return InferResult.fail;
             p.* = .{
                 .address_space = addr_space,
                 .element = operand_type,
                 .access_mode = access_mode,
             };
-            return .{ .pointer = p };
+            return InferResult.some(.{ .pointer = p }, stage);
         },
     }
 }
 
-fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
+fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
     // Get callee name
     var callee_name: []const u8 = "";
     if (e.func) |func| {
@@ -3024,7 +3104,7 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
             },
             else => {
                 v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, "expression is not callable");
-                return null;
+                return InferResult.fail;
             },
         }
     }
@@ -3041,46 +3121,52 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
     // matrix, array, atomic, and handle operands are rejected.
     if (std.mem.eql(u8, callee_name, "bitcast")) {
         if (e.template_type) |tt| {
-            const dest_type = v.resolveType(tt) orelse return null;
+            const dest_type = v.resolveType(tt) orelse return InferResult.fail;
             const range = exprRange(.{ .call = e });
 
             if (e.args.items.len != 1) {
                 v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'bitcast' requires exactly 1 argument, got {d}", .{e.args.items.len}));
-                return null;
+                return InferResult.fail;
             }
 
             // Evaluate the source argument; promote abstract numerics.
-            const raw_src = (try v.checkExpr(e.args.items[0])) orelse return dest_type;
+            const arg_r = try v.checkExpr(e.args.items[0]);
+            const raw_src = arg_r.typ orelse return InferResult.some(dest_type, arg_r.stage);
             const src_type = Types.concreteType(raw_src);
 
             const src_size = bitcastSize(src_type);
             const dst_size = bitcastSize(dest_type);
             if (src_size == 0) {
                 v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast from '{s}'; must be a numeric scalar or vector of numeric scalars", .{raw_src.string()}));
-                return dest_type;
+                return InferResult.some(dest_type, arg_r.stage);
             }
             if (dst_size == 0) {
                 v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast to '{s}'; must be a numeric scalar or vector of numeric scalars", .{dest_type.string()}));
-                return dest_type;
+                return InferResult.some(dest_type, arg_r.stage);
             }
             if (src_size != dst_size) {
                 v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("bitcast source type '{s}' ({d} bits) and destination type '{s}' ({d} bits) must have the same bit-width", .{ src_type.string(), src_size, dest_type.string(), dst_size }));
             }
-            return dest_type;
+            return InferResult.some(dest_type, arg_r.stage);
         }
     }
 
     // Template type constructor (e.g. array<vec3f, 7>(...), vec3<f32>(...))
     if (e.template_type) |tt| {
-        const resolved = v.resolveType(tt) orelse return null;
+        const resolved = v.resolveType(tt) orelse return InferResult.fail;
         // Use type string as callee_name when the parser doesn't set func
         const name = if (callee_name.len > 0) callee_name else resolved.string();
         // Validate constructor arguments against the resolved type
         var constructor_arg_types: std.ArrayListUnmanaged(?Types.Type) = .empty;
+        var args_stage: ExprStage = .const_expr;
         for (e.args.items) |arg| {
-            try constructor_arg_types.append(v.arena, try v.checkExpr(arg));
+            const ar = try v.checkExpr(arg);
+            try constructor_arg_types.append(v.arena, ar.typ);
+            args_stage = ExprStage.combine(args_stage, ar.stage);
         }
-        return v.checkTypeConstructor(e, name, resolved, constructor_arg_types.items);
+        const ret = v.checkTypeConstructor(e, name, resolved, constructor_arg_types.items) orelse
+            return .{ .typ = null, .stage = args_stage };
+        return InferResult.some(ret, args_stage);
     }
 
     // Check if it's a builtin function
@@ -3090,8 +3176,11 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
 
     // For non-builtin calls, validate all argument expressions and collect types
     var constructor_arg_types: std.ArrayListUnmanaged(?Types.Type) = .empty;
+    var args_stage: ExprStage = .const_expr;
     for (e.args.items) |arg| {
-        try constructor_arg_types.append(v.arena, try v.checkExpr(arg));
+        const ar = try v.checkExpr(arg);
+        try constructor_arg_types.append(v.arena, ar.typ);
+        args_stage = ExprStage.combine(args_stage, ar.stage);
     }
 
     // Check if it's a type constructor
@@ -3103,7 +3192,9 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
         // scalar before validation so `let x = vec2(1, 2)` is vec2<i32>
         // (or vec2<abstract-int> in contexts that retain abstractness).
         const effective_t = v.inferGenericCtorElement(callee_name, t, constructor_arg_types.items) orelse t;
-        return v.checkTypeConstructor(e, callee_name, effective_t, constructor_arg_types.items);
+        const ret = v.checkTypeConstructor(e, callee_name, effective_t, constructor_arg_types.items) orelse
+            return .{ .typ = null, .stage = args_stage };
+        return InferResult.some(ret, args_stage);
     }
 
     // Check if it's a user-defined function
@@ -3118,23 +3209,34 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
     if (callee_name.len > 0) {
         v.reportNotCallable(e, callee_name);
     }
-    return null;
+    return InferResult.fail;
 }
 
-fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, builtin_fn: Builtins.Builtin) Allocator.Error!?Types.Type {
+fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, builtin_fn: Builtins.Builtin) Allocator.Error!InferResult {
     // Check argument count
     const arg_count: u32 = @intCast(e.args.items.len);
     if (!builtin_fn.checkArgCount(arg_count)) {
         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' expects {d} to {d} arguments, got {d}", .{ callee_name, builtin_fn.min_args, builtin_fn.max_args, arg_count }));
-        return null;
+        return InferResult.fail;
     }
 
     // Collect argument types (single pass — no double evaluation)
     var arg_types: [8]?Types.Type = .{null} ** 8;
+    var args_stage: ExprStage = .const_expr;
     const max_check = @min(e.args.items.len, 8);
     for (0..max_check) |i| {
-        arg_types[i] = try v.checkExpr(e.args.items[i]);
+        const ar = try v.checkExpr(e.args.items[i]);
+        arg_types[i] = ar.typ;
+        args_stage = ExprStage.combine(args_stage, ar.stage);
     }
+    // A builtin's own evaluation stage caps how early the call can run:
+    // a `.const_eval` builtin preserves its args' stage; `.runtime` forces
+    // runtime; `.override` allows at most override-time evaluation.
+    const call_stage: ExprStage = switch (builtin_fn.stage) {
+        .const_eval => args_stage,
+        .override => ExprStage.combine(args_stage, .override_expr),
+        .runtime => .runtime_expr,
+    };
 
     // Type check arguments based on builtin kind
     switch (builtin_fn.kind) {
@@ -3144,7 +3246,7 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                 if (arg_types[i]) |at| {
                     if (!Types.isNumeric(at) and !Types.isFloat(at) and !Types.isMatrix(at)) {
                         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires numeric argument, got '{s}'", .{ callee_name, at.string() }));
-                        return null;
+                        return InferResult.fail;
                     }
                     // Float-only and int-only builtins further restrict the
                     // element type. Matrix args only appear as first args of
@@ -3160,13 +3262,13 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                             const is_float_mat = at == .matrix and at.matrix.element.isFloat();
                             if (!Types.isFloat(at) and !isAbstractNumeric(at) and !is_float_mat) {
                                 v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires a float-typed argument, got '{s}'", .{ callee_name, at.string() }));
-                                return null;
+                                return InferResult.fail;
                             }
                         },
                         .int_only => {
                             if (!Types.isInteger(at)) {
                                 v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires an integer argument, got '{s}'", .{ callee_name, at.string() }));
-                                return null;
+                                return InferResult.fail;
                             }
                         },
                         .numeric_any, .unknown => {},
@@ -3186,7 +3288,7 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                             Diagnostic.Code.invalid_arg_type,
                             v.fmtError("'select' condition must be 'bool' or 'vecN<bool>', got '{s}'", .{cond.string()}),
                         );
-                        return null;
+                        return InferResult.fail;
                     }
                 }
             } else {
@@ -3196,7 +3298,7 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                     const is_bool_vec = at == .vector and at.vector.element.kind == .bool;
                     if (!is_bool and !is_bool_vec) {
                         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires 'bool' or 'vecN<bool>' argument, got '{s}'", .{ callee_name, at.string() }));
-                        return null;
+                        return InferResult.fail;
                     }
                 }
             }
@@ -3218,7 +3320,7 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                         Diagnostic.Code.invalid_arg_type,
                         v.fmtError("'textureStore' requires 'write' or 'read_write' access, got 'read'", .{}),
                     );
-                    return null;
+                    return InferResult.fail;
                 }
                 // Coord dimension check — must match the texture dim.
                 if (arg_types[1]) |coord| {
@@ -3231,7 +3333,7 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                                 .{ textureCoordExpected(at.texture.dimension), coord.string() },
                             ),
                         );
-                        return null;
+                        return InferResult.fail;
                     }
                 }
             }
@@ -3246,7 +3348,7 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                         Diagnostic.Code.invalid_arg_type,
                         v.fmtError("'textureLoad' requires 'read' or 'read_write' access on a storage texture, got 'write'", .{}),
                     );
-                    return null;
+                    return InferResult.fail;
                 }
             }
         }
@@ -3271,12 +3373,14 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                         .{ callee_name, a0.string(), ai.string() },
                     ),
                 );
-                return null;
+                return InferResult.fail;
             }
         }
     }
 
-    return v.inferBuiltinReturnType(builtin_fn, callee_name, arg_types);
+    const ret = v.inferBuiltinReturnType(builtin_fn, callee_name, arg_types) orelse
+        return .{ .typ = null, .stage = call_stage };
+    return InferResult.some(ret, call_stage);
 }
 
 /// Returns true when `coord` has the scalar/vector width the texture
@@ -3318,14 +3422,20 @@ fn unifyAllArgsBuiltin(name: []const u8) bool {
     return false;
 }
 
-fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr, callee_name: []const u8) Allocator.Error!?Types.Type {
+fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr, callee_name: []const u8) Allocator.Error!InferResult {
+    // Stage follows the args' combined staging. This matches the long-
+    // standing `classifyExprStage` behavior: WGSL doesn't allow user
+    // functions at shader-creation time, but a separate initializer /
+    // const_assert check already rejects that via the `invalid_const_expr`
+    // diagnostic on the enclosing expression, so we don't bump to
+    // `.runtime_expr` here and avoid duplicate staging errors.
     if (ident.ref.isValid()) {
         const idx = ident.ref.index();
 
         // Entry points must not be called as functions (WGSL spec 8.6)
         if (idx < v.module.symbols.items.len and v.module.symbols.items[idx].flags.is_entry_point) {
             v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.entry_point_called, v.fmtError("entry point '{s}' cannot be the target of a function call", .{callee_name}));
-            return null;
+            return InferResult.fail;
         }
 
         if (v.symbol_types.get(idx)) |sym_type| {
@@ -3336,27 +3446,30 @@ fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr,
                     // Check argument count
                     if (e.args.items.len != fn_type.parameters.len) {
                         v.addErrorWithRelatedR(call_range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' expects {d} arguments, got {d}", .{ callee_name, fn_type.parameters.len, e.args.items.len }), fn_related);
-                        return null;
+                        return InferResult.fail;
                     }
                     // Check argument types
+                    var args_stage: ExprStage = .const_expr;
                     for (e.args.items, 0..) |arg, ai| {
                         if (ai < fn_type.parameters.len) {
-                            const arg_type = try v.checkExpr(arg);
-                            if (arg_type) |at| {
+                            const arg_r = try v.checkExpr(arg);
+                            args_stage = ExprStage.combine(args_stage, arg_r.stage);
+                            if (arg_r.typ) |at| {
                                 const param_type = fn_type.parameters[ai];
                                 if (!at.eql(param_type) and !Types.canConvertTo(at, param_type)) {
                                     v.addErrorWithRelatedR(call_range, Diagnostic.Code.invalid_arg_type, v.fmtError("argument {d} of '{s}' has type '{s}', expected '{s}'", .{ ai + 1, callee_name, at.string(), param_type.string() }), fn_related);
-                                    return null;
+                                    return InferResult.fail;
                                 }
                             }
                         }
                     }
-                    return fn_type.return_type;
+                    const ret = fn_type.return_type orelse return InferResult.fail;
+                    return InferResult.some(ret, args_stage);
                 },
                 else => {
                     // Symbol exists but is not a function
                     v.reportNotCallable(e, callee_name);
-                    return null;
+                    return InferResult.fail;
                 },
             }
         }
@@ -3365,16 +3478,16 @@ fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr,
             v.module.symbols.items[idx].kind == .function)
         {
             // User function — check argument count against parameters
-            return null; // Can't fully type-check without function type
+            return InferResult.fail; // Can't fully type-check without function type
         }
     }
 
     // Not resolvable — report error
     if (callee_name.len > 0 and !Builtins.isBuiltin(callee_name)) {
         v.reportNotCallable(e, callee_name);
-        return null;
+        return InferResult.fail;
     }
-    return null;
+    return InferResult.fail;
 }
 
 /// Unifies the argument types of a builtin whose return pattern is
@@ -4029,12 +4142,14 @@ fn suggestVecForComponents(v: *Validator, callee_name: []const u8, total_compone
     return buf;
 }
 
-fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!?Types.Type {
-    const base_type = (try v.checkExpr(e.base)) orelse return null;
-    const index_type = try v.checkExpr(e.idx);
+fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!InferResult {
+    const br = try v.checkExpr(e.base);
+    const ir = try v.checkExpr(e.idx);
+    const stage = ExprStage.combine(br.stage, ir.stage);
+    const base_type = br.typ orelse return .{ .typ = null, .stage = stage };
 
     // Check index type
-    if (index_type) |it| {
+    if (ir.typ) |it| {
         if (!Types.isInteger(it)) {
             v.addErrorWithCodeR(exprRange(.{ .index = e }), Diagnostic.Code.type_mismatch, v.fmtError("array index must be integer, got '{s}'", .{it.string()}));
         }
@@ -4057,24 +4172,24 @@ fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!?Types.Type {
 
     // Get element type
     switch (base_type) {
-        .array => |a| return a.element,
-        .vector => |ve| return .{ .scalar = ve.element },
+        .array => |a| return InferResult.some(a.element, stage),
+        .vector => |ve| return InferResult.some(.{ .scalar = ve.element }, stage),
         .matrix => |m| {
             // Indexing a matrix gives a column vector
-            const col_vec = v.arena.create(Types.Vector) catch return null;
+            const col_vec = v.arena.create(Types.Vector) catch return InferResult.fail;
             col_vec.* = .{ .width = m.rows, .element = m.element };
-            return .{ .vector = col_vec };
+            return InferResult.some(.{ .vector = col_vec }, stage);
         },
         .pointer => |p| {
             // Indexing through pointer to array
             switch (p.element) {
-                .array => |a| return a.element,
+                .array => |a| return InferResult.some(a.element, stage),
                 else => {},
             }
         },
         .reference => |r| {
             switch (r.element) {
-                .array => |a| return a.element,
+                .array => |a| return InferResult.some(a.element, stage),
                 else => {},
             }
         },
@@ -4082,7 +4197,7 @@ fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!?Types.Type {
     }
 
     v.addErrorWithCodeR(exprRange(.{ .index = e }), Diagnostic.Code.not_indexable, v.fmtError("type '{s}' is not indexable", .{base_type.string()}));
-    return null;
+    return InferResult.fail;
 }
 
 fn validateSwizzle(v: *Validator, name: []const u8, vec_width: u8, loc: u32, base_type: Types.Type) bool {
@@ -4156,8 +4271,10 @@ fn suggestSwizzle(v: *Validator, name: []const u8, vec_width: u8) ?[]const u8 {
     return buf;
 }
 
-fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!?Types.Type {
-    var base_type = (try v.checkExpr(e.base)) orelse return null;
+fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!InferResult {
+    const br = try v.checkExpr(e.base);
+    const stage = br.stage;
+    var base_type = br.typ orelse return .{ .typ = null, .stage = stage };
     const mr = exprRange(.{ .member = e }); // dot + member_name
 
     // Auto-dereference pointers/references
@@ -4172,7 +4289,7 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!?Types.Type {
     switch (base_type) {
         .@"struct" => |st| {
             if (st.getField(e.member_name)) |field| {
-                return field.typ;
+                return InferResult.some(field.typ, stage);
             }
             const related = if (v.findStructDecl(st.name)) |sd|
                 v.makeRelatedR(v.symbolRange(sd.name), v.fmtError("struct '{s}' defined here", .{st.name}))
@@ -4189,29 +4306,29 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!?Types.Type {
             } else {
                 v.addErrorWithRelatedR(mr, Diagnostic.Code.no_such_member, v.fmtError("struct '{s}' has no member '{s}'", .{ st.name, e.member_name }), related);
             }
-            return null;
+            return InferResult.fail;
         },
         .vector => |ve| {
             if (e.member_name.len < 1 or e.member_name.len > 4) {
                 v.addErrorWithCodeR(mr, Diagnostic.Code.no_such_member, v.fmtError("invalid swizzle '.{s}' on type '{s}'; valid components are xyzw or rgba", .{ e.member_name, base_type.string() }));
-                return null;
+                return InferResult.fail;
             }
-            if (!v.validateSwizzle(e.member_name, ve.width, e.loc, base_type)) return null;
+            if (!v.validateSwizzle(e.member_name, ve.width, e.loc, base_type)) return InferResult.fail;
             // Single-component swizzle: returns scalar
             if (e.member_name.len == 1) {
-                return .{ .scalar = ve.element };
+                return InferResult.some(.{ .scalar = ve.element }, stage);
             }
             // Multi-component swizzle: returns vector
-            const swiz_vec = v.arena.create(Types.Vector) catch return null;
+            const swiz_vec = v.arena.create(Types.Vector) catch return InferResult.fail;
             swiz_vec.* = .{
                 .width = @intCast(e.member_name.len),
                 .element = ve.element,
             };
-            return .{ .vector = swiz_vec };
+            return InferResult.some(.{ .vector = swiz_vec }, stage);
         },
         else => {
             v.addErrorWithCodeR(mr, Diagnostic.Code.no_such_member, v.fmtError("type '{s}' has no members", .{base_type.string()}));
-            return null;
+            return InferResult.fail;
         },
     }
 }
@@ -5428,13 +5545,6 @@ fn extractLiteralIntValueDepth(expr: Ast.Expr, depth: u32) ?i64 {
         else => null,
     };
 }
-
-/// Expression evaluation stage per WGSL spec sections 6.7-6.9.
-const ExprStage = enum(u2) {
-    const_expr, // Evaluable at shader creation time from const declarations
-    override_expr, // Evaluable at pipeline creation time (references overrides)
-    runtime_expr, // Only evaluable at runtime
-};
 
 /// Classify the evaluation stage of an expression.
 /// const_expr < override_expr < runtime_expr; parent = max(children).
