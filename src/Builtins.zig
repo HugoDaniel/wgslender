@@ -830,6 +830,25 @@ const unpack2x16_float_sigs = &[_]O.OverloadSig{
     },
 };
 
+/// dot4I8Packed / dot4U8Packed (§17.5.20): `(u32, u32) -> i32 / u32`.
+/// Inputs are interpreted as four packed 8-bit ints. No tparams — both
+/// params and the return are concrete, so this mirrors the shape of the
+/// `unpack4xI8` / `unpack4xU8` sigs above.
+const dot4I8Packed_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{ .{ .concrete = Types.U32 }, .{ .concrete = Types.U32 } },
+        .result = .{ .fixed = Types.I32 },
+    },
+};
+const dot4U8Packed_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{ .{ .concrete = Types.U32 }, .{ .concrete = Types.U32 } },
+        .result = .{ .fixed = Types.U32 },
+    },
+};
+
 /// subgroupBallot: `()` or `(bool) -> vec4<u32>`.
 const subgroup_ballot_sigs = &[_]O.OverloadSig{
     .{
@@ -1266,6 +1285,10 @@ const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
     .{ "unpack2x16snorm", unpack2x16_float_sigs },
     .{ "unpack2x16unorm", unpack2x16_float_sigs },
     .{ "unpack2x16float", unpack2x16_float_sigs },
+
+    // Packed dot product (§17.5.20)
+    .{ "dot4I8Packed", dot4I8Packed_sigs },
+    .{ "dot4U8Packed", dot4U8Packed_sigs },
 
     // Synchronization (§17.11)
     .{ "workgroupUniformLoad", wg_uniform_load_sigs },

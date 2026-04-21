@@ -3287,12 +3287,12 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         }
     }
 
-    // Declarative overload resolution (Task #9 / Phases 1-2). Active for
+    // Declarative overload resolution (Task #9 / Phases 1-3a). Active for
     // any builtin with populated `overloads`. The solver binds type
     // parameters from the arg types and the caller builds the return from
-    // `ResultRule`. Builtins without overloads (bitcast, dot4*-packed,
-    // texture/atomic-store, arrayLength, barriers) still ride the legacy
-    // `inferBuiltinReturnType` fallback — Phase 3 migrates the remaining set.
+    // `ResultRule`. Builtins without overloads (bitcast, texture/atomic-store,
+    // arrayLength, barriers) still ride the legacy `inferBuiltinReturnType`
+    // fallback — later Phase 3 steps migrate the remaining set.
     if (builtin_fn.overloads.len > 0) {
         const argc = @min(e.args.items.len, 8);
         const res = Overload.resolve(builtin_fn.overloads, arg_types[0..argc]);
@@ -3612,12 +3612,12 @@ fn inferCustomBuiltin(v: *Validator, name: []const u8, arg_types: [8]?Types.Type
     _ = v;
     _ = name;
     _ = arg_types;
-    // Phase 1 of Task #9 moved transpose / workgroupUniformLoad / subgroupBallot
-    // / atomicCompareExchangeWeak / frexp / modf / atomic* / unpack* to the
-    // declarative `Overload.resolve` path (see `Builtins.sig_entries`).
-    // The remaining `.custom`-pattern builtins (`bitcast`, `dot4I8Packed`,
-    // `dot4U8Packed`) are handled directly in `checkExprCall` / via their
-    // dedicated call-site logic — none reach this function today.
+    // Phases 1-3a of Task #9 moved transpose / workgroupUniformLoad /
+    // subgroupBallot / atomicCompareExchangeWeak / frexp / modf / atomic* /
+    // unpack* / dot4I8Packed / dot4U8Packed to the declarative
+    // `Overload.resolve` path (see `Builtins.sig_entries`). `bitcast` is the
+    // sole remaining `.custom`-pattern builtin and is handled by its
+    // dedicated call-site logic in `checkExprCall` — nothing reaches here.
     return null;
 }
 

@@ -765,3 +765,51 @@ test "buildPatternType: bound_matrix_transposed swaps cols/rows" {
     try std.testing.expectEqual(@as(u8, 2), t.?.matrix.rows);
     try std.testing.expectEqual(Types.ScalarKind.f32, t.?.matrix.element.kind);
 }
+
+// =========================================================================
+// 13. dot4-packed (§17.5.20) — Phase 3a migration
+// =========================================================================
+
+test "dot4I8Packed(u32, u32) → i32" {
+    var r = try analyze("fn f() { let x = dot4I8Packed(0u, 0u); }");
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "i32");
+}
+
+test "dot4U8Packed(u32, u32) → u32" {
+    var r = try analyze("fn f() { let x = dot4U8Packed(0u, 0u); }");
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "u32");
+}
+
+test "dot4I8Packed accepts u32 variable references (load rule)" {
+    var r = try analyze(
+        \\fn f() {
+        \\    var a: u32 = 1u;
+        \\    var b: u32 = 2u;
+        \\    let x = dot4I8Packed(a, b);
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    try expectLetString(&r, "x", "i32");
+}
+
+test "dot4I8Packed rejects i32 args (no matching overload)" {
+    var r = try validate("fn f() { let x = dot4I8Packed(1i, 2i); }");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasErrorWithCode(r, "E0203"));
+    try std.testing.expect(hasErrorContaining(r, "dot4I8Packed"));
+}
+
+test "dot4U8Packed rejects mixed u32/i32 on second arg" {
+    var r = try validate("fn f() { let x = dot4U8Packed(0u, 1i); }");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasErrorWithCode(r, "E0203"));
+    try std.testing.expect(hasErrorContaining(r, "argument 2"));
+}
+
+test "dot4I8Packed arity: one arg rejected" {
+    var r = try validate("fn f() { let x = dot4I8Packed(0u); }");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(anyError(r));
+}

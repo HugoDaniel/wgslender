@@ -12,9 +12,9 @@
 //! lowest total wins. Ties are broken by declaration order (first wins),
 //! which matches Naga/Tint.
 //!
-//! The engine is deliberately small: texture/bitcast/dot4*-packed
-//! complexity is deferred to Phase 3, so the Pattern grammar covers only
-//! the shapes Phase 1 needs (scalar, vector, matrix, pointer<atomic<T>>,
+//! The engine is deliberately small: texture and `bitcast<T>` complexity
+//! is deferred to later Phase 3 steps, so the Pattern grammar covers only
+//! the shapes Phases 1-3a need (scalar, vector, matrix, pointer<atomic<T>>,
 //! concrete singleton refs). Expanding it later is a matter of adding
 //! new `Pattern` variants and `unifyArg` cases.
 
