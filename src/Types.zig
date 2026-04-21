@@ -862,6 +862,75 @@ pub fn elementType(allocator: Allocator, t: Type) Allocator.Error!?Type {
 // Type Conversion and Inference
 // =========================================================================
 
+/// Returns the WGSL ConversionRank from `src` to `dst` per spec §8.2
+/// (bikeshed lines 2436+). Lower ranks are more desirable; `null` means
+/// the conversion is infeasible. Identity and the load-rule are rank 0.
+/// Abstract cascade follows the 9-rule table exactly. Vectors, matrices
+/// and fixed-size arrays inherit their element rank.
+pub fn conversionRank(src: Type, dst: Type) ?u32 {
+    if (src.eql(dst)) return 0;
+
+    // Load rule: ref<AS, T, AM> → T when AM is read or read_write.
+    if (src == .reference) {
+        const r = src.reference;
+        if (r.access_mode == .read or r.access_mode == .read_write) {
+            return conversionRank(r.element, dst);
+        }
+        return null;
+    }
+
+    if (src == .scalar and dst == .scalar) {
+        return scalarConversionRank(src.scalar.kind, dst.scalar.kind);
+    }
+
+    if (src == .vector and dst == .vector) {
+        const sv = src.vector;
+        const dv = dst.vector;
+        if (sv.width != dv.width) return null;
+        return scalarConversionRank(sv.element.kind, dv.element.kind);
+    }
+
+    if (src == .matrix and dst == .matrix) {
+        const sm = src.matrix;
+        const dm = dst.matrix;
+        if (sm.cols != dm.cols or sm.rows != dm.rows) return null;
+        return scalarConversionRank(sm.element.kind, dm.element.kind);
+    }
+
+    if (src == .array and dst == .array) {
+        const sa = src.array;
+        const da = dst.array;
+        // Runtime-sized arrays (count == 0) cannot carry abstract element
+        // types per the spec note, so no conversion between them applies.
+        if (sa.count == 0 or da.count == 0) return null;
+        if (sa.count != da.count) return null;
+        return conversionRank(sa.element, da.element);
+    }
+
+    return null;
+}
+
+/// Rank table for scalar-to-scalar conversions per spec §8.2.
+fn scalarConversionRank(src: ScalarKind, dst: ScalarKind) ?u32 {
+    if (src == dst) return 0;
+    return switch (src) {
+        .abstract_float => switch (dst) {
+            .f32 => 1,
+            .f16 => 2,
+            else => null,
+        },
+        .abstract_int => switch (dst) {
+            .i32 => 3,
+            .u32 => 4,
+            .abstract_float => 5,
+            .f32 => 6,
+            .f16 => 7,
+            else => null,
+        },
+        else => null,
+    };
+}
+
 /// Returns true if src can be implicitly converted to dst.
 /// Iteratively follows type element chains.
 pub fn canConvertTo(src: Type, dst: Type) bool {
