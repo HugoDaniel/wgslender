@@ -88,6 +88,28 @@ pub fn build(b: *std.Build) void {
     });
     const lsp_mod = lsp_kit_dep.module("lsp");
 
+    // Handler and bridge modules (registered here so both the LSP
+    // executable and the test files can depend on them by name). The
+    // bridge module translates `Handler.LspDiagnostic` to the lsp-kit
+    // JSON-shaped `lsp.types.Diagnostic` used by publishDiagnostics.
+    const handler_mod = b.addModule("Handler", .{
+        .root_source_file = b.path("lsp/Handler.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "wgslender", .module = wgslender_mod },
+        },
+    });
+    const bridge_mod = b.addModule("bridge", .{
+        .root_source_file = b.path("lsp/bridge.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "Handler", .module = handler_mod },
+        },
+    });
+
     const lsp_exe = b.addExecutable(.{
         .name = "wgslender-lsp",
         .root_module = b.createModule(.{
@@ -97,6 +119,8 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "wgslender", .module = wgslender_mod },
                 .{ .name = "lsp", .module = lsp_mod },
+                .{ .name = "Handler", .module = handler_mod },
+                .{ .name = "bridge", .module = bridge_mod },
             },
         }),
     });
@@ -139,14 +163,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const handler_mod = b.addModule("Handler", .{
-        .root_source_file = b.path("lsp/Handler.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "wgslender", .module = wgslender_mod },
-        },
-    });
+    // `handler_mod` and `bridge_mod` are defined above, adjacent to the
+    // LSP executable so both binary and tests share the same module graph.
 
     const test_step = b.step("test", "Run all tests");
     const w: std.Build.Module.Import = .{ .name = "wgslender", .module = wgslender_mod };
@@ -273,6 +291,16 @@ pub fn build(b: *std.Build) void {
     // on the document's current source (the strongest consistency check
     // for the incremental wiring).
     _ = addTestStep(b, test_step, "tests/lsp_analysis_cache_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // End-to-end publishDiagnostics JSON payload tests — drive WGSL
+    // sources through validateDocument + bridge + writeNotification and
+    // assert the serialized code / codeDescription.href / relatedInformation
+    // shape every editor consumes.
+    _ = addTestStep(b, test_step, "tests/lsp_publish_diagnostics_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "bridge", .module = bridge_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+    });
     // LSP analyze perf smoke: records Lexer.tokenize invocations
     // across a 200-keystroke burst against bridge.wgsl. Enforces a
     // generous upper bound so a reintroduced tokenize path in

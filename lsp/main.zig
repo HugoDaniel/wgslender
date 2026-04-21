@@ -5,7 +5,8 @@
 
 const std = @import("std");
 const lsp = @import("lsp");
-const Handler = @import("Handler.zig");
+const Handler = @import("Handler");
+const bridge = @import("bridge");
 
 pub fn main(init: std.process.Init) !void {
     var read_buffer: [4096]u8 = undefined;
@@ -840,86 +841,16 @@ const NativeServer = struct {
         const diags = self.handler.validateDocumentFull(uri) catch return;
         defer Handler.freeDiagnostics(self.handler.gpa, diags);
 
-        // Convert Handler diagnostics to lsp-kit types.
-        const lsp_diags = self.handler.gpa.alloc(lsp.types.Diagnostic, diags.len) catch return;
-        defer self.handler.gpa.free(lsp_diags);
-
-        // Track allocations so we can free them after serialization.
-        var related_allocs: [256]?[]const lsp.types.Diagnostic.RelatedInformation = undefined;
-        var related_count: usize = 0;
-        var tag_allocs: [256]?[]const lsp.types.Diagnostic.Tag = undefined;
-        var tag_count: usize = 0;
-
-        for (diags, 0..) |d, i| {
-            var related_info: ?[]const lsp.types.Diagnostic.RelatedInformation = null;
-            if (d.related.len > 0) {
-                const rel = self.handler.gpa.alloc(lsp.types.Diagnostic.RelatedInformation, d.related.len) catch null;
-                if (rel) |r| {
-                    for (d.related, 0..) |rel_item, ri| {
-                        r[ri] = .{
-                            .location = .{
-                                .uri = uri,
-                                .range = .{
-                                    .start = .{ .line = rel_item.range.start.line, .character = rel_item.range.start.character },
-                                    .end = .{ .line = rel_item.range.end.line, .character = rel_item.range.end.character },
-                                },
-                            },
-                            .message = rel_item.message,
-                        };
-                    }
-                    related_info = r;
-                    if (related_count < related_allocs.len) {
-                        related_allocs[related_count] = r;
-                        related_count += 1;
-                    }
-                }
-            }
-            lsp_diags[i] = .{
-                .range = .{
-                    .start = .{ .line = d.range.start.line, .character = d.range.start.character },
-                    .end = .{ .line = d.range.end.line, .character = d.range.end.character },
-                },
-                .severity = switch (d.severity) {
-                    .@"error" => .Error,
-                    .warning => .Warning,
-                    .information => .Information,
-                    .hint => .Hint,
-                },
-                .code = if (d.code.len > 0) .{ .string = d.code } else null,
-                .codeDescription = if (d.spec_url.len > 0) .{ .href = d.spec_url } else null,
-                .source = "wgslender",
-                .message = d.message,
-                .tags = if (d.tags.len > 0) blk: {
-                    const t = self.handler.gpa.alloc(lsp.types.Diagnostic.Tag, d.tags.len) catch break :blk null;
-                    for (d.tags, 0..) |tag, ti| t[ti] = switch (tag) {
-                        .unnecessary => .Unnecessary,
-                        .deprecated => .Deprecated,
-                    };
-                    if (tag_count < tag_allocs.len) {
-                        tag_allocs[tag_count] = t;
-                        tag_count += 1;
-                    }
-                    break :blk t;
-                } else null,
-                .relatedInformation = related_info,
-            };
-        }
+        var bridged = bridge.toLspKitDiagnostics(self.handler.gpa, diags, uri) catch return;
+        defer bridged.deinit();
 
         self.transport.writeNotification(
             self.io,
             self.handler.gpa,
             "textDocument/publishDiagnostics",
             lsp.types.publish_diagnostics.Params,
-            .{ .uri = uri, .diagnostics = lsp_diags },
+            .{ .uri = uri, .diagnostics = bridged.diagnostics },
             .{ .emit_null_optional_fields = false },
         ) catch {};
-
-        // Free allocated arrays after serialization.
-        for (related_allocs[0..related_count]) |ri| {
-            if (ri) |r| self.handler.gpa.free(r);
-        }
-        for (tag_allocs[0..tag_count]) |ti| {
-            if (ti) |t| self.handler.gpa.free(t);
-        }
     }
 };
