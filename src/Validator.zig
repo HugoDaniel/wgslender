@@ -2740,6 +2740,21 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
     }
 }
 
+/// Syntactic approximation of whether an expression can denote a reference
+/// — i.e. something addressable by `&`. The check is conservative: it
+/// permits ident / member / index / paren-wrapped forms (which may reach a
+/// variable) and `*p` (deref of a pointer yields a reference), and rejects
+/// shapes that definitionally produce values (literals, calls, other unary
+/// forms, binary ops).
+fn addrOfOperandLooksAddressable(operand: Ast.Expr) bool {
+    return switch (operand) {
+        .ident, .member, .index => true,
+        .paren => |p| addrOfOperandLooksAddressable(p.expr),
+        .unary => |u| u.op == .deref and addrOfOperandLooksAddressable(u.operand),
+        .literal, .call, .binary => false,
+    };
+}
+
 fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
     const operand_type = (try v.checkExpr(e.operand)) orelse return null;
     const er = exprRange(.{ .unary = e });
@@ -2775,13 +2790,26 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!?Types.Type {
                 .pointer => |p| return p.element,
                 .reference => |r| return r.element,
                 else => {
-                    v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot dereference non-pointer type '{s}'", .{operand_type.string()}));
+                    v.addErrorWithCodeR(er, Diagnostic.Code.deref_requires_pointer, v.fmtError("unary '*' requires a pointer, got '{s}'", .{operand_type.string()}));
                     return null;
                 },
             }
         },
         .addr => {
-            // Creates a pointer to the operand (simplified — actual address space detection is complex)
+            // The operand of `&` must denote a reference (a memory view) —
+            // in practice, something you could read or write. Pure values like
+            // literals and computed expression results have no address. We do
+            // not yet flow reference types through the expression checker, so
+            // use a syntactic approximation: reject any operand whose shape
+            // cannot possibly carry a reference.
+            if (!addrOfOperandLooksAddressable(e.operand)) {
+                v.addErrorWithCodeR(
+                    er,
+                    Diagnostic.Code.addr_of_requires_reference,
+                    "unary '&' requires a reference (e.g. a variable or member access); the operand has no address",
+                );
+                return null;
+            }
             const p = v.arena.create(Types.Pointer) catch return null;
             p.* = .{
                 .address_space = .function,

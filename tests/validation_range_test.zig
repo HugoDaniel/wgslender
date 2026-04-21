@@ -645,7 +645,7 @@ test "validation range: deref non-pointer underlines *" {
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
     // '*' is 1 char
-    try expectErrorWidth(result, "cannot dereference", 1);
+    try expectErrorWidth(result, "unary '*' requires a pointer", 1);
 }
 
 // =========================================================================

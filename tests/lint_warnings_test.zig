@@ -398,3 +398,86 @@ test "E0213: arithmetic within arithmetic is OK" {
         }
     }
 }
+
+// -------------------------------------------------------------------------
+// E0214 deref requires pointer / E0215 address-of requires reference
+// -------------------------------------------------------------------------
+
+test "E0214: *f32 on non-pointer fires" {
+    var r = try validateSource(
+        \\fn main() -> f32 {
+        \\  let x: f32 = 1.0;
+        \\  return *x;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0214")) {
+        dumpDiags("no E0214 for '*x' where x is f32", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0214: dereferencing a pointer is OK" {
+    var r = try validateSource(
+        \\fn main() -> f32 {
+        \\  var x: f32 = 1.0;
+        \\  let p = &x;
+        \\  return *p;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    for (r.diagnostics.items()) |d| {
+        if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0214")) {
+            dumpDiags("unexpected E0214 on valid pointer deref", r);
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "E0215: &literal has no address" {
+    var r = try validateSource(
+        \\fn main() -> f32 {
+        \\  var x: f32 = 1.0;
+        \\  let p = &1.0;
+        \\  return x;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0215")) {
+        dumpDiags("no E0215 for '&1.0'", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0215: &(a + b) has no address" {
+    var r = try validateSource(
+        \\fn main() -> f32 {
+        \\  var a: f32 = 1.0;
+        \\  var b: f32 = 2.0;
+        \\  let p = &(a + b);
+        \\  return a;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0215")) {
+        dumpDiags("no E0215 for '&(a + b)'", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "E0215: &x on a variable is OK" {
+    var r = try validateSource(
+        \\fn main() -> f32 {
+        \\  var x: f32 = 1.0;
+        \\  let p = &x;
+        \\  return *p;
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    for (r.diagnostics.items()) |d| {
+        if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0215")) {
+            dumpDiags("unexpected E0215 on valid addr-of", r);
+            return error.TestUnexpectedResult;
+        }
+    }
+}
