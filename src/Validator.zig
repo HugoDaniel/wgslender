@@ -1647,6 +1647,21 @@ fn hasDuplicateSwizzleChars(name: []const u8) bool {
     return false;
 }
 
+/// Returns true if `name` is a syntactically valid swizzle (1–4 chars,
+/// all from xyzw or all from rgba — never mixed). Used alongside the
+/// base-type check to distinguish struct-field access from swizzles.
+fn isSwizzleName(name: []const u8) bool {
+    if (name.len == 0 or name.len > 4) return false;
+    var saw_xyzw = false;
+    var saw_rgba = false;
+    for (name) |c| switch (c) {
+        'x', 'y', 'z', 'w' => saw_xyzw = true,
+        'r', 'g', 'b', 'a' => saw_rgba = true,
+        else => return false,
+    };
+    return saw_xyzw != saw_rgba;
+}
+
 /// @invariant can only apply to @builtin(position) (WGSL spec section 9.3.3).
 fn validateInvariantAttr(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attribute), member_loc: u32) void {
     if (!hasAttr(attrs, "invariant")) return;
@@ -2222,12 +2237,24 @@ fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
         }
     }
 
-    // Duplicate swizzle components in write target are invalid (WGSL spec section 9.4).
+    // Swizzle write-target rules, WGSL §5.3.4 and §9.4:
+    // 1. A multi-letter swizzle always yields a value (rvalue), so it
+    //    cannot appear on the LHS of an assignment.
+    // 2. Even single-occurrence multi-letter swizzles like `.xy` are
+    //    invalid as write targets; only single-letter swizzles are
+    //    lvalues.
+    // 3. Duplicate components (`.xx`, `.xyx`) are trivially invalid.
     if (s.left == .member) {
         const member = s.left.member;
         if (member.base == .ident or member.base == .member) {
-            if (hasDuplicateSwizzleChars(member.member_name)) {
-                v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("swizzle assignment target '{s}' has duplicate components", .{member.member_name}));
+            const is_swiz = isSwizzleName(member.member_name);
+            const is_multi = member.member_name.len > 1;
+            if (is_swiz and is_multi) {
+                if (hasDuplicateSwizzleChars(member.member_name)) {
+                    v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("swizzle assignment target '{s}' has duplicate components", .{member.member_name}));
+                } else {
+                    v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("multi-letter swizzle '{s}' cannot appear on the left-hand side of an assignment", .{member.member_name}));
+                }
             }
         }
     }
