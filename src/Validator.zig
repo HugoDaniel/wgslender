@@ -3018,7 +3018,16 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
         }
     }
 
-    // bitcast<T>(expr): validate conversion constraints before the generic template path.
+    // bitcast<T>(expr) — WGSL §17.9.5. The spec defines six overload forms
+    // over concrete 32-bit numerics and f16 vectors:
+    //   • scalar ↔ scalar (i32 ↔ u32 ↔ f32),
+    //   • vecN<T> ↔ vecN<S> (T,S ∈ {i32,u32,f32}),
+    //   • 32-bit ↔ vec2<f16>,
+    //   • vec2 of 32-bit ↔ vec4<f16>.
+    // Abstract-numeric inputs concretize automatically before the cast
+    // (AbstractInt → i32, AbstractFloat → f32) — this mirrors the spec's
+    // automatic conversion at argument sites. Bool, pointer, struct,
+    // matrix, array, atomic, and handle operands are rejected.
     if (std.mem.eql(u8, callee_name, "bitcast")) {
         if (e.template_type) |tt| {
             const dest_type = v.resolveType(tt) orelse return null;
@@ -3029,21 +3038,20 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!?Types.Type {
                 return null;
             }
 
-            // Evaluate the source argument
-            const src_type = (try v.checkExpr(e.args.items[0])) orelse return dest_type;
+            // Evaluate the source argument; promote abstract numerics.
+            const raw_src = (try v.checkExpr(e.args.items[0])) orelse return dest_type;
+            const src_type = Types.concreteType(raw_src);
 
-            // Spec: bitcast operands must be numeric scalar or vector (no bool, no pointer, no struct).
             const src_size = bitcastSize(src_type);
             const dst_size = bitcastSize(dest_type);
             if (src_size == 0) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast from '{s}'; must be a numeric scalar or vector of numeric scalars", .{src_type.string()}));
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast from '{s}'; must be a numeric scalar or vector of numeric scalars", .{raw_src.string()}));
                 return dest_type;
             }
             if (dst_size == 0) {
                 v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot bitcast to '{s}'; must be a numeric scalar or vector of numeric scalars", .{dest_type.string()}));
                 return dest_type;
             }
-            // Spec: source and destination must have the same bit-width.
             if (src_size != dst_size) {
                 v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("bitcast source type '{s}' ({d} bits) and destination type '{s}' ({d} bits) must have the same bit-width", .{ src_type.string(), src_size, dest_type.string(), dst_size }));
             }
