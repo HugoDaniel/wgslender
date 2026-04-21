@@ -321,6 +321,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/inference/const_classification_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/overload_same_as_arg_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/template_inference_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/inference/operator_types_test.zig", target, optimize, &.{w});
 }
 
 fn addTestStep(

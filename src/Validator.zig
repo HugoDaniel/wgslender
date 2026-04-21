@@ -2745,8 +2745,16 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!?Types.Type {
                 return null;
             }
             // Shift amount must be less than the bit width of the LHS type (WGSL spec section 8.7).
+            // AbstractInt LHS has no in-source bit width (`Scalar.size()` is 0);
+            // per spec it concretizes to i32/u32 so a 32-bit cap is the right
+            // shader-creation-time ceiling. Preserves spec-literal behavior
+            // for concrete `i32`/`u32` LHS (also 32-bit).
             if (v.tryExtractIntValue(e.right)) |shift_val| {
-                const bit_width: i64 = if (left_type == .scalar) @as(i64, left_type.scalar.size()) * 8 else 32;
+                const bit_width: i64 = blk: {
+                    if (left_type != .scalar) break :blk 32;
+                    const sz = left_type.scalar.size();
+                    break :blk if (sz == 0) 32 else @as(i64, sz) * 8;
+                };
                 if (shift_val < 0 or shift_val >= bit_width) {
                     v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.invalid_operand, v.fmtError("shift amount {d} exceeds bit width of {d}", .{ shift_val, bit_width }));
                 }
