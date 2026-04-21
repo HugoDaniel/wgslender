@@ -45,6 +45,9 @@ pub const ScalarFamily = enum {
     /// every scalar kind including bool. Used by `select` and a few subgroup
     /// ops where T is "any scalar or vector of any scalar".
     any,
+    /// bool only — used by `all`/`any`/subgroupAll/subgroupAny for their
+    /// `vecN<bool>` overloads.
+    bool,
 
     pub fn accepts(self: ScalarFamily, kind: Types.ScalarKind) bool {
         return switch (self) {
@@ -53,6 +56,7 @@ pub const ScalarFamily = enum {
             .numeric => kind != .bool,
             .abstract_int => kind == .abstract_int,
             .any => true,
+            .bool => kind == .bool,
         };
     }
 };

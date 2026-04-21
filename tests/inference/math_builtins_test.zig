@@ -11,8 +11,12 @@
 //!     family).
 //!
 //! `dot` is deliberately numeric-any per §17.5.15 even though most
-//! vector-algebra helpers are float-only. See the allow-list in
-//! `mathBuiltinDomain` in src/Validator.zig.
+//! vector-algebra helpers are float-only.
+//!
+//! Post-Phase-2 (Task #9): domain enforcement lives in the declarative
+//! overload signatures in `Builtins.sig_entries`; the legacy
+//! `mathBuiltinDomain` switch has been retired. Rejection errors now
+//! read "no matching overload for 'X': argument N has type 'Y'".
 
 const std = @import("std");
 const wgslender = @import("wgslender");
@@ -55,23 +59,20 @@ fn validMustPass(src: [:0]const u8, label: []const u8) !void {
     }
 }
 
-fn expectFloatOnlyReject(src: [:0]const u8, label: []const u8) !void {
+fn expectNoMatchingOverload(src: [:0]const u8, label: []const u8) !void {
     var r = try validate(src);
     defer r.deinit(std.testing.allocator);
-    if (!hasErrorContaining(r, "requires a float-typed argument")) {
+    if (!hasErrorContaining(r, "no matching overload")) {
         dump(label, r);
         return error.TestUnexpectedResult;
     }
 }
 
-fn expectIntOnlyReject(src: [:0]const u8, label: []const u8) !void {
-    var r = try validate(src);
-    defer r.deinit(std.testing.allocator);
-    if (!hasErrorContaining(r, "requires an integer argument")) {
-        dump(label, r);
-        return error.TestUnexpectedResult;
-    }
-}
+// Kept as aliases so every rejection call site stays self-documenting:
+// the test name says "float-only" or "int-only", the helper name says the
+// same, and the runtime needle is the engine's generic error.
+const expectFloatOnlyReject = expectNoMatchingOverload;
+const expectIntOnlyReject = expectNoMatchingOverload;
 
 // -------------------------------------------------------------------------
 // Float-only unaries — positive cases.
@@ -284,7 +285,7 @@ test "§17.5.12: clamp(vec3f(0.5), vec3f(0.0), vec3f(1.0)) valid" {
 test "§17.5.1: abs(true) rejected (not numeric)" {
     var r = try validate("fn f() { let x = abs(true); }");
     defer r.deinit(std.testing.allocator);
-    if (!hasErrorContaining(r, "requires numeric argument")) {
+    if (!hasErrorContaining(r, "no matching overload")) {
         dump("expected numeric error on abs(true)", r);
         return error.TestUnexpectedResult;
     }
@@ -293,7 +294,7 @@ test "§17.5.1: abs(true) rejected (not numeric)" {
 test "§17.5.33: min(true, false) rejected" {
     var r = try validate("fn f() { let x = min(true, false); }");
     defer r.deinit(std.testing.allocator);
-    if (!hasErrorContaining(r, "requires numeric argument")) {
+    if (!hasErrorContaining(r, "no matching overload")) {
         dump("expected numeric error on min(bool)", r);
         return error.TestUnexpectedResult;
     }

@@ -1144,7 +1144,7 @@ const select_sigs = &[_]O.OverloadSig{
         .params = &.{
             vectorParam(.any),
             vectorParam(.any),
-            .{ .tparam_vector = .{ .elem_idx = 2, .elem_family = .any, .n_idx = 1 } },
+            .{ .tparam_vector = .{ .elem_idx = O.Pattern.no_tparam, .elem_family = .bool, .n_idx = 1 } },
         },
         .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
     },
@@ -1174,6 +1174,70 @@ const subgroup_shuffle_sigs = &[_]O.OverloadSig{
 /// `quadBroadcast(e: T, id: u32) -> T` with T ∈ numeric. Shape identical
 /// to subgroupBroadcast.
 const quad_broadcast_sigs = subgroup_shuffle_sigs;
+
+/// `all(bool) -> bool`, `all(vecN<bool>) -> bool` — same shape for `any`
+/// and the subgroup reductions.
+const bool_reduce_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = Types.Bool }},
+        .result = .{ .fixed = Types.Bool },
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_vector = .{ .elem_idx = O.Pattern.no_tparam, .elem_family = .bool, .n_idx = 0 } }},
+        .result = .{ .fixed = Types.Bool },
+    },
+};
+
+/// `subgroupElect() -> bool` / `subgroupAll(bool) -> bool` / `subgroupAny(bool)`.
+const subgroup_bool_reduce_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = Types.Bool }},
+        .result = .{ .fixed = Types.Bool },
+    },
+};
+
+const subgroup_elect_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{},
+        .result = .{ .fixed = Types.Bool },
+    },
+};
+
+/// pack2x16* take vec2<f32>; pack4x8* take vec4<f32>; pack4xI8* take
+/// vec4<i32>; pack4xU8* take vec4<u32>. Static vec-type singletons are
+/// reused from Phase 1's unpack table.
+const pack_vec2_f32_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = vec2_f32_type }},
+        .result = .{ .fixed = Types.U32 },
+    },
+};
+const pack_vec4_f32_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = vec4_f32_type }},
+        .result = .{ .fixed = Types.U32 },
+    },
+};
+const pack_vec4_i32_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = vec4_i32_type }},
+        .result = .{ .fixed = Types.U32 },
+    },
+};
+const pack_vec4_u32_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 0,
+        .params = &.{.{ .concrete = vec4_u32_type }},
+        .result = .{ .fixed = Types.U32 },
+    },
+};
 
 /// Side-table entries — built at comptime to keep lookup O(1).
 const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
@@ -1320,6 +1384,24 @@ const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
     .{ "quadSwapDiagonal", subgroup_unary_numeric_sigs },
     .{ "quadSwapX", subgroup_unary_numeric_sigs },
     .{ "quadSwapY", subgroup_unary_numeric_sigs },
+
+    // Logical reductions (§17.3).
+    .{ "all", bool_reduce_sigs },
+    .{ "any", bool_reduce_sigs },
+    .{ "subgroupAll", subgroup_bool_reduce_sigs },
+    .{ "subgroupAny", subgroup_bool_reduce_sigs },
+    .{ "subgroupElect", subgroup_elect_sigs },
+
+    // Data packing (§17.9).
+    .{ "pack2x16snorm", pack_vec2_f32_sigs },
+    .{ "pack2x16unorm", pack_vec2_f32_sigs },
+    .{ "pack2x16float", pack_vec2_f32_sigs },
+    .{ "pack4x8snorm", pack_vec4_f32_sigs },
+    .{ "pack4x8unorm", pack_vec4_f32_sigs },
+    .{ "pack4xI8", pack_vec4_i32_sigs },
+    .{ "pack4xI8Clamp", pack_vec4_i32_sigs },
+    .{ "pack4xU8", pack_vec4_u32_sigs },
+    .{ "pack4xU8Clamp", pack_vec4_u32_sigs },
 };
 
 // =========================================================================

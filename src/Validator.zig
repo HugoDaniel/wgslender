@@ -3239,74 +3239,6 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         .runtime => .runtime_expr,
     };
 
-    // Type check arguments based on builtin kind
-    switch (builtin_fn.kind) {
-        .numeric, .derivative => {
-            const domain = mathBuiltinDomain(callee_name);
-            for (0..max_check) |i| {
-                if (arg_types[i]) |at| {
-                    if (!Types.isNumeric(at) and !Types.isFloat(at) and !Types.isMatrix(at)) {
-                        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires numeric argument, got '{s}'", .{ callee_name, at.string() }));
-                        return InferResult.fail;
-                    }
-                    // Float-only and int-only builtins further restrict the
-                    // element type. Matrix args only appear as first args of
-                    // matrix builtins (handled by .custom return rule), so
-                    // the scalar-family check is safe here.
-                    if (i == 0) switch (domain) {
-                        .float_only => {
-                            // Float-only builtins accept f16/f32 scalars,
-                            // float vectors, float matrices (for transpose/
-                            // determinant), or abstract numerics. The
-                            // float-matrix check is the one `Types.isFloat`
-                            // does not cover on its own.
-                            const is_float_mat = at == .matrix and at.matrix.element.isFloat();
-                            if (!Types.isFloat(at) and !isAbstractNumeric(at) and !is_float_mat) {
-                                v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires a float-typed argument, got '{s}'", .{ callee_name, at.string() }));
-                                return InferResult.fail;
-                            }
-                        },
-                        .int_only => {
-                            if (!Types.isInteger(at)) {
-                                v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires an integer argument, got '{s}'", .{ callee_name, at.string() }));
-                                return InferResult.fail;
-                            }
-                        },
-                        .numeric_any, .unknown => {},
-                    };
-                }
-            }
-        },
-        .logical => {
-            // all/any require bool args; select has (T, T, bool_or_vecN<bool>) signature
-            if (std.mem.eql(u8, callee_name, "select")) {
-                if (arg_types[2]) |cond| {
-                    const is_bool = cond.eql(Types.Bool);
-                    const is_bool_vec = cond == .vector and cond.vector.element.kind == .bool;
-                    if (!is_bool and !is_bool_vec) {
-                        v.addErrorWithCodeR(
-                            exprRange(.{ .call = e }),
-                            Diagnostic.Code.invalid_arg_type,
-                            v.fmtError("'select' condition must be 'bool' or 'vecN<bool>', got '{s}'", .{cond.string()}),
-                        );
-                        return InferResult.fail;
-                    }
-                }
-            } else {
-                // all / any accept bool or vecN<bool> only.
-                if (arg_types[0]) |at| {
-                    const is_bool = at.eql(Types.Bool);
-                    const is_bool_vec = at == .vector and at.vector.element.kind == .bool;
-                    if (!is_bool and !is_bool_vec) {
-                        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' requires 'bool' or 'vecN<bool>' argument, got '{s}'", .{ callee_name, at.string() }));
-                        return InferResult.fail;
-                    }
-                }
-            }
-        },
-        else => {},
-    }
-
     // Storage-texture access-mode enforcement: textureStore needs `write`
     // or `read_write`; textureLoad on a storage texture needs `read` or
     // `read_write`. Silently dispatching on a `read`-only texture would
@@ -3355,34 +3287,12 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         }
     }
 
-    // Per-builtin cross-arg consistency: for the "all numeric args share T"
-    // family (min/max/clamp/step/pow/atan2/smoothstep/fma) every pair must
-    // have a common type. Without this check, `min(1i, 2u)` silently picks
-    // the first arg's type even though WGSL has no matching overload.
-    if (unifyAllArgsBuiltin(callee_name)) {
-        const count = @min(e.args.items.len, 8);
-        var i: usize = 1;
-        while (i < count) : (i += 1) {
-            const a0 = arg_types[0] orelse break;
-            const ai = arg_types[i] orelse break;
-            if (Types.commonType(a0, ai) == null) {
-                v.addErrorWithCodeR(
-                    exprRange(.{ .call = e }),
-                    Diagnostic.Code.invalid_arg_type,
-                    v.fmtError(
-                        "no matching overload for '{s}': argument types '{s}' and '{s}' have no common type",
-                        .{ callee_name, a0.string(), ai.string() },
-                    ),
-                );
-                return InferResult.fail;
-            }
-        }
-    }
-
-    // Declarative overload resolution (Task #9 / Phase 1). Active only for
-    // builtins with populated `overloads`; legacy `.custom` string-dispatch
-    // still runs for everyone else. The solver binds type parameters from
-    // the arg types and the caller builds the return from `ResultRule`.
+    // Declarative overload resolution (Task #9 / Phases 1-2). Active for
+    // any builtin with populated `overloads`. The solver binds type
+    // parameters from the arg types and the caller builds the return from
+    // `ResultRule`. Builtins without overloads (bitcast, dot4*-packed,
+    // texture/atomic-store, arrayLength, barriers) still ride the legacy
+    // `inferBuiltinReturnType` fallback — Phase 3 migrates the remaining set.
     if (builtin_fn.overloads.len > 0) {
         const argc = @min(e.args.items.len, 8);
         const res = Overload.resolve(builtin_fn.overloads, arg_types[0..argc]);
@@ -3492,20 +3402,6 @@ fn textureCoordExpected(dim: Types.TextureDimension) []const u8 {
     };
 }
 
-/// Returns true when every argument of `name` is required by spec to share
-/// a common type with the first. Builtins whose later args intentionally
-/// diverge (refract's scalar eta, select's bool cond, ldexp's i32 exponent,
-/// mix's scalar blend) are deliberately excluded.
-fn unifyAllArgsBuiltin(name: []const u8) bool {
-    const all_share = [_][]const u8{
-        "min",       "max",        "clamp",
-        "step",      "pow",        "atan2",
-        "smoothstep","fma",        "faceForward",
-    };
-    for (all_share) |n| if (std.mem.eql(u8, n, name)) return true;
-    return false;
-}
-
 fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr, callee_name: []const u8) Allocator.Error!InferResult {
     // Stage follows the args' combined staging. This matches the long-
     // standing `classifyExprStage` behavior: WGSL doesn't allow user
@@ -3574,92 +3470,6 @@ fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr,
     return InferResult.fail;
 }
 
-/// Unifies the argument types of a builtin whose return pattern is
-/// `same_as_arg`. When args carry mixed abstract/concrete shapes (e.g.
-/// `min(5, 0u)` or `clamp(0, 1f, 1)`) we must return the concrete type
-/// that all args automatically convert to, not blindly `arg_types[0]`.
-/// Walks args left-to-right folding through `Types.commonType`, which
-/// already honors the abstract→concrete feasibility table. Stops on the
-/// first incompatible arg (e.g. the bool predicate of `select`) and
-/// returns the type unified so far — which matches the WGSL spec's
-/// overload-resolution outcome for the first-two-numeric-args family.
-/// Scalar-family restriction for a numeric-category builtin. Driven by
-/// the WGSL spec's per-builtin overload sets; we keep the classification
-/// localized here rather than extending `Builtins.Builtin` because the
-/// domain only matters at the validator's argument-type check and is not
-/// used by any other consumer of the builtins table.
-const MathDomain = enum {
-    /// Accepts f32/f16 scalars, matching vectors, or matching matrices
-    /// (plus abstract-float). Covers all transcendentals and most
-    /// numeric-analysis builtins.
-    float_only,
-    /// Accepts i32/u32 scalars or matching vectors. Covers bit-manipulation
-    /// builtins (countOneBits, reverseBits, ...).
-    int_only,
-    /// Accepts int OR float (abs/sign/min/max/clamp).
-    numeric_any,
-    /// Builtin is outside the numeric category (e.g. `all`/`select`) or
-    /// delegates its own checking (e.g. `.custom`).
-    unknown,
-};
-
-fn mathBuiltinDomain(name: []const u8) MathDomain {
-    // Float-only transcendentals, exponentials, rounding, interpolation.
-    // `dot` is deliberately omitted — per §17.5.15 it accepts any numeric
-    // element type (i32, u32, f32, f16, plus abstract), so it falls into
-    // the generic numeric path.
-    const float_only = [_][]const u8{
-        "sin",         "cos",        "tan",      "asin",        "acos",
-        "atan",        "sinh",       "cosh",     "tanh",        "asinh",
-        "acosh",       "atanh",      "atan2",    "exp",         "exp2",
-        "log",         "log2",       "pow",      "sqrt",        "inverseSqrt",
-        "floor",       "ceil",       "round",    "trunc",       "fract",
-        "mix",         "step",       "smoothstep","fma",        "degrees",
-        "radians",     "saturate",   "length",   "distance",
-        "cross",       "normalize",  "reflect",  "refract",     "faceForward",
-        "quantizeToF16","determinant","transpose","modf",        "frexp",
-        "ldexp",
-    };
-    for (float_only) |n| {
-        if (std.mem.eql(u8, n, name)) return .float_only;
-    }
-    // Integer-only bit-manipulation.
-    const int_only = [_][]const u8{
-        "countOneBits",      "countLeadingZeros",  "countTrailingZeros",
-        "reverseBits",       "firstLeadingBit",    "firstTrailingBit",
-        "extractBits",       "insertBits",
-    };
-    for (int_only) |n| {
-        if (std.mem.eql(u8, n, name)) return .int_only;
-    }
-    // abs/sign/min/max/clamp accept either domain.
-    const numeric_any = [_][]const u8{ "abs", "sign", "min", "max", "clamp" };
-    for (numeric_any) |n| {
-        if (std.mem.eql(u8, n, name)) return .numeric_any;
-    }
-    return .unknown;
-}
-
-fn isAbstractNumeric(t: Types.Type) bool {
-    return switch (t) {
-        .scalar => |s| s.kind == .abstract_int or s.kind == .abstract_float,
-        .vector => |vv| vv.element.kind == .abstract_int or vv.element.kind == .abstract_float,
-        .matrix => |mm| mm.element.kind == .abstract_float,
-        else => false,
-    };
-}
-
-fn sameAsArgResult(arg_types: [8]?Types.Type) ?Types.Type {
-    var unified = arg_types[0] orelse return null;
-    var i: usize = 1;
-    while (i < arg_types.len) : (i += 1) {
-        const next = arg_types[i] orelse break;
-        const common = Types.commonType(unified, next) orelse break;
-        unified = common;
-    }
-    return unified;
-}
-
 /// Bare `vec2`/`vec3`/`vec4` and `matCxR` accept any scalar element type
 /// that's common to the arguments. `lookupType` hands back an f32 default
 /// so other call paths stay simple; here we replace the element with the
@@ -3723,15 +3533,15 @@ fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8) v
 
 fn inferBuiltinReturnType(v: *Validator, builtin: Builtins.Builtin, name: []const u8, arg_types: [8]?Types.Type) ?Types.Type {
     return switch (builtin.return_pattern) {
-        .same_as_arg => sameAsArgResult(arg_types),
-        .bool_scalar => Types.Bool,
-        .scalar_of_arg => if (arg_types[0]) |at| Types.scalarOf(at) else null,
         .void_type => Types.Void,
-        .pack_u32 => Types.U32,
         .u32_scalar => Types.U32,
         .texture => v.inferTextureReturnType(name, arg_types),
         .texture_dims => v.inferTextureDimsType(arg_types),
         .custom => v.inferCustomBuiltin(name, arg_types),
+        // Patterns below are fully migrated to declarative overloads in
+        // Phases 1-2 — every builtin that still tags with these dispatches
+        // through the engine and never reaches here.
+        .same_as_arg, .bool_scalar, .scalar_of_arg, .pack_u32 => unreachable,
     };
 }
 

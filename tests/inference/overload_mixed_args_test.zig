@@ -310,7 +310,7 @@ test "§17.10: select(vec3i, vec3i, vec3<bool>) valid" {
 test "§17.10: all(vec3<i32>) rejected — not a bool vec" {
     var r = try validate("fn f() { let x = all(vec3<i32>(1)); }");
     defer r.deinit(std.testing.allocator);
-    if (!hasErrorContaining(r, "bool")) {
+    if (!hasErrorContaining(r, "no matching overload for 'all'")) {
         dump("expected all(vec<i32>) rejection", r);
         return error.TestUnexpectedResult;
     }
@@ -319,7 +319,7 @@ test "§17.10: all(vec3<i32>) rejected — not a bool vec" {
 test "§17.10: any(vec3<f32>) rejected" {
     var r = try validate("fn f() { let x = any(vec3<f32>(1.0)); }");
     defer r.deinit(std.testing.allocator);
-    if (!hasErrorContaining(r, "bool")) {
+    if (!hasErrorContaining(r, "no matching overload for 'any'")) {
         dump("expected any(vec<f32>) rejection", r);
         return error.TestUnexpectedResult;
     }
@@ -328,7 +328,7 @@ test "§17.10: any(vec3<f32>) rejected" {
 test "§17.10: all(i32) rejected" {
     var r = try validate("fn f() { let x = all(1i); }");
     defer r.deinit(std.testing.allocator);
-    if (!hasErrorContaining(r, "bool")) {
+    if (!hasErrorContaining(r, "no matching overload for 'all'")) {
         dump("expected all(i32) rejection", r);
         return error.TestUnexpectedResult;
     }
