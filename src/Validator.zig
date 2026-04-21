@@ -3122,6 +3122,12 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
             const dest_type = v.resolveType(tt) orelse return InferResult.fail;
             return try v.checkBitcastCall(e, dest_type);
         }
+        v.addErrorWithCodeR(
+            exprRange(.{ .call = e }),
+            Diagnostic.Code.invalid_conversion,
+            v.fmtError("'bitcast' requires a template type argument, e.g. 'bitcast<u32>(x)'", .{}),
+        );
+        return InferResult.fail;
     }
 
     // Template type constructor (e.g. array<vec3f, 7>(...), vec3<f32>(...))
@@ -3513,11 +3519,12 @@ fn inferBuiltinReturnType(v: *Validator, builtin: Builtins.Builtin, name: []cons
         .u32_scalar => Types.U32,
         .texture => v.inferTextureReturnType(name, arg_types),
         .texture_dims => v.inferTextureDimsType(arg_types),
-        .custom => v.inferCustomBuiltin(name, arg_types),
-        // Patterns below are fully migrated to declarative overloads in
-        // Phases 1-2 — every builtin that still tags with these dispatches
-        // through the engine and never reaches here.
-        .same_as_arg, .bool_scalar, .scalar_of_arg, .pack_u32 => unreachable,
+        // `.custom` used to route to a bespoke per-builtin handler, but
+        // Phases 1-3b migrated every callee to the declarative engine
+        // (`.overloads` populated) or to a dedicated call-site block
+        // (`bitcast`). The `.custom` tag is kept on Builtin entries for
+        // documentation only — this branch is no longer reachable.
+        .custom, .same_as_arg, .bool_scalar, .scalar_of_arg, .pack_u32 => unreachable,
     };
 }
 
@@ -3582,19 +3589,6 @@ fn inferTextureDimsType(v: *Validator, arg_types: [8]?Types.Type) ?Types.Type {
     const result = v.arena.create(Types.Vector) catch return null;
     result.* = .{ .width = width, .element = Types.scalar_u32_ptr };
     return .{ .vector = result };
-}
-
-fn inferCustomBuiltin(v: *Validator, name: []const u8, arg_types: [8]?Types.Type) ?Types.Type {
-    _ = v;
-    _ = name;
-    _ = arg_types;
-    // Phases 1-3b of Task #9 migrated every live `.custom` builtin to the
-    // declarative engine: atomic*, frexp, modf, transpose, subgroupBallot,
-    // workgroupUniformLoad, unpack*, dot4I8Packed, dot4U8Packed via
-    // `Builtins.sig_entries`; `bitcast` via `checkBitcastCall` above. No
-    // `.custom`-pattern builtin reaches this function any more — the body
-    // and the `ReturnPattern.custom` variant can be retired in a follow-up.
-    return null;
 }
 
 // Cache synthesized structs so repeated calls to frexp/modf/

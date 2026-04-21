@@ -962,3 +962,12 @@ test "bitcast nested: outer f32 seeded even when inner is vec2<f16>" {
     defer r.deinit(std.testing.allocator);
     try expectLetString(&r, "x", "f32");
 }
+
+test "bitcast without template argument rejected" {
+    // Previously this silently returned no-type (bitcast fell through to
+    // inferCustomBuiltin → null). Now the validator emits a dedicated
+    // diagnostic so the user knows a template is required.
+    var r = try validate("fn f() { let x = bitcast(1u); }");
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasErrorContaining(r, "template type argument"));
+}
