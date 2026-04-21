@@ -3036,6 +3036,26 @@ fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentExpr,
     return null;
 }
 
+/// Unifies the argument types of a builtin whose return pattern is
+/// `same_as_arg`. When args carry mixed abstract/concrete shapes (e.g.
+/// `min(5, 0u)` or `clamp(0, 1f, 1)`) we must return the concrete type
+/// that all args automatically convert to, not blindly `arg_types[0]`.
+/// Walks args left-to-right folding through `Types.commonType`, which
+/// already honors the abstract→concrete feasibility table. Stops on the
+/// first incompatible arg (e.g. the bool predicate of `select`) and
+/// returns the type unified so far — which matches the WGSL spec's
+/// overload-resolution outcome for the first-two-numeric-args family.
+fn sameAsArgResult(arg_types: [8]?Types.Type) ?Types.Type {
+    var unified = arg_types[0] orelse return null;
+    var i: usize = 1;
+    while (i < arg_types.len) : (i += 1) {
+        const next = arg_types[i] orelse break;
+        const common = Types.commonType(unified, next) orelse break;
+        unified = common;
+    }
+    return unified;
+}
+
 fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8) void {
     if (v.suggestCallable(callee_name, e.args.items.len)) |s| {
         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
@@ -3046,7 +3066,7 @@ fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8) v
 
 fn inferBuiltinReturnType(v: *Validator, builtin: Builtins.Builtin, name: []const u8, arg_types: [8]?Types.Type) ?Types.Type {
     return switch (builtin.return_pattern) {
-        .same_as_arg => arg_types[0],
+        .same_as_arg => sameAsArgResult(arg_types),
         .bool_scalar => Types.Bool,
         .scalar_of_arg => if (arg_types[0]) |at| Types.scalarOf(at) else null,
         .void_type => Types.Void,

@@ -319,6 +319,7 @@ pub fn build(b: *std.Build) void {
     // Inference tests (spec §8.2 rank table, and future inference surface).
     _ = addTestStep(b, test_step, "tests/inference/conversion_rank_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/const_classification_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/inference/overload_same_as_arg_test.zig", target, optimize, &.{w});
 }
 
 fn addTestStep(
