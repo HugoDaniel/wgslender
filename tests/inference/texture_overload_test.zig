@@ -465,3 +465,100 @@ test "§17.7.13: textureLoad on sampled texture unaffected (no access mode)" {
         \\}
     , "textureLoad on sampled texture");
 }
+
+// -------------------------------------------------------------------------
+// Storage-texture coord dimension — textureStore coord must match texture
+// dimension and be integer-typed.
+// -------------------------------------------------------------------------
+
+test "§17.7.11: textureStore 2d with vec3 coord rejected" {
+    var r = try validate(
+        \\@group(0) @binding(0) var t: texture_storage_2d<rgba8unorm, write>;
+        \\fn f() {
+        \\  textureStore(t, vec3<i32>(0), vec4f(0.0));
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasMessage(r, "wrong dimension")) {
+        dump("expected 2d coord dim error", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.7.11: textureStore 3d with vec2 coord rejected" {
+    var r = try validate(
+        \\@group(0) @binding(0) var t: texture_storage_3d<rgba8unorm, write>;
+        \\fn f() {
+        \\  textureStore(t, vec2<i32>(0), vec4f(0.0));
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasMessage(r, "wrong dimension")) {
+        dump("expected 3d coord dim error", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.7.11: textureStore 1d with vec2 coord rejected" {
+    var r = try validate(
+        \\@group(0) @binding(0) var t: texture_storage_1d<rgba8unorm, write>;
+        \\fn f() {
+        \\  textureStore(t, vec2<i32>(0), vec4f(0.0));
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasMessage(r, "wrong dimension")) {
+        dump("expected 1d coord dim error", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.7.11: textureStore 2d with float-vec coord rejected" {
+    var r = try validate(
+        \\@group(0) @binding(0) var t: texture_storage_2d<rgba8unorm, write>;
+        \\fn f() {
+        \\  textureStore(t, vec2f(0.0), vec4f(0.0));
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasMessage(r, "wrong dimension")) {
+        dump("expected float-coord rejection", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.7.11: textureStore 2d with vec2<u32> coord valid" {
+    try validMustPass(
+        \\@group(0) @binding(0) var t: texture_storage_2d<rgba8unorm, write>;
+        \\fn f() {
+        \\  textureStore(t, vec2<u32>(0u), vec4f(0.0));
+        \\}
+    , "textureStore u32 coord");
+}
+
+test "§17.7.11: textureStore 2d with vec2<i32> coord valid" {
+    try validMustPass(
+        \\@group(0) @binding(0) var t: texture_storage_2d<rgba8unorm, write>;
+        \\fn f() {
+        \\  textureStore(t, vec2<i32>(0), vec4f(0.0));
+        \\}
+    , "textureStore i32 coord");
+}
+
+test "§17.7.11: textureStore 1d with i32 scalar coord valid" {
+    try validMustPass(
+        \\@group(0) @binding(0) var t: texture_storage_1d<rgba8unorm, write>;
+        \\fn f() {
+        \\  textureStore(t, 0i, vec4f(0.0));
+        \\}
+    , "textureStore 1d scalar coord");
+}
+
+test "§17.7.11: textureStore 3d with vec3<i32> coord valid" {
+    try validMustPass(
+        \\@group(0) @binding(0) var t: texture_storage_3d<rgba8unorm, write>;
+        \\fn f() {
+        \\  textureStore(t, vec3<i32>(0), vec4f(0.0));
+        \\}
+    , "textureStore 3d coord");
+}

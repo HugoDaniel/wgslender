@@ -3220,6 +3220,20 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
                     );
                     return null;
                 }
+                // Coord dimension check — must match the texture dim.
+                if (arg_types[1]) |coord| {
+                    if (!textureCoordMatches(at.texture.dimension, coord)) {
+                        v.addErrorWithCodeR(
+                            exprRange(.{ .call = e }),
+                            Diagnostic.Code.invalid_arg_type,
+                            v.fmtError(
+                                "'textureStore' coord has wrong dimension: expected {s}, got '{s}'",
+                                .{ textureCoordExpected(at.texture.dimension), coord.string() },
+                            ),
+                        );
+                        return null;
+                    }
+                }
             }
         }
     } else if (std.mem.eql(u8, callee_name, "textureLoad")) {
@@ -3263,6 +3277,31 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
     }
 
     return v.inferBuiltinReturnType(builtin_fn, callee_name, arg_types);
+}
+
+/// Returns true when `coord` has the scalar/vector width the texture
+/// dimension requires. Covers only the shapes that appear in
+/// textureStore (coord is always integer-typed) and other indexed loads.
+/// cube/cube_array use vec3<f32> for sampling direction, but textureStore
+/// is not defined on them, so this helper doesn't model that case.
+fn textureCoordMatches(dim: Types.TextureDimension, coord: Types.Type) bool {
+    const coord_conc = Types.concreteType(coord);
+    return switch (dim) {
+        .@"1d" => coord_conc == .scalar and Types.isInteger(coord_conc),
+        .@"2d" => coord_conc == .vector and coord_conc.vector.width == 2 and Types.isInteger(.{ .scalar = coord_conc.vector.element }),
+        .@"2d_array" => coord_conc == .vector and coord_conc.vector.width == 2 and Types.isInteger(.{ .scalar = coord_conc.vector.element }),
+        .@"3d" => coord_conc == .vector and coord_conc.vector.width == 3 and Types.isInteger(.{ .scalar = coord_conc.vector.element }),
+        .cube, .cube_array => coord_conc == .vector and coord_conc.vector.width == 3,
+    };
+}
+
+fn textureCoordExpected(dim: Types.TextureDimension) []const u8 {
+    return switch (dim) {
+        .@"1d" => "i32/u32",
+        .@"2d", .@"2d_array" => "vec2<i32>/vec2<u32>",
+        .@"3d" => "vec3<i32>/vec3<u32>",
+        .cube, .cube_array => "vec3<f32>",
+    };
 }
 
 /// Returns true when every argument of `name` is required by spec to share
