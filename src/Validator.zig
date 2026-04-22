@@ -2911,10 +2911,73 @@ fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) InferResult {
         v.checkFloatLiteralValue(e);
         return InferResult.some(Types.F32, .const_expr);
     }
-    if (val[val.len - 1] == 'u') return InferResult.some(Types.U32, .const_expr);
-    if (val[val.len - 1] == 'i') return InferResult.some(Types.I32, .const_expr);
+    if (val[val.len - 1] == 'u') {
+        v.checkIntLiteralRange(e, .u);
+        return InferResult.some(Types.U32, .const_expr);
+    }
+    if (val[val.len - 1] == 'i') {
+        v.checkIntLiteralRange(e, .i);
+        return InferResult.some(Types.I32, .const_expr);
+    }
 
+    v.checkIntLiteralRange(e, .abstract);
     return InferResult.some(Types.AbstractInt, .const_expr);
+}
+
+const IntLiteralKind = enum { u, i, abstract };
+
+/// Reject integer literals whose magnitude overflows the destination type.
+/// Per WGSL §16.1 / §4.4.2 the literal's magnitude is bounded by the target:
+///   - `u`      : [0, 2^32 − 1]
+///   - `i`      : magnitude ≤ 2^31 (2^31 is admitted so `-2147483648i` is
+///                 legal when negated via unary `-`)
+///   - abstract : magnitude ≤ 2^63 (same carve-out for the i64 min case)
+/// Underscore digit separators are stripped before parsing. Magnitudes that
+/// don't fit in u64 at all are rejected wholesale.
+fn checkIntLiteralRange(v: *Validator, e: *Ast.LiteralExpr, kind: IntLiteralKind) void {
+    const val = e.value;
+    var num_end = val.len;
+    if (num_end > 0 and (val[num_end - 1] == 'u' or val[num_end - 1] == 'i')) num_end -= 1;
+    if (num_end == 0) return;
+
+    const num_str = val[0..num_end];
+    // WGSL §4.4 allows `_` as a digit separator; `std.fmt.parseInt` does not.
+    var buf: [128]u8 = undefined;
+    var j: usize = 0;
+    for (num_str) |c| {
+        if (c == '_') continue;
+        if (j >= buf.len) {
+            v.addErrorWithCodeR(
+                .{ .start = e.loc, .end = e.loc +| @as(u32, @intCast(val.len)) },
+                Diagnostic.Code.integer_overflow,
+                v.fmtError("integer literal '{s}' is too long to fit in any integer type", .{val}),
+            );
+            return;
+        }
+        buf[j] = c;
+        j += 1;
+    }
+    const magnitude = std.fmt.parseInt(u64, buf[0..j], 0) catch {
+        v.addErrorWithCodeR(
+            .{ .start = e.loc, .end = e.loc +| @as(u32, @intCast(val.len)) },
+            Diagnostic.Code.integer_overflow,
+            v.fmtError("integer literal '{s}' exceeds the maximum magnitude (2^63)", .{val}),
+        );
+        return;
+    };
+    const limit: u64 = switch (kind) {
+        .u => std.math.maxInt(u32),
+        .i => @as(u64, std.math.maxInt(i32)) + 1,
+        .abstract => @as(u64, std.math.maxInt(i64)) + 1,
+    };
+    if (magnitude > limit) {
+        const type_name = switch (kind) { .u => "u32", .i => "i32", .abstract => "abstract-int" };
+        v.addErrorWithCodeR(
+            .{ .start = e.loc, .end = e.loc +| @as(u32, @intCast(val.len)) },
+            Diagnostic.Code.integer_overflow,
+            v.fmtError("integer literal '{s}' is out of range for '{s}'", .{ val, type_name }),
+        );
+    }
 }
 
 /// Walk the scope tree once and emit W0100 for every symbol declared in a
@@ -3107,19 +3170,42 @@ fn checkF16Enabled(v: *Validator, loc: u32) void {
     }
 }
 
-/// Validate that a float literal does not evaluate to NaN or infinity.
+/// Validate that a float literal fits its target type. NaN/Inf rejects every
+/// form. `f`-suffixed literals additionally must fit the finite f32 range,
+/// and `h`-suffixed must fit f16 — so `1e40f` and `1e10h` are caught even
+/// though they parse to finite f64 values.
 fn checkFloatLiteralValue(v: *Validator, e: *Ast.LiteralExpr) void {
     // Strip suffix for parsing
-    var parse_str = e.value;
-    if (parse_str.len > 0 and (parse_str[parse_str.len - 1] == 'f' or parse_str[parse_str.len - 1] == 'h')) {
-        parse_str = parse_str[0 .. parse_str.len - 1];
-    }
+    const raw = e.value;
+    var parse_str = raw;
+    const suffix: u8 = if (raw.len > 0 and (raw[raw.len - 1] == 'f' or raw[raw.len - 1] == 'h')) raw[raw.len - 1] else 0;
+    if (suffix != 0) parse_str = parse_str[0 .. parse_str.len - 1];
     if (parse_str.len == 0) return;
+    const range: LocRange = .{ .start = e.loc, .end = e.loc +| @as(u32, @intCast(raw.len)) };
     const parsed = std.fmt.parseFloat(f64, parse_str) catch return;
     if (std.math.isNan(parsed)) {
-        v.addErrorWithCodeR(.{ .start = e.loc, .end = e.loc +| @as(u32, @intCast(e.value.len)) }, Diagnostic.Code.invalid_float_literal, "float literal evaluates to NaN");
-    } else if (std.math.isInf(parsed)) {
-        v.addErrorWithCodeR(.{ .start = e.loc, .end = e.loc +| @as(u32, @intCast(e.value.len)) }, Diagnostic.Code.invalid_float_literal, "float literal evaluates to infinity");
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_float_literal, "float literal evaluates to NaN");
+        return;
+    }
+    if (std.math.isInf(parsed)) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_float_literal, "float literal evaluates to infinity");
+        return;
+    }
+    const abs_val = @abs(parsed);
+    switch (suffix) {
+        'f' => {
+            const f32_max: f64 = std.math.floatMax(f32);
+            if (abs_val > f32_max) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_float_literal, v.fmtError("f32 literal '{s}' is out of range (|value| > {e})", .{ raw, f32_max }));
+            }
+        },
+        'h' => {
+            const f16_max: f64 = std.math.floatMax(f16);
+            if (abs_val > f16_max) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_float_literal, v.fmtError("f16 literal '{s}' is out of range (|value| > {e})", .{ raw, f16_max }));
+            }
+        },
+        else => {},
     }
 }
 
