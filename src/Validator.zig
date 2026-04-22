@@ -3483,13 +3483,18 @@ fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocator.E
 
 /// Syntactic approximation of whether an expression can denote a reference
 /// — i.e. something addressable by `&`. The check is conservative: it
-/// permits ident / member / index / paren-wrapped forms (which may reach a
-/// variable) and `*p` (deref of a pointer yields a reference), and rejects
-/// shapes that definitionally produce values (literals, calls, other unary
-/// forms, binary ops).
+/// permits ident / paren-wrapped forms (which may reach a variable), `*p`
+/// (deref of a pointer yields a reference), and member / index forms whose
+/// *base* is itself addressable. Rejects shapes that definitionally produce
+/// values (literals, calls, other unary forms, binary ops) — including when
+/// they sit beneath a member or index projection (e.g. `&foo().x`,
+/// `&(a+b).x`), which would otherwise slip past the gate and force the
+/// AS/AM resolver into its lossy fallback.
 fn addrOfOperandLooksAddressable(operand: Ast.Expr) bool {
     return switch (operand) {
-        .ident, .member, .index => true,
+        .ident => true,
+        .member => |m| addrOfOperandLooksAddressable(m.base),
+        .index => |ix| addrOfOperandLooksAddressable(ix.base),
         .paren => |p| addrOfOperandLooksAddressable(p.expr),
         .unary => |u| u.op == .deref and addrOfOperandLooksAddressable(u.operand),
         .literal, .call, .binary => false,
@@ -3511,47 +3516,91 @@ const AddrSpaceAndMode = struct {
     access_mode: Ast.AccessMode,
 };
 
-/// Walks an addressable chain (ident / *p / member-access / index / paren)
-/// and reports the AS/AM that `&`-of-that-chain should carry. Falls back to
-/// `function` / `read_write` when the chain leads somewhere we cannot
-/// resolve (e.g. an unbound identifier).
+/// Walks an addressable chain (ident / *p / member / index / paren) and
+/// resolves the AS/AM that `&`-of-that-chain should carry. Returns `null`
+/// when the chain cannot be traced — caller should then return
+/// `InferResult.fail` rather than materializing a bogus pointer type.
 ///
 /// Two sources feed the answer:
-///   • var-declared idents → `var_info` stores the normalized AS/AM.
-///   • `*ptr_expr` arms → the inner `ptr_expr`'s inferred pointer type
-///     supplies AS/AM. This keeps `&(*p)` (and member / index chains built
-///     on top of it) faithful to `p`'s source pointer, instead of collapsing
-///     to the historical defaults.
-fn addrOfOperandAsAm(v: *Validator, expr: Ast.Expr) Allocator.Error!AddrSpaceAndMode {
-    const defaults: AddrSpaceAndMode = .{ .address_space = .function, .access_mode = .read_write };
+///   • `var`-declared ident at the root → `var_info` stores the normalized
+///     AS/AM.
+///   • `*ptr_expr` root → the inner `ptr_expr`'s inferred pointer type
+///     supplies AS/AM, keeping `&(*p)` (and chains built on top) faithful to
+///     `p`'s source pointer.
+///
+/// Non-`var` ident roots (const / override / let / parameter / struct /
+/// alias / function / builtin) are **not** references per WGSL §6.5, so
+/// this helper also emits a kind-specific `E0215` at `er` and returns null.
+/// Unbound idents and already-failed sub-expressions return null silently —
+/// an upstream diagnostic is already in flight and a second generic error
+/// here would only add noise.
+///
+/// The historical `function` / `read_write` default was a foot-gun: it let
+/// `&foo().x` or `&my_const` silently produce `ptr<function, T, rw>` and
+/// cascade into misleading downstream type-mismatch errors. Returning null
+/// and bailing at the call site keeps the diagnostic stream honest.
+fn addrOfOperandAsAm(v: *Validator, expr: Ast.Expr, er: LocRange) Allocator.Error!?AddrSpaceAndMode {
     var cur = expr;
     while (true) {
         switch (cur) {
             .ident => |id| {
-                if (id.ref.isValid()) {
-                    if (v.var_info.get(id.ref.index())) |info| {
-                        return .{ .address_space = info.address_space, .access_mode = info.access_mode };
-                    }
+                if (!id.ref.isValid()) return null; // undefined-ident already reported
+                const idx = id.ref.index();
+                if (idx >= v.module.symbols.items.len) return null;
+                const sym = v.module.symbols.items[idx];
+                switch (sym.kind) {
+                    .@"var" => {
+                        if (v.var_info.get(idx)) |info| {
+                            return .{ .address_space = info.address_space, .access_mode = info.access_mode };
+                        }
+                        return null;
+                    },
+                    .@"const" => {
+                        v.addErrorWithCodeR(er, Diagnostic.Code.addr_of_requires_reference, v.fmtError("cannot take the address of '{s}': 'const' declarations have no memory location", .{sym.original_name}));
+                        return null;
+                    },
+                    .override => {
+                        v.addErrorWithCodeR(er, Diagnostic.Code.addr_of_requires_reference, v.fmtError("cannot take the address of '{s}': 'override' declarations have no memory location", .{sym.original_name}));
+                        return null;
+                    },
+                    .let => {
+                        v.addErrorWithCodeR(er, Diagnostic.Code.addr_of_requires_reference, v.fmtError("cannot take the address of '{s}': 'let' bindings are not references", .{sym.original_name}));
+                        return null;
+                    },
+                    .parameter => {
+                        v.addErrorWithCodeR(er, Diagnostic.Code.addr_of_requires_reference, v.fmtError("cannot take the address of parameter '{s}': parameters are not references (declare a 'var' or project through a 'ptr<…>' parameter via '&(*p)')", .{sym.original_name}));
+                        return null;
+                    },
+                    .@"struct", .alias => {
+                        v.addErrorWithCodeR(er, Diagnostic.Code.addr_of_requires_reference, v.fmtError("cannot take the address of type name '{s}'", .{sym.original_name}));
+                        return null;
+                    },
+                    .function, .builtin => {
+                        v.addErrorWithCodeR(er, Diagnostic.Code.addr_of_requires_reference, v.fmtError("cannot take the address of function '{s}'", .{sym.original_name}));
+                        return null;
+                    },
+                    .unbound, .member => return null,
                 }
-                return defaults;
             },
             .paren => |p| cur = p.expr,
             .member => |m| cur = m.base,
             .index => |ix| cur = ix.base,
             .unary => |u| {
-                if (u.op != .deref) return defaults;
+                if (u.op != .deref) return null; // unreachable after syntactic gate
                 // `*x` — for this arm to have type-checked, x is a pointer
-                // (or, via load-rule, a reference). Either way its type
-                // carries the AS/AM we want to project onto the outer `&`.
+                // (or a reference, by load-rule). Either way its type
+                // carries the AS/AM we project onto the outer `&`. If x
+                // didn't type-check, an upstream diagnostic exists and we
+                // silently return null instead of fabricating AS/AM.
                 const inner = try v.checkExpr(u.operand);
-                if (inner.typ) |t| switch (t) {
-                    .pointer => |p| return .{ .address_space = p.address_space, .access_mode = p.access_mode },
-                    .reference => |r| return .{ .address_space = r.address_space, .access_mode = r.access_mode },
-                    else => {},
+                const t = inner.typ orelse return null;
+                return switch (t) {
+                    .pointer => |p| .{ .address_space = p.address_space, .access_mode = p.access_mode },
+                    .reference => |r| .{ .address_space = r.address_space, .access_mode = r.access_mode },
+                    else => null,
                 };
-                return defaults;
             },
-            else => return defaults,
+            else => return null, // unreachable after syntactic gate
         }
     }
 }
@@ -3697,8 +3746,14 @@ fn checkUnaryE(v: *Validator, e: *Ast.UnaryExpr, exp: Expectation) Allocator.Err
             }
 
             // Choose AS/AM from the addressable chain: a var ident supplies
-            // its declared AS/AM, a `*x` arm projects x's pointer type.
-            const asam = try addrOfOperandAsAm(v, e.operand);
+            // its declared AS/AM, a `*x` arm projects x's pointer type. A
+            // null return means the chain leads to a non-reference (const,
+            // let, parameter, …) — in which case addrOfOperandAsAm has
+            // already emitted a kind-specific E0215 — or an upstream
+            // sub-expression already failed to type-check. Either way, we
+            // bail instead of fabricating a `ptr<function, T, rw>` that
+            // would cascade misleading type-mismatch errors downstream.
+            const asam = (try addrOfOperandAsAm(v, e.operand, er)) orelse return InferResult.fail;
 
             const p = v.arena.create(Types.Pointer) catch return InferResult.fail;
             p.* = .{
