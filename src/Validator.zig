@@ -150,6 +150,11 @@ const Expectation = union(enum) {
     }
 };
 
+/// Controls whether an abstract-typed initializer is concretized at decl
+/// time. WGSL §6.6 keeps abstract typing for module-scope `const`; §15 demotes
+/// function-scope `const` to concrete. Call sites pick the rule they want.
+const AbstractHandling = enum { keep, concretize };
+
 pub const AnalysisResult = struct {
     valid: bool,
     diagnostics: *Diagnostic,
@@ -765,7 +770,10 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
 fn validateDeclarations(v: *Validator) Allocator.Error!void {
     for (v.module.declarations.items) |decl| {
         switch (decl) {
-            .@"const" => |d| try v.validateConstDecl(d),
+            // Module-scope `const` keeps abstract typing per WGSL §6.6 so
+            // `const PI = 3.14;` remains `abstract-float` and can be used to
+            // initialize both `f32` and `f16` slots downstream.
+            .@"const" => |d| try v.validateConstDecl(d, .keep),
             .override => |d| try v.validateOverrideDecl(d),
             .@"var" => |d| try v.validateVarDecl(d),
             .let => |d| try v.validateLetDecl(d),
@@ -775,7 +783,7 @@ fn validateDeclarations(v: *Validator) Allocator.Error!void {
     }
 }
 
-fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) Allocator.Error!void {
+fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl, handling: AbstractHandling) Allocator.Error!void {
     const name = v.symbolName(d.name);
     const r = v.symbolRange(d.name);
 
@@ -807,8 +815,12 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) Allocator.Error!void {
             }
         }
     } else {
-        // Infer type from initializer, converting abstract to concrete
-        decl_type = Types.concreteType(init_type);
+        // Infer type from initializer. Module-scope `const` keeps abstract
+        // typing (§6.6); function-scope `const` demotes to concrete (§15).
+        decl_type = switch (handling) {
+            .keep => init_type,
+            .concretize => Types.concreteType(init_type),
+        };
     }
 
     // const initializer must be a const-expression (not override or runtime).
@@ -824,9 +836,12 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) Allocator.Error!void {
         }
     }
 
-    // const must have constructible type
+    // const must have constructible type. Abstract types are "non-constructible"
+    // in the sense that they cannot instantiate runtime memory, but §6.6 allows
+    // module-scope `const` to retain an abstract type when the caller opted in
+    // to `.keep` — downstream uses concretize at their own decl-site expectation.
     if (decl_type) |dt| {
-        if (!dt.isConstructible()) {
+        if (!dt.isConstructible() and !(handling == .keep and !dt.isConcrete())) {
             v.addErrorWithCodeR(r, Diagnostic.Code.invalid_const_expr, v.fmtError("const '{s}' has non-constructible type '{s}'", .{ name, dt.string() }));
             return;
         }
@@ -2795,7 +2810,9 @@ fn validateCallStmt(v: *Validator, s: *Ast.CallStmt) Allocator.Error!void {
 
 fn validateDeclStmt(v: *Validator, s: *Ast.DeclStmt) Allocator.Error!void {
     switch (s.decl) {
-        .@"const" => |d| try v.validateConstDecl(d),
+        // Function-scope `const` demotes abstract types to concrete per §15;
+        // see validateConstDecl's `AbstractHandling` knob.
+        .@"const" => |d| try v.validateConstDecl(d, .concretize),
         .let => |d| try v.validateLetDecl(d),
         .@"var" => |d| try v.validateVarDecl(d),
         .const_assert => |d| try v.validateConstAssert(d),

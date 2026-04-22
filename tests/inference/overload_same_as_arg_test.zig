@@ -66,13 +66,11 @@ test "same_as_arg: min all-abstract stays abstract then demotes to i32 at let" {
     try expectLetString(&r, "x", "i32");
 }
 
-// Note: per-spec §6.7 `const x = min(5, 10)` should preserve AbstractInt
-// so that downstream contexts can pick the best concretization. Today
-// `validateConstDecl` eagerly demotes via `Types.concreteType`. A future
-// commit will preserve abstract at const-decls; for now we pin existing
-// behavior to catch unintended regressions from the overload-unification
-// change.
-test "same_as_arg: min all-abstract at const (today: demotes to i32)" {
+// Per WGSL §6.6 / §6.7, `const x = min(5, 10)` at module scope preserves
+// AbstractInt so downstream contexts can pick the best concretization.
+// The AbstractHandling split wired this in — function-scope `const`
+// still demotes via `Types.concreteType` (§15).
+test "same_as_arg: min all-abstract at module-scope const preserves abstract-int" {
     var r = try analyze("const x = min(5, 10);");
     defer r.deinit(std.testing.allocator);
     const mod = r.module orelse return error.TestUnexpectedResult;
@@ -81,7 +79,7 @@ test "same_as_arg: min all-abstract at const (today: demotes to i32)" {
         if (sym.kind != .@"const") continue;
         if (!std.mem.eql(u8, sym.original_name, "x")) continue;
         const t = r.symbol_types.get(@intCast(idx)) orelse continue;
-        try std.testing.expectEqualStrings("i32", t.string());
+        try std.testing.expectEqualStrings("abstract-int", t.string());
         found = true;
     }
     try std.testing.expect(found);
@@ -159,7 +157,7 @@ test "same_as_arg: min(vec<f32>, vec<f32>) → vec<f32>" {
 
 // --- Single-arg builtins: unification no-op ---
 
-test "same_as_arg: abs(-5) at const (today: demotes to i32)" {
+test "same_as_arg: abs(-5) at module-scope const preserves abstract-int" {
     var r = try analyze("const x = abs(-5);");
     defer r.deinit(std.testing.allocator);
     const mod = r.module orelse return error.TestUnexpectedResult;
@@ -168,13 +166,13 @@ test "same_as_arg: abs(-5) at const (today: demotes to i32)" {
         if (sym.kind != .@"const") continue;
         if (!std.mem.eql(u8, sym.original_name, "x")) continue;
         const t = r.symbol_types.get(@intCast(idx)) orelse continue;
-        try std.testing.expectEqualStrings("i32", t.string());
+        try std.testing.expectEqualStrings("abstract-int", t.string());
         found = true;
     }
     try std.testing.expect(found);
 }
 
-test "same_as_arg: sin(1.0) at const (today: demotes to f32)" {
+test "same_as_arg: sin(1.0) at module-scope const preserves abstract-float" {
     var r = try analyze("const x = sin(1.0);");
     defer r.deinit(std.testing.allocator);
     const mod = r.module orelse return error.TestUnexpectedResult;
@@ -183,7 +181,7 @@ test "same_as_arg: sin(1.0) at const (today: demotes to f32)" {
         if (sym.kind != .@"const") continue;
         if (!std.mem.eql(u8, sym.original_name, "x")) continue;
         const t = r.symbol_types.get(@intCast(idx)) orelse continue;
-        try std.testing.expectEqualStrings("f32", t.string());
+        try std.testing.expectEqualStrings("abstract-float", t.string());
         found = true;
     }
     try std.testing.expect(found);

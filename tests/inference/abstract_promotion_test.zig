@@ -206,15 +206,29 @@ test "§6.8: var x = 1u + 2; → u32" {
 }
 
 // -------------------------------------------------------------------------
-// `const` at module scope — can stay abstract (sort of) but we demote.
+// `const` at module scope — retains abstract typing per §6.6 so downstream
+// contexts can pick the best concretization (e.g. the same `const` can feed
+// both `f32` and `f16` slots). Function-scope `const` still demotes per §15.
 // -------------------------------------------------------------------------
 
-test "§6.6: const MY_VAL = 1; is accepted" {
+test "§6.6: const MY_VAL = 1; preserves abstract-int" {
     try validMustPass("const MY_VAL = 1; fn f() { let x = MY_VAL; }", "const abstract-int");
+    var r = try analyze("const MY_VAL = 1;");
+    defer r.deinit(std.testing.allocator);
+    try expectSymbolType(constType, &r, "MY_VAL", "abstract-int");
 }
 
-test "§6.6: const PI = 3.14; is accepted" {
+test "§6.6: const PI = 3.14; preserves abstract-float" {
     try validMustPass("const PI = 3.14; fn f() { let x = PI; }", "const abstract-float");
+    var r = try analyze("const PI = 3.14;");
+    defer r.deinit(std.testing.allocator);
+    try expectSymbolType(constType, &r, "PI", "abstract-float");
+}
+
+test "§15: function-scope const still demotes to concrete" {
+    var r = try analyze("fn f() { const MY_VAL = 1; }");
+    defer r.deinit(std.testing.allocator);
+    try expectSymbolType(constType, &r, "MY_VAL", "i32");
 }
 
 // -------------------------------------------------------------------------
