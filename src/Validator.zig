@@ -124,6 +124,32 @@ const InferResult = struct {
     }
 };
 
+/// Top-down type expectation threaded into expression inference.
+///
+/// Driving the cached `expr_types` entries with the *materialized* view (what
+/// the surrounding context asks for) instead of the raw bottom-up inference
+/// fixes LSP hovers inside typed contexts: in `let v: f32 = 1 + 2` the binary
+/// expression records `f32`, not `abstract-int`. The materialization only
+/// kicks in when the inferred type is abstract and convertible to the target
+/// — concrete mismatches remain errors that the decl validator still reports.
+///
+/// The union is open-ended by design: Stage 2 only wires `.none` / `.exact`;
+/// `.integer_scalar` (shift RHS, array index) and `.concrete` (runtime slots)
+/// are reserved for later stages.
+const Expectation = union(enum) {
+    none,
+    exact: Types.Type,
+    integer_scalar,
+    concrete,
+
+    fn asExact(self: Expectation) ?Types.Type {
+        return switch (self) {
+            .exact => |t| t,
+            else => null,
+        };
+    }
+};
+
 pub const AnalysisResult = struct {
     valid: bool,
     diagnostics: *Diagnostic,
@@ -759,13 +785,19 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl) Allocator.Error!void {
         return;
     }
 
+    // Pre-resolve the annotation (if any) so the initializer inference can
+    // record materialized types in `expr_types` — a hover inside
+    // `const MY: f32 = 1 + 2` sees `f32`, not `abstract-int`.
+    var decl_type: ?Types.Type = null;
+    const ann_type: ?Types.Type = if (d.typ) |ast_type| v.resolveType(ast_type) else null;
+    const exp: Expectation = if (ann_type) |dt| .{ .exact = dt } else .none;
+
     // Infer or check type (and capture staging for the const-expression rule).
-    const init_r = try v.checkExpr(d.initializer.?);
+    const init_r = try v.checkExprE(d.initializer.?, exp);
     const init_type = init_r.typ orelse return;
 
-    var decl_type: ?Types.Type = null;
     if (d.typ) |ast_type| {
-        decl_type = v.resolveType(ast_type);
+        decl_type = ann_type;
         if (decl_type) |dt| {
             if (!Types.canConvertTo(init_type, dt)) {
                 const type_range = astTypeRange(ast_type);
@@ -855,7 +887,9 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error!voi
 
     if (d.initializer) |init| {
         // Re-check only when we didn't already infer from the initializer.
-        const r_init = init_r orelse try v.checkExpr(init);
+        // Thread `exact(dt)` so subexpressions in `override FOO: f32 = 1;`
+        // record `f32` instead of the raw `abstract-int` inference.
+        const r_init = init_r orelse try v.checkExprE(init, .{ .exact = dt });
         init_r = r_init;
         if (r_init.typ) |it| {
             if (!Types.canConvertTo(it, dt)) {
@@ -948,9 +982,13 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
     // Validate address space constraints
     v.validateAddressSpace(d, dt);
 
-    // Check initializer compatibility
+    // Check initializer compatibility. When the `var` carried an explicit
+    // type annotation we thread it down as an `exact(dt)` expectation so the
+    // initializer's subexpressions record `dt` in `expr_types` rather than
+    // the raw abstract inference. When the type was inferred above, `init_r`
+    // is already populated and no re-check is needed.
     if (d.initializer) |init| {
-        const r_init = init_r orelse try v.checkExpr(init);
+        const r_init = init_r orelse try v.checkExprE(init, .{ .exact = dt });
         if (r_init.typ) |it| {
             if (!Types.canConvertTo(it, dt)) {
                 if (d.typ) |ast_type| {
@@ -1176,16 +1214,19 @@ fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
         return;
     }
 
-    const init_type = (try v.checkExpr(d.initializer.?)).typ orelse return;
+    var decl_type: ?Types.Type = null;
+    const ann_type: ?Types.Type = if (d.typ) |ast_type| v.resolveType(ast_type) else null;
+    const exp: Expectation = if (ann_type) |dt| .{ .exact = dt } else .none;
+
+    const init_type = (try v.checkExprE(d.initializer.?, exp)).typ orelse return;
 
     if (!init_type.isConstructible() and init_type != .pointer and init_type.isConcrete()) {
         v.addErrorWithCodeR(r, Diagnostic.Code.type_mismatch, v.fmtError("'let {s}' requires a constructible or pointer type, got '{s}'", .{ name, init_type.string() }));
         return;
     }
 
-    var decl_type: ?Types.Type = null;
     if (d.typ) |ast_type| {
-        decl_type = v.resolveType(ast_type);
+        decl_type = ann_type;
         if (decl_type) |dt| {
             if (!Types.canConvertTo(init_type, dt)) {
                 const type_range = astTypeRange(ast_type);
@@ -2769,20 +2810,35 @@ fn validateDeclStmt(v: *Validator, s: *Ast.DeclStmt) Allocator.Error!void {
 const max_expr_depth: u32 = 256;
 
 fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!InferResult {
+    return v.checkExprE(expr, .none);
+}
+
+fn checkExprE(v: *Validator, expr: Ast.Expr, exp: Expectation) Allocator.Error!InferResult {
     if (v.expr_depth >= max_expr_depth) return .fail;
     v.expr_depth += 1;
     defer v.expr_depth -= 1;
     const result: InferResult = switch (expr) {
         .literal => |e| v.checkLiteral(e),
         .ident => |e| v.checkIdent(e),
-        .binary => |e| try v.checkBinary(e),
-        .unary => |e| try v.checkUnary(e),
+        .binary => |e| try v.checkBinaryE(e, exp),
+        .unary => |e| try v.checkUnaryE(e, exp),
         .call => |e| try v.checkCallExpr(e),
         .index => |e| try v.checkIndex(e),
         .member => |e| try v.checkMember(e),
-        .paren => |e| try v.checkExpr(e.expr),
+        .paren => |e| try v.checkExprE(e.expr, exp),
     };
-    if (result.typ) |typ| {
+    // Materialize for cache recording: under `exact(T)` where the inferred
+    // type is abstract and convertible to T, store T — so a hover inside
+    // `let v: f32 = 1 + 2` sees `f32` on every subexpression that the decl
+    // context would concretize.
+    const recorded_typ: ?Types.Type = if (result.typ) |typ|
+        if (exp.asExact()) |target|
+            if (!typ.isConcrete() and Types.canConvertTo(typ, target)) target else typ
+        else
+            typ
+    else
+        null;
+    if (recorded_typ) |typ| {
         // Key on each expression's own loc (operator for binary, open-paren
         // for call, etc.) so nested expressions that share the same start
         // offset don't collide in the hash map. `.paren` has no distinct loc
@@ -3113,8 +3169,22 @@ fn checkIdent(v: *Validator, e: *Ast.IdentExpr) InferResult {
 }
 
 fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!InferResult {
-    const lr = try v.checkExpr(e.left);
-    const rr = try v.checkExpr(e.right);
+    return v.checkBinaryE(e, .none);
+}
+
+fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocator.Error!InferResult {
+    // Arithmetic / bitwise operators type-check against a common operand
+    // type, so an outer `exact(T)` expectation applies symmetrically to
+    // both sides. Boolean / comparison / shift forms have fixed operand
+    // shapes that do not benefit from propagating `T`: forwarding would
+    // confuse the materialization check at the cache-write site (e.g.
+    // `exact(f32)` pushed into a shift RHS that must stay `u32`).
+    const operand_exp: Expectation = switch (e.op) {
+        .add, .sub, .mul, .div, .mod, .@"and", .@"or", .xor => exp,
+        .logical_and, .logical_or, .eq, .ne, .lt, .le, .gt, .ge, .shl, .shr => .none,
+    };
+    const lr = try v.checkExprE(e.left, operand_exp);
+    const rr = try v.checkExprE(e.right, operand_exp);
     // Stage is computed from both children regardless of type inference
     // success so enclosing staging checks (const decls, const_assert,
     // switch selectors, …) don't mis-report a subtree that merely had a
@@ -3345,7 +3415,19 @@ fn isVectorOrVectorRef(t: Types.Type) bool {
 }
 
 fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!InferResult {
-    const or_ = try v.checkExpr(e.operand);
+    return v.checkUnaryE(e, .none);
+}
+
+fn checkUnaryE(v: *Validator, e: *Ast.UnaryExpr, exp: Expectation) Allocator.Error!InferResult {
+    // `-` and `~` produce a value of the operand's type, so an outer
+    // `exact(T)` expectation applies to the operand. `!`, `&`, `*` change
+    // shape (bool result, pointer wrap/unwrap) — forwarding would stamp
+    // the wrong type into the cache.
+    const operand_exp: Expectation = switch (e.op) {
+        .neg, .bit_not => exp,
+        .not, .deref, .addr => .none,
+    };
+    const or_ = try v.checkExprE(e.operand, operand_exp);
     const stage = or_.stage;
     const operand_type = or_.typ orelse return .{ .typ = null, .stage = stage };
     const er = exprRange(.{ .unary = e });
