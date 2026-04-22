@@ -243,6 +243,12 @@ pub const @"errors/io/workgroup_size_on_vertex" = @embedFile("testdata/validatio
 pub const @"errors/io/workgroup_size_on_fragment" = @embedFile("testdata/validation/errors/io/workgroup_size_on_fragment.wgsl");
 pub const @"errors/io/workgroup_size_on_non_entry" = @embedFile("testdata/validation/errors/io/workgroup_size_on_non_entry.wgsl");
 pub const @"errors/io/invariant_on_direct_return_non_position" = @embedFile("testdata/validation/errors/io/invariant_on_direct_return_non_position.wgsl");
+pub const @"errors/io/blend_src_on_vertex_output" = @embedFile("testdata/validation/errors/io/blend_src_on_vertex_output.wgsl");
+pub const @"errors/io/blend_src_without_location" = @embedFile("testdata/validation/errors/io/blend_src_without_location.wgsl");
+pub const @"errors/io/blend_src_invalid_value" = @embedFile("testdata/validation/errors/io/blend_src_invalid_value.wgsl");
+pub const @"errors/io/blend_src_unpaired" = @embedFile("testdata/validation/errors/io/blend_src_unpaired.wgsl");
+pub const @"errors/io/blend_src_type_mismatch" = @embedFile("testdata/validation/errors/io/blend_src_type_mismatch.wgsl");
+pub const @"errors/io/blend_src_on_input" = @embedFile("testdata/validation/errors/io/blend_src_on_input.wgsl");
 
 // --- types/ entry-point I/O (valid) ---
 pub const @"types/entry_point_vertex_inputs" = @embedFile("testdata/validation/types/entry_point_vertex_inputs.wgsl");
@@ -251,6 +257,7 @@ pub const @"types/entry_point_fragment_all_inputs" = @embedFile("testdata/valida
 pub const @"types/entry_point_fragment_frag_depth" = @embedFile("testdata/validation/types/entry_point_fragment_frag_depth.wgsl");
 pub const @"types/entry_point_fragment_sample_mask_out" = @embedFile("testdata/validation/types/entry_point_fragment_sample_mask_out.wgsl");
 pub const @"types/entry_point_compute_all_builtins" = @embedFile("testdata/validation/types/entry_point_compute_all_builtins.wgsl");
+pub const @"types/entry_point_fragment_blend_src" = @embedFile("testdata/validation/types/entry_point_fragment_blend_src.wgsl");
 
 // --- errors/control_flow/ ---
 pub const @"errors/control_flow/discard_outside_fragment" = @embedFile("testdata/validation/errors/control_flow/discard_outside_fragment.wgsl");

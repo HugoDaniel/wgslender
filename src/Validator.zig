@@ -1518,6 +1518,9 @@ fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error
     try v.validateEntryPointIO(fn_decl);
 }
 
+const OutputLocEntry = struct { loc: u32, blend_src: ?i64 };
+const BlendSrcEntry = struct { location: i64, value: i64, typ: ?Types.Type, member_range: LocRange, attr_loc: u32 };
+
 fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
     const fn_range = v.symbolRange(fn_decl.name);
 
@@ -1590,16 +1593,23 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                             v.validateLocationType(member_type, v.symbolRange(member.name));
                         }
                     }
+                    // @blend_src is only valid on fragment outputs (WGSL spec §11.3).
+                    if (hasAttr(member.attributes, "blend_src")) {
+                        const bs_loc = attrLocByName(member.attributes, "blend_src");
+                        v.addErrorWithCodeR(.{ .start = bs_loc, .end = bs_loc +| 9 }, Diagnostic.Code.invalid_attribute, "@blend_src is only valid on fragment outputs");
+                    }
                 }
             }
         }
     }
 
     // Check output locations (return type)
-    var output_locations: std.AutoHashMapUnmanaged(i64, u32) = .{};
+    var output_locations: std.AutoHashMapUnmanaged(i64, OutputLocEntry) = .{};
     if (getLocationInfo(fn_decl.return_attr)) |info| {
-        try output_locations.put(v.arena, info.value, info.loc);
+        try output_locations.put(v.arena, info.value, .{ .loc = info.loc, .blend_src = null });
     }
+    // Members with @blend_src, collected for post-walk dual-source pairing validation.
+    var blend_src_members: std.ArrayListUnmanaged(BlendSrcEntry) = .empty;
     if (fn_decl.return_type) |rt| {
         const ret_type = v.resolveType(rt) orelse return;
         if (ret_type == .@"struct") {
@@ -1613,12 +1623,33 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                     if (!hasLocationOrBuiltin(member.attributes)) {
                         v.addErrorWithCodeR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("entry point struct member '{s}' must have @builtin or @location", .{v.symbolName(member.name)}));
                     }
+                    // Collect @blend_src info for pairing & attribute-site validation.
+                    const bs_info = getBlendSrcInfo(member.attributes);
                     if (getLocationInfo(member.attributes)) |info| {
-                        if (output_locations.get(info.value)) |first_loc| {
-                            v.addErrorWithRelatedR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
+                        if (output_locations.get(info.value)) |first| {
+                            // Duplicate @location is permitted only when both members carry
+                            // @blend_src with valid values (0 & 1) — the pairing check below
+                            // validates the full rule.
+                            const both_blend_src = first.blend_src != null and bs_info != null;
+                            if (!both_blend_src) {
+                                v.addErrorWithRelatedR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first.loc, .end = first.loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
+                            }
                         } else {
-                            try output_locations.put(v.arena, info.value, info.loc);
+                            try output_locations.put(v.arena, info.value, .{ .loc = info.loc, .blend_src = if (bs_info) |b| b.value else null });
                         }
+                    }
+                    // @blend_src attribute-site validation (output/fragment).
+                    if (bs_info) |bs| {
+                        const bs_range: LocRange = .{ .start = bs.loc, .end = bs.loc +| 9 };
+                        if (v.current_stage != .fragment) {
+                            v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, "@blend_src is only valid on fragment outputs");
+                        } else if (!hasAttr(member.attributes, "location")) {
+                            v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, "@blend_src requires a @location attribute on the same member");
+                        } else if (bs.value != 0 and bs.value != 1) {
+                            v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, v.fmtError("@blend_src value must be 0 or 1, got {d}", .{bs.value}));
+                        }
+                        const loc_val: i64 = if (getLocationInfo(member.attributes)) |li| li.value else -1;
+                        try blend_src_members.append(v.arena, .{ .location = loc_val, .value = bs.value, .typ = out_mt, .member_range = v.symbolRange(member.name), .attr_loc = bs.loc });
                     }
                     // Validate @interpolate on vertex outputs
                     if (v.current_stage == .vertex) {
@@ -1650,6 +1681,10 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                         }
                     }
                 }
+                // Post-walk: validate @blend_src dual-source pairing (WGSL spec §11.3,
+                // §12.3.1.2). Each location with @blend_src must have exactly 2 members
+                // with values {0, 1} of the same type.
+                v.validateBlendSrcPairing(blend_src_members.items, fn_range);
             }
         } else {
             // Direct (non-struct) return: validate @builtin stage/direction + type,
@@ -1665,10 +1700,58 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
             if (hasAttr(fn_decl.return_attr, "location")) {
                 v.validateLocationType(ret_type, fn_range);
             }
+            // @blend_src is only valid on struct members, not direct returns.
+            if (hasAttr(fn_decl.return_attr, "blend_src")) {
+                const bs_loc = attrLocByName(fn_decl.return_attr, "blend_src");
+                v.addErrorWithCodeR(.{ .start = bs_loc, .end = bs_loc +| 9 }, Diagnostic.Code.invalid_attribute, "@blend_src must only be applied to a struct member");
+            }
             v.validateInvariantAttr(fn_decl.return_attr, fn_range.start);
             if (v.current_stage == .vertex) {
                 v.validateInterpolation(fn_decl.return_attr, ret_type, fn_range.start);
             }
+        }
+    }
+}
+
+/// Verify dual-source blending pairing rules (WGSL spec §12.3.1.2):
+/// members with @blend_src must come as exactly two entries at the same
+/// @location, one with value 0 and one with value 1, of the same type.
+fn validateBlendSrcPairing(v: *Validator, entries: []const BlendSrcEntry, fn_range: LocRange) void {
+    if (entries.len == 0) return;
+    // Group by location — expected to always be location 0 per spec, but we
+    // check each distinct location independently.
+    for (entries, 0..) |e, i| {
+        // Find the paired entry at the same location with the opposite value.
+        const want_other: i64 = if (e.value == 0) 1 else if (e.value == 1) 0 else continue;
+        var found_partner = false;
+        for (entries, 0..) |o, j| {
+            if (i == j) continue;
+            if (o.location != e.location) continue;
+            if (o.value == want_other) {
+                // Same-type check
+                if (e.typ != null and o.typ != null and !e.typ.?.eql(o.typ.?)) {
+                    v.addErrorWithCodeR(e.member_range, Diagnostic.Code.invalid_shader_io, v.fmtError("@blend_src pair at @location({d}) must share a type, got '{s}' and '{s}'", .{ e.location, e.typ.?.string(), o.typ.?.string() }));
+                }
+                found_partner = true;
+                break;
+            }
+        }
+        if (!found_partner and e.value >= 0 and e.value <= 1) {
+            v.addErrorWithCodeR(e.member_range, Diagnostic.Code.invalid_shader_io, v.fmtError("@blend_src({d}) at @location({d}) is missing its paired @blend_src({d}) member", .{ e.value, e.location, want_other }));
+        }
+    }
+    // Count distinct locations with @blend_src — none may have more than 2 members.
+    var seen_counts: std.AutoHashMapUnmanaged(i64, u32) = .{};
+    defer seen_counts.deinit(v.arena);
+    for (entries) |e| {
+        const gop = seen_counts.getOrPut(v.arena, e.location) catch return;
+        if (!gop.found_existing) gop.value_ptr.* = 0;
+        gop.value_ptr.* += 1;
+    }
+    var it = seen_counts.iterator();
+    while (it.next()) |kv| {
+        if (kv.value_ptr.* > 2) {
+            v.addErrorWithCodeR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("@location({d}) has {d} members with @blend_src, expected exactly 2", .{ kv.key_ptr.*, kv.value_ptr.* }));
         }
     }
 }
@@ -1875,6 +1958,28 @@ fn getLocationInfo(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?struct { value
         }
     }
     return null;
+}
+
+/// @blend_src attribute info: returns the const value (0 or 1 when valid)
+/// and the attribute's source location. Returns null when absent or when
+/// the argument is not extractable as an integer literal.
+fn getBlendSrcInfo(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?struct { value: i64, loc: u32 } {
+    for (attrs.items) |attr| {
+        if (std.mem.eql(u8, attr.name, "blend_src") and attr.args.items.len > 0) {
+            if (extractLiteralIntValue(attr.args.items[0])) |val| {
+                return .{ .value = val, .loc = attr.loc };
+            }
+            return .{ .value = -1, .loc = attr.loc }; // present but non-literal
+        }
+    }
+    return null;
+}
+
+fn attrLocByName(attrs: std.ArrayListUnmanaged(Ast.Attribute), name: []const u8) u32 {
+    for (attrs.items) |attr| {
+        if (std.mem.eql(u8, attr.name, name)) return attr.loc;
+    }
+    return 0;
 }
 
 /// Extract @builtin name from attributes, or null.

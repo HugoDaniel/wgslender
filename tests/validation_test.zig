@@ -1115,6 +1115,48 @@ test "validation: errors/io/invariant_on_direct_return_non_position" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/io/invariant_on_direct_return_non_position");
 }
 
+test "validation: errors/io/blend_src_on_vertex_output" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/blend_src_on_vertex_output");
+}
+
+test "validation: errors/io/blend_src_without_location" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/blend_src_without_location");
+}
+
+test "validation: errors/io/blend_src_invalid_value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/blend_src_invalid_value");
+}
+
+test "validation: errors/io/blend_src_unpaired" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/blend_src_unpaired");
+}
+
+test "validation: errors/io/blend_src_type_mismatch" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/blend_src_type_mismatch");
+}
+
+test "validation: errors/io/blend_src_on_input" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/blend_src_on_input");
+}
+
+test "validation: types/entry_point_fragment_blend_src" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_fragment_blend_src");
+}
+
 test "validation: types/entry_point_vertex_inputs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
