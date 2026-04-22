@@ -190,7 +190,14 @@ pub fn changeDocument(self: *Handler, uri: []const u8, text: []const u8) !void {
     const new_source = try self.gpa.dupe(u8, text);
     self.gpa.free(doc.source);
     doc.source = new_source;
+    // `parseFull` in `rebuildParse` starts fresh at `module_version = 0`.
+    // Preserve monotonicity across the full-replace path so pull-mode
+    // `resultId` values keep advancing — otherwise a client would see
+    // the same id after a full-text edit and wrongly trust a stale
+    // diagnostic set.
+    const prev_version = if (doc.parse) |*p| p.module_version else 0;
     self.rebuildParse(doc);
+    if (doc.parse) |*p| p.module_version = prev_version +% 1;
 }
 
 /// Removes a document and frees its source and URI.
@@ -208,6 +215,20 @@ pub fn closeDocument(self: *Handler, uri: []const u8) void {
 pub fn getDocumentSource(self: *const Handler, uri: []const u8) ?[]const u8 {
     const doc = self.documents.get(uri) orelse return null;
     return doc.source;
+}
+
+/// Returns a revision key for pull-mode diagnostics (LSP `resultId`).
+/// Two successive pulls that return the same value describe the same
+/// diagnostic set — the server may reply with `Unchanged` in that case.
+///
+/// The key is `doc.parse.module_version`: bumped on every reparse that
+/// could shift diagnostics, preserved by the trivia-only shortcut, and
+/// kept monotonic across full-text replaces by `changeDocument`.
+/// Returns `null` for unknown URIs or when the initial parse failed.
+pub fn currentResultId(self: *const Handler, uri: []const u8) ?u32 {
+    const doc = self.documents.get(uri) orelse return null;
+    const p = doc.parse orelse return null;
+    return p.module_version;
 }
 
 /// Handles a `textDocument/didSave` notification. The client remains the

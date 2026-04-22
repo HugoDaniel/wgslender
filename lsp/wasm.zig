@@ -992,7 +992,8 @@ fn emitDiagnostics(uri: []const u8) void {
 }
 
 /// Pull-model diagnostics (LSP 3.17 `textDocument/diagnostic`). Returns a
-/// Full report. Unknown URIs and `diagnostics.enabled=false` both answer
+/// Full report (or Unchanged when `previousResultId` matches the current
+/// revision key). Unknown URIs and `diagnostics.enabled=false` both answer
 /// with an empty Full report — pull clients wait for a response, so
 /// silence would hang the UI.
 fn handlePullDiagnostic(root: std.json.ObjectMap, id: ?std.json.Value) void {
@@ -1004,11 +1005,37 @@ fn handlePullDiagnostic(root: std.json.ObjectMap, id: ?std.json.Value) void {
     if (!handler.settings.diagnostics_enabled) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
     if (handler.getDocumentSource(uri) == null) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
 
+    var id_buf: [10]u8 = undefined;
+    const current_id: ?[]const u8 = if (handler.currentResultId(uri)) |v|
+        std.fmt.bufPrint(&id_buf, "{d}", .{v}) catch null
+    else
+        null;
+
+    if (current_id) |cur| {
+        const prev = strVal(objGet(params, "previousResultId"));
+        if (prev != null and std.mem.eql(u8, prev.?, cur)) {
+            var ubuf: std.ArrayListUnmanaged(u8) = .empty;
+            appendStr(&ubuf, "{\"kind\":\"unchanged\",\"resultId\":\"");
+            appendStr(&ubuf, cur);
+            appendStr(&ubuf, "\"}");
+            const ubody = ubuf.toOwnedSlice(wasm_allocator) catch return;
+            defer wasm_allocator.free(ubody);
+            sendResult(id, ubody);
+            return;
+        }
+    }
+
     const diags = handler.validateDocumentFull(uri) catch return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
     defer Handler.freeDiagnostics(handler.gpa, diags);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"kind\":\"full\",\"items\":");
+    appendStr(&buf, "{\"kind\":\"full\"");
+    if (current_id) |cur| {
+        appendStr(&buf, ",\"resultId\":\"");
+        appendStr(&buf, cur);
+        appendStr(&buf, "\"");
+    }
+    appendStr(&buf, ",\"items\":");
     diagnostic_json.appendDiagnosticItems(&buf, wasm_allocator, uri, diags);
     appendStr(&buf, "}");
     const body = buf.toOwnedSlice(wasm_allocator) catch return;

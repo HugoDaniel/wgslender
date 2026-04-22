@@ -231,6 +231,10 @@ const NativeServer = struct {
     /// `validateDocumentFull` path the push notification uses. Unknown URIs
     /// and `diagnostics.enabled=false` both return an empty Full report —
     /// pull clients wait for a response, so silence would hang the UI.
+    ///
+    /// When `params.previousResultId` matches the current revision key we
+    /// return an Unchanged report (spec-blessed short-circuit that lets the
+    /// client reuse its cached items[]).
     pub fn @"textDocument/diagnostic"(
         self: *NativeServer,
         arena: std.mem.Allocator,
@@ -247,6 +251,19 @@ const NativeServer = struct {
         if (!self.handler.settings.diagnostics_enabled) return empty;
         if (self.handler.getDocumentSource(uri) == null) return empty;
 
+        const current_id: ?[]const u8 = if (self.handler.currentResultId(uri)) |v|
+            try std.fmt.allocPrint(arena, "{d}", .{v})
+        else
+            null;
+
+        if (current_id) |cur| if (params.previousResultId) |prev|
+            if (std.mem.eql(u8, prev, cur)) return .{
+                .related_unchanged_document_diagnostic_report = .{
+                    .resultId = cur,
+                    .relatedDocuments = null,
+                },
+            };
+
         const handler_diags = try self.handler.validateDocumentFull(uri);
         defer Handler.freeDiagnostics(self.handler.gpa, handler_diags);
 
@@ -254,7 +271,7 @@ const NativeServer = struct {
         return .{
             .related_full_document_diagnostic_report = .{
                 .items = items,
-                .resultId = null,
+                .resultId = current_id,
                 .relatedDocuments = null,
             },
         };
