@@ -567,3 +567,205 @@ test "§8.5: &*p is valid when p is a pointer" {
         return error.TestUnexpectedResult;
     }
 }
+
+// -------------------------------------------------------------------------
+// AS / AM propagation through `&(*p)` chains — historically defaulted to
+// function/read_write because `rootVarSymbol` stopped at the deref arm.
+// Each test installs a pointer-typed sink whose declared AS has to match
+// the inferred pointer type of the `&*p` expression for the call to
+// type-check; the sink is reachable only when propagation is correct.
+// -------------------------------------------------------------------------
+
+test "§8.5: &*p preserves storage,read_write on a storage var" {
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\@group(0) @binding(0) var<storage, read_write> G: array<f32>;
+        \\fn sink(p: ptr<storage, array<f32>, read_write>) -> u32 { return arrayLength(p); }
+        \\fn f() -> u32 { let p = &G; let q = &*p; return sink(q); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on &*p → ptr<storage,…,read_write>", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§8.5: &*p preserves storage,read on a storage<read> var" {
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\@group(0) @binding(0) var<storage, read> R: array<u32>;
+        \\fn sink(p: ptr<storage, array<u32>, read>) -> u32 { return arrayLength(p); }
+        \\fn f() -> u32 { let p = &R; let q = &*p; return sink(q); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on &*p → ptr<storage,…,read>", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§8.5: &*p preserves workgroup on a workgroup var" {
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\var<workgroup> W: i32;
+        \\fn sink(p: ptr<workgroup, i32, read_write>) { *p = 1; }
+        \\fn f() { let p = &W; let q = &*p; sink(q); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on &*p → ptr<workgroup,…>", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§8.5: &*p preserves private on a private var" {
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\var<private> P: i32 = 0;
+        \\fn sink(p: ptr<private, i32, read_write>) { *p = 1; }
+        \\fn f() { let p = &P; let q = &*p; sink(q); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on &*p → ptr<private,…>", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§8.5: &*p preserves uniform on a uniform var" {
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\@group(0) @binding(0) var<uniform> U: vec4f;
+        \\fn sink(p: ptr<uniform, vec4f, read>) -> vec4f { return *p; }
+        \\fn f() -> vec4f { let p = &U; let q = &*p; return sink(q); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on &*p → ptr<uniform,…,read>", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§8.5: &*p defaults to function on a function-scope var (regression)" {
+    var r = try validate(
+        \\fn sink(p: ptr<function, i32, read_write>) { *p = 2; }
+        \\fn f() { var x: i32 = 1; let p = &x; let q = &*p; sink(q); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on &*p → ptr<function,…>", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§8.5: &*p into a mismatched AS sink is rejected (storage vs function)" {
+    // Without the fix, the args in this program look like ptr<function,…>
+    // on both sides, so the call would spuriously succeed. With the fix,
+    // `q` is ptr<storage,…,read_write> and the function-AS parameter
+    // rejects it — proving AS really is propagating.
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\@group(0) @binding(0) var<storage, read_write> G: i32;
+        \\fn sink(p: ptr<function, i32, read_write>) { *p = 1; }
+        \\fn f() { let p = &G; let q = &*p; sink(q); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (!hasErrorWithCode(r, "E0304") and !anyError(r)) {
+        dump("expected argument-type / AS error on storage &*p → function sink", r);
+        return error.TestUnexpectedResult;
+    }
+    if (!anyError(r)) return error.TestUnexpectedResult;
+}
+
+// -------------------------------------------------------------------------
+// Chains built on top of `*p`: member and index arms must also propagate
+// AS/AM from the source pointer.
+// -------------------------------------------------------------------------
+
+test "§8.5: &(*p).field preserves AS through member access" {
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\struct S { a: f32, b: i32 }
+        \\@group(0) @binding(0) var<storage, read_write> G: S;
+        \\fn sink(p: ptr<storage, f32, read_write>) { *p = 1.0; }
+        \\fn f() { let p = &G; let q = &(*p).a; sink(q); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on &(*p).field → ptr<storage,…>", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§8.5: &(*p)[i] preserves AS through index" {
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\@group(0) @binding(0) var<storage, read_write> G: array<f32, 16>;
+        \\fn sink(p: ptr<storage, f32, read_write>) { *p = 2.0; }
+        \\fn f() { let p = &G; let q = &(*p)[0]; sink(q); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on &(*p)[i] → ptr<storage,…>", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+// NOTE: no test for the inline form `&(*(&x))`. That shape is rejected by
+// `addrOfOperandLooksAddressable` (which only treats `*<ident/member/index>`
+// as addressable, not `*<&-of-something>`). That is a separate, pre-existing
+// conservatism in the syntactic gate — orthogonal to AS/AM propagation. The
+// let-chain test below covers the same "round-trip through a pointer"
+// behavior without tripping that gate.
+
+test "§8.5: &*p over a let-chain of pointers keeps source AS" {
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\struct S { a: f32 }
+        \\@group(0) @binding(0) var<storage, read_write> G: S;
+        \\fn sink(p: ptr<storage, f32, read_write>) { *p = 1.0; }
+        \\fn f() {
+        \\  let p = &G;
+        \\  let pp = &*p;
+        \\  let q = &(*pp).a;
+        \\  sink(q);
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on let-chain pointer AS propagation", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§13: &*p on a function-parameter pointer keeps the param's AS" {
+    var r = try validate(
+        \\enable unrestricted_pointer_parameters;
+        \\@group(0) @binding(0) var<storage, read_write> G: array<f32>;
+        \\fn g(p: ptr<storage, array<f32>, read_write>) -> u32 {
+        \\  let q = &*p;
+        \\  return arrayLength(q);
+        \\}
+        \\fn f() -> u32 { return g(&G); }
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on param-pointer &*p preservation", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "§17.14: arrayLength(&*p) resolves via tparam_ptr_runtime_array" {
+    var r = try validate(
+        \\@group(0) @binding(0) var<storage, read_write> G: array<f32>;
+        \\fn f() -> u32 {
+        \\  let p = &G;
+        \\  return arrayLength(&*p);
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    if (anyError(r)) {
+        dump("no error expected on arrayLength(&*p) round-trip", r);
+        return error.TestUnexpectedResult;
+    }
+}

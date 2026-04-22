@@ -124,11 +124,10 @@ pub const Pattern = union(enum) {
     /// ptr<AS, array<E>, AM> for arrayLength (§17.14). Both AS and AM bind
     /// to tparam slots — neither is pinned. Per WGSL §6.7.4 a runtime-sized
     /// array can only legally be declared in a storage var, so the array
-    /// element + `isRuntimeSized` checks are sufficient on their own;
-    /// pinning AS to `.storage` would falsely reject valid code that goes
-    /// through pointer-chain inference (e.g. `let p = &G; let p2 = &(*p)`)
-    /// where the validator's `&(*p)` rule currently defaults AS to
-    /// `function`. The element type E is intentionally NOT bound: the
+    /// element + `isRuntimeSized` checks are sufficient on their own —
+    /// pinning AS/AM here would just duplicate what the source-level
+    /// binding already guarantees while producing worse diagnostics on
+    /// mismatches. The element type E is intentionally NOT bound: the
     /// result is fixed `u32` regardless of E, and runtime-sized arrays may
     /// have non-scalar elements (struct, vec, nested array) that the
     /// existing scalar-only Binding can't represent. The pattern enforces

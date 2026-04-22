@@ -2928,23 +2928,55 @@ fn stripParens(operand: Ast.Expr) Ast.Expr {
     return cur;
 }
 
-/// Walks an addressable chain (ident / *p / member-access / index) back to
-/// the root variable symbol. Returns `.none` if the chain doesn't terminate
-/// in an ident — which means the root is some other form of reference
-/// (e.g. `*param_ptr.field`) whose AS/AM we can't look up directly.
-fn rootVarSymbol(expr: Ast.Expr) Ast.SymbolIndex {
+/// Address-space / access-mode pair used when materializing a pointer type
+/// from `&`. Pulled out so the recovery helper below can return both fields
+/// in one shot.
+const AddrSpaceAndMode = struct {
+    address_space: Ast.AddressSpace,
+    access_mode: Ast.AccessMode,
+};
+
+/// Walks an addressable chain (ident / *p / member-access / index / paren)
+/// and reports the AS/AM that `&`-of-that-chain should carry. Falls back to
+/// `function` / `read_write` when the chain leads somewhere we cannot
+/// resolve (e.g. an unbound identifier).
+///
+/// Two sources feed the answer:
+///   • var-declared idents → `var_info` stores the normalized AS/AM.
+///   • `*ptr_expr` arms → the inner `ptr_expr`'s inferred pointer type
+///     supplies AS/AM. This keeps `&(*p)` (and member / index chains built
+///     on top of it) faithful to `p`'s source pointer, instead of collapsing
+///     to the historical defaults.
+fn addrOfOperandAsAm(v: *Validator, expr: Ast.Expr) Allocator.Error!AddrSpaceAndMode {
+    const defaults: AddrSpaceAndMode = .{ .address_space = .function, .access_mode = .read_write };
     var cur = expr;
     while (true) {
         switch (cur) {
-            .ident => |id| return id.ref,
+            .ident => |id| {
+                if (id.ref.isValid()) {
+                    if (v.var_info.get(id.ref.index())) |info| {
+                        return .{ .address_space = info.address_space, .access_mode = info.access_mode };
+                    }
+                }
+                return defaults;
+            },
             .paren => |p| cur = p.expr,
             .member => |m| cur = m.base,
             .index => |ix| cur = ix.base,
             .unary => |u| {
-                if (u.op == .deref) return .none;
-                return .none;
+                if (u.op != .deref) return defaults;
+                // `*x` — for this arm to have type-checked, x is a pointer
+                // (or, via load-rule, a reference). Either way its type
+                // carries the AS/AM we want to project onto the outer `&`.
+                const inner = try v.checkExpr(u.operand);
+                if (inner.typ) |t| switch (t) {
+                    .pointer => |p| return .{ .address_space = p.address_space, .access_mode = p.access_mode },
+                    .reference => |r| return .{ .address_space = r.address_space, .access_mode = r.access_mode },
+                    else => {},
+                };
+                return defaults;
             },
-            else => return .none,
+            else => return defaults,
         }
     }
 }
@@ -3069,22 +3101,15 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!InferResult {
                 return InferResult.fail;
             }
 
-            // Choose AS/AM from the root variable if we can identify it.
-            var addr_space: Ast.AddressSpace = .function;
-            var access_mode: Ast.AccessMode = .read_write;
-            const root = rootVarSymbol(e.operand);
-            if (root.isValid()) {
-                if (v.var_info.get(root.index())) |info| {
-                    addr_space = info.address_space;
-                    access_mode = info.access_mode;
-                }
-            }
+            // Choose AS/AM from the addressable chain: a var ident supplies
+            // its declared AS/AM, a `*x` arm projects x's pointer type.
+            const asam = try addrOfOperandAsAm(v, e.operand);
 
             const p = v.arena.create(Types.Pointer) catch return InferResult.fail;
             p.* = .{
-                .address_space = addr_space,
+                .address_space = asam.address_space,
                 .element = operand_type,
-                .access_mode = access_mode,
+                .access_mode = asam.access_mode,
             };
             return InferResult.some(.{ .pointer = p }, stage);
         },
