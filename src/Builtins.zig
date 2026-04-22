@@ -42,19 +42,6 @@ pub const UniformityRequirement = enum(u8) {
     uniform_args, // Certain arguments must be uniform
 };
 
-/// Describes how to infer the return type of a builtin function.
-pub const ReturnPattern = enum(u8) {
-    same_as_arg, // Return type matches first argument (abs, sin, floor, etc.)
-    bool_scalar, // Returns bool (all, any)
-    scalar_of_arg, // Returns scalar element of first arg (dot, length, distance, determinant)
-    void_type, // Returns void (barriers, atomicStore, textureStore)
-    texture, // Infer from texture argument (textureLoad, textureSample, etc.)
-    texture_dims, // textureDimensions: u32 / vec2<u32> / vec3<u32> based on dimension
-    pack_u32, // Packing functions return u32
-    u32_scalar, // Returns u32 (textureNumLayers, arrayLength, etc.)
-    custom, // Needs special logic (bitcast, transpose, atomics, unpack, etc.)
-};
-
 // =========================================================================
 // Builtin Definition
 // =========================================================================
@@ -67,7 +54,6 @@ pub const Builtin = struct {
     uniformity: UniformityRequirement,
     min_args: u8, // Minimum argument count for overload resolution stub
     max_args: u8, // Maximum argument count for overload resolution stub
-    return_pattern: ReturnPattern,
     must_use: bool, // Return value must be consumed (not called as statement)
     /// Declarative overload signatures. Every callable builtin populates
     /// this table; `Validator.checkBuiltinCall` asserts non-empty and
@@ -154,7 +140,7 @@ const builtin_entries = conversion_entries ++
 // ---------------------------------------------------------------------------
 
 const conversion_entries = [_]struct { []const u8, Builtin }{
-    entry("bitcast", .conversion, .const_eval, .none, 1, 1, .custom),
+    entry("bitcast", .conversion, .const_eval, .none, 1, 1, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -162,9 +148,9 @@ const conversion_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const logical_entries = [_]struct { []const u8, Builtin }{
-    entry("all", .logical, .const_eval, .none, 1, 1, .bool_scalar),
-    entry("any", .logical, .const_eval, .none, 1, 1, .bool_scalar),
-    entry("select", .logical, .const_eval, .none, 3, 3, .same_as_arg),
+    entry("all", .logical, .const_eval, .none, 1, 1, true),
+    entry("any", .logical, .const_eval, .none, 1, 1, true),
+    entry("select", .logical, .const_eval, .none, 3, 3, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -172,7 +158,7 @@ const logical_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const array_entries = [_]struct { []const u8, Builtin }{
-    entry("arrayLength", .array, .runtime, .none, 1, 1, .u32_scalar),
+    entry("arrayLength", .array, .runtime, .none, 1, 1, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -180,19 +166,19 @@ const array_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_trig_entries = [_]struct { []const u8, Builtin }{
-    entry("sin", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("cos", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("tan", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("asin", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("acos", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("atan", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("sinh", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("cosh", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("tanh", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("asinh", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("acosh", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("atanh", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("atan2", .numeric, .const_eval, .none, 2, 2, .same_as_arg),
+    entry("sin", .numeric, .const_eval, .none, 1, 1, true),
+    entry("cos", .numeric, .const_eval, .none, 1, 1, true),
+    entry("tan", .numeric, .const_eval, .none, 1, 1, true),
+    entry("asin", .numeric, .const_eval, .none, 1, 1, true),
+    entry("acos", .numeric, .const_eval, .none, 1, 1, true),
+    entry("atan", .numeric, .const_eval, .none, 1, 1, true),
+    entry("sinh", .numeric, .const_eval, .none, 1, 1, true),
+    entry("cosh", .numeric, .const_eval, .none, 1, 1, true),
+    entry("tanh", .numeric, .const_eval, .none, 1, 1, true),
+    entry("asinh", .numeric, .const_eval, .none, 1, 1, true),
+    entry("acosh", .numeric, .const_eval, .none, 1, 1, true),
+    entry("atanh", .numeric, .const_eval, .none, 1, 1, true),
+    entry("atan2", .numeric, .const_eval, .none, 2, 2, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -200,13 +186,13 @@ const numeric_trig_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_exp_entries = [_]struct { []const u8, Builtin }{
-    entry("exp", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("exp2", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("log", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("log2", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("pow", .numeric, .const_eval, .none, 2, 2, .same_as_arg),
-    entry("sqrt", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("inverseSqrt", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
+    entry("exp", .numeric, .const_eval, .none, 1, 1, true),
+    entry("exp2", .numeric, .const_eval, .none, 1, 1, true),
+    entry("log", .numeric, .const_eval, .none, 1, 1, true),
+    entry("log2", .numeric, .const_eval, .none, 1, 1, true),
+    entry("pow", .numeric, .const_eval, .none, 2, 2, true),
+    entry("sqrt", .numeric, .const_eval, .none, 1, 1, true),
+    entry("inverseSqrt", .numeric, .const_eval, .none, 1, 1, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -214,23 +200,23 @@ const numeric_exp_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_misc_entries = [_]struct { []const u8, Builtin }{
-    entry("abs", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("sign", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("floor", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("ceil", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("round", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("trunc", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("fract", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("min", .numeric, .const_eval, .none, 2, 2, .same_as_arg),
-    entry("max", .numeric, .const_eval, .none, 2, 2, .same_as_arg),
-    entry("clamp", .numeric, .const_eval, .none, 3, 3, .same_as_arg),
-    entry("saturate", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("mix", .numeric, .const_eval, .none, 3, 3, .same_as_arg),
-    entry("step", .numeric, .const_eval, .none, 2, 2, .same_as_arg),
-    entry("smoothstep", .numeric, .const_eval, .none, 3, 3, .same_as_arg),
-    entry("fma", .numeric, .const_eval, .none, 3, 3, .same_as_arg),
-    entry("degrees", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("radians", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
+    entry("abs", .numeric, .const_eval, .none, 1, 1, true),
+    entry("sign", .numeric, .const_eval, .none, 1, 1, true),
+    entry("floor", .numeric, .const_eval, .none, 1, 1, true),
+    entry("ceil", .numeric, .const_eval, .none, 1, 1, true),
+    entry("round", .numeric, .const_eval, .none, 1, 1, true),
+    entry("trunc", .numeric, .const_eval, .none, 1, 1, true),
+    entry("fract", .numeric, .const_eval, .none, 1, 1, true),
+    entry("min", .numeric, .const_eval, .none, 2, 2, true),
+    entry("max", .numeric, .const_eval, .none, 2, 2, true),
+    entry("clamp", .numeric, .const_eval, .none, 3, 3, true),
+    entry("saturate", .numeric, .const_eval, .none, 1, 1, true),
+    entry("mix", .numeric, .const_eval, .none, 3, 3, true),
+    entry("step", .numeric, .const_eval, .none, 2, 2, true),
+    entry("smoothstep", .numeric, .const_eval, .none, 3, 3, true),
+    entry("fma", .numeric, .const_eval, .none, 3, 3, true),
+    entry("degrees", .numeric, .const_eval, .none, 1, 1, true),
+    entry("radians", .numeric, .const_eval, .none, 1, 1, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -238,16 +224,16 @@ const numeric_misc_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_vector_entries = [_]struct { []const u8, Builtin }{
-    entry("dot", .numeric, .const_eval, .none, 2, 2, .scalar_of_arg),
-    entry("dot4I8Packed", .numeric, .const_eval, .none, 2, 2, .custom),
-    entry("dot4U8Packed", .numeric, .const_eval, .none, 2, 2, .custom),
-    entry("cross", .numeric, .const_eval, .none, 2, 2, .same_as_arg),
-    entry("length", .numeric, .const_eval, .none, 1, 1, .scalar_of_arg),
-    entry("distance", .numeric, .const_eval, .none, 2, 2, .scalar_of_arg),
-    entry("normalize", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("reflect", .numeric, .const_eval, .none, 2, 2, .same_as_arg),
-    entry("refract", .numeric, .const_eval, .none, 3, 3, .same_as_arg),
-    entry("faceForward", .numeric, .const_eval, .none, 3, 3, .same_as_arg),
+    entry("dot", .numeric, .const_eval, .none, 2, 2, true),
+    entry("dot4I8Packed", .numeric, .const_eval, .none, 2, 2, true),
+    entry("dot4U8Packed", .numeric, .const_eval, .none, 2, 2, true),
+    entry("cross", .numeric, .const_eval, .none, 2, 2, true),
+    entry("length", .numeric, .const_eval, .none, 1, 1, true),
+    entry("distance", .numeric, .const_eval, .none, 2, 2, true),
+    entry("normalize", .numeric, .const_eval, .none, 1, 1, true),
+    entry("reflect", .numeric, .const_eval, .none, 2, 2, true),
+    entry("refract", .numeric, .const_eval, .none, 3, 3, true),
+    entry("faceForward", .numeric, .const_eval, .none, 3, 3, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -255,14 +241,14 @@ const numeric_vector_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_bit_entries = [_]struct { []const u8, Builtin }{
-    entry("countOneBits", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("countLeadingZeros", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("countTrailingZeros", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("reverseBits", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("firstLeadingBit", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("firstTrailingBit", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
-    entry("extractBits", .numeric, .const_eval, .none, 3, 3, .same_as_arg),
-    entry("insertBits", .numeric, .const_eval, .none, 4, 4, .same_as_arg),
+    entry("countOneBits", .numeric, .const_eval, .none, 1, 1, true),
+    entry("countLeadingZeros", .numeric, .const_eval, .none, 1, 1, true),
+    entry("countTrailingZeros", .numeric, .const_eval, .none, 1, 1, true),
+    entry("reverseBits", .numeric, .const_eval, .none, 1, 1, true),
+    entry("firstLeadingBit", .numeric, .const_eval, .none, 1, 1, true),
+    entry("firstTrailingBit", .numeric, .const_eval, .none, 1, 1, true),
+    entry("extractBits", .numeric, .const_eval, .none, 3, 3, true),
+    entry("insertBits", .numeric, .const_eval, .none, 4, 4, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -270,8 +256,8 @@ const numeric_bit_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_matrix_entries = [_]struct { []const u8, Builtin }{
-    entry("transpose", .numeric, .const_eval, .none, 1, 1, .custom),
-    entry("determinant", .numeric, .const_eval, .none, 1, 1, .scalar_of_arg),
+    entry("transpose", .numeric, .const_eval, .none, 1, 1, true),
+    entry("determinant", .numeric, .const_eval, .none, 1, 1, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -279,10 +265,10 @@ const numeric_matrix_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_special_entries = [_]struct { []const u8, Builtin }{
-    entry("ldexp", .numeric, .const_eval, .none, 2, 2, .same_as_arg),
-    entry("frexp", .numeric, .runtime, .none, 1, 1, .custom),
-    entry("modf", .numeric, .runtime, .none, 1, 1, .custom),
-    entry("quantizeToF16", .numeric, .const_eval, .none, 1, 1, .same_as_arg),
+    entry("ldexp", .numeric, .const_eval, .none, 2, 2, true),
+    entry("frexp", .numeric, .runtime, .none, 1, 1, true),
+    entry("modf", .numeric, .runtime, .none, 1, 1, true),
+    entry("quantizeToF16", .numeric, .const_eval, .none, 1, 1, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -290,15 +276,15 @@ const numeric_special_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const derivative_entries = [_]struct { []const u8, Builtin }{
-    entry("dpdx", .derivative, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("dpdy", .derivative, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("fwidth", .derivative, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("dpdxCoarse", .derivative, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("dpdyCoarse", .derivative, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("fwidthCoarse", .derivative, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("dpdxFine", .derivative, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("dpdyFine", .derivative, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("fwidthFine", .derivative, .runtime, .uniform_flow, 1, 1, .same_as_arg),
+    entry("dpdx", .derivative, .runtime, .uniform_flow, 1, 1, true),
+    entry("dpdy", .derivative, .runtime, .uniform_flow, 1, 1, true),
+    entry("fwidth", .derivative, .runtime, .uniform_flow, 1, 1, true),
+    entry("dpdxCoarse", .derivative, .runtime, .uniform_flow, 1, 1, true),
+    entry("dpdyCoarse", .derivative, .runtime, .uniform_flow, 1, 1, true),
+    entry("fwidthCoarse", .derivative, .runtime, .uniform_flow, 1, 1, true),
+    entry("dpdxFine", .derivative, .runtime, .uniform_flow, 1, 1, true),
+    entry("dpdyFine", .derivative, .runtime, .uniform_flow, 1, 1, true),
+    entry("fwidthFine", .derivative, .runtime, .uniform_flow, 1, 1, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -307,27 +293,27 @@ const derivative_entries = [_]struct { []const u8, Builtin }{
 
 const texture_entries = [_]struct { []const u8, Builtin }{
     // textureSample requires uniform control flow
-    entry("textureSample", .texture, .runtime, .uniform_flow, 2, 5, .texture),
-    entry("textureSampleBias", .texture, .runtime, .uniform_flow, 3, 6, .texture),
-    entry("textureSampleCompare", .texture, .runtime, .uniform_flow, 3, 6, .texture),
+    entry("textureSample", .texture, .runtime, .uniform_flow, 2, 5, true),
+    entry("textureSampleBias", .texture, .runtime, .uniform_flow, 3, 6, true),
+    entry("textureSampleCompare", .texture, .runtime, .uniform_flow, 3, 6, true),
     // textureSampleCompareLevel does NOT require uniform control flow
-    entry("textureSampleCompareLevel", .texture, .runtime, .none, 4, 6, .texture),
+    entry("textureSampleCompareLevel", .texture, .runtime, .none, 4, 6, true),
     // textureSampleLevel does NOT require uniform control flow
-    entry("textureSampleLevel", .texture, .runtime, .none, 3, 6, .texture),
+    entry("textureSampleLevel", .texture, .runtime, .none, 3, 6, true),
     // textureSampleGrad does NOT require uniform control flow
-    entry("textureSampleGrad", .texture, .runtime, .none, 4, 7, .texture),
+    entry("textureSampleGrad", .texture, .runtime, .none, 4, 7, true),
     // textureLoad/Store
-    entry("textureLoad", .texture, .runtime, .none, 2, 4, .texture),
-    entry("textureStore", .texture, .runtime, .none, 3, 4, .void_type),
+    entry("textureLoad", .texture, .runtime, .none, 2, 4, true),
+    entry("textureStore", .texture, .runtime, .none, 3, 4, false),
     // textureDimensions, textureNumLayers, textureNumLevels, textureNumSamples
-    entry("textureDimensions", .texture, .runtime, .none, 1, 2, .texture_dims),
-    entry("textureNumLayers", .texture, .runtime, .none, 1, 1, .u32_scalar),
-    entry("textureNumLevels", .texture, .runtime, .none, 1, 1, .u32_scalar),
-    entry("textureNumSamples", .texture, .runtime, .none, 1, 1, .u32_scalar),
+    entry("textureDimensions", .texture, .runtime, .none, 1, 2, true),
+    entry("textureNumLayers", .texture, .runtime, .none, 1, 1, true),
+    entry("textureNumLevels", .texture, .runtime, .none, 1, 1, true),
+    entry("textureNumSamples", .texture, .runtime, .none, 1, 1, true),
     // textureGather and textureGatherCompare require uniform control flow
-    entry("textureGather", .texture, .runtime, .uniform_flow, 3, 6, .texture),
-    entry("textureGatherCompare", .texture, .runtime, .uniform_flow, 4, 6, .texture),
-    entry("textureSampleBaseClampToEdge", .texture, .runtime, .none, 3, 3, .texture),
+    entry("textureGather", .texture, .runtime, .uniform_flow, 3, 6, true),
+    entry("textureGatherCompare", .texture, .runtime, .uniform_flow, 4, 6, true),
+    entry("textureSampleBaseClampToEdge", .texture, .runtime, .none, 3, 3, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -335,17 +321,17 @@ const texture_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const atomic_entries = [_]struct { []const u8, Builtin }{
-    entry("atomicLoad", .atomic, .runtime, .none, 1, 1, .custom),
-    entry("atomicStore", .atomic, .runtime, .none, 2, 2, .void_type),
-    entry("atomicAdd", .atomic, .runtime, .none, 2, 2, .custom),
-    entry("atomicSub", .atomic, .runtime, .none, 2, 2, .custom),
-    entry("atomicMax", .atomic, .runtime, .none, 2, 2, .custom),
-    entry("atomicMin", .atomic, .runtime, .none, 2, 2, .custom),
-    entry("atomicAnd", .atomic, .runtime, .none, 2, 2, .custom),
-    entry("atomicOr", .atomic, .runtime, .none, 2, 2, .custom),
-    entry("atomicXor", .atomic, .runtime, .none, 2, 2, .custom),
-    entry("atomicExchange", .atomic, .runtime, .none, 2, 2, .custom),
-    entry("atomicCompareExchangeWeak", .atomic, .runtime, .none, 3, 3, .custom),
+    entry("atomicLoad", .atomic, .runtime, .none, 1, 1, true),
+    entry("atomicStore", .atomic, .runtime, .none, 2, 2, false),
+    entry("atomicAdd", .atomic, .runtime, .none, 2, 2, true),
+    entry("atomicSub", .atomic, .runtime, .none, 2, 2, true),
+    entry("atomicMax", .atomic, .runtime, .none, 2, 2, true),
+    entry("atomicMin", .atomic, .runtime, .none, 2, 2, true),
+    entry("atomicAnd", .atomic, .runtime, .none, 2, 2, true),
+    entry("atomicOr", .atomic, .runtime, .none, 2, 2, true),
+    entry("atomicXor", .atomic, .runtime, .none, 2, 2, true),
+    entry("atomicExchange", .atomic, .runtime, .none, 2, 2, true),
+    entry("atomicCompareExchangeWeak", .atomic, .runtime, .none, 3, 3, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -354,23 +340,23 @@ const atomic_entries = [_]struct { []const u8, Builtin }{
 
 const packing_entries = [_]struct { []const u8, Builtin }{
     // Packing functions: input is a vector, output is u32
-    entry("pack4x8snorm", .packing, .const_eval, .none, 1, 1, .pack_u32),
-    entry("pack4x8unorm", .packing, .const_eval, .none, 1, 1, .pack_u32),
-    entry("pack2x16snorm", .packing, .const_eval, .none, 1, 1, .pack_u32),
-    entry("pack2x16unorm", .packing, .const_eval, .none, 1, 1, .pack_u32),
-    entry("pack2x16float", .packing, .const_eval, .none, 1, 1, .pack_u32),
-    entry("pack4xI8", .packing, .const_eval, .none, 1, 1, .pack_u32),
-    entry("pack4xU8", .packing, .const_eval, .none, 1, 1, .pack_u32),
-    entry("pack4xI8Clamp", .packing, .const_eval, .none, 1, 1, .pack_u32),
-    entry("pack4xU8Clamp", .packing, .const_eval, .none, 1, 1, .pack_u32),
+    entry("pack4x8snorm", .packing, .const_eval, .none, 1, 1, true),
+    entry("pack4x8unorm", .packing, .const_eval, .none, 1, 1, true),
+    entry("pack2x16snorm", .packing, .const_eval, .none, 1, 1, true),
+    entry("pack2x16unorm", .packing, .const_eval, .none, 1, 1, true),
+    entry("pack2x16float", .packing, .const_eval, .none, 1, 1, true),
+    entry("pack4xI8", .packing, .const_eval, .none, 1, 1, true),
+    entry("pack4xU8", .packing, .const_eval, .none, 1, 1, true),
+    entry("pack4xI8Clamp", .packing, .const_eval, .none, 1, 1, true),
+    entry("pack4xU8Clamp", .packing, .const_eval, .none, 1, 1, true),
     // Unpacking functions: variable return types
-    entry("unpack4x8snorm", .packing, .const_eval, .none, 1, 1, .custom),
-    entry("unpack4x8unorm", .packing, .const_eval, .none, 1, 1, .custom),
-    entry("unpack2x16snorm", .packing, .const_eval, .none, 1, 1, .custom),
-    entry("unpack2x16unorm", .packing, .const_eval, .none, 1, 1, .custom),
-    entry("unpack2x16float", .packing, .const_eval, .none, 1, 1, .custom),
-    entry("unpack4xI8", .packing, .const_eval, .none, 1, 1, .custom),
-    entry("unpack4xU8", .packing, .const_eval, .none, 1, 1, .custom),
+    entry("unpack4x8snorm", .packing, .const_eval, .none, 1, 1, true),
+    entry("unpack4x8unorm", .packing, .const_eval, .none, 1, 1, true),
+    entry("unpack2x16snorm", .packing, .const_eval, .none, 1, 1, true),
+    entry("unpack2x16unorm", .packing, .const_eval, .none, 1, 1, true),
+    entry("unpack2x16float", .packing, .const_eval, .none, 1, 1, true),
+    entry("unpack4xI8", .packing, .const_eval, .none, 1, 1, true),
+    entry("unpack4xU8", .packing, .const_eval, .none, 1, 1, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -378,10 +364,10 @@ const packing_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const synchronization_entries = [_]struct { []const u8, Builtin }{
-    entry("workgroupBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, .void_type),
-    entry("storageBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, .void_type),
-    entry("textureBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, .void_type),
-    entry("workgroupUniformLoad", .synchronization, .runtime, .uniform_flow, 1, 1, .custom),
+    entry("workgroupBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, false),
+    entry("storageBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, false),
+    entry("textureBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, false),
+    entry("workgroupUniformLoad", .synchronization, .runtime, .uniform_flow, 1, 1, true),
 };
 
 // ---------------------------------------------------------------------------
@@ -389,39 +375,42 @@ const synchronization_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const subgroup_entries = [_]struct { []const u8, Builtin }{
-    entry("subgroupBallot", .subgroup, .runtime, .uniform_flow, 0, 1, .custom),
-    entry("subgroupBroadcast", .subgroup, .runtime, .uniform_flow, 2, 2, .same_as_arg),
-    entry("subgroupBroadcastFirst", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupShuffle", .subgroup, .runtime, .uniform_flow, 2, 2, .same_as_arg),
-    entry("subgroupShuffleDown", .subgroup, .runtime, .uniform_flow, 2, 2, .same_as_arg),
-    entry("subgroupShuffleUp", .subgroup, .runtime, .uniform_flow, 2, 2, .same_as_arg),
-    entry("subgroupShuffleXor", .subgroup, .runtime, .uniform_flow, 2, 2, .same_as_arg),
-    entry("subgroupAdd", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupMul", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupAnd", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupOr", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupXor", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupMin", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupMax", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupInclusiveAdd", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupInclusiveMul", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupExclusiveAdd", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupExclusiveMul", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("subgroupAll", .subgroup, .runtime, .uniform_flow, 1, 1, .bool_scalar),
-    entry("subgroupAny", .subgroup, .runtime, .uniform_flow, 1, 1, .bool_scalar),
-    entry("subgroupElect", .subgroup, .runtime, .uniform_flow, 0, 0, .bool_scalar),
+    entry("subgroupBallot", .subgroup, .runtime, .uniform_flow, 0, 1, true),
+    entry("subgroupBroadcast", .subgroup, .runtime, .uniform_flow, 2, 2, true),
+    entry("subgroupBroadcastFirst", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupShuffle", .subgroup, .runtime, .uniform_flow, 2, 2, true),
+    entry("subgroupShuffleDown", .subgroup, .runtime, .uniform_flow, 2, 2, true),
+    entry("subgroupShuffleUp", .subgroup, .runtime, .uniform_flow, 2, 2, true),
+    entry("subgroupShuffleXor", .subgroup, .runtime, .uniform_flow, 2, 2, true),
+    entry("subgroupAdd", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupMul", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupAnd", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupOr", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupXor", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupMin", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupMax", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupInclusiveAdd", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupInclusiveMul", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupExclusiveAdd", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupExclusiveMul", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupAll", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupAny", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("subgroupElect", .subgroup, .runtime, .uniform_flow, 0, 0, true),
     // Quad operations (Section 17.13)
-    entry("quadBroadcast", .subgroup, .runtime, .uniform_flow, 2, 2, .same_as_arg),
-    entry("quadSwapDiagonal", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("quadSwapX", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
-    entry("quadSwapY", .subgroup, .runtime, .uniform_flow, 1, 1, .same_as_arg),
+    entry("quadBroadcast", .subgroup, .runtime, .uniform_flow, 2, 2, true),
+    entry("quadSwapDiagonal", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("quadSwapX", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    entry("quadSwapY", .subgroup, .runtime, .uniform_flow, 1, 1, true),
 };
 
 // =========================================================================
 // Entry Helper
 // =========================================================================
 
-/// Builds a StaticStringMap entry tuple from builtin metadata.
+/// Builds a StaticStringMap entry tuple from builtin metadata. Every
+/// builtin with a return value is `@must_use` per WGSL spec; pass
+/// `false` only for the handful of void-returning builtins (barriers,
+/// textureStore, atomicStore).
 fn entry(
     comptime name: []const u8,
     comptime kind: Kind,
@@ -429,7 +418,7 @@ fn entry(
     comptime uniformity: UniformityRequirement,
     comptime min_args: u8,
     comptime max_args: u8,
-    comptime return_pattern: ReturnPattern,
+    comptime must_use: bool,
 ) struct { []const u8, Builtin } {
     return .{
         name,
@@ -440,9 +429,7 @@ fn entry(
             .uniformity = uniformity,
             .min_args = min_args,
             .max_args = max_args,
-            .return_pattern = return_pattern,
-            // Per WGSL spec, all builtin functions with a return value are @must_use.
-            .must_use = return_pattern != .void_type,
+            .must_use = must_use,
         },
     };
 }
@@ -2153,34 +2140,19 @@ test "builtins: requiresUniform correctness" {
     }
 }
 
-test "builtins: return patterns are assigned" {
-    // Numeric builtins return same_as_arg
-    try std.testing.expectEqual(ReturnPattern.same_as_arg, lookup("sin").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.same_as_arg, lookup("abs").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.same_as_arg, lookup("floor").?.return_pattern);
+test "builtins: must_use is true except for void-returning builtins" {
+    // Value-returning builtins must be @must_use.
+    try std.testing.expect(lookup("sin").?.must_use);
+    try std.testing.expect(lookup("dot").?.must_use);
+    try std.testing.expect(lookup("textureSample").?.must_use);
+    try std.testing.expect(lookup("atomicLoad").?.must_use);
 
-    // Vector operations
-    try std.testing.expectEqual(ReturnPattern.scalar_of_arg, lookup("dot").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.scalar_of_arg, lookup("length").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.scalar_of_arg, lookup("determinant").?.return_pattern);
-
-    // Logical
-    try std.testing.expectEqual(ReturnPattern.bool_scalar, lookup("all").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.bool_scalar, lookup("any").?.return_pattern);
-
-    // Texture
-    try std.testing.expectEqual(ReturnPattern.texture, lookup("textureSample").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.texture, lookup("textureLoad").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.texture_dims, lookup("textureDimensions").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.void_type, lookup("textureStore").?.return_pattern);
-
-    // Packing
-    try std.testing.expectEqual(ReturnPattern.pack_u32, lookup("pack4x8snorm").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.custom, lookup("unpack4x8snorm").?.return_pattern);
-
-    // Void
-    try std.testing.expectEqual(ReturnPattern.void_type, lookup("workgroupBarrier").?.return_pattern);
-    try std.testing.expectEqual(ReturnPattern.void_type, lookup("atomicStore").?.return_pattern);
+    // Void-returning builtins — call-as-statement is fine.
+    try std.testing.expect(!lookup("workgroupBarrier").?.must_use);
+    try std.testing.expect(!lookup("storageBarrier").?.must_use);
+    try std.testing.expect(!lookup("textureBarrier").?.must_use);
+    try std.testing.expect(!lookup("textureStore").?.must_use);
+    try std.testing.expect(!lookup("atomicStore").?.must_use);
 }
 
 test "builtins: every callable entry has declarative overloads" {
