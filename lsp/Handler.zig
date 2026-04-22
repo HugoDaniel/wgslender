@@ -15,6 +15,15 @@ const Handler = @This();
 
 gpa: std.mem.Allocator,
 documents: std.StringHashMapUnmanaged(Document),
+settings: Settings = .{},
+
+/// Client-provided LSP settings. Pulled from the client via
+/// `workspace/configuration` (section `"wgslender"`) or seeded from
+/// `InitializeParams.initializationOptions`. Defaults leave every feature on.
+pub const Settings = struct {
+    inlay_hints_enabled: bool = true,
+    diagnostics_enabled: bool = true,
+};
 
 pub const Document = struct {
     source: []u8,
@@ -91,7 +100,7 @@ pub const LspCodeAction = struct {
 
 /// Server capabilities as a JSON string (shared by native and WASM).
 pub const capabilities_json =
-    \\{"textDocumentSync":{"openClose":true,"change":2},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{},"documentFormattingProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenTypes":["keyword","function","struct","parameter","variable","number","type","comment","decorator"],"tokenModifiers":["declaration","readonly","defaultLibrary"]}},"selectionRangeProvider":true,"callHierarchyProvider":true,"documentHighlightProvider":true}
+    \\{"textDocumentSync":{"openClose":true,"change":2,"save":{"includeText":false}},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{},"documentFormattingProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenTypes":["keyword","function","struct","parameter","variable","number","type","comment","decorator"],"tokenModifiers":["declaration","readonly","defaultLibrary"]}},"selectionRangeProvider":true,"callHierarchyProvider":true,"documentHighlightProvider":true}
 ;
 
 /// Creates a handler with an empty document store.
@@ -199,6 +208,42 @@ pub fn closeDocument(self: *Handler, uri: []const u8) void {
 pub fn getDocumentSource(self: *const Handler, uri: []const u8) ?[]const u8 {
     const doc = self.documents.get(uri) orelse return null;
     return doc.source;
+}
+
+/// Handles a `textDocument/didSave` notification. The client remains the
+/// authoritative source of text, so there is nothing to persist here — the
+/// transport layer re-publishes diagnostics on top of this call. Kept as an
+/// explicit hook point for future save-only behavior (e.g. format-on-save).
+pub fn handleDidSave(self: *Handler, uri: []const u8) void {
+    _ = self;
+    _ = uri;
+}
+
+/// Merge a client-provided settings object into `self.settings`. Fields that
+/// are missing or of the wrong type are silently ignored — matching the
+/// permissive behavior of `Config.parseJson` for project config files.
+///
+/// Schema:
+///   { "inlayHints": { "enabled": bool }, "diagnostics": { "enabled": bool } }
+pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
+    const obj = switch (value) {
+        .object => |o| o,
+        else => return,
+    };
+    if (obj.get("inlayHints")) |ih| switch (ih) {
+        .object => |o| if (o.get("enabled")) |b| switch (b) {
+            .bool => |v| self.settings.inlay_hints_enabled = v,
+            else => {},
+        },
+        else => {},
+    };
+    if (obj.get("diagnostics")) |d| switch (d) {
+        .object => |o| if (o.get("enabled")) |b| switch (b) {
+            .bool => |v| self.settings.diagnostics_enabled = v,
+            else => {},
+        },
+        else => {},
+    };
 }
 
 /// Returns cached analysis result for a document, running analysis if needed.
@@ -2252,6 +2297,7 @@ pub const InlayHintInfo = struct {
 };
 
 pub fn computeInlayHints(self: *Handler, uri: []const u8, range: Range) ![]InlayHintInfo {
+    if (!self.settings.inlay_hints_enabled) return &.{};
     const analysis = self.analyzeDocument(uri) catch return &.{};
     const module = analysis.module orelse return &.{};
     const source = module.source;

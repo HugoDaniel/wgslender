@@ -26,6 +26,13 @@ const NativeServer = struct {
     handler: Handler,
     transport: *lsp.Transport,
     io: std.Io,
+    /// True iff the client advertised `workspace.configuration` support in
+    /// InitializeParams. Gates outgoing `workspace/configuration` requests
+    /// — without it the client would reject the pull with method_not_found.
+    client_supports_configuration: bool = false,
+    next_request_id: i64 = 1,
+    /// ID of the in-flight `workspace/configuration` request, if any.
+    pending_config_id: ?i64 = null,
 
     fn init(allocator: std.mem.Allocator, transport: *lsp.Transport, io: std.Io) NativeServer {
         return .{
@@ -43,10 +50,16 @@ const NativeServer = struct {
 
     /// Handles the LSP initialize request; returns server capabilities.
     pub fn initialize(
-        _: *NativeServer,
+        self: *NativeServer,
         _: std.mem.Allocator,
-        _: lsp.types.InitializeParams,
+        params: lsp.types.InitializeParams,
     ) lsp.types.InitializeResult {
+        if (params.capabilities.workspace) |ws| {
+            if (ws.configuration orelse false) self.client_supports_configuration = true;
+        }
+        if (params.initializationOptions) |opts| {
+            self.handler.applyClientSettings(opts);
+        }
         return .{
             .serverInfo = .{ .name = "wgslender-lsp", .version = "1.0.0" },
             .capabilities = .{
@@ -55,6 +68,7 @@ const NativeServer = struct {
                     .text_document_sync_options = .{
                         .openClose = true,
                         .change = .Incremental,
+                        .save = .{ .save_options = .{ .includeText = false } },
                     },
                 },
                 .codeActionProvider = .{
@@ -108,8 +122,33 @@ const NativeServer = struct {
     }
     /// No-op exit notification handler.
     pub fn exit(_: *NativeServer, _: std.mem.Allocator, _: void) void {}
-    /// No-op handler for server-to-client response messages.
-    pub fn onResponse(_: *NativeServer, _: std.mem.Allocator, _: lsp.JsonRPCMessage.Response) void {}
+
+    /// Routes client responses to any in-flight server-initiated request.
+    /// Currently only `workspace/configuration` triggers an outgoing request;
+    /// unrelated / unknown response IDs are ignored.
+    pub fn onResponse(
+        self: *NativeServer,
+        _: std.mem.Allocator,
+        response: lsp.JsonRPCMessage.Response,
+    ) void {
+        const resp_id = response.id orelse return;
+        const id_number = switch (resp_id) {
+            .number => |n| n,
+            .string => return,
+        };
+        if (self.pending_config_id == null or self.pending_config_id.? != id_number) return;
+        self.pending_config_id = null;
+
+        const result = switch (response.result_or_error) {
+            .result => |r| r orelse return,
+            .@"error" => return,
+        };
+        // workspace/configuration returns one LSPAny per requested item.
+        const arr = switch (result) { .array => |a| a, else => return };
+        if (arr.items.len == 0) return;
+        self.handler.applyClientSettings(arr.items[0]);
+        self.republishAllDocuments();
+    }
 
     // ----- Document sync -----
 
@@ -163,6 +202,32 @@ const NativeServer = struct {
             .{ .uri = uri, .diagnostics = &.{} },
             .{ .emit_null_optional_fields = false },
         ) catch {};
+    }
+
+    /// Handles `textDocument/didSave`. We don't trust the optional `text`
+    /// field (we advertise `includeText: false`), so this just re-publishes
+    /// diagnostics. Useful hook for future save-only flows.
+    pub fn @"textDocument/didSave"(
+        self: *NativeServer,
+        _: std.mem.Allocator,
+        notification: lsp.types.TextDocument.DidSaveParams,
+    ) void {
+        const uri = notification.textDocument.uri;
+        self.handler.handleDidSave(uri);
+        self.publishDiagnostics(uri);
+    }
+
+    /// Handles `workspace/didChangeConfiguration`. Per LSP issue #676 the
+    /// parameters are unreliable; instead we pull the current settings back
+    /// from the client via `workspace/configuration`. Only meaningful when
+    /// the client advertised `workspace.configuration` support.
+    pub fn @"workspace/didChangeConfiguration"(
+        self: *NativeServer,
+        _: std.mem.Allocator,
+        _: lsp.types.workspace.configuration.did_change.Params,
+    ) void {
+        if (!self.client_supports_configuration) return;
+        self.sendConfigurationRequest();
     }
 
     // ----- Code Actions -----
@@ -838,6 +903,7 @@ const NativeServer = struct {
     // ----- Helpers -----
 
     fn publishDiagnostics(self: *NativeServer, uri: []const u8) void {
+        if (!self.handler.settings.diagnostics_enabled) return;
         const diags = self.handler.validateDocumentFull(uri) catch return;
         defer Handler.freeDiagnostics(self.handler.gpa, diags);
 
@@ -852,5 +918,44 @@ const NativeServer = struct {
             .{ .uri = uri, .diagnostics = bridged.diagnostics },
             .{ .emit_null_optional_fields = false },
         ) catch {};
+    }
+
+    /// Send a `workspace/configuration` request for the `"wgslender"` section.
+    /// The response is handled in `onResponse`.
+    fn sendConfigurationRequest(self: *NativeServer) void {
+        const id = self.next_request_id;
+        self.next_request_id +%= 1;
+        const items = [_]lsp.types.workspace.configuration.Item{.{ .section = "wgslender" }};
+        self.transport.writeRequest(
+            self.io,
+            self.handler.gpa,
+            .{ .number = id },
+            "workspace/configuration",
+            lsp.types.workspace.configuration.Params,
+            .{ .items = &items },
+            .{ .emit_null_optional_fields = false },
+        ) catch return;
+        self.pending_config_id = id;
+    }
+
+    /// Re-publish diagnostics for every open document. Called after client
+    /// settings change, since toggling `diagnostics.enabled` must take effect
+    /// without requiring the client to re-open each file.
+    fn republishAllDocuments(self: *NativeServer) void {
+        var it = self.handler.documents.iterator();
+        while (it.next()) |entry| {
+            if (self.handler.settings.diagnostics_enabled) {
+                self.publishDiagnostics(entry.key_ptr.*);
+            } else {
+                self.transport.writeNotification(
+                    self.io,
+                    self.handler.gpa,
+                    "textDocument/publishDiagnostics",
+                    lsp.types.publish_diagnostics.Params,
+                    .{ .uri = entry.key_ptr.*, .diagnostics = &.{} },
+                    .{ .emit_null_optional_fields = false },
+                ) catch {};
+            }
+        }
     }
 };

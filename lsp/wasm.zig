@@ -34,6 +34,11 @@ const wasm_allocator = std.heap.wasm_allocator;
 
 var handler: Handler = .init(wasm_allocator);
 var outbox: std.ArrayListUnmanaged([]u8) = .empty;
+/// True iff the client advertised `workspace.configuration` in InitializeParams.
+var client_supports_configuration: bool = false;
+var next_request_id: i64 = 1;
+/// ID of the in-flight `workspace/configuration` request, if any.
+var pending_config_id: ?i64 = null;
 
 // =========================================================================
 // Exported WASM functions
@@ -86,13 +91,19 @@ fn handleMessage(json: []const u8) void {
     defer parsed.deinit();
 
     const root = parsed.value.object;
-    const method = switch (root.get("method") orelse return) {
+    const method_val = root.get("method") orelse {
+        // No `method` field — this is a response to a server-initiated request.
+        handleResponse(root);
+        return;
+    };
+    const method = switch (method_val) {
         .string => |s| s,
         else => return,
     };
     const id = root.get("id");
 
     if (eql(method, "initialize")) {
+        handleInitialize(root);
         sendResult(id, "{\"capabilities\":" ++ Handler.capabilities_json ++ ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"1.0.0\"}}");
     } else if (eql(method, "initialized") or eql(method, "exit")) {
         // No-op.
@@ -104,6 +115,10 @@ fn handleMessage(json: []const u8) void {
         handleDidChange(root);
     } else if (eql(method, "textDocument/didClose")) {
         handleDidClose(root);
+    } else if (eql(method, "textDocument/didSave")) {
+        handleDidSave(root);
+    } else if (eql(method, "workspace/didChangeConfiguration")) {
+        handleDidChangeConfiguration(root);
     } else if (eql(method, "textDocument/codeAction")) {
         handleCodeAction(root, id);
     } else if (eql(method, "textDocument/hover")) {
@@ -214,6 +229,79 @@ fn handleDidClose(root: std.json.ObjectMap) void {
     Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
     appendStr(&buf, "\",\"diagnostics\":[]}}");
     enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+fn handleDidSave(root: std.json.ObjectMap) void {
+    const params = root.getPtr("params") orelse return;
+    const td = objGet(params, "textDocument") orelse return;
+    const uri = strVal(objGet(td, "uri")) orelse return;
+    handler.handleDidSave(uri);
+    emitDiagnostics(uri);
+}
+
+fn handleDidChangeConfiguration(_: std.json.ObjectMap) void {
+    if (!client_supports_configuration) return;
+    sendConfigurationRequest();
+}
+
+fn handleInitialize(root: std.json.ObjectMap) void {
+    const params = root.getPtr("params") orelse return;
+    if (objGet(params, "capabilities")) |cap|
+        if (objGet(cap, "workspace")) |ws|
+            if (objGet(ws, "configuration")) |c| switch (c.*) {
+                .bool => |b| client_supports_configuration = b,
+                else => {},
+            };
+    if (objGet(params, "initializationOptions")) |opts|
+        handler.applyClientSettings(opts.*);
+}
+
+fn handleResponse(root: std.json.ObjectMap) void {
+    const id_val = root.get("id") orelse return;
+    const id: i64 = switch (id_val) {
+        .integer => |n| n,
+        else => return,
+    };
+    if (pending_config_id == null or pending_config_id.? != id) return;
+    pending_config_id = null;
+
+    const result_val = root.get("result") orelse return;
+    const arr = switch (result_val) {
+        .array => |a| a,
+        else => return,
+    };
+    if (arr.items.len == 0) return;
+    handler.applyClientSettings(arr.items[0]);
+    republishAllDocuments();
+}
+
+fn sendConfigurationRequest() void {
+    const id = next_request_id;
+    next_request_id +%= 1;
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"id\":");
+    appendI64(&buf, id);
+    appendStr(&buf, ",\"method\":\"workspace/configuration\",\"params\":{\"items\":[{\"section\":\"wgslender\"}]}}");
+    const msg = buf.toOwnedSlice(wasm_allocator) catch return;
+    enqueue(msg);
+    pending_config_id = id;
+}
+
+fn republishAllDocuments() void {
+    var it = handler.documents.iterator();
+    while (it.next()) |entry| {
+        const uri = entry.key_ptr.*;
+        if (handler.settings.diagnostics_enabled) {
+            emitDiagnostics(uri);
+        } else {
+            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
+            appendStr(&buf, "\",\"diagnostics\":[]}}");
+            enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
+        }
+    }
 }
 
 // =========================================================================
@@ -887,6 +975,7 @@ fn handleOutgoingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
 // =========================================================================
 
 fn emitDiagnostics(uri: []const u8) void {
+    if (!handler.settings.diagnostics_enabled) return;
     const diags = handler.validateDocumentFull(uri) catch return;
     defer Handler.freeDiagnostics(handler.gpa, diags);
 
@@ -1019,6 +1108,12 @@ fn appendStr(buf: *std.ArrayListUnmanaged(u8), s: []const u8) void {
 
 fn appendUint(buf: *std.ArrayListUnmanaged(u8), val: u32) void {
     var num_buf: [10]u8 = undefined;
+    const s = std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch return;
+    buf.appendSlice(wasm_allocator, s) catch {};
+}
+
+fn appendI64(buf: *std.ArrayListUnmanaged(u8), val: i64) void {
+    var num_buf: [21]u8 = undefined;
     const s = std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch return;
     buf.appendSlice(wasm_allocator, s) catch {};
 }
