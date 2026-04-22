@@ -1,24 +1,24 @@
 //! Declarative builtin overload signatures + unification solver.
 //!
-//! Phase 1 of Task #9: replaces the string-matched per-builtin logic in
-//! `Validator.inferCustomBuiltin` for a targeted subset (frexp, modf,
-//! atomic*, unpack*, subgroupBallot, workgroupUniformLoad, transpose)
-//! with a declarative signature table driven by a generic unification
-//! solver. Builtins with `Builtin.overloads == null` continue to ride
-//! the old path, so this module is strictly additive.
+//! Every callable WGSL builtin resolves through this engine: `Validator.
+//! checkBuiltinCall` asserts `builtin_fn.overloads.len > 0` and hands the
+//! argument types to `resolve`. The winning overload's `ResultRule` is
+//! then materialized by `Validator.buildOverloadResult`. `bitcast<T>` is
+//! the only call site that dispatches from its own block — it seeds
+//! slots 0/1 from the template type and calls `resolveSeeded` against
+//! one of the `Builtins.bitcast_to_*_sigs` tables, but the solver and
+//! signature DSL are the same.
 //!
 //! Spec: WGSL §8.7 overload resolution. Feasible candidates are ranked
 //! by the max `Types.conversionRank` across their bound arguments; the
 //! lowest total wins. Ties are broken by declaration order (first wins),
 //! which matches Naga/Tint.
 //!
-//! The engine is deliberately small: texture complexity is deferred to a
-//! later Phase 3 step, so the Pattern grammar covers only the shapes
-//! Phases 1-3b need (scalar, vector, matrix, pointer<atomic<T>>, concrete
-//! singleton refs). Phase 3b introduced `resolveSeeded` for `bitcast<T>`
-//! where the template pre-binds the element scalar kind (and width for
-//! vector templates) before the solver unifies the value arg. Expanding
-//! later is a matter of adding new `Pattern` variants and `unifyArg` cases.
+//! The Pattern grammar covers: scalars, vectors, matrices, pointers
+//! (plain / atomic / runtime-sized array), textures (by kind + dim),
+//! samplers (by comparison flag), and concrete singletons. Adding a new
+//! builtin shape is a matter of adding a `Pattern` variant and a
+//! corresponding `unifyArg` case.
 
 const std = @import("std");
 const Ast = @import("Ast.zig");
@@ -93,10 +93,9 @@ pub const Pattern = union(enum) {
         n_fixed: u8 = 0,
     },
 
-    /// matCxR<T> — cols and rows are always fixed-literal here (the spec has
-    /// no single-pattern polymorphism over both axes that Phase 1 needs).
-    /// `swap_for_result = true` is used by transpose's result pattern to
-    /// produce matRxC from a bound matCxR.
+    /// matCxR<T> — cols and rows are always fixed-literal here. `swap_for_result
+    /// = true` is used by transpose's result pattern to produce matRxC from a
+    /// bound matCxR.
     tparam_matrix: struct {
         elem_idx: u8,
         elem_family: ScalarFamily,
@@ -104,8 +103,8 @@ pub const Pattern = union(enum) {
         rows_idx: u8,
     },
 
-    /// ptr<AS, atomic<T>, AM> — Phase 1 only needs this exact shape for the
-    /// atomic family. AS/AM bind to tparams; T binds via `elem_idx`.
+    /// ptr<AS, atomic<T>, AM> — used by the atomic* family. AS/AM bind to
+    /// tparams; T binds via `elem_idx`.
     tparam_ptr_atomic: struct {
         as_idx: u8,
         am_idx: u8,
@@ -165,10 +164,10 @@ pub const Pattern = union(enum) {
     bound_scalar: u8,
 
     /// Re-expansion of a bound elem_tparam as vecN. Width is taken from
-    /// `n_fixed` if non-zero; otherwise from the slot at `n_idx`. Phase 1
-    /// used this for `frexp.exp` (width bound via slot). Phase 3c adds
-    /// `n_fixed` so `textureLoad → vec4<T>` can express the literal 4
-    /// directly without a synthetic width slot.
+    /// `n_fixed` if non-zero; otherwise from the slot at `n_idx`. The
+    /// slot-bound form is used when the width comes from the arg (e.g.
+    /// `frexp.exp`); the fixed form is used when the literal width is
+    /// part of the signature (e.g. `textureLoad → vec4<T>`).
     bound_vector: struct { elem_idx: u8, n_idx: u8 = no_tparam, n_fixed: u8 = 0 },
 
     /// Re-expansion of a bound matrix but with cols/rows swapped (transpose).
@@ -194,8 +193,9 @@ pub const ResultRule = union(enum) {
     bound_scalar_as_type: u8,
 };
 
-/// Number of tparams an overload declares. Phase 1 tops out at 4 (the
-/// pointer-atomic family needs elem_T, AS, AM, plus an optional N slot).
+/// Number of tparams an overload declares. 4 is the current maximum —
+/// the pointer-atomic family needs elem_T, AS, AM plus an optional N
+/// slot — and every existing signature fits.
 pub const max_tparams: u8 = 4;
 
 /// Per-slot binding. Only the field matching the tparam's kind is read;
@@ -253,12 +253,12 @@ pub fn resolve(sigs: []const OverloadSig, arg_types: []const ?Types.Type) Resolv
 }
 
 /// Like `resolve`, but starts each candidate's bindings from `seed` instead
-/// of the empty binding set. Used by `bitcast<T>` (Phase 3b): the validator
-/// pre-binds slot 0 to the template's element `ScalarKind` and (for vector
-/// templates) slot 1 to the template's width, then the solver unifies the
-/// value arg against a shape pattern that references those slots.
-/// `bindScalar` / `bindWidth` already implement the "previously-bound —
-/// check compatibility" branch, so seeded slots enforce equality for free.
+/// of the empty binding set. Used by `bitcast<T>`: the validator pre-binds
+/// slot 0 to the template's element `ScalarKind` and (for vector templates)
+/// slot 1 to the template's width, then the solver unifies the value arg
+/// against a shape pattern that references those slots. `bindScalar` /
+/// `bindWidth` already implement the "previously-bound — check compatibility"
+/// branch, so seeded slots enforce equality for free.
 pub fn resolveSeeded(
     sigs: []const OverloadSig,
     seed: [max_tparams]Binding,
@@ -283,8 +283,8 @@ pub fn resolveSeeded(
 
     // Tie-break by declaration order — on strict less-than we take the
     // earliest winner, so two overloads with equal minimum rank leave the
-    // first one selected. Ambiguity between non-equivalent candidates is
-    // reserved for later phases and not triggered by Phase 1 signatures.
+    // first one selected. Matches Naga/Tint; no current signature produces
+    // ambiguity between non-equivalent candidates.
     for (sigs, 0..) |s, idx| {
         if (s.params.len != arg_types.len) continue;
         var bindings: [max_tparams]Binding = seed;
@@ -386,12 +386,11 @@ fn unifyArg(p: *const Pattern, arg: Types.Type, bindings: *[max_tparams]Binding)
             if (a != .pointer) return error.Mismatch;
             const pp = a.pointer;
             if (pp.address_space != tp.as_fixed) return error.Mismatch;
-            // Record elem as a whole-Type binding via scalar-only shortcut:
-            // Phase 1 only uses this for workgroupUniformLoad where `elem_idx`
-            // is a scalar tparam if the element is scalar, or we just pin via
-            // conversionRank=0 and look up the element type from the arg in
-            // buildResult. For Phase 1 correctness we track the pointer's
-            // element scalar when possible.
+            // Record elem as a whole-Type binding via scalar-only shortcut.
+            // Used by workgroupUniformLoad: when the pointee is a scalar we
+            // bind the scalar kind directly; when it's an atomic we bind its
+            // inner scalar; non-scalar pointees are still matched shape-only
+            // here and recovered from the arg type in `buildResult`.
             if (!try bindAccessMode(bindings, tp.am_idx, pp.access_mode)) return error.Mismatch;
             if (pp.element == .scalar) {
                 _ = try bindScalar(bindings, tp.elem_idx, pp.element.scalar.kind, .numeric);
@@ -827,7 +826,7 @@ test "resolve: null arg is feasible, preserves rank across other args" {
 }
 
 // =========================================================================
-// Phase 3b — resolveSeeded + ScalarFamily.concrete_32
+// resolveSeeded + ScalarFamily.concrete_32
 // =========================================================================
 
 test "ScalarFamily.concrete_32 accepts i32/u32/f32, rejects f16/bool/abstract" {
@@ -924,7 +923,7 @@ test "resolveSeeded: empty seed is equivalent to resolve()" {
 }
 
 // -------------------------------------------------------------------------
-// Phase 3c — tparam_texture + bound_vector.n_fixed
+// tparam_texture + bound_vector.n_fixed
 // -------------------------------------------------------------------------
 
 test "tparam_texture: binds sampled element from texture_2d<f32>" {
@@ -1166,7 +1165,7 @@ test "buildPatternType: tparam_texture returns null (result-position unsupported
 }
 
 // -------------------------------------------------------------------------
-// Phase 3e — tparam_ptr_runtime_array (arrayLength)
+// tparam_ptr_runtime_array (arrayLength)
 // -------------------------------------------------------------------------
 
 test "tparam_ptr_runtime_array: accepts ptr<storage, array<f32>, read>" {

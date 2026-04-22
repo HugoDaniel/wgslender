@@ -69,11 +69,12 @@ pub const Builtin = struct {
     max_args: u8, // Maximum argument count for overload resolution stub
     return_pattern: ReturnPattern,
     must_use: bool, // Return value must be consumed (not called as statement)
-    /// Declarative overload signatures — when non-empty, the validator uses
-    /// `Overload.resolve` for argument matching and return-type inference
-    /// instead of the legacy string-matched ad-hoc path. Phase 1 of Task #9
-    /// populates this for a subset (non-texture `.custom` builtins); the
-    /// remaining entries still ride the legacy path via `return_pattern`.
+    /// Declarative overload signatures. Every callable builtin populates
+    /// this table; `Validator.checkBuiltinCall` asserts non-empty and
+    /// routes through `Overload.resolve`. `bitcast` is the only exception
+    /// — it dispatches from its own block with template-seeded bindings
+    /// (see `bitcast_to_*_sigs` below), so its `lookup().overloads` is
+    /// intentionally empty.
     overloads: []const Overload.OverloadSig = &.{},
 
     /// Returns true if this builtin requires uniform control flow.
@@ -99,10 +100,10 @@ pub const Builtin = struct {
 /// Comptime-built lookup table mapping builtin function names to definitions.
 const table = std.StaticStringMap(Builtin).initComptime(builtin_entries);
 
-/// Side table of declarative overload signatures (Task #9 / Phase 1). Kept
-/// separate from `table` so the core entries remain simple tuples; lookup()
-/// merges in the signatures when present. See `Overload.zig` for the
-/// signature DSL and solver.
+/// Side table of declarative overload signatures. Kept separate from
+/// `table` so the core entries remain simple tuples; `lookup()` merges
+/// in the signatures when present. See `Overload.zig` for the signature
+/// DSL and solver.
 const sig_table = std.StaticStringMap([]const Overload.OverloadSig).initComptime(sig_entries);
 
 /// Look up a builtin function by name, or return null if not found.
@@ -710,15 +711,15 @@ const subgroup_doc = [_]struct { []const u8, BuiltinDoc }{
 };
 
 // =========================================================================
-// Overload Signatures (Task #9 / Phase 1)
+// Overload Signatures
 // =========================================================================
 //
-// Declarative overload sets for the 18 non-texture `.custom` builtins.
-// Each entry is keyed by the builtin's name and contains one or more
+// Declarative overload sets covering every callable WGSL builtin. Each
+// entry is keyed by the builtin's name and contains one or more
 // `Overload.OverloadSig` values. The validator calls `Overload.resolve`
-// when a looked-up Builtin has a non-empty `overloads` slice; otherwise
-// the legacy `return_pattern` switch still runs. See `docs/` for the
-// Phase 2–4 roadmap (same_as_arg family, texture overloads, bitcast).
+// unconditionally — `Validator.checkBuiltinCall` asserts that every
+// lookup hits a non-empty table, and a test further down enforces the
+// invariant (`bitcast` is the only exempt name; see its block below).
 
 // Common alias to keep signature tables short and readable.
 const O = Overload;
@@ -761,8 +762,8 @@ const atomic_cmp_xchg_sigs = &[_]O.OverloadSig{
 };
 
 /// `(ptr<AS, atomic<T>, AM>, T) -> void` for atomicStore. Same shape as
-/// atomic_rmw_sigs (Phase 1) but the result is fixed Void — atomicStore is
-/// the only atomic operation that doesn't return T.
+/// atomic_rmw_sigs but the result is fixed Void — atomicStore is the only
+/// atomic operation that doesn't return T.
 const atomic_store_sigs = &[_]O.OverloadSig{
     .{
         .tparam_count = 3,
@@ -896,7 +897,7 @@ const dot4U8Packed_sigs = &[_]O.OverloadSig{
     },
 };
 
-/// Bitcast (§17.9.5) — Phase 3b template seeding.
+/// Bitcast (§17.9.5) — template-seeded overload dispatch.
 ///
 /// Bitcast is the only template-taking builtin: the caller writes
 /// `bitcast<T>(e)`, and the template T is already resolved to a concrete
@@ -994,14 +995,13 @@ const transpose_sigs = &[_]O.OverloadSig{
 };
 
 // =========================================================================
-// Phase 3c — Texture overloads (§17.6.x)
+// Texture query overloads (§17.6.x)
 // =========================================================================
 //
 // Declarative signatures for textureLoad, textureStore, textureDimensions,
-// textureNumLayers, textureNumLevels, and textureNumSamples. Phase 3d
-// extends coverage to the sampling / gather families (textureSample*,
-// textureGather*, textureSampleCompare*, textureSampleBaseClampToEdge) —
-// every texture builtin now resolves through the declarative engine.
+// textureNumLayers, textureNumLevels, and textureNumSamples. The sampling
+// and gather families (textureSample*, textureGather*) live in the block
+// further below. Every texture builtin resolves through this engine.
 //
 // Convention for ancillary integer args (coord, level, array_index,
 // sample_index): we don't bind their scalar kind to a tparam slot; we
@@ -1291,19 +1291,19 @@ const textureNumSamples_sigs = &[_]O.OverloadSig{
 };
 
 // =========================================================================
-// Phase 3d — Sampling / gather overloads (§17.7.11–17.7.19)
+// Sampling / gather overloads (§17.7.11–17.7.19)
 // =========================================================================
 //
-// Declarative signatures for the sample / gather families. Same machinery
-// as Phase 3c — `Pattern.tparam_texture` for kind+dimension matching, slot
-// 0 for the sampled element scalar, fixed results for depth/external.
-// Sampler args are matched as concrete types against static singletons so
+// Declarative signatures for the sample / gather families. Uses
+// `Pattern.tparam_texture` for kind+dimension matching, slot 0 for the
+// sampled element scalar, and fixed results for depth/external. Sampler
+// args are matched as concrete types against static singletons so
 // `sampler_comparison` cannot stand in for `sampler` and vice versa.
 //
 // Offset is modeled as a shape-only `.concrete = vec2<i32>/vec3<i32>` —
 // the spec's const-expression requirement is a pre-resolution side check
-// not expressible via Pattern, and already unenforced on the legacy path.
-// Landing that is orthogonal and kept out of Phase 3d.
+// not expressible via Pattern, and is not currently enforced. Landing
+// that is orthogonal to overload dispatch.
 
 const coord_2d_f32: O.Pattern = .{ .tparam_vector = .{ .elem_idx = no_tp, .elem_family = .float, .n_fixed = 2 } };
 const coord_3d_f32: O.Pattern = .{ .tparam_vector = .{ .elem_idx = no_tp, .elem_family = .float, .n_fixed = 3 } };
@@ -1465,14 +1465,14 @@ const textureSampleBaseClampToEdge_sigs = &[_]O.OverloadSig{
 };
 
 // =========================================================================
-// Phase 2 Overload Signatures (Task #9 — `same_as_arg` family)
+// Same-as-arg overload families (§17.3 / §17.5 / §17.6 / §17.12)
 // =========================================================================
 //
-// Declarative replacements for every numeric/derivative/subgroup builtin
-// that previously used `.same_as_arg`. Each shape (scalar, vecN<T>) is a
-// separate overload; the solver picks the lowest-rank match. When the
-// shared shapes appear many times, they're factored into the helpers
-// below to keep the per-builtin lines short.
+// Declarative signatures for every numeric/derivative/subgroup builtin
+// whose return type matches its first argument. Each shape (scalar,
+// vecN<T>) is a separate overload; the solver picks the lowest-rank
+// match. Where the shared shapes appear many times they're factored
+// into the helpers below to keep the per-builtin lines short.
 //
 // Notation:
 //   - `T` = scalar tparam (slot 0)
@@ -1811,7 +1811,7 @@ const subgroup_elect_sigs = &[_]O.OverloadSig{
 
 /// pack2x16* take vec2<f32>; pack4x8* take vec4<f32>; pack4xI8* take
 /// vec4<i32>; pack4xU8* take vec4<u32>. Static vec-type singletons are
-/// reused from Phase 1's unpack table.
+/// reused from the unpack table above.
 const pack_vec2_f32_sigs = &[_]O.OverloadSig{
     .{
         .tparam_count = 0,
@@ -1905,7 +1905,7 @@ const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
     .{ "subgroupBallot", subgroup_ballot_sigs },
 
     // -------------------------------------------------------------------
-    // Phase 2 — `same_as_arg` family (§17.3 / §17.5 / §17.6 / §17.12)
+    // Same-as-arg family (§17.3 / §17.5 / §17.6 / §17.12)
     // -------------------------------------------------------------------
 
     // Logical (§17.3) — select is polymorphic across any scalar.
@@ -2183,14 +2183,15 @@ test "builtins: return patterns are assigned" {
     try std.testing.expectEqual(ReturnPattern.void_type, lookup("atomicStore").?.return_pattern);
 }
 
-test "builtins: every callable entry has declarative overloads (Phase 3e invariant)" {
-    // Phase 3e retired the legacy `inferBuiltinReturnType` switch in
-    // `Validator.checkBuiltinCall`, so every builtin reachable via the
-    // generic call dispatch must have a non-empty `.overloads` slice.
-    // `bitcast` is exempt: it dispatches through the dedicated
-    // `Validator.checkBitcastCall` block which seeds tparams from the
-    // template type and selects from `Builtins.bitcast_to_*_sigs`
-    // directly, so its `lookup().overloads` is intentionally empty.
+test "builtins: every callable entry has declarative overloads" {
+    // `Validator.checkBuiltinCall` asserts `overloads.len > 0` before
+    // dispatching to the solver. This test enforces the invariant at the
+    // table level so a missing sig table shows up here, not as an assert
+    // failure on the first call at validation time. `bitcast` is exempt:
+    // it dispatches through the dedicated `Validator.checkBitcastCall`
+    // block which seeds tparams from the template type and selects from
+    // `Builtins.bitcast_to_*_sigs` directly, so its `lookup().overloads`
+    // is intentionally empty.
     for (table.keys()) |name| {
         if (std.mem.eql(u8, name, "bitcast")) continue;
         const b = lookup(name).?;

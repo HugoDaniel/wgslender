@@ -3672,13 +3672,13 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
         }
     }
 
-    // bitcast<T>(expr) — WGSL §17.9.5. Phase 3b of Task #9: the template T
-    // is resolved to a concrete Types.Type by `resolveType`, then we pick
-    // the matching sig array in `Builtins` based on T's shape, pre-seed
-    // slot 0 (element kind) and — for vector templates — slot 1 (width),
-    // and dispatch to `Overload.resolveSeeded` for arg validation. Size
-    // compatibility is verified post-resolution so cross-shape sigs can't
-    // produce ill-sized pairs. See `checkBitcastCall` below.
+    // bitcast<T>(expr) — WGSL §17.9.5. The template T is resolved to a
+    // concrete Types.Type by `resolveType`, then we pick the matching sig
+    // array in `Builtins` based on T's shape, pre-seed slot 0 (element
+    // kind) and — for vector templates — slot 1 (width), and dispatch to
+    // `Overload.resolveSeeded` for arg validation. Size compatibility is
+    // verified post-resolution so cross-shape sigs can't produce
+    // ill-sized pairs. See `checkBitcastCall` below.
     if (std.mem.eql(u8, callee_name, "bitcast")) {
         if (e.template_type) |tt| {
             const dest_type = v.resolveType(tt) orelse return InferResult.fail;
@@ -3827,16 +3827,13 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         }
     }
 
-    // Declarative overload resolution (Task #9 / Phases 1-3e). Every
-    // callable builtin reaches this point with `overloads` populated —
-    // Phase 3e retired the last legacy `inferBuiltinReturnType` callees
-    // (atomicStore, arrayLength, workgroupBarrier, storageBarrier,
-    // textureBarrier) by adding the missing sig tables. `bitcast<T>`
-    // dispatched earlier via `checkBitcastCall` because its sig set is
-    // template-shape-selected and its slot-0/slot-1 bindings are seeded
-    // from the template — but the solver and signature DSL it uses are
-    // the same. The `Builtins` test suite enforces the invariant that
-    // every entry other than bitcast has a non-empty `_sigs`.
+    // Declarative overload resolution. Every callable builtin reaches
+    // this point with `overloads` populated; `bitcast<T>` dispatched
+    // earlier via `checkBitcastCall` because its sig set is template-
+    // shape-selected and its slot-0/slot-1 bindings are seeded from the
+    // template — but the solver and signature DSL it uses are the same.
+    // The `Builtins` test suite enforces the invariant that every entry
+    // other than bitcast has a non-empty `_sigs`.
     std.debug.assert(builtin_fn.overloads.len > 0);
     const argc = @min(e.args.items.len, 8);
     const res = Overload.resolve(builtin_fn.overloads, arg_types[0..argc]);
@@ -3872,9 +3869,9 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
 /// Materialize the return type for an overload-resolved builtin call.
 /// Dispatches on the signature's `ResultRule` — pattern-driven types go
 /// through `Overload.buildPatternType`; struct-synthesizing builtins call
-/// the existing `synthesize{Frexp,Modf,AtomicExchange}Result` helpers so
-/// the cached `__frexp_result_*` / `__modf_result_*` structs stay shared
-/// with any legacy-path call site.
+/// `synthesize{Frexp,Modf,AtomicExchange}Result` so the cached
+/// `__frexp_result_*` / `__modf_result_*` structs stay shared across
+/// every call site that produces them.
 fn buildOverloadResult(
     v: *Validator,
     rule: Overload.ResultRule,
@@ -4428,9 +4425,9 @@ fn bitcastTemplateShape(t: Types.Type) BitcastTemplateShape {
     }
 }
 
-/// Phase 3b: declarative bitcast validation. The template type is already
-/// resolved; pick its sig array, pre-seed bindings from the template, then
-/// run the solver over the (1-arg) value arg. Size compat is post-checked.
+/// Declarative bitcast validation. The template type is already resolved;
+/// pick its sig array, pre-seed bindings from the template, then run the
+/// solver over the (1-arg) value arg. Size compat is post-checked.
 fn checkBitcastCall(
     v: *Validator,
     e: *Ast.CallExpr,
