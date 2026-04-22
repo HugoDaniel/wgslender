@@ -217,6 +217,37 @@ pub const @"errors/symbols/use_before_decl_let" = @embedFile("testdata/validatio
 pub const @"errors/symbols/recursive_fn_direct" = @embedFile("testdata/validation/errors/symbols/recursive_fn_direct.wgsl");
 pub const @"errors/symbols/recursive_fn_indirect" = @embedFile("testdata/validation/errors/symbols/recursive_fn_indirect.wgsl");
 
+// --- errors/io/ (entry-point I/O: builtin stage/direction, builtin type, @location type) ---
+pub const @"errors/io/frag_output_builtin_position" = @embedFile("testdata/validation/errors/io/frag_output_builtin_position.wgsl");
+pub const @"errors/io/vertex_output_builtin_vertex_index" = @embedFile("testdata/validation/errors/io/vertex_output_builtin_vertex_index.wgsl");
+pub const @"errors/io/frag_input_struct_vertex_index" = @embedFile("testdata/validation/errors/io/frag_input_struct_vertex_index.wgsl");
+pub const @"errors/io/frag_output_struct_vertex_index" = @embedFile("testdata/validation/errors/io/frag_output_struct_vertex_index.wgsl");
+pub const @"errors/io/vertex_input_frag_depth" = @embedFile("testdata/validation/errors/io/vertex_input_frag_depth.wgsl");
+pub const @"errors/io/builtin_position_wrong_type_vec3" = @embedFile("testdata/validation/errors/io/builtin_position_wrong_type_vec3.wgsl");
+pub const @"errors/io/builtin_position_wrong_type_vec4i" = @embedFile("testdata/validation/errors/io/builtin_position_wrong_type_vec4i.wgsl");
+pub const @"errors/io/builtin_frag_depth_wrong_type_vec4" = @embedFile("testdata/validation/errors/io/builtin_frag_depth_wrong_type_vec4.wgsl");
+pub const @"errors/io/builtin_sample_mask_wrong_type_f32" = @embedFile("testdata/validation/errors/io/builtin_sample_mask_wrong_type_f32.wgsl");
+pub const @"errors/io/builtin_vertex_index_wrong_type_i32" = @embedFile("testdata/validation/errors/io/builtin_vertex_index_wrong_type_i32.wgsl");
+pub const @"errors/io/builtin_front_facing_wrong_type_u32" = @embedFile("testdata/validation/errors/io/builtin_front_facing_wrong_type_u32.wgsl");
+pub const @"errors/io/builtin_local_invocation_id_wrong_type" = @embedFile("testdata/validation/errors/io/builtin_local_invocation_id_wrong_type.wgsl");
+pub const @"errors/io/builtin_global_invocation_id_wrong_element" = @embedFile("testdata/validation/errors/io/builtin_global_invocation_id_wrong_element.wgsl");
+pub const @"errors/io/builtin_workgroup_id_vec4" = @embedFile("testdata/validation/errors/io/builtin_workgroup_id_vec4.wgsl");
+pub const @"errors/io/builtin_clip_distances_too_many" = @embedFile("testdata/validation/errors/io/builtin_clip_distances_too_many.wgsl");
+pub const @"errors/io/builtin_clip_distances_wrong_element" = @embedFile("testdata/validation/errors/io/builtin_clip_distances_wrong_element.wgsl");
+pub const @"errors/io/location_matrix" = @embedFile("testdata/validation/errors/io/location_matrix.wgsl");
+pub const @"errors/io/location_struct" = @embedFile("testdata/validation/errors/io/location_struct.wgsl");
+pub const @"errors/io/location_bool" = @embedFile("testdata/validation/errors/io/location_bool.wgsl");
+pub const @"errors/io/location_array" = @embedFile("testdata/validation/errors/io/location_array.wgsl");
+pub const @"errors/io/location_on_compute_input_struct_member" = @embedFile("testdata/validation/errors/io/location_on_compute_input_struct_member.wgsl");
+
+// --- types/ entry-point I/O (valid) ---
+pub const @"types/entry_point_vertex_inputs" = @embedFile("testdata/validation/types/entry_point_vertex_inputs.wgsl");
+pub const @"types/entry_point_vertex_clip_distances" = @embedFile("testdata/validation/types/entry_point_vertex_clip_distances.wgsl");
+pub const @"types/entry_point_fragment_all_inputs" = @embedFile("testdata/validation/types/entry_point_fragment_all_inputs.wgsl");
+pub const @"types/entry_point_fragment_frag_depth" = @embedFile("testdata/validation/types/entry_point_fragment_frag_depth.wgsl");
+pub const @"types/entry_point_fragment_sample_mask_out" = @embedFile("testdata/validation/types/entry_point_fragment_sample_mask_out.wgsl");
+pub const @"types/entry_point_compute_all_builtins" = @embedFile("testdata/validation/types/entry_point_compute_all_builtins.wgsl");
+
 // --- errors/control_flow/ ---
 pub const @"errors/control_flow/discard_outside_fragment" = @embedFile("testdata/validation/errors/control_flow/discard_outside_fragment.wgsl");
 pub const @"errors/control_flow/continue_outside_loop" = @embedFile("testdata/validation/errors/control_flow/continue_outside_loop.wgsl");

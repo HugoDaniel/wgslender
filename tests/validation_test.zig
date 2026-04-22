@@ -962,6 +962,172 @@ test "validation: errors/control_flow/unreachable_after_return" {
 }
 
 // =========================================================================
+// Entry-point I/O: builtin stage/direction, builtin type, @location type
+// =========================================================================
+
+test "validation: errors/io/frag_output_builtin_position" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/frag_output_builtin_position");
+}
+
+test "validation: errors/io/vertex_output_builtin_vertex_index" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/vertex_output_builtin_vertex_index");
+}
+
+test "validation: errors/io/frag_input_struct_vertex_index" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/frag_input_struct_vertex_index");
+}
+
+test "validation: errors/io/frag_output_struct_vertex_index" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/frag_output_struct_vertex_index");
+}
+
+test "validation: errors/io/vertex_input_frag_depth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/vertex_input_frag_depth");
+}
+
+test "validation: errors/io/builtin_position_wrong_type_vec3" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_position_wrong_type_vec3");
+}
+
+test "validation: errors/io/builtin_position_wrong_type_vec4i" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_position_wrong_type_vec4i");
+}
+
+test "validation: errors/io/builtin_frag_depth_wrong_type_vec4" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_frag_depth_wrong_type_vec4");
+}
+
+test "validation: errors/io/builtin_sample_mask_wrong_type_f32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_sample_mask_wrong_type_f32");
+}
+
+test "validation: errors/io/builtin_vertex_index_wrong_type_i32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_vertex_index_wrong_type_i32");
+}
+
+test "validation: errors/io/builtin_front_facing_wrong_type_u32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_front_facing_wrong_type_u32");
+}
+
+test "validation: errors/io/builtin_local_invocation_id_wrong_type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_local_invocation_id_wrong_type");
+}
+
+test "validation: errors/io/builtin_global_invocation_id_wrong_element" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_global_invocation_id_wrong_element");
+}
+
+test "validation: errors/io/builtin_workgroup_id_vec4" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_workgroup_id_vec4");
+}
+
+test "validation: errors/io/builtin_clip_distances_too_many" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_clip_distances_too_many");
+}
+
+test "validation: errors/io/builtin_clip_distances_wrong_element" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_clip_distances_wrong_element");
+}
+
+test "validation: errors/io/location_matrix" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_matrix");
+}
+
+test "validation: errors/io/location_struct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_struct");
+}
+
+test "validation: errors/io/location_bool" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_bool");
+}
+
+test "validation: errors/io/location_array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_array");
+}
+
+test "validation: errors/io/location_on_compute_input_struct_member" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_on_compute_input_struct_member");
+}
+
+test "validation: types/entry_point_vertex_inputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_vertex_inputs");
+}
+
+test "validation: types/entry_point_vertex_clip_distances" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_vertex_clip_distances");
+}
+
+test "validation: types/entry_point_fragment_all_inputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_fragment_all_inputs");
+}
+
+test "validation: types/entry_point_fragment_frag_depth" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_fragment_frag_depth");
+}
+
+test "validation: types/entry_point_fragment_sample_mask_out" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_fragment_sample_mask_out");
+}
+
+test "validation: types/entry_point_compute_all_builtins" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_compute_all_builtins");
+}
+
+// =========================================================================
 // Const folding tests (binary arithmetic in tryExtractIntValue)
 // =========================================================================
 

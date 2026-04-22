@@ -1397,7 +1397,7 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
                 }
             }
         }
-        v.validateParameterAttributes(param);
+        try v.validateParameterAttributes(param);
     }
 
     // Register function type in symbol_types so calls can resolve it
@@ -1427,19 +1427,23 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
     v.return_type = null;
 }
 
-fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) void {
+fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) Allocator.Error!void {
+    const param_type = v.resolveType(param.typ);
+    const param_range = v.symbolRange(param.name);
     for (param.attributes.items) |attr| {
         if (std.mem.eql(u8, attr.name, "location")) {
             if (v.current_stage == .none) {
                 v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@location is only valid on entry point parameters");
             } else if (v.current_stage == .compute) {
                 v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "compute shaders cannot have user-defined inputs (@location)");
+            } else if (param_type) |pt| {
+                v.validateLocationType(pt, param_range);
             }
         } else if (std.mem.eql(u8, attr.name, "builtin")) {
             if (attr.args.items.len > 0) {
                 switch (attr.args.items[0]) {
                     .ident => |ident| {
-                        v.validateBuiltinForStage(ident.name, true, attr.loc);
+                        try v.validateBuiltinAttr(ident.name, true, attr.loc, param_type, param_range);
                     },
                     else => {},
                 }
@@ -1562,6 +1566,23 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                             input_builtins.put(v.arena, bn, v.symbolLoc(member.name)) catch {};
                         }
                     }
+                    // @builtin stage/direction + required type.
+                    for (member.attributes.items) |a| {
+                        if (!std.mem.eql(u8, a.name, "builtin") or a.args.items.len == 0) continue;
+                        switch (a.args.items[0]) {
+                            .ident => |ident| try v.validateBuiltinAttr(ident.name, true, a.loc, mt, v.symbolRange(member.name)),
+                            else => {},
+                        }
+                    }
+                    // @location: reject on compute inputs (user-defined I/O forbidden),
+                    // otherwise check the member type is numeric scalar/vector.
+                    if (hasAttr(member.attributes, "location")) {
+                        if (v.current_stage == .compute) {
+                            v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_attribute, v.fmtError("compute shaders cannot have user-defined inputs (@location on struct member '{s}')", .{v.symbolName(member.name)}));
+                        } else if (mt) |member_type| {
+                            v.validateLocationType(member_type, v.symbolRange(member.name));
+                        }
+                    }
                 }
             }
         }
@@ -1607,7 +1628,35 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                             output_builtins.put(v.arena, bn, v.symbolLoc(member.name)) catch {};
                         }
                     }
+                    // @builtin stage/direction + required type on output members.
+                    for (member.attributes.items) |a| {
+                        if (!std.mem.eql(u8, a.name, "builtin") or a.args.items.len == 0) continue;
+                        switch (a.args.items[0]) {
+                            .ident => |ident| try v.validateBuiltinAttr(ident.name, false, a.loc, out_mt, v.symbolRange(member.name)),
+                            else => {},
+                        }
+                    }
+                    // @location type check on output members.
+                    if (hasAttr(member.attributes, "location")) {
+                        if (out_mt) |member_type| {
+                            v.validateLocationType(member_type, v.symbolRange(member.name));
+                        }
+                    }
                 }
+            }
+        } else {
+            // Direct (non-struct) return: validate @builtin stage/direction + type,
+            // and @location type, attached directly to the return.
+            for (fn_decl.return_attr.items) |a| {
+                if (std.mem.eql(u8, a.name, "builtin") and a.args.items.len > 0) {
+                    switch (a.args.items[0]) {
+                        .ident => |ident| try v.validateBuiltinAttr(ident.name, false, a.loc, ret_type, fn_range),
+                        else => {},
+                    }
+                }
+            }
+            if (hasAttr(fn_decl.return_attr, "location")) {
+                v.validateLocationType(ret_type, fn_range);
             }
         }
     }
@@ -1862,17 +1911,23 @@ const all_builtin_values = [_][]const u8{
     "local_invocation_id",
     "local_invocation_index",
     "global_invocation_id",
+    "global_invocation_index",
     "workgroup_id",
+    "workgroup_index",
     "num_workgroups",
     "subgroup_invocation_id",
     "subgroup_size",
+    "subgroup_id",
+    "num_subgroups",
+    "clip_distances",
+    "primitive_index",
 };
 
 const vertex_input_builtins = [_][]const u8{ "vertex_index", "instance_index" };
-const vertex_output_builtins = [_][]const u8{"position"};
-const fragment_input_builtins = [_][]const u8{ "position", "front_facing", "sample_index", "sample_mask", "subgroup_invocation_id", "subgroup_size" };
+const vertex_output_builtins = [_][]const u8{ "position", "clip_distances" };
+const fragment_input_builtins = [_][]const u8{ "position", "front_facing", "sample_index", "sample_mask", "primitive_index", "subgroup_invocation_id", "subgroup_size" };
 const fragment_output_builtins = [_][]const u8{ "frag_depth", "sample_mask" };
-const compute_input_builtins = [_][]const u8{ "local_invocation_id", "local_invocation_index", "global_invocation_id", "workgroup_id", "num_workgroups", "subgroup_invocation_id", "subgroup_size" };
+const compute_input_builtins = [_][]const u8{ "local_invocation_id", "local_invocation_index", "global_invocation_id", "global_invocation_index", "workgroup_id", "workgroup_index", "num_workgroups", "subgroup_invocation_id", "subgroup_size", "subgroup_id", "num_subgroups" };
 
 fn isKnownBuiltinValue(name: []const u8) bool {
     for (&all_builtin_values) |v| {
@@ -1934,7 +1989,8 @@ fn isVertexInput(name: []const u8) bool {
 }
 
 fn isVertexOutput(name: []const u8) bool {
-    return std.mem.eql(u8, name, "position");
+    return std.mem.eql(u8, name, "position") or
+        std.mem.eql(u8, name, "clip_distances");
 }
 
 fn isFragmentInput(name: []const u8) bool {
@@ -1942,6 +1998,7 @@ fn isFragmentInput(name: []const u8) bool {
         std.mem.eql(u8, name, "front_facing") or
         std.mem.eql(u8, name, "sample_index") or
         std.mem.eql(u8, name, "sample_mask") or
+        std.mem.eql(u8, name, "primitive_index") or
         std.mem.eql(u8, name, "subgroup_invocation_id") or
         std.mem.eql(u8, name, "subgroup_size");
 }
@@ -1951,14 +2008,123 @@ fn isFragmentOutput(name: []const u8) bool {
         std.mem.eql(u8, name, "sample_mask");
 }
 
+/// Returns the WGSL type that the named built-in is required to have, per
+/// the table in WGSL spec §9.3.1. Returns null for unknown names, for
+/// clip_distances (handled specially by validateClipDistancesType due to
+/// the N ≤ 8 constraint), and for builtins that have no type check
+/// (currently none do — kept for future extensions).
+fn builtinExpectedType(v: *Validator, name: []const u8) Allocator.Error!?Types.Type {
+    // u32 scalars
+    if (std.mem.eql(u8, name, "vertex_index") or
+        std.mem.eql(u8, name, "instance_index") or
+        std.mem.eql(u8, name, "sample_index") or
+        std.mem.eql(u8, name, "sample_mask") or
+        std.mem.eql(u8, name, "local_invocation_index") or
+        std.mem.eql(u8, name, "global_invocation_index") or
+        std.mem.eql(u8, name, "workgroup_index") or
+        std.mem.eql(u8, name, "subgroup_invocation_id") or
+        std.mem.eql(u8, name, "subgroup_size") or
+        std.mem.eql(u8, name, "subgroup_id") or
+        std.mem.eql(u8, name, "num_subgroups") or
+        std.mem.eql(u8, name, "primitive_index"))
+    {
+        return Types.U32;
+    }
+    if (std.mem.eql(u8, name, "front_facing")) return Types.Bool;
+    if (std.mem.eql(u8, name, "frag_depth")) return Types.F32;
+    if (std.mem.eql(u8, name, "position")) {
+        return try Types.vec(v.arena, 4, Types.scalar_f32_ptr);
+    }
+    if (std.mem.eql(u8, name, "local_invocation_id") or
+        std.mem.eql(u8, name, "global_invocation_id") or
+        std.mem.eql(u8, name, "workgroup_id") or
+        std.mem.eql(u8, name, "num_workgroups"))
+    {
+        return try Types.vec(v.arena, 3, Types.scalar_u32_ptr);
+    }
+    return null;
+}
+
+/// Validates a @builtin attribute site: combines the stage/direction check
+/// (validateBuiltinForStage) with the type check against the required
+/// spec type. `host_type` is the resolved type the builtin is attached to
+/// (param type, return type, or struct-member type). `host_range` is the
+/// range reported on type mismatches.
+fn validateBuiltinAttr(
+    v: *Validator,
+    builtin_name: []const u8,
+    is_input: bool,
+    attr_loc: u32,
+    host_type: ?Types.Type,
+    host_range: LocRange,
+) Allocator.Error!void {
+    v.validateBuiltinForStage(builtin_name, is_input, attr_loc);
+    const actual = host_type orelse return;
+    if (std.mem.eql(u8, builtin_name, "clip_distances")) {
+        v.validateClipDistancesType(actual, host_range);
+        return;
+    }
+    const expected = (try v.builtinExpectedType(builtin_name)) orelse return;
+    if (!actual.eql(expected)) {
+        v.addErrorWithCodeR(host_range, Diagnostic.Code.type_mismatch, v.fmtError("@builtin({s}) requires type '{s}', got '{s}'", .{ builtin_name, expected.string(), actual.string() }));
+    }
+}
+
+/// @builtin(clip_distances) requires `array<f32, N>` with 1 ≤ N ≤ 8
+/// (WGSL spec §9.3.1 + clip_distances extension).
+fn validateClipDistancesType(v: *Validator, actual: Types.Type, host_range: LocRange) void {
+    if (actual != .array) {
+        v.addErrorWithCodeR(host_range, Diagnostic.Code.type_mismatch, v.fmtError("@builtin(clip_distances) requires type 'array<f32, N>' (N ≤ 8), got '{s}'", .{actual.string()}));
+        return;
+    }
+    const arr = actual.array;
+    if (arr.element != .scalar or arr.element.scalar.kind != .f32) {
+        v.addErrorWithCodeR(host_range, Diagnostic.Code.type_mismatch, v.fmtError("@builtin(clip_distances) requires array of f32, got array of '{s}'", .{arr.element.string()}));
+        return;
+    }
+    if (arr.count == 0) {
+        v.addErrorWithCodeR(host_range, Diagnostic.Code.type_mismatch, "@builtin(clip_distances) requires a fixed-size array");
+        return;
+    }
+    if (arr.count > 8) {
+        v.addErrorWithCodeR(host_range, Diagnostic.Code.type_mismatch, v.fmtError("@builtin(clip_distances) requires array size ≤ 8, got {d}", .{arr.count}));
+    }
+}
+
+/// WGSL spec §10.2.1 + §9.5: user-defined I/O (@location) must be a numeric
+/// scalar (i32/u32/f32/f16) or vector of those.
+fn isValidLocationType(t: Types.Type) bool {
+    return switch (t) {
+        .scalar => |s| switch (s.kind) {
+            .i32, .u32, .f32, .f16 => true,
+            else => false,
+        },
+        .vector => |ve| switch (ve.element.kind) {
+            .i32, .u32, .f32, .f16 => true,
+            else => false,
+        },
+        else => false,
+    };
+}
+
+fn validateLocationType(v: *Validator, actual: Types.Type, host_range: LocRange) void {
+    if (!isValidLocationType(actual)) {
+        v.addErrorWithCodeR(host_range, Diagnostic.Code.invalid_location, v.fmtError("@location requires numeric scalar or numeric vector type, got '{s}'", .{actual.string()}));
+    }
+}
+
 fn isComputeInput(name: []const u8) bool {
     return std.mem.eql(u8, name, "local_invocation_id") or
         std.mem.eql(u8, name, "local_invocation_index") or
         std.mem.eql(u8, name, "global_invocation_id") or
+        std.mem.eql(u8, name, "global_invocation_index") or
         std.mem.eql(u8, name, "workgroup_id") or
+        std.mem.eql(u8, name, "workgroup_index") or
         std.mem.eql(u8, name, "num_workgroups") or
         std.mem.eql(u8, name, "subgroup_invocation_id") or
-        std.mem.eql(u8, name, "subgroup_size");
+        std.mem.eql(u8, name, "subgroup_size") or
+        std.mem.eql(u8, name, "subgroup_id") or
+        std.mem.eql(u8, name, "num_subgroups");
 }
 
 // =========================================================================
