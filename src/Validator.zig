@@ -139,15 +139,17 @@ const InferResult = struct {
 const Expectation = union(enum) {
     none,
     exact: Types.Type,
+    /// The value must be a scalar integer (`i32`, `u32`, or `abstract-int`).
+    /// Vectors / floats / bools / composites are rejected at the inference
+    /// site with E0200. Abstract-int is accepted as-is — callers that need a
+    /// specific concrete type (e.g. shift RHS requires `u32`) narrow after
+    /// the subtree returns.
     integer_scalar,
+    /// The value will land in a runtime slot (unannotated `let` / `var` /
+    /// function-scope `const`). Abstract values materialize to their default
+    /// concrete form (`abstract-int`→`i32`, `abstract-float`→`f32`) in the
+    /// `expr_types` cache; no errors ever emitted.
     concrete,
-
-    fn asExact(self: Expectation) ?Types.Type {
-        return switch (self) {
-            .exact => |t| t,
-            else => null,
-        };
-    }
 };
 
 /// Controls whether an abstract-typed initializer is concretized at decl
@@ -795,10 +797,17 @@ fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl, handling: AbstractHandlin
 
     // Pre-resolve the annotation (if any) so the initializer inference can
     // record materialized types in `expr_types` — a hover inside
-    // `const MY: f32 = 1 + 2` sees `f32`, not `abstract-int`.
+    // `const MY: f32 = 1 + 2` sees `f32`, not `abstract-int`. Without an
+    // annotation, function-scope const (handling = .concretize, §15) pushes
+    // `.concrete` so the cache records the default concrete type; module-
+    // scope const (handling = .keep, §6.6) keeps `.none` so abstract types
+    // survive through the hover.
     var decl_type: ?Types.Type = null;
     const ann_type: ?Types.Type = if (d.typ) |ast_type| v.resolveType(ast_type) else null;
-    const exp: Expectation = if (ann_type) |dt| .{ .exact = dt } else .none;
+    const exp: Expectation = if (ann_type) |dt| .{ .exact = dt } else switch (handling) {
+        .keep => .none,
+        .concretize => .concrete,
+    };
 
     // Infer or check type (and capture staging for the const-expression rule).
     const init_r = try v.checkExprE(d.initializer.?, exp);
@@ -978,10 +987,13 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
     if (d.typ) |ast_type| {
         decl_type = v.resolveType(ast_type);
     } else if (d.initializer) |init| {
-        const r_init = try v.checkExpr(init);
+        // `var` always concretizes; push `.concrete` so the initializer's
+        // subexpressions cache their default concrete type for hovers, even
+        // though we still apply `Types.concreteType` on the returned type
+        // for the decl itself.
+        const r_init = try v.checkExprE(init, .concrete);
         init_r = r_init;
         decl_type = r_init.typ;
-        // Convert abstract types to concrete for var declarations
         if (decl_type) |dt| decl_type = Types.concreteType(dt);
     }
 
@@ -1231,7 +1243,10 @@ fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
 
     var decl_type: ?Types.Type = null;
     const ann_type: ?Types.Type = if (d.typ) |ast_type| v.resolveType(ast_type) else null;
-    const exp: Expectation = if (ann_type) |dt| .{ .exact = dt } else .none;
+    // `let` always concretizes (function scope, §15); without an annotation
+    // push `.concrete` so the initializer's subexpressions cache their
+    // default concrete type for LSP hovers.
+    const exp: Expectation = if (ann_type) |dt| .{ .exact = dt } else .concrete;
 
     const init_type = (try v.checkExprE(d.initializer.?, exp)).typ orelse return;
 
@@ -2834,7 +2849,7 @@ fn checkExprE(v: *Validator, expr: Ast.Expr, exp: Expectation) Allocator.Error!I
     if (v.expr_depth >= max_expr_depth) return .fail;
     v.expr_depth += 1;
     defer v.expr_depth -= 1;
-    const result: InferResult = switch (expr) {
+    var result: InferResult = switch (expr) {
         .literal => |e| v.checkLiteral(e),
         .ident => |e| v.checkIdent(e),
         .binary => |e| try v.checkBinaryE(e, exp),
@@ -2844,17 +2859,38 @@ fn checkExprE(v: *Validator, expr: Ast.Expr, exp: Expectation) Allocator.Error!I
         .member => |e| try v.checkMember(e),
         .paren => |e| try v.checkExprE(e.expr, exp),
     };
-    // Materialize for cache recording: under `exact(T)` where the inferred
-    // type is abstract and convertible to T, store T — so a hover inside
-    // `let v: f32 = 1 + 2` sees `f32` on every subexpression that the decl
-    // context would concretize.
-    const recorded_typ: ?Types.Type = if (result.typ) |typ|
-        if (exp.asExact()) |target|
-            if (!typ.isConcrete() and Types.canConvertTo(typ, target)) target else typ
-        else
-            typ
-    else
-        null;
+    // Apply the surrounding expectation to (a) validate shape at the
+    // inference site, (b) decide what to record in `expr_types` for LSP
+    // hovers, and (c) potentially short-circuit the returned type so
+    // callers don't pile on redundant follow-up diagnostics.
+    //
+    // `.exact(T)`       — if the inferred type is abstract and convertible
+    //                     to T, record T; the outer decl validator still
+    //                     enforces the exact match on the returned type.
+    // `.integer_scalar` — the inferred type must be a scalar integer;
+    //                     non-matches emit E0200 here and null the result
+    //                     so the outer form (index, shift) skips its own
+    //                     secondary check.
+    // `.concrete`       — abstract types materialize to their default
+    //                     concrete form in the cache. Never errors.
+    const recorded_typ: ?Types.Type = blk: {
+        const typ = result.typ orelse break :blk null;
+        switch (exp) {
+            .none => break :blk typ,
+            .exact => |target| {
+                break :blk if (!typ.isConcrete() and Types.canConvertTo(typ, target)) target else typ;
+            },
+            .integer_scalar => {
+                if (typ != .scalar or !typ.scalar.isInteger()) {
+                    v.addErrorWithCodeR(exprSpan(expr), Diagnostic.Code.type_mismatch, v.fmtError("expected integer scalar, got '{s}'", .{typ.string()}));
+                    result.typ = null;
+                    break :blk null;
+                }
+                break :blk typ;
+            },
+            .concrete => break :blk if (!typ.isConcrete()) Types.concreteType(typ) else typ,
+        }
+    };
     if (recorded_typ) |typ| {
         // Key on each expression's own loc (operator for binary, open-paren
         // for call, etc.) so nested expressions that share the same start
@@ -3277,17 +3313,31 @@ fn checkBinary(v: *Validator, e: *Ast.BinaryExpr) Allocator.Error!InferResult {
 
 fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocator.Error!InferResult {
     // Arithmetic / bitwise operators type-check against a common operand
-    // type, so an outer `exact(T)` expectation applies symmetrically to
-    // both sides. Boolean / comparison / shift forms have fixed operand
-    // shapes that do not benefit from propagating `T`: forwarding would
-    // confuse the materialization check at the cache-write site (e.g.
-    // `exact(f32)` pushed into a shift RHS that must stay `u32`).
-    const operand_exp: Expectation = switch (e.op) {
-        .add, .sub, .mul, .div, .mod, .@"and", .@"or", .xor => exp,
+    // type, so an outer `exact(T)` / `.concrete` expectation applies
+    // symmetrically to both sides. Boolean / comparison forms have fixed
+    // operand shapes that do not benefit from propagating `T`. Shifts
+    // split: RHS takes `.integer_scalar` (rejects floats/bools/vectors at
+    // the sub-expr site with a precise message); LHS stays `.none`
+    // because WGSL accepts integer vectors as shift LHS.
+    //
+    // `.integer_scalar` never forwards to arithmetic operands: we want
+    // the diagnostic to fire at the binary as a whole (e.g. the full
+    // `1.0 + 2.0` in `a[1.0 + 2.0]`), not at each literal individually.
+    const forward_exp: Expectation = switch (exp) {
+        .integer_scalar => .none,
+        else => exp,
+    };
+    const left_exp: Expectation = switch (e.op) {
+        .add, .sub, .mul, .div, .mod, .@"and", .@"or", .xor => forward_exp,
         .logical_and, .logical_or, .eq, .ne, .lt, .le, .gt, .ge, .shl, .shr => .none,
     };
-    const lr = try v.checkExprE(e.left, operand_exp);
-    const rr = try v.checkExprE(e.right, operand_exp);
+    const right_exp: Expectation = switch (e.op) {
+        .add, .sub, .mul, .div, .mod, .@"and", .@"or", .xor => forward_exp,
+        .logical_and, .logical_or, .eq, .ne, .lt, .le, .gt, .ge => .none,
+        .shl, .shr => .integer_scalar,
+    };
+    const lr = try v.checkExprE(e.left, left_exp);
+    const rr = try v.checkExprE(e.right, right_exp);
     // Stage is computed from both children regardless of type inference
     // success so enclosing staging checks (const decls, const_assert,
     // switch selectors, …) don't mis-report a subtree that merely had a
@@ -3523,11 +3573,19 @@ fn checkUnary(v: *Validator, e: *Ast.UnaryExpr) Allocator.Error!InferResult {
 
 fn checkUnaryE(v: *Validator, e: *Ast.UnaryExpr, exp: Expectation) Allocator.Error!InferResult {
     // `-` and `~` produce a value of the operand's type, so an outer
-    // `exact(T)` expectation applies to the operand. `!`, `&`, `*` change
-    // shape (bool result, pointer wrap/unwrap) — forwarding would stamp
-    // the wrong type into the cache.
+    // `exact(T)` / `.concrete` expectation applies to the operand. `!`,
+    // `&`, `*` change shape (bool result, pointer wrap/unwrap) —
+    // forwarding would stamp the wrong type into the cache.
+    //
+    // `.integer_scalar` never forwards: the check fires at the unary
+    // form as a whole so the diagnostic range covers the full `-x` or
+    // `~x` rather than the inner operand alone.
+    const forward_exp: Expectation = switch (exp) {
+        .integer_scalar => .none,
+        else => exp,
+    };
     const operand_exp: Expectation = switch (e.op) {
-        .neg, .bit_not => exp,
+        .neg, .bit_not => forward_exp,
         .not, .deref, .addr => .none,
     };
     const or_ = try v.checkExprE(e.operand, operand_exp);
@@ -4537,16 +4595,13 @@ fn suggestVecForComponents(v: *Validator, callee_name: []const u8, total_compone
 
 fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!InferResult {
     const br = try v.checkExpr(e.base);
-    const ir = try v.checkExpr(e.idx);
+    // Push an `.integer_scalar` expectation down so non-integer-scalar
+    // indices (floats, bools, vectors, composites) are rejected at the
+    // index sub-expression rather than at the outer `[]` form, and so
+    // `expr_types` records the integer shape for hovers.
+    const ir = try v.checkExprE(e.idx, .integer_scalar);
     const stage = ExprStage.combine(br.stage, ir.stage);
     const base_type = br.typ orelse return .{ .typ = null, .stage = stage };
-
-    // Check index type
-    if (ir.typ) |it| {
-        if (!Types.isInteger(it)) {
-            v.addErrorWithCodeR(exprRange(.{ .index = e }), Diagnostic.Code.type_mismatch, v.fmtError("array index must be integer, got '{s}'", .{it.string()}));
-        }
-    }
 
     // Out-of-bounds literal index detection
     if (v.tryExtractIntValue(e.idx)) |idx_val| {

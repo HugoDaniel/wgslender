@@ -604,7 +604,7 @@ test "validation range: not-indexable error underlines bracket" {
     try expectErrorWidth(result, "not indexable", 1);
 }
 
-test "validation range: array index type error underlines bracket" {
+test "validation range: array index type error underlines the index expression" {
     const source =
         \\@fragment
         \\fn main() {
@@ -614,7 +614,50 @@ test "validation range: array index type error underlines bracket" {
     ;
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
-    try expectErrorWidth(result, "array index must be integer", 1);
+    // The `.integer_scalar` expectation reports E0200 at the offending
+    // sub-expression (the `1.5` literal, 3 chars wide) rather than at the
+    // opening `[` — a more useful range for editors.
+    try expectErrorWidth(result, "expected integer scalar", 3);
+}
+
+test "validation range: array index inner binary underlines the whole expression" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  var a: array<f32, 4>;
+        \\  let v = a[1.0 + 2.0];
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // `1.0 + 2.0` is 9 chars — exprSpan covers leftmost to rightmost.
+    try expectErrorWidth(result, "expected integer scalar", 9);
+}
+
+test "validation range: shift RHS float underlines the literal" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  let v = 1u << 1.5;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // `1.5` is 3 chars — the shift RHS `.integer_scalar` points here.
+    try expectErrorWidth(result, "expected integer scalar", 3);
+}
+
+test "validation range: shift RHS bool underlines the literal" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\  let v = 1u << true;
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    // `true` is 4 chars.
+    try expectErrorWidth(result, "expected integer scalar", 4);
 }
 
 // =========================================================================

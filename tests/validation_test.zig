@@ -1633,3 +1633,98 @@ test "validate: normal group numbers no warning" {
     }
 }
 
+// =========================================================================
+// Expectation pushdown: `.integer_scalar` at index / shift-RHS;
+// `.concrete` at unannotated decl initializers.
+// =========================================================================
+
+test "validation: types/index_integer_types_valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/index_integer_types_valid");
+}
+
+test "validation: types/let_var_no_annotation_concretize" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/let_var_no_annotation_concretize");
+}
+
+test "validation: types/let_nested_expectation_dispatch" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/let_nested_expectation_dispatch");
+}
+
+test "validation: expressions/binary/shift_integer_rhs_valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"expressions/binary/shift_integer_rhs_valid");
+}
+
+test "validation: errors/types/index_float_literal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/index_float_literal");
+}
+
+test "validation: errors/types/index_f32_var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/index_f32_var");
+}
+
+test "validation: errors/types/index_bool" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/index_bool");
+}
+
+test "validation: errors/types/index_vector" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/index_vector");
+}
+
+test "validation: errors/types/index_inner_binary_float" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/index_inner_binary_float");
+}
+
+test "validation: errors/operations/shift_rhs_float" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/operations/shift_rhs_float");
+}
+
+test "validation: errors/operations/shift_rhs_f32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/operations/shift_rhs_f32");
+}
+
+test "validation: errors/operations/shift_rhs_bool" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/operations/shift_rhs_bool");
+}
+
+test "validation: errors/operations/shift_rhs_vector" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/operations/shift_rhs_vector");
+}
+
+test "validation: errors/operations/shift_rhs_i32_requires_u32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/operations/shift_rhs_i32_requires_u32");
+}
+
+test "validation: errors/operations/shift_lhs_float" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/operations/shift_lhs_float");
+}
+

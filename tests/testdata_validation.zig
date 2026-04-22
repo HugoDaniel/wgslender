@@ -294,3 +294,22 @@ pub const @"errors/control_flow/break_outside_loop" = @embedFile("testdata/valid
 pub const @"errors/control_flow/break_in_function" = @embedFile("testdata/validation/errors/control_flow/break_in_function.wgsl");
 pub const @"errors/control_flow/continue_in_if" = @embedFile("testdata/validation/errors/control_flow/continue_in_if.wgsl");
 pub const @"errors/control_flow/unreachable_after_return" = @embedFile("testdata/validation/errors/control_flow/unreachable_after_return.wgsl");
+
+// --- expectation pushdown: .integer_scalar / .concrete ---
+// Fixtures added alongside the validator change that wires `.integer_scalar`
+// at array-index / shift-RHS and `.concrete` at unannotated decl initializers.
+pub const @"types/index_integer_types_valid" = @embedFile("testdata/validation/types/index_integer_types_valid.wgsl");
+pub const @"types/let_var_no_annotation_concretize" = @embedFile("testdata/validation/types/let_var_no_annotation_concretize.wgsl");
+pub const @"types/let_nested_expectation_dispatch" = @embedFile("testdata/validation/types/let_nested_expectation_dispatch.wgsl");
+pub const @"expressions/binary/shift_integer_rhs_valid" = @embedFile("testdata/validation/expressions/binary/shift_integer_rhs_valid.wgsl");
+pub const @"errors/types/index_float_literal" = @embedFile("testdata/validation/errors/types/index_float_literal.wgsl");
+pub const @"errors/types/index_f32_var" = @embedFile("testdata/validation/errors/types/index_f32_var.wgsl");
+pub const @"errors/types/index_bool" = @embedFile("testdata/validation/errors/types/index_bool.wgsl");
+pub const @"errors/types/index_vector" = @embedFile("testdata/validation/errors/types/index_vector.wgsl");
+pub const @"errors/types/index_inner_binary_float" = @embedFile("testdata/validation/errors/types/index_inner_binary_float.wgsl");
+pub const @"errors/operations/shift_rhs_float" = @embedFile("testdata/validation/errors/operations/shift_rhs_float.wgsl");
+pub const @"errors/operations/shift_rhs_f32" = @embedFile("testdata/validation/errors/operations/shift_rhs_f32.wgsl");
+pub const @"errors/operations/shift_rhs_bool" = @embedFile("testdata/validation/errors/operations/shift_rhs_bool.wgsl");
+pub const @"errors/operations/shift_rhs_vector" = @embedFile("testdata/validation/errors/operations/shift_rhs_vector.wgsl");
+pub const @"errors/operations/shift_rhs_i32_requires_u32" = @embedFile("testdata/validation/errors/operations/shift_rhs_i32_requires_u32.wgsl");
+pub const @"errors/operations/shift_lhs_float" = @embedFile("testdata/validation/errors/operations/shift_lhs_float.wgsl");
