@@ -456,6 +456,76 @@ const wasmModule = await WebAssembly.compileStreaming(
 await initialize({ wasmModule });
 ```
 
+## Refactoring API
+
+The analyzer that powers the WGSL language server is exposed as pure
+functions, so any editor or build tool can drive find-references, rename,
+and structural edits without spawning a full LSP session. All offsets are
+**UTF-8 byte offsets** into the source.
+
+Every function returns a result object with an optional `error` string —
+no exceptions are thrown for user input. `*Apply` variants always return
+a usable `source` field (the original text on failure) so you can use
+the return value as a drop-in replacement either way.
+
+### Cursor-based operations
+
+```typescript
+findReferences(source, offset, includeDeclaration?): FindReferencesResult
+rename(source, offset, newName): RenameResult
+renameApply(source, offset, newName): RenameApplyResult
+```
+
+```javascript
+import { findReferences, renameApply } from "wgslender";
+
+const { references } = findReferences(source, cursorByteOffset);
+// [{ start: 12, end: 15, isWrite: true }, { start: 42, end: 45, isWrite: false }, ...]
+
+const { ok, source: next, edits } = renameApply(source, cursorByteOffset, "newName");
+```
+
+### Stable identifiers
+
+Stable IDs are deterministic strings like `v1:fn:main/block#0/let:x` that
+identify a symbol independently of its text position. They survive
+reparses and edits that don't move the declaration across a block scope,
+so you can cache them across keystrokes.
+
+```typescript
+stableIdAtOffset(source, offset): { stableId: string | null, error?: string }
+locateStableId(source, stableId): { start: number | null, end: number | null, error?: string }
+locateDeclaration(source, stableId): { start, end }   // full decl (attributes + trailing `;`/`}`)
+locateType(source, stableId): { start, end }          // just the `: T` annotation
+```
+
+```typescript
+renameByStableId(source, stableId, newName): RenameResult
+removeDeclarationByStableId(source, stableId): RenameResult
+removeDeclarationApplyByStableId(source, stableId): RenameApplyResult
+changeTypeByStableId(source, stableId, newType): RenameResult
+changeTypeApplyByStableId(source, stableId, newType): RenameApplyResult
+```
+
+```javascript
+import { stableIdAtOffset, changeTypeApplyByStableId } from "wgslender";
+
+const { stableId } = stableIdAtOffset(source, cursorByteOffset);
+const { source: next } = changeTypeApplyByStableId(source, stableId, "vec3<f32>");
+```
+
+`locateType` works on struct members, function parameters, function return
+types (pass the function's stable ID), and `var`/`const`/`let`/`override`
+declarations with an explicit `: T` annotation.
+
+### Error strings
+
+| Code | Meaning |
+|------|---------|
+| `"parse error"` | Source didn't parse — the edit couldn't be computed |
+| `"symbol not found"` | Offset is not over a renameable symbol, or the stable ID doesn't resolve |
+| `"invalid identifier"` | `newName` is empty, a keyword, reserved, starts with `__`, or contains bad chars |
+
 ## Performance
 
 - WASM binary: ~3.6MB

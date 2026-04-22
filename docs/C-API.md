@@ -147,6 +147,89 @@ WgslenderJsonResult wgslender_reflect_c(
     const uint8_t *source_ptr, uint32_t source_len);
 ```
 
+### Refactoring functions
+
+The same analyzer that powers the WGSL language server is exposed as
+stateless C functions. All offsets are **UTF-8 byte offsets** into the
+source and every function returns `WgslenderJsonResult` — the `json_ptr`
+is a JSON object that always includes the requested output field(s) and,
+on failure, an `"error"` string. The buffer must be freed with
+`wgslender_free_c(result.json_ptr, result.json_len)`.
+
+#### `wgslender_find_references_c`
+
+Find every use of the symbol under `offset`. `include_declaration` is
+`0` or `1`.
+
+```c
+WgslenderJsonResult wgslender_find_references_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t offset,
+    uint32_t include_declaration);
+```
+
+Returns `{"references":[{"start":N,"end":N,"isWrite":bool}, ...]}`, or
+`{"references":[]}` if no symbol is under the offset.
+
+#### `wgslender_rename_c`
+
+Compute the text edits that rename the symbol at `offset` to `new_name`.
+
+```c
+WgslenderJsonResult wgslender_rename_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t offset,
+    const uint8_t *new_name_ptr, uint32_t new_name_len);
+```
+
+Returns `{"edits":[{"start":N,"end":N,"newText":"..."}, ...]}` on success
+or `{"edits":[],"error":"..."}` on failure. Possible error strings:
+`"parse error"`, `"symbol not found"`, `"invalid identifier"` (keyword,
+reserved, `__`-prefixed, empty, or containing bad characters).
+
+#### `wgslender_rename_apply_c`
+
+Same as `wgslender_rename_c` but also returns the rewritten source.
+
+```c
+WgslenderJsonResult wgslender_rename_apply_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t offset,
+    const uint8_t *new_name_ptr, uint32_t new_name_len);
+```
+
+Returns `{"ok":true,"source":"<rewritten>","edits":[...]}` on success or
+`{"ok":false,"source":"<original>","edits":[],"error":"..."}` on failure.
+The `source` field is always present so callers can use the response
+uniformly.
+
+#### Stable identifiers
+
+Stable IDs are strings like `v1:fn:main/block#0/let:x` that identify a
+symbol independently of its text position. They survive reparses and
+edits that do not reorder or insert a `.block` scope at or above the
+symbol's declaration, so callers can cache them across keystrokes.
+
+```c
+/* Resolve cursor offset → stable ID. */
+WgslenderJsonResult wgslender_stable_id_at_offset_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    uint32_t offset);
+/* → {"stableId":"v1:fn:main/block#0/let:x"}  or  {"stableId":null,"error":"..."} */
+
+/* Resolve stable ID → declaration byte range. */
+WgslenderJsonResult wgslender_locate_stable_id_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len);
+/* → {"start":N,"end":N}  or  {"start":null,"end":null,"error":"..."} */
+
+/* Rename by stable ID — same JSON shape as wgslender_rename_c. */
+WgslenderJsonResult wgslender_rename_by_id_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len,
+    const uint8_t *new_name_ptr, uint32_t new_name_len);
+```
+
 ### `wgslender_free_c`
 
 Free memory returned by wgslender functions. **Both pointer and length are required.**

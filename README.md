@@ -46,7 +46,8 @@ console.log(info.entryPoints); // Entry point metadata
 | **Source Maps**    | Debug minified shaders with v3 source maps                     |
 | **Binary shaders** | Compile WGSL to `.wasm` — BPE compression + tiny WASM decoder  |
 | **Multi-platform** | CLI, npm/WASM, Zig library, C library (FFI)                    |
-| **Editor support** | Language server (LSP) with diagnostics, quick fixes, "did you mean?" suggestions |
+| **Editor support** | Full-featured language server — see [Language Server](#language-server-lsp) |
+| **Refactoring API** | Programmatic find-references, rename, and reparse-stable IDs from JS/C |
 | **Well tested**    | Validated against Dawn Tint test suite (7,961 shaders)         |
 
 ## Installation
@@ -108,6 +109,7 @@ wgslender --source-map shader.wgsl -o shader.min.wgsl
 | Flag                         | Description                          |
 | ---------------------------- | ------------------------------------ |
 | `-o <file>`                  | Output file (default: stdout)        |
+| `--minify`                   | Force-enable all minification passes |
 | `--minify-whitespace`        | Only minify whitespace               |
 | `--minify-identifiers`       | Only minify identifiers              |
 | `--minify-syntax`            | Only minify syntax (numeric literals)|
@@ -157,13 +159,7 @@ wgslender compile shader.wgsl -o shader.wasm
 ## JavaScript/TypeScript API
 
 ```javascript
-import {
-  initialize,
-  minify,
-  minifyAndReflect,
-  reflect,
-  validate,
-} from "wgslender";
+import { initialize, minify, reflect, validate } from "wgslender";
 
 await initialize({ wasmURL: "/wgslender.wasm" });
 
@@ -177,7 +173,10 @@ const result = minify(source, {
 });
 
 // Validate (strictMode treats warnings as errors)
-const validation = validate(source, { strictMode: true });
+const validation = validate(source, {
+  strictMode: true,
+  diagnosticFilters: { derivative_uniformity: "warning" },
+});
 if (!validation.valid) {
   for (const d of validation.diagnostics) {
     console.log(`${d.line}:${d.column}: ${d.message}`);
@@ -189,14 +188,44 @@ const info = reflect(source);
 for (const b of info.bindings) {
   console.log(`@group(${b.group}) @binding(${b.binding}) ${b.name}: ${b.type}`);
 }
-
-// Combined minify + reflect (with minified names)
-const combined = minifyAndReflect(source);
-console.log(combined.code);
-console.log(combined.reflect.bindings);
 ```
 
 See [npm/wgslender/README.md](npm/wgslender/README.md) for full API documentation.
+
+### Refactoring API
+
+The same analyzer that powers the language server is exposed as pure functions,
+so any editor or build tool can drive find-references, rename, and structural
+edits without running a full LSP session.
+
+```javascript
+import {
+  findReferences, rename, renameApply,
+  stableIdAtOffset, locateStableId, locateDeclaration, locateType,
+  renameByStableId,
+  removeDeclarationByStableId, removeDeclarationApplyByStableId,
+  changeTypeByStableId, changeTypeApplyByStableId,
+} from "wgslender";
+
+// Offset-based (good for cursor-in-editor workflows)
+const refs = findReferences(source, cursorByteOffset);   // { references: [{start,end,isWrite}] }
+const edits = rename(source, cursorByteOffset, "newName"); // { edits: [{start,end,newText}] }
+const { source: next } = renameApply(source, cursorByteOffset, "newName");
+
+// Stable-ID based (survives reparses + unrelated edits)
+const { stableId } = stableIdAtOffset(source, cursorByteOffset);
+const decl   = locateDeclaration(source, stableId); // { start, end } of full decl
+const typeSp = locateType(source, stableId);         // { start, end } of `: T` annotation
+renameByStableId(source, stableId, "newName");
+changeTypeApplyByStableId(source, stableId, "vec3<f32>");
+removeDeclarationApplyByStableId(source, stableId);
+```
+
+Stable IDs survive reparses and edits that don't move the declaration across a
+block scope, so callers can cache them across keystrokes. Every function
+returns an `error` field (e.g. `"invalid identifier"`, `"symbol not found"`)
+instead of throwing, and `*Apply` variants always return a usable `source`
+string (the original on failure).
 
 ## Config File
 
@@ -249,7 +278,30 @@ device.createShaderModule({ code: wgsl });
 
 ## Language Server (LSP)
 
-Real-time diagnostics, quick-fix code actions, and "did you mean?" suggestions for WGSL files.
+A full-featured WGSL language server built from the same analyzer as the CLI.
+
+| Capability | Details |
+| ---------- | ------- |
+| Diagnostics | Push on open/change/save **and** pull model (`textDocument/diagnostic`) with `resultId` cache |
+| Quick fixes | Code actions for typo fixes, safe casts, duplicate-binding renumbering, unused-removal, "did you mean?" |
+| Hover | Resolved type info + function signatures + docstrings |
+| Go to definition / type definition | Jump to decl or to the struct/alias behind a value |
+| Find references / document highlight | All uses of the symbol under the cursor |
+| Rename | With `prepareRename`, validates the new name against reserved words |
+| Completion | Identifier + attribute completion (triggered by `.` and `@`) |
+| Signature help | Parameter info while typing a call (triggered by `(` and `,`) |
+| Document symbols | Hierarchical outline — structs, fields, functions, params, locals |
+| Folding ranges | Blocks, functions, structs |
+| Inlay hints | Evaluated `const` array sizes and other computed values (toggleable) |
+| Code lens | Binding / entry-point annotations |
+| Document formatting | Pretty-print the full file |
+| Semantic tokens | 9 token types × 3 modifiers (keyword, function, struct, parameter, variable, number, type, comment, decorator) |
+| Selection range | Smart expand/shrink up the AST |
+| Call hierarchy | Incoming and outgoing calls |
+| Incremental sync | `TextDocumentSyncKind.Incremental` — only changed ranges are reparsed |
+| `workspace/configuration` | Pulls `wgslender` section (`inlayHints.enabled`, `diagnostics.enabled`) |
+
+Both transports (native stdio and browser WASM) expose the same capability set.
 
 ### Native (VS Code / Neovim)
 
