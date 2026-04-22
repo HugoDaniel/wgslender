@@ -3265,52 +3265,46 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         }
     }
 
-    // Declarative overload resolution (Task #9 / Phases 1-3d). Active for
-    // any builtin with populated `overloads`. The solver binds type
-    // parameters from the arg types and the caller builds the return from
-    // `ResultRule`. `bitcast<T>` dispatches via `checkBitcastCall` above
-    // because its sig set is template-shape-selected and its slot-0/slot-1
-    // bindings are seeded from the template — but the solver and
-    // signature DSL it uses are the same. Phase 3c migrated the indexed
-    // texture builtins via `Pattern.tparam_texture`; Phase 3d extends
-    // that to the sampling and gather families, so every texture builtin
-    // is now declarative. Remaining legacy paths are the non-texture
-    // side cases (atomicStore, arrayLength, barriers).
-    if (builtin_fn.overloads.len > 0) {
-        const argc = @min(e.args.items.len, 8);
-        const res = Overload.resolve(builtin_fn.overloads, arg_types[0..argc]);
-        switch (res) {
-            .err => |err| {
-                // Arity was already validated above via `checkArgCount`, so
-                // a count mismatch here means the builtin's per-overload
-                // arity differs from min/max — treat it as a no-match.
-                const bad_idx = if (err.kind == .no_matching_overload) err.first_bad_arg else 0;
-                const bad_type_str: []const u8 = if (bad_idx < argc)
-                    if (arg_types[bad_idx]) |bt| bt.string() else "<unknown>"
-                else
-                    "<missing>";
-                v.addErrorWithCodeR(
-                    exprRange(.{ .call = e }),
-                    Diagnostic.Code.invalid_arg_type,
-                    v.fmtError(
-                        "no matching overload for '{s}': argument {d} has type '{s}'",
-                        .{ callee_name, bad_idx + 1, bad_type_str },
-                    ),
-                );
-                return InferResult.fail;
-            },
-            .ok => |ok| {
-                const sig = builtin_fn.overloads[ok.sig_index];
-                const ret = try v.buildOverloadResult(sig.result, &ok.bindings, arg_types) orelse
-                    return .{ .typ = null, .stage = call_stage };
-                return InferResult.some(ret, call_stage);
-            },
-        }
+    // Declarative overload resolution (Task #9 / Phases 1-3e). Every
+    // callable builtin reaches this point with `overloads` populated —
+    // Phase 3e retired the last legacy `inferBuiltinReturnType` callees
+    // (atomicStore, arrayLength, workgroupBarrier, storageBarrier,
+    // textureBarrier) by adding the missing sig tables. `bitcast<T>`
+    // dispatched earlier via `checkBitcastCall` because its sig set is
+    // template-shape-selected and its slot-0/slot-1 bindings are seeded
+    // from the template — but the solver and signature DSL it uses are
+    // the same. The `Builtins` test suite enforces the invariant that
+    // every entry other than bitcast has a non-empty `_sigs`.
+    std.debug.assert(builtin_fn.overloads.len > 0);
+    const argc = @min(e.args.items.len, 8);
+    const res = Overload.resolve(builtin_fn.overloads, arg_types[0..argc]);
+    switch (res) {
+        .err => |err| {
+            // Arity was already validated above via `checkArgCount`, so
+            // a count mismatch here means the builtin's per-overload
+            // arity differs from min/max — treat it as a no-match.
+            const bad_idx = if (err.kind == .no_matching_overload) err.first_bad_arg else 0;
+            const bad_type_str: []const u8 = if (bad_idx < argc)
+                if (arg_types[bad_idx]) |bt| bt.string() else "<unknown>"
+            else
+                "<missing>";
+            v.addErrorWithCodeR(
+                exprRange(.{ .call = e }),
+                Diagnostic.Code.invalid_arg_type,
+                v.fmtError(
+                    "no matching overload for '{s}': argument {d} has type '{s}'",
+                    .{ callee_name, bad_idx + 1, bad_type_str },
+                ),
+            );
+            return InferResult.fail;
+        },
+        .ok => |ok| {
+            const sig = builtin_fn.overloads[ok.sig_index];
+            const ret = try v.buildOverloadResult(sig.result, &ok.bindings, arg_types) orelse
+                return .{ .typ = null, .stage = call_stage };
+            return InferResult.some(ret, call_stage);
+        },
     }
-
-    const ret = v.inferBuiltinReturnType(builtin_fn, callee_name, arg_types) orelse
-        return .{ .typ = null, .stage = call_stage };
-    return InferResult.some(ret, call_stage);
 }
 
 /// Materialize the return type for an overload-resolved builtin call.
@@ -3512,39 +3506,6 @@ fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8) v
     } else {
         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
     }
-}
-
-fn inferBuiltinReturnType(v: *Validator, builtin: Builtins.Builtin, name: []const u8, arg_types: [8]?Types.Type) ?Types.Type {
-    _ = name;
-    return switch (builtin.return_pattern) {
-        .void_type => Types.Void,
-        .u32_scalar => Types.U32,
-        .texture_dims => v.inferTextureDimsType(arg_types),
-        // Phases 1-3d migrated every callee to the declarative engine
-        // (`.overloads` populated) or to a dedicated call-site block
-        // (`bitcast`). These tags are kept on Builtin entries for
-        // documentation only — these branches are no longer reachable.
-        .texture, .custom, .same_as_arg, .bool_scalar, .scalar_of_arg, .pack_u32 => unreachable,
-    };
-}
-
-fn inferTextureDimsType(v: *Validator, arg_types: [8]?Types.Type) ?Types.Type {
-    const tex_type = arg_types[0] orelse return Types.U32;
-
-    if (tex_type != .texture) return Types.U32;
-    const t = tex_type.texture;
-
-    const width: u8 = switch (t.dimension) {
-        .@"1d" => 1,
-        .@"2d", .@"2d_array", .cube, .cube_array => 2,
-        .@"3d" => 3,
-    };
-
-    if (width == 1) return Types.U32;
-
-    const result = v.arena.create(Types.Vector) catch return null;
-    result.* = .{ .width = width, .element = Types.scalar_u32_ptr };
-    return .{ .vector = result };
 }
 
 // Cache synthesized structs so repeated calls to frexp/modf/

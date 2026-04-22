@@ -121,6 +121,23 @@ pub const Pattern = union(enum) {
         elem_idx: u8,
     },
 
+    /// ptr<AS, array<E>, AM> for arrayLength (§17.14). Both AS and AM bind
+    /// to tparam slots — neither is pinned. Per WGSL §6.7.4 a runtime-sized
+    /// array can only legally be declared in a storage var, so the array
+    /// element + `isRuntimeSized` checks are sufficient on their own;
+    /// pinning AS to `.storage` would falsely reject valid code that goes
+    /// through pointer-chain inference (e.g. `let p = &G; let p2 = &(*p)`)
+    /// where the validator's `&(*p)` rule currently defaults AS to
+    /// `function`. The element type E is intentionally NOT bound: the
+    /// result is fixed `u32` regardless of E, and runtime-sized arrays may
+    /// have non-scalar elements (struct, vec, nested array) that the
+    /// existing scalar-only Binding can't represent. The pattern enforces
+    /// that the array is runtime-sized (`array<E>`, not `array<E, N>`).
+    tparam_ptr_runtime_array: struct {
+        as_idx: u8,
+        am_idx: u8,
+    },
+
     /// A texture type with fixed kind + dimension, optionally binding
     /// the sampled/storage element scalar to a tparam slot. Always a
     /// parameter pattern — WGSL has no builtin that returns a texture.
@@ -384,6 +401,15 @@ fn unifyArg(p: *const Pattern, arg: Types.Type, bindings: *[max_tparams]Binding)
             }
             return 0;
         },
+        .tparam_ptr_runtime_array => |tp| {
+            if (a != .pointer) return error.Mismatch;
+            const pp = a.pointer;
+            if (pp.element != .array) return error.Mismatch;
+            if (!pp.element.array.isRuntimeSized()) return error.Mismatch;
+            if (!try bindAddressSpace(bindings, tp.as_idx, pp.address_space)) return error.Mismatch;
+            if (!try bindAccessMode(bindings, tp.am_idx, pp.access_mode)) return error.Mismatch;
+            return 0;
+        },
         .tparam_texture => |tt| {
             if (a != .texture) return error.Mismatch;
             const t = a.texture;
@@ -599,7 +625,7 @@ pub fn buildPatternType(
             m.* = .{ .cols = rb.width.?, .rows = cb.width.?, .element = kindPtr(eb.scalar_kind.?) };
             return .{ .matrix = m };
         },
-        .tparam_ptr_atomic, .tparam_ptr, .tparam_texture => {
+        .tparam_ptr_atomic, .tparam_ptr, .tparam_ptr_runtime_array, .tparam_texture => {
             // Not valid as result patterns: WGSL has no builtin that
             // returns a pointer, atomic, or texture.
             return null;
@@ -1136,6 +1162,116 @@ test "buildPatternType: tparam_texture returns null (result-position unsupported
         .kind = .sampled,
         .dimension = .@"2d",
     } };
+    const t = try buildPatternType(arena_state.allocator(), pat, &bindings);
+    try std.testing.expect(t == null);
+}
+
+// -------------------------------------------------------------------------
+// Phase 3e — tparam_ptr_runtime_array (arrayLength)
+// -------------------------------------------------------------------------
+
+test "tparam_ptr_runtime_array: accepts ptr<storage, array<f32>, read>" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_ptr_runtime_array = .{ .as_idx = 0, .am_idx = 1 } }},
+        .result = .{ .fixed = Types.U32 },
+    }};
+    const arr = Types.Array{ .element = Types.F32, .count = 0 };
+    const ptr = Types.Pointer{
+        .address_space = .storage,
+        .element = .{ .array = &arr },
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .pointer = &ptr }});
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(Ast.AddressSpace.storage, r.ok.bindings[0].address_space.?);
+    try std.testing.expectEqual(Ast.AccessMode.read, r.ok.bindings[1].access_mode.?);
+}
+
+test "tparam_ptr_runtime_array: accepts ptr<storage, array<f32>, read_write>" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_ptr_runtime_array = .{ .as_idx = 0, .am_idx = 1 } }},
+        .result = .{ .fixed = Types.U32 },
+    }};
+    const arr = Types.Array{ .element = Types.F32, .count = 0 };
+    const ptr = Types.Pointer{
+        .address_space = .storage,
+        .element = .{ .array = &arr },
+        .access_mode = .read_write,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .pointer = &ptr }});
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(Ast.AccessMode.read_write, r.ok.bindings[1].access_mode.?);
+}
+
+test "tparam_ptr_runtime_array: rejects sized array (count != 0)" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_ptr_runtime_array = .{ .as_idx = 0, .am_idx = 1 } }},
+        .result = .{ .fixed = Types.U32 },
+    }};
+    const arr = Types.Array{ .element = Types.F32, .count = 16 };
+    const ptr = Types.Pointer{
+        .address_space = .storage,
+        .element = .{ .array = &arr },
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .pointer = &ptr }});
+    try std.testing.expect(r == .err);
+}
+
+test "tparam_ptr_runtime_array: accepts unconventional AS but binds whatever is given" {
+    // The pattern is permissive about AS; per spec only `storage` is legal,
+    // but upstream var-decl validation already rejects runtime-sized arrays
+    // in workgroup/uniform/function. The pattern just records what it sees.
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_ptr_runtime_array = .{ .as_idx = 0, .am_idx = 1 } }},
+        .result = .{ .fixed = Types.U32 },
+    }};
+    const arr = Types.Array{ .element = Types.F32, .count = 0 };
+    const ptr = Types.Pointer{
+        .address_space = .function,
+        .element = .{ .array = &arr },
+        .access_mode = .read_write,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .pointer = &ptr }});
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(Ast.AddressSpace.function, r.ok.bindings[0].address_space.?);
+}
+
+test "tparam_ptr_runtime_array: rejects pointer to non-array" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_ptr_runtime_array = .{ .as_idx = 0, .am_idx = 1 } }},
+        .result = .{ .fixed = Types.U32 },
+    }};
+    const ptr = Types.Pointer{
+        .address_space = .storage,
+        .element = Types.F32,
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .pointer = &ptr }});
+    try std.testing.expect(r == .err);
+}
+
+test "tparam_ptr_runtime_array: rejects non-pointer arg" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 2,
+        .params = &.{.{ .tparam_ptr_runtime_array = .{ .as_idx = 0, .am_idx = 1 } }},
+        .result = .{ .fixed = Types.U32 },
+    }};
+    const r = resolve(&sigs, &[_]?Types.Type{Types.U32});
+    try std.testing.expect(r == .err);
+}
+
+test "buildPatternType: tparam_ptr_runtime_array returns null (result-position unsupported)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    var bindings: [max_tparams]Binding = @splat(.{});
+    const pat: Pattern = .{ .tparam_ptr_runtime_array = .{ .as_idx = 0, .am_idx = 1 } };
     const t = try buildPatternType(arena_state.allocator(), pat, &bindings);
     try std.testing.expect(t == null);
 }

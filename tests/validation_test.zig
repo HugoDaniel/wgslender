@@ -355,6 +355,68 @@ test "validation: builtins/texture_sample" {
     try runValidationTest(arena.allocator(), validation_data.@"builtins/texture_sample");
 }
 
+// --- Phase 3e migration coverage (atomicStore / arrayLength / barriers) ---
+
+test "validation: builtins/atomic_store" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/atomic_store");
+}
+
+test "validation: builtins/atomic_store_wrong_value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/atomic_store_wrong_value");
+}
+
+test "validation: builtins/atomic_store_non_atomic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/atomic_store_non_atomic");
+}
+
+test "validation: builtins/atomic_store_wrong_signed_value" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/atomic_store_wrong_signed_value");
+}
+
+test "validation: builtins/array_length" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/array_length");
+}
+
+test "validation: builtins/array_length_sized" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/array_length_sized");
+}
+
+test "validation: builtins/array_length_workgroup" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/array_length_workgroup");
+}
+
+test "validation: builtins/array_length_non_array" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/array_length_non_array");
+}
+
+test "validation: builtins/barriers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/barriers");
+}
+
+test "validation: builtins/barriers_wrong_arity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"builtins/barriers_wrong_arity");
+}
+
 // --- expressions/binary/mul/ (8 files) ---
 
 test "validation: expressions/binary/mul/vec3_mat3x3_f32" {

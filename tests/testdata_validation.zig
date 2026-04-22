@@ -42,6 +42,17 @@ pub const @"builtins/math_basic" = @embedFile("testdata/validation/builtins/math
 pub const @"builtins/atomic_ops" = @embedFile("testdata/validation/builtins/atomic_ops.wgsl");
 pub const @"builtins/texture_sample" = @embedFile("testdata/validation/builtins/texture_sample.wgsl");
 pub const @"builtins/must_use_consumed" = @embedFile("testdata/validation/builtins/must_use_consumed.wgsl");
+// Phase 3e — atomicStore / arrayLength / barriers migration coverage.
+pub const @"builtins/atomic_store" = @embedFile("testdata/validation/builtins/atomic_store.wgsl");
+pub const @"builtins/atomic_store_wrong_value" = @embedFile("testdata/validation/builtins/atomic_store_wrong_value.wgsl");
+pub const @"builtins/atomic_store_non_atomic" = @embedFile("testdata/validation/builtins/atomic_store_non_atomic.wgsl");
+pub const @"builtins/atomic_store_wrong_signed_value" = @embedFile("testdata/validation/builtins/atomic_store_wrong_signed_value.wgsl");
+pub const @"builtins/array_length" = @embedFile("testdata/validation/builtins/array_length.wgsl");
+pub const @"builtins/array_length_sized" = @embedFile("testdata/validation/builtins/array_length_sized.wgsl");
+pub const @"builtins/array_length_workgroup" = @embedFile("testdata/validation/builtins/array_length_workgroup.wgsl");
+pub const @"builtins/array_length_non_array" = @embedFile("testdata/validation/builtins/array_length_non_array.wgsl");
+pub const @"builtins/barriers" = @embedFile("testdata/validation/builtins/barriers.wgsl");
+pub const @"builtins/barriers_wrong_arity" = @embedFile("testdata/validation/builtins/barriers_wrong_arity.wgsl");
 
 // --- types/ (new) ---
 pub const @"types/index_bounds_valid" = @embedFile("testdata/validation/types/index_bounds_valid.wgsl");

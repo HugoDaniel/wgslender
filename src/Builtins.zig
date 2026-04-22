@@ -760,6 +760,40 @@ const atomic_cmp_xchg_sigs = &[_]O.OverloadSig{
     },
 };
 
+/// `(ptr<AS, atomic<T>, AM>, T) -> void` for atomicStore. Same shape as
+/// atomic_rmw_sigs (Phase 1) but the result is fixed Void — atomicStore is
+/// the only atomic operation that doesn't return T.
+const atomic_store_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 3,
+        .params = &.{
+            .{ .tparam_ptr_atomic = .{ .as_idx = 1, .am_idx = 2, .elem_idx = 0, .elem_family = .integer } },
+            .{ .bound_scalar = 0 },
+        },
+        .result = .{ .fixed = Types.Void },
+    },
+};
+
+/// `(ptr<AS, array<E>, AM>) -> u32` for arrayLength. AS and AM bind freely;
+/// the only structural constraint is that the pointee is a runtime-sized
+/// array. See `Pattern.tparam_ptr_runtime_array` for the rationale.
+const array_length_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 2,
+        .params = &.{
+            .{ .tparam_ptr_runtime_array = .{ .as_idx = 0, .am_idx = 1 } },
+        },
+        .result = .{ .fixed = Types.U32 },
+    },
+};
+
+/// `() -> void` — shared by workgroupBarrier / storageBarrier /
+/// textureBarrier. The uniform-control-flow requirement is enforced
+/// separately in `Validator.checkCallExpr` via `Builtin.uniformity`.
+const barrier_sigs = &[_]O.OverloadSig{
+    .{ .tparam_count = 0, .params = &.{}, .result = .{ .fixed = Types.Void } },
+};
+
 /// frexp / modf — scalar and vector float forms. The validator's
 /// `synthesizeFrexpResult` / `synthesizeModfResult` build the result
 /// struct from the bound element type + (for vectors) bound width.
@@ -1820,6 +1854,10 @@ const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
     .{ "atomicXor", atomic_rmw_sigs },
     .{ "atomicExchange", atomic_rmw_sigs },
     .{ "atomicCompareExchangeWeak", atomic_cmp_xchg_sigs },
+    .{ "atomicStore", atomic_store_sigs },
+
+    // Array (§17.14)
+    .{ "arrayLength", array_length_sigs },
 
     // Numeric special (§17.5)
     .{ "frexp", frexp_sigs },
@@ -1859,6 +1897,9 @@ const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
 
     // Synchronization (§17.11)
     .{ "workgroupUniformLoad", wg_uniform_load_sigs },
+    .{ "workgroupBarrier", barrier_sigs },
+    .{ "storageBarrier", barrier_sigs },
+    .{ "textureBarrier", barrier_sigs },
 
     // Subgroup (§17.12)
     .{ "subgroupBallot", subgroup_ballot_sigs },
@@ -2140,6 +2181,24 @@ test "builtins: return patterns are assigned" {
     // Void
     try std.testing.expectEqual(ReturnPattern.void_type, lookup("workgroupBarrier").?.return_pattern);
     try std.testing.expectEqual(ReturnPattern.void_type, lookup("atomicStore").?.return_pattern);
+}
+
+test "builtins: every callable entry has declarative overloads (Phase 3e invariant)" {
+    // Phase 3e retired the legacy `inferBuiltinReturnType` switch in
+    // `Validator.checkBuiltinCall`, so every builtin reachable via the
+    // generic call dispatch must have a non-empty `.overloads` slice.
+    // `bitcast` is exempt: it dispatches through the dedicated
+    // `Validator.checkBitcastCall` block which seeds tparams from the
+    // template type and selects from `Builtins.bitcast_to_*_sigs`
+    // directly, so its `lookup().overloads` is intentionally empty.
+    for (table.keys()) |name| {
+        if (std.mem.eql(u8, name, "bitcast")) continue;
+        const b = lookup(name).?;
+        if (b.overloads.len == 0) {
+            std.debug.print("missing overloads: {s}\n", .{name});
+            try std.testing.expect(false);
+        }
+    }
 }
 
 test "builtins: all Go builtins are registered" {
