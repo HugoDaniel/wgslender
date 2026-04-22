@@ -1253,6 +1253,54 @@ test "validation: errors/io/location_non_const" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_non_const");
 }
 
+test "validation: errors/io/compute_output_builtin" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/compute_output_builtin");
+}
+
+test "validation: errors/io/builtin_frag_depth_wrong_type_f16" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_frag_depth_wrong_type_f16");
+}
+
+test "validation: errors/io/builtin_sample_mask_wrong_type_i32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_sample_mask_wrong_type_i32");
+}
+
+test "validation: errors/io/builtin_local_invocation_index_wrong_type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_local_invocation_index_wrong_type");
+}
+
+test "validation: errors/io/location_atomic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_atomic");
+}
+
+test "validation: errors/io/duplicate_location_across_param_and_struct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/duplicate_location_across_param_and_struct");
+}
+
+test "validation: errors/io/blend_src_non_numeric" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/blend_src_non_numeric");
+}
+
+test "validation: errors/io/interpolate_on_direct_return" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/interpolate_on_direct_return");
+}
+
 test "validation: types/entry_point_fragment_blend_src" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1293,6 +1341,18 @@ test "validation: types/entry_point_compute_all_builtins" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_compute_all_builtins");
+}
+
+test "validation: types/entry_point_fragment_multi_location" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_fragment_multi_location");
+}
+
+test "validation: types/entry_point_location_f16" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"types/entry_point_location_f16");
 }
 
 // =========================================================================

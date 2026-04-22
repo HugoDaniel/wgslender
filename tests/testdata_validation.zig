@@ -266,6 +266,14 @@ pub const @"errors/io/location_and_builtin_on_non_entry_function_return" = @embe
 pub const @"errors/io/builtin_on_helper_called_from_entry_point" = @embedFile("testdata/validation/errors/io/builtin_on_helper_called_from_entry_point.wgsl");
 pub const @"errors/io/location_negative" = @embedFile("testdata/validation/errors/io/location_negative.wgsl");
 pub const @"errors/io/location_non_const" = @embedFile("testdata/validation/errors/io/location_non_const.wgsl");
+pub const @"errors/io/compute_output_builtin" = @embedFile("testdata/validation/errors/io/compute_output_builtin.wgsl");
+pub const @"errors/io/builtin_frag_depth_wrong_type_f16" = @embedFile("testdata/validation/errors/io/builtin_frag_depth_wrong_type_f16.wgsl");
+pub const @"errors/io/builtin_sample_mask_wrong_type_i32" = @embedFile("testdata/validation/errors/io/builtin_sample_mask_wrong_type_i32.wgsl");
+pub const @"errors/io/builtin_local_invocation_index_wrong_type" = @embedFile("testdata/validation/errors/io/builtin_local_invocation_index_wrong_type.wgsl");
+pub const @"errors/io/location_atomic" = @embedFile("testdata/validation/errors/io/location_atomic.wgsl");
+pub const @"errors/io/duplicate_location_across_param_and_struct" = @embedFile("testdata/validation/errors/io/duplicate_location_across_param_and_struct.wgsl");
+pub const @"errors/io/blend_src_non_numeric" = @embedFile("testdata/validation/errors/io/blend_src_non_numeric.wgsl");
+pub const @"errors/io/interpolate_on_direct_return" = @embedFile("testdata/validation/errors/io/interpolate_on_direct_return.wgsl");
 
 // --- types/ entry-point I/O (valid) ---
 pub const @"types/entry_point_vertex_inputs" = @embedFile("testdata/validation/types/entry_point_vertex_inputs.wgsl");
@@ -275,6 +283,8 @@ pub const @"types/entry_point_fragment_frag_depth" = @embedFile("testdata/valida
 pub const @"types/entry_point_fragment_sample_mask_out" = @embedFile("testdata/validation/types/entry_point_fragment_sample_mask_out.wgsl");
 pub const @"types/entry_point_compute_all_builtins" = @embedFile("testdata/validation/types/entry_point_compute_all_builtins.wgsl");
 pub const @"types/entry_point_fragment_blend_src" = @embedFile("testdata/validation/types/entry_point_fragment_blend_src.wgsl");
+pub const @"types/entry_point_fragment_multi_location" = @embedFile("testdata/validation/types/entry_point_fragment_multi_location.wgsl");
+pub const @"types/entry_point_location_f16" = @embedFile("testdata/validation/types/entry_point_location_f16.wgsl");
 
 // --- errors/control_flow/ ---
 pub const @"errors/control_flow/discard_outside_fragment" = @embedFile("testdata/validation/errors/control_flow/discard_outside_fragment.wgsl");
