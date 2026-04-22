@@ -279,6 +279,13 @@ pub fn resolveSeeded(
     var best_idx: ?usize = null;
     var best_rank: u32 = std.math.maxInt(u32);
     var best_bindings: [max_tparams]Binding = seed;
+    // Deepest successful unification prefix across every failing candidate.
+    // Used to report the "most likely culprit" argument on total failure:
+    // if one sig matched through arg 2 and broke at arg 3, and another
+    // broke at arg 0, arg 3 is almost always what the user got wrong.
+    // Overwriting per-sig (as earlier iterations did) collapsed to the
+    // last-tried sig's bad arg, which was usually 0 for irrelevant sigs
+    // (e.g. the vector form of a scalar-valued call).
     var last_bad_arg: u8 = 0;
 
     // Tie-break by declaration order — on strict less-than we take the
@@ -306,7 +313,7 @@ pub fn resolveSeeded(
             total_rank = @max(total_rank, r);
         }
         if (!ok) {
-            last_bad_arg = bad_arg;
+            if (bad_arg > last_bad_arg) last_bad_arg = bad_arg;
             continue;
         }
         if (best_idx == null or total_rank < best_rank) {
