@@ -146,11 +146,15 @@ pub const Pattern = union(enum) {
     ///   depth / depth_multisampled / external → no element; must set
     ///   `elem_idx = no_tparam`.
     ///
-    /// Access mode is intentionally NOT constrained here. The existing
-    /// side-validations in `Validator.checkCallExpr` fire before overload
-    /// resolution and produce better diagnostics than pattern mismatch
-    /// ("needs write, got read" vs "no matching overload"). Keeping
-    /// patterns access-mode-agnostic also collapses storage sig counts.
+    /// Access mode is intentionally NOT constrained here. Two builtins
+    /// need it — `textureStore` and `textureLoad`-on-storage — and both
+    /// are handled by `Validator.preValidateTextureBuiltin`, which fires
+    /// before `Overload.resolve` and produces the specific diagnostic the
+    /// user deserves ("needs write, got read" vs "no matching overload").
+    /// Making this declarative would require adding a per-field
+    /// mismatch-reason channel to the solver for two call sites that have
+    /// no peers in the WGSL spec; keeping patterns access-mode-agnostic
+    /// also collapses storage sig counts.
     tparam_texture: struct {
         kind: Types.TextureKind,
         dimension: Types.TextureDimension,

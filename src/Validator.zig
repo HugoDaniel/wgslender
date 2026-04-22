@@ -3779,52 +3779,8 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         .runtime => .runtime_expr,
     };
 
-    // Storage-texture access-mode enforcement: textureStore needs `write`
-    // or `read_write`; textureLoad on a storage texture needs `read` or
-    // `read_write`. Silently dispatching on a `read`-only texture would
-    // produce a WebGPU validation error at runtime.
-    if (std.mem.eql(u8, callee_name, "textureStore")) {
-        if (arg_types[0]) |at| {
-            if (at == .texture and at.texture.kind == .storage) {
-                const am = at.texture.access_mode;
-                if (am != .write and am != .read_write) {
-                    v.addErrorWithCodeR(
-                        exprRange(.{ .call = e }),
-                        Diagnostic.Code.invalid_arg_type,
-                        v.fmtError("'textureStore' requires 'write' or 'read_write' access, got 'read'", .{}),
-                    );
-                    return InferResult.fail;
-                }
-                // Coord dimension check — must match the texture dim.
-                if (arg_types[1]) |coord| {
-                    if (!textureCoordMatches(at.texture.dimension, coord)) {
-                        v.addErrorWithCodeR(
-                            exprRange(.{ .call = e }),
-                            Diagnostic.Code.invalid_arg_type,
-                            v.fmtError(
-                                "'textureStore' coord has wrong dimension: expected {s}, got '{s}'",
-                                .{ textureCoordExpected(at.texture.dimension), coord.string() },
-                            ),
-                        );
-                        return InferResult.fail;
-                    }
-                }
-            }
-        }
-    } else if (std.mem.eql(u8, callee_name, "textureLoad")) {
-        if (arg_types[0]) |at| {
-            if (at == .texture and at.texture.kind == .storage) {
-                const am = at.texture.access_mode;
-                if (am != .read and am != .read_write) {
-                    v.addErrorWithCodeR(
-                        exprRange(.{ .call = e }),
-                        Diagnostic.Code.invalid_arg_type,
-                        v.fmtError("'textureLoad' requires 'read' or 'read_write' access on a storage texture, got 'write'", .{}),
-                    );
-                    return InferResult.fail;
-                }
-            }
-        }
+    if (try preValidateTextureBuiltin(v, e, callee_name, arg_types[0..max_check])) |result| {
+        return result;
     }
 
     // Declarative overload resolution. Every callable builtin reaches
@@ -3911,6 +3867,65 @@ fn buildOverloadResult(
             } };
         },
     }
+}
+
+/// Runs before `Overload.resolve()` for the two builtins whose WGSL rules
+/// can't be expressed as pattern constraints without adding a per-field
+/// mismatch-reason channel to the generic solver. See the
+/// `Pattern.tparam_texture` comment in `Overload.zig` for the trade-off.
+///
+/// Returns `null` to let the declarative solver run; returns
+/// `InferResult.fail` (after emitting a diagnostic) when an access-mode
+/// or coord-dim rule is violated.
+fn preValidateTextureBuiltin(
+    v: *Validator,
+    e: *Ast.CallExpr,
+    callee_name: []const u8,
+    arg_types: []const ?Types.Type,
+) Allocator.Error!?InferResult {
+    const is_store = std.mem.eql(u8, callee_name, "textureStore");
+    const is_load = std.mem.eql(u8, callee_name, "textureLoad");
+    if (!is_store and !is_load) return null;
+    if (arg_types.len == 0) return null;
+
+    const at = arg_types[0] orelse return null;
+    if (at != .texture or at.texture.kind != .storage) return null;
+
+    const am = at.texture.access_mode;
+    if (is_store and am != .write and am != .read_write) {
+        v.addErrorWithCodeR(
+            exprRange(.{ .call = e }),
+            Diagnostic.Code.invalid_arg_type,
+            v.fmtError("'textureStore' requires 'write' or 'read_write' access, got 'read'", .{}),
+        );
+        return InferResult.fail;
+    }
+    if (is_load and am != .read and am != .read_write) {
+        v.addErrorWithCodeR(
+            exprRange(.{ .call = e }),
+            Diagnostic.Code.invalid_arg_type,
+            v.fmtError("'textureLoad' requires 'read' or 'read_write' access on a storage texture, got 'write'", .{}),
+        );
+        return InferResult.fail;
+    }
+
+    if (is_store and arg_types.len > 1) {
+        if (arg_types[1]) |coord| {
+            if (!textureCoordMatches(at.texture.dimension, coord)) {
+                v.addErrorWithCodeR(
+                    exprRange(.{ .call = e }),
+                    Diagnostic.Code.invalid_arg_type,
+                    v.fmtError(
+                        "'textureStore' coord has wrong dimension: expected {s}, got '{s}'",
+                        .{ textureCoordExpected(at.texture.dimension), coord.string() },
+                    ),
+                );
+                return InferResult.fail;
+            }
+        }
+    }
+
+    return null;
 }
 
 /// Returns true when `coord` has the scalar/vector width the texture
