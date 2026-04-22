@@ -1446,7 +1446,14 @@ fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) Allocator.Er
             } else if (param_type) |pt| {
                 v.validateLocationType(pt, param_range);
             }
+            v.validateLocationArgExpr(&attr);
         } else if (std.mem.eql(u8, attr.name, "builtin")) {
+            // @builtin must only be applied to entry-point params, return, or struct
+            // members (WGSL spec §11.1). Reject when outside an entry point, but
+            // still run the name check below so code-actions can offer suggestions.
+            if (v.current_stage == .none) {
+                v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@builtin is only valid on entry point function parameters");
+            }
             if (attr.args.items.len > 0) {
                 switch (attr.args.items[0]) {
                     .ident => |ident| {
@@ -1455,6 +1462,22 @@ fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) Allocator.Er
                     else => {},
                 }
             }
+        }
+    }
+}
+
+/// WGSL spec §11.1: @location argument must be a const-expression that
+/// resolves to a non-negative i32 or u32.
+fn validateLocationArgExpr(v: *Validator, attr: *const Ast.Attribute) void {
+    if (attr.args.items.len == 0) return;
+    const arg = attr.args.items[0];
+    if (v.classifyExprStage(arg) != .const_expr) {
+        v.addErrorWithCodeR(attrRange(attr), Diagnostic.Code.invalid_location, "@location argument must be a const-expression");
+        return;
+    }
+    if (v.tryExtractIntValue(arg)) |val| {
+        if (val < 0) {
+            v.addErrorWithCodeR(attrRange(attr), Diagnostic.Code.invalid_location, v.fmtError("@location value must be non-negative, got {d}", .{val}));
         }
     }
 }
@@ -1592,6 +1615,9 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                         } else if (mt) |member_type| {
                             v.validateLocationType(member_type, v.symbolRange(member.name));
                         }
+                        for (member.attributes.items) |*a| {
+                            if (std.mem.eql(u8, a.name, "location")) v.validateLocationArgExpr(a);
+                        }
                     }
                     // @blend_src is only valid on fragment outputs (WGSL spec §11.3).
                     if (hasAttr(member.attributes, "blend_src")) {
@@ -1679,6 +1705,9 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
                         if (out_mt) |member_type| {
                             v.validateLocationType(member_type, v.symbolRange(member.name));
                         }
+                        for (member.attributes.items) |*a| {
+                            if (std.mem.eql(u8, a.name, "location")) v.validateLocationArgExpr(a);
+                        }
                     }
                 }
                 // Post-walk: validate @blend_src dual-source pairing (WGSL spec §11.3,
@@ -1699,6 +1728,9 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
             }
             if (hasAttr(fn_decl.return_attr, "location")) {
                 v.validateLocationType(ret_type, fn_range);
+                for (fn_decl.return_attr.items) |*a| {
+                    if (std.mem.eql(u8, a.name, "location")) v.validateLocationArgExpr(a);
+                }
             }
             // @blend_src is only valid on struct members, not direct returns.
             if (hasAttr(fn_decl.return_attr, "blend_src")) {

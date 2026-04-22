@@ -1151,6 +1151,24 @@ test "validation: errors/io/blend_src_on_input" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/io/blend_src_on_input");
 }
 
+test "validation: errors/io/builtin_on_non_entry_function_param" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_on_non_entry_function_param");
+}
+
+test "validation: errors/io/location_negative" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_negative");
+}
+
+test "validation: errors/io/location_non_const" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_non_const");
+}
+
 test "validation: types/entry_point_fragment_blend_src" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

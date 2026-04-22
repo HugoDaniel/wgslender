@@ -249,6 +249,9 @@ pub const @"errors/io/blend_src_invalid_value" = @embedFile("testdata/validation
 pub const @"errors/io/blend_src_unpaired" = @embedFile("testdata/validation/errors/io/blend_src_unpaired.wgsl");
 pub const @"errors/io/blend_src_type_mismatch" = @embedFile("testdata/validation/errors/io/blend_src_type_mismatch.wgsl");
 pub const @"errors/io/blend_src_on_input" = @embedFile("testdata/validation/errors/io/blend_src_on_input.wgsl");
+pub const @"errors/io/builtin_on_non_entry_function_param" = @embedFile("testdata/validation/errors/io/builtin_on_non_entry_function_param.wgsl");
+pub const @"errors/io/location_negative" = @embedFile("testdata/validation/errors/io/location_negative.wgsl");
+pub const @"errors/io/location_non_const" = @embedFile("testdata/validation/errors/io/location_non_const.wgsl");
 
 // --- types/ entry-point I/O (valid) ---
 pub const @"types/entry_point_vertex_inputs" = @embedFile("testdata/validation/types/entry_point_vertex_inputs.wgsl");
