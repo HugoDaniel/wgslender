@@ -885,6 +885,7 @@ fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error!voi
 
     // Validate @id attribute: must be 0..65535, unique
     try v.validateOverrideId(d, name);
+    v.rejectIOAttrsOnModuleDecl(d.attributes, "override");
 
     try v.setSymbolType(d.name, decl_type);
 }
@@ -967,6 +968,7 @@ fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
     }
 
     try v.validateBindingAttributes(d, name, r);
+    v.rejectIOAttrsOnModuleDecl(d.attributes, "var");
 
     try v.setSymbolType(d.name, decl_type);
 
@@ -1407,6 +1409,8 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
         try v.validateParameterAttributes(param);
     }
 
+    v.validateReturnAttributes(fn_decl);
+
     // Register function type in symbol_types so calls can resolve it
     if (fn_decl.name.isValid()) {
         const fn_type = Types.functionType(v.arena, param_types.items, v.return_type) catch null;
@@ -1462,6 +1466,35 @@ fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) Allocator.Er
                     else => {},
                 }
             }
+        }
+    }
+}
+
+/// WGSL spec §11.1 (`builtin`) / §11.2 (`location`): both attributes are only
+/// valid on entry-point function parameters, entry-point function return
+/// types, or struct members. This helper catches the non-entry *return*
+/// site; parameters go through `validateParameterAttributes` and entry-point
+/// returns are fully validated by `validateEntryPointIO`.
+fn validateReturnAttributes(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
+    if (v.current_stage != .none) return;
+    for (fn_decl.return_attr.items) |attr| {
+        if (std.mem.eql(u8, attr.name, "location")) {
+            v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@location is only valid on entry point function return types");
+        } else if (std.mem.eql(u8, attr.name, "builtin")) {
+            v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@builtin is only valid on entry point function return types");
+        }
+    }
+}
+
+/// WGSL spec §11.1 (`builtin`) / §11.2 (`location`): these attributes must
+/// not appear on module-scope declarations. `site` is inserted into the
+/// diagnostic (e.g. `"var"`, `"override"`).
+fn rejectIOAttrsOnModuleDecl(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attribute), site: []const u8) void {
+    for (attrs.items) |attr| {
+        if (std.mem.eql(u8, attr.name, "location")) {
+            v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, v.fmtError("@location is not valid on module-scope {s} declarations", .{site}));
+        } else if (std.mem.eql(u8, attr.name, "builtin")) {
+            v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, v.fmtError("@builtin is not valid on module-scope {s} declarations", .{site}));
         }
     }
 }

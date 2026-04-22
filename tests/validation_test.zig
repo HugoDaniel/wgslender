@@ -739,6 +739,54 @@ test "validation: errors/declarations/const_assert_non_bool" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/const_assert_non_bool");
 }
 
+test "validation: errors/declarations/builtin_on_module_private_var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/builtin_on_module_private_var");
+}
+
+test "validation: errors/declarations/builtin_on_module_workgroup_var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/builtin_on_module_workgroup_var");
+}
+
+test "validation: errors/declarations/builtin_on_module_storage_var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/builtin_on_module_storage_var");
+}
+
+test "validation: errors/declarations/location_on_module_private_var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/location_on_module_private_var");
+}
+
+test "validation: errors/declarations/location_on_module_uniform_var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/location_on_module_uniform_var");
+}
+
+test "validation: errors/declarations/builtin_on_override" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/builtin_on_override");
+}
+
+test "validation: errors/declarations/location_on_override" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/location_on_override");
+}
+
+test "validation: errors/declarations/builtin_unknown_name_on_module_var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/builtin_unknown_name_on_module_var");
+}
+
 // --- errors/operations/ (11 files) ---
 
 test "validation: errors/operations/mul_incompatible_types" {
@@ -1155,6 +1203,42 @@ test "validation: errors/io/builtin_on_non_entry_function_param" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_on_non_entry_function_param");
+}
+
+test "validation: errors/io/builtin_position_on_non_entry_function_return" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_position_on_non_entry_function_return");
+}
+
+test "validation: errors/io/builtin_frag_depth_on_non_entry_function_return" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_frag_depth_on_non_entry_function_return");
+}
+
+test "validation: errors/io/builtin_vertex_index_on_non_entry_function_return" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_vertex_index_on_non_entry_function_return");
+}
+
+test "validation: errors/io/location_on_non_entry_function_return" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_on_non_entry_function_return");
+}
+
+test "validation: errors/io/location_and_builtin_on_non_entry_function_return" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_and_builtin_on_non_entry_function_return");
+}
+
+test "validation: errors/io/builtin_on_helper_called_from_entry_point" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/builtin_on_helper_called_from_entry_point");
 }
 
 test "validation: errors/io/location_negative" {
