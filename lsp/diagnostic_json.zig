@@ -104,3 +104,147 @@ inline fn appendUint(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Alloca
     const s = std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch return;
     buf.appendSlice(allocator, s) catch {};
 }
+
+// ==========================================================================
+// Tests
+// ==========================================================================
+
+const testing = std.testing;
+
+fn renderAndParse(
+    arena: *std.heap.ArenaAllocator,
+    uri: []const u8,
+    diags: []const Handler.LspDiagnostic,
+) !std.json.Value {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendDiagnosticItems(&buf, testing.allocator, uri, diags);
+    defer buf.deinit(testing.allocator);
+    return std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), buf.items, .{});
+}
+
+test "appendDiagnosticItems: empty slice emits empty array" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const parsed = try renderAndParse(&arena, "test://a.wgsl", &.{});
+    try testing.expect(parsed == .array);
+    try testing.expectEqual(@as(usize, 0), parsed.array.items.len);
+}
+
+test "appendDiagnosticItems: required fields present, optional fields omitted when empty" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const diags = [_]Handler.LspDiagnostic{
+        .{
+            .range = .{ .start = .{ .line = 1, .character = 2 }, .end = .{ .line = 1, .character = 4 } },
+            .severity = .warning,
+            .message = "w",
+        },
+    };
+    const parsed = try renderAndParse(&arena, "test://a.wgsl", &diags);
+
+    try testing.expectEqual(@as(usize, 1), parsed.array.items.len);
+    const d = parsed.array.items[0];
+    try testing.expectEqualStrings("wgslender", d.object.get("source").?.string);
+    try testing.expectEqual(@as(i64, 2), d.object.get("severity").?.integer);
+    try testing.expectEqualStrings("w", d.object.get("message").?.string);
+    try testing.expectEqual(@as(i64, 1), d.object.get("range").?.object.get("start").?.object.get("line").?.integer);
+
+    // No source data for these → keys must be absent (pulled-diagnostic
+    // clients check for presence, not null).
+    try testing.expect(d.object.get("code") == null);
+    try testing.expect(d.object.get("codeDescription") == null);
+    try testing.expect(d.object.get("relatedInformation") == null);
+    try testing.expect(d.object.get("tags") == null);
+}
+
+test "appendDiagnosticItems: code + codeDescription round-trip" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const diags = [_]Handler.LspDiagnostic{
+        .{
+            .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 1 } },
+            .severity = .@"error",
+            .message = "nope",
+            .code = "E0200",
+            .spec_url = "https://www.w3.org/TR/WGSL/#types",
+        },
+    };
+    const parsed = try renderAndParse(&arena, "test://a.wgsl", &diags);
+    const d = parsed.array.items[0];
+
+    try testing.expectEqualStrings("E0200", d.object.get("code").?.string);
+    try testing.expectEqualStrings(
+        "https://www.w3.org/TR/WGSL/#types",
+        d.object.get("codeDescription").?.object.get("href").?.string,
+    );
+}
+
+test "appendDiagnosticItems: relatedInformation attaches the provided URI" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const related = [_]Handler.LspRelatedInfo{
+        .{
+            .range = .{ .start = .{ .line = 3, .character = 4 }, .end = .{ .line = 3, .character = 5 } },
+            .message = "first declared here",
+        },
+    };
+    const diags = [_]Handler.LspDiagnostic{
+        .{
+            .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 1 } },
+            .severity = .@"error",
+            .message = "dup",
+            .related = &related,
+        },
+    };
+    const parsed = try renderAndParse(&arena, "test://related.wgsl", &diags);
+    const ri = parsed.array.items[0].object.get("relatedInformation").?.array.items[0];
+    try testing.expectEqualStrings("test://related.wgsl", ri.object.get("location").?.object.get("uri").?.string);
+    try testing.expectEqualStrings("first declared here", ri.object.get("message").?.string);
+    try testing.expectEqual(
+        @as(i64, 3),
+        ri.object.get("location").?.object.get("range").?.object.get("start").?.object.get("line").?.integer,
+    );
+}
+
+test "appendDiagnosticItems: tags are serialized as integers" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const tags = [_]Handler.DiagnosticTag{ .unnecessary, .deprecated };
+    const diags = [_]Handler.LspDiagnostic{
+        .{
+            .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 1 } },
+            .severity = .hint,
+            .message = "dead",
+            .tags = &tags,
+        },
+    };
+    const parsed = try renderAndParse(&arena, "test://tags.wgsl", &diags);
+    const arr = parsed.array.items[0].object.get("tags").?.array.items;
+    try testing.expectEqual(@as(usize, 2), arr.len);
+    try testing.expectEqual(@as(i64, 1), arr[0].integer);
+    try testing.expectEqual(@as(i64, 2), arr[1].integer);
+}
+
+test "appendDiagnosticItems: message escapes JSON specials" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const diags = [_]Handler.LspDiagnostic{
+        .{
+            .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 1 } },
+            .severity = .@"error",
+            .message = "quotes \"x\" and a\\slash and a\nnewline",
+        },
+    };
+    const parsed = try renderAndParse(&arena, "test://a.wgsl", &diags);
+    // The parsed string must round-trip to the original unescaped bytes.
+    try testing.expectEqualStrings(
+        "quotes \"x\" and a\\slash and a\nnewline",
+        parsed.array.items[0].object.get("message").?.string,
+    );
+}

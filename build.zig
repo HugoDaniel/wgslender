@@ -301,6 +301,18 @@ pub fn build(b: *std.Build) void {
         .{ .name = "bridge", .module = bridge_mod },
         .{ .name = "lsp", .module = lsp_mod },
     });
+    // End-to-end tests for the pull-mode `textDocument/diagnostic`
+    // response (LSP 3.17) — drives `bridge.buildPullReport` + `lsp.writeResponse`.
+    _ = addTestStep(b, test_step, "tests/lsp_pull_diagnostic_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "bridge", .module = bridge_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+    });
+    // Unit tests for the shared WASM diagnostic-items JSON encoder.
+    // Tested as its own root module so `@import("Handler.zig")` resolves
+    // locally (matches how `lsp/wasm.zig` consumes it at build time).
+    _ = addTestStep(b, test_step, "lsp/diagnostic_json.zig", target, optimize, &.{w});
     // LSP analyze perf smoke: records Lexer.tokenize invocations
     // across a 200-keystroke burst against bridge.wgsl. Enforces a
     // generous upper bound so a reintroduced tokenize path in

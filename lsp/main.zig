@@ -240,41 +240,7 @@ const NativeServer = struct {
         arena: std.mem.Allocator,
         params: lsp.types.document_diagnostic.Params,
     ) !lsp.types.document_diagnostic.Report {
-        const uri = params.textDocument.uri;
-        const empty: lsp.types.document_diagnostic.Report = .{
-            .related_full_document_diagnostic_report = .{
-                .items = &.{},
-                .resultId = null,
-                .relatedDocuments = null,
-            },
-        };
-        if (!self.handler.settings.diagnostics_enabled) return empty;
-        if (self.handler.getDocumentSource(uri) == null) return empty;
-
-        const current_id: ?[]const u8 = if (self.handler.currentResultId(uri)) |v|
-            try std.fmt.allocPrint(arena, "{d}", .{v})
-        else
-            null;
-
-        if (current_id) |cur| if (params.previousResultId) |prev|
-            if (std.mem.eql(u8, prev, cur)) return .{
-                .related_unchanged_document_diagnostic_report = .{
-                    .resultId = cur,
-                    .relatedDocuments = null,
-                },
-            };
-
-        const handler_diags = try self.handler.validateDocumentFull(uri);
-        defer Handler.freeDiagnostics(self.handler.gpa, handler_diags);
-
-        const items = try bridge.toLspKitDiagnosticsInto(arena, handler_diags, uri);
-        return .{
-            .related_full_document_diagnostic_report = .{
-                .items = items,
-                .resultId = current_id,
-                .relatedDocuments = null,
-            },
-        };
+        return bridge.buildPullReport(&self.handler, arena, params.textDocument.uri, params.previousResultId);
     }
 
     /// Handles `workspace/didChangeConfiguration`. Per LSP issue #676 the
@@ -1019,3 +985,4 @@ const NativeServer = struct {
         }
     }
 };
+

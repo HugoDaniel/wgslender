@@ -101,6 +101,54 @@ pub fn toLspKitDiagnostics(
     };
 }
 
+/// Pure pipeline behind the pull-mode `textDocument/diagnostic` handler.
+/// Exposed here so tests drive the exact production path (settings gate
+/// → document existence → `currentResultId` short-circuit →
+/// `validateDocumentFull` → bridge) without spinning up a transport.
+/// Allocations land on the caller's arena — shape-compatible with the
+/// per-request arena `lsp.basic_server` threads through to the handler.
+pub fn buildPullReport(
+    h: *Handler,
+    arena: std.mem.Allocator,
+    uri: []const u8,
+    previous_result_id: ?[]const u8,
+) !lsp.types.document_diagnostic.Report {
+    const empty: lsp.types.document_diagnostic.Report = .{
+        .related_full_document_diagnostic_report = .{
+            .items = &.{},
+            .resultId = null,
+            .relatedDocuments = null,
+        },
+    };
+    if (!h.settings.diagnostics_enabled) return empty;
+    if (h.getDocumentSource(uri) == null) return empty;
+
+    const current_id: ?[]const u8 = if (h.currentResultId(uri)) |v|
+        try std.fmt.allocPrint(arena, "{d}", .{v})
+    else
+        null;
+
+    if (current_id) |cur| if (previous_result_id) |prev|
+        if (std.mem.eql(u8, prev, cur)) return .{
+            .related_unchanged_document_diagnostic_report = .{
+                .resultId = cur,
+                .relatedDocuments = null,
+            },
+        };
+
+    const handler_diags = try h.validateDocumentFull(uri);
+    defer Handler.freeDiagnostics(h.gpa, handler_diags);
+
+    const items = try toLspKitDiagnosticsInto(arena, handler_diags, uri);
+    return .{
+        .related_full_document_diagnostic_report = .{
+            .items = items,
+            .resultId = current_id,
+            .relatedDocuments = null,
+        },
+    };
+}
+
 /// Bridge variant for the pull-diagnostic handler. Allocates everything
 /// (slice + per-item relatedInformation / tags + duplicated strings) on
 /// the caller's arena. Unlike `toLspKitDiagnostics`, every `[]const u8`
