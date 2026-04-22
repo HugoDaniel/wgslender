@@ -572,10 +572,45 @@ pub const Texture = struct {
     texel_format: []const u8, // For storage textures.
     access_mode: Ast.AccessMode,
 
+    /// Renders the WGSL surface syntax for this texture type:
+    /// `texture_2d<f32>`, `texture_storage_2d<rgba8unorm, write>`,
+    /// `texture_depth_cube`, etc. Output goes into a small rotating
+    /// static buffer pool (4 slots) so multiple `string()` calls in a
+    /// single format expression don't overwrite each other. Not thread-
+    /// safe — wgslender processes each document on one thread.
     pub fn string(self: *const Texture) []const u8 {
-        _ = self;
-        // Full formatting deferred to printer.
-        return "texture";
+        const S = struct {
+            var slots: [4][96]u8 = undefined;
+            var next: usize = 0;
+        };
+        const buf = &S.slots[S.next];
+        S.next = (S.next + 1) % S.slots.len;
+        return formatInto(self, buf) catch "texture";
+    }
+
+    fn formatInto(self: *const Texture, buf: []u8) std.fmt.BufPrintError![]const u8 {
+        const dim = self.dimension.string();
+        return switch (self.kind) {
+            .sampled => std.fmt.bufPrint(buf, "texture_{s}<{s}>", .{
+                dim,
+                if (self.sampled_type) |s| s.string() else "f32",
+            }),
+            .multisampled => std.fmt.bufPrint(buf, "texture_multisampled_{s}<{s}>", .{
+                dim,
+                if (self.sampled_type) |s| s.string() else "f32",
+            }),
+            .storage => if (self.access_mode == .none)
+                std.fmt.bufPrint(buf, "texture_storage_{s}<{s}>", .{ dim, self.texel_format })
+            else
+                std.fmt.bufPrint(buf, "texture_storage_{s}<{s}, {s}>", .{
+                    dim,
+                    self.texel_format,
+                    self.access_mode.string(),
+                }),
+            .depth => std.fmt.bufPrint(buf, "texture_depth_{s}", .{dim}),
+            .depth_multisampled => std.fmt.bufPrint(buf, "texture_depth_multisampled_{s}", .{dim}),
+            .external => "texture_external",
+        };
     }
 
     fn eqlTexture(self: *const Texture, other: *const Texture) bool {
@@ -1428,6 +1463,92 @@ test "types: texelFormatToScalar maps formats correctly" {
 
     // Empty format defaults to f32.
     try std.testing.expectEqual(ScalarKind.f32, texelFormatToScalar("").kind);
+}
+
+test "types: Texture.string renders WGSL surface syntax" {
+    // Sampled textures print element type in angle brackets.
+    const sampled_2d_f32 = Texture{
+        .kind = .sampled,
+        .dimension = .@"2d",
+        .sampled_type = scalar_f32_ptr,
+        .texel_format = "",
+        .access_mode = .none,
+    };
+    try std.testing.expectEqualStrings("texture_2d<f32>", sampled_2d_f32.string());
+
+    const sampled_cube_i32 = Texture{
+        .kind = .sampled,
+        .dimension = .cube,
+        .sampled_type = scalar_i32_ptr,
+        .texel_format = "",
+        .access_mode = .none,
+    };
+    try std.testing.expectEqualStrings("texture_cube<i32>", sampled_cube_i32.string());
+
+    // Multisampled.
+    const ms_2d_u32 = Texture{
+        .kind = .multisampled,
+        .dimension = .@"2d",
+        .sampled_type = scalar_u32_ptr,
+        .texel_format = "",
+        .access_mode = .none,
+    };
+    try std.testing.expectEqualStrings("texture_multisampled_2d<u32>", ms_2d_u32.string());
+
+    // Storage textures include texel format and access mode.
+    const storage_2d = Texture{
+        .kind = .storage,
+        .dimension = .@"2d",
+        .sampled_type = null,
+        .texel_format = "rgba8unorm",
+        .access_mode = .write,
+    };
+    try std.testing.expectEqualStrings("texture_storage_2d<rgba8unorm, write>", storage_2d.string());
+
+    const storage_3d_rw = Texture{
+        .kind = .storage,
+        .dimension = .@"3d",
+        .sampled_type = null,
+        .texel_format = "r32uint",
+        .access_mode = .read_write,
+    };
+    try std.testing.expectEqualStrings("texture_storage_3d<r32uint, read_write>", storage_3d_rw.string());
+
+    // Depth textures have neither element nor format.
+    const depth_cube = Texture{
+        .kind = .depth,
+        .dimension = .cube,
+        .sampled_type = null,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    try std.testing.expectEqualStrings("texture_depth_cube", depth_cube.string());
+
+    const depth_ms_2d = Texture{
+        .kind = .depth_multisampled,
+        .dimension = .@"2d",
+        .sampled_type = null,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    try std.testing.expectEqualStrings("texture_depth_multisampled_2d", depth_ms_2d.string());
+
+    // External textures are parameterless.
+    const ext = Texture{
+        .kind = .external,
+        .dimension = .@"2d",
+        .sampled_type = null,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    try std.testing.expectEqualStrings("texture_external", ext.string());
+
+    // Rotating buffer: two concurrent calls in one expression must both
+    // survive long enough to compare.
+    const a = sampled_2d_f32.string();
+    const b = storage_2d.string();
+    try std.testing.expectEqualStrings("texture_2d<f32>", a);
+    try std.testing.expectEqualStrings("texture_storage_2d<rgba8unorm, write>", b);
 }
 
 test "types: canConvertTo pointer compatibility" {
