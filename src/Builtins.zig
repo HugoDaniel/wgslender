@@ -798,6 +798,10 @@ const vec2_f32_singleton = Types.Vector{ .width = 2, .element = Types.scalar_f32
 
 const vec2_f16_singleton = Types.Vector{ .width = 2, .element = Types.scalar_f16_ptr };
 const vec4_f16_singleton = Types.Vector{ .width = 4, .element = Types.scalar_f16_ptr };
+const vec2_i32_singleton = Types.Vector{ .width = 2, .element = Types.scalar_i32_ptr };
+const vec3_i32_singleton = Types.Vector{ .width = 3, .element = Types.scalar_i32_ptr };
+const vec2_u32_singleton = Types.Vector{ .width = 2, .element = Types.scalar_u32_ptr };
+const vec3_u32_singleton = Types.Vector{ .width = 3, .element = Types.scalar_u32_ptr };
 
 const vec4_i32_type: Types.Type = .{ .vector = &vec4_i32_singleton };
 const vec4_u32_type: Types.Type = .{ .vector = &vec4_u32_singleton };
@@ -805,6 +809,10 @@ const vec4_f32_type: Types.Type = .{ .vector = &vec4_f32_singleton };
 const vec2_f32_type: Types.Type = .{ .vector = &vec2_f32_singleton };
 pub const vec2_f16_type: Types.Type = .{ .vector = &vec2_f16_singleton };
 pub const vec4_f16_type: Types.Type = .{ .vector = &vec4_f16_singleton };
+const vec2_i32_type: Types.Type = .{ .vector = &vec2_i32_singleton };
+const vec3_i32_type: Types.Type = .{ .vector = &vec3_i32_singleton };
+const vec2_u32_type: Types.Type = .{ .vector = &vec2_u32_singleton };
+const vec3_u32_type: Types.Type = .{ .vector = &vec3_u32_singleton };
 
 const unpack4xI8_sigs = &[_]O.OverloadSig{
     .{
@@ -949,6 +957,304 @@ const transpose_sigs = &[_]O.OverloadSig{
         .params = &.{.{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } }},
         .result = .{ .pattern = .{ .bound_matrix_transposed = .{ .elem_idx = 0, .cols_idx = 1, .rows_idx = 2 } } },
     },
+};
+
+// =========================================================================
+// Phase 3c — Texture overloads (§17.6.x)
+// =========================================================================
+//
+// Declarative signatures for textureLoad, textureStore, textureDimensions,
+// textureNumLayers, textureNumLevels, and textureNumSamples. Sampling /
+// gather families (textureSample*, textureGather*, textureSampleCompare*,
+// textureSampleBaseClampToEdge) are deferred to a later phase — their
+// offset-arg optionality balloons the sig count and they bring no new
+// engine demands beyond what Phase 3c already proves out.
+//
+// Convention for ancillary integer args (coord, level, array_index,
+// sample_index): we don't bind their scalar kind to a tparam slot; we
+// only want family filtering (.integer accepts i32, u32, abstract_int).
+// The `no_tparam` sentinel for `tparam_scalar.idx` / `tparam_vector.elem_idx`
+// turns bindScalar into a no-op that still does the family check.
+//
+// Slot 0 always holds the texture's element scalar (T in texture_kind_dim<T>
+// for sampled/multisampled, or the channel type derived from texel_format
+// for storage). Depth/external textures have no element, so their sigs
+// set `elem_idx = no_tparam` on the texture pattern and use a fixed result.
+
+const no_tp: u8 = O.Pattern.no_tparam;
+
+/// textureLoad coordinate patterns — integer scalar/vector, family-only
+/// (no slot binding). All share the `.integer` ScalarFamily so i32, u32,
+/// and abstract_int are accepted uniformly.
+const coord_1d: O.Pattern = .{ .tparam_scalar = .{ .idx = no_tp, .family = .integer } };
+const coord_2d: O.Pattern = .{ .tparam_vector = .{ .elem_idx = no_tp, .elem_family = .integer, .n_fixed = 2 } };
+const coord_3d: O.Pattern = .{ .tparam_vector = .{ .elem_idx = no_tp, .elem_family = .integer, .n_fixed = 3 } };
+/// Ancillary integer scalar arg (level, array_index, sample_index).
+const int_scalar: O.Pattern = .{ .tparam_scalar = .{ .idx = no_tp, .family = .integer } };
+
+/// Result pattern for sampled/storage textureLoad: vec4<T> where T is
+/// bound at slot 0 by the texture pattern.
+const vec4_of_slot0: O.ResultRule = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_fixed = 4 } } };
+
+/// textureLoad (§17.6.6) — 13 overloads covering every texture kind that
+/// supports indexed loads. Coord shape + mip/sample/array-index arity is
+/// dimension-dependent.
+const textureLoad_sigs = &[_]O.OverloadSig{
+    // --- Sampled textures: vec4<T> ---
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"1d", .elem_idx = 0 } },
+            coord_1d,
+            int_scalar,
+        },
+        .result = vec4_of_slot0,
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d", .elem_idx = 0 } },
+            coord_2d,
+            int_scalar,
+        },
+        .result = vec4_of_slot0,
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d_array", .elem_idx = 0 } },
+            coord_2d,
+            int_scalar, // array_index
+            int_scalar, // level
+        },
+        .result = vec4_of_slot0,
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"3d", .elem_idx = 0 } },
+            coord_3d,
+            int_scalar,
+        },
+        .result = vec4_of_slot0,
+    },
+
+    // --- Multisampled texture: vec4<T>, sample_index instead of level ---
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .multisampled, .dimension = .@"2d", .elem_idx = 0 } },
+            coord_2d,
+            int_scalar,
+        },
+        .result = vec4_of_slot0,
+    },
+
+    // --- Depth textures: f32 (no element parameter) ---
+    .{
+        .tparam_count = 0,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .depth, .dimension = .@"2d" } },
+            coord_2d,
+            int_scalar,
+        },
+        .result = .{ .fixed = Types.F32 },
+    },
+    .{
+        .tparam_count = 0,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .depth, .dimension = .@"2d_array" } },
+            coord_2d,
+            int_scalar, // array_index
+            int_scalar, // level
+        },
+        .result = .{ .fixed = Types.F32 },
+    },
+    .{
+        .tparam_count = 0,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .depth_multisampled, .dimension = .@"2d" } },
+            coord_2d,
+            int_scalar,
+        },
+        .result = .{ .fixed = Types.F32 },
+    },
+
+    // --- External texture: vec4<f32>, no level ---
+    .{
+        .tparam_count = 0,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .external, .dimension = .@"2d" } },
+            coord_2d,
+        },
+        .result = .{ .fixed = vec4_f32_type },
+    },
+
+    // --- Storage textures: vec4<CF>, CF derived from texel_format ---
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .storage, .dimension = .@"1d", .elem_idx = 0 } },
+            coord_1d,
+        },
+        .result = vec4_of_slot0,
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .storage, .dimension = .@"2d", .elem_idx = 0 } },
+            coord_2d,
+        },
+        .result = vec4_of_slot0,
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .storage, .dimension = .@"2d_array", .elem_idx = 0 } },
+            coord_2d,
+            int_scalar, // array_index
+        },
+        .result = vec4_of_slot0,
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .storage, .dimension = .@"3d", .elem_idx = 0 } },
+            coord_3d,
+        },
+        .result = vec4_of_slot0,
+    },
+};
+
+/// Value-arg pattern for textureStore: vec4<CF> where CF = slot 0 (the
+/// texture's texel-format channel type). Uses `tparam_vector` on an
+/// already-bound slot — bindScalar's "already bound → check equality"
+/// branch enforces value.element == texture-channel.
+const store_value: O.Pattern = .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .numeric, .n_fixed = 4 } };
+
+/// textureStore (§17.6.9) — storage textures only. Returns void. The
+/// access-mode side check (`Validator.zig` — textureStore requires
+/// `write` or `read_write`) still fires pre-resolution.
+const textureStore_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .storage, .dimension = .@"1d", .elem_idx = 0 } },
+            coord_1d,
+            store_value,
+        },
+        .result = .{ .fixed = Types.Void },
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .storage, .dimension = .@"2d", .elem_idx = 0 } },
+            coord_2d,
+            store_value,
+        },
+        .result = .{ .fixed = Types.Void },
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .storage, .dimension = .@"2d_array", .elem_idx = 0 } },
+            coord_2d,
+            int_scalar, // array_index
+            store_value,
+        },
+        .result = .{ .fixed = Types.Void },
+    },
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .storage, .dimension = .@"3d", .elem_idx = 0 } },
+            coord_3d,
+            store_value,
+        },
+        .result = .{ .fixed = Types.Void },
+    },
+};
+
+/// textureDimensions (§17.6.1) — returns u32 / vec2<u32> / vec3<u32> per
+/// dimension. Level arg is permitted only on mippable textures (sampled
+/// and depth; NOT multisampled, storage, external).
+fn dimsResult(dim: Types.TextureDimension) O.ResultRule {
+    return switch (dim) {
+        .@"1d" => .{ .fixed = Types.U32 },
+        .@"3d" => .{ .fixed = vec3_u32_type },
+        .@"2d", .@"2d_array", .cube, .cube_array => .{ .fixed = vec2_u32_type },
+    };
+}
+
+const textureDimensions_sigs = &[_]O.OverloadSig{
+    // Sampled: arity 1 (no level) and arity 2 (with level).
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"1d" } }}, .result = dimsResult(.@"1d") },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"1d" } }, int_scalar }, .result = dimsResult(.@"1d") },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d" } }}, .result = dimsResult(.@"2d") },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d" } }, int_scalar }, .result = dimsResult(.@"2d") },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d_array" } }}, .result = dimsResult(.@"2d_array") },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d_array" } }, int_scalar }, .result = dimsResult(.@"2d_array") },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"3d" } }}, .result = dimsResult(.@"3d") },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"3d" } }, int_scalar }, .result = dimsResult(.@"3d") },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .cube } }}, .result = dimsResult(.cube) },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .sampled, .dimension = .cube } }, int_scalar }, .result = dimsResult(.cube) },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .cube_array } }}, .result = dimsResult(.cube_array) },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .sampled, .dimension = .cube_array } }, int_scalar }, .result = dimsResult(.cube_array) },
+
+    // Multisampled: no level arg (spec).
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .multisampled, .dimension = .@"2d" } }}, .result = dimsResult(.@"2d") },
+
+    // Depth: arity 1 and 2.
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .@"2d" } }}, .result = dimsResult(.@"2d") },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .depth, .dimension = .@"2d" } }, int_scalar }, .result = dimsResult(.@"2d") },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .@"2d_array" } }}, .result = dimsResult(.@"2d_array") },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .depth, .dimension = .@"2d_array" } }, int_scalar }, .result = dimsResult(.@"2d_array") },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .cube } }}, .result = dimsResult(.cube) },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .depth, .dimension = .cube } }, int_scalar }, .result = dimsResult(.cube) },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .cube_array } }}, .result = dimsResult(.cube_array) },
+    .{ .tparam_count = 0, .params = &.{ .{ .tparam_texture = .{ .kind = .depth, .dimension = .cube_array } }, int_scalar }, .result = dimsResult(.cube_array) },
+
+    // Depth multisampled: no level.
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth_multisampled, .dimension = .@"2d" } }}, .result = dimsResult(.@"2d") },
+
+    // Storage: no level.
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .storage, .dimension = .@"1d" } }}, .result = dimsResult(.@"1d") },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .storage, .dimension = .@"2d" } }}, .result = dimsResult(.@"2d") },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .storage, .dimension = .@"2d_array" } }}, .result = dimsResult(.@"2d_array") },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .storage, .dimension = .@"3d" } }}, .result = dimsResult(.@"3d") },
+
+    // External: no level.
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .external, .dimension = .@"2d" } }}, .result = dimsResult(.@"2d") },
+};
+
+/// textureNumLayers (§17.6.2) — array-capable textures only. Returns u32.
+const textureNumLayers_sigs = &[_]O.OverloadSig{
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d_array" } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .cube_array } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .@"2d_array" } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .cube_array } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .storage, .dimension = .@"2d_array" } }}, .result = .{ .fixed = Types.U32 } },
+};
+
+/// textureNumLevels (§17.6.3) — mippable textures only. Excludes
+/// multisampled, depth_multisampled, external, and storage per spec.
+const textureNumLevels_sigs = &[_]O.OverloadSig{
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"1d" } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d" } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d_array" } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"3d" } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .cube } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .sampled, .dimension = .cube_array } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .@"2d" } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .@"2d_array" } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .cube } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth, .dimension = .cube_array } }}, .result = .{ .fixed = Types.U32 } },
+};
+
+/// textureNumSamples (§17.6.4) — multisampled textures only. Returns u32.
+const textureNumSamples_sigs = &[_]O.OverloadSig{
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .multisampled, .dimension = .@"2d" } }}, .result = .{ .fixed = Types.U32 } },
+    .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth_multisampled, .dimension = .@"2d" } }}, .result = .{ .fixed = Types.U32 } },
 };
 
 // =========================================================================
@@ -1359,6 +1665,16 @@ const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
     // Packed dot product (§17.5.20)
     .{ "dot4I8Packed", dot4I8Packed_sigs },
     .{ "dot4U8Packed", dot4U8Packed_sigs },
+
+    // Texture builtins (§17.6.x) — Phase 3c. Sampling / gather families
+    // still ride the legacy `inferTextureReturnType` path; migrating them
+    // is a follow-up (the engine extension lands here).
+    .{ "textureLoad", textureLoad_sigs },
+    .{ "textureStore", textureStore_sigs },
+    .{ "textureDimensions", textureDimensions_sigs },
+    .{ "textureNumLayers", textureNumLayers_sigs },
+    .{ "textureNumLevels", textureNumLevels_sigs },
+    .{ "textureNumSamples", textureNumSamples_sigs },
 
     // Synchronization (§17.11)
     .{ "workgroupUniformLoad", wg_uniform_load_sigs },

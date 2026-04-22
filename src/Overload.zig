@@ -121,14 +121,39 @@ pub const Pattern = union(enum) {
         elem_idx: u8,
     },
 
+    /// A texture type with fixed kind + dimension, optionally binding
+    /// the sampled/storage element scalar to a tparam slot. Always a
+    /// parameter pattern — WGSL has no builtin that returns a texture.
+    ///
+    /// Element-binding source by kind:
+    ///   sampled / multisampled → `t.sampled_type.?.kind`
+    ///   storage → `Types.texelFormatToScalar(t.texel_format).kind`
+    ///   depth / depth_multisampled / external → no element; must set
+    ///   `elem_idx = no_tparam`.
+    ///
+    /// Access mode is intentionally NOT constrained here. The existing
+    /// side-validations in `Validator.checkCallExpr` fire before overload
+    /// resolution and produce better diagnostics than pattern mismatch
+    /// ("needs write, got read" vs "no matching overload"). Keeping
+    /// patterns access-mode-agnostic also collapses storage sig counts.
+    tparam_texture: struct {
+        kind: Types.TextureKind,
+        dimension: Types.TextureDimension,
+        elem_idx: u8 = no_tparam,
+        elem_family: ScalarFamily = .numeric,
+    },
+
     /// Re-expansion of a previously bound scalar tparam. Used in result
     /// rules (e.g. atomic ops return T, a pattern that says "same scalar as
     /// param 0's bound T").
     bound_scalar: u8,
 
-    /// Re-expansion of a bound elem_tparam as vecN, where N is bound.
-    /// Not used in Phase 1 params (only in result rules for frexp.exp).
-    bound_vector: struct { elem_idx: u8, n_idx: u8 },
+    /// Re-expansion of a bound elem_tparam as vecN. Width is taken from
+    /// `n_fixed` if non-zero; otherwise from the slot at `n_idx`. Phase 1
+    /// used this for `frexp.exp` (width bound via slot). Phase 3c adds
+    /// `n_fixed` so `textureLoad → vec4<T>` can express the literal 4
+    /// directly without a synthetic width slot.
+    bound_vector: struct { elem_idx: u8, n_idx: u8 = no_tparam, n_fixed: u8 = 0 },
 
     /// Re-expansion of a bound matrix but with cols/rows swapped (transpose).
     bound_matrix_transposed: struct { elem_idx: u8, cols_idx: u8, rows_idx: u8 },
@@ -359,6 +384,29 @@ fn unifyArg(p: *const Pattern, arg: Types.Type, bindings: *[max_tparams]Binding)
             }
             return 0;
         },
+        .tparam_texture => |tt| {
+            if (a != .texture) return error.Mismatch;
+            const t = a.texture;
+            if (t.kind != tt.kind) return error.Mismatch;
+            if (t.dimension != tt.dimension) return error.Mismatch;
+            if (tt.elem_idx == Pattern.no_tparam) return 0;
+            // Extract the element scalar. Depth / depth_multisampled /
+            // external have no element, so a pattern binding elem_idx
+            // against them is a sig-author error — reject defensively.
+            const elem_kind: Types.ScalarKind = switch (tt.kind) {
+                .sampled, .multisampled => blk: {
+                    const st = t.sampled_type orelse return error.Mismatch;
+                    break :blk st.kind;
+                },
+                .storage => blk: {
+                    if (t.texel_format.len == 0) return error.Mismatch;
+                    break :blk Types.texelFormatToScalar(t.texel_format).kind;
+                },
+                .depth, .depth_multisampled, .external => return error.Mismatch,
+            };
+            if (!tt.elem_family.accepts(elem_kind)) return error.Mismatch;
+            return try bindScalar(bindings, tt.elem_idx, elem_kind, tt.elem_family);
+        },
         .bound_scalar => |idx| {
             // `bound_scalar` in a param position means "the scalar T already
             // bound by an earlier param" — arg must convert to that scalar.
@@ -529,10 +577,16 @@ pub fn buildPatternType(
         },
         .bound_vector => |bv| {
             const eb = bindings[bv.elem_idx];
-            const wb = bindings[bv.n_idx];
-            if (!eb.bound or !wb.bound) return null;
+            if (!eb.bound) return null;
+            const width: u8 = if (bv.n_fixed != 0)
+                bv.n_fixed
+            else blk: {
+                const wb = bindings[bv.n_idx];
+                if (!wb.bound) return null;
+                break :blk wb.width.?;
+            };
             const v = try arena.create(Types.Vector);
-            v.* = .{ .width = wb.width.?, .element = kindPtr(eb.scalar_kind.?) };
+            v.* = .{ .width = width, .element = kindPtr(eb.scalar_kind.?) };
             return .{ .vector = v };
         },
         .bound_matrix_transposed => |bm| {
@@ -545,8 +599,9 @@ pub fn buildPatternType(
             m.* = .{ .cols = rb.width.?, .rows = cb.width.?, .element = kindPtr(eb.scalar_kind.?) };
             return .{ .matrix = m };
         },
-        .tparam_ptr_atomic, .tparam_ptr => {
-            // Not valid as result patterns in Phase 1.
+        .tparam_ptr_atomic, .tparam_ptr, .tparam_texture => {
+            // Not valid as result patterns: WGSL has no builtin that
+            // returns a pointer, atomic, or texture.
             return null;
         },
     }
@@ -841,4 +896,246 @@ test "resolveSeeded: empty seed is equivalent to resolve()" {
     try std.testing.expect(plain == .ok);
     try std.testing.expectEqual(plain.ok.sig_index, seeded.ok.sig_index);
     try std.testing.expectEqual(plain.ok.bindings[0].scalar_kind.?, seeded.ok.bindings[0].scalar_kind.?);
+}
+
+// -------------------------------------------------------------------------
+// Phase 3c — tparam_texture + bound_vector.n_fixed
+// -------------------------------------------------------------------------
+
+test "tparam_texture: binds sampled element from texture_2d<f32>" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_texture = .{
+            .kind = .sampled,
+            .dimension = .@"2d",
+            .elem_idx = 0,
+            .elem_family = .numeric,
+        } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_fixed = 4 } } },
+    }};
+    const tex = Types.Texture{
+        .kind = .sampled,
+        .dimension = .@"2d",
+        .sampled_type = Types.scalar_f32_ptr,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .texture = &tex }});
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(Types.ScalarKind.f32, r.ok.bindings[0].scalar_kind.?);
+}
+
+test "tparam_texture: binds integer element from texture_2d<i32>" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_texture = .{
+            .kind = .sampled,
+            .dimension = .@"2d",
+            .elem_idx = 0,
+            .elem_family = .numeric,
+        } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_fixed = 4 } } },
+    }};
+    const tex = Types.Texture{
+        .kind = .sampled,
+        .dimension = .@"2d",
+        .sampled_type = Types.scalar_i32_ptr,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .texture = &tex }});
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(Types.ScalarKind.i32, r.ok.bindings[0].scalar_kind.?);
+}
+
+test "tparam_texture: storage element comes from texel_format" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_texture = .{
+            .kind = .storage,
+            .dimension = .@"2d",
+            .elem_idx = 0,
+            .elem_family = .numeric,
+        } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_fixed = 4 } } },
+    }};
+
+    const unorm = Types.Texture{
+        .kind = .storage,
+        .dimension = .@"2d",
+        .sampled_type = null,
+        .texel_format = "rgba8unorm",
+        .access_mode = .read,
+    };
+    const r_unorm = resolve(&sigs, &[_]?Types.Type{.{ .texture = &unorm }});
+    try std.testing.expect(r_unorm == .ok);
+    try std.testing.expectEqual(Types.ScalarKind.f32, r_unorm.ok.bindings[0].scalar_kind.?);
+
+    const sint = Types.Texture{
+        .kind = .storage,
+        .dimension = .@"2d",
+        .sampled_type = null,
+        .texel_format = "rg32sint",
+        .access_mode = .read,
+    };
+    const r_sint = resolve(&sigs, &[_]?Types.Type{.{ .texture = &sint }});
+    try std.testing.expect(r_sint == .ok);
+    try std.testing.expectEqual(Types.ScalarKind.i32, r_sint.ok.bindings[0].scalar_kind.?);
+
+    const uint = Types.Texture{
+        .kind = .storage,
+        .dimension = .@"2d",
+        .sampled_type = null,
+        .texel_format = "r32uint",
+        .access_mode = .read_write,
+    };
+    const r_uint = resolve(&sigs, &[_]?Types.Type{.{ .texture = &uint }});
+    try std.testing.expect(r_uint == .ok);
+    try std.testing.expectEqual(Types.ScalarKind.u32, r_uint.ok.bindings[0].scalar_kind.?);
+}
+
+test "tparam_texture: rejects wrong kind (storage pattern, sampled arg)" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_texture = .{
+            .kind = .storage,
+            .dimension = .@"2d",
+            .elem_idx = 0,
+            .elem_family = .numeric,
+        } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_fixed = 4 } } },
+    }};
+    const tex = Types.Texture{
+        .kind = .sampled,
+        .dimension = .@"2d",
+        .sampled_type = Types.scalar_f32_ptr,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .texture = &tex }});
+    try std.testing.expect(r == .err);
+    try std.testing.expectEqual(ResolveError.no_matching_overload, r.err.kind);
+}
+
+test "tparam_texture: rejects wrong dimension (2d pattern, 3d arg)" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_texture = .{
+            .kind = .sampled,
+            .dimension = .@"2d",
+            .elem_idx = 0,
+            .elem_family = .numeric,
+        } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_fixed = 4 } } },
+    }};
+    const tex = Types.Texture{
+        .kind = .sampled,
+        .dimension = .@"3d",
+        .sampled_type = Types.scalar_f32_ptr,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .texture = &tex }});
+    try std.testing.expect(r == .err);
+}
+
+test "tparam_texture: elem_family.integer rejects texture_2d<f32>" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_texture = .{
+            .kind = .sampled,
+            .dimension = .@"2d",
+            .elem_idx = 0,
+            .elem_family = .integer,
+        } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_fixed = 4 } } },
+    }};
+    const tex = Types.Texture{
+        .kind = .sampled,
+        .dimension = .@"2d",
+        .sampled_type = Types.scalar_f32_ptr,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .texture = &tex }});
+    try std.testing.expect(r == .err);
+}
+
+test "tparam_texture: depth texture with elem_idx=no_tparam accepts" {
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 0,
+        .params = &.{.{ .tparam_texture = .{
+            .kind = .depth,
+            .dimension = .@"2d",
+        } }},
+        .result = .{ .fixed = Types.F32 },
+    }};
+    const tex = Types.Texture{
+        .kind = .depth,
+        .dimension = .@"2d",
+        .sampled_type = null,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .texture = &tex }});
+    try std.testing.expect(r == .ok);
+}
+
+test "tparam_texture: unwraps reference<handle, texture, read>" {
+    // Module-scope `var<handle>` textures surface as a reference to the
+    // texture type. The solver's load rule should unwrap this the same
+    // way it does for memory-backed var declarations.
+    const sigs = [_]OverloadSig{.{
+        .tparam_count = 1,
+        .params = &.{.{ .tparam_texture = .{
+            .kind = .sampled,
+            .dimension = .@"2d",
+            .elem_idx = 0,
+            .elem_family = .numeric,
+        } }},
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_fixed = 4 } } },
+    }};
+    const tex = Types.Texture{
+        .kind = .sampled,
+        .dimension = .@"2d",
+        .sampled_type = Types.scalar_f32_ptr,
+        .texel_format = "",
+        .access_mode = .read,
+    };
+    const ref = Types.Reference{
+        .address_space = .handle,
+        .element = .{ .texture = &tex },
+        .access_mode = .read,
+    };
+    const r = resolve(&sigs, &[_]?Types.Type{.{ .reference = &ref }});
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(Types.ScalarKind.f32, r.ok.bindings[0].scalar_kind.?);
+}
+
+test "bound_vector.n_fixed: materializes vec4 from bound element" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    var bindings: [max_tparams]Binding = @splat(.{});
+    bindings[0] = .{ .bound = true, .scalar_kind = .i32 };
+
+    const pat: Pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_fixed = 4 } };
+    const t = try buildPatternType(arena_state.allocator(), pat, &bindings);
+    try std.testing.expect(t != null);
+    try std.testing.expect(t.? == .vector);
+    try std.testing.expectEqual(@as(u8, 4), t.?.vector.width);
+    try std.testing.expectEqual(Types.ScalarKind.i32, t.?.vector.element.kind);
+}
+
+test "buildPatternType: tparam_texture returns null (result-position unsupported)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+
+    var bindings: [max_tparams]Binding = @splat(.{});
+    const pat: Pattern = .{ .tparam_texture = .{
+        .kind = .sampled,
+        .dimension = .@"2d",
+    } };
+    const t = try buildPatternType(arena_state.allocator(), pat, &bindings);
+    try std.testing.expect(t == null);
 }

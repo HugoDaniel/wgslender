@@ -3265,16 +3265,18 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         }
     }
 
-    // Declarative overload resolution (Task #9 / Phases 1-3b). Active for
+    // Declarative overload resolution (Task #9 / Phases 1-3c). Active for
     // any builtin with populated `overloads`. The solver binds type
     // parameters from the arg types and the caller builds the return from
     // `ResultRule`. `bitcast<T>` dispatches via `checkBitcastCall` above
     // because its sig set is template-shape-selected and its slot-0/slot-1
     // bindings are seeded from the template — but the solver and
-    // signature DSL it uses are the same. Builtins without overloads
-    // (texture/atomic-store, arrayLength, barriers) still ride the legacy
-    // `inferBuiltinReturnType` fallback — the texture phase of Task #9
-    // migrates the remaining set.
+    // signature DSL it uses are the same. Phase 3c migrated textureLoad,
+    // textureStore, textureDimensions, textureNumLayers/Levels/Samples
+    // via `Pattern.tparam_texture`. Still legacy: the sampling /
+    // gather families (textureSample*, textureGather*,
+    // textureSampleCompare*, textureSampleBaseClampToEdge) and the
+    // non-texture side cases (atomicStore, arrayLength, barriers).
     if (builtin_fn.overloads.len > 0) {
         const argc = @min(e.args.items.len, 8);
         const res = Overload.resolve(builtin_fn.overloads, arg_types[0..argc]);
