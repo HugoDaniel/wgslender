@@ -100,3 +100,70 @@ pub fn toLspKitDiagnostics(
         .arena = arena,
     };
 }
+
+/// Bridge variant for the pull-diagnostic handler. Allocates everything
+/// (slice + per-item relatedInformation / tags + duplicated strings) on
+/// the caller's arena. Unlike `toLspKitDiagnostics`, every `[]const u8`
+/// is duped — the pull handler returns the `Diagnostic[]` by value to
+/// lsp-kit, which serializes after `handler_diags` has been freed. The
+/// caller must keep the arena alive until after the response is written
+/// (the per-request arena threaded by `lsp.basic_server` satisfies this).
+pub fn toLspKitDiagnosticsInto(
+    arena: std.mem.Allocator,
+    handler_diags: []const Handler.LspDiagnostic,
+    uri: []const u8,
+) ![]lsp.types.Diagnostic {
+    const diags = try arena.alloc(lsp.types.Diagnostic, handler_diags.len);
+    const uri_dup = try arena.dupe(u8, uri);
+    for (handler_diags, 0..) |d, i| {
+        var related_info: ?[]const lsp.types.Diagnostic.RelatedInformation = null;
+        if (d.related.len > 0) {
+            if (arena.alloc(lsp.types.Diagnostic.RelatedInformation, d.related.len)) |rel| {
+                for (d.related, 0..) |rel_item, ri| {
+                    rel[ri] = .{
+                        .location = .{
+                            .uri = uri_dup,
+                            .range = .{
+                                .start = .{ .line = rel_item.range.start.line, .character = rel_item.range.start.character },
+                                .end = .{ .line = rel_item.range.end.line, .character = rel_item.range.end.character },
+                            },
+                        },
+                        .message = arena.dupe(u8, rel_item.message) catch "",
+                    };
+                }
+                related_info = rel;
+            } else |_| {}
+        }
+
+        var tags_slice: ?[]const lsp.types.Diagnostic.Tag = null;
+        if (d.tags.len > 0) {
+            if (arena.alloc(lsp.types.Diagnostic.Tag, d.tags.len)) |t| {
+                for (d.tags, 0..) |tag, ti| t[ti] = switch (tag) {
+                    .unnecessary => .Unnecessary,
+                    .deprecated => .Deprecated,
+                };
+                tags_slice = t;
+            } else |_| {}
+        }
+
+        diags[i] = .{
+            .range = .{
+                .start = .{ .line = d.range.start.line, .character = d.range.start.character },
+                .end = .{ .line = d.range.end.line, .character = d.range.end.character },
+            },
+            .severity = switch (d.severity) {
+                .@"error" => .Error,
+                .warning => .Warning,
+                .information => .Information,
+                .hint => .Hint,
+            },
+            .code = if (d.code.len > 0) .{ .string = arena.dupe(u8, d.code) catch "" } else null,
+            .codeDescription = if (d.spec_url.len > 0) .{ .href = arena.dupe(u8, d.spec_url) catch "" } else null,
+            .source = "wgslender",
+            .message = arena.dupe(u8, d.message) catch "",
+            .tags = tags_slice,
+            .relatedInformation = related_info,
+        };
+    }
+    return diags;
+}

@@ -160,6 +160,8 @@ fn handleMessage(json: []const u8) void {
         handleIncomingCalls(root, id);
     } else if (eql(method, "callHierarchy/outgoingCalls")) {
         handleOutgoingCalls(root, id);
+    } else if (eql(method, "textDocument/diagnostic")) {
+        handlePullDiagnostic(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -987,6 +989,31 @@ fn emitDiagnostics(uri: []const u8) void {
     diagnostic_json.appendDiagnosticItems(&buf, wasm_allocator, uri, diags);
     appendStr(&buf, "}}");
     enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
+}
+
+/// Pull-model diagnostics (LSP 3.17 `textDocument/diagnostic`). Returns a
+/// Full report. Unknown URIs and `diagnostics.enabled=false` both answer
+/// with an empty Full report — pull clients wait for a response, so
+/// silence would hang the UI.
+fn handlePullDiagnostic(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    if (id == null) return;
+    const params = root.getPtr("params") orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
+    const td = objGet(params, "textDocument") orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
+    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
+
+    if (!handler.settings.diagnostics_enabled) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
+    if (handler.getDocumentSource(uri) == null) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
+
+    const diags = handler.validateDocumentFull(uri) catch return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
+    defer Handler.freeDiagnostics(handler.gpa, diags);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"kind\":\"full\",\"items\":");
+    diagnostic_json.appendDiagnosticItems(&buf, wasm_allocator, uri, diags);
+    appendStr(&buf, "}");
+    const body = buf.toOwnedSlice(wasm_allocator) catch return;
+    defer wasm_allocator.free(body);
+    sendResult(id, body);
 }
 
 // =========================================================================

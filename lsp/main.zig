@@ -110,6 +110,12 @@ const NativeServer = struct {
                         },
                     },
                 },
+                .diagnosticProvider = .{
+                    .diagnostic_options = .{
+                        .interFileDependencies = false,
+                        .workspaceDiagnostics = false,
+                    },
+                },
             },
         };
     }
@@ -215,6 +221,43 @@ const NativeServer = struct {
         const uri = notification.textDocument.uri;
         self.handler.handleDidSave(uri);
         self.publishDiagnostics(uri);
+    }
+
+    /// Pull-model diagnostics (LSP 3.17 `textDocument/diagnostic`).
+    /// Complements the push model (`publishDiagnostics` on didOpen/didChange/
+    /// didSave). Clients that advertise diagnostic pull support will send this
+    /// request on open + on any event the client deems relevant (focus, save);
+    /// we respond with a Full report built from the same
+    /// `validateDocumentFull` path the push notification uses. Unknown URIs
+    /// and `diagnostics.enabled=false` both return an empty Full report —
+    /// pull clients wait for a response, so silence would hang the UI.
+    pub fn @"textDocument/diagnostic"(
+        self: *NativeServer,
+        arena: std.mem.Allocator,
+        params: lsp.types.document_diagnostic.Params,
+    ) !lsp.types.document_diagnostic.Report {
+        const uri = params.textDocument.uri;
+        const empty: lsp.types.document_diagnostic.Report = .{
+            .related_full_document_diagnostic_report = .{
+                .items = &.{},
+                .resultId = null,
+                .relatedDocuments = null,
+            },
+        };
+        if (!self.handler.settings.diagnostics_enabled) return empty;
+        if (self.handler.getDocumentSource(uri) == null) return empty;
+
+        const handler_diags = try self.handler.validateDocumentFull(uri);
+        defer Handler.freeDiagnostics(self.handler.gpa, handler_diags);
+
+        const items = try bridge.toLspKitDiagnosticsInto(arena, handler_diags, uri);
+        return .{
+            .related_full_document_diagnostic_report = .{
+                .items = items,
+                .resultId = null,
+                .relatedDocuments = null,
+            },
+        };
     }
 
     /// Handles `workspace/didChangeConfiguration`. Per LSP issue #676 the
