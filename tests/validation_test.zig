@@ -1091,6 +1091,30 @@ test "validation: errors/io/location_on_compute_input_struct_member" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/io/location_on_compute_input_struct_member");
 }
 
+test "validation: errors/io/workgroup_size_on_vertex" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/workgroup_size_on_vertex");
+}
+
+test "validation: errors/io/workgroup_size_on_fragment" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/workgroup_size_on_fragment");
+}
+
+test "validation: errors/io/workgroup_size_on_non_entry" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/workgroup_size_on_non_entry");
+}
+
+test "validation: errors/io/invariant_on_direct_return_non_position" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/io/invariant_on_direct_return_non_position");
+}
+
 test "validation: types/entry_point_vertex_inputs" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

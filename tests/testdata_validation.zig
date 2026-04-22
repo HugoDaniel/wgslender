@@ -239,6 +239,10 @@ pub const @"errors/io/location_struct" = @embedFile("testdata/validation/errors/
 pub const @"errors/io/location_bool" = @embedFile("testdata/validation/errors/io/location_bool.wgsl");
 pub const @"errors/io/location_array" = @embedFile("testdata/validation/errors/io/location_array.wgsl");
 pub const @"errors/io/location_on_compute_input_struct_member" = @embedFile("testdata/validation/errors/io/location_on_compute_input_struct_member.wgsl");
+pub const @"errors/io/workgroup_size_on_vertex" = @embedFile("testdata/validation/errors/io/workgroup_size_on_vertex.wgsl");
+pub const @"errors/io/workgroup_size_on_fragment" = @embedFile("testdata/validation/errors/io/workgroup_size_on_fragment.wgsl");
+pub const @"errors/io/workgroup_size_on_non_entry" = @embedFile("testdata/validation/errors/io/workgroup_size_on_non_entry.wgsl");
+pub const @"errors/io/invariant_on_direct_return_non_position" = @embedFile("testdata/validation/errors/io/invariant_on_direct_return_non_position.wgsl");
 
 // --- types/ entry-point I/O (valid) ---
 pub const @"types/entry_point_vertex_inputs" = @embedFile("testdata/validation/types/entry_point_vertex_inputs.wgsl");

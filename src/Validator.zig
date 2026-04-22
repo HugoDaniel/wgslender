@@ -1360,6 +1360,13 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
         }
     }
 
+    // WGSL spec §11.2.3: @workgroup_size is valid only on compute entry points.
+    for (fn_decl.attributes.items) |attr| {
+        if (std.mem.eql(u8, attr.name, "workgroup_size") and v.current_stage != .compute) {
+            v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@workgroup_size is only valid on compute entry points");
+        }
+    }
+
     // WGSL spec: function parameter count must not exceed 255
     if (fn_decl.parameters.items.len > 255) {
         v.addErrorWithCodeR(v.symbolRange(fn_decl.name), Diagnostic.Code.invalid_entry_point, v.fmtError("function '{s}' has {d} parameters, exceeding the maximum of 255", .{ v.symbolName(fn_decl.name), fn_decl.parameters.items.len }));
@@ -1646,7 +1653,7 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
             }
         } else {
             // Direct (non-struct) return: validate @builtin stage/direction + type,
-            // and @location type, attached directly to the return.
+            // @location type, plus @invariant and @interpolate (vertex-output only).
             for (fn_decl.return_attr.items) |a| {
                 if (std.mem.eql(u8, a.name, "builtin") and a.args.items.len > 0) {
                     switch (a.args.items[0]) {
@@ -1657,6 +1664,10 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
             }
             if (hasAttr(fn_decl.return_attr, "location")) {
                 v.validateLocationType(ret_type, fn_range);
+            }
+            v.validateInvariantAttr(fn_decl.return_attr, fn_range.start);
+            if (v.current_stage == .vertex) {
+                v.validateInterpolation(fn_decl.return_attr, ret_type, fn_range.start);
             }
         }
     }
