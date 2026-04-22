@@ -964,11 +964,10 @@ const transpose_sigs = &[_]O.OverloadSig{
 // =========================================================================
 //
 // Declarative signatures for textureLoad, textureStore, textureDimensions,
-// textureNumLayers, textureNumLevels, and textureNumSamples. Sampling /
-// gather families (textureSample*, textureGather*, textureSampleCompare*,
-// textureSampleBaseClampToEdge) are deferred to a later phase — their
-// offset-arg optionality balloons the sig count and they bring no new
-// engine demands beyond what Phase 3c already proves out.
+// textureNumLayers, textureNumLevels, and textureNumSamples. Phase 3d
+// extends coverage to the sampling / gather families (textureSample*,
+// textureGather*, textureSampleCompare*, textureSampleBaseClampToEdge) —
+// every texture builtin now resolves through the declarative engine.
 //
 // Convention for ancillary integer args (coord, level, array_index,
 // sample_index): we don't bind their scalar kind to a tparam slot; we
@@ -1255,6 +1254,180 @@ const textureNumLevels_sigs = &[_]O.OverloadSig{
 const textureNumSamples_sigs = &[_]O.OverloadSig{
     .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .multisampled, .dimension = .@"2d" } }}, .result = .{ .fixed = Types.U32 } },
     .{ .tparam_count = 0, .params = &.{.{ .tparam_texture = .{ .kind = .depth_multisampled, .dimension = .@"2d" } }}, .result = .{ .fixed = Types.U32 } },
+};
+
+// =========================================================================
+// Phase 3d — Sampling / gather overloads (§17.7.11–17.7.19)
+// =========================================================================
+//
+// Declarative signatures for the sample / gather families. Same machinery
+// as Phase 3c — `Pattern.tparam_texture` for kind+dimension matching, slot
+// 0 for the sampled element scalar, fixed results for depth/external.
+// Sampler args are matched as concrete types against static singletons so
+// `sampler_comparison` cannot stand in for `sampler` and vice versa.
+//
+// Offset is modeled as a shape-only `.concrete = vec2<i32>/vec3<i32>` —
+// the spec's const-expression requirement is a pre-resolution side check
+// not expressible via Pattern, and already unenforced on the legacy path.
+// Landing that is orthogonal and kept out of Phase 3d.
+
+const coord_2d_f32: O.Pattern = .{ .tparam_vector = .{ .elem_idx = no_tp, .elem_family = .float, .n_fixed = 2 } };
+const coord_3d_f32: O.Pattern = .{ .tparam_vector = .{ .elem_idx = no_tp, .elem_family = .float, .n_fixed = 3 } };
+const f32_scalar: O.Pattern = .{ .tparam_scalar = .{ .idx = no_tp, .family = .float } };
+const offset_2d_i32: O.Pattern = .{ .concrete = vec2_i32_type };
+const offset_3d_i32: O.Pattern = .{ .concrete = vec3_i32_type };
+
+const sampler_noncmp_singleton = Types.Sampler{ .comparison = false };
+const sampler_cmp_singleton = Types.Sampler{ .comparison = true };
+const sampler_type: Types.Type = .{ .sampler = &sampler_noncmp_singleton };
+const sampler_cmp_type: Types.Type = .{ .sampler = &sampler_cmp_singleton };
+const sampler_pat: O.Pattern = .{ .concrete = sampler_type };
+const sampler_cmp_pat: O.Pattern = .{ .concrete = sampler_cmp_type };
+
+/// Build a `.tparam_texture` pattern binding slot 0 to the sampled
+/// texture's element scalar. Used by sample/gather sampled overloads
+/// whose result is `vec4<T>`.
+fn sampledTex(comptime dim: Types.TextureDimension) O.Pattern {
+    return .{ .tparam_texture = .{ .kind = .sampled, .dimension = dim, .elem_idx = 0 } };
+}
+
+fn depthTex(comptime dim: Types.TextureDimension) O.Pattern {
+    return .{ .tparam_texture = .{ .kind = .depth, .dimension = dim } };
+}
+
+/// textureSample (§17.7.14) — sampled returns vec4<T>, depth returns f32.
+/// Offsets valid on 2d / 2d_array / 3d (and their depth counterparts).
+const textureSample_sigs = &[_]O.OverloadSig{
+    // --- Sampled ---
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d"), sampler_pat, coord_2d_f32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d"), sampler_pat, coord_2d_f32, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"3d"), sampler_pat, coord_3d_f32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"3d"), sampler_pat, coord_3d_f32, offset_3d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.cube), sampler_pat, coord_3d_f32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.cube_array), sampler_pat, coord_3d_f32, int_scalar }, .result = vec4_of_slot0 },
+    // --- Depth ---
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_pat, coord_2d_f32 }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_pat, coord_2d_f32, offset_2d_i32 }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, offset_2d_i32 }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube), sampler_pat, coord_3d_f32 }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube_array), sampler_pat, coord_3d_f32, int_scalar }, .result = .{ .fixed = Types.F32 } },
+};
+
+/// textureSampleBias (§17.7.15) — sampled textures only. Bias is f32.
+const textureSampleBias_sigs = &[_]O.OverloadSig{
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d"), sampler_pat, coord_2d_f32, f32_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d"), sampler_pat, coord_2d_f32, f32_scalar, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, f32_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, f32_scalar, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"3d"), sampler_pat, coord_3d_f32, f32_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"3d"), sampler_pat, coord_3d_f32, f32_scalar, offset_3d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.cube), sampler_pat, coord_3d_f32, f32_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.cube_array), sampler_pat, coord_3d_f32, int_scalar, f32_scalar }, .result = vec4_of_slot0 },
+};
+
+/// textureSampleGrad (§17.7.16) — sampled textures only. ddx/ddy share the
+/// coord's vec-width (vec2 for 2d/2d_array, vec3 for 3d/cube/cube_array).
+const textureSampleGrad_sigs = &[_]O.OverloadSig{
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d"), sampler_pat, coord_2d_f32, coord_2d_f32, coord_2d_f32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d"), sampler_pat, coord_2d_f32, coord_2d_f32, coord_2d_f32, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, coord_2d_f32, coord_2d_f32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, coord_2d_f32, coord_2d_f32, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"3d"), sampler_pat, coord_3d_f32, coord_3d_f32, coord_3d_f32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"3d"), sampler_pat, coord_3d_f32, coord_3d_f32, coord_3d_f32, offset_3d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.cube), sampler_pat, coord_3d_f32, coord_3d_f32, coord_3d_f32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.cube_array), sampler_pat, coord_3d_f32, int_scalar, coord_3d_f32, coord_3d_f32 }, .result = vec4_of_slot0 },
+};
+
+/// textureSampleLevel (§17.7.17) — sampled (level: f32) and depth (level: i32).
+const textureSampleLevel_sigs = &[_]O.OverloadSig{
+    // --- Sampled (level: f32) ---
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d"), sampler_pat, coord_2d_f32, f32_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d"), sampler_pat, coord_2d_f32, f32_scalar, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, f32_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, f32_scalar, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"3d"), sampler_pat, coord_3d_f32, f32_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.@"3d"), sampler_pat, coord_3d_f32, f32_scalar, offset_3d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.cube), sampler_pat, coord_3d_f32, f32_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ sampledTex(.cube_array), sampler_pat, coord_3d_f32, int_scalar, f32_scalar }, .result = vec4_of_slot0 },
+    // --- Depth (level: i32) ---
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_pat, coord_2d_f32, int_scalar }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_pat, coord_2d_f32, int_scalar, offset_2d_i32 }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, int_scalar }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, int_scalar, offset_2d_i32 }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube), sampler_pat, coord_3d_f32, int_scalar }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube_array), sampler_pat, coord_3d_f32, int_scalar, int_scalar }, .result = .{ .fixed = Types.F32 } },
+};
+
+/// textureSampleCompare (§17.7.18) — depth textures + sampler_comparison.
+/// Returns f32. Offsets valid on depth_2d / depth_2d_array.
+const textureSampleCompare_sigs = &[_]O.OverloadSig{
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_cmp_pat, coord_2d_f32, f32_scalar }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_cmp_pat, coord_2d_f32, f32_scalar, offset_2d_i32 }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_cmp_pat, coord_2d_f32, int_scalar, f32_scalar }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_cmp_pat, coord_2d_f32, int_scalar, f32_scalar, offset_2d_i32 }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube), sampler_cmp_pat, coord_3d_f32, f32_scalar }, .result = .{ .fixed = Types.F32 } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube_array), sampler_cmp_pat, coord_3d_f32, int_scalar, f32_scalar }, .result = .{ .fixed = Types.F32 } },
+};
+
+/// textureSampleCompareLevel (§17.7.19) — same arities as Compare. Returns f32.
+const textureSampleCompareLevel_sigs = textureSampleCompare_sigs;
+
+/// textureGather (§17.7.12) — sampled prepends `component: i32/u32`, returns
+/// vec4<T>. Depth has no component arg and returns vec4<f32>. 1d / 3d /
+/// multisampled / storage / external textures are not permitted.
+const textureGather_sigs = &[_]O.OverloadSig{
+    // --- Sampled (component prepended) ---
+    .{ .tparam_count = 1, .params = &.{ int_scalar, sampledTex(.@"2d"), sampler_pat, coord_2d_f32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ int_scalar, sampledTex(.@"2d"), sampler_pat, coord_2d_f32, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ int_scalar, sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ int_scalar, sampledTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, offset_2d_i32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ int_scalar, sampledTex(.cube), sampler_pat, coord_3d_f32 }, .result = vec4_of_slot0 },
+    .{ .tparam_count = 1, .params = &.{ int_scalar, sampledTex(.cube_array), sampler_pat, coord_3d_f32, int_scalar }, .result = vec4_of_slot0 },
+    // --- Depth (no component) ---
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_pat, coord_2d_f32 }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_pat, coord_2d_f32, offset_2d_i32 }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_pat, coord_2d_f32, int_scalar, offset_2d_i32 }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube), sampler_pat, coord_3d_f32 }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube_array), sampler_pat, coord_3d_f32, int_scalar }, .result = .{ .fixed = vec4_f32_type } },
+};
+
+/// textureGatherCompare (§17.7.13) — depth + sampler_comparison + depth_ref.
+/// Returns vec4<f32>.
+const textureGatherCompare_sigs = &[_]O.OverloadSig{
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_cmp_pat, coord_2d_f32, f32_scalar }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d"), sampler_cmp_pat, coord_2d_f32, f32_scalar, offset_2d_i32 }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_cmp_pat, coord_2d_f32, int_scalar, f32_scalar }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.@"2d_array"), sampler_cmp_pat, coord_2d_f32, int_scalar, f32_scalar, offset_2d_i32 }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube), sampler_cmp_pat, coord_3d_f32, f32_scalar }, .result = .{ .fixed = vec4_f32_type } },
+    .{ .tparam_count = 0, .params = &.{ depthTex(.cube_array), sampler_cmp_pat, coord_3d_f32, int_scalar, f32_scalar }, .result = .{ .fixed = vec4_f32_type } },
+};
+
+/// textureSampleBaseClampToEdge (§17.7.11) — texture_2d<f32> or
+/// texture_external. Returns vec4<f32>. Restricting to f32-element
+/// sampled textures uses the slot-0 family filter.
+const textureSampleBaseClampToEdge_sigs = &[_]O.OverloadSig{
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .sampled, .dimension = .@"2d", .elem_idx = 0, .elem_family = .float } },
+            sampler_pat,
+            coord_2d_f32,
+        },
+        .result = .{ .fixed = vec4_f32_type },
+    },
+    .{
+        .tparam_count = 0,
+        .params = &.{
+            .{ .tparam_texture = .{ .kind = .external, .dimension = .@"2d" } },
+            sampler_pat,
+            coord_2d_f32,
+        },
+        .result = .{ .fixed = vec4_f32_type },
+    },
 };
 
 // =========================================================================
@@ -1666,15 +1839,23 @@ const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
     .{ "dot4I8Packed", dot4I8Packed_sigs },
     .{ "dot4U8Packed", dot4U8Packed_sigs },
 
-    // Texture builtins (§17.6.x) — Phase 3c. Sampling / gather families
-    // still ride the legacy `inferTextureReturnType` path; migrating them
-    // is a follow-up (the engine extension lands here).
+    // Texture builtins (§17.6.x / §17.7.x) — Phases 3c + 3d. Every
+    // texture builtin resolves through the declarative engine.
     .{ "textureLoad", textureLoad_sigs },
     .{ "textureStore", textureStore_sigs },
     .{ "textureDimensions", textureDimensions_sigs },
     .{ "textureNumLayers", textureNumLayers_sigs },
     .{ "textureNumLevels", textureNumLevels_sigs },
     .{ "textureNumSamples", textureNumSamples_sigs },
+    .{ "textureSample", textureSample_sigs },
+    .{ "textureSampleBias", textureSampleBias_sigs },
+    .{ "textureSampleGrad", textureSampleGrad_sigs },
+    .{ "textureSampleLevel", textureSampleLevel_sigs },
+    .{ "textureSampleCompare", textureSampleCompare_sigs },
+    .{ "textureSampleCompareLevel", textureSampleCompareLevel_sigs },
+    .{ "textureGather", textureGather_sigs },
+    .{ "textureGatherCompare", textureGatherCompare_sigs },
+    .{ "textureSampleBaseClampToEdge", textureSampleBaseClampToEdge_sigs },
 
     // Synchronization (§17.11)
     .{ "workgroupUniformLoad", wg_uniform_load_sigs },

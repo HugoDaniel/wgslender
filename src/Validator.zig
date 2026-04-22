@@ -3265,18 +3265,17 @@ fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, bu
         }
     }
 
-    // Declarative overload resolution (Task #9 / Phases 1-3c). Active for
+    // Declarative overload resolution (Task #9 / Phases 1-3d). Active for
     // any builtin with populated `overloads`. The solver binds type
     // parameters from the arg types and the caller builds the return from
     // `ResultRule`. `bitcast<T>` dispatches via `checkBitcastCall` above
     // because its sig set is template-shape-selected and its slot-0/slot-1
     // bindings are seeded from the template — but the solver and
-    // signature DSL it uses are the same. Phase 3c migrated textureLoad,
-    // textureStore, textureDimensions, textureNumLayers/Levels/Samples
-    // via `Pattern.tparam_texture`. Still legacy: the sampling /
-    // gather families (textureSample*, textureGather*,
-    // textureSampleCompare*, textureSampleBaseClampToEdge) and the
-    // non-texture side cases (atomicStore, arrayLength, barriers).
+    // signature DSL it uses are the same. Phase 3c migrated the indexed
+    // texture builtins via `Pattern.tparam_texture`; Phase 3d extends
+    // that to the sampling and gather families, so every texture builtin
+    // is now declarative. Remaining legacy paths are the non-texture
+    // side cases (atomicStore, arrayLength, barriers).
     if (builtin_fn.overloads.len > 0) {
         const argc = @min(e.args.items.len, 8);
         const res = Overload.resolve(builtin_fn.overloads, arg_types[0..argc]);
@@ -3516,62 +3515,17 @@ fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8) v
 }
 
 fn inferBuiltinReturnType(v: *Validator, builtin: Builtins.Builtin, name: []const u8, arg_types: [8]?Types.Type) ?Types.Type {
+    _ = name;
     return switch (builtin.return_pattern) {
         .void_type => Types.Void,
         .u32_scalar => Types.U32,
-        .texture => v.inferTextureReturnType(name, arg_types),
         .texture_dims => v.inferTextureDimsType(arg_types),
-        // `.custom` used to route to a bespoke per-builtin handler, but
-        // Phases 1-3b migrated every callee to the declarative engine
+        // Phases 1-3d migrated every callee to the declarative engine
         // (`.overloads` populated) or to a dedicated call-site block
-        // (`bitcast`). The `.custom` tag is kept on Builtin entries for
-        // documentation only — this branch is no longer reachable.
-        .custom, .same_as_arg, .bool_scalar, .scalar_of_arg, .pack_u32 => unreachable,
+        // (`bitcast`). These tags are kept on Builtin entries for
+        // documentation only — these branches are no longer reachable.
+        .texture, .custom, .same_as_arg, .bool_scalar, .scalar_of_arg, .pack_u32 => unreachable,
     };
-}
-
-fn inferTextureReturnType(v: *Validator, name: []const u8, arg_types: [8]?Types.Type) ?Types.Type {
-    // Comparison sampling always returns f32
-    if (std.mem.eql(u8, name, "textureSampleCompare") or
-        std.mem.eql(u8, name, "textureSampleCompareLevel"))
-    {
-        return Types.F32;
-    }
-
-    const tex_type = arg_types[0] orelse return .{ .vector = &vec4_f32_singleton };
-
-    switch (tex_type) {
-        .texture => |t| {
-            // Depth textures
-            if (t.kind == .depth or t.kind == .depth_multisampled) {
-                // textureGather/GatherCompare on depth return vec4<f32>
-                if (std.mem.eql(u8, name, "textureGather") or
-                    std.mem.eql(u8, name, "textureGatherCompare"))
-                {
-                    return .{ .vector = &vec4_f32_singleton };
-                }
-                // textureLoad, textureSample on depth return f32
-                return Types.F32;
-            }
-
-            // Get element scalar from sampled_type or texel_format
-            var elem_scalar: *const Types.Scalar = Types.scalar_f32_ptr;
-            if (t.sampled_type) |st| {
-                elem_scalar = st;
-            } else if (t.texel_format.len > 0) {
-                elem_scalar = Types.texelFormatToScalar(t.texel_format);
-            }
-
-            // Return vec4<element>
-            if (elem_scalar == Types.scalar_f32_ptr) {
-                return .{ .vector = &vec4_f32_singleton };
-            }
-            const result = v.arena.create(Types.Vector) catch return null;
-            result.* = .{ .width = 4, .element = elem_scalar };
-            return .{ .vector = result };
-        },
-        else => return .{ .vector = &vec4_f32_singleton },
-    }
 }
 
 fn inferTextureDimsType(v: *Validator, arg_types: [8]?Types.Type) ?Types.Type {
@@ -3658,12 +3612,6 @@ fn synthesizeModfResult(v: *Validator, operand: Types.Type) Allocator.Error!?Typ
     try v.struct_types.put(v.arena, name, st);
     return .{ .@"struct" = st };
 }
-
-// Singleton vectors for common return types
-const vec4_f32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_f32_ptr };
-const vec4_u32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_u32_ptr };
-const vec4_i32_singleton = Types.Vector{ .width = 4, .element = Types.scalar_i32_ptr };
-const vec2_f32_singleton = Types.Vector{ .width = 2, .element = Types.scalar_f32_ptr };
 
 fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
     const arg_count = e.args.items.len;
