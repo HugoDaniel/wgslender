@@ -338,6 +338,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/inference/overload_phase2_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/overload_phase3c_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/overload_phase3d_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/inference/sig_shape_invariant_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference_corpus_pinning_test.zig", target, optimize, &.{w});
 }
 
