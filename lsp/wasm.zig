@@ -24,6 +24,7 @@
 const std = @import("std");
 const wgslender = @import("wgslender");
 const Handler = @import("Handler.zig");
+const diagnostic_json = @import("diagnostic_json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
 const wasm_allocator = std.heap.wasm_allocator;
@@ -982,65 +983,9 @@ fn emitDiagnostics(uri: []const u8) void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
     Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
-    appendStr(&buf, "\",\"diagnostics\":[");
-
-    for (diags, 0..) |diag, i| {
-        if (i > 0) buf.append(wasm_allocator, ',') catch {};
-        appendStr(&buf, "{\"range\":{\"start\":{\"line\":");
-        appendUint(&buf, diag.range.start.line);
-        appendStr(&buf, ",\"character\":");
-        appendUint(&buf, diag.range.start.character);
-        appendStr(&buf, "},\"end\":{\"line\":");
-        appendUint(&buf, diag.range.end.line);
-        appendStr(&buf, ",\"character\":");
-        appendUint(&buf, diag.range.end.character);
-        appendStr(&buf, "}},\"severity\":");
-        appendUint(&buf, @intFromEnum(diag.severity));
-        appendStr(&buf, ",\"source\":\"wgslender\",\"message\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.message) catch return;
-        appendStr(&buf, "\"");
-        if (diag.code.len > 0) {
-            appendStr(&buf, ",\"code\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.code) catch return;
-            appendStr(&buf, "\"");
-        }
-        if (diag.spec_url.len > 0) {
-            appendStr(&buf, ",\"codeDescription\":{\"href\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, diag.spec_url) catch return;
-            appendStr(&buf, "\"}");
-        }
-        if (diag.related.len > 0) {
-            appendStr(&buf, ",\"relatedInformation\":[");
-            for (diag.related, 0..) |rel, ri| {
-                if (ri > 0) buf.append(wasm_allocator, ',') catch {};
-                appendStr(&buf, "{\"location\":{\"uri\":\"");
-                Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
-                appendStr(&buf, "\",\"range\":{\"start\":{\"line\":");
-                appendUint(&buf, rel.range.start.line);
-                appendStr(&buf, ",\"character\":");
-                appendUint(&buf, rel.range.start.character);
-                appendStr(&buf, "},\"end\":{\"line\":");
-                appendUint(&buf, rel.range.end.line);
-                appendStr(&buf, ",\"character\":");
-                appendUint(&buf, rel.range.end.character);
-                appendStr(&buf, "}}},\"message\":\"");
-                Diagnostic.appendJsonEscaped(&buf, wasm_allocator, rel.message) catch return;
-                appendStr(&buf, "\"}");
-            }
-            appendStr(&buf, "]");
-        }
-        if (diag.tags.len > 0) {
-            appendStr(&buf, ",\"tags\":[");
-            for (diag.tags, 0..) |tag, ti| {
-                if (ti > 0) buf.append(wasm_allocator, ',') catch {};
-                appendUint(&buf, @intFromEnum(tag));
-            }
-            appendStr(&buf, "]");
-        }
-        appendStr(&buf, "}");
-    }
-
-    appendStr(&buf, "]}}");
+    appendStr(&buf, "\",\"diagnostics\":");
+    diagnostic_json.appendDiagnosticItems(&buf, wasm_allocator, uri, diags);
+    appendStr(&buf, "}}");
     enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
 }
 
