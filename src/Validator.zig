@@ -2785,13 +2785,18 @@ fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!InferResult {
     if (result.typ) |typ| {
         // Key on each expression's own loc (operator for binary, open-paren
         // for call, etc.) so nested expressions that share the same start
-        // offset don't collide in the hash map.
+        // offset don't collide in the hash map. `.paren` has no distinct loc
+        // of its own — the inner expression has already registered itself
+        // via the recursive `checkExpr` call above.
         const key: ?u32 = switch (expr) {
+            .literal => |e| e.loc,
+            .ident => |e| e.loc,
             .binary => |e| e.loc,
+            .unary => |e| e.loc,
             .call => |e| e.loc,
             .index => |e| e.loc,
             .member => |e| e.loc,
-            else => null,
+            .paren => null,
         };
         if (key) |k| {
             v.expr_types.put(v.arena, k, .{
