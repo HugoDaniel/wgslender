@@ -325,7 +325,7 @@ const texture_entries = [_]struct { []const u8, Builtin }{
     entry("textureNumLevels", .texture, .runtime, .none, 1, 1, .u32_scalar),
     entry("textureNumSamples", .texture, .runtime, .none, 1, 1, .u32_scalar),
     // textureGather and textureGatherCompare require uniform control flow
-    entry("textureGather", .texture, .runtime, .uniform_flow, 3, 5, .texture),
+    entry("textureGather", .texture, .runtime, .uniform_flow, 3, 6, .texture),
     entry("textureGatherCompare", .texture, .runtime, .uniform_flow, 4, 6, .texture),
     entry("textureSampleBaseClampToEdge", .texture, .runtime, .none, 3, 3, .texture),
 };
