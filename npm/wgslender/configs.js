@@ -26,6 +26,7 @@ const recommended = {
     'for-direction': 'warn',
     'no-duplicate-case': 'warn',
     'no-self-assign': 'warn',
+    'no-redundant-casts': 'warn',
   },
 };
 
@@ -42,6 +43,7 @@ const performance = {
   name: '@wgslender/performance',
   rules: {
     'no-large-local-arrays': 'warn',
+    'prefer-mix': 'warn',
   },
 };
 
@@ -51,6 +53,7 @@ const portability = {
   rules: {
     'require-entry-point-attrs': 'error',
     'consistent-binding-annotations': 'warn',
+    'no-f16-without-extension': 'warn',
   },
 };
 
@@ -66,10 +69,13 @@ const strict = {
     'for-direction': 'error',
     'no-duplicate-case': 'error',
     'no-self-assign': 'error',
+    'no-redundant-casts': 'warn',
+    'prefer-mix': 'warn',
     'naming-convention': 'warn',
     'no-large-local-arrays': 'warn',
     'require-entry-point-attrs': 'error',
     'consistent-binding-annotations': 'error',
+    'no-f16-without-extension': 'error',
   },
 };
 

@@ -147,6 +147,41 @@ fn walkExprTree(
     }
 }
 
+/// Best-effort start offset for an expression. Prefers `.span` when
+/// populated (CstLower path); falls back to each node's `.loc` token.
+pub fn exprStart(e: Ast.Expr) u32 {
+    const s = e.span();
+    if (s.start != s.end) return s.start;
+    return switch (e) {
+        .literal => |l| l.loc,
+        .ident => |i| i.loc,
+        .binary => |b| exprStart(b.left),
+        .unary => |u| u.loc,
+        .call => |c| c.loc,
+        .index => |i| exprStart(i.base),
+        .member => |m| exprStart(m.base),
+        .paren => |p| exprStart(p.expr),
+    };
+}
+
+/// Best-effort end offset (one past the last byte) for an expression.
+/// Prefers `.span` when populated; otherwise derives from child locs plus
+/// the token length of trailing identifiers / literals.
+pub fn exprEnd(e: Ast.Expr) u32 {
+    const s = e.span();
+    if (s.start != s.end) return s.end;
+    return switch (e) {
+        .literal => |l| l.loc + @as(u32, @intCast(l.value.len)),
+        .ident => |i| i.loc + @as(u32, @intCast(i.name.len)),
+        .binary => |b| exprEnd(b.right),
+        .unary => |u| exprEnd(u.operand),
+        .call => |c| c.end_loc,
+        .index => |i| i.end_loc,
+        .member => |m| m.loc + @as(u32, @intCast(m.member_name.len)),
+        .paren => |p| exprEnd(p.expr),
+    };
+}
+
 /// Visit every statement (flat, not just top-level) reachable from a
 /// function body. Useful for rules that care about local-decl shapes.
 pub fn walkFunctionStmts(

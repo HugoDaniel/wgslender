@@ -19,6 +19,9 @@ const no_constant_condition = @import("rules/no_constant_condition.zig");
 const for_direction = @import("rules/for_direction.zig");
 const no_duplicate_case = @import("rules/no_duplicate_case.zig");
 const no_self_assign = @import("rules/no_self_assign.zig");
+const no_redundant_casts = @import("rules/no_redundant_casts.zig");
+const prefer_mix = @import("rules/prefer_mix.zig");
+const no_f16_without_extension = @import("rules/no_f16_without_extension.zig");
 
 /// Every lint rule the linter knows about. Declaration order is the order
 /// rules execute in per-file; rules may depend on module-wide analysis but
@@ -37,6 +40,9 @@ pub const all = [_]Rule{
     for_direction.rule,
     no_duplicate_case.rule,
     no_self_assign.rule,
+    no_redundant_casts.rule,
+    prefer_mix.rule,
+    no_f16_without_extension.rule,
 };
 
 /// Look up a rule by its public id (e.g. `"no-unused-vars"`).

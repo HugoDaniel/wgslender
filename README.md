@@ -158,10 +158,10 @@ Rules are organized into shareable config packs:
 
 | Pack                       | Rules                                                                      |
 | -------------------------- | -------------------------------------------------------------------------- |
-| `@wgslender/recommended`   | `no-unused-vars`, `no-dead-code`, `no-unused-binding`, `no-unreachable`, `no-constant-condition`, `for-direction`, `no-duplicate-case`, `no-self-assign` |
+| `@wgslender/recommended`   | `no-unused-vars`, `no-dead-code`, `no-unused-binding`, `no-unreachable`, `no-constant-condition`, `for-direction`, `no-duplicate-case`, `no-self-assign`, `no-redundant-casts` |
 | `@wgslender/style`         | `naming-convention`                                                        |
-| `@wgslender/performance`   | `no-large-local-arrays`                                                    |
-| `@wgslender/portability`   | `require-entry-point-attrs`, `consistent-binding-annotations`              |
+| `@wgslender/performance`   | `no-large-local-arrays`, `prefer-mix`                                      |
+| `@wgslender/portability`   | `require-entry-point-attrs`, `consistent-binding-annotations`, `no-f16-without-extension` |
 | `@wgslender/strict`        | Everything above (except `no-magic-numbers`) at error severity — CI gate   |
 
 Opt-in rule not included in any pack by default: `no-magic-numbers` (flags

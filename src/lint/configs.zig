@@ -37,6 +37,7 @@ pub const recommended = Config{
         .{ .id = "for-direction", .severity = .warning },
         .{ .id = "no-duplicate-case", .severity = .warning },
         .{ .id = "no-self-assign", .severity = .warning },
+        .{ .id = "no-redundant-casts", .severity = .warning },
     },
 };
 
@@ -51,6 +52,7 @@ pub const performance = Config{
     .name = "@wgslender/performance",
     .rules = &.{
         .{ .id = "no-large-local-arrays", .severity = .warning },
+        .{ .id = "prefer-mix", .severity = .warning },
     },
 };
 
@@ -59,6 +61,7 @@ pub const portability = Config{
     .rules = &.{
         .{ .id = "require-entry-point-attrs", .severity = .@"error" },
         .{ .id = "consistent-binding-annotations", .severity = .warning },
+        .{ .id = "no-f16-without-extension", .severity = .warning },
     },
 };
 
@@ -76,10 +79,13 @@ pub const strict = Config{
         .{ .id = "for-direction", .severity = .@"error" },
         .{ .id = "no-duplicate-case", .severity = .@"error" },
         .{ .id = "no-self-assign", .severity = .@"error" },
+        .{ .id = "no-redundant-casts", .severity = .warning },
+        .{ .id = "prefer-mix", .severity = .warning },
         .{ .id = "naming-convention", .severity = .warning },
         .{ .id = "no-large-local-arrays", .severity = .warning },
         .{ .id = "require-entry-point-attrs", .severity = .@"error" },
         .{ .id = "consistent-binding-annotations", .severity = .@"error" },
+        .{ .id = "no-f16-without-extension", .severity = .@"error" },
     },
 };
 

@@ -867,6 +867,142 @@ test "no-self-assign: attaches autofix that deletes the statement" {
 }
 
 // =========================================================================
+// no-redundant-casts (W0201)
+// =========================================================================
+
+test "no-redundant-casts: f32(f32_val) is flagged" {
+    var r = try runLint(
+        \\fn f() -> f32 {
+        \\  let x: f32 = 1.0;
+        \\  return f32(x);
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0201"));
+}
+
+test "no-redundant-casts: i32(f32_val) is NOT flagged" {
+    var r = try runLint(
+        \\fn f() -> i32 {
+        \\  let x: f32 = 1.5;
+        \\  return i32(x);
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0201"));
+}
+
+test "no-redundant-casts: attaches fix that unwraps the argument" {
+    var r = try runLint(
+        \\fn f() -> f32 {
+        \\  let x: f32 = 1.0;
+        \\  return f32(x);
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    var found = false;
+    for (r.lint.diagnostics.items()) |d| {
+        if (std.mem.eql(u8, d.code, "W0201")) {
+            try std.testing.expect(d.fix != null);
+            try std.testing.expectEqualStrings("x", d.fix.?.text);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// =========================================================================
+// prefer-mix (W0203)
+// =========================================================================
+
+const prefer_mix_opts = wgslender.Linter.Options{
+    .extends = &.{"@wgslender/performance"},
+};
+
+test "prefer-mix: canonical a + (b - a) * t is flagged" {
+    var r = try runLint(
+        \\fn f(a: f32, b: f32, t: f32) -> f32 {
+        \\  return a + (b - a) * t;
+        \\}
+    , prefer_mix_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0203"));
+}
+
+test "prefer-mix: unrelated addition is not flagged" {
+    var r = try runLint(
+        \\fn f(a: f32, b: f32, c: f32) -> f32 {
+        \\  return a + b * c;
+        \\}
+    , prefer_mix_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0203"));
+}
+
+test "prefer-mix: emits autofix with mix(...) replacement" {
+    var r = try runLint(
+        \\fn f(a: f32, b: f32, t: f32) -> f32 {
+        \\  return a + (b - a) * t;
+        \\}
+    , prefer_mix_opts);
+    defer r.deinit(std.testing.allocator);
+    var found = false;
+    for (r.lint.diagnostics.items()) |d| {
+        if (std.mem.eql(u8, d.code, "W0203")) {
+            try std.testing.expect(d.fix != null);
+            try std.testing.expect(std.mem.startsWith(u8, d.fix.?.text, "mix("));
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// =========================================================================
+// no-f16-without-extension (W0207)
+// =========================================================================
+
+const portability_f16_opts = wgslender.Linter.Options{
+    .extends = &.{"@wgslender/portability"},
+};
+
+test "no-f16-without-extension: f16 without enable is flagged" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> u: f16;
+        \\@compute @workgroup_size(1) fn main() { let x = u; _ = x; }
+    , portability_f16_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0207"));
+}
+
+test "no-f16-without-extension: f16 with enable is fine" {
+    var r = try runLint(
+        \\enable f16;
+        \\@group(0) @binding(0) var<uniform> u: f16;
+        \\@compute @workgroup_size(1) fn main() { let x = u; _ = x; }
+    , portability_f16_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0207"));
+}
+
+test "no-f16-without-extension: fix inserts `enable f16;` at the top" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> u: f16;
+        \\@compute @workgroup_size(1) fn main() { let x = u; _ = x; }
+    , portability_f16_opts);
+    defer r.deinit(std.testing.allocator);
+    var found = false;
+    for (r.lint.diagnostics.items()) |d| {
+        if (std.mem.eql(u8, d.code, "W0207")) {
+            try std.testing.expect(d.fix != null);
+            try std.testing.expectEqualStrings("enable f16;\n", d.fix.?.text);
+            try std.testing.expectEqual(@as(u32, 0), d.fix.?.range.start.offset);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// =========================================================================
 // Config packs
 // =========================================================================
 
