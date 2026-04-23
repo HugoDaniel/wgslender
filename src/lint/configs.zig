@@ -96,6 +96,10 @@ pub const strict = Config{
         .{ .id = "require-entry-point-attrs", .severity = .@"error" },
         .{ .id = "consistent-binding-annotations", .severity = .@"error" },
         .{ .id = "no-f16-without-extension", .severity = .@"error" },
+        .{ .id = "max-params", .severity = .warning },
+        .{ .id = "max-depth", .severity = .warning },
+        .{ .id = "complexity", .severity = .warning },
+        .{ .id = "max-lines-per-function", .severity = .warning },
     },
 };
 

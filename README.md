@@ -162,7 +162,7 @@ Rules are organized into shareable config packs:
 | `@wgslender/style`         | `naming-convention`, `prefer-let-over-var`, `no-empty`, `no-useless-return`, `no-lonely-if`, `no-shadow` |
 | `@wgslender/performance`   | `no-large-local-arrays`, `prefer-mix`                                      |
 | `@wgslender/portability`   | `require-entry-point-attrs`, `consistent-binding-annotations`, `no-f16-without-extension` |
-| `@wgslender/strict`        | Everything above (except `no-magic-numbers`) at error severity — CI gate   |
+| `@wgslender/strict`        | Everything above (except `no-magic-numbers`) at error severity, plus complexity-bound rules (`max-params`, `max-depth`, `complexity`, `max-lines-per-function`) — CI gate |
 
 Opt-in rule not included in any pack by default: `no-magic-numbers` (flags
 bare numeric literals outside `{-1, 0, 1, 2}`).

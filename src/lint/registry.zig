@@ -27,6 +27,10 @@ const no_empty = @import("rules/no_empty.zig");
 const no_useless_return = @import("rules/no_useless_return.zig");
 const no_lonely_if = @import("rules/no_lonely_if.zig");
 const no_shadow = @import("rules/no_shadow.zig");
+const max_params = @import("rules/max_params.zig");
+const max_depth = @import("rules/max_depth.zig");
+const complexity = @import("rules/complexity.zig");
+const max_lines_per_function = @import("rules/max_lines_per_function.zig");
 
 /// Every lint rule the linter knows about. Declaration order is the order
 /// rules execute in per-file; rules may depend on module-wide analysis but
@@ -53,6 +57,10 @@ pub const all = [_]Rule{
     no_useless_return.rule,
     no_lonely_if.rule,
     no_shadow.rule,
+    max_params.rule,
+    max_depth.rule,
+    complexity.rule,
+    max_lines_per_function.rule,
 };
 
 /// Look up a rule by its public id (e.g. `"no-unused-vars"`).

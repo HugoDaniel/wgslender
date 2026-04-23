@@ -1223,6 +1223,142 @@ test "no-shadow: sibling blocks are NOT shadowing" {
 }
 
 // =========================================================================
+// max-params (W0220)
+// =========================================================================
+
+test "max-params: default 8 flags a 9-param function" {
+    const src: [:0]const u8 =
+        "fn f(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32) -> i32 { return a; }";
+    var r = try runLint(src, .{
+        .rules = &.{.{ .id = "max-params", .severity = .warning }},
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0220"));
+}
+
+test "max-params: 4 params pass with default" {
+    var r = try runLint(
+        "fn f(a: i32, b: i32, c: i32, d: i32) -> i32 { return a + b + c + d; }",
+        .{ .rules = &.{.{ .id = "max-params", .severity = .warning }} },
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0220"));
+}
+
+test "max-params: configurable max via options" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"max\":2}", .{});
+    defer parsed.deinit();
+    var r = try runLint(
+        "fn f(a: i32, b: i32, c: i32) -> i32 { return a + b + c; }",
+        .{ .rules = &.{.{
+            .id = "max-params",
+            .severity = .warning,
+            .options = parsed.value,
+        }} },
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0220"));
+}
+
+// =========================================================================
+// max-depth (W0221)
+// =========================================================================
+
+test "max-depth: depth-5 body is flagged" {
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 {
+        \\  if (x > 0) {
+        \\    if (x > 1) {
+        \\      if (x > 2) {
+        \\        if (x > 3) {
+        \\          if (x > 4) { return 1; }
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\  return 0;
+        \\}
+    , .{ .rules = &.{.{ .id = "max-depth", .severity = .warning }} });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0221"));
+}
+
+test "max-depth: shallow function passes" {
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 {
+        \\  if (x > 0) { return 1; }
+        \\  return 0;
+        \\}
+    , .{ .rules = &.{.{ .id = "max-depth", .severity = .warning }} });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0221"));
+}
+
+// =========================================================================
+// complexity (W0222)
+// =========================================================================
+
+test "complexity: flagged when decisions exceed threshold" {
+    // 16 if-statements → cyclomatic complexity 17, default max 15 → flag.
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"max\":3}", .{});
+    defer parsed.deinit();
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 {
+        \\  if (x > 0) { return 1; }
+        \\  if (x > 1) { return 2; }
+        \\  if (x > 2) { return 3; }
+        \\  if (x > 3) { return 4; }
+        \\  return 0;
+        \\}
+    , .{ .rules = &.{.{
+        .id = "complexity",
+        .severity = .warning,
+        .options = parsed.value,
+    }} });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0222"));
+}
+
+test "complexity: simple function passes" {
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 { return x + 1; }
+    , .{ .rules = &.{.{ .id = "complexity", .severity = .warning }} });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0222"));
+}
+
+// =========================================================================
+// max-lines-per-function (W0223)
+// =========================================================================
+
+test "max-lines-per-function: long function flagged with max 3" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"max\":3}", .{});
+    defer parsed.deinit();
+    var r = try runLint(
+        \\fn f() -> i32 {
+        \\  let a = 1;
+        \\  let b = 2;
+        \\  let c = 3;
+        \\  return a + b + c;
+        \\}
+    , .{ .rules = &.{.{
+        .id = "max-lines-per-function",
+        .severity = .warning,
+        .options = parsed.value,
+    }} });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0223"));
+}
+
+test "max-lines-per-function: short function passes default" {
+    var r = try runLint(
+        \\fn f() -> i32 { return 1; }
+    , .{ .rules = &.{.{ .id = "max-lines-per-function", .severity = .warning }} });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0223"));
+}
+
+// =========================================================================
 // Config packs
 // =========================================================================
 

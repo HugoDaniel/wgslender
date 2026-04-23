@@ -754,6 +754,10 @@ pub const Code = struct {
     pub const lint_no_useless_return: []const u8 = "W0217";
     pub const lint_no_lonely_if: []const u8 = "W0218";
     pub const lint_no_shadow: []const u8 = "W0219";
+    pub const lint_max_params: []const u8 = "W0220";
+    pub const lint_max_depth: []const u8 = "W0221";
+    pub const lint_complexity: []const u8 = "W0222";
+    pub const lint_max_lines_per_function: []const u8 = "W0223";
 };
 
 /// Map a diagnostic code to a WGSL spec section slug.

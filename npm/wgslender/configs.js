@@ -86,6 +86,10 @@ const strict = {
     'require-entry-point-attrs': 'error',
     'consistent-binding-annotations': 'error',
     'no-f16-without-extension': 'error',
+    'max-params': 'warn',
+    'max-depth': 'warn',
+    'complexity': 'warn',
+    'max-lines-per-function': 'warn',
   },
 };
 
