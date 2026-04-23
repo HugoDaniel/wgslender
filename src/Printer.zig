@@ -59,6 +59,14 @@ pub fn print(self: *Printer, module: *const Ast.Module) ![]const u8 {
 
     self.buf.clearRetainingCapacity();
     try self.printModule(module);
+
+    // Post: indent must have unwound. A non-zero value means a printer
+    // path forgot to close a block — reusing this Printer would emit
+    // every subsequent module pre-indented.
+    std.debug.assert(self.indent == 0);
+    // Post: source-map line/col stay within sane bounds. Output can't
+    // have more lines than source bytes (every newline is one source byte).
+    std.debug.assert(self.output_line <= module.source.len);
     return self.buf.items;
 }
 
