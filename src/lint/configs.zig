@@ -35,29 +35,50 @@ pub const recommended = Config{
     },
 };
 
+pub const style = Config{
+    .name = "@wgslender/style",
+    .rules = &.{
+        .{ .id = "naming-convention", .severity = .warning },
+    },
+};
+
 pub const performance = Config{
     .name = "@wgslender/performance",
     .rules = &.{
-        .{ .id = "no-redundant-casts", .severity = .warning },
-        .{ .id = "prefer-mix", .severity = .warning },
         .{ .id = "no-large-local-arrays", .severity = .warning },
-        .{ .id = "prefer-workgroup-shared", .severity = .warning },
     },
 };
 
 pub const portability = Config{
     .name = "@wgslender/portability",
     .rules = &.{
-        .{ .id = "no-f16-without-extension", .severity = .@"error" },
         .{ .id = "require-entry-point-attrs", .severity = .@"error" },
         .{ .id = "consistent-binding-annotations", .severity = .warning },
     },
 };
 
+/// "Opt-in strictness" meta-pack: everything except rules that are
+/// typically noisy (no-magic-numbers). Useful for CI gates on new
+/// projects.
+pub const strict = Config{
+    .name = "@wgslender/strict",
+    .rules = &.{
+        .{ .id = "no-unused-vars", .severity = .@"error" },
+        .{ .id = "no-dead-code", .severity = .@"error" },
+        .{ .id = "no-unused-binding", .severity = .@"error" },
+        .{ .id = "naming-convention", .severity = .warning },
+        .{ .id = "no-large-local-arrays", .severity = .warning },
+        .{ .id = "require-entry-point-attrs", .severity = .@"error" },
+        .{ .id = "consistent-binding-annotations", .severity = .@"error" },
+    },
+};
+
 pub const all = [_]*const Config{
     &recommended,
+    &style,
     &performance,
     &portability,
+    &strict,
 };
 
 pub fn byName(name: []const u8) ?*const Config {

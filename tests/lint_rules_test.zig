@@ -379,6 +379,278 @@ test "no-unused-binding: multiple unused bindings each reported" {
 }
 
 // =========================================================================
+// naming-convention (W0200)
+// =========================================================================
+
+const naming_opts = wgslender.Linter.Options{
+    .rules = &.{.{ .id = "naming-convention", .severity = .warning }},
+};
+
+test "naming-convention: snake_case function fires warning" {
+    var r = try runLint("fn snake_fn() -> f32 { return 1.0; }", naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0200", "snake_fn"));
+    try std.testing.expect(hasCodeContaining(r, "W0200", "camelCase"));
+}
+
+test "naming-convention: camelCase function passes" {
+    var r = try runLint("fn goodName() -> f32 { return 1.0; }", naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0200"));
+}
+
+test "naming-convention: lowercase const fires (wants SCREAMING_SNAKE_CASE)" {
+    var r = try runLint("const pi: f32 = 3.14;", naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0200", "SCREAMING_SNAKE_CASE"));
+}
+
+test "naming-convention: SCREAMING_SNAKE const passes" {
+    var r = try runLint("const PI: f32 = 3.14;", naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0200"));
+}
+
+test "naming-convention: lowercase struct fires (wants PascalCase)" {
+    var r = try runLint("struct my_struct { x: f32 }", naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0200", "my_struct"));
+    try std.testing.expect(hasCodeContaining(r, "W0200", "PascalCase"));
+}
+
+test "naming-convention: PascalCase struct passes" {
+    var r = try runLint("struct MyStruct { x: f32 }", naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0200"));
+}
+
+test "naming-convention: entry point is excluded" {
+    var r = try runLint("@compute @workgroup_size(1) fn bad_name() {}", naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0200"));
+}
+
+test "naming-convention: external binding is excluded (api surface)" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> my_uniform: f32;
+        \\@compute @workgroup_size(1) fn main() { let x = my_uniform; _ = x; }
+    , naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0200"));
+}
+
+test "naming-convention: leading underscore opts out" {
+    var r = try runLint("fn _helper() -> f32 { return 1.0; } fn main() -> f32 { return _helper(); }", naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0200"));
+}
+
+// =========================================================================
+// require-entry-point-attrs (W0206)
+// =========================================================================
+
+const portability_opts = wgslender.Linter.Options{
+    .extends = &.{"@wgslender/portability"},
+};
+
+test "require-entry-point-attrs: @compute without @workgroup_size is flagged" {
+    var r = try runLint("@compute fn bad() {}", portability_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0206", "missing @workgroup_size"));
+}
+
+test "require-entry-point-attrs: @compute with @workgroup_size passes" {
+    var r = try runLint("@compute @workgroup_size(1) fn good() {}", portability_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0206"));
+}
+
+test "require-entry-point-attrs: @vertex without workgroup is not flagged" {
+    var r = try runLint("@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0.0); }", portability_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0206"));
+}
+
+test "require-entry-point-attrs: default severity is error" {
+    var r = try runLint("@compute fn bad() {}", portability_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasSeverity(r, "W0206", .@"error"));
+}
+
+// =========================================================================
+// consistent-binding-annotations (W0208)
+// =========================================================================
+
+test "consistent-binding-annotations: uniform var missing @group and @binding" {
+    // Parser requires both for a valid var, but let's at least exercise
+    // one missing.
+    var r = try runLint(
+        \\@group(0) var<uniform> partial: f32;
+        \\@compute @workgroup_size(1) fn main() { let x = partial; _ = x; }
+    , portability_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0208", "@binding"));
+}
+
+test "consistent-binding-annotations: missing @group" {
+    var r = try runLint(
+        \\@binding(0) var<uniform> partial: f32;
+        \\@compute @workgroup_size(1) fn main() { let x = partial; _ = x; }
+    , portability_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0208", "@group"));
+}
+
+test "consistent-binding-annotations: complete binding passes" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> u: f32;
+        \\@compute @workgroup_size(1) fn main() { let x = u; _ = x; }
+    , portability_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0208"));
+}
+
+test "consistent-binding-annotations: non-resource var ignored" {
+    var r = try runLint(
+        \\var<private> pv: f32;
+        \\@compute @workgroup_size(1) fn main() { pv = 1.0; }
+    , portability_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0208"));
+}
+
+// =========================================================================
+// no-magic-numbers (W0202)
+// =========================================================================
+
+const magic_opts = wgslender.Linter.Options{
+    .rules = &.{.{ .id = "no-magic-numbers", .severity = .warning }},
+};
+
+test "no-magic-numbers: plain literal in expression is flagged" {
+    var r = try runLint("fn f() -> f32 { return 3.14; }", magic_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0202", "3.14"));
+}
+
+test "no-magic-numbers: allowlisted 0/1/2 pass" {
+    var r = try runLint("fn f() -> f32 { return 0.0 + 1.0 * 2.0; }", magic_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0202"));
+}
+
+test "no-magic-numbers: integer 42 is flagged" {
+    var r = try runLint("fn f() -> i32 { return 42; }", magic_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0202", "42"));
+}
+
+test "no-magic-numbers: u32 literal 255 is flagged" {
+    var r = try runLint("fn f() -> u32 { return 255u; }", magic_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0202", "255"));
+}
+
+test "no-magic-numbers: inside const declaration is skipped" {
+    var r = try runLint("const PI: f32 = 3.14159;", magic_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0202"));
+}
+
+test "no-magic-numbers: switch selectors exempt (pattern literals)" {
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 {
+        \\  switch x {
+        \\    case 42: { return 0; }
+        \\    default: { return 1; }
+        \\  }
+        \\}
+    , magic_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0202"));
+}
+
+// =========================================================================
+// no-large-local-arrays (W0204)
+// =========================================================================
+
+const large_array_opts = wgslender.Linter.Options{
+    .rules = &.{.{ .id = "no-large-local-arrays", .severity = .warning }},
+};
+
+test "no-large-local-arrays: large local array is flagged" {
+    var r = try runLint("fn f() { var big: array<f32, 2048>; _ = big[0]; }", large_array_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0204", "big"));
+    try std.testing.expect(hasCodeContaining(r, "W0204", "2048"));
+}
+
+test "no-large-local-arrays: small local array is not flagged" {
+    var r = try runLint("fn f() { var small: array<f32, 16>; _ = small[0]; }", large_array_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0204"));
+}
+
+test "no-large-local-arrays: threshold boundary (1024 passes)" {
+    var r = try runLint("fn f() { var b: array<f32, 1024>; _ = b[0]; }", large_array_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0204"));
+}
+
+test "no-large-local-arrays: module-scope arrays are not flagged" {
+    var r = try runLint("var<workgroup> shared: array<f32, 65536>;\n@compute @workgroup_size(1) fn main() { shared[0] = 1.0; }", large_array_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0204"));
+}
+
+test "no-large-local-arrays: named size (const expr) is not flagged" {
+    // Without const-expr evaluation we can't determine the size, so we
+    // intentionally skip. Documented behavior.
+    var r = try runLint("const N: u32 = 4096;\nfn f() { var a: array<f32, N>; _ = a[0]; }", large_array_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0204"));
+}
+
+test "no-large-local-arrays: configurable maxSize option" {
+    // Options parse through the rule's own readThreshold. We need to pass
+    // a JSON value; build one with std.json.
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"maxSize\":256}", .{});
+    defer parsed.deinit();
+
+    var r = try runLint("fn f() { var a: array<f32, 512>; _ = a[0]; }", .{
+        .rules = &.{.{
+            .id = "no-large-local-arrays",
+            .severity = .warning,
+            .options = parsed.value,
+        }},
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0204", "512"));
+}
+
+// =========================================================================
+// Config packs
+// =========================================================================
+
+test "configs: @wgslender/style includes naming-convention" {
+    const cfg = wgslender.Linter.Configs.byName("@wgslender/style").?;
+    var found = false;
+    for (cfg.rules) |r| {
+        if (std.mem.eql(u8, r.id, "naming-convention")) found = true;
+    }
+    try std.testing.expect(found);
+}
+
+test "configs: @wgslender/strict elevates core rules to error" {
+    const cfg = wgslender.Linter.Configs.byName("@wgslender/strict").?;
+    for (cfg.rules) |r| {
+        if (std.mem.eql(u8, r.id, "no-unused-vars")) {
+            try std.testing.expectEqual(Severity.@"error", r.severity);
+        }
+    }
+}
+
+// =========================================================================
 // Cross-rule interactions
 // =========================================================================
 
