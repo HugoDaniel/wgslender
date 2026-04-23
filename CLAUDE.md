@@ -25,6 +25,13 @@ echo 'fn main() {}' | ./zig-out/bin/wgslender          # From stdin
 ./zig-out/bin/wgslender validate shader.wgsl           # Semantic validation
 ./zig-out/bin/wgslender validate --format json shader.wgsl  # JSON diagnostics
 
+# Lint (configurable rule-based linting, ESLint-inspired)
+./zig-out/bin/wgslender lint shader.wgsl                          # @wgslender/recommended by default
+./zig-out/bin/wgslender lint --extends @wgslender/strict shader.wgsl
+./zig-out/bin/wgslender lint --rule no-magic-numbers=warn shader.wgsl
+./zig-out/bin/wgslender lint --fix shader.wgsl                    # apply autofixes in place
+./zig-out/bin/wgslender lint --format json shader.wgsl
+
 # Compression-friendly minification (better DEFLATE, 5-29% gzip savings)
 ./zig-out/bin/wgslender --sort-declarations --scope-local-rename shader.wgsl
 
@@ -64,6 +71,15 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/Types.zig` | WGSL type system representation |
 | `src/Builtins.zig` | Builtin function signatures and uniformity info |
 | `src/Validator.zig` | Semantic validation (types, symbols, uniformity) |
+| `src/lint/Linter.zig` | Lint orchestrator: resolves config packs + user overrides, runs enabled rules, applies disable comments |
+| `src/lint/Rule.zig` | Rule struct + Meta (id, code, category, default_severity, fixable, requires_dce) |
+| `src/lint/Context.zig` | Per-invocation state passed to each rule — `report()`, `makeRange()`, `fmt()`, config-resolved severity |
+| `src/lint/Disable.zig` | Parses `wgslender-disable[-next-line\|-line\|-file]` comments; filters diagnostics post-lint |
+| `src/lint/Fixer.zig` | Applies non-overlapping `Entry.fix` splices to source (ESLint-style) |
+| `src/lint/registry.zig` | Comptime `[_]Rule{...}` listing every built-in rule |
+| `src/lint/configs.zig` | Shareable packs: @wgslender/recommended, /style, /performance, /portability, /strict |
+| `src/lint/walk.zig` | Read-only expression/statement walker — used by rules that scan function bodies |
+| `src/lint/rules/` | Individual rule modules (one file per rule, exporting `pub const rule: Rule`) |
 | `src/SourceMap.zig` | Source map v3 generation with VLQ encoding |
 | `src/Reflect.zig` | Shader reflection and WGSL memory layout computation |
 | `src/Compiler.zig` | WGSL → WASM binary shader compiler (BPE + WASM codegen) |
@@ -93,6 +109,19 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 - With `--mangle-external-bindings`: Rename directly
 
 ## Common Tasks
+
+### Adding a New Lint Rule
+
+1. Create `src/lint/rules/<rule>.zig` exporting `pub const rule: Rule = .{ .meta = ..., .run = ... }`.
+2. Import it in `src/lint/registry.zig` and add to the `all` array.
+3. Add the rule's id to the appropriate pack in `src/lint/configs.zig` (or leave out for opt-in rules).
+4. If the rule produces autofixes, set `meta.fixable = true` and attach `Entry.fix` in `run()` — Fixer will splice non-overlapping fixes automatically.
+5. If the rule reads `Symbol.is_live`, set `meta.requires_dce = true` so the Linter runs `Dce.mark` before the rule.
+6. Register a diagnostic code in `src/Diagnostic.zig` `Code` struct (W02xx for new lint rules).
+7. Add unit tests to `tests/lint_rules_test.zig` following the `runLint` + `hasCodeContaining` pattern.
+8. If the rule's pack changes, mirror in `npm/wgslender/configs.js` + `configs.d.ts`.
+
+Rules see a `Context` with `.module`, `.source`, `.symbols`, `.arena`, and `.report()`. Rules may use `AstVisit.visit` internally, walk `ctx.module.symbols.items`, or use `src/lint/walk.zig` for expression scans — the Linter doesn't prescribe traversal shape. Severity is config-resolved; `ctx.report()` stamps `code`, `source`, and effective severity automatically.
 
 ### Adding a New AST Node Type
 

@@ -42,6 +42,7 @@ console.log(info.entryPoints); // Entry point metadata
 | ------------------ | -------------------------------------------------------------- |
 | **Minification**   | Whitespace removal, identifier renaming, dead code elimination |
 | **Validation**     | Type checking, symbol resolution, uniformity analysis, rich diagnostics |
+| **Lint**           | ESLint-style configurable rules + shareable configs + disable comments |
 | **Reflection**     | Extract bindings, struct layouts, entry points                 |
 | **Source Maps**    | Debug minified shaders with v3 source maps                     |
 | **Binary shaders** | Compile WGSL to `.wasm` — BPE compression + tiny WASM decoder  |
@@ -139,9 +140,53 @@ wgslender validate --strict shader.wgsl  # Warnings as errors
 wgslender reflect shader.wgsl
 wgslender reflect --compact shader.wgsl
 
+# Lint - run configurable quality rules
+wgslender lint shader.wgsl                                 # @wgslender/recommended by default
+wgslender lint --extends @wgslender/strict shader.wgsl     # CI-grade preset
+wgslender lint --rule no-unused-vars=error shader.wgsl     # override a rule
+wgslender lint --format json shader.wgsl                   # machine-readable
+wgslender lint --fix shader.wgsl                           # apply autofixes in place
+wgslender lint --fix-dry-run shader.wgsl                   # preview fixes to stdout
+
 # Compile - produce a binary shader (.wasm)
 wgslender compile shader.wgsl -o shader.wasm
 ```
+
+### Lint Rules
+
+Rules are organized into shareable config packs:
+
+| Pack                       | Rules                                                                      |
+| -------------------------- | -------------------------------------------------------------------------- |
+| `@wgslender/recommended`   | `no-unused-vars`, `no-dead-code`, `no-unused-binding`                      |
+| `@wgslender/style`         | `naming-convention`                                                        |
+| `@wgslender/performance`   | `no-large-local-arrays`                                                    |
+| `@wgslender/portability`   | `require-entry-point-attrs`, `consistent-binding-annotations`              |
+| `@wgslender/strict`        | Everything above (except `no-magic-numbers`) at error severity — CI gate   |
+
+Opt-in rule not included in any pack by default: `no-magic-numbers` (flags
+bare numeric literals outside `{-1, 0, 1, 2}`).
+
+### Disable Comments
+
+Silence specific rules inline:
+
+```wgsl
+// wgslender-disable-next-line no-unused-vars
+fn scratchHelper() {}
+
+let magic = 42; // wgslender-disable-line no-magic-numbers
+
+/* wgslender-disable no-magic-numbers */
+let a = 99;
+let b = 77;
+/* wgslender-enable no-magic-numbers */
+
+// wgslender-disable-file naming-convention
+```
+
+Rule ids are comma-separated. An empty list silences every lint rule. Pass
+`--report-unused-disable-directives` to be warned about dangling directives.
 
 ## What Gets Preserved
 
@@ -188,6 +233,22 @@ const info = reflect(source);
 for (const b of info.bindings) {
   console.log(`@group(${b.group}) @binding(${b.binding}) ${b.name}: ${b.type}`);
 }
+
+// Lint
+import { lint, lintAndFix } from "wgslender";
+import { recommended, strict } from "wgslender/configs";
+
+const report = lint(source, {
+  extends: [recommended.name],
+  rules: { "no-unused-vars": "error" },
+});
+console.log(`${report.errorCount} errors, ${report.warningCount} warnings`);
+for (const d of report.diagnostics) {
+  console.log(`${d.line}:${d.column} ${d.severity} [${d.code}] ${d.message}`);
+}
+
+// Apply autofixes and rewrite the source in one call
+const { fixed } = lintAndFix(source, { extends: [strict.name] });
 ```
 
 See [npm/wgslender/README.md](npm/wgslender/README.md) for full API documentation.
@@ -237,7 +298,13 @@ Create `wgslender.json` in your project:
   "minifyIdentifiers": true,
   "minifySyntax": true,
   "treeShaking": true,
-  "keepNames": ["myUniform"]
+  "keepNames": ["myUniform"],
+
+  "extends": ["@wgslender/recommended"],
+  "rules": {
+    "no-unused-vars": "error",
+    "no-magic-numbers": ["warn", { "allowlist": [-1, 0, 1, 2] }]
+  }
 }
 ```
 
