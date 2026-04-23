@@ -2121,7 +2121,8 @@ test "builtins: requiresUniform correctness" {
         "dpdxFine",         "dpdyFine",          "fwidthFine",
         "textureSample",    "textureSampleBias", "textureSampleCompare",
         "workgroupBarrier", "storageBarrier",    "textureBarrier",
-        "quadBroadcast",    "quadSwapDiagonal",  "quadSwapX",          "quadSwapY",
+        "quadBroadcast",    "quadSwapDiagonal",  "quadSwapX",
+        "quadSwapY",
     };
     for (names_uniform) |name| {
         const b = lookup(name).?;

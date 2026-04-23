@@ -150,7 +150,10 @@ const NativeServer = struct {
             .@"error" => return,
         };
         // workspace/configuration returns one LSPAny per requested item.
-        const arr = switch (result) { .array => |a| a, else => return };
+        const arr = switch (result) {
+            .array => |a| a,
+            else => return,
+        };
         if (arr.items.len == 0) return;
         self.handler.applyClientSettings(arr.items[0]);
         self.republishAllDocuments();
@@ -985,4 +988,3 @@ const NativeServer = struct {
         }
     }
 };
-

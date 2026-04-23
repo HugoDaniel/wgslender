@@ -276,7 +276,7 @@ test "MG13: moved prev.deinit() is a no-op under testing.allocator" {
         defer updated.deinit();
         try std.testing.expect(updated.reused);
         try std.testing.expect(prev.moved);
-        prev.deinit();  // sentinel-guard short-circuit; allocator sees no destroy.
+        prev.deinit(); // sentinel-guard short-circuit; allocator sees no destroy.
     }
 }
 
@@ -351,7 +351,7 @@ test "MG16: LSP-handler pattern does not trip the moved guard" {
         .end = 24,
         .new_text = "9",
     });
-    prev.deinit();  // prev.moved == true here — deinit must still work.
+    prev.deinit(); // prev.moved == true here — deinit must still work.
 
     var mut_updated = updated;
     defer mut_updated.deinit();

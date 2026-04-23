@@ -199,4 +199,3 @@ test "infer: break if rejects non-bool condition" {
     defer r.deinit(std.testing.allocator);
     try std.testing.expect(hasErrorWithCode(r, "E0200"));
 }
-

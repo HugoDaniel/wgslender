@@ -824,9 +824,7 @@ test "reflect: nested array binding" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const result = try reflectSource(alloc,
-        "@group(0) @binding(0) var<storage> matrix: array<array<f32, 4>, 10>;"
-    );
+    const result = try reflectSource(alloc, "@group(0) @binding(0) var<storage> matrix: array<array<f32, 4>, 10>;");
     try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
     const outer = result.bindings.items[0].array orelse return error.TestExpectedArray;
     try std.testing.expectEqual(@as(u32, 1), outer.depth);
@@ -849,9 +847,7 @@ test "reflect: deeply nested array binding" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const result = try reflectSource(alloc,
-        "@group(0) @binding(0) var<storage> tensor: array<array<array<f32, 2>, 3>, 4>;"
-    );
+    const result = try reflectSource(alloc, "@group(0) @binding(0) var<storage> tensor: array<array<array<f32, 2>, 3>, 4>;");
     try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
 
     const l1 = result.bindings.items[0].array orelse return error.TestExpectedArray;
@@ -902,9 +898,7 @@ test "reflect: atomic array elements" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const result = try reflectSource(alloc,
-        "@group(0) @binding(0) var<storage, read_write> counters: array<atomic<u32>, 64>;"
-    );
+    const result = try reflectSource(alloc, "@group(0) @binding(0) var<storage, read_write> counters: array<atomic<u32>, 64>;");
     try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
     const arr = result.bindings.items[0].array orelse return error.TestExpectedArray;
     try std.testing.expectEqualStrings("atomic<u32>", arr.element_type);
@@ -916,9 +910,7 @@ test "reflect: mat4x4 array elements" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const result = try reflectSource(alloc,
-        "@group(0) @binding(0) var<storage> bones: array<mat4x4f, 100>;"
-    );
+    const result = try reflectSource(alloc, "@group(0) @binding(0) var<storage> bones: array<mat4x4f, 100>;");
     try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
     const arr = result.bindings.items[0].array orelse return error.TestExpectedArray;
     try std.testing.expectEqualStrings("mat4x4f", arr.element_type);

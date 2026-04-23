@@ -1065,8 +1065,8 @@ fn removeDeclarationByIdImpl(
 
     const edits = (try Edits.removeDeclarationEdit(wasm_allocator, module, target)) orelse
         return try packJsonResultAlloc(
-        "{\"edits\":[],\"error\":\"not a removable declaration\"}",
-    );
+            "{\"edits\":[],\"error\":\"not a removable declaration\"}",
+        );
     defer wasm_allocator.free(edits);
 
     return try packEditsJson(edits, "");
@@ -1165,8 +1165,8 @@ fn changeTypeByIdImpl(
 
     const edits = (try Edits.changeTypeEdit(wasm_allocator, module, target, new_type)) orelse
         return try packJsonResultAlloc(
-        "{\"edits\":[],\"error\":\"no type annotation or invalid replacement\"}",
-    );
+            "{\"edits\":[],\"error\":\"no type annotation or invalid replacement\"}",
+        );
     defer wasm_allocator.free(edits);
 
     return try packEditsJson(edits, new_type);

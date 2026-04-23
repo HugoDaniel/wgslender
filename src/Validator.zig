@@ -3007,7 +3007,11 @@ fn checkIntLiteralRange(v: *Validator, e: *Ast.LiteralExpr, kind: IntLiteralKind
         .abstract => @as(u64, std.math.maxInt(i64)) + 1,
     };
     if (magnitude > limit) {
-        const type_name = switch (kind) { .u => "u32", .i => "i32", .abstract => "abstract-int" };
+        const type_name = switch (kind) {
+            .u => "u32",
+            .i => "i32",
+            .abstract => "abstract-int",
+        };
         v.addErrorWithCodeR(
             .{ .start = e.loc, .end = e.loc +| @as(u32, @intCast(val.len)) },
             Diagnostic.Code.integer_overflow,

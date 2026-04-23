@@ -737,7 +737,6 @@ fn isSymbolFreeAnchor(k: Cst.Kind) bool {
     };
 }
 
-
 // =========================================================================
 // In-place hot-path variant (see `docs/arena-transfer-zero-alloc-plan.md`).
 //
@@ -1084,12 +1083,10 @@ fn tryCompoundSpliceInPlace(
     //    includes trivia; the AST compound's span uses non-trivia
     //    boundaries. Use the OLD scope map to retrieve the block scope
     //    the old compound opened, then match by scope → compound.
-    const old_block_scope = prev.scope_for_cst_node.get(@intFromEnum(new_subtree_node))
-        orelse return error.ScopeSpliceMalformed;
+    const old_block_scope = prev.scope_for_cst_node.get(@intFromEnum(new_subtree_node)) orelse return error.ScopeSpliceMalformed;
     const parent_scope = old_block_scope.parent orelse return error.ScopeSpliceMalformed;
 
-    const old_compound = findCompoundBySpan(prev.module, old_anchor_span)
-        orelse return error.AstSlotNotFound;
+    const old_compound = findCompoundBySpan(prev.module, old_anchor_span) orelse return error.AstSlotNotFound;
 
     // 2. Sub-walk the old compound. Scopes_in_order is the DFS listing
     //    starting with the compound's own scope (the walker calls
@@ -1270,12 +1267,10 @@ fn tryDeclStmtSpliceInPlace(
     // 1. Revisit-root CST node = the enclosing compound_stmt. The anchor
     //    CST node was spliced into prev.cst by `Cst.spliceSubtree`, so
     //    its parent chain is still walkable.
-    const parent_compound_cst = enclosingCompoundCst(&new_tree, new_subtree_node)
-        orelse return error.DeclStmtNotInCompound;
+    const parent_compound_cst = enclosingCompoundCst(&new_tree, new_subtree_node) orelse return error.DeclStmtNotInCompound;
 
     // 2. Parent AST compound + parent block scope.
-    const parent_scope = prev.scope_for_cst_node.get(@intFromEnum(parent_compound_cst))
-        orelse return error.ScopeSpliceMalformed;
+    const parent_scope = prev.scope_for_cst_node.get(@intFromEnum(parent_compound_cst)) orelse return error.ScopeSpliceMalformed;
 
     // findCompoundBySpan wants the parent compound's OLD span. The
     // parent compound's CST range spans some bytes in NEW coords (its
@@ -1295,8 +1290,7 @@ fn tryDeclStmtSpliceInPlace(
         .start = parent_cst_node.start,
         .end = @intCast(@as(i64, parent_cst_node.end) - delta_for_parent),
     };
-    const parent_compound = findCompoundBySpan(prev.module, parent_span_old)
-        orelse return error.AstSlotNotFound;
+    const parent_compound = findCompoundBySpan(prev.module, parent_span_old) orelse return error.AstSlotNotFound;
 
     // 3. Find the decl_stmt slot in parent_compound.stmts by span
     //    containment (the anchor's CST range contains the AST decl_stmt's
@@ -1925,7 +1919,7 @@ pub fn classifyEdit(
         const ol = old_ends[i] - old_starts[i];
         const nl = new_ends[i] - new_starts[i];
         if (ol != nl) return .semantic;
-        if (!std.mem.eql(u8, old_source[old_starts[i] .. old_ends[i]], new_source[new_starts[i] .. new_ends[i]])) {
+        if (!std.mem.eql(u8, old_source[old_starts[i]..old_ends[i]], new_source[new_starts[i]..new_ends[i]])) {
             return .semantic;
         }
     }

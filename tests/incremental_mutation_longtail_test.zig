@@ -3568,4 +3568,3 @@ test "M24.b: edit spans a function-body closing `}` into the next decl" {
     try expectUseCountsMatch(updated.module, oracle.module);
     try expectErrorsOracleMatch(updated.errors, oracle.errors);
 }
-

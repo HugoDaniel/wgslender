@@ -93,11 +93,11 @@ fn wrapMain(comptime body: []const u8) [:0]const u8 {
 
 test "unary float builtins reject non-float scalar" {
     const names = [_][]const u8{
-        "sin",     "cos",       "tan",         "asin",      "acos",       "atan",
-        "sinh",    "cosh",      "tanh",        "asinh",     "acosh",      "atanh",
-        "exp",     "exp2",      "log",         "log2",      "sqrt",       "inverseSqrt",
-        "floor",   "ceil",      "round",       "trunc",     "fract",      "saturate",
-        "degrees", "radians",   "quantizeToF16",
+        "sin",     "cos",     "tan",           "asin",  "acos",  "atan",
+        "sinh",    "cosh",    "tanh",          "asinh", "acosh", "atanh",
+        "exp",     "exp2",    "log",           "log2",  "sqrt",  "inverseSqrt",
+        "floor",   "ceil",    "round",         "trunc", "fract", "saturate",
+        "degrees", "radians", "quantizeToF16",
     };
     for (names) |n| {
         var buf: [128]u8 = undefined;
@@ -158,8 +158,8 @@ test "ternary float builtins point at correct bad arg" {
 
 test "integer-only builtins reject float arg" {
     const names = [_][]const u8{
-        "countOneBits",      "countLeadingZeros", "countTrailingZeros",
-        "reverseBits",       "firstLeadingBit",   "firstTrailingBit",
+        "countOneBits", "countLeadingZeros", "countTrailingZeros",
+        "reverseBits",  "firstLeadingBit",   "firstTrailingBit",
     };
     for (names) |n| {
         var fixture_buf: [128]u8 = undefined;

@@ -603,8 +603,8 @@ test "F-EXACT E9: compound_stmt re-order preserves every live use_count" {
         "F-EXACT E9",
         src,
         .{
-            .start    = off,
-            .end      = off + @as(u32, @intCast(before.len)),
+            .start = off,
+            .end = off + @as(u32, @intCast(before.len)),
             .new_text = after,
         },
     );
@@ -626,8 +626,8 @@ test "F-EXACT E10: decl_stmt init change adjusts a.use_count correctly" {
         "F-EXACT E10",
         src,
         .{
-            .start    = init_off,
-            .end      = init_off + @as(u32, @intCast(before.len)),
+            .start = init_off,
+            .end = init_off + @as(u32, @intCast(before.len)),
             .new_text = "let q = 2;",
         },
     );
@@ -690,8 +690,8 @@ test "F-EXACT E13: twins — fn a's `i` use swapped for literal (a.i dies)" {
         "F-EXACT E13",
         twin_base,
         .{
-            .start    = use_off,
-            .end      = use_off + @as(u32, @intCast("let x = i;".len)),
+            .start = use_off,
+            .end = use_off + @as(u32, @intCast("let x = i;".len)),
             .new_text = "let x = 1;",
         },
     );
@@ -720,8 +720,8 @@ test "F-EXACT E15: twins — append `let w = i + i;` to fn a body" {
         "F-EXACT E15",
         twin_base,
         .{
-            .start    = close_off,
-            .end      = close_off,
+            .start = close_off,
+            .end = close_off,
             .new_text = " let w = i + i;",
         },
     );

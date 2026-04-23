@@ -1781,4 +1781,3 @@ test "validation: errors/operations/shift_lhs_float" {
     defer arena.deinit();
     try runValidationTest(arena.allocator(), validation_data.@"errors/operations/shift_lhs_float");
 }
-

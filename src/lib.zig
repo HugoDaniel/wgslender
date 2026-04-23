@@ -761,8 +761,8 @@ export fn wgslender_change_type_by_id_c(
         return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
     const edits = maybe_edits orelse
         return jsonOutPayload(
-        "{\"edits\":[],\"error\":\"no type annotation or invalid replacement\"}",
-    );
+            "{\"edits\":[],\"error\":\"no type annotation or invalid replacement\"}",
+        );
 
     var json: std.ArrayListUnmanaged(u8) = .empty;
     buildEditsJson(&json, alloc, edits, new_type) catch

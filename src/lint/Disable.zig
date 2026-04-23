@@ -41,7 +41,7 @@ pub const Kind = enum {
     disable_line,
     disable_next_line,
     disable,
-    @"enable",
+    enable,
     disable_file,
 };
 
@@ -140,7 +140,7 @@ fn tryParseDirective(
         .{ .s = "wgslender-disable-line", .k = .disable_line },
         .{ .s = "wgslender-disable-file", .k = .disable_file },
         .{ .s = "wgslender-disable", .k = .disable },
-        .{ .s = "wgslender-enable", .k = .@"enable" },
+        .{ .s = "wgslender-enable", .k = .enable },
     };
     for (prefixes) |p| {
         if (std.mem.startsWith(u8, trimmed, p.s)) {
@@ -255,7 +255,7 @@ fn isSilenced(directives: *DirectiveList, rule_id: []const u8, line: u32) bool {
         if (d.kind == .disable and matches(d, rule_id)) {
             disabled = true;
             last_disable = d;
-        } else if (d.kind == .@"enable" and matches(d, rule_id)) {
+        } else if (d.kind == .enable and matches(d, rule_id)) {
             disabled = false;
         }
     }
@@ -334,7 +334,7 @@ test "parse: disable/enable block" {
     defer list.deinit(a);
     try std.testing.expectEqual(@as(usize, 2), list.items.len);
     try std.testing.expectEqual(Kind.disable, list.items[0].kind);
-    try std.testing.expectEqual(Kind.@"enable", list.items[1].kind);
+    try std.testing.expectEqual(Kind.enable, list.items[1].kind);
 }
 
 test "parse: multiple rules in one directive" {

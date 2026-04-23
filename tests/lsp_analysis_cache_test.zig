@@ -248,7 +248,7 @@ test "LA6: decl_stmt insert grows symbol table correctly" {
 
     const doc = handler.documents.getPtr(uri).?;
     // Insert `let y: i32 = 2; ` between the let and return.
-    const insert_off = at(doc.source, "return x") ;
+    const insert_off = at(doc.source, "return x");
     try handler.changeDocumentIncremental(
         uri,
         rangeFor(doc.source, insert_off, insert_off),
@@ -431,8 +431,7 @@ test "LA12: keystroke burst inside fn body — per-edit oracle match" {
         // Current literal may have grown/shrunk across edits; find its end.
         var lit_end = lit_start;
         while (lit_end < doc.source.len and
-            (doc.source[lit_end] >= '0' and doc.source[lit_end] <= '9'))
-            : (lit_end += 1)
+            (doc.source[lit_end] >= '0' and doc.source[lit_end] <= '9')) : (lit_end += 1)
         {}
 
         var buf: [8]u8 = undefined;

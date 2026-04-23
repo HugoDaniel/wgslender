@@ -277,21 +277,20 @@ fn expectFamily(name: []const u8, want: Overload.ScalarFamily) !void {
 
 test "spot-check: trig / exp / geometric builtins are .float" {
     const names = [_][]const u8{
-        "sin",     "cos",      "tan",     "asin",        "acos",       "atan",
-        "atan2",   "exp",      "exp2",    "log",         "log2",       "pow",
-        "sqrt",    "inverseSqrt", "floor", "ceil",       "round",      "trunc",
-        "fract",   "cross",    "normalize", "reflect",   "refract",    "faceForward",
-        "degrees", "radians",  "saturate", "fma",        "smoothstep",
-        "quantizeToF16",
+        "sin",     "cos",         "tan",       "asin",    "acos",       "atan",
+        "atan2",   "exp",         "exp2",      "log",     "log2",       "pow",
+        "sqrt",    "inverseSqrt", "floor",     "ceil",    "round",      "trunc",
+        "fract",   "cross",       "normalize", "reflect", "refract",    "faceForward",
+        "degrees", "radians",     "saturate",  "fma",     "smoothstep", "quantizeToF16",
     };
     for (names) |n| try expectFamily(n, .float);
 }
 
 test "spot-check: bit-counting and insert/extract are .integer" {
     const names = [_][]const u8{
-        "countOneBits",      "countLeadingZeros", "countTrailingZeros",
-        "reverseBits",       "firstLeadingBit",   "firstTrailingBit",
-        "extractBits",       "insertBits",
+        "countOneBits", "countLeadingZeros", "countTrailingZeros",
+        "reverseBits",  "firstLeadingBit",   "firstTrailingBit",
+        "extractBits",  "insertBits",
     };
     for (names) |n| try expectFamily(n, .integer);
 }

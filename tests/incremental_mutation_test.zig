@@ -904,7 +904,7 @@ test "SS-A6: 50-edit literal burst on the same return expression" {
         // Flip between single-digit literals.
         const off: u32 = @intCast(std.mem.indexOf(u8, cur.source, "return ").?);
         const digit_off: u32 = off + @as(u32, @intCast("return ".len));
-        var buf: [1]u8 = .{ @as(u8, '0') + @as(u8, @intCast(i % 10)) };
+        var buf: [1]u8 = .{@as(u8, '0') + @as(u8, @intCast(i % 10))};
         const next = try Incremental.reparse(gpa, &cur, .{
             .start = digit_off,
             .end = digit_off + 1,

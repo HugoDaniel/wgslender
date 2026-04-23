@@ -346,7 +346,7 @@ test "Linter: Diagnostic.source stamped on every entry" {
     defer analysis.deinit(std.testing.allocator);
 
     var result = try run(std.testing.allocator, &analysis, .{
-        .rules = &.{ .{ .id = "no-unused-vars", .severity = .warning } },
+        .rules = &.{.{ .id = "no-unused-vars", .severity = .warning }},
     });
     defer result.deinit(std.testing.allocator);
     try std.testing.expect(result.diagnostics.items().len >= 1);

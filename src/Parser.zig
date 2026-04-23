@@ -1125,7 +1125,6 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
 }
 
 fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
-
     if (isVecName(name)) {
         const size = name[3] - '0';
         const elem = try self.parseType("in vector type");

@@ -137,10 +137,7 @@ test "rename: reject all WGSL keywords" {
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult;
     // Test several keywords
-    for ([_][]const u8{ "if", "else", "for", "while", "loop", "switch", "case",
-                        "break", "continue", "return", "discard", "let", "var",
-                        "const", "struct", "alias", "fn", "override", "true", "false",
-                        "enable", "default" }) |kw| {
+    for ([_][]const u8{ "if", "else", "for", "while", "loop", "switch", "case", "break", "continue", "return", "discard", "let", "var", "const", "struct", "alias", "fn", "override", "true", "false", "enable", "default" }) |kw| {
         const edits = try ctx.handler.computeRename("test://file.wgsl", pos, kw);
         try std.testing.expect(edits == null);
     }
@@ -151,8 +148,7 @@ test "rename: reject WGSL reserved words" {
     const ctx = try setup(source);
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult;
-    for ([_][]const u8{ "abstract", "async", "await", "class", "enum", "import",
-                        "interface", "module", "namespace", "template", "typeof", "yield" }) |rw| {
+    for ([_][]const u8{ "abstract", "async", "await", "class", "enum", "import", "interface", "module", "namespace", "template", "typeof", "yield" }) |rw| {
         const edits = try ctx.handler.computeRename("test://file.wgsl", pos, rw);
         try std.testing.expect(edits == null);
     }

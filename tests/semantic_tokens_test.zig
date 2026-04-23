@@ -166,7 +166,10 @@ test "semantic tokens: multi-line source" {
     var has_line_delta = false;
     var i: usize = 0;
     while (i + 4 < data.len) : (i += 5) {
-        if (data[i] > 0) { has_line_delta = true; break; }
+        if (data[i] > 0) {
+            has_line_delta = true;
+            break;
+        }
     }
     try std.testing.expect(has_line_delta);
 }

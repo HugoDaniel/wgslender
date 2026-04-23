@@ -455,7 +455,9 @@ test "F-01: nested compound replacement keeps outer scope chain intact" {
     const pos: u32 = @intCast(std.mem.indexOf(u8, base_src, needle).?);
     const end: u32 = pos + @as(u32, @intCast(needle.len));
     var updated = try Incremental.reparse(gpa, &prev, .{
-        .start = pos, .end = end, .new_text = replacement,
+        .start = pos,
+        .end = end,
+        .new_text = replacement,
     });
     defer updated.deinit();
     try std.testing.expect(updated.reused);

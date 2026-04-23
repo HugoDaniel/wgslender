@@ -10,19 +10,18 @@ const wgslender = @import("wgslender");
 // =========================================================================
 
 const compute_toys_keep_names: []const []const u8 = &.{
-    "time",                          "mouse",          "custom",    "dispatch",
-    "screen",                        "pass_in",        "pass_out",  "channel0",
-    "channel1",                      "nearest",        "bilinear",  "trilinear",
-    "nearest_repeat",                "bilinear_repeat", "trilinear_repeat",
-    "_keyboard",                     "Time",           "Mouse",     "Custom",
-    "DispatchInfo",                  "int",            "uint",      "float",
-    "int2",                          "int3",           "int4",      "uint2",
-    "uint3",                         "uint4",          "float2",    "float3",
-    "float4",                        "bool2",          "bool3",     "bool4",
-    "float2x2",                      "float2x3",       "float2x4",
-    "float3x2",                      "float3x3",       "float3x4",
-    "float4x2",                      "float4x3",       "float4x4",
-    "keyDown",                       "assert",         "passStore", "passLoad",
+    "time",                          "mouse",           "custom",           "dispatch",
+    "screen",                        "pass_in",         "pass_out",         "channel0",
+    "channel1",                      "nearest",         "bilinear",         "trilinear",
+    "nearest_repeat",                "bilinear_repeat", "trilinear_repeat", "_keyboard",
+    "Time",                          "Mouse",           "Custom",           "DispatchInfo",
+    "int",                           "uint",            "float",            "int2",
+    "int3",                          "int4",            "uint2",            "uint3",
+    "uint4",                         "float2",          "float3",           "float4",
+    "bool2",                         "bool3",           "bool4",            "float2x2",
+    "float2x3",                      "float2x4",        "float3x2",         "float3x3",
+    "float3x4",                      "float4x2",        "float4x3",         "float4x4",
+    "keyDown",                       "assert",          "passStore",        "passLoad",
     "passSampleLevelBilinearRepeat", "main_image",
 };
 
