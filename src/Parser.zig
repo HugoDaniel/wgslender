@@ -2621,6 +2621,48 @@ test "parser: binary expressions" {
     try expectPrinted("const x = true || false;", "const x = true || false;\n");
 }
 
+test "parser: precedence — mul binds tighter than add" {
+    // `1 + 2 * 3` groups as `1 + (2 * 3)` — no parens needed on output.
+    try expectPrinted("const x = 1 + 2 * 3;", "const x = 1 + 2 * 3;\n");
+    try expectPrinted("const x = 1 * 2 + 3;", "const x = 1 * 2 + 3;\n");
+    // Parentheses flipping precedence must be preserved on output.
+    try expectPrinted("const x = (1 + 2) * 3;", "const x = (1 + 2) * 3;\n");
+    try expectPrinted("const x = 1 * (2 + 3);", "const x = 1 * (2 + 3);\n");
+}
+
+test "parser: precedence — negation binds tighter than binary ops" {
+    // `-1 + 2` groups as `(-1) + 2`, not `-(1 + 2)`.
+    try expectPrinted("const x = -1 + 2;", "const x = -1 + 2;\n");
+    try expectPrinted("const x = 2 + -1;", "const x = 2 + -1;\n");
+    // `!a && b` groups as `(!a) && b`.
+    try expectPrinted("const x = !a && b;", "const x = !a && b;\n");
+    // Overriding with parens must round-trip.
+    try expectPrinted("const x = -(1 + 2);", "const x = -(1 + 2);\n");
+    try expectPrinted("const x = !(a && b);", "const x = !(a && b);\n");
+}
+
+test "parser: precedence — left-associative infix" {
+    // `1 - 2 - 3` groups left: `(1 - 2) - 3`; the default form drops parens.
+    try expectPrinted("const x = 1 - 2 - 3;", "const x = 1 - 2 - 3;\n");
+    try expectPrinted("const x = 1 / 2 / 3;", "const x = 1 / 2 / 3;\n");
+    // Right-associating with explicit parens is NOT the same — parens must
+    // survive the round-trip so semantics are preserved.
+    try expectPrinted("const x = 1 - (2 - 3);", "const x = 1 - (2 - 3);\n");
+}
+
+test "parser: precedence — modulo vs comparison" {
+    // `a % b == 0` groups as `(a % b) == 0` — no parens needed.
+    try expectPrinted("const x = a % b == 0;", "const x = a % b == 0;\n");
+    try expectPrinted("const x = a == b % 2;", "const x = a == b % 2;\n");
+}
+
+test "parser: precedence — shift vs add" {
+    // WGSL gives shift lower precedence than add, so `1 + 2 << 3` is
+    // `(1 + 2) << 3` — parens optional in source but the meaning is fixed.
+    try expectPrinted("const x = (1 + 2) << 3;", "const x = (1 + 2) << 3;\n");
+    try expectPrinted("const x = 1 << (2 + 3);", "const x = 1 << (2 + 3);\n");
+}
+
 // -------------------------------------------------------------------------
 // Unary expression tests
 // -------------------------------------------------------------------------
