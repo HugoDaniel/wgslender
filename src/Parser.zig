@@ -17,8 +17,12 @@ const Tag = Lexer.Tag;
 
 arena: Allocator,
 source: [:0]const u8,
-token_tags: []const Tag,
-token_starts: []const u32,
+// Mutable so `expectTemplateClose` can split a `>>` lexer token into two
+// logical template closures (retag + start-bump). The underlying storage
+// is parser-owned (arena-allocated by `TokenStream.init`, or caller-owned
+// `MultiArrayList` items, both of which permit write-through).
+token_tags: []Tag,
+token_starts: []u32,
 pos: u32,
 
 // Symbol table
@@ -369,6 +373,47 @@ fn expect(self: *Parser, tag: Tag) bool {
     }
     self.advance();
     return true;
+}
+
+/// Consume a single `>` closing a template-argument list, splitting a
+/// compound trailing-`>` token in place if the lexer bundled two closures
+/// together (WGSL §3.8, classic C++ nested-template problem). Leaves the
+/// parser state exactly as if a real `.gt` had been consumed.
+///
+/// Rewrites the current non-trivia token entry (parser-owned storage) by
+/// retagging and bumping the start byte by 1. The CST's all-stream tokens
+/// are untouched, so the raw token trivia/byte tree remains faithful.
+fn expectTemplateClose(self: *Parser) bool {
+    switch (self.currentTag()) {
+        .gt => {
+            self.advance();
+            return true;
+        },
+        .gt_gt => {
+            // `>>` → consume the first `>`; the second becomes a `.gt` at
+            // the same index for the enclosing template close to pick up.
+            self.token_tags[self.pos] = .gt;
+            self.token_starts[self.pos] += 1;
+            return true;
+        },
+        .gt_gt_eq => {
+            // `>>=` → consume the first `>`; the remainder is `>=`.
+            self.token_tags[self.pos] = .gt_eq;
+            self.token_starts[self.pos] += 1;
+            return true;
+        },
+        .gt_eq => {
+            // `>=` → consume the `>`; the remainder is `=`.
+            self.token_tags[self.pos] = .eq;
+            self.token_starts[self.pos] += 1;
+            return true;
+        },
+        else => {
+            const msg = std.fmt.allocPrint(self.arena, "expected '>'", .{}) catch "expected '>'";
+            self.addError(msg);
+            return false;
+        },
+    }
 }
 
 fn tokenText(self: *const Parser, pos: u32) []const u8 {
@@ -1084,7 +1129,7 @@ fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.
     if (isVecName(name)) {
         const size = name[3] - '0';
         const elem = try self.parseType("in vector type");
-        _ = self.expect(.gt);
+        _ = self.expectTemplateClose();
         const typ = try self.arena.create(Ast.VecType);
         typ.* = .{
             .size = size,
@@ -1099,7 +1144,7 @@ fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.
         const cols = name[3] - '0';
         const rows = name[5] - '0';
         const elem = try self.parseType("in matrix type");
-        _ = self.expect(.gt);
+        _ = self.expectTemplateClose();
         const typ = try self.arena.create(Ast.MatType);
         typ.* = .{
             .cols = cols,
@@ -1118,7 +1163,7 @@ fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.
             self.expr_context = "in array size";
             size = try self.parseTemplateArgExpr();
         }
-        _ = self.expect(.gt);
+        _ = self.expectTemplateClose();
         const typ = try self.arena.create(Ast.ArrayType);
         typ.* = .{
             .elem_type = elem,
@@ -1134,7 +1179,7 @@ fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.
         const elem = try self.parseType("in pointer type");
         var access: Ast.AccessMode = .none;
         if (self.eat(.comma)) access = self.parseAccessMode();
-        _ = self.expect(.gt);
+        _ = self.expectTemplateClose();
         const typ = try self.arena.create(Ast.PtrType);
         typ.* = .{
             .address_space = addr,
@@ -1147,7 +1192,7 @@ fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.
 
     if (std.mem.eql(u8, name, "atomic")) {
         const elem = try self.parseType("in atomic type");
-        _ = self.expect(.gt);
+        _ = self.expectTemplateClose();
         const typ = try self.arena.create(Ast.AtomicType);
         typ.* = .{
             .elem_type = elem,
@@ -1170,7 +1215,7 @@ fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.
         } else if (info.kind != .depth and info.kind != .depth_multisampled) {
             typ.sampled_type = try self.parseType("in texture type");
         }
-        _ = self.expect(.gt);
+        _ = self.expectTemplateClose();
         typ.span = .{ .start = name_loc, .end = self.prevTokenEnd() };
         return .{ .texture = typ };
     }
@@ -1178,7 +1223,7 @@ fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.
     // Generic templated type
     _ = try self.parseType("in template arguments");
     while (self.eat(.comma)) _ = try self.parseType("in template arguments");
-    _ = self.expect(.gt);
+    _ = self.expectTemplateClose();
     const typ = try self.arena.create(Ast.IdentType);
     typ.* = .{
         .name = name,
@@ -1704,7 +1749,7 @@ fn parseBitcastExpr(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
     const args_marker = self.cstOpen();
     _ = self.expect(.lt);
     const dest_type = try self.parseType("in bitcast type");
-    _ = self.expect(.gt);
+    _ = self.expectTemplateClose();
     self.cstClose(args_marker, .template_args);
     if (self.currentTag() != .l_paren) {
         self.addError("expected '(' after bitcast<T>");
@@ -2694,12 +2739,27 @@ test "parser: bitcast — basic template form" {
 }
 
 test "parser: bitcast — vector target type" {
-    // Aliased vector form works today. The nested-template form
-    // `bitcast<vec4<u32>>(x)` hits the `>>` template-close split that WGSL
-    // §3.8 requires and wgslender's parser doesn't yet do — tracked
-    // separately; the Tint corpus skips those files for the same reason.
+    // Aliased forms.
     try expectPrinted("const x = bitcast<vec4f>(v);", "const x = bitcast<vec4f>(v);\n");
     try expectPrinted("const x = bitcast<vec3i>(w);", "const x = bitcast<vec3i>(w);\n");
+    // Nested-template forms — WGSL §3.8 requires splitting the trailing
+    // `>>` lexer token into two template closes.
+    try expectPrinted("const x = bitcast<vec4<u32>>(y);", "const x = bitcast<vec4<u32>>(y);\n");
+    try expectPrinted("const x = bitcast<vec3<f32>>(x);", "const x = bitcast<vec3<f32>>(x);\n");
+}
+
+test "parser: nested template close — array/ptr forms" {
+    // Non-bitcast forms also rely on the `>>` split.
+    try expectPrinted(
+        "alias A = array<vec4<u32>>;",
+        "alias A = array<vec4<u32>>;\n",
+    );
+    // Three levels of nesting — the final `>>` closes two templates at
+    // once, while the preceding single `>` closes one on its own.
+    try expectPrinted(
+        "alias P = ptr<function, array<f32, 4>>;",
+        "alias P = ptr<function, array<f32, 4>>;\n",
+    );
 }
 
 test "parser: bitcast — no template (plain function call)" {
