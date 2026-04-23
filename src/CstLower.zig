@@ -1770,23 +1770,77 @@ const LowerCtx = struct {
         const span = self.nonTriviaSpan(cur.node);
         _ = w.eatToken(.keyword_loop);
         const body_n = w.eatNodeKind(.compound_stmt) orelse return error.InvalidCst;
+        // Spec form (WGSL §8.8): `continuing` lives as the final statement
+        // inside the body compound. Siphon it out while the body scope is
+        // active so its scope slots in correctly between body and the next
+        // sibling — mirrors how `Parser.parseLoopBody` pushes `body →
+        // continuing` into `scopes_in_order`.
         var continuing: ?*Ast.CompoundStmt = null;
-        if (w.eatNodeKind(.continuing_stmt)) |cn| {
-            var cw = self.walker(self.nodeCursor(cn));
-            _ = cw.eatToken(.keyword_continuing);
-            if (cw.eatNodeKind(.compound_stmt)) |cbody| {
-                continuing = try self.lowerCompoundStmt(self.nodeCursor(cbody));
+        const body = try self.lowerLoopBody(self.nodeCursor(body_n), &continuing);
+        // Legacy form — `continuing_stmt` sits as a sibling of the body
+        // compound (older `loop { body } continuing { cont }` shape).
+        if (continuing == null) {
+            if (w.eatNodeKind(.continuing_stmt)) |cn| {
+                continuing = try self.lowerContinuingStmtNode(cn);
             }
-            // Optional trailing break_if inside continuing — ignored here
-            // because Ast.LoopStmt.continuing is just a compound block.
         }
         const node = try self.arena.create(Ast.LoopStmt);
         node.* = .{
-            .body = try self.lowerCompoundStmt(self.nodeCursor(body_n)),
+            .body = body,
             .continuing = continuing,
             .span = span,
         };
         return node;
+    }
+
+    /// Like `lowerCompoundStmt` but also siphons a trailing `.continuing_stmt`
+    /// child out into `out_continuing`, lowered while the body's block scope
+    /// is still the active scope so the continuing scope slots in after body
+    /// in `scopes_in_order` — exactly how `Parser.parseLoopBody` builds it.
+    fn lowerLoopBody(self: *LowerCtx, cur: Cst.Cursor, out_continuing: *?*Ast.CompoundStmt) error{ OutOfMemory, InvalidCst }!*Ast.CompoundStmt {
+        const stmt = try self.arena.create(Ast.CompoundStmt);
+        stmt.* = .{ .stmts = .empty, .span = self.nonTriviaSpan(cur.node) };
+
+        try self.pushScope(.block);
+
+        var w = self.walker(cur);
+        _ = w.eatToken(.l_brace);
+        while (true) {
+            if (w.i >= w.children.len) break;
+            if (w.peekTokenTag()) |t| {
+                if (t == .r_brace or t == .eof) break;
+                if (t == .semicolon) {
+                    _ = w.eatAnyToken();
+                    continue;
+                }
+            }
+            if (w.eatAnyNode()) |n| {
+                if (self.nodeKind(n) == .continuing_stmt) {
+                    out_continuing.* = try self.lowerContinuingStmtNode(n);
+                    continue;
+                }
+                if (try self.lowerStmt(n)) |s| try stmt.stmts.append(self.arena, s);
+            } else if (w.eatAnyToken()) |_| {
+                // advanced one token
+            } else {
+                break;
+            }
+        }
+        _ = w.eatToken(.r_brace);
+
+        self.popScope();
+        return stmt;
+    }
+
+    fn lowerContinuingStmtNode(self: *LowerCtx, cn: Cst.NodeIndex) !*Ast.CompoundStmt {
+        var cw = self.walker(self.nodeCursor(cn));
+        _ = cw.eatToken(.keyword_continuing);
+        if (cw.eatNodeKind(.compound_stmt)) |cbody| {
+            return self.lowerCompoundStmt(self.nodeCursor(cbody));
+        }
+        const empty = try self.arena.create(Ast.CompoundStmt);
+        empty.* = .{ .stmts = .empty };
+        return empty;
     }
 
     fn lowerBreakStmt(self: *LowerCtx, cur: Cst.Cursor) !*Ast.BreakStmt {

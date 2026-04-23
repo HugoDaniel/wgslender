@@ -2289,11 +2289,54 @@ fn parseWhileStmt(self: *Parser) !*Ast.WhileStmt {
 fn parseLoopStmt(self: *Parser) !*Ast.LoopStmt {
     _ = self.expect(.keyword_loop);
     const node = try self.arena.create(Ast.LoopStmt);
-    node.* = .{ .body = try self.parseCompoundStmt() };
-    if (self.eat(.keyword_continuing)) {
+    // Uninitialized-field trap: assigning `node.* = .{ .body = parseLoopBody(&node.continuing) }`
+    // looks fine but zeroes `continuing` *after* the callee wrote to it.
+    // Initialize the whole struct first, then fill in fields.
+    node.* = .{ .body = undefined };
+    node.body = try self.parseLoopBody(&node.continuing);
+    // Legacy trailing form (`loop { body } continuing { cont }`) — kept
+    // alongside the spec-standard in-body form so both parse.
+    if (node.continuing == null and self.currentTag() == .keyword_continuing) {
+        const cont_marker = self.cstOpen();
+        self.advance();
         node.continuing = try self.parseCompoundStmt();
+        self.cstClose(cont_marker, .continuing_stmt);
     }
     return node;
+}
+
+/// Parses the `{ ... }` body of a `loop`, pulling a trailing
+/// `continuing { ... }` out into `out_continuing` if present. WGSL §8.8:
+/// the continuing statement, when present, is the *last* statement inside
+/// the loop body — a plain `parseCompoundStmt` would fall through to
+/// `parseExpressionOrAssignment` on the `continuing` keyword and emit
+/// "expected expression in statement". Emits a `.continuing_stmt` CST
+/// node around the keyword + compound so `CstLower.lowerLoopStmt` picks
+/// it up the same way as the legacy trailing form.
+fn parseLoopBody(self: *Parser, out_continuing: *?*Ast.CompoundStmt) !*Ast.CompoundStmt {
+    const span_start = self.currentStart();
+    const marker = self.cstOpen();
+    _ = self.expect(.l_brace);
+    try self.pushScope(.block);
+    const stmt = try self.arena.create(Ast.CompoundStmt);
+    stmt.* = .{ .stmts = .empty };
+    while (self.currentTag() != .r_brace and self.currentTag() != .eof) {
+        if (self.currentTag() == .keyword_continuing) {
+            const cont_marker = self.cstOpen();
+            self.advance();
+            out_continuing.* = try self.parseCompoundStmt();
+            self.cstClose(cont_marker, .continuing_stmt);
+            break;
+        }
+        if (try self.parseStatement()) |s| {
+            try stmt.stmts.append(self.arena, s);
+        }
+    }
+    self.popScope();
+    _ = self.expect(.r_brace);
+    self.cstClose(marker, .compound_stmt);
+    stmt.span = .{ .start = span_start, .end = self.prevTokenEnd() };
+    return stmt;
 }
 
 fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
@@ -3043,9 +3086,15 @@ test "parser: loop statement" {
 }
 
 test "parser: loop continuing" {
+    // Printer emits WGSL §8.8 spec form: continuing sits inside the loop
+    // body's braces so vars declared in the body stay in scope.
     try expectPrinted(
         "fn foo() { loop { break; } continuing { i++; } }",
-        "fn foo() {\n    loop {\n        break;\n    } continuing {\n        i++;\n    }\n}\n",
+        "fn foo() {\n    loop {\n        break;\n        continuing {\n            i++;\n        }\n    }\n}\n",
+    );
+    try expectPrinted(
+        "fn foo() { loop { break; continuing { i++; } } }",
+        "fn foo() {\n    loop {\n        break;\n        continuing {\n            i++;\n        }\n    }\n}\n",
     );
 }
 
@@ -3091,7 +3140,12 @@ test "parser: break and continue" {
 test "parser: break if statement" {
     try expectPrinted(
         "fn foo() { loop { } continuing { break if true; } }",
-        "fn foo() {\n    loop {\n    } continuing {\n        break if true;\n    }\n}\n",
+        "fn foo() {\n    loop {\n        continuing {\n            break if true;\n        }\n    }\n}\n",
+    );
+    // Spec-form input (continuing inside body) round-trips identically.
+    try expectPrinted(
+        "fn foo() { loop { continuing { break if true; } } }",
+        "fn foo() {\n    loop {\n        continuing {\n            break if true;\n        }\n    }\n}\n",
     );
 }
 

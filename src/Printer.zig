@@ -912,7 +912,7 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
                 try stack.append(self.arena, .{ .compound = stmt.body });
             },
             .continuing => |c| {
-                try self.emit(" continuing");
+                try self.emit("continuing");
                 try self.emitSpace();
                 try stack.append(self.arena, .{ .compound = c });
             },
@@ -959,8 +959,28 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
                 .loop => |stmt| {
                     try self.emit("loop");
                     try self.emitSpace();
-                    if (stmt.continuing) |c| try stack.append(self.arena, .{ .continuing = c });
-                    try stack.append(self.arena, .{ .compound = stmt.body });
+                    // WGSL §8.8: `continuing` is the final statement inside
+                    // the loop body's braces — emit the body manually so
+                    // `{ stmts... continuing { ... } }` prints in one brace
+                    // pair. (The legacy `loop { body } continuing { cont }`
+                    // form splits the scope and makes body-declared vars
+                    // invisible to the continuing block, which tripped
+                    // downstream validators.)
+                    try stack.append(self.arena, .{ .literal = "}" });
+                    try stack.append(self.arena, .newline);
+                    try stack.append(self.arena, .indent_dec);
+                    if (stmt.continuing) |c| {
+                        try stack.append(self.arena, .{ .continuing = c });
+                        try stack.append(self.arena, .newline);
+                    }
+                    var i = stmt.body.stmts.items.len;
+                    while (i > 0) {
+                        i -= 1;
+                        try stack.append(self.arena, .{ .stmt = stmt.body.stmts.items[i] });
+                        try stack.append(self.arena, .newline);
+                    }
+                    try stack.append(self.arena, .indent_inc);
+                    try stack.append(self.arena, .{ .literal = "{" });
                 },
                 .@"break" => try self.emit("break;"),
                 .break_if => |stmt| {

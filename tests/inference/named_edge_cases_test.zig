@@ -167,3 +167,36 @@ test "infer: var<function> inside a function body is accepted" {
     try std.testing.expect(!anyError(r));
 }
 
+// ---------------------------------------------------------------------
+// break_if_bool (wgsl-analyzer)
+// `break if <bool-expr>;` is a valid loop terminator (WGSL §8.8) when
+// the `continuing` block is the last statement inside the loop body's
+// braces — the spec-standard form. The bool check belongs to
+// validateBreakIfStmt; a non-bool condition must surface as E0200.
+// ---------------------------------------------------------------------
+
+test "infer: break if accepts bool condition in continuing block" {
+    var r = try validate(
+        \\fn f() {
+        \\    var done: bool = false;
+        \\    loop {
+        \\        continuing { break if done; }
+        \\    }
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!anyError(r));
+}
+
+test "infer: break if rejects non-bool condition" {
+    var r = try validate(
+        \\fn f() {
+        \\    loop {
+        \\        continuing { break if 0; }
+        \\    }
+        \\}
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasErrorWithCode(r, "E0200"));
+}
+
