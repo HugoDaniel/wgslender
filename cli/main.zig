@@ -322,6 +322,8 @@ fn readSource(arena: std.mem.Allocator, io: std.Io, input_path: ?[]const u8) ![:
     } else {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         var tmp: [4096]u8 = undefined;
+        // Unbounded by design: input length is whatever the user pipes in.
+        // Terminates on EOF (n == 0) or stdin read error.
         while (true) {
             const n = std.Io.File.stdin().readStreaming(io, &.{&tmp}) catch break;
             if (n == 0) break;
