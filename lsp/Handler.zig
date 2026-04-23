@@ -172,6 +172,12 @@ pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: 
 
     const gop = try self.documents.getOrPut(self.gpa, uri);
     if (gop.found_existing) {
+        // Re-open on an already-tracked URI. Tear down cache + parse +
+        // source before overwriting the Document struct, otherwise the
+        // old analysis arena, sentinel source, and CST/AST leak (and
+        // future incremental edits that read stale pointers would be
+        // operating on orphaned state).
+        self.invalidateAnalysisAt(gop.value_ptr);
         if (gop.value_ptr.parse) |*p| {
             p.deinit();
         }
@@ -2798,8 +2804,13 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
         });
     }
 
-    // Add binding summary and workgroup size lenses for entry points
+    // Add binding summary and workgroup size lenses for entry points.
+    // `binding_summary` is the shared template; each lens gets its own
+    // duped copy so the caller can free `l.title` uniformly without
+    // double-freeing across entry points (and without leaking when the
+    // module has bindings but no entry points consume the template).
     const binding_summary = collectBindingSummary(self.gpa, module);
+    defer if (binding_summary) |s| self.gpa.free(s);
     for (module.declarations.items) |decl| {
         switch (decl) {
             .function => |f| {
@@ -2808,9 +2819,9 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
                 if (!sym.flags.is_entry_point) continue;
                 const range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
 
-                // Binding summary (shared across all entry points)
                 if (binding_summary) |summary| {
-                    try lenses.append(self.gpa, .{ .range = range, .title = summary });
+                    const title = try self.gpa.dupe(u8, summary);
+                    try lenses.append(self.gpa, .{ .range = range, .title = title });
                 }
 
                 // Workgroup size for compute shaders

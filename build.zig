@@ -313,6 +313,14 @@ pub fn build(b: *std.Build) void {
     // Tested as its own root module so `@import("Handler.zig")` resolves
     // locally (matches how `lsp/wasm.zig` consumes it at build time).
     _ = addTestStep(b, test_step, "lsp/diagnostic_json.zig", target, optimize, &.{w});
+    // Regression test for publishDiagnostics message/codeDescription.href
+    // corruption after codeLens/documentHighlight + incremental edit.
+    // Drives the Handler directly and renders through the same
+    // `diagnostic_json.appendDiagnosticItems` path the WASM transport
+    // uses, so byte-level assertions see what an editor sees on the wire.
+    // Lives under lsp/ so sibling file imports for Handler.zig and
+    // diagnostic_json.zig stay inside the test module's path.
+    _ = addTestStep(b, test_step, "lsp/diagnostic_corruption_test.zig", target, optimize, &.{w});
     // LSP analyze perf smoke: records Lexer.tokenize invocations
     // across a 200-keystroke burst against bridge.wgsl. Enforces a
     // generous upper bound so a reintroduced tokenize path in
