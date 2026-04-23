@@ -187,6 +187,8 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/collision_test.zig", target, optimize, &.{w});
     // Regression tests
     _ = addTestStep(b, test_step, "tests/regression_test.zig", target, optimize, &.{w});
+    // Parser recursive-descent depth limit regressions
+    _ = addTestStep(b, test_step, "tests/depth_limits_test.zig", target, optimize, &.{w});
     // Reflect tests
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
     // Edits tests — library-level rename / text edit primitives
