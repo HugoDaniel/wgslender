@@ -651,6 +651,134 @@ test "configs: @wgslender/strict elevates core rules to error" {
 }
 
 // =========================================================================
+// wgslender-disable directives
+// =========================================================================
+
+test "disable-next-line silences diagnostic on the following line" {
+    var r = try runLint(
+        \\// wgslender-disable-next-line no-unused-vars
+        \\fn unused_fn() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0001"));
+}
+
+test "disable-next-line does not silence two lines below" {
+    var r = try runLint(
+        \\// wgslender-disable-next-line no-unused-vars
+        \\
+        \\fn unused_fn() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0001", "unused_fn"));
+}
+
+test "disable-line silences diagnostic on same line (trailing comment)" {
+    var r = try runLint(
+        \\fn unused_fn() {} // wgslender-disable-line no-unused-vars
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0001"));
+}
+
+test "disable-file silences the rule across the whole file" {
+    var r = try runLint(
+        \\// wgslender-disable-file no-unused-vars
+        \\fn a() {}
+        \\fn b() {}
+        \\fn c() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0001"));
+}
+
+test "disable/enable block silences between markers" {
+    var r = try runLint(
+        \\/* wgslender-disable no-unused-vars */
+        \\fn inside1() {}
+        \\fn inside2() {}
+        \\/* wgslender-enable no-unused-vars */
+        \\fn outside() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0001", "outside"));
+    // inside1 / inside2 both silenced
+    for (r.lint.diagnostics.items()) |d| {
+        if (std.mem.indexOf(u8, d.message, "inside1") != null or
+            std.mem.indexOf(u8, d.message, "inside2") != null)
+        {
+            dump("unexpected diag inside disable range", r);
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "disable without rule id silences everything" {
+    var r = try runLint(
+        \\// wgslender-disable-next-line
+        \\fn unused_fn() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0001"));
+}
+
+test "disable with multiple rules on comma-separated list" {
+    var r = try runLint(
+        \\// wgslender-disable-next-line no-unused-vars, no-unused-binding
+        \\fn unused_fn() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0001"));
+}
+
+test "disable does not silence validator diagnostics" {
+    // Validator E-codes flow through untouched.
+    var r = try runLint(
+        \\// wgslender-disable-file no-unused-vars
+        \\fn main() { let x = undeclared_symbol; }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(r.analysis.diagnostics.errorCount() > 0);
+}
+
+test "report-unused-disable-directives flags dead directives" {
+    var r = try runLint(
+        \\// wgslender-disable-next-line no-unused-vars
+        \\@compute @workgroup_size(1) fn main() {}
+    , .{
+        .extends = &.{"@wgslender/recommended"},
+        .report_unused_disable_directives = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0209"));
+}
+
+test "report-unused-disable-directives does not fire on used directives" {
+    var r = try runLint(
+        \\// wgslender-disable-next-line no-unused-vars
+        \\fn lonely() {}
+    , .{
+        .extends = &.{"@wgslender/recommended"},
+        .report_unused_disable_directives = true,
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0209"));
+}
+
+// =========================================================================
+// Fixer public API
+// =========================================================================
+
+test "Fixer: exposed via wgslender.Linter.Fixer" {
+    // Quick smoke — just ensures the module is reachable from the public
+    // surface. Full behavior tested in src/lint/Fixer.zig.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const r = try wgslender.Linter.Fixer.apply(arena_state.allocator(), "hello", &.{});
+    try std.testing.expectEqualStrings("hello", r.fixed);
+}
+
+// =========================================================================
 // Cross-rule interactions
 // =========================================================================
 

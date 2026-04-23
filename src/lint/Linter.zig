@@ -27,6 +27,8 @@ const Dce = @import("../Dce.zig");
 pub const Rule = @import("Rule.zig");
 pub const Context = @import("Context.zig");
 pub const Configs = @import("configs.zig");
+pub const Disable = @import("Disable.zig");
+pub const Fixer = @import("Fixer.zig");
 pub const registry = @import("registry.zig");
 
 const Severity = Diagnostic.Severity;
@@ -54,6 +56,10 @@ pub const Options = struct {
     line_offset: i32 = 0,
     /// Global kill-switch. When true, the Linter produces no diagnostics.
     disabled: bool = false,
+    /// When true, emit a W0209 warning for every wgslender-disable
+    /// directive that didn't match any diagnostic. Off by default because
+    /// dangling directives after a bug-fix are normal; CI lints flip it on.
+    report_unused_disable_directives: bool = false,
 
     pub const RuleOverride = struct {
         id: []const u8,
@@ -185,6 +191,30 @@ pub fn run(
         }
     }
 
+    // Parse wgslender-disable directives and filter the diagnostics list.
+    // Validator diagnostics (non-lint codes) are never silenced — only
+    // entries whose code resolves to a registered rule id.
+    var directives = try Disable.parse(alloc, module.source);
+    const filtered = try Disable.filter(alloc, diags.diagnostics.items, &directives, codeToRuleId);
+
+    // Replace the diag list's items with the filtered slice. We're in a
+    // fresh arena so dropping the old backing memory is a no-op.
+    diags.diagnostics = .empty;
+    try diags.diagnostics.appendSlice(alloc, filtered);
+    diags.has_errors = false;
+    for (diags.diagnostics.items) |d| {
+        if (d.severity == .@"error") {
+            diags.has_errors = true;
+            break;
+        }
+    }
+
+    if (options.report_unused_disable_directives) {
+        var tmp: std.ArrayListUnmanaged(Diagnostic.Entry) = .empty;
+        try Disable.reportUnused(alloc, module.source, &directives, &tmp);
+        for (tmp.items) |e| diags.add(alloc, e);
+    }
+
     return .{
         .diagnostics = diags,
         .error_count = diags.errorCount(),
@@ -192,6 +222,15 @@ pub fn run(
         .fixable_count = fixable,
         ._arena = arena,
     };
+}
+
+/// Map a diagnostic code (`"W0001"`) back to its public rule id
+/// (`"no-unused-vars"`). Returns null for non-lint codes (validator
+/// errors / warnings) so the Disable filter passes them through
+/// untouched.
+fn codeToRuleId(code: []const u8) ?[]const u8 {
+    const r = registry.byCode(code) orelse return null;
+    return r.meta.id;
 }
 
 // =========================================================================

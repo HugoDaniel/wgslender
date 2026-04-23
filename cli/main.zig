@@ -27,6 +27,9 @@ const CliArgs = struct {
         rule_overrides: []const wgslender.Linter.Options.RuleOverride = &.{},
         max_warnings: i32 = -1,
         quiet: bool = false,
+        fix: bool = false,
+        fix_dry_run: bool = false,
+        report_unused_disable_directives: bool = false,
     };
 };
 
@@ -120,6 +123,12 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             if (args_iter.next()) |v| args.lint_options.max_warnings = std.fmt.parseInt(i32, v, 10) catch -1;
         } else if (std.mem.eql(u8, arg, "--quiet")) {
             args.lint_options.quiet = true;
+        } else if (std.mem.eql(u8, arg, "--fix")) {
+            args.lint_options.fix = true;
+        } else if (std.mem.eql(u8, arg, "--fix-dry-run")) {
+            args.lint_options.fix_dry_run = true;
+        } else if (std.mem.eql(u8, arg, "--report-unused-disable-directives")) {
+            args.lint_options.report_unused_disable_directives = true;
         } else if (std.mem.eql(u8, arg, "-o")) {
             args.output_path = args_iter.next();
         } else if (std.mem.eql(u8, arg, "--config")) {
@@ -540,8 +549,36 @@ fn runLint(
         .extends = lint_opts.extends,
         .rules = lint_opts.rule_overrides,
         .line_offset = line_offset,
+        .report_unused_disable_directives = lint_opts.report_unused_disable_directives,
     });
     defer result.deinit(arena);
+
+    if (lint_opts.fix or lint_opts.fix_dry_run) {
+        const File = std.Io.File;
+        const Dir = std.Io.Dir;
+        const fix_result = try wgslender.Linter.Fixer.apply(
+            arena,
+            source,
+            result.lint.diagnostics.items(),
+        );
+        if (lint_opts.fix_dry_run) {
+            try File.stdout().writeStreamingAll(io, fix_result.fixed);
+            return;
+        }
+        // --fix writes to input_path; stdin cannot be rewritten safely.
+        if (input_path) |path| {
+            const f = try Dir.cwd().createFile(io, path, .{});
+            defer f.close(io);
+            try f.writeStreamingAll(io, fix_result.fixed);
+            try File.stderr().writeStreamingAll(io, "Applied fixes to ");
+            try File.stderr().writeStreamingAll(io, path);
+            try File.stderr().writeStreamingAll(io, "\n");
+            return;
+        } else {
+            try File.stderr().writeStreamingAll(io, "error: --fix requires a file input; use --fix-dry-run for stdin\n");
+            std.process.exit(2);
+        }
+    }
 
     // A lint run surfaces three diagnostic streams: parse/validator errors
     // (on `result.analysis.diagnostics`), and lint warnings
@@ -725,6 +762,9 @@ const usage_text =
     \\  --rule <id>=<severity>           (lint) Override a rule (severity: off|warn|error)
     \\  --max-warnings <n>               (lint) Exit non-zero if lint warnings exceed n
     \\  --quiet                          (lint) Show errors only; hide warnings
+    \\  --fix                            (lint) Apply autofixes in place (requires a file input)
+    \\  --fix-dry-run                    (lint) Print fixed source to stdout without writing
+    \\  --report-unused-disable-directives  (lint) Warn on wgslender-disable comments that never match
     \\  --version                        Show version
     \\  -h, --help                       Show this help
     \\
