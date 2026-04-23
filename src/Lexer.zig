@@ -30,6 +30,13 @@ pub const Token = struct {
     end: u32,
 };
 
+comptime {
+    // Pin the Token layout so a stray field rename doesn't quietly
+    // double its size in every cache line of the MultiArrayList SoA.
+    std.debug.assert(@sizeOf(Token) == 12);
+    std.debug.assert(@sizeOf(Tag) == 1);
+}
+
 /// Token tags. Values ≤ keyword_end are keywords, used for StaticStringMap.
 pub const Tag = enum(u8) {
     // Sentinel / error
@@ -400,6 +407,11 @@ pub fn tokenize(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayL
         if (tok.tag == .eof or tok.tag == .@"error") break;
     } else unreachable;
 
+    // Post: at least one token (the eof / error sentinel) is always emitted
+    // and the last entry is exactly that sentinel — Parser relies on this.
+    std.debug.assert(lex.tokens.len > 0);
+    const last_tag = lex.tokens.items(.tag)[lex.tokens.len - 1];
+    std.debug.assert(last_tag == .eof or last_tag == .@"error");
     return lex.tokens;
 }
 
@@ -442,6 +454,10 @@ pub fn tokenizeRange(
         if (tok.tag == .eof or tok.tag == .@"error") break;
     } else unreachable;
 
+    // Post: trivia-preserving stream still terminates on a sentinel token.
+    std.debug.assert(lex.tokens.len > 0);
+    const last_tag = lex.tokens.items(.tag)[lex.tokens.len - 1];
+    std.debug.assert(last_tag == .eof or last_tag == .@"error");
     return lex.tokens;
 }
 
