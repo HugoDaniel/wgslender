@@ -459,7 +459,10 @@ fn scanNumberText(self: *const Parser, start: u32) []const u8 {
             const nfs = pos + 1 < src.len and
                 (src[pos + 1] == 'f' or src[pos + 1] == 'h') and
                 (pos + 2 >= src.len or !Lexer.isIdentContinue(src[pos + 2]));
-            if (nid or ae or !nie or nfs) {
+            // `1.e…` — dot followed directly by an exponent is a float too
+            // (WGSL §6.1.2 rule 4 — fractional digits optional).
+            const nex = pos + 1 < src.len and (src[pos + 1] == 'e' or src[pos + 1] == 'E');
+            if (nid or ae or !nie or nfs or nex) {
                 pos += 1;
                 while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
             }

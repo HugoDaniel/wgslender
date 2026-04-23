@@ -734,14 +734,20 @@ fn next(self: *Lexer) TokenResult {
             // Accept 1.f and 1.h — float suffix after decimal point with no fractional digits
             const next_is_float_suffix = (after_dot == 'f' or after_dot == 'h') and
                 !isIdentContinue(src[self.pos + 2]); // safe: sentinel guarantees valid read
+            // WGSL §6.1.2 rule 4 admits omitted fractional digits before the
+            // exponent, so `0.e+4f` / `1.E-3` must enter float mode here.
+            const next_is_exponent = after_dot == 'e' or after_dot == 'E';
 
-            if (next_is_digit or at_end or !next_is_ident or next_is_float_suffix) {
+            if (next_is_digit or at_end or !next_is_ident or next_is_float_suffix or next_is_exponent) {
                 kind = .float_literal;
                 self.pos += 1; // consume the '.'
                 if (next_is_float_suffix) {
                     self.pos += 1; // consume the suffix
                     // Check for exponent after suffix? No — 1.f is complete.
                     // But we still need to scan fractional digits if not a suffix.
+                } else if (next_is_exponent) {
+                    self.pos += 1; // consume the 'e'/'E'
+                    continue :state .decimal_exponent;
                 } else {
                     continue :state .decimal_frac;
                 }
@@ -1800,9 +1806,12 @@ test "lexer: decimal float edge forms" {
     try expectTokenValue("12.34", .float_literal, "12.34");
     // Dotless zero with `h` suffix — f16 decimal.
     try expectTokenValue("0h", .float_literal, "0h");
-    // NOTE: `0.e+4f` (valid per WGSL §6.1.2 rule 4) is currently lexed as
-    // `int_literal` + trailing garbage — tracked separately; omitted here so
-    // the literal sweep stays green.
+    // `0.e+4f` — dot directly followed by exponent, no fractional digits
+    // (valid per WGSL §6.1.2 rule 4).
+    try expectTokenValue("0.e+4f", .float_literal, "0.e+4f");
+    // Generic `<digits>.<exp>` coverage — no suffix, uppercase E, signed exp.
+    try expectTokenValue("1.e2", .float_literal, "1.e2");
+    try expectTokenValue("1.E-3f", .float_literal, "1.E-3f");
 }
 
 // -------------------------------------------------------------------------
