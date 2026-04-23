@@ -7,12 +7,16 @@
 const Rule = @import("Rule.zig");
 
 const no_unused_vars = @import("rules/no_unused_vars.zig");
+const no_dead_code = @import("rules/no_dead_code.zig");
+const no_unused_binding = @import("rules/no_unused_binding.zig");
 
 /// Every lint rule the linter knows about. Declaration order is the order
 /// rules execute in per-file; rules may depend on module-wide analysis but
 /// must not depend on other rules' diagnostics.
 pub const all = [_]Rule{
     no_unused_vars.rule,
+    no_dead_code.rule,
+    no_unused_binding.rule,
 };
 
 /// Look up a rule by its public id (e.g. `"no-unused-vars"`).

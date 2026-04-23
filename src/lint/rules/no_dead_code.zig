@@ -1,0 +1,67 @@
+//! `no-dead-code` — flag declarations that are referenced from other
+//! declarations but unreachable from any entry point.
+//!
+//! Requires DCE (`Dce.mark`) so `Symbol.is_live` is populated. When no
+//! entry points are declared (library mode), DCE conservatively marks
+//! everything live and this rule emits nothing — there's no "dead" root
+//! to measure against.
+//!
+//! Preserves the shape of the hand-coded LSP `appendDeadCodeWarnings`:
+//! same W0002 code, same filtering, same message. In Slice 5 the LSP
+//! handler will delegate to this rule instead of duplicating the logic.
+
+const std = @import("std");
+
+const Rule = @import("../Rule.zig");
+const Context = @import("../Context.zig");
+const Diagnostic = @import("../../Diagnostic.zig");
+
+pub const rule = Rule{
+    .meta = .{
+        .id = "no-dead-code",
+        .code = Diagnostic.Code.lint_no_dead_code,
+        .default_severity = .warning,
+        .description = "Report declarations referenced only by other unreachable declarations — they compile but have no runtime effect",
+        .docs_url = "https://github.com/hugoam/wgslender/blob/main/docs/rules/no-dead-code.md",
+        .category = .correctness,
+        .requires_dce = true,
+    },
+    .run = run,
+};
+
+fn run(ctx: *Context) error{OutOfMemory}!void {
+    const module = ctx.module;
+
+    // Library mode (no entry points) → DCE conservatively marks every
+    // symbol live, so there is no "dead" set to flag. Skip entirely.
+    var has_entry_points = false;
+    for (module.symbols.items) |sym| {
+        if (sym.flags.is_entry_point) {
+            has_entry_points = true;
+            break;
+        }
+    }
+    if (!has_entry_points) return;
+
+    for (module.symbols.items) |sym| {
+        if (sym.flags.is_live) continue;
+        // Unreferenced altogether is the other rule's territory.
+        if (sym.use_count == 0) continue;
+        if (sym.original_name.len == 0) continue;
+        if (sym.flags.is_entry_point) continue;
+        if (sym.flags.is_external_binding) continue;
+
+        switch (sym.kind) {
+            .function, .@"struct", .@"const", .let, .@"var", .override => {},
+            else => continue,
+        }
+
+        const name_len: u32 = @intCast(sym.original_name.len);
+        const end = sym.loc + name_len;
+        const msg = try ctx.fmt("'{s}' is not reachable from any entry point", .{sym.original_name});
+        ctx.report(.{
+            .message = msg,
+            .range = ctx.makeRange(sym.loc, end),
+        });
+    }
+}

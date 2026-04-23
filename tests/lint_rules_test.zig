@@ -124,15 +124,15 @@ test "no-unused-vars: vertex / fragment / compute all excluded" {
 
 test "no-unused-vars: external binding is excluded (caught by unused-binding separately)" {
     // `@group/@binding` vars are filtered out of no-unused-vars — the
-    // no-unused-binding rule (Slice 2) is the right surface for them.
+    // no-unused-binding rule is the right surface for them.
     var r = try runLint(
         \\@group(0) @binding(0) var<uniform> u: f32;
         \\@compute @workgroup_size(1) fn main() {}
     , recommended_opts);
     defer r.deinit(std.testing.allocator);
     for (r.lint.diagnostics.items()) |d| {
-        if (std.mem.indexOf(u8, d.message, "'u'") != null) {
-            dump("unexpected no-unused-vars flag on external binding", r);
+        if (std.mem.eql(u8, d.code, "W0001") and std.mem.indexOf(u8, d.message, "'u'") != null) {
+            dump("unexpected W0001 flag on external binding", r);
             return error.TestUnexpectedResult;
         }
     }
@@ -211,6 +211,204 @@ test "no-unused-vars: parse error does not crash linter" {
     defer r.deinit(std.testing.allocator);
     // Lint should degrade gracefully; validator reports the parse error.
     try std.testing.expect(r.analysis.diagnostics.errorCount() > 0);
+}
+
+// =========================================================================
+// no-dead-code (W0002)
+// =========================================================================
+
+test "no-dead-code: function unreachable from entry point is flagged" {
+    // `orphan` is called by `sibling`, but `sibling` is never called and
+    // not an entry point, so the whole chain is dead relative to `main`.
+    var r = try runLint(
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    if (!hasCodeContaining(r, "W0002", "orphan")) {
+        dump("no-dead-code: orphan not flagged", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "no-dead-code: reachable helper is not flagged" {
+    var r = try runLint(
+        \\fn helper() -> f32 { return 1.0; }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(helper()); }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0002"));
+}
+
+test "no-dead-code: library mode (no entry points) emits nothing" {
+    // DCE conservatively marks everything live in library mode.
+    var r = try runLint(
+        \\fn helper() -> f32 { return 1.0; }
+        \\fn process() -> f32 { return helper(); }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0002"));
+}
+
+test "no-dead-code: entry point itself is never flagged" {
+    var r = try runLint(
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0002"));
+}
+
+test "no-dead-code: never-referenced declarations belong to no-unused-vars, not this rule" {
+    // `use_count == 0` → caught by no-unused-vars; no-dead-code skips them.
+    var r = try runLint(
+        \\fn totally_unused() {}
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    // Exactly one W0001 (totally_unused), zero W0002.
+    try std.testing.expect(hasCodeContaining(r, "W0001", "totally_unused"));
+    for (r.lint.diagnostics.items()) |d| {
+        if (std.mem.eql(u8, d.code, "W0002") and std.mem.indexOf(u8, d.message, "totally_unused") != null) {
+            dump("unexpected W0002 on never-used symbol", r);
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "no-dead-code: source field stamped" {
+    var r = try runLint(
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    for (r.lint.diagnostics.items()) |d| {
+        if (std.mem.eql(u8, d.code, "W0002")) {
+            try std.testing.expectEqualStrings("wgslender-lint", d.source);
+        }
+    }
+}
+
+// =========================================================================
+// no-unused-binding (W0003)
+// =========================================================================
+
+test "no-unused-binding: unused uniform is flagged" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> unused_buf: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    if (!hasCodeContaining(r, "W0003", "unused_buf")) {
+        dump("no-unused-binding: unused uniform not flagged", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "no-unused-binding: used uniform is not flagged" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> used_buf: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = used_buf; _ = x; }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0003"));
+}
+
+test "no-unused-binding: unused storage is flagged" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var<storage, read_write> unused_buf: array<f32>;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0003", "unused_buf"));
+}
+
+test "no-unused-binding: textures are currently caught by no-unused-vars, not this rule" {
+    // Limitation: the parser sets `is_external_binding` only on `var<uniform>`
+    // and `var<storage>` declarations (Parser.zig:905), so textures and
+    // samplers declared with `@group/@binding` fall through to the
+    // no-unused-vars rule instead. Kept as a regression guard so a future
+    // fix (detect `@group/@binding` attrs directly) is a visible, tested
+    // change rather than a silent behavior drift.
+    var r = try runLint(
+        \\@group(0) @binding(0) var tex: texture_2d<f32>;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0003"));
+    try std.testing.expect(hasCodeContaining(r, "W0001", "tex"));
+}
+
+test "no-unused-binding: message mentions bind group layout slot" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> u: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0003", "bind group layout slot"));
+}
+
+test "no-unused-binding: does NOT fire on non-binding vars" {
+    // `var<private>` is not a bind-group binding, so this rule should
+    // ignore it entirely (no-unused-vars handles it if unused).
+    var r = try runLint(
+        \\var<private> pv: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0003"));
+}
+
+test "no-unused-binding: multiple unused bindings each reported" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> a: f32;
+        \\@group(0) @binding(1) var<uniform> b: f32;
+        \\@group(0) @binding(2) var<uniform> c: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), countCode(r, "W0003"));
+}
+
+// =========================================================================
+// Cross-rule interactions
+// =========================================================================
+
+test "rules: severity override to error for no-dead-code" {
+    var r = try runLint(
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    , .{
+        .extends = &.{"@wgslender/recommended"},
+        .rules = &.{.{ .id = "no-dead-code", .severity = .@"error" }},
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasSeverity(r, "W0002", .@"error"));
+}
+
+test "rules: disable one rule in a pack" {
+    // Disable no-dead-code but keep no-unused-vars + no-unused-binding.
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> unused_buf: f32;
+        \\fn unused_fn() {}
+        \\@compute @workgroup_size(1) fn main() {}
+    , .{
+        .extends = &.{"@wgslender/recommended"},
+        .rules = &.{.{ .id = "no-dead-code", .severity = .disabled }},
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0001")); // unused_fn
+    try std.testing.expect(hasCode(r, "W0003")); // unused_buf
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0002"));
 }
 
 // =========================================================================
