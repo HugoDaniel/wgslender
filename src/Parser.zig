@@ -10,6 +10,8 @@ const Lexer = @import("Lexer.zig");
 const Cst = @import("Cst.zig");
 const AstVisit = @import("AstVisit.zig");
 const Suggest = @import("Suggest.zig");
+const Diagnostic = @import("Diagnostic.zig");
+const constants = @import("constants.zig");
 
 const Parser = @This();
 
@@ -35,6 +37,16 @@ scopes_in_order: std.ArrayListUnmanaged(*Ast.Scope),
 // Errors
 errors: std.ArrayListUnmanaged(ParseError),
 expr_context: []const u8 = "",
+
+/// Recursive descent depth counters. Each `parseExpression` /
+/// `parseStatement` / `parseType` entry bumps the matching counter and
+/// emits a `nesting_too_deep` diagnostic if it would exceed the limit
+/// in `constants.zig`. Without these guards, adversarial input like
+/// `(((((... a ...)))))` could overflow the call stack before the
+/// validator's depth checks ever run.
+expr_depth: u16 = 0,
+stmt_depth: u16 = 0,
+type_depth: u16 = 0,
 
 // =========================================================================
 // Optional concrete syntax tree shadow.
@@ -547,6 +559,17 @@ fn addError(self: *Parser, message: []const u8) void {
     const start = self.currentStart();
     const text = self.currentText();
     self.errors.append(self.arena, .{ .message = message, .pos = start, .end = start +| @as(u32, @intCast(text.len)) }) catch {};
+}
+
+fn addErrorWithCode(self: *Parser, message: []const u8, code: []const u8) void {
+    const start = self.currentStart();
+    const text = self.currentText();
+    self.errors.append(self.arena, .{
+        .message = message,
+        .pos = start,
+        .end = start +| @as(u32, @intCast(text.len)),
+        .code = code,
+    }) catch {};
 }
 
 fn isIdentLike(self: *const Parser) bool {
@@ -1075,6 +1098,12 @@ fn parseConstAssert(self: *Parser) !*Ast.ConstAssertDecl {
 // =========================================================================
 
 fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed }!Ast.Type {
+    if (self.type_depth >= constants.max_parser_type_depth) {
+        self.addErrorWithCode("type nesting too deep", Diagnostic.Code.nesting_too_deep);
+        return error.ParseFailed;
+    }
+    self.type_depth += 1;
+    defer self.type_depth -= 1;
     const marker = self.cstOpen();
 
     if (self.eatIdent()) |name| {
@@ -1310,6 +1339,12 @@ fn parseAccessMode(self: *Parser) Ast.AccessMode {
 // =========================================================================
 
 fn parseExpression(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Expr {
+    if (self.expr_depth >= constants.max_parser_expr_depth) {
+        self.addErrorWithCode("expression nesting too deep", Diagnostic.Code.nesting_too_deep);
+        return error.ParseFailed;
+    }
+    self.expr_depth += 1;
+    defer self.expr_depth -= 1;
     return self.parseLogicalOrExpr();
 }
 
@@ -1965,6 +2000,12 @@ fn typeCstKind(t: Ast.Type) Cst.Kind {
 }
 
 fn parseStatement(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
+    if (self.stmt_depth >= constants.max_parser_stmt_depth) {
+        self.addErrorWithCode("statement nesting too deep", Diagnostic.Code.nesting_too_deep);
+        return error.ParseFailed;
+    }
+    self.stmt_depth += 1;
+    defer self.stmt_depth -= 1;
     // Compound statements open their own CST marker inside `parseCompoundStmt`;
     // don't nest a second one here.
     if (self.currentTag() == .l_brace) {
