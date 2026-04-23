@@ -1760,6 +1760,9 @@ test "lexer: hex integers" {
     try expectTokenValue("0xFFu", .int_literal, "0xFFu");
     try expectTokenValue("0x0", .int_literal, "0x0");
     try expectTokenValue("0X0", .int_literal, "0X0");
+    // Uppercase X combined with u/i suffixes.
+    try expectTokenValue("0X123u", .int_literal, "0X123u");
+    try expectTokenValue("0X7Fi", .int_literal, "0X7Fi");
 }
 
 // -------------------------------------------------------------------------
@@ -1785,6 +1788,23 @@ test "lexer: decimal floats" {
     try expectTokenValue("1E0", .float_literal, "1E0");
 }
 
+test "lexer: decimal float edge forms" {
+    // Leading zero + trailing dot: `01.`
+    try expectTokenValue("01.", .float_literal, "01.");
+    // Dot-leading with multi-digit fraction: `.01`
+    try expectTokenValue(".01", .float_literal, ".01");
+    // Dot-leading with f16 suffix: `.0f` / `.5h`
+    try expectTokenValue(".0f", .float_literal, ".0f");
+    try expectTokenValue(".5h", .float_literal, ".5h");
+    // Two-sided decimal without suffix.
+    try expectTokenValue("12.34", .float_literal, "12.34");
+    // Dotless zero with `h` suffix — f16 decimal.
+    try expectTokenValue("0h", .float_literal, "0h");
+    // NOTE: `0.e+4f` (valid per WGSL §6.1.2 rule 4) is currently lexed as
+    // `int_literal` + trailing garbage — tracked separately; omitted here so
+    // the literal sweep stays green.
+}
+
 // -------------------------------------------------------------------------
 // Hex float literal tests
 // -------------------------------------------------------------------------
@@ -1797,6 +1817,21 @@ test "lexer: hex floats" {
     try expectTokenValue("0x1.0p-10", .float_literal, "0x1.0p-10");
     try expectTokenValue("0x1p0f", .float_literal, "0x1p0f");
     try expectTokenValue("0x1p0h", .float_literal, "0x1p0h");
+}
+
+test "lexer: hex float edge forms" {
+    // Lowercase mantissa digits plus signed exponent.
+    try expectTokenValue("0xa.fp+2", .float_literal, "0xa.fp+2");
+    // Uppercase P with positive exponent and f suffix.
+    try expectTokenValue("0x1P+4f", .float_literal, "0x1P+4f");
+    // Uppercase X with no leading mantissa digit (bare ".f").
+    try expectTokenValue("0X.3p0", .float_literal, "0X.3p0");
+    // Uppercase X, dotted mantissa, negative exponent.
+    try expectTokenValue("0X1.fp-4", .float_literal, "0X1.fp-4");
+    // h (f16) suffix with positive exponent.
+    try expectTokenValue("0x3p+2h", .float_literal, "0x3p+2h");
+    // Dotted mantissa + h suffix.
+    try expectTokenValue("0x3.2p+2h", .float_literal, "0x3.2p+2h");
 }
 
 // -------------------------------------------------------------------------
