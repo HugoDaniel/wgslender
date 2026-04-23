@@ -2684,6 +2684,37 @@ test "parser: call expressions" {
     try expectPrinted("const x = foo(1, 2, 3);", "const x = foo(1, 2, 3);\n");
 }
 
+test "parser: bitcast — basic template form" {
+    // `bitcast<T>(x)` — the canonical spec form.
+    try expectPrinted("const x = bitcast<u32>(y);", "const x = bitcast<u32>(y);\n");
+    try expectPrinted("const x = bitcast<i32>(1u);", "const x = bitcast<i32>(1u);\n");
+}
+
+test "parser: bitcast — vector target type" {
+    // Aliased vector form works today. The nested-template form
+    // `bitcast<vec4<u32>>(x)` hits the `>>` template-close split that WGSL
+    // §3.8 requires and wgslender's parser doesn't yet do — tracked
+    // separately; the Tint corpus skips those files for the same reason.
+    try expectPrinted("const x = bitcast<vec4f>(v);", "const x = bitcast<vec4f>(v);\n");
+    try expectPrinted("const x = bitcast<vec3i>(w);", "const x = bitcast<vec3i>(w);\n");
+}
+
+test "parser: bitcast — no template (plain function call)" {
+    // `bitcast(x)` without `<T>` is a regular call expression — the lexer
+    // must not special-case `bitcast` as a keyword and the parser must not
+    // require a template list.
+    try expectPrinted("const x = bitcast(y);", "const x = bitcast(y);\n");
+}
+
+test "parser: bitcast — embedded in expression" {
+    // `1 + -bitcast<u32>(x) + 1` — bitcast as an operand of a binary op,
+    // behind a unary minus. Exercises precedence at the bitcast boundary.
+    try expectPrinted(
+        "const x = 1 + -bitcast<u32>(y) + 1;",
+        "const x = 1 + -bitcast<u32>(y) + 1;\n",
+    );
+}
+
 // -------------------------------------------------------------------------
 // Type constructor tests
 // -------------------------------------------------------------------------
