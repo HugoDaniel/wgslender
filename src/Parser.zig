@@ -2812,6 +2812,70 @@ test "parser: if — else-if after bare else error" {
     try expectParseError("fn foo() { if a { } else { } else if b { } }");
 }
 
+// -------------------------------------------------------------------------
+// Parse-recovery scenarios — each mirrors a named wgsl-analyzer tests.rs
+// case. Intent: the parser produces at least one diagnostic without
+// crashing, so downstream IDE features (completion, hover) stay alive
+// while the user types.
+// -------------------------------------------------------------------------
+
+test "parser: recovery — bare 'fn' at module scope" {
+    // wgsl-analyzer: fn_recover. Two adjacent `fn` keywords, the first
+    // missing name+signature; parser must recover into the second.
+    try expectParseError("fn\nfn name() {}");
+}
+
+test "parser: recovery — fn missing body before next decl" {
+    // wgsl-analyzer: fn_recover_2. `fn name()` with no body, followed by a
+    // valid `fn test() {}` — the first must error, the second must parse.
+    try expectParseError("fn name()\nfn test() {}");
+}
+
+test "parser: recovery — fn with incomplete parameter list" {
+    // wgsl-analyzer: fn_recover_incomplete_param.
+    try expectParseError("fn foo(x: ) {}");
+}
+
+test "parser: recovery — bare 'struct' keyword" {
+    // wgsl-analyzer: struct_recover. `struct` with no name, followed by a
+    // complete decl — parser must flag the bare keyword and continue.
+    try expectParseError("struct\nfn test() {}");
+}
+
+test "parser: recovery — struct missing body" {
+    // wgsl-analyzer: struct_recover_2. `struct Name` without `{…}`.
+    try expectParseError("struct test\nfn test() {}");
+}
+
+test "parser: recovery — bare 'var' at module scope" {
+    // wgsl-analyzer: var_recover_elided_name. A lone `var` must not crash
+    // the parser.
+    try expectParseError("var");
+}
+
+test "parser: recovery — let statement missing initializer before return" {
+    // wgsl-analyzer: let_statement_recover_return. `let` alone followed by
+    // a return must recover — the return statement should still parse.
+    try expectParseError("fn main() { let\n    return 0;\n}");
+}
+
+test "parser: recovery — let 'x be' without '='" {
+    // wgsl-analyzer: let_statement_recover_return_no_eq. Typing past `let x`
+    // without `=`/`:`/`;` must emit an error, not hang or crash.
+    try expectParseError("fn main() {\n    let x be\n}");
+}
+
+test "parser: recovery — if with empty parenthesized condition" {
+    // wgsl-analyzer: parse_if_recover_empty. Empty `()` as condition.
+    try expectParseError("fn foo() { if () { } }");
+}
+
+test "parser: recovery — missing LHS before unary plus" {
+    // wgsl-analyzer: parse_missing_lhs_recover. WGSL has no unary `+`,
+    // so `let a = +1;` must produce a parse error at the `+`.
+    try expectParseError("fn foo() { let a = +1; }");
+}
+
 test "parser: for statement" {
     try expectPrinted(
         "fn foo() { for (var i: i32 = 0; i < 4; i++) { } }",
