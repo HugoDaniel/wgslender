@@ -12,6 +12,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Parser = @import("Parser.zig");
+const constants = @import("constants.zig");
 
 /// Direction of a subtree walk.
 ///
@@ -314,10 +315,12 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
     return e;
 }
 
-/// Iteratively visits a type, following single-child chains.
+/// Iteratively visits a type, following single-child chains. The bound
+/// matches `constants.max_parser_type_depth` so the parser cannot build a
+/// type the visitor refuses on depth grounds.
 pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
     var current = t;
-    for (0..32) |_| {
+    for (0..constants.max_parser_type_depth) |_| {
         switch (current) {
             .ident => |typ| switch (ctx.mode) {
                 .add => {
