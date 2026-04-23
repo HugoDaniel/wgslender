@@ -605,6 +605,60 @@ test "validation: errors/types/incr_decr_non_concrete" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/types/incr_decr_non_concrete");
 }
 
+// --- @interpolate error matrix (WGSL §10.3) ---
+// Each @interpolate(type, sampling) combination below must produce a specific
+// error code; porting the named-case pattern from wgsl-analyzer so any
+// regression shows up with a readable fixture name instead of "one of the 35
+// dedup-sweep files broke".
+
+test "validation: errors/types/missing_interpolation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/missing_interpolation");
+}
+
+test "validation: errors/types/interpolate_integer_linear" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/interpolate_integer_linear");
+}
+
+test "validation: errors/types/interpolate_flat_sample" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/interpolate_flat_sample");
+}
+
+test "validation: errors/types/interpolate_perspective_first" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/interpolate_perspective_first");
+}
+
+test "validation: errors/types/interpolate_perspective_either" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/interpolate_perspective_either");
+}
+
+test "validation: errors/types/interpolate_linear_first" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/interpolate_linear_first");
+}
+
+test "validation: errors/types/interpolate_linear_either" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/interpolate_linear_either");
+}
+
+test "validation: errors/types/interpolate_invalid_type" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/types/interpolate_invalid_type");
+}
+
 // --- errors/declarations/ (4 files) ---
 
 test "validation: errors/declarations/const_without_init" {

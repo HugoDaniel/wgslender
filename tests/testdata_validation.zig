@@ -124,6 +124,9 @@ pub const @"errors/types/interpolate_integer_linear" = @embedFile("testdata/vali
 pub const @"errors/types/interpolate_flat_sample" = @embedFile("testdata/validation/errors/types/interpolate_flat_sample.wgsl");
 pub const @"errors/types/interpolate_perspective_first" = @embedFile("testdata/validation/errors/types/interpolate_perspective_first.wgsl");
 pub const @"errors/types/interpolate_invalid_type" = @embedFile("testdata/validation/errors/types/interpolate_invalid_type.wgsl");
+pub const @"errors/types/interpolate_linear_first" = @embedFile("testdata/validation/errors/types/interpolate_linear_first.wgsl");
+pub const @"errors/types/interpolate_linear_either" = @embedFile("testdata/validation/errors/types/interpolate_linear_either.wgsl");
+pub const @"errors/types/interpolate_perspective_either" = @embedFile("testdata/validation/errors/types/interpolate_perspective_either.wgsl");
 pub const @"errors/types/switch_duplicate_const_case" = @embedFile("testdata/validation/errors/types/switch_duplicate_const_case.wgsl");
 
 // --- errors/declarations/ ---
