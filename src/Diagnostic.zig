@@ -744,6 +744,11 @@ pub const Code = struct {
     pub const lint_no_f16_without_extension: []const u8 = "W0207";
     pub const lint_consistent_binding_annotations: []const u8 = "W0208";
     pub const lint_unused_disable_directive: []const u8 = "W0209";
+    pub const lint_no_unreachable: []const u8 = "W0210";
+    pub const lint_no_constant_condition: []const u8 = "W0211";
+    pub const lint_for_direction: []const u8 = "W0212";
+    pub const lint_no_duplicate_case: []const u8 = "W0213";
+    pub const lint_no_self_assign: []const u8 = "W0214";
 };
 
 /// Map a diagnostic code to a WGSL spec section slug.

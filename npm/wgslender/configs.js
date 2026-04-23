@@ -21,6 +21,11 @@ const recommended = {
     'no-unused-vars': 'warn',
     'no-dead-code': 'warn',
     'no-unused-binding': 'warn',
+    'no-unreachable': 'warn',
+    'no-constant-condition': 'warn',
+    'for-direction': 'warn',
+    'no-duplicate-case': 'warn',
+    'no-self-assign': 'warn',
   },
 };
 
@@ -56,6 +61,11 @@ const strict = {
     'no-unused-vars': 'error',
     'no-dead-code': 'error',
     'no-unused-binding': 'error',
+    'no-unreachable': 'error',
+    'no-constant-condition': 'error',
+    'for-direction': 'error',
+    'no-duplicate-case': 'error',
+    'no-self-assign': 'error',
     'naming-convention': 'warn',
     'no-large-local-arrays': 'warn',
     'require-entry-point-attrs': 'error',

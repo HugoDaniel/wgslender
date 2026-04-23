@@ -158,7 +158,7 @@ Rules are organized into shareable config packs:
 
 | Pack                       | Rules                                                                      |
 | -------------------------- | -------------------------------------------------------------------------- |
-| `@wgslender/recommended`   | `no-unused-vars`, `no-dead-code`, `no-unused-binding`                      |
+| `@wgslender/recommended`   | `no-unused-vars`, `no-dead-code`, `no-unused-binding`, `no-unreachable`, `no-constant-condition`, `for-direction`, `no-duplicate-case`, `no-self-assign` |
 | `@wgslender/style`         | `naming-convention`                                                        |
 | `@wgslender/performance`   | `no-large-local-arrays`                                                    |
 | `@wgslender/portability`   | `require-entry-point-attrs`, `consistent-binding-annotations`              |

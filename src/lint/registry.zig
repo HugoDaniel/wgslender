@@ -14,6 +14,11 @@ const require_entry_point_attrs = @import("rules/require_entry_point_attrs.zig")
 const consistent_binding_annotations = @import("rules/consistent_binding_annotations.zig");
 const no_magic_numbers = @import("rules/no_magic_numbers.zig");
 const no_large_local_arrays = @import("rules/no_large_local_arrays.zig");
+const no_unreachable = @import("rules/no_unreachable.zig");
+const no_constant_condition = @import("rules/no_constant_condition.zig");
+const for_direction = @import("rules/for_direction.zig");
+const no_duplicate_case = @import("rules/no_duplicate_case.zig");
+const no_self_assign = @import("rules/no_self_assign.zig");
 
 /// Every lint rule the linter knows about. Declaration order is the order
 /// rules execute in per-file; rules may depend on module-wide analysis but
@@ -27,6 +32,11 @@ pub const all = [_]Rule{
     consistent_binding_annotations.rule,
     no_magic_numbers.rule,
     no_large_local_arrays.rule,
+    no_unreachable.rule,
+    no_constant_condition.rule,
+    for_direction.rule,
+    no_duplicate_case.rule,
+    no_self_assign.rule,
 };
 
 /// Look up a rule by its public id (e.g. `"no-unused-vars"`).

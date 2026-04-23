@@ -629,6 +629,244 @@ test "no-large-local-arrays: configurable maxSize option" {
 }
 
 // =========================================================================
+// no-unreachable (W0210)
+// =========================================================================
+
+test "no-unreachable: statement after return is flagged" {
+    var r = try runLint(
+        \\fn f() -> i32 {
+        \\  return 1;
+        \\  let dead = 2;
+        \\  return dead;
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0210"));
+}
+
+test "no-unreachable: statement after discard is flagged" {
+    var r = try runLint(
+        \\@fragment fn fs() -> @location(0) vec4f {
+        \\  discard;
+        \\  return vec4f(0.0);
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0210"));
+}
+
+test "no-unreachable: break inside loop flags following stmts" {
+    var r = try runLint(
+        \\fn f() {
+        \\  loop {
+        \\    break;
+        \\    let x = 1;
+        \\  }
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0210"));
+}
+
+test "no-unreachable: conditional return is NOT flagged" {
+    // The return is inside an `if`, so code after the `if` is reachable
+    // via the else-not-taken path.
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 {
+        \\  if (x > 0) { return 1; }
+        \\  return 2;
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0210"));
+}
+
+test "no-unreachable: last return in function is not flagged" {
+    var r = try runLint("fn f() -> i32 { return 1; }", recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0210"));
+}
+
+// =========================================================================
+// no-constant-condition (W0211)
+// =========================================================================
+
+test "no-constant-condition: if (true) is flagged" {
+    var r = try runLint("fn f() -> i32 { if (true) { return 1; } return 0; }", recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0211"));
+}
+
+test "no-constant-condition: while (false) is flagged" {
+    var r = try runLint("fn f() { while (false) { } }", recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0211"));
+}
+
+test "no-constant-condition: variable condition is not flagged" {
+    var r = try runLint("fn f(b: bool) -> i32 { if (b) { return 1; } return 0; }", recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0211"));
+}
+
+// =========================================================================
+// for-direction (W0212)
+// =========================================================================
+
+test "for-direction: up comparator with decrement is flagged" {
+    var r = try runLint(
+        \\fn f() {
+        \\  for (var i = 0; i < 10; i--) { }
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0212"));
+}
+
+test "for-direction: down comparator with increment is flagged" {
+    var r = try runLint(
+        \\fn f() {
+        \\  for (var i = 10; i > 0; i++) { }
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0212"));
+}
+
+test "for-direction: correctly-oriented up-loop is fine" {
+    var r = try runLint(
+        \\fn f() {
+        \\  for (var i = 0; i < 10; i++) { }
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0212"));
+}
+
+test "for-direction: correctly-oriented down-loop is fine" {
+    var r = try runLint(
+        \\fn f() {
+        \\  for (var i = 10; i >= 0; i--) { }
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0212"));
+}
+
+// =========================================================================
+// no-duplicate-case (W0213)
+// =========================================================================
+
+test "no-duplicate-case: duplicate integer selector is flagged" {
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 {
+        \\  switch x {
+        \\    case 1: { return 1; }
+        \\    case 1: { return 2; }
+        \\    default: { return 0; }
+        \\  }
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0213"));
+}
+
+test "no-duplicate-case: 42 and 42u collide" {
+    var r = try runLint(
+        \\fn f(x: u32) -> u32 {
+        \\  switch x {
+        \\    case 42: { return 1u; }
+        \\    case 42u: { return 2u; }
+        \\    default: { return 0u; }
+        \\  }
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0213"));
+}
+
+test "no-duplicate-case: distinct selectors are fine" {
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 {
+        \\  switch x {
+        \\    case 1: { return 1; }
+        \\    case 2: { return 2; }
+        \\    default: { return 0; }
+        \\  }
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0213"));
+}
+
+// =========================================================================
+// no-self-assign (W0214)
+// =========================================================================
+
+test "no-self-assign: x = x is flagged" {
+    var r = try runLint(
+        \\fn f() {
+        \\  var x: i32 = 1;
+        \\  x = x;
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0214"));
+}
+
+test "no-self-assign: member self-assign is flagged" {
+    var r = try runLint(
+        \\fn f() {
+        \\  var v: vec2f = vec2f(1.0);
+        \\  v.x = v.x;
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0214"));
+}
+
+test "no-self-assign: compound assign not flagged" {
+    var r = try runLint(
+        \\fn f() {
+        \\  var x: i32 = 1;
+        \\  x += x;
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0214"));
+}
+
+test "no-self-assign: assign different variables is fine" {
+    var r = try runLint(
+        \\fn f() {
+        \\  var x: i32 = 1;
+        \\  var y: i32 = 2;
+        \\  x = y;
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0214"));
+}
+
+test "no-self-assign: attaches autofix that deletes the statement" {
+    var r = try runLint(
+        \\fn f() {
+        \\  var x: i32 = 1;
+        \\  x = x;
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    var found = false;
+    for (r.lint.diagnostics.items()) |d| {
+        if (std.mem.eql(u8, d.code, "W0214")) {
+            try std.testing.expect(d.fix != null);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+// =========================================================================
 // Config packs
 // =========================================================================
 

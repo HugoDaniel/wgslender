@@ -32,6 +32,11 @@ pub const recommended = Config{
         .{ .id = "no-unused-vars", .severity = .warning },
         .{ .id = "no-dead-code", .severity = .warning },
         .{ .id = "no-unused-binding", .severity = .warning },
+        .{ .id = "no-unreachable", .severity = .warning },
+        .{ .id = "no-constant-condition", .severity = .warning },
+        .{ .id = "for-direction", .severity = .warning },
+        .{ .id = "no-duplicate-case", .severity = .warning },
+        .{ .id = "no-self-assign", .severity = .warning },
     },
 };
 
@@ -66,6 +71,11 @@ pub const strict = Config{
         .{ .id = "no-unused-vars", .severity = .@"error" },
         .{ .id = "no-dead-code", .severity = .@"error" },
         .{ .id = "no-unused-binding", .severity = .@"error" },
+        .{ .id = "no-unreachable", .severity = .@"error" },
+        .{ .id = "no-constant-condition", .severity = .@"error" },
+        .{ .id = "for-direction", .severity = .@"error" },
+        .{ .id = "no-duplicate-case", .severity = .@"error" },
+        .{ .id = "no-self-assign", .severity = .@"error" },
         .{ .id = "naming-convention", .severity = .warning },
         .{ .id = "no-large-local-arrays", .severity = .warning },
         .{ .id = "require-entry-point-attrs", .severity = .@"error" },
