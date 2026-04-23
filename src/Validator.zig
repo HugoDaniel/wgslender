@@ -237,6 +237,11 @@ var_info: std.AutoHashMapUnmanaged(u32, VarInfo) = .{},
 
 /// Validate a parsed WGSL module.
 pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result {
+    // Pre: module came from a parse (or CstLower) — its scope tree must be
+    // rooted, and the source slice is what diagnostics will index into.
+    std.debug.assert(module.scope.parent == null);
+    std.debug.assert(module.source.len < std.math.maxInt(u32));
+
     const diags = try arena.create(Diagnostic);
     diags.* = try Diagnostic.init(arena, module.source);
     diags.line_offset = options.line_offset;
@@ -294,6 +299,12 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     // Remove duplicate diagnostics produced by overlapping phases
     diags.deduplicate();
 
+    // Post: every depth-tracked walk inside the validator must return to
+    // baseline. Stale state would silently lower the effective limit on
+    // the next call against a reused Validator instance.
+    std.debug.assert(v.expr_depth == 0);
+    std.debug.assert(v.stmt_depth == 0);
+
     return .{
         .valid = !diags.hasErrors(),
         .diagnostics = diags,
@@ -308,6 +319,9 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
 /// front so every span/loc read inside the validator (diagnostic
 /// ranges, attribute positions, etc.) sees current coordinates.
 pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !AnalysisResult {
+    std.debug.assert(module.scope.parent == null);
+    std.debug.assert(module.source.len < std.math.maxInt(u32));
+
     module.absorbInteriors();
 
     const diags = try arena.create(Diagnostic);
@@ -339,6 +353,9 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
     v.detectShadowing();
     v.checkOperatorPrecedence();
     diags.deduplicate();
+
+    std.debug.assert(v.expr_depth == 0);
+    std.debug.assert(v.stmt_depth == 0);
 
     return .{
         .valid = !diags.hasErrors(),
