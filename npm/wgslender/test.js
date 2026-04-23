@@ -716,6 +716,80 @@ fn get_time(g: Uniforms) -> f32 { return g.time; }
   console.log('');
 
   // =============================================
+  // Lint
+  // =============================================
+  console.log('\n--- Lint ---');
+
+  const { lint, lintAndFix } = wgslender;
+
+  // Empty config → no lint rules fire
+  const lintEmpty = lint('fn unused() {}');
+  assert(lintEmpty.warningCount === 0, 'lint() without extends emits no warnings');
+  assert(lintEmpty.errorCount === 0, 'lint() without extends emits no errors');
+
+  // @wgslender/recommended catches unused declaration
+  const lintRecommended = lint('fn unused() {}', {
+    extends: ['@wgslender/recommended'],
+  });
+  assert(
+    lintRecommended.warningCount >= 1,
+    'lint() @wgslender/recommended flags unused function',
+    `got warningCount=${lintRecommended.warningCount}`,
+  );
+  assert(
+    lintRecommended.diagnostics.some(d => d.code === 'W0001'),
+    'lint() emits W0001 for unused-vars',
+  );
+  assert(
+    lintRecommended.diagnostics.every(d => d.source === 'wgslender-lint'),
+    'lint() diagnostics carry source="wgslender-lint"',
+  );
+
+  // Per-rule override to error
+  const lintError = lint('fn unused() {}', {
+    rules: { 'no-unused-vars': 'error' },
+  });
+  assert(lintError.errorCount >= 1, 'lint() per-rule error override elevates severity');
+
+  // Rule disabled silences the extended pack
+  const lintOff = lint('fn unused() {}', {
+    extends: ['@wgslender/recommended'],
+    rules: { 'no-unused-vars': 'off' },
+  });
+  assert(
+    lintOff.warningCount === 0 && lintOff.errorCount === 0,
+    'lint() per-rule "off" silences the pack',
+  );
+
+  // Disable comment silences the rule
+  const lintDisabled = lint(
+    '// wgslender-disable-next-line no-unused-vars\nfn skipped() {}',
+    { extends: ['@wgslender/recommended'] },
+  );
+  assert(
+    !lintDisabled.diagnostics.some(d => d.code === 'W0001'),
+    'lint() respects wgslender-disable-next-line comments',
+  );
+
+  // Configs sub-export
+  const configs = require('./configs.js');
+  assert(configs.recommended.name === '@wgslender/recommended', 'configs.recommended exported');
+  assert(
+    Object.keys(configs.recommended.rules).length >= 3,
+    'configs.recommended lists at least 3 rules',
+  );
+  assert(configs.strict.rules['no-unused-vars'] === 'error', 'configs.strict elevates to error');
+
+  // lintAndFix returns fixed source + diagnostics (no fixable rules in v1,
+  // so `fixed` equals `source`).
+  const fixResult = lintAndFix('fn unused() {}', {
+    extends: ['@wgslender/recommended'],
+  });
+  assert(typeof fixResult.fixed === 'string', 'lintAndFix() returns fixed:string');
+  assert(fixResult.fixed === 'fn unused() {}', 'lintAndFix() passes source through when no fixes');
+  assert(fixResult.warningCount >= 1, 'lintAndFix() reports diagnostics');
+
+  // =============================================
   // Summary
   // =============================================
   console.log(`\n${passed} passed, ${failed} failed`);

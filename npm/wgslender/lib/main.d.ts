@@ -486,3 +486,91 @@ export function isInitialized(): boolean;
  * Get the version of the minifier.
  */
 export const version: string;
+
+// =============================================================================
+// Lint
+// =============================================================================
+
+/** Severity of a lint rule. */
+export type LintSeverity = 'off' | 'warn' | 'error';
+
+/**
+ * A per-rule setting. Either a severity string, or a tuple `[severity, opts]`
+ * to pass rule-specific options (currently forwarded opaquely to the Zig
+ * backend — only a handful of rules read them).
+ */
+export type RuleSetting = LintSeverity | [LintSeverity, Record<string, unknown>];
+
+/** Options for `lint()` / `lintAndFix()`. */
+export interface LintOptions {
+  /**
+   * Names of built-in configs to inherit rules from.
+   * Known values: `@wgslender/recommended`, `@wgslender/style`,
+   * `@wgslender/performance`, `@wgslender/portability`, `@wgslender/strict`.
+   * Unknown names are silently ignored.
+   */
+  extends?: string[];
+
+  /**
+   * Per-rule severity overrides. Keys are public rule ids
+   * (e.g. `"no-unused-vars"`). These take precedence over anything inherited
+   * via `extends`.
+   */
+  rules?: Record<string, RuleSetting>;
+
+  /**
+   * Emit a W0209 warning for every `wgslender-disable` directive that never
+   * matched a diagnostic.
+   * @default false
+   */
+  reportUnusedDisableDirectives?: boolean;
+}
+
+/** A lint diagnostic returned by `lint()`. */
+export interface LintDiagnostic {
+  severity: 'error' | 'warning' | 'info' | 'note';
+  code: string;
+  message: string;
+  line: number;
+  column: number;
+  endLine?: number;
+  endColumn?: number;
+  source?: string;
+  specRef?: string;
+  fix?: {
+    range: {
+      startLine: number;
+      startColumn: number;
+      startOffset: number;
+      endLine: number;
+      endColumn: number;
+      endOffset: number;
+    };
+    text: string;
+  };
+}
+
+/** Result of `lint()`. */
+export interface LintResult {
+  diagnostics: LintDiagnostic[];
+  errorCount: number;
+  warningCount: number;
+}
+
+/** Result of `lintAndFix()`. Extends LintResult with the fixed source. */
+export interface LintFixResult extends LintResult {
+  fixed: string;
+}
+
+/**
+ * Lint WGSL source. Returns diagnostics from both the WGSL validator
+ * (spec errors) and the lint rules selected by `options.extends` / `rules`.
+ */
+export function lint(source: string, options?: LintOptions): LintResult;
+
+/**
+ * Lint and apply autofixes. Overlapping fixes are dropped; the remaining
+ * diagnostics list still includes the skipped ones so a follow-up pass
+ * can converge.
+ */
+export function lintAndFix(source: string, options?: LintOptions): LintFixResult;

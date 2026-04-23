@@ -195,6 +195,84 @@ function validate(source, options) {
 }
 
 /**
+ * Lint WGSL source with a rule-pack config.
+ * @param {string} source - WGSL source code
+ * @param {Object} [options] - Lint config
+ * @param {string[]} [options.extends] - Shareable config names, e.g. ['@wgslender/recommended']
+ * @param {Object<string, string|[string, Object]>} [options.rules] - Per-rule overrides.
+ *   Value is either a severity string ('off'|'warn'|'error') or a `[severity, optionsObj]` tuple.
+ * @param {boolean} [options.reportUnusedDisableDirectives=false]
+ * @returns {{diagnostics: Array, errorCount: number, warningCount: number}}
+ */
+function lint(source, options) {
+  if (!_initialized) throw new Error('wgslender not initialized. Call initialize() first.');
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+
+  const config = _buildLintConfig(options);
+  const src = _writeString(source);
+  const cfg = _writeString(config);
+  const resultPtr = _wasm.wgslender_lint(src.ptr, src.len, cfg.ptr, cfg.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(cfg.ptr, cfg.allocLen);
+  if (!resultPtr) throw new Error('Lint failed: WASM returned null');
+
+  const view = new DataView(_wasm.memory.buffer);
+  const errorCount = view.getUint32(resultPtr, true);
+  const warningCount = view.getUint32(resultPtr + 4, true);
+  const jsonLen = view.getUint32(resultPtr + 8, true);
+  const diagnostics = JSON.parse(
+    _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 12, jsonLen))
+  );
+  _wasm.wgslender_dealloc(resultPtr, 12 + jsonLen);
+
+  return { diagnostics, errorCount, warningCount };
+}
+
+/**
+ * Lint and apply autofixes in a single call.
+ * @param {string} source - WGSL source code
+ * @param {Object} [options] - Lint config (same shape as lint())
+ * @returns {{fixed: string, diagnostics: Array, errorCount: number, warningCount: number}}
+ */
+function lintAndFix(source, options) {
+  if (!_initialized) throw new Error('wgslender not initialized. Call initialize() first.');
+  if (typeof source !== 'string') throw new TypeError('source must be a string');
+
+  const config = _buildLintConfig(options);
+  const src = _writeString(source);
+  const cfg = _writeString(config);
+  const resultPtr = _wasm.wgslender_lint_fix(src.ptr, src.len, cfg.ptr, cfg.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(cfg.ptr, cfg.allocLen);
+  if (!resultPtr) throw new Error('Lint fix failed: WASM returned null');
+
+  const view = new DataView(_wasm.memory.buffer);
+  const fixedLen = view.getUint32(resultPtr, true);
+  const errorCount = view.getUint32(resultPtr + 4, true);
+  const warningCount = view.getUint32(resultPtr + 8, true);
+  const jsonLen = view.getUint32(resultPtr + 12, true);
+  const fixed = _decoder.decode(
+    new Uint8Array(_wasm.memory.buffer, resultPtr + 16, fixedLen)
+  );
+  const diagnostics = JSON.parse(
+    _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 16 + fixedLen, jsonLen))
+  );
+  _wasm.wgslender_dealloc(resultPtr, 16 + fixedLen + jsonLen);
+
+  return { fixed, diagnostics, errorCount, warningCount };
+}
+
+function _buildLintConfig(options) {
+  if (!options) return '';
+  const out = {};
+  if (options.extends) out.extends = options.extends;
+  if (options.rules) out.rules = options.rules;
+  if (options.reportUnusedDisableDirectives)
+    out.reportUnusedDisableDirectives = true;
+  return JSON.stringify(out);
+}
+
+/**
  * Find all references to the symbol under `offset` (byte offset in `source`).
  * @param {string} source - WGSL source code
  * @param {number} offset - Byte offset where to resolve the symbol
@@ -528,6 +606,8 @@ module.exports = {
   minify,
   reflect,
   validate,
+  lint,
+  lintAndFix,
   findReferences,
   rename,
   renameApply,

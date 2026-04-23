@@ -339,6 +339,205 @@ fn minifyAndReflectJsonImpl(
 }
 
 // =========================================================================
+// Lint
+// =========================================================================
+
+/// Lint WGSL source and return diagnostics.
+///
+/// Input:
+///   * source text pointer + length
+///   * JSON config pointer + length
+///     (e.g. `{"extends":["@wgslender/recommended"],"rules":{"no-unused-vars":"error"}}`)
+///     Empty buffer → default (no rules enabled, zero diagnostics).
+/// Output: `[u32 error_count][u32 warning_count][u32 json_len][u8... diagnostics_json]`.
+/// Returns null on allocation failure.
+export fn wgslender_lint(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    config_ptr: [*]const u8,
+    config_len: u32,
+) ?[*]u8 {
+    return lintImpl(source_ptr, source_len, config_ptr, config_len) catch return null;
+}
+
+fn lintImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    config_ptr: [*]const u8,
+    config_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+
+    const opts = try parseLintConfig(config_ptr, config_len);
+
+    var result = try wgslender.lint(wasm_allocator, source, opts);
+    defer result.deinit(wasm_allocator);
+
+    var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+    try json_buf.append(wasm_allocator, '[');
+    var first = true;
+    // Validator diagnostics first (parse / semantic errors), then lint.
+    for (result.analysis.diagnostics.items()) |*entry| {
+        if (!first) try json_buf.append(wasm_allocator, ',');
+        first = false;
+        try Diagnostic.entryToJson(&json_buf, wasm_allocator, entry);
+    }
+    for (result.lint.diagnostics.items()) |*entry| {
+        if (!first) try json_buf.append(wasm_allocator, ',');
+        first = false;
+        try Diagnostic.entryToJson(&json_buf, wasm_allocator, entry);
+    }
+    try json_buf.append(wasm_allocator, ']');
+
+    const analysis_errors = result.analysis.diagnostics.errorCount();
+    const error_count = analysis_errors + result.lint.error_count;
+    const warning_count = result.lint.warning_count;
+    return packLintResult(error_count, warning_count, json_buf.items);
+}
+
+fn packLintResult(error_count: u32, warning_count: u32, json: []const u8) ?[*]u8 {
+    const out_buf = wasm_allocator.alloc(u8, 12 + json.len) catch return null;
+    std.mem.writeInt(u32, out_buf[0..4], error_count, .little);
+    std.mem.writeInt(u32, out_buf[4..8], warning_count, .little);
+    std.mem.writeInt(u32, out_buf[8..12], @intCast(json.len), .little);
+    @memcpy(out_buf[12..][0..json.len], json);
+    return out_buf.ptr;
+}
+
+/// Lint and apply autofixes in a single call.
+///
+/// Input: same as `wgslender_lint`.
+/// Output: `[u32 fixed_len][u32 error_count][u32 warning_count][u32 json_len]`
+///         `[u8... fixed_source][u8... remaining_diagnostics_json]`.
+/// Returns null on allocation failure.
+export fn wgslender_lint_fix(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    config_ptr: [*]const u8,
+    config_len: u32,
+) ?[*]u8 {
+    return lintFixImpl(source_ptr, source_len, config_ptr, config_len) catch return null;
+}
+
+fn lintFixImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    config_ptr: [*]const u8,
+    config_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+
+    const opts = try parseLintConfig(config_ptr, config_len);
+
+    var result = try wgslender.lint(wasm_allocator, source, opts);
+    defer result.deinit(wasm_allocator);
+
+    const fix_result = try wgslender.Linter.Fixer.apply(
+        wasm_allocator,
+        source,
+        result.lint.diagnostics.items(),
+    );
+
+    // Remaining diagnostics = those that were not fixed. For now we emit
+    // every diagnostic (fixed or not); a future slice can split the two.
+    var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+    try json_buf.append(wasm_allocator, '[');
+    var first = true;
+    for (result.analysis.diagnostics.items()) |*entry| {
+        if (!first) try json_buf.append(wasm_allocator, ',');
+        first = false;
+        try Diagnostic.entryToJson(&json_buf, wasm_allocator, entry);
+    }
+    for (result.lint.diagnostics.items()) |*entry| {
+        if (!first) try json_buf.append(wasm_allocator, ',');
+        first = false;
+        try Diagnostic.entryToJson(&json_buf, wasm_allocator, entry);
+    }
+    try json_buf.append(wasm_allocator, ']');
+
+    const fixed = fix_result.fixed;
+    const analysis_errors = result.analysis.diagnostics.errorCount();
+    const error_count = analysis_errors + result.lint.error_count;
+    const warning_count = result.lint.warning_count;
+
+    const total_len = 16 + fixed.len + json_buf.items.len;
+    const out_buf = wasm_allocator.alloc(u8, total_len) catch return null;
+    std.mem.writeInt(u32, out_buf[0..4], @intCast(fixed.len), .little);
+    std.mem.writeInt(u32, out_buf[4..8], error_count, .little);
+    std.mem.writeInt(u32, out_buf[8..12], warning_count, .little);
+    std.mem.writeInt(u32, out_buf[12..16], @intCast(json_buf.items.len), .little);
+    @memcpy(out_buf[16..][0..fixed.len], fixed);
+    @memcpy(out_buf[16 + fixed.len ..][0..json_buf.items.len], json_buf.items);
+    return out_buf.ptr;
+}
+
+/// Parse the JSON config payload into `Linter.Options`. Empty or malformed
+/// payload degrades to defaults (zero rules enabled) rather than failing —
+/// the WASM caller can always inspect the diagnostics array to see that
+/// no lint fired, and invalid-config diagnostics are a future slice.
+fn parseLintConfig(config_ptr: [*]const u8, config_len: u32) Allocator.Error!wgslender.Linter.Options {
+    if (config_len == 0) return .{};
+    const slice = config_ptr[0..config_len];
+    var parsed = std.json.parseFromSlice(std.json.Value, wasm_allocator, slice, .{}) catch return .{};
+    defer parsed.deinit();
+    const root = parsed.value;
+    if (root != .object) return .{};
+
+    var extends_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    if (root.object.get("extends")) |v| {
+        if (v == .array) {
+            for (v.array.items) |item| {
+                if (item == .string) {
+                    const duped = try wasm_allocator.dupe(u8, item.string);
+                    try extends_list.append(wasm_allocator, duped);
+                }
+            }
+        }
+    }
+
+    var rule_overrides: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
+    if (root.object.get("rules")) |v| {
+        if (v == .object) {
+            var it = v.object.iterator();
+            while (it.next()) |kv| {
+                const id = try wasm_allocator.dupe(u8, kv.key_ptr.*);
+                const rule_entry = kv.value_ptr.*;
+                const sev = parseSeverity(rule_entry) orelse continue;
+                try rule_overrides.append(wasm_allocator, .{
+                    .id = id,
+                    .severity = sev,
+                });
+            }
+        }
+    }
+
+    var report_unused = false;
+    if (root.object.get("reportUnusedDisableDirectives")) |v| {
+        if (v == .bool) report_unused = v.bool;
+    }
+
+    return .{
+        .extends = try extends_list.toOwnedSlice(wasm_allocator),
+        .rules = try rule_overrides.toOwnedSlice(wasm_allocator),
+        .report_unused_disable_directives = report_unused,
+    };
+}
+
+fn parseSeverity(value: std.json.Value) ?Diagnostic.Severity {
+    const s: []const u8 = switch (value) {
+        .string => |str| str,
+        .array => |arr| if (arr.items.len > 0 and arr.items[0] == .string) arr.items[0].string else return null,
+        else => return null,
+    };
+    if (std.mem.eql(u8, s, "off")) return .disabled;
+    if (std.mem.eql(u8, s, "warn") or std.mem.eql(u8, s, "warning")) return .warning;
+    if (std.mem.eql(u8, s, "error")) return .@"error";
+    return null;
+}
+
+// =========================================================================
 // Edits (rename / findReferences)
 // =========================================================================
 

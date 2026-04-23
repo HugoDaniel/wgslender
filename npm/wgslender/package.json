@@ -23,13 +23,19 @@
       },
       "default": "./lib/main.js"
     },
+    "./configs": {
+      "types": "./configs.d.ts",
+      "default": "./configs.js"
+    },
     "./wasm": "./wgslender.wasm"
   },
   "files": [
     "lib",
     "esm",
     "bin",
-    "wgslender.wasm"
+    "wgslender.wasm",
+    "configs.js",
+    "configs.d.ts"
   ],
   "keywords": [
     "wgsl",
