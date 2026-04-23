@@ -99,3 +99,37 @@ test "infer: struct constructor applies load rule to ref args" {
     try std.testing.expect(!anyError(r));
 }
 
+// ---------------------------------------------------------------------
+// no_crash_on_hex_int (wgsl-analyzer #826)
+// Unsuffixed hex integers must stay `AbstractInt`, not get miscast as
+// `f32` on trailing-'f' or as `AbstractFloat` on an embedded 'e'.
+// ---------------------------------------------------------------------
+
+test "infer: hex literal concretizes to integer (no_crash_on_hex_int)" {
+    var r = try validate(
+        \\fn f() { let i2 = 0u; let p0 = (i2 >> 0u) & 0xf; }
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!anyError(r));
+}
+
+test "infer: hex literal with embedded 'e' stays integer" {
+    // `0xe5` previously tripped the `.eE` float-sniff; must type as u32
+    // after the `u` concretization.
+    var r = try validate(
+        \\fn f() { let a: u32 = 0xe5; let b = a & 0xff; }
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!anyError(r));
+}
+
+test "infer: hex float with p-exponent still types as float" {
+    // Guard against the fix over-reaching: `0x1p0` must remain
+    // `AbstractFloat` (the lexer already flags it `.float_literal`).
+    var r = try validate(
+        \\const c: f32 = 0x1p0;
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!anyError(r));
+}
+

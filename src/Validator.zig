@@ -2921,43 +2921,36 @@ fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) InferResult {
     const val = e.value;
     if (val.len == 0) return InferResult.some(Types.AbstractInt, .const_expr);
 
-    // Boolean literals
-    if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "false")) {
-        return InferResult.some(Types.Bool, .const_expr);
+    // Dispatch on the lexer's token classification — text-based heuristics
+    // mistype hex literals (e.g. `0xf` ends in 'f', `0xe5` contains 'e'),
+    // while the lexer already tracks int vs float via the `p`/`.` markers.
+    switch (e.kind) {
+        .true_literal, .false_literal => return InferResult.some(Types.Bool, .const_expr),
+        .float_literal => {
+            v.checkFloatLiteralValue(e);
+            const last = val[val.len - 1];
+            if (last == 'h') {
+                v.checkF16Enabled(e.loc);
+                return InferResult.some(Types.F16, .const_expr);
+            }
+            if (last == 'f') return InferResult.some(Types.F32, .const_expr);
+            return InferResult.some(Types.AbstractFloat, .const_expr);
+        },
+        .int_literal => {
+            const last = val[val.len - 1];
+            if (last == 'u') {
+                v.checkIntLiteralRange(e, .u);
+                return InferResult.some(Types.U32, .const_expr);
+            }
+            if (last == 'i') {
+                v.checkIntLiteralRange(e, .i);
+                return InferResult.some(Types.I32, .const_expr);
+            }
+            v.checkIntLiteralRange(e, .abstract);
+            return InferResult.some(Types.AbstractInt, .const_expr);
+        },
+        else => return InferResult.some(Types.AbstractInt, .const_expr),
     }
-
-    // Check for float indicators
-    if (hasByteAny(val, ".eE")) {
-        v.checkFloatLiteralValue(e);
-        if (val[val.len - 1] == 'h') {
-            v.checkF16Enabled(e.loc);
-            return InferResult.some(Types.F16, .const_expr);
-        }
-        if (val[val.len - 1] == 'f') return InferResult.some(Types.F32, .const_expr);
-        return InferResult.some(Types.AbstractFloat, .const_expr);
-    }
-
-    // Suffix-based typing
-    if (val[val.len - 1] == 'h') {
-        v.checkFloatLiteralValue(e);
-        v.checkF16Enabled(e.loc);
-        return InferResult.some(Types.F16, .const_expr);
-    }
-    if (val[val.len - 1] == 'f') {
-        v.checkFloatLiteralValue(e);
-        return InferResult.some(Types.F32, .const_expr);
-    }
-    if (val[val.len - 1] == 'u') {
-        v.checkIntLiteralRange(e, .u);
-        return InferResult.some(Types.U32, .const_expr);
-    }
-    if (val[val.len - 1] == 'i') {
-        v.checkIntLiteralRange(e, .i);
-        return InferResult.some(Types.I32, .const_expr);
-    }
-
-    v.checkIntLiteralRange(e, .abstract);
-    return InferResult.some(Types.AbstractInt, .const_expr);
 }
 
 const IntLiteralKind = enum { u, i, abstract };
@@ -6226,16 +6219,6 @@ fn classifyIdentByName(v: *const Validator, name: []const u8) ExprStage {
     return .runtime_expr;
 }
 
-/// Check if a byte slice contains any of the given bytes.
-fn hasByteAny(s: []const u8, chars: []const u8) bool {
-    for (s) |c| {
-        for (chars) |ch| {
-            if (c == ch) return true;
-        }
-    }
-    return false;
-}
-
 // =========================================================================
 // Tests
 // =========================================================================
@@ -6288,14 +6271,6 @@ test "validator: shorthandElement" {
     try std.testing.expectEqual(Types.ScalarKind.f32, shorthandElement("vec2f").kind);
     try std.testing.expectEqual(Types.ScalarKind.f16, shorthandElement("mat3x3h").kind);
     try std.testing.expectEqual(Types.ScalarKind.f32, shorthandElement("").kind);
-}
-
-test "validator: hasByteAny" {
-    try std.testing.expect(hasByteAny("hello.world", ".eE"));
-    try std.testing.expect(hasByteAny("1e5", ".eE"));
-    try std.testing.expect(hasByteAny("3.14", ".eE"));
-    try std.testing.expect(!hasByteAny("42", ".eE"));
-    try std.testing.expect(!hasByteAny("", ".eE"));
 }
 
 test "validator: validate empty module" {
