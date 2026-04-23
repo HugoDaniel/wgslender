@@ -2760,6 +2760,27 @@ test "parser: if statement" {
     );
 }
 
+test "parser: if — multiple else-if clauses round-trip" {
+    // Four-way chain with a trailing else. Regression guard for the
+    // else-if walker — mirrors wgsl-analyzer's parse_if_multiple_else_clauses
+    // coverage, but for the well-formed case.
+    try expectPrinted(
+        "fn foo() { if a { } else if b { } else if c { } else if d { } else { } }",
+        "fn foo() {\n    if a {\n    } else if b {\n    } else if c {\n    } else if d {\n    } else {\n    }\n}\n",
+    );
+}
+
+test "parser: if — duplicate else clauses error" {
+    // `if () {} else {} else {}` — two bare `else` arms are illegal.
+    try expectParseError("fn foo() { if a { } else { } else { } }");
+}
+
+test "parser: if — else-if after bare else error" {
+    // `if () {} else {} else if () {}` — once a bare `else` has closed the
+    // chain, any following `else if` must be a parse error.
+    try expectParseError("fn foo() { if a { } else { } else if b { } }");
+}
+
 test "parser: for statement" {
     try expectPrinted(
         "fn foo() { for (var i: i32 = 0; i < 4; i++) { } }",
