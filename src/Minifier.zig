@@ -78,7 +78,9 @@ pub fn defaultOptions() Options {
 /// The returned code is owned by the arena allocator.
 pub fn minify(arena: Allocator, source: [:0]const u8, options: Options) !Result {
     // Pre-conditions: source is sentinel-terminated (enforced by type),
-    // keep_names entries must not be empty strings.
+    // keep_names entries must not be empty strings, and the source size
+    // fits the u32 ranges Diagnostic / source-map encoders use throughout.
+    std.debug.assert(source.len < std.math.maxInt(u32));
     for (options.keep_names) |name| {
         std.debug.assert(name.len > 0);
     }
@@ -158,6 +160,10 @@ pub fn minify(arena: Allocator, source: [:0]const u8, options: Options) !Result 
     // Post-conditions
     std.debug.assert(result.minified_size <= result.original_size or !options.minify_whitespace);
     std.debug.assert(result.symbols_dead <= module.symbols.items.len);
+    // Successful minify never returns parser errors — the early-return
+    // branches above replace `result.code` with `source` and bail before
+    // reaching here, so on this path errors must be empty.
+    std.debug.assert(result.errors.len == 0);
 
     return result;
 }
