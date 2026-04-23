@@ -22,6 +22,11 @@ const no_self_assign = @import("rules/no_self_assign.zig");
 const no_redundant_casts = @import("rules/no_redundant_casts.zig");
 const prefer_mix = @import("rules/prefer_mix.zig");
 const no_f16_without_extension = @import("rules/no_f16_without_extension.zig");
+const prefer_let_over_var = @import("rules/prefer_let_over_var.zig");
+const no_empty = @import("rules/no_empty.zig");
+const no_useless_return = @import("rules/no_useless_return.zig");
+const no_lonely_if = @import("rules/no_lonely_if.zig");
+const no_shadow = @import("rules/no_shadow.zig");
 
 /// Every lint rule the linter knows about. Declaration order is the order
 /// rules execute in per-file; rules may depend on module-wide analysis but
@@ -43,6 +48,11 @@ pub const all = [_]Rule{
     no_redundant_casts.rule,
     prefer_mix.rule,
     no_f16_without_extension.rule,
+    prefer_let_over_var.rule,
+    no_empty.rule,
+    no_useless_return.rule,
+    no_lonely_if.rule,
+    no_shadow.rule,
 };
 
 /// Look up a rule by its public id (e.g. `"no-unused-vars"`).

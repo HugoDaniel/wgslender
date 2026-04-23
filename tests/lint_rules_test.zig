@@ -1003,6 +1003,226 @@ test "no-f16-without-extension: fix inserts `enable f16;` at the top" {
 }
 
 // =========================================================================
+// prefer-let-over-var (W0215)
+// =========================================================================
+
+const style_opts = wgslender.Linter.Options{
+    .extends = &.{"@wgslender/style"},
+};
+
+test "prefer-let-over-var: immutable var is flagged" {
+    var r = try runLint(
+        \\fn f() -> i32 {
+        \\  var x: i32 = 5;
+        \\  return x;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0215"));
+}
+
+test "prefer-let-over-var: mutated var is NOT flagged" {
+    var r = try runLint(
+        \\fn f() -> i32 {
+        \\  var x: i32 = 5;
+        \\  x = 6;
+        \\  return x;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0215"));
+}
+
+test "prefer-let-over-var: address-taken var is NOT flagged" {
+    var r = try runLint(
+        \\fn take_ptr(p: ptr<function, i32>) { *p = 1; }
+        \\fn f() -> i32 {
+        \\  var x: i32 = 5;
+        \\  take_ptr(&x);
+        \\  return x;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0215"));
+}
+
+test "prefer-let-over-var: autofix rewrites var to let" {
+    var r = try runLint(
+        \\fn f() -> i32 {
+        \\  var x: i32 = 5;
+        \\  return x;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    var found = false;
+    for (r.lint.diagnostics.items()) |d| {
+        if (std.mem.eql(u8, d.code, "W0215")) {
+            try std.testing.expect(d.fix != null);
+            try std.testing.expectEqualStrings("let", d.fix.?.text);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "prefer-let-over-var: module-scope var is NOT flagged" {
+    var r = try runLint(
+        \\var<private> px: f32 = 1.0;
+        \\@compute @workgroup_size(1) fn main() { let _v = px; _ = _v; }
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0215"));
+}
+
+// =========================================================================
+// no-empty (W0216)
+// =========================================================================
+
+test "no-empty: empty if body is flagged" {
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 {
+        \\  if (x > 0) {}
+        \\  return 0;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0216"));
+}
+
+test "no-empty: empty function body is NOT flagged" {
+    var r = try runLint("fn f() {}", style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0216"));
+}
+
+test "no-empty: non-empty body passes" {
+    var r = try runLint(
+        \\fn f(x: i32) -> i32 {
+        \\  if (x > 0) { return 1; }
+        \\  return 0;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0216"));
+}
+
+// =========================================================================
+// no-useless-return (W0217)
+// =========================================================================
+
+test "no-useless-return: trailing bare return is flagged" {
+    var r = try runLint(
+        \\fn f() {
+        \\  let x = 1;
+        \\  _ = x;
+        \\  return;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0217"));
+}
+
+test "no-useless-return: return with value is NOT flagged" {
+    var r = try runLint("fn f() -> i32 { return 1; }", style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0217"));
+}
+
+test "no-useless-return: early return (not last) is NOT flagged" {
+    var r = try runLint(
+        \\fn f(x: i32) {
+        \\  if (x > 0) { return; }
+        \\  let y = 1;
+        \\  _ = y;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0217"));
+}
+
+// =========================================================================
+// no-lonely-if (W0218)
+// =========================================================================
+
+test "no-lonely-if: lone if inside else is flagged" {
+    var r = try runLint(
+        \\fn f(a: i32, b: i32) -> i32 {
+        \\  if (a > 0) { return 1; } else {
+        \\    if (b > 0) { return 2; }
+        \\  }
+        \\  return 0;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0218"));
+}
+
+test "no-lonely-if: inner if with its own else is NOT flagged" {
+    var r = try runLint(
+        \\fn f(a: i32, b: i32) -> i32 {
+        \\  if (a > 0) { return 1; } else {
+        \\    if (b > 0) { return 2; } else { return 3; }
+        \\  }
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0218"));
+}
+
+test "no-lonely-if: else if is NOT flagged" {
+    var r = try runLint(
+        \\fn f(a: i32, b: i32) -> i32 {
+        \\  if (a > 0) { return 1; } else if (b > 0) { return 2; }
+        \\  return 0;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0218"));
+}
+
+// =========================================================================
+// no-shadow (W0219)
+// =========================================================================
+
+test "no-shadow: local shadows module-scope const is flagged" {
+    var r = try runLint(
+        \\const X: i32 = 1;
+        \\fn f() -> i32 {
+        \\  let X: i32 = 2;
+        \\  return X;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0219"));
+}
+
+test "no-shadow: inner block shadows outer var is flagged" {
+    var r = try runLint(
+        \\fn f() -> i32 {
+        \\  var outer: i32 = 1;
+        \\  if (outer > 0) {
+        \\    let outer: i32 = 2;
+        \\    return outer;
+        \\  }
+        \\  return outer;
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0219"));
+}
+
+test "no-shadow: sibling blocks are NOT shadowing" {
+    var r = try runLint(
+        \\fn f(b: bool) -> i32 {
+        \\  if (b) { let x: i32 = 1; return x; }
+        \\  else { let x: i32 = 2; return x; }
+        \\}
+    , style_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0219"));
+}
+
+// =========================================================================
 // Config packs
 // =========================================================================
 

@@ -45,6 +45,11 @@ pub const style = Config{
     .name = "@wgslender/style",
     .rules = &.{
         .{ .id = "naming-convention", .severity = .warning },
+        .{ .id = "prefer-let-over-var", .severity = .warning },
+        .{ .id = "no-empty", .severity = .warning },
+        .{ .id = "no-useless-return", .severity = .warning },
+        .{ .id = "no-lonely-if", .severity = .warning },
+        .{ .id = "no-shadow", .severity = .warning },
     },
 };
 
@@ -81,6 +86,11 @@ pub const strict = Config{
         .{ .id = "no-self-assign", .severity = .@"error" },
         .{ .id = "no-redundant-casts", .severity = .warning },
         .{ .id = "prefer-mix", .severity = .warning },
+        .{ .id = "prefer-let-over-var", .severity = .warning },
+        .{ .id = "no-empty", .severity = .warning },
+        .{ .id = "no-useless-return", .severity = .warning },
+        .{ .id = "no-lonely-if", .severity = .warning },
+        .{ .id = "no-shadow", .severity = .warning },
         .{ .id = "naming-convention", .severity = .warning },
         .{ .id = "no-large-local-arrays", .severity = .warning },
         .{ .id = "require-entry-point-attrs", .severity = .@"error" },

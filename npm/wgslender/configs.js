@@ -35,6 +35,11 @@ const style = {
   name: '@wgslender/style',
   rules: {
     'naming-convention': 'warn',
+    'prefer-let-over-var': 'warn',
+    'no-empty': 'warn',
+    'no-useless-return': 'warn',
+    'no-lonely-if': 'warn',
+    'no-shadow': 'warn',
   },
 };
 
@@ -71,6 +76,11 @@ const strict = {
     'no-self-assign': 'error',
     'no-redundant-casts': 'warn',
     'prefer-mix': 'warn',
+    'prefer-let-over-var': 'warn',
+    'no-empty': 'warn',
+    'no-useless-return': 'warn',
+    'no-lonely-if': 'warn',
+    'no-shadow': 'warn',
     'naming-convention': 'warn',
     'no-large-local-arrays': 'warn',
     'require-entry-point-attrs': 'error',
