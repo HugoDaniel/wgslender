@@ -278,6 +278,12 @@ pub fn parse(self: *Parser) !*Ast.Module {
     for (module.symbols.items) |sym| {
         std.debug.assert(sym.original_name.len > 0 or sym.kind == .unbound);
     }
+    // Post-condition: every depth-tracked descent unwound; a stale value
+    // here means a parseExpression/parseStatement/parseType path is missing
+    // its `defer depth -= 1`, which would silently degrade later parses.
+    std.debug.assert(self.expr_depth == 0);
+    std.debug.assert(self.stmt_depth == 0);
+    std.debug.assert(self.type_depth == 0);
 
     return module;
 }
