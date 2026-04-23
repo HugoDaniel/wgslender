@@ -64,6 +64,15 @@ pub const RelatedInfo = struct {
     message: []const u8 = "",
 };
 
+/// A source-text rewrite attached to a diagnostic. Applied by the linter's
+/// fixer and surfaced as an LSP CodeAction by the language server. The byte
+/// offsets on `range.start.offset` / `range.end.offset` drive splicing; the
+/// line/column positions drive LSP rendering.
+pub const Fix = struct {
+    range: Range = .{},
+    text: []const u8 = "",
+};
+
 // =========================================================================
 // Entry
 // =========================================================================
@@ -81,6 +90,15 @@ pub const Entry = struct {
     related: []const RelatedInfo = &.{},
     /// WGSL spec section reference (e.g. "6.4").
     spec_ref: []const u8 = "",
+    /// Origin of the diagnostic ("" for validator, "wgslender-lint" for
+    /// linter rules). Editors can style/filter on this; JSON consumers use
+    /// it to separate spec-errors from advisory lint.
+    source: []const u8 = "",
+    /// Optional autofix. When set, the linter's Fixer can rewrite source and
+    /// the LSP can publish a quickfix code action. Stored by pointer so
+    /// `Entry` stays compact — fixes live on the same arena as the
+    /// diagnostic list, so the pointer lifetime tracks the list.
+    fix: ?*const Fix = null,
 
     /// Format as "line:col: severity: message".
     pub fn format(self: *const Entry, writer: anytype) !void {
@@ -135,6 +153,30 @@ pub fn entryToJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, entry
             try buf.appendSlice(allocator, "\"}");
         }
         try buf.append(allocator, ']');
+    }
+
+    if (entry.source.len > 0) {
+        try buf.appendSlice(allocator, ",\"source\":\"");
+        try appendJsonEscaped(buf, allocator, entry.source);
+        try buf.append(allocator, '"');
+    }
+
+    if (entry.fix) |f| {
+        try buf.appendSlice(allocator, ",\"fix\":{\"range\":{\"startLine\":");
+        try appendInt(buf, allocator, f.range.start.line);
+        try buf.appendSlice(allocator, ",\"startColumn\":");
+        try appendInt(buf, allocator, f.range.start.column);
+        try buf.appendSlice(allocator, ",\"startOffset\":");
+        try appendInt(buf, allocator, f.range.start.offset);
+        try buf.appendSlice(allocator, ",\"endLine\":");
+        try appendInt(buf, allocator, f.range.end.line);
+        try buf.appendSlice(allocator, ",\"endColumn\":");
+        try appendInt(buf, allocator, f.range.end.column);
+        try buf.appendSlice(allocator, ",\"endOffset\":");
+        try appendInt(buf, allocator, f.range.end.offset);
+        try buf.appendSlice(allocator, "},\"text\":\"");
+        try appendJsonEscaped(buf, allocator, f.text);
+        try buf.appendSlice(allocator, "\"}");
     }
 
     try buf.append(allocator, '}');
@@ -246,11 +288,26 @@ has_errors: bool,
 /// original file's line numbers. May be negative.
 line_offset: i32 = 0,
 
-/// Create a new diagnostic list for the given source.
+/// Create a new diagnostic list for the given source. Pre-allocates a
+/// modest capacity for the diagnostic array so small-error-count
+/// validator scenarios (e.g. `"fn { invalid }"` → 4 parse errors) don't
+/// need to grow the list during the error-reporting hot path —
+/// `Diagnostic.add` deliberately swallows OOM on append (best-effort
+/// contract), which the exhaustive OOM tests flag as a swallowed
+/// allocation every time a realloc fails. Eight slots covers typical
+/// parse errors on invalid fragments without meaningfully bloating the
+/// common, clean-shader case.
 pub fn init(allocator: Allocator, source: []const u8) Allocator.Error!Diagnostic {
+    var line_index = try LineIndex.init(allocator, source);
+    errdefer line_index.deinit(allocator);
+
+    var diags: std.ArrayListUnmanaged(Entry) = .empty;
+    errdefer diags.deinit(allocator);
+    try diags.ensureTotalCapacity(allocator, 8);
+
     return .{
-        .diagnostics = .empty,
-        .line_index = try LineIndex.init(allocator, source),
+        .diagnostics = diags,
+        .line_index = line_index,
         .source = source,
         .has_errors = false,
     };
@@ -671,6 +728,22 @@ pub const Code = struct {
     // Warnings (W01xx)
     pub const shadowing: []const u8 = "W0100";
     pub const redundant_cast: []const u8 = "W0101";
+
+    // Lint rules (W0001..W0003 are legacy LSP codes kept for back-compat,
+    // W02xx is the new linter namespace for rules added after the refactor).
+    pub const lint_no_unused_vars: []const u8 = "W0001";
+    pub const lint_no_dead_code: []const u8 = "W0002";
+    pub const lint_no_unused_binding: []const u8 = "W0003";
+    pub const lint_naming_convention: []const u8 = "W0200";
+    pub const lint_no_redundant_casts: []const u8 = "W0201";
+    pub const lint_no_magic_numbers: []const u8 = "W0202";
+    pub const lint_prefer_mix: []const u8 = "W0203";
+    pub const lint_no_large_local_arrays: []const u8 = "W0204";
+    pub const lint_prefer_workgroup_shared: []const u8 = "W0205";
+    pub const lint_require_entry_point_attrs: []const u8 = "W0206";
+    pub const lint_no_f16_without_extension: []const u8 = "W0207";
+    pub const lint_consistent_binding_annotations: []const u8 = "W0208";
+    pub const lint_unused_disable_directive: []const u8 = "W0209";
 };
 
 /// Map a diagnostic code to a WGSL spec section slug.
@@ -692,6 +765,8 @@ pub fn specRefFor(code: []const u8) []const u8 {
     if (std.mem.startsWith(u8, code, "E08")) return "memory-model";
     if (std.mem.startsWith(u8, code, "E09")) return "directives";
     if (std.mem.startsWith(u8, code, "W01")) return "module-scope-declarations";
+    if (std.mem.startsWith(u8, code, "W02")) return "linting";
+    if (std.mem.startsWith(u8, code, "W00")) return "linting";
     return "";
 }
 

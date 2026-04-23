@@ -12,14 +12,22 @@ const CliArgs = struct {
     options: wgslender.Minifier.Options = wgslender.Minifier.defaultOptions(),
     source_map: bool = false,
     source_map_inline: bool = false,
-    subcommand: enum { minify, validate, reflect, compile } = .minify,
+    subcommand: enum { minify, validate, reflect, compile, lint } = .minify,
     validate_format: ValidateFormat = .text,
     strict: bool = false,
     line_offset: i32 = 0,
     compact: bool = false,
     show_help: bool = false,
+    lint_options: LintOptions = .{},
 
-    const ValidateFormat = enum { text, json };
+    const ValidateFormat = enum { text, json, stylish };
+
+    const LintOptions = struct {
+        extends: []const []const u8 = &.{},
+        rule_overrides: []const wgslender.Linter.Options.RuleOverride = &.{},
+        max_warnings: i32 = -1,
+        quiet: bool = false,
+    };
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -43,6 +51,15 @@ pub fn main(init: std.process.Init) !void {
         ),
         .reflect => try runReflect(arena, io, source, args.compact),
         .compile => try runCompile(arena, io, source, args.output_path, args.options),
+        .lint => try runLint(
+            arena,
+            io,
+            source,
+            args.validate_format,
+            args.line_offset,
+            args.input_path,
+            args.lint_options,
+        ),
         .minify => try runMinify(
             arena,
             io,
@@ -69,6 +86,10 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     var source_map_sources = false;
     var keep_names_raw: ?[]const u8 = null;
 
+    var lint_extends: std.ArrayListUnmanaged([]const u8) = .empty;
+    var lint_rule_overrides: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
+    var lint_use_recommended = true;
+
     var args_iter = std.process.Args.Iterator.init(raw_args);
     _ = args_iter.skip(); // skip program name
     while (args_iter.next()) |arg| {
@@ -78,6 +99,27 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             args.subcommand = .compile;
         } else if (std.mem.eql(u8, arg, "reflect")) {
             args.subcommand = .reflect;
+        } else if (std.mem.eql(u8, arg, "lint")) {
+            args.subcommand = .lint;
+        } else if (std.mem.eql(u8, arg, "--extends")) {
+            if (args_iter.next()) |name| {
+                lint_extends.append(arena, name) catch return null;
+                lint_use_recommended = false;
+            }
+        } else if (std.mem.eql(u8, arg, "--no-recommended")) {
+            lint_use_recommended = false;
+        } else if (std.mem.eql(u8, arg, "--rule")) {
+            if (args_iter.next()) |spec| {
+                const override = parseRuleOverride(spec) orelse {
+                    File.stderr().writeStreamingAll(io, "error: invalid --rule syntax (expected id=severity)\n") catch {};
+                    return null;
+                };
+                lint_rule_overrides.append(arena, override) catch return null;
+            }
+        } else if (std.mem.eql(u8, arg, "--max-warnings")) {
+            if (args_iter.next()) |v| args.lint_options.max_warnings = std.fmt.parseInt(i32, v, 10) catch -1;
+        } else if (std.mem.eql(u8, arg, "--quiet")) {
+            args.lint_options.quiet = true;
         } else if (std.mem.eql(u8, arg, "-o")) {
             args.output_path = args_iter.next();
         } else if (std.mem.eql(u8, arg, "--config")) {
@@ -118,6 +160,8 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
                     args.validate_format = .json;
                 } else if (std.mem.eql(u8, fmt, "text")) {
                     args.validate_format = .text;
+                } else if (std.mem.eql(u8, fmt, "stylish")) {
+                    args.validate_format = .stylish;
                 }
             }
         } else if (std.mem.eql(u8, arg, "--strict")) {
@@ -151,8 +195,32 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     );
     if (keep_names_raw) |raw| args.options.keep_names = parseKeepNames(arena, raw) catch return null;
     configureSourceMap(&args, source_map_sources);
+    if (args.subcommand == .lint) {
+        if (lint_use_recommended and lint_extends.items.len == 0) {
+            lint_extends.append(arena, "@wgslender/recommended") catch return null;
+        }
+        args.lint_options.extends = lint_extends.items;
+        args.lint_options.rule_overrides = lint_rule_overrides.items;
+    }
 
     return args;
+}
+
+/// Parse a `--rule id=severity` spec. Accepts `off` / `warn` / `error`.
+fn parseRuleOverride(spec: []const u8) ?wgslender.Linter.Options.RuleOverride {
+    const eq = std.mem.indexOfScalar(u8, spec, '=') orelse return null;
+    if (eq == 0 or eq == spec.len - 1) return null;
+    const id = spec[0..eq];
+    const sev_s = spec[eq + 1 ..];
+    const sev: wgslender.Diagnostic.Severity = if (std.mem.eql(u8, sev_s, "off"))
+        .disabled
+    else if (std.mem.eql(u8, sev_s, "warn") or std.mem.eql(u8, sev_s, "warning"))
+        .warning
+    else if (std.mem.eql(u8, sev_s, "error"))
+        .@"error"
+    else
+        return null;
+    return .{ .id = id, .severity = sev };
 }
 
 /// Load config from explicit path or auto-discover from parent directories.
@@ -362,7 +430,7 @@ fn runValidate(
             try json_buf.appendSlice(arena, "}\n");
             try File.stdout().writeStreamingAll(io, json_buf.items);
         },
-        .text => {
+        .stylish, .text => {
             const file_prefix = input_path orelse "<stdin>";
             for (result.diagnostics.diagnostics.items) |entry| {
                 var tmp: [20]u8 = undefined;
@@ -458,6 +526,166 @@ fn runCompile(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, output
     try File.stderr().writeStreamingAll(io, " bytes\n");
 }
 
+fn runLint(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    source: [:0]const u8,
+    format: CliArgs.ValidateFormat,
+    line_offset: i32,
+    input_path: ?[]const u8,
+    lint_opts: CliArgs.LintOptions,
+) !void {
+    const Diagnostic = wgslender.Diagnostic;
+    var result = try wgslender.lint(arena, source, .{
+        .extends = lint_opts.extends,
+        .rules = lint_opts.rule_overrides,
+        .line_offset = line_offset,
+    });
+    defer result.deinit(arena);
+
+    // A lint run surfaces three diagnostic streams: parse/validator errors
+    // (on `result.analysis.diagnostics`), and lint warnings
+    // (on `result.lint.diagnostics`). The CLI merges them so the user
+    // sees one unified list ordered by severity.
+    var combined: std.ArrayListUnmanaged(Diagnostic.Entry) = .empty;
+    for (result.analysis.diagnostics.items()) |d| try combined.append(arena, d);
+    for (result.lint.diagnostics.items()) |d| try combined.append(arena, d);
+
+    const analysis_errors: u32 = result.analysis.diagnostics.errorCount();
+    const lint_errors: u32 = result.lint.error_count;
+    const lint_warnings: u32 = result.lint.warning_count;
+
+    const filtered = if (lint_opts.quiet)
+        try filterErrorsOnly(arena, combined.items)
+    else
+        combined.items;
+
+    const file_prefix = input_path orelse "<stdin>";
+    switch (format) {
+        .json => try emitJson(arena, io, filtered, analysis_errors, lint_errors, lint_warnings, result.lint.fixable_count, file_prefix),
+        .stylish => try emitStylish(arena, io, filtered, file_prefix),
+        .text => try emitText(arena, io, filtered, file_prefix),
+    }
+
+    // Exit-code policy:
+    //   0  — no parse/validator errors AND lint error_count == 0 AND
+    //        (--max-warnings unset OR warning_count <= --max-warnings)
+    //   1  — any parse/validator error, any lint error, or warnings exceed
+    //        --max-warnings threshold
+    const exceeds_max_warnings = lint_opts.max_warnings >= 0 and lint_warnings > @as(u32, @intCast(lint_opts.max_warnings));
+    if (analysis_errors > 0 or lint_errors > 0 or exceeds_max_warnings) {
+        std.process.exit(1);
+    }
+}
+
+fn filterErrorsOnly(
+    arena: std.mem.Allocator,
+    entries: []const wgslender.Diagnostic.Entry,
+) ![]wgslender.Diagnostic.Entry {
+    var out: std.ArrayListUnmanaged(wgslender.Diagnostic.Entry) = .empty;
+    for (entries) |e| if (e.severity == .@"error") try out.append(arena, e);
+    return out.items;
+}
+
+fn emitText(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    entries: []const wgslender.Diagnostic.Entry,
+    file_prefix: []const u8,
+) !void {
+    const File = std.Io.File;
+    _ = arena;
+    for (entries) |entry| {
+        var tmp: [32]u8 = undefined;
+        try File.stderr().writeStreamingAll(io, file_prefix);
+        try File.stderr().writeStreamingAll(io, ":");
+        const ls = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.line}) catch "";
+        try File.stderr().writeStreamingAll(io, ls);
+        try File.stderr().writeStreamingAll(io, ":");
+        const cs = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.column}) catch "";
+        try File.stderr().writeStreamingAll(io, cs);
+        try File.stderr().writeStreamingAll(io, ": ");
+        try File.stderr().writeStreamingAll(io, entry.severity.string());
+        try File.stderr().writeStreamingAll(io, ": ");
+        try File.stderr().writeStreamingAll(io, entry.message);
+        if (entry.code.len > 0) {
+            try File.stderr().writeStreamingAll(io, " [");
+            try File.stderr().writeStreamingAll(io, entry.code);
+            try File.stderr().writeStreamingAll(io, "]");
+        }
+        try File.stderr().writeStreamingAll(io, "\n");
+    }
+}
+
+fn emitStylish(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    entries: []const wgslender.Diagnostic.Entry,
+    file_prefix: []const u8,
+) !void {
+    const File = std.Io.File;
+    if (entries.len == 0) return;
+    var out: std.ArrayListUnmanaged(u8) = .empty;
+    try out.appendSlice(arena, "\n");
+    try out.appendSlice(arena, file_prefix);
+    try out.appendSlice(arena, "\n");
+    for (entries) |entry| {
+        var tmp: [32]u8 = undefined;
+        try out.appendSlice(arena, "  ");
+        const ls = std.fmt.bufPrint(&tmp, "{d}:{d}", .{ entry.range.start.line, entry.range.start.column }) catch "";
+        try out.appendSlice(arena, ls);
+        // Pad so messages align
+        const pad = if (ls.len < 8) 8 - ls.len else 1;
+        var i: usize = 0;
+        while (i < pad) : (i += 1) try out.append(arena, ' ');
+        try out.appendSlice(arena, entry.severity.string());
+        try out.appendSlice(arena, "  ");
+        try out.appendSlice(arena, entry.message);
+        if (entry.code.len > 0) {
+            try out.appendSlice(arena, "  ");
+            try out.appendSlice(arena, entry.code);
+        }
+        try out.append(arena, '\n');
+    }
+    try File.stderr().writeStreamingAll(io, out.items);
+}
+
+fn emitJson(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    entries: []const wgslender.Diagnostic.Entry,
+    analysis_errors: u32,
+    lint_errors: u32,
+    lint_warnings: u32,
+    fixable_count: u32,
+    file_prefix: []const u8,
+) !void {
+    const Diagnostic = wgslender.Diagnostic;
+    const File = std.Io.File;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(arena, "{\"results\":[{\"filePath\":\"");
+    try Diagnostic.appendJsonEscaped(&buf, arena, file_prefix);
+    try buf.appendSlice(arena, "\",\"diagnostics\":[");
+    for (entries, 0..) |*entry, i| {
+        if (i > 0) try buf.append(arena, ',');
+        try Diagnostic.entryToJson(&buf, arena, entry);
+    }
+    try buf.appendSlice(arena, "],\"errorCount\":");
+    try Diagnostic.appendInt(&buf, arena, lint_errors + analysis_errors);
+    try buf.appendSlice(arena, ",\"warningCount\":");
+    try Diagnostic.appendInt(&buf, arena, lint_warnings);
+    try buf.appendSlice(arena, ",\"fixableCount\":");
+    try Diagnostic.appendInt(&buf, arena, fixable_count);
+    try buf.appendSlice(arena, "}],\"errorCount\":");
+    try Diagnostic.appendInt(&buf, arena, lint_errors + analysis_errors);
+    try buf.appendSlice(arena, ",\"warningCount\":");
+    try Diagnostic.appendInt(&buf, arena, lint_warnings);
+    try buf.appendSlice(arena, ",\"fixableCount\":");
+    try Diagnostic.appendInt(&buf, arena, fixable_count);
+    try buf.appendSlice(arena, "}\n");
+    try File.stdout().writeStreamingAll(io, buf.items);
+}
+
 const usage_text =
     \\Usage: wgslender [command] [options] [file.wgsl]
     \\
@@ -466,6 +694,7 @@ const usage_text =
     \\  validate                         Validate WGSL source
     \\  reflect                          Extract bindings, layouts, and entry points as JSON
     \\  compile                          Compile WGSL to a .wasm binary shader
+    \\  lint                             Run lint rules and emit diagnostics
     \\
     \\Options:
     \\  -o <path>                        Output file
@@ -486,9 +715,16 @@ const usage_text =
     \\  --source-map-inline              Embed source map as inline data URI
     \\  --source-map-sources             Include original source in source map
     \\  --compact                        Compact JSON output (reflect)
-    \\  --format <text|json>              Output format for validate (default: text)
+    \\  --format <text|json|stylish>      Output format for validate/lint (default: text)
     \\  --strict                         Treat warnings as errors (validate)
-    \\  --line-offset <n>                Add n to reported line numbers (validate)
+    \\  --line-offset <n>                Add n to reported line numbers (validate/lint)
+    \\  --extends <config>               (lint) Inherit rules from a shareable config
+    \\                                     (@wgslender/recommended, @wgslender/performance,
+    \\                                      @wgslender/portability). Repeatable.
+    \\  --no-recommended                 (lint) Do not auto-apply @wgslender/recommended
+    \\  --rule <id>=<severity>           (lint) Override a rule (severity: off|warn|error)
+    \\  --max-warnings <n>               (lint) Exit non-zero if lint warnings exceed n
+    \\  --quiet                          (lint) Show errors only; hide warnings
     \\  --version                        Show version
     \\  -h, --help                       Show this help
     \\

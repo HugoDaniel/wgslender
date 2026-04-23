@@ -33,6 +33,7 @@ pub const StableId = @import("StableId.zig");
 pub const Cst = @import("Cst.zig");
 pub const CstLower = @import("CstLower.zig");
 pub const Incremental = @import("Incremental.zig");
+pub const Linter = @import("lint/Linter.zig");
 
 test {
     // Force test discovery for modules that have no call-site references
@@ -189,6 +190,37 @@ pub fn analyzeWithOptions(gpa: Allocator, source: [:0]const u8, options: Validat
     result._arena = arena;
     return result;
 }
+
+// =========================================================================
+// Lint API
+// =========================================================================
+
+/// Lint WGSL source. Runs the analyzer, then every enabled lint rule
+/// against the resolved module. Returns the lint diagnostics separately
+/// from any validation errors surfaced on `result.analysis.diagnostics`.
+/// Call `result.deinit(gpa)` to free all memory.
+pub fn lint(gpa: Allocator, source: [:0]const u8, options: Linter.Options) !LintResult {
+    var analysis = try analyzeWithOptions(gpa, source, .{
+        .line_offset = options.line_offset,
+    });
+    errdefer analysis.deinit(gpa);
+    var lint_result = try Linter.run(gpa, &analysis, options);
+    errdefer lint_result.deinit(gpa);
+    return .{ .analysis = analysis, .lint = lint_result };
+}
+
+/// Combined analysis + lint result. Holds two arenas: the analysis owns
+/// the AST and validator diagnostics; the lint owns the advisory
+/// diagnostics produced by rules. `deinit` releases both.
+pub const LintResult = struct {
+    analysis: Validator.AnalysisResult,
+    lint: Linter.Result,
+
+    pub fn deinit(self: *LintResult, gpa: Allocator) void {
+        self.lint.deinit(gpa);
+        self.analysis.deinit(gpa);
+    }
+};
 
 // =========================================================================
 // Reflect API
@@ -389,4 +421,5 @@ comptime {
     _ = WasmBinary;
     _ = Edits;
     _ = StableId;
+    _ = Linter;
 }
