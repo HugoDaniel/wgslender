@@ -1710,29 +1710,20 @@ test "lexer: double underscore prefix is reserved_ident" {
     try expectToken("__foo", .reserved_ident);
 }
 
-test "lexer: reserved words produce reserved_ident" {
-    // Sample of WGSL reserved words (see reserved_words map)
-    try expectToken("NULL", .reserved_ident);
-    try expectToken("Self", .reserved_ident);
-    try expectToken("abstract", .reserved_ident);
-    try expectToken("async", .reserved_ident);
-    try expectToken("await", .reserved_ident);
-    try expectToken("class", .reserved_ident);
-    try expectToken("enum", .reserved_ident);
-    try expectToken("import", .reserved_ident);
-    try expectToken("interface", .reserved_ident);
-    try expectToken("module", .reserved_ident);
-    try expectToken("namespace", .reserved_ident);
-    try expectToken("new", .reserved_ident);
-    try expectToken("null", .reserved_ident);
-    try expectToken("public", .reserved_ident);
-    try expectToken("static", .reserved_ident);
-    try expectToken("super", .reserved_ident);
-    try expectToken("this", .reserved_ident);
-    try expectToken("throw", .reserved_ident);
-    try expectToken("try", .reserved_ident);
-    try expectToken("typeof", .reserved_ident);
-    try expectToken("yield", .reserved_ident);
+test "lexer: every reserved word produces reserved_ident" {
+    // Exhaustive sweep over the full `reserved_words` table (WGSL §14.5).
+    // Guards against future drift between the map and the lexer classifier.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var buf: [64]u8 = undefined;
+    for (reserved_words.keys()) |word| {
+        const input = try std.fmt.bufPrintZ(&buf, "{s}", .{word});
+        _ = arena.reset(.retain_capacity);
+        const tokens = try tokenize(arena.allocator(), input);
+        const tags = tokens.items(.tag);
+        try std.testing.expect(tags.len > 0);
+        try std.testing.expectEqual(Tag.reserved_ident, tags[0]);
+    }
 }
 
 // -------------------------------------------------------------------------
