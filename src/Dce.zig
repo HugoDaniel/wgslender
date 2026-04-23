@@ -9,6 +9,10 @@ const Ast = @import("Ast.zig");
 
 /// Perform dead code elimination. Returns the number of dead symbols.
 pub fn mark(arena: Allocator, module: *Ast.Module) Allocator.Error!u32 {
+    // Pre: symbol indices are encoded as u32, so the table can never grow
+    // past that ceiling. A breach here would silently truncate downstream
+    // SymbolIndex values when buildDependencyGraph stamps them.
+    std.debug.assert(module.symbols.items.len < std.math.maxInt(u32));
     if (module.symbols.items.len == 0) return 0;
 
     // Build dependency graph
