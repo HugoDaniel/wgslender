@@ -133,3 +133,37 @@ test "infer: hex float with p-exponent still types as float" {
     try std.testing.expect(!anyError(r));
 }
 
+// ---------------------------------------------------------------------
+// global_var_function_address_space_error (wgsl-analyzer)
+// `var<function>` is only valid inside a function body — module-scope
+// use must surface as invalid_address_space (E0304).
+// ---------------------------------------------------------------------
+
+test "infer: var<function> at module scope is rejected" {
+    var r = try validate(
+        \\var<function> x: u32;
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasErrorWithCode(r, "E0304"));
+}
+
+test "infer: var<private> at module scope is accepted" {
+    // Pin that the module-scope guard doesn't over-reach into other
+    // address spaces.
+    var r = try validate(
+        \\var<private> x: u32;
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!anyError(r));
+}
+
+test "infer: var<function> inside a function body is accepted" {
+    // Function-local `var<function>` is the only legal use — must stay
+    // valid after the module-scope guard.
+    var r = try validate(
+        \\fn f() { var<function> x: u32 = 1u; let y = x; }
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!anyError(r));
+}
+

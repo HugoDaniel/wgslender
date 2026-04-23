@@ -1304,6 +1304,13 @@ fn validateConstAssert(v: *Validator, d: *Ast.ConstAssertDecl) Allocator.Error!v
 fn validateAddressSpace(v: *Validator, d: *Ast.VarDecl, var_type: Types.Type) void {
     const r = v.symbolRange(d.name);
     const name = v.symbolName(d.name);
+    // WGSL §8: `function` is only valid inside a function body. Module-scope
+    // `var<function> x: T;` is rejected here (v.current_func == null marks
+    // module scope — set in validateFunction, cleared on return).
+    if (v.current_func == null and d.address_space == .function) {
+        v.addErrorWithCodeR(r, Diagnostic.Code.invalid_address_space, v.fmtError("module-scope 'var {s}' cannot use 'function' address space (valid only inside a function body)", .{name}));
+        return;
+    }
     // Handle types (texture, sampler) must not specify an address space
     const is_handle = var_type == .texture or var_type == .sampler;
     if (is_handle and d.address_space != .none) {
