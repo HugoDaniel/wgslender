@@ -773,10 +773,16 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
     var stack: std.ArrayListUnmanaged(Frame) = .empty;
     defer stack.deinit(v.arena);
 
-    color.put(v.arena, start, 1) catch return; // gray
-    stack.append(v.arena, .{ .fn_idx = start, .callee_idx = 0 }) catch return;
-
     const num_syms: usize = v.module.symbols.items.len;
+    // Pre: `start` must be a real symbol index. The call-graph is keyed on
+    // symbol indices produced by `collectCallGraph`; a stale index slipping
+    // past the build phase would lead to a nonsense DFS and a later
+    // spurious `recursive_function` diagnostic.
+    std.debug.assert(start < num_syms);
+
+    try color.put(v.arena, start, 1); // gray
+    try stack.append(v.arena, .{ .fn_idx = start, .callee_idx = 0 });
+
     for (0..num_syms * (num_syms + 1)) |_| {
         const frame = &(stack.items[stack.items.len - 1 ..][0]);
         const callees = call_graph.get(frame.fn_idx) orelse {

@@ -509,6 +509,10 @@ const State = enum {
 };
 
 fn next(self: *Lexer) TokenResult {
+    // Pre: cursor must not have walked past the sentinel. `src[self.pos]`
+    // below would otherwise index past the slice and lose the `src.len == 0`
+    // guard the hot-path state machine relies on.
+    std.debug.assert(self.pos <= self.source.len);
     var start: u32 = self.pos;
     var kind: Tag = .eof;
     var block_depth: u32 = 0;
