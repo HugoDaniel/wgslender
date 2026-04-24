@@ -2473,7 +2473,128 @@ pub fn computeInlayHints(self: *Handler, uri: []const u8, range: Range) ![]Inlay
         try self.collectInlayHintsFromDecl(module, analysis, label_alloc, source, decl, range_start, range_end, &hints);
     }
 
+    if (analysis.valid) {
+        try self.collectMinifyHints(uri, module, label_alloc, source, &hints);
+    }
+
     return try self.gpa.dupe(InlayHintInfo, hints.items);
+}
+
+/// Tooltip attached to every minify-size hint. Discloses that the number is
+/// an estimate produced without running a full minify pass.
+const minify_hint_tooltip: []const u8 =
+    "approximate minified byte size — estimated from the symbol table; " ++
+    "the true size may differ slightly until you run a full minify.";
+
+/// Emit byte-size inlay hints when the document's effective minifier-mode is
+/// `insights` or `strict`. Hints land at three positions:
+///
+///   * module-level total at `{0,0}` (gated on `insights.total_size`);
+///   * per-function hints at the closing `}` of the function body
+///     (gated on `insights.function_size`);
+///   * per-non-function-decl hints at the trailing `;` (gated on
+///     `insights.decl_size`).
+///
+/// Labels honour the resolved `insights.format` (`delta`, `bytes`, `both`)
+/// and roll over from `B` to `KB` once the formatted value reaches 1024.
+fn collectMinifyHints(
+    self: *Handler,
+    uri: []const u8,
+    module: *const wgslender.Ast.Module,
+    label_alloc: std.mem.Allocator,
+    source: [:0]const u8,
+    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+) std.mem.Allocator.Error!void {
+    const eff = self.effectiveMinifyFor(uri);
+    if (!eff.insightsActive()) return;
+
+    const MinifyEstimator = wgslender.MinifyEstimator;
+    var arena = std.heap.ArenaAllocator.init(self.gpa);
+    defer arena.deinit();
+    const result = MinifyEstimator.estimate(arena.allocator(), @constCast(module), .{}) catch return;
+
+    if (eff.insights.total_size) {
+        const original: u32 = @intCast(source.len);
+        const label = formatMinifyLabel(label_alloc, original, result.total_min, eff.insights.format) catch return;
+        try hints.append(self.gpa, .{
+            .position = .{ .line = 0, .character = 0 },
+            .label = label,
+            .kind = .minify_size,
+            .tooltip = minify_hint_tooltip,
+        });
+    }
+
+    for (module.declarations.items) |decl| {
+        const name_ref = decl.nameRef();
+        if (!name_ref.isValid()) continue;
+
+        const is_function = decl == .function;
+        if (is_function and !eff.insights.function_size) continue;
+        if (!is_function and !eff.insights.decl_size) continue;
+
+        const estimated: u32 = if (is_function)
+            (result.per_function.get(name_ref) orelse continue).min
+        else
+            (result.per_decl.get(name_ref) orelse continue).min;
+
+        const span = decl.declSpan();
+        if (span.end == 0 or span.end > source.len) continue;
+        const original = span.end - span.start;
+        const pos = offsetToLspPosition(source, span.end) orelse continue;
+
+        const label = formatMinifyLabel(label_alloc, original, estimated, eff.insights.format) catch continue;
+        try hints.append(self.gpa, .{
+            .position = pos,
+            .label = label,
+            .kind = .minify_size,
+            .tooltip = minify_hint_tooltip,
+        });
+    }
+}
+
+/// Format a single byte-size inlay-hint label. The shape is driven by
+/// `format`:
+///
+///   * `delta`  → `"-NN B"` (savings = original − estimated; never negative
+///     in practice, but a `+NN B` shape is used if the estimate is somehow
+///     larger than the source);
+///   * `bytes`  → `"NN B"` (the post-minify estimate);
+///   * `both`   → `"NN B (-NN B)"` (estimate then savings).
+///
+/// Sub-1024 byte values render as `"NN B"`. Values ≥ 1024 roll over to a
+/// one-decimal-place `"X.Y KB"` form.
+pub fn formatMinifyLabel(
+    arena: std.mem.Allocator,
+    original: u32,
+    estimated: u32,
+    format: MinifySettings.InsightsFormat,
+) std.mem.Allocator.Error![]u8 {
+    const delta_signed: i64 = @as(i64, original) - @as(i64, estimated);
+    const delta_abs: u64 = if (delta_signed < 0) @intCast(-delta_signed) else @intCast(delta_signed);
+    const delta_sign: u8 = if (delta_signed < 0) '+' else '-';
+
+    var bytes_buf: [32]u8 = undefined;
+    var delta_buf: [32]u8 = undefined;
+    const bytes_str = formatSize(&bytes_buf, estimated);
+    const delta_str = formatSize(&delta_buf, delta_abs);
+
+    return switch (format) {
+        .delta => std.fmt.allocPrint(arena, "{c}{s}", .{ delta_sign, delta_str }),
+        .bytes => arena.dupe(u8, bytes_str),
+        .both => std.fmt.allocPrint(arena, "{s} ({c}{s})", .{ bytes_str, delta_sign, delta_str }),
+    };
+}
+
+/// Format `size` as `"NN B"` for sub-1024 values or `"X.Y KB"` for larger
+/// ones. Writes into `buf` (≥ 32 bytes is plenty) and returns the slice.
+fn formatSize(buf: []u8, size: u64) []u8 {
+    if (size < 1024) {
+        return std.fmt.bufPrint(buf, "{d} B", .{size}) catch unreachable;
+    }
+    const tenths = (size * 10 + 512) / 1024;
+    const whole = tenths / 10;
+    const frac = tenths % 10;
+    return std.fmt.bufPrint(buf, "{d}.{d} KB", .{ whole, frac }) catch unreachable;
 }
 
 fn collectInlayHintsFromDecl(

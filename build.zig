@@ -351,6 +351,9 @@ pub fn build(b: *std.Build) void {
     // LSP-layer plumbing for minifier-mode: Handler settings parse,
     // effectiveMinify accessor, workspace/executeCommand dispatch.
     _ = addTestStep(b, test_step, "tests/lsp_minify_settings_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // Phase 4 byte-size inlay hints emitted by the LSP when minifier-mode
+    // is `insights` or `strict`.
+    _ = addTestStep(b, test_step, "tests/lsp_minify_inlay_hints_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/formatting_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/semantic_tokens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/selection_range_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
