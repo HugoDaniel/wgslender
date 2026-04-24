@@ -24,6 +24,7 @@ const SourceMap = wgslender.SourceMap;
 const Diagnostic = wgslender.Diagnostic;
 const Compiler = wgslender.Compiler;
 const Minifier = wgslender.Minifier;
+const Printer = wgslender.Printer;
 
 // =========================================================================
 // Test inputs
@@ -325,6 +326,36 @@ fn testReflectModule(allocator: std.mem.Allocator, source: [:0]const u8) !void {
 
 test "Reflect.reflect: shader with bindings — exhaustive OOM" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testReflectModule, .{struct_binding});
+}
+
+// --- Printer (arena-designed: wraps in ArenaAllocator) ---
+
+fn testPrinterPrint(allocator: std.mem.Allocator, source: [:0]const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const tokens = Lexer.tokenize(alloc, source) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    var parser = Parser.init(alloc, source, tokens) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    const module = parser.parse() catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return,
+    };
+    var printer = Printer.init(alloc, .{}, module.symbols.items);
+    _ = printer.print(module) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+}
+
+test "Printer.print: struct+binding shader — exhaustive OOM" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testPrinterPrint, .{struct_binding});
+}
+
+test "Printer.print: multi-function shader — exhaustive OOM" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testPrinterPrint, .{multi_fn});
 }
 
 // --- SourceMap (uses allocator for LineIndex) ---
