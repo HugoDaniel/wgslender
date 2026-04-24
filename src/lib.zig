@@ -31,7 +31,7 @@ export fn wgslender_minify_c(
     source_ptr: [*]const u8,
     source_len: u32,
     flags: u32,
-) WgslenderResult {
+) callconv(.c) WgslenderResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const alloc = arena.allocator();
 
@@ -63,7 +63,7 @@ export fn wgslender_minify_c(
 }
 
 /// Free memory returned by wgslender_minify_c.
-export fn wgslender_free_c(ptr: [*]u8, len: u32) void {
+export fn wgslender_free_c(ptr: [*]u8, len: u32) callconv(.c) void {
     std.heap.page_allocator.free(ptr[0..len]);
 }
 
@@ -87,7 +87,7 @@ export fn wgslender_validate_c(
     source_ptr: [*]const u8,
     source_len: u32,
     flags: u32,
-) WgslenderValidateResult {
+) callconv(.c) WgslenderValidateResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const alloc = arena.allocator();
 
@@ -144,7 +144,7 @@ pub const WgslenderJsonResult = extern struct {
 export fn wgslender_reflect_c(
     source_ptr: [*]const u8,
     source_len: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const alloc = arena.allocator();
 
@@ -181,7 +181,7 @@ export fn wgslender_minify_json_c(
     source_len: u32,
     opts_ptr: [*]const u8,
     opts_len: u32,
-) WgslenderResult {
+) callconv(.c) WgslenderResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const alloc = arena.allocator();
 
@@ -263,7 +263,7 @@ export fn wgslender_find_references_c(
     source_len: u32,
     offset: u32,
     include_declaration: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -303,7 +303,7 @@ export fn wgslender_rename_c(
     offset: u32,
     new_name_ptr: [*]const u8,
     new_name_len: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -351,7 +351,7 @@ export fn wgslender_rename_apply_c(
     offset: u32,
     new_name_ptr: [*]const u8,
     new_name_len: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -501,7 +501,7 @@ export fn wgslender_stable_id_at_offset_c(
     source_ptr: [*]const u8,
     source_len: u32,
     offset: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -542,7 +542,7 @@ export fn wgslender_locate_stable_id_c(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -587,7 +587,7 @@ export fn wgslender_rename_by_id_c(
     id_len: u32,
     new_name_ptr: [*]const u8,
     new_name_len: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -636,7 +636,7 @@ export fn wgslender_locate_declaration_c(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     return locateRangeImplC(source_ptr, source_len, id_ptr, id_len, StableIdMod.locateDeclaration);
 }
 
@@ -647,7 +647,7 @@ export fn wgslender_locate_type_c(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     return locateRangeImplC(source_ptr, source_len, id_ptr, id_len, StableIdMod.locateType);
 }
 
@@ -696,7 +696,7 @@ export fn wgslender_remove_declaration_by_id_c(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -736,7 +736,7 @@ export fn wgslender_change_type_by_id_c(
     id_len: u32,
     new_type_ptr: [*]const u8,
     new_type_len: u32,
-) WgslenderJsonResult {
+) callconv(.c) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -775,7 +775,7 @@ export fn wgslender_change_type_by_id_c(
 // =========================================================================
 
 /// Return the version string and length.
-export fn wgslender_version_c(len: *u32) [*]const u8 {
+export fn wgslender_version_c(len: *u32) callconv(.c) [*]const u8 {
     len.* = wgslender.version.len;
     return wgslender.version.ptr;
 }

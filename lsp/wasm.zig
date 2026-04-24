@@ -45,25 +45,25 @@ var pending_config_id: ?i64 = null;
 // Exported WASM functions
 // =========================================================================
 
-export fn wgslender_lsp_alloc(len: u32) ?[*]u8 {
+export fn wgslender_lsp_alloc(len: u32) callconv(.c) ?[*]u8 {
     const slice = wasm_allocator.alloc(u8, len) catch return null;
     return slice.ptr;
 }
 
-export fn wgslender_lsp_dealloc(ptr: [*]u8, len: u32) void {
+export fn wgslender_lsp_dealloc(ptr: [*]u8, len: u32) callconv(.c) void {
     wasm_allocator.free(ptr[0..len]);
 }
 
 /// Send a JSON-RPC message to the server. Responses/notifications
 /// are queued and retrieved via wgslender_lsp_recv().
-export fn wgslender_lsp_send(msg_ptr: [*]const u8, msg_len: u32) void {
+export fn wgslender_lsp_send(msg_ptr: [*]const u8, msg_len: u32) callconv(.c) void {
     handleMessage(msg_ptr[0..msg_len]);
 }
 
 /// Get the next outgoing message, or null if empty.
 /// Returns pointer to [u32 len][u8... json].
 /// Caller frees with wgslender_lsp_dealloc(ptr, len + 4).
-export fn wgslender_lsp_recv() ?[*]u8 {
+export fn wgslender_lsp_recv() callconv(.c) ?[*]u8 {
     if (outbox.items.len == 0) return null;
     const msg = outbox.orderedRemove(0);
     const out = wasm_allocator.alloc(u8, 4 + msg.len) catch {

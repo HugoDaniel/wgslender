@@ -36,13 +36,13 @@ const OPT_MANGLE_EXTERNAL: u32 = 1 << 4;
 const OPT_PRESERVE_UNIFORM_STRUCTS: u32 = 1 << 5;
 
 /// Allocate memory for JS to write into.
-export fn wgslender_alloc(len: u32) ?[*]u8 {
+export fn wgslender_alloc(len: u32) callconv(.c) ?[*]u8 {
     const slice = wasm_allocator.alloc(u8, len) catch return null;
     return slice.ptr;
 }
 
 /// Free memory previously allocated.
-export fn wgslender_dealloc(ptr: [*]u8, len: u32) void {
+export fn wgslender_dealloc(ptr: [*]u8, len: u32) callconv(.c) void {
     wasm_allocator.free(ptr[0..len]);
 }
 
@@ -50,7 +50,7 @@ export fn wgslender_dealloc(ptr: [*]u8, len: u32) void {
 /// Input: pointer to source text + length + option flags.
 /// Output: pointer to result buffer [u32 len][u8... minified_code].
 ///         Returns null on allocation failure.
-export fn wgslender_minify(source_ptr: [*]const u8, source_len: u32, flags: u32) ?[*]u8 {
+export fn wgslender_minify(source_ptr: [*]const u8, source_len: u32, flags: u32) callconv(.c) ?[*]u8 {
     const source = makeSentinelSource(source_ptr, source_len) orelse return null;
     defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
 
@@ -84,7 +84,7 @@ export fn wgslender_minify_json(
     source_len: u32,
     opts_ptr: [*]const u8,
     opts_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return minifyJsonImpl(source_ptr, source_len, opts_ptr, opts_len) catch return null;
 }
 
@@ -149,7 +149,7 @@ fn minifyJsonImpl(
 /// Input: pointer to source text + length.
 /// Output: pointer to result buffer [u32 valid (1/0)][u32 error_count][u32 json_len][u8... json_diagnostics].
 ///         Returns null on allocation failure.
-export fn wgslender_validate(source_ptr: [*]const u8, source_len: u32) ?[*]u8 {
+export fn wgslender_validate(source_ptr: [*]const u8, source_len: u32) callconv(.c) ?[*]u8 {
     return validateImpl(source_ptr, source_len) catch return null;
 }
 
@@ -227,7 +227,7 @@ fn packValidateResultWithJson(valid: bool, error_count: usize, json: []const u8)
 /// Input: pointer to source text + length.
 /// Output: pointer to result buffer [u32 len][u8... json_result].
 ///         Returns null on allocation failure.
-export fn wgslender_reflect(source_ptr: [*]const u8, source_len: u32) ?[*]u8 {
+export fn wgslender_reflect(source_ptr: [*]const u8, source_len: u32) callconv(.c) ?[*]u8 {
     return reflectImpl(source_ptr, source_len) catch return null;
 }
 
@@ -273,7 +273,7 @@ export fn wgslender_minify_and_reflect_json(
     source_len: u32,
     opts_ptr: [*]const u8,
     opts_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return minifyAndReflectJsonImpl(source_ptr, source_len, opts_ptr, opts_len) catch return null;
 }
 
@@ -356,7 +356,7 @@ export fn wgslender_lint(
     source_len: u32,
     config_ptr: [*]const u8,
     config_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return lintImpl(source_ptr, source_len, config_ptr, config_len) catch return null;
 }
 
@@ -416,7 +416,7 @@ export fn wgslender_lint_fix(
     source_len: u32,
     config_ptr: [*]const u8,
     config_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return lintFixImpl(source_ptr, source_len, config_ptr, config_len) catch return null;
 }
 
@@ -556,7 +556,7 @@ export fn wgslender_find_references(
     source_len: u32,
     offset: u32,
     include_declaration: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return findReferencesImpl(source_ptr, source_len, offset, include_declaration != 0) catch return null;
 }
 
@@ -617,7 +617,7 @@ export fn wgslender_rename(
     offset: u32,
     new_name_ptr: [*]const u8,
     new_name_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return renameImpl(source_ptr, source_len, offset, new_name_ptr, new_name_len) catch return null;
 }
 
@@ -674,7 +674,7 @@ export fn wgslender_rename_apply(
     offset: u32,
     new_name_ptr: [*]const u8,
     new_name_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return renameApplyImpl(source_ptr, source_len, offset, new_name_ptr, new_name_len) catch return null;
 }
 
@@ -790,7 +790,7 @@ export fn wgslender_stable_id_at_offset(
     source_ptr: [*]const u8,
     source_len: u32,
     offset: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return stableIdAtOffsetImpl(source_ptr, source_len, offset) catch return null;
 }
 
@@ -840,7 +840,7 @@ export fn wgslender_locate_stable_id(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return locateStableIdImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
 }
 
@@ -886,7 +886,7 @@ export fn wgslender_rename_by_id(
     id_len: u32,
     new_name_ptr: [*]const u8,
     new_name_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return renameByIdImpl(
         source_ptr,
         source_len,
@@ -949,7 +949,7 @@ export fn wgslender_locate_declaration(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return locateDeclarationImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
 }
 
@@ -987,7 +987,7 @@ export fn wgslender_locate_type(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return locateTypeImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
 }
 
@@ -1035,7 +1035,7 @@ export fn wgslender_remove_declaration_by_id(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return removeDeclarationByIdImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
 }
 
@@ -1079,7 +1079,7 @@ export fn wgslender_remove_declaration_apply_by_id(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return removeDeclarationApplyByIdImpl(source_ptr, source_len, id_ptr, id_len) catch return null;
 }
 
@@ -1125,7 +1125,7 @@ export fn wgslender_change_type_by_id(
     id_len: u32,
     new_type_ptr: [*]const u8,
     new_type_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return changeTypeByIdImpl(
         source_ptr,
         source_len,
@@ -1180,7 +1180,7 @@ export fn wgslender_change_type_apply_by_id(
     id_len: u32,
     new_type_ptr: [*]const u8,
     new_type_len: u32,
-) ?[*]u8 {
+) callconv(.c) ?[*]u8 {
     return changeTypeApplyByIdImpl(
         source_ptr,
         source_len,
@@ -1227,12 +1227,12 @@ fn changeTypeApplyByIdImpl(
 }
 
 /// Return the version string.
-export fn wgslender_version() [*]const u8 {
+export fn wgslender_version() callconv(.c) [*]const u8 {
     return wgslender.version.ptr;
 }
 
 /// Return the version string length.
-export fn wgslender_version_len() u32 {
+export fn wgslender_version_len() callconv(.c) u32 {
     return wgslender.version.len;
 }
 
