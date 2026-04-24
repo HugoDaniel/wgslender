@@ -86,11 +86,22 @@ pub const CompileResult = struct {
 
 /// Compile WGSL source to a `.wasm` binary shader.
 pub fn compile(gpa: Allocator, source: [:0]const u8, options: CompileOptions) !CompileResult {
+    // Pre: source size must fit the u32 offsets used by every BPE / WASM
+    // memory-layout calculation downstream.
+    std.debug.assert(source.len < std.math.maxInt(u32));
+
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
     const alloc = arena.allocator();
 
     var result = try compileInner(alloc, source, options);
+
+    // Post: WASM binary always carries the 8-byte magic + version header
+    // (`\0asm\x01\x00\x00\x00`). A shorter slice means assembly aborted
+    // mid-stream without surfacing an error.
+    std.debug.assert(result.wasm.len >= 8);
+    std.debug.assert(std.mem.eql(u8, result.wasm[0..4], "\x00asm"));
+
     result._arena = arena;
     return result;
 }
