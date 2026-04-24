@@ -123,6 +123,12 @@ pub fn run(
     analysis: *Validator.AnalysisResult,
     options: Options,
 ) !Result {
+    // Pre: at least one rule must be present in the registry, otherwise
+    // the loop body never runs and the lint report is silently empty.
+    // This catches a build that accidentally compiles registry.all to a
+    // zero-length array (e.g. a comptime gate excluded every rule).
+    std.debug.assert(registry.all.len > 0);
+
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
     const alloc = arena.allocator();
