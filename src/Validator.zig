@@ -3715,92 +3715,94 @@ fn checkUnaryE(v: *Validator, e: *Ast.UnaryExpr, exp: Expectation) Allocator.Err
                 },
             }
         },
-        .addr => {
-            // `&` produces a pointer to the reference denoted by its operand.
-            // The spec restricts what can be addressed:
-            //   1. The operand must syntactically denote a memory location —
-            //      an ident, member, index, `*p`, or paren-wrapping of one
-            //      of these. Literals / calls / arithmetic produce values
-            //      with no address.
-            //   2. Vector components and sub-vector swizzles are *values*,
-            //      never references, so `&v.x` and `&v[i]` (where `v` is a
-            //      vector) are forbidden. See "Reference types" in §6.5 and
-            //      the detailed rule-out in §10.4 ("Address-of").
-            //   3. Handles (textures, samplers) are not first-class memory
-            //      locations — `&my_texture` is also forbidden.
-            // If the root is a plain variable, the resulting pointer carries
-            // that variable's address space and access mode rather than the
-            // historical `function` / `read_write` defaults.
-            if (!addrOfOperandLooksAddressable(e.operand)) {
-                v.addErrorWithCodeR(
-                    er,
-                    Diagnostic.Code.addr_of_requires_reference,
-                    "unary '&' requires a reference (e.g. a variable or member access); the operand has no address",
-                );
-                return InferResult.fail;
-            }
-
-            // Reject `&vector.x` / `&vector[i]` — vector components are not
-            // references.
-            const inner = stripParens(e.operand);
-            switch (inner) {
-                .member => |m| {
-                    if ((try v.checkExpr(m.base)).typ) |base_ty| {
-                        if (isVectorOrVectorRef(base_ty)) {
-                            v.addErrorWithCodeR(
-                                er,
-                                Diagnostic.Code.addr_of_vector_component,
-                                v.fmtError("cannot take the address of '.{s}': vector components are not references", .{m.member_name}),
-                            );
-                            return InferResult.fail;
-                        }
-                    }
-                },
-                .index => |ix| {
-                    if ((try v.checkExpr(ix.base)).typ) |base_ty| {
-                        if (isVectorOrVectorRef(base_ty)) {
-                            v.addErrorWithCodeR(
-                                er,
-                                Diagnostic.Code.addr_of_vector_component,
-                                "cannot take the address of a vector component: vector components are not references",
-                            );
-                            return InferResult.fail;
-                        }
-                    }
-                },
-                else => {},
-            }
-
-            // Reject `&handle_var` — textures/samplers have no memory
-            // location users can form pointers to.
-            if (Types.isTexture(operand_type) or Types.isSampler(operand_type)) {
-                v.addErrorWithCodeR(
-                    er,
-                    Diagnostic.Code.addr_of_handle,
-                    v.fmtError("cannot take the address of handle type '{s}': textures and samplers are not references", .{operand_type.string()}),
-                );
-                return InferResult.fail;
-            }
-
-            // Choose AS/AM from the addressable chain: a var ident supplies
-            // its declared AS/AM, a `*x` arm projects x's pointer type. A
-            // null return means the chain leads to a non-reference (const,
-            // let, parameter, …) — in which case addrOfOperandAsAm has
-            // already emitted a kind-specific E0215 — or an upstream
-            // sub-expression already failed to type-check. Either way, we
-            // bail instead of fabricating a `ptr<function, T, rw>` that
-            // would cascade misleading type-mismatch errors downstream.
-            const asam = (try addrOfOperandAsAm(v, e.operand, er)) orelse return InferResult.fail;
-
-            const p = v.arena.create(Types.Pointer) catch return InferResult.fail;
-            p.* = .{
-                .address_space = asam.address_space,
-                .element = operand_type,
-                .access_mode = asam.access_mode,
-            };
-            return InferResult.some(.{ .pointer = p }, stage);
-        },
+        .addr => return v.checkAddrOfUnary(e, er, operand_type, stage),
     }
+}
+
+/// `&` produces a pointer to the reference denoted by its operand.
+/// The spec restricts what can be addressed:
+///   1. The operand must syntactically denote a memory location —
+///      an ident, member, index, `*p`, or paren-wrapping of one
+///      of these. Literals / calls / arithmetic produce values
+///      with no address.
+///   2. Vector components and sub-vector swizzles are *values*,
+///      never references, so `&v.x` and `&v[i]` (where `v` is a
+///      vector) are forbidden. See "Reference types" in §6.5 and
+///      the detailed rule-out in §10.4 ("Address-of").
+///   3. Handles (textures, samplers) are not first-class memory
+///      locations — `&my_texture` is also forbidden.
+/// If the root is a plain variable, the resulting pointer carries
+/// that variable's address space and access mode rather than the
+/// historical `function` / `read_write` defaults.
+fn checkAddrOfUnary(v: *Validator, e: *Ast.UnaryExpr, er: LocRange, operand_type: Types.Type, stage: ExprStage) Allocator.Error!InferResult {
+    if (!addrOfOperandLooksAddressable(e.operand)) {
+        v.addErrorWithCodeR(
+            er,
+            Diagnostic.Code.addr_of_requires_reference,
+            "unary '&' requires a reference (e.g. a variable or member access); the operand has no address",
+        );
+        return InferResult.fail;
+    }
+
+    // Reject `&vector.x` / `&vector[i]` — vector components are not
+    // references.
+    const inner = stripParens(e.operand);
+    switch (inner) {
+        .member => |m| {
+            if ((try v.checkExpr(m.base)).typ) |base_ty| {
+                if (isVectorOrVectorRef(base_ty)) {
+                    v.addErrorWithCodeR(
+                        er,
+                        Diagnostic.Code.addr_of_vector_component,
+                        v.fmtError("cannot take the address of '.{s}': vector components are not references", .{m.member_name}),
+                    );
+                    return InferResult.fail;
+                }
+            }
+        },
+        .index => |ix| {
+            if ((try v.checkExpr(ix.base)).typ) |base_ty| {
+                if (isVectorOrVectorRef(base_ty)) {
+                    v.addErrorWithCodeR(
+                        er,
+                        Diagnostic.Code.addr_of_vector_component,
+                        "cannot take the address of a vector component: vector components are not references",
+                    );
+                    return InferResult.fail;
+                }
+            }
+        },
+        else => {},
+    }
+
+    // Reject `&handle_var` — textures/samplers have no memory
+    // location users can form pointers to.
+    if (Types.isTexture(operand_type) or Types.isSampler(operand_type)) {
+        v.addErrorWithCodeR(
+            er,
+            Diagnostic.Code.addr_of_handle,
+            v.fmtError("cannot take the address of handle type '{s}': textures and samplers are not references", .{operand_type.string()}),
+        );
+        return InferResult.fail;
+    }
+
+    // Choose AS/AM from the addressable chain: a var ident supplies
+    // its declared AS/AM, a `*x` arm projects x's pointer type. A
+    // null return means the chain leads to a non-reference (const,
+    // let, parameter, …) — in which case addrOfOperandAsAm has
+    // already emitted a kind-specific E0215 — or an upstream
+    // sub-expression already failed to type-check. Either way, we
+    // bail instead of fabricating a `ptr<function, T, rw>` that
+    // would cascade misleading type-mismatch errors downstream.
+    const asam = (try addrOfOperandAsAm(v, e.operand, er)) orelse return InferResult.fail;
+
+    const p = v.arena.create(Types.Pointer) catch return InferResult.fail;
+    p.* = .{
+        .address_space = asam.address_space,
+        .element = operand_type,
+        .access_mode = asam.access_mode,
+    };
+    return InferResult.some(.{ .pointer = p }, stage);
 }
 
 fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
