@@ -727,9 +727,10 @@ const NativeServer = struct {
                 .position = .{ .line = h.position.line, .character = h.position.character },
                 .label = label,
                 .kind = switch (h.kind) {
-                    .type_hint, .const_value_hint => .Type,
+                    .type_hint, .const_value_hint, .minify_size => .Type,
                     .parameter_hint => .Parameter,
                 },
+                .tooltip = if (h.tooltip) |t| .{ .string = t } else null,
             };
         }
         return lsp_hints;

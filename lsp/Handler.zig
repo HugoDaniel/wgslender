@@ -2447,9 +2447,12 @@ pub fn computeTypeDefinition(self: *Handler, uri: []const u8, position: Position
 pub const InlayHintInfo = struct {
     position: Position,
     label: []const u8,
-    kind: enum { type_hint, parameter_hint, const_value_hint },
+    kind: enum { type_hint, parameter_hint, const_value_hint, minify_size },
     /// For struct types: the definition range so the hint label is clickable/hoverable.
     def_range: ?Range = null,
+    /// Optional human-readable tooltip rendered on hover. Used by minify-size
+    /// hints to disclose that the byte count is approximate.
+    tooltip: ?[]const u8 = null,
 };
 
 pub fn computeInlayHints(self: *Handler, uri: []const u8, range: Range) ![]InlayHintInfo {

@@ -819,6 +819,11 @@ fn handleInlayHint(root: std.json.ObjectMap, id: ?std.json.Value) void {
         }
         appendStr(&buf, ",\"kind\":");
         appendUint(&buf, if (h.kind == .parameter_hint) @as(u32, 2) else @as(u32, 1));
+        if (h.tooltip) |t| {
+            appendStr(&buf, ",\"tooltip\":\"");
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, t) catch return;
+            appendStr(&buf, "\"");
+        }
         appendStr(&buf, "}");
     }
     appendStr(&buf, "]");
