@@ -6,6 +6,18 @@
 //! The optional scope-local rename and declaration sort passes improve
 //! DEFLATE compression by making structurally similar functions produce
 //! near-identical text and grouping declarations by kind.
+//!
+//! Invariants:
+//!   - Entry points and `@group/@binding` vars are marked API-facing
+//!     BEFORE DCE, so tree-shaking never removes anything a downstream
+//!     pipeline binds by name.
+//!   - Identifier renaming assigns the shortest names to the most
+//!     frequently used symbols (frequency-descending). Ties break by
+//!     stable symbol-index order so runs are deterministic.
+//!   - `result.minified_size <= result.original_size` when
+//!     `options.minify_whitespace` is true — asserted as a post-condition.
+//!   - `result.errors.len == 0` on the success path; the error fallback
+//!     replaces `result.code` with the original source before returning.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

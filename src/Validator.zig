@@ -9,6 +9,19 @@
 //!   3. validateDeclarations  — validate const/override/var/let decls
 //!   4. validateFunctions     — validate functions, statements, expressions
 //!   5. analyzeUniformity     — detect non-uniform control flow violations
+//!
+//! Invariants:
+//!   - The input `Module` is a parsed root: `module.scope.parent == null`,
+//!     `module.source.len < maxInt(u32)`. Asserted on entry to `validate`
+//!     and `analyze`.
+//!   - `expr_depth` and `stmt_depth` return to zero before either entry
+//!     point returns. Asserted on the way out so a missing `defer` in a
+//!     deeply nested check path surfaces immediately.
+//!   - Diagnostic byte offsets index into the same `module.source` the
+//!     parser used; the validator never re-tokenizes.
+//!   - Phases run in order: `analyze` and `validate` orchestrate exactly
+//!     the same sequence — `analyze` retains semantic state for the LSP,
+//!     `validate` returns only diagnostics.
 
 const std = @import("std");
 const Ast = @import("Ast.zig");

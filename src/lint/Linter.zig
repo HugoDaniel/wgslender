@@ -15,6 +15,19 @@
 //! The `Context` shape is designed so a future single-traversal
 //! multiplexed-visitor implementation can slot in without changing rule
 //! code — only the Linter internals change.
+//!
+//! Invariants:
+//!   - The rule registry (`registry.all`) is non-empty. Asserted at the
+//!     entry of `run` so a comptime gate that excludes every rule fails
+//!     loudly instead of producing silent empty reports.
+//!   - DCE runs at most once per call (lazily, only if some enabled rule
+//!     declares `requires_dce`). Once run, every subsequent rule reuses
+//!     the cached `Symbol.is_live` flags.
+//!   - `wgslender-disable` directives never silence validator diagnostics
+//!     (non-lint codes); they only filter entries whose `code` resolves
+//!     to a registered rule id.
+//!   - `Result.diagnostics` carries lint output only. Validator diagnostics
+//!     stay on `analysis.diagnostics`, which the caller already owns.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
