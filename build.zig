@@ -341,6 +341,9 @@ pub fn build(b: *std.Build) void {
     // Minify-mode settings resolver (precedence merge of magic comment,
     // workspace, and project-config layers).
     _ = addTestStep(b, test_step, "tests/minify_settings_test.zig", target, optimize, &.{w});
+    // Per-document magic-comment scanner for `// wgslender-minify-*`
+    // directives that override workspace/project mode.
+    _ = addTestStep(b, test_step, "tests/magic_comment_test.zig", target, optimize, &.{w});
     // LSP-layer plumbing for minifier-mode: Handler settings parse,
     // effectiveMinify accessor, workspace/executeCommand dispatch.
     _ = addTestStep(b, test_step, "tests/lsp_minify_settings_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
