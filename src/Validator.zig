@@ -1686,13 +1686,12 @@ const OutputLocEntry = struct { loc: u32, blend_src: ?i64 };
 const BlendSrcEntry = struct { location: i64, value: i64, typ: ?Types.Type, member_range: LocRange, attr_loc: u32 };
 
 fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
-    const fn_range = v.symbolRange(fn_decl.name);
+    try v.validateEntryPointInputs(fn_decl);
+    try v.validateEntryPointOutputs(fn_decl);
+}
 
-    // Track duplicate builtins across all I/O members.
+fn validateEntryPointInputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
     var input_builtins: std.StringHashMapUnmanaged(u32) = .{};
-    var output_builtins: std.StringHashMapUnmanaged(u32) = .{};
-
-    // Check input locations (parameters)
     var input_locations: std.AutoHashMapUnmanaged(i64, u32) = .{};
     for (fn_decl.parameters.items) |param| {
         // Direct @location on parameter
@@ -1769,7 +1768,11 @@ fn validateEntryPointIO(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
             }
         }
     }
+}
 
+fn validateEntryPointOutputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
+    const fn_range = v.symbolRange(fn_decl.name);
+    var output_builtins: std.StringHashMapUnmanaged(u32) = .{};
     // Check output locations (return type)
     var output_locations: std.AutoHashMapUnmanaged(i64, OutputLocEntry) = .{};
     if (getLocationInfo(fn_decl.return_attr)) |info| {
