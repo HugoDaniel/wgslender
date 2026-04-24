@@ -402,9 +402,9 @@ pub fn tokenize(arena: std.mem.Allocator, source: [:0]const u8) !std.MultiArrayL
     try lex.tokens.ensureTotalCapacity(arena, estimated);
 
     for (0..source.len + 1) |_| {
-        const tok = lex.next();
-        try lex.tokens.append(arena, .{ .tag = tok.tag, .start = tok.start, .end = tok.end });
-        if (tok.tag == .eof or tok.tag == .@"error") break;
+        const token = lex.next();
+        try lex.tokens.append(arena, .{ .tag = token.tag, .start = token.start, .end = token.end });
+        if (token.tag == .eof or token.tag == .@"error") break;
     } else unreachable;
 
     // Post: at least one token (the eof / error sentinel) is always emitted
@@ -449,9 +449,9 @@ pub fn tokenizeRange(
     // Upper bound: every remaining byte can at worst produce a 1-byte
     // trivia token plus a 0-length boundary token, plus the trailing `.eof`.
     for (0..remaining * 2 + 2) |_| {
-        const tok = lex.nextAny();
-        try lex.tokens.append(arena, .{ .tag = tok.tag, .start = tok.start, .end = tok.end });
-        if (tok.tag == .eof or tok.tag == .@"error") break;
+        const token = lex.nextAny();
+        try lex.tokens.append(arena, .{ .tag = token.tag, .start = token.start, .end = token.end });
+        if (token.tag == .eof or token.tag == .@"error") break;
     } else unreachable;
 
     // Post: trivia-preserving stream still terminates on a sentinel token.
@@ -1097,7 +1097,7 @@ fn next(self: *Lexer) TokenResult {
 
 /// Like `next()` but emits whitespace and comment trivia as first-class
 /// tokens instead of skipping them. Guarantees: for any sequence of
-/// successive calls, the concatenation of `source[tok.start..tok.end]` is
+/// successive calls, the concatenation of `source[token.start..token.end]` is
 /// byte-identical to the source up to EOF. Each whitespace run collapses
 /// into a single `.whitespace` token (greedy run of any of space / tab /
 /// CR / LF). Comments follow the same one-token-per-comment rule as today,

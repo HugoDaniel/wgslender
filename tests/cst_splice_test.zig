@@ -36,10 +36,10 @@ fn renderTree(
         if (el.asNode()) |child| {
             try renderTree(gpa, tree, buf, child);
         } else {
-            const tok = el.asToken().?;
+            const token = el.asToken().?;
             const starts = tree.tokens.items(.start);
             const ends = tree.tokens.items(.end);
-            const leaf = try std.fmt.allocPrint(gpa, "[t{d}:{d}..{d}]", .{ tok, starts[tok], ends[tok] });
+            const leaf = try std.fmt.allocPrint(gpa, "[t{d}:{d}..{d}]", .{ token, starts[token], ends[token] });
             defer gpa.free(leaf);
             try buf.appendSlice(gpa, leaf);
         }

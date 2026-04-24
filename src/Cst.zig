@@ -729,8 +729,8 @@ pub fn spliceSubtree(
                 const new_idx = try remapNode(nraw, anchor_dfs_start, anchor_dfs_end, delta_nodes);
                 children_buf[dst_off + k] = Tree.Element.fromNode(new_idx);
             } else {
-                const tok = el.asToken().?;
-                const new_tok = try remapTok(tok, anchor_tok.first, anchor_tok.last, delta_tok);
+                const token = el.asToken().?;
+                const new_tok = try remapTok(token, anchor_tok.first, anchor_tok.last, delta_tok);
                 children_buf[dst_off + k] = Tree.Element.fromToken(new_tok);
             }
         }
@@ -1025,9 +1025,9 @@ pub const TokenIter = struct {
                 self.push(child);
                 continue;
             }
-            const tok = el.asToken().?;
-            if (self.mode == .non_trivia and token_tags[tok].isTrivia()) continue;
-            return tok;
+            const token = el.asToken().?;
+            if (self.mode == .non_trivia and token_tags[token].isTrivia()) continue;
+            return token;
         }
         return null;
     }

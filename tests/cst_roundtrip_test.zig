@@ -27,9 +27,9 @@ fn walkConcat(
     const n = tree.getNode(node_idx);
     const children = tree.children[n.first_child .. n.first_child + n.child_count];
     for (children) |el| {
-        if (el.asToken()) |tok| {
-            const s = tree.tokens.items(.start)[tok];
-            const e = tree.tokens.items(.end)[tok];
+        if (el.asToken()) |token| {
+            const s = tree.tokens.items(.start)[token];
+            const e = tree.tokens.items(.end)[token];
             try buf.appendSlice(gpa, tree.source[s..e]);
         } else if (el.asNode()) |child| {
             try walkConcat(gpa, tree, buf, child);

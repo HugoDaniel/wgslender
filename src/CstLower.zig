@@ -326,20 +326,20 @@ const LowerCtx = struct {
 
     // ---- token / child access --------------------------------------------
 
-    fn tokenTag(self: *const LowerCtx, tok: u32) Tag {
-        return self.token_tags[tok];
+    fn tokenTag(self: *const LowerCtx, token: u32) Tag {
+        return self.token_tags[token];
     }
 
-    fn tokenText(self: *const LowerCtx, tok: u32) []const u8 {
-        return self.cst.source[self.token_starts[tok]..self.token_ends[tok]];
+    fn tokenText(self: *const LowerCtx, token: u32) []const u8 {
+        return self.cst.source[self.token_starts[token]..self.token_ends[token]];
     }
 
-    fn tokenStart(self: *const LowerCtx, tok: u32) u32 {
-        return self.token_starts[tok];
+    fn tokenStart(self: *const LowerCtx, token: u32) u32 {
+        return self.token_starts[token];
     }
 
-    fn tokenEnd(self: *const LowerCtx, tok: u32) u32 {
-        return self.token_ends[tok];
+    fn tokenEnd(self: *const LowerCtx, token: u32) u32 {
+        return self.token_ends[token];
     }
 
     fn nodeKind(self: *const LowerCtx, n: Cst.NodeIndex) Cst.Kind {
@@ -378,10 +378,10 @@ const LowerCtx = struct {
         const node = self.cst.getNode(n);
         const children = self.cst.children[node.first_child .. node.first_child + node.child_count];
         for (children) |el| {
-            if (el.asToken()) |tok| {
-                if (self.token_tags[tok].isTrivia()) continue;
-                const s = self.token_starts[tok];
-                const e = self.token_ends[tok];
+            if (el.asToken()) |token| {
+                if (self.token_tags[token].isTrivia()) continue;
+                const s = self.token_starts[token];
+                const e = self.token_ends[token];
                 if (state.first_start == null) state.first_start = s;
                 state.last_end = e;
             } else if (el.asNode()) |child| {
@@ -402,8 +402,8 @@ const LowerCtx = struct {
         fn skipTrivia(self: *Walker) void {
             while (self.i < self.children.len) : (self.i += 1) {
                 const el = self.children[self.i];
-                if (el.asToken()) |tok| {
-                    if (self.ctx.tokenTag(tok).isTrivia()) continue;
+                if (el.asToken()) |token| {
+                    if (self.ctx.tokenTag(token).isTrivia()) continue;
                 }
                 return;
             }
@@ -417,8 +417,8 @@ const LowerCtx = struct {
 
         fn peekTokenTag(self: *Walker) ?Tag {
             const el = self.peekElement() orelse return null;
-            const tok = el.asToken() orelse return null;
-            return self.ctx.tokenTag(tok);
+            const token = el.asToken() orelse return null;
+            return self.ctx.tokenTag(token);
         }
 
         fn peekNodeKind(self: *Walker) ?Cst.Kind {
@@ -429,17 +429,17 @@ const LowerCtx = struct {
 
         fn eatToken(self: *Walker, tag: Tag) ?u32 {
             const el = self.peekElement() orelse return null;
-            const tok = el.asToken() orelse return null;
-            if (self.ctx.tokenTag(tok) != tag) return null;
+            const token = el.asToken() orelse return null;
+            if (self.ctx.tokenTag(token) != tag) return null;
             self.i += 1;
-            return tok;
+            return token;
         }
 
         fn eatAnyToken(self: *Walker) ?u32 {
             const el = self.peekElement() orelse return null;
-            const tok = el.asToken() orelse return null;
+            const token = el.asToken() orelse return null;
             self.i += 1;
-            return tok;
+            return token;
         }
 
         fn eatAnyNode(self: *Walker) ?Cst.NodeIndex {
@@ -477,8 +477,8 @@ const LowerCtx = struct {
                 while (true) {
                     const t = w.peekTokenTag() orelse break;
                     if (t == .ident) {
-                        const tok = w.eatAnyToken().?;
-                        try features.append(self.arena, self.tokenText(tok));
+                        const token = w.eatAnyToken().?;
+                        try features.append(self.arena, self.tokenText(token));
                     } else if (t == .comma) {
                         _ = w.eatAnyToken();
                     } else break;
@@ -490,8 +490,8 @@ const LowerCtx = struct {
                 while (true) {
                     const t = w.peekTokenTag() orelse break;
                     if (t == .ident) {
-                        const tok = w.eatAnyToken().?;
-                        try features.append(self.arena, self.tokenText(tok));
+                        const token = w.eatAnyToken().?;
+                        try features.append(self.arena, self.tokenText(token));
                     } else if (t == .comma) {
                         _ = w.eatAnyToken();
                     } else break;
@@ -502,9 +502,9 @@ const LowerCtx = struct {
                 _ = w.eatToken(.l_paren);
                 var severity: []const u8 = "";
                 var rule: []const u8 = "";
-                if (w.eatToken(.ident)) |tok| severity = self.tokenText(tok);
+                if (w.eatToken(.ident)) |token| severity = self.tokenText(token);
                 _ = w.eatToken(.comma);
-                if (w.eatToken(.ident)) |tok| rule = self.tokenText(tok);
+                if (w.eatToken(.ident)) |token| rule = self.tokenText(token);
                 _ = w.eatToken(.r_paren);
                 return .{ .diagnostic = .{ .severity = severity, .rule = rule, .span = span } };
             },
@@ -538,8 +538,8 @@ const LowerCtx = struct {
         // Skip any attribute_list (const doesn't carry attrs on the Ast node).
         _ = w.eatNodeKind(.attribute_list);
         _ = w.eatToken(.keyword_const);
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            decl.name = try self.declareSymbol(self.tokenText(tok), .@"const", .{}, self.tokenStart(tok));
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            decl.name = try self.declareSymbol(self.tokenText(token), .@"const", .{}, self.tokenStart(token));
         }
         if (w.eatToken(.colon) != null) {
             if (w.eatAnyNode()) |n| decl.typ = try self.lowerType(n);
@@ -556,8 +556,8 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         if (w.eatNodeKind(.attribute_list)) |n| decl.attributes = try self.lowerAttributeList(self.nodeCursor(n));
         _ = w.eatToken(.keyword_override);
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            decl.name = try self.declareSymbol(self.tokenText(tok), .override, .{}, self.tokenStart(tok));
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            decl.name = try self.declareSymbol(self.tokenText(token), .override, .{}, self.tokenStart(token));
         }
         if (w.eatToken(.colon) != null) {
             if (w.eatAnyNode()) |n| decl.typ = try self.lowerType(n);
@@ -582,9 +582,9 @@ const LowerCtx = struct {
         if (w.eatNodeKind(.attribute_list)) |n| decl.attributes = try self.lowerAttributeList(self.nodeCursor(n));
         _ = w.eatToken(.keyword_var);
         if (w.eatToken(.lt) != null) {
-            if (w.eatToken(.ident)) |tok| decl.address_space = addressSpaceFromText(self.tokenText(tok));
+            if (w.eatToken(.ident)) |token| decl.address_space = addressSpaceFromText(self.tokenText(token));
             if (w.eatToken(.comma) != null) {
-                if (w.eatToken(.ident)) |tok| decl.access_mode = accessModeFromText(self.tokenText(tok));
+                if (w.eatToken(.ident)) |token| decl.access_mode = accessModeFromText(self.tokenText(token));
             }
             _ = w.eatToken(.gt);
         }
@@ -594,8 +594,8 @@ const LowerCtx = struct {
             flags.is_external_binding = true;
         }
 
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            decl.name = try self.declareSymbol(self.tokenText(tok), .@"var", flags, self.tokenStart(tok));
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            decl.name = try self.declareSymbol(self.tokenText(token), .@"var", flags, self.tokenStart(token));
         }
         if (w.eatToken(.colon) != null) {
             if (w.eatAnyNode()) |n| decl.typ = try self.lowerType(n);
@@ -613,8 +613,8 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         _ = w.eatNodeKind(.attribute_list);
         _ = w.eatToken(.keyword_let);
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            decl.name = try self.declareSymbol(self.tokenText(tok), .let, .{}, self.tokenStart(tok));
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            decl.name = try self.declareSymbol(self.tokenText(token), .let, .{}, self.tokenStart(token));
         }
         if (w.eatToken(.colon) != null) {
             if (w.eatAnyNode()) |n| decl.typ = try self.lowerType(n);
@@ -655,8 +655,8 @@ const LowerCtx = struct {
         }
 
         _ = w.eatToken(.keyword_fn);
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            decl.name = try self.declareSymbol(self.tokenText(tok), .function, flags, self.tokenStart(tok));
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            decl.name = try self.declareSymbol(self.tokenText(token), .function, flags, self.tokenStart(token));
         }
 
         try self.pushScope(.function);
@@ -741,8 +741,8 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         _ = w.eatNodeKind(.attribute_list);
         _ = w.eatToken(.keyword_struct);
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            decl.name = try self.declareSymbol(self.tokenText(tok), .@"struct", .{}, self.tokenStart(tok));
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            decl.name = try self.declareSymbol(self.tokenText(token), .@"struct", .{}, self.tokenStart(token));
         }
         _ = w.eatToken(.l_brace);
 
@@ -797,8 +797,8 @@ const LowerCtx = struct {
         _ = w.eatNodeKind(.attribute_list);
         _ = w.eatToken(.keyword_alias);
         var name: Ast.SymbolIndex = .none;
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            name = try self.declareSymbol(self.tokenText(tok), .alias, .{}, self.tokenStart(tok));
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            name = try self.declareSymbol(self.tokenText(token), .alias, .{}, self.tokenStart(token));
         }
         _ = w.eatToken(.eq);
         var typ: Ast.Type = undefined;
@@ -853,9 +853,9 @@ const LowerCtx = struct {
     fn lowerAttribute(self: *LowerCtx, cur: Cst.Cursor) !Ast.Attribute {
         var w = self.walker(cur);
         var attr = Ast.Attribute{ .name = "", .args = .empty, .loc = 0, .span = self.nonTriviaSpan(cur.node) };
-        if (w.eatToken(.at)) |tok| attr.loc = self.tokenStart(tok);
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            attr.name = self.tokenText(tok);
+        if (w.eatToken(.at)) |token| attr.loc = self.tokenStart(token);
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            attr.name = self.tokenText(token);
         }
         if (w.eatNodeKind(.attribute_args)) |n| {
             attr.args = try self.lowerAttributeArgs(self.nodeCursor(n));
@@ -898,9 +898,9 @@ const LowerCtx = struct {
                 var w = self.walker(cur);
                 var name: []const u8 = "";
                 var loc: u32 = span.start;
-                if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-                    name = self.tokenText(tok);
-                    loc = self.tokenStart(tok);
+                if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+                    name = self.tokenText(token);
+                    loc = self.tokenStart(token);
                 }
                 const t = try self.arena.create(Ast.IdentType);
                 t.* = .{ .name = name, .ref = .none, .loc = loc, .span = span };
@@ -927,9 +927,9 @@ const LowerCtx = struct {
         const span = self.nonTriviaSpan(cur.node);
         var name: []const u8 = "";
         var loc: u32 = span.start;
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            name = self.tokenText(tok);
-            loc = self.tokenStart(tok);
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            name = self.tokenText(token);
+            loc = self.tokenStart(token);
         }
         const size: u8 = if (name.len >= 4) name[3] - '0' else 0;
         var elem: ?Ast.Type = null;
@@ -949,9 +949,9 @@ const LowerCtx = struct {
         const span = self.nonTriviaSpan(cur.node);
         var name: []const u8 = "";
         var loc: u32 = span.start;
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            name = self.tokenText(tok);
-            loc = self.tokenStart(tok);
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            name = self.tokenText(token);
+            loc = self.tokenStart(token);
         }
         const cols: u8 = if (name.len >= 6) name[3] - '0' else 0;
         const rows: u8 = if (name.len >= 6) name[5] - '0' else 0;
@@ -997,11 +997,11 @@ const LowerCtx = struct {
         if (w.eatNodeKind(.template_args)) |tn| {
             var tw = self.walker(self.nodeCursor(tn));
             _ = tw.eatToken(.lt);
-            if (tw.eatToken(.ident)) |tok| addr = addressSpaceFromText(self.tokenText(tok));
+            if (tw.eatToken(.ident)) |token| addr = addressSpaceFromText(self.tokenText(token));
             _ = tw.eatToken(.comma);
             if (tw.eatAnyNode()) |en| elem = try self.lowerType(en);
             if (tw.eatToken(.comma) != null) {
-                if (tw.eatToken(.ident)) |tok| access = accessModeFromText(self.tokenText(tok));
+                if (tw.eatToken(.ident)) |token| access = accessModeFromText(self.tokenText(token));
             }
             _ = tw.eatToken(.gt);
         }
@@ -1023,7 +1023,7 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const span = self.nonTriviaSpan(cur.node);
         var loc: u32 = span.start;
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| loc = self.tokenStart(tok);
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| loc = self.tokenStart(token);
         var elem: ?Ast.Type = null;
         if (w.eatNodeKind(.template_args)) |tn| {
             var tw = self.walker(self.nodeCursor(tn));
@@ -1048,8 +1048,8 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const span = self.nonTriviaSpan(cur.node);
         var is_comparison = false;
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            const name = self.tokenText(tok);
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            const name = self.tokenText(token);
             is_comparison = std.mem.eql(u8, name, "sampler_comparison");
         }
         const t = try self.arena.create(Ast.SamplerType);
@@ -1061,8 +1061,8 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const span = self.nonTriviaSpan(cur.node);
         var name: []const u8 = "";
-        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |tok| {
-            name = self.tokenText(tok);
+        if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
+            name = self.tokenText(token);
         }
         const info = textureInfoFromName(name) orelse {
             const t = try self.arena.create(Ast.TextureType);
@@ -1080,9 +1080,9 @@ const LowerCtx = struct {
                     if (tw.eatAnyNode()) |en| sampled = try self.lowerType(en);
                 },
                 .storage => {
-                    if (tw.eatToken(.ident)) |tok| texel_format = self.tokenText(tok);
+                    if (tw.eatToken(.ident)) |token| texel_format = self.tokenText(token);
                     _ = tw.eatToken(.comma);
-                    if (tw.eatToken(.ident)) |tok| access = accessModeFromText(self.tokenText(tok));
+                    if (tw.eatToken(.ident)) |token| access = accessModeFromText(self.tokenText(token));
                 },
                 .depth, .depth_multisampled, .external => {},
             }
@@ -1127,9 +1127,9 @@ const LowerCtx = struct {
 
     fn lowerLiteralExpr(self: *LowerCtx, cur: Cst.Cursor) !Ast.Expr {
         var w = self.walker(cur);
-        const tok = w.eatAnyToken() orelse return error.InvalidCst;
-        const tag = self.tokenTag(tok);
-        const loc = self.tokenStart(tok);
+        const token = w.eatAnyToken() orelse return error.InvalidCst;
+        const tag = self.tokenTag(token);
+        const loc = self.tokenStart(token);
         // Parser derives numeric literal text via its own `scanNumberText`
         // which stops at a different boundary than `Lexer.Token.end` in some
         // edge cases (e.g. `2.f` — Lexer says 3 chars, Parser says 1). To
@@ -1137,7 +1137,7 @@ const LowerCtx = struct {
         // mirror that logic for int/float literals.
         const value: []const u8 = switch (tag) {
             .int_literal, .float_literal => self.scanNumberText(loc),
-            else => self.tokenText(tok),
+            else => self.tokenText(token),
         };
         const node = try self.arena.create(Ast.LiteralExpr);
         node.* = .{ .loc = loc, .kind = tag, .value = value, .span = self.nonTriviaSpan(cur.node) };
@@ -1189,14 +1189,14 @@ const LowerCtx = struct {
 
     fn lowerIdentExpr(self: *LowerCtx, cur: Cst.Cursor) !Ast.Expr {
         var w = self.walker(cur);
-        const tok = w.eatAnyToken() orelse return error.InvalidCst;
+        const token = w.eatAnyToken() orelse return error.InvalidCst;
         // There may be a trailing `template_args` child if the source wrote
         // `vec3<f32>` without `(...)` — Parser accepts this as a lenient
         // ident reference; we mirror that and ignore the template_args.
         const node = try self.arena.create(Ast.IdentExpr);
         node.* = .{
-            .loc = self.tokenStart(tok),
-            .name = self.tokenText(tok),
+            .loc = self.tokenStart(token),
+            .name = self.tokenText(token),
             .ref = .none,
             .span = self.nonTriviaSpan(cur.node),
         };
@@ -1260,12 +1260,12 @@ const LowerCtx = struct {
                     _ = w.eatAnyNode();
                     func = try self.lowerExpr(n);
                 }
-            } else if (first.asToken()) |tok| {
-                const tag = self.tokenTag(tok);
+            } else if (first.asToken()) |token| {
+                const tag = self.tokenTag(token);
                 if (tag == .ident or tag == .reserved_ident) {
                     _ = w.eatAnyToken();
-                    const name = self.tokenText(tok);
-                    const name_loc = self.tokenStart(tok);
+                    const name = self.tokenText(token);
+                    const name_loc = self.tokenStart(token);
                     if (w.peekNodeKind()) |nk2| {
                         if (nk2 == .template_args) {
                             const tn = w.eatAnyNode().?;
@@ -1293,7 +1293,7 @@ const LowerCtx = struct {
 
         // `(`
         var paren_loc: u32 = 0;
-        if (w.eatToken(.l_paren)) |tok| paren_loc = self.tokenStart(tok);
+        if (w.eatToken(.l_paren)) |token| paren_loc = self.tokenStart(token);
 
         var args: std.ArrayListUnmanaged(Ast.Expr) = .empty;
         while (true) {
@@ -1311,9 +1311,9 @@ const LowerCtx = struct {
 
         var end_loc: u32 = paren_loc +| 1;
         if (w.peekElement()) |el| {
-            if (el.asToken()) |tok| {
-                if (self.tokenTag(tok) == .r_paren) {
-                    end_loc = self.tokenEnd(tok);
+            if (el.asToken()) |token| {
+                if (self.tokenTag(token) == .r_paren) {
+                    end_loc = self.tokenEnd(token);
                 }
             }
         }
@@ -1403,12 +1403,12 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const base_n = w.eatAnyNode() orelse return error.InvalidCst;
         var bracket_loc: u32 = 0;
-        if (w.eatToken(.l_bracket)) |tok| bracket_loc = self.tokenStart(tok);
+        if (w.eatToken(.l_bracket)) |token| bracket_loc = self.tokenStart(token);
         const idx_n = w.eatAnyNode() orelse return error.InvalidCst;
         var end_loc: u32 = bracket_loc +| 1;
         if (w.peekElement()) |el| {
-            if (el.asToken()) |tok| {
-                if (self.tokenTag(tok) == .r_bracket) end_loc = self.tokenEnd(tok);
+            if (el.asToken()) |token| {
+                if (self.tokenTag(token) == .r_bracket) end_loc = self.tokenEnd(token);
             }
         }
         _ = w.eatToken(.r_bracket);
@@ -1427,9 +1427,9 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const base_n = w.eatAnyNode() orelse return error.InvalidCst;
         var dot_loc: u32 = 0;
-        if (w.eatToken(.dot)) |tok| dot_loc = self.tokenStart(tok);
+        if (w.eatToken(.dot)) |token| dot_loc = self.tokenStart(token);
         var member: []const u8 = "";
-        if (w.eatAnyToken()) |tok| member = self.tokenText(tok);
+        if (w.eatAnyToken()) |token| member = self.tokenText(token);
         const node = try self.arena.create(Ast.MemberExpr);
         node.* = .{
             .loc = dot_loc,
@@ -1518,7 +1518,7 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const span = self.nonTriviaSpan(cur.node);
         var loc: u32 = span.start;
-        if (w.eatToken(.keyword_return)) |tok| loc = self.tokenStart(tok);
+        if (w.eatToken(.keyword_return)) |token| loc = self.tokenStart(token);
         var value: ?Ast.Expr = null;
         if (w.peekElement()) |el| {
             if (el.asNode()) |n| {
@@ -1715,23 +1715,23 @@ const LowerCtx = struct {
         const stmt_start = left.span().start;
         if (w.peekTokenTag()) |t| {
             if (t == .plus_plus or t == .minus_minus) {
-                const tok = w.eatAnyToken().?;
+                const token = w.eatAnyToken().?;
                 const node = try self.arena.create(Ast.IncrDecrStmt);
                 node.* = .{
-                    .loc = self.tokenStart(tok),
+                    .loc = self.tokenStart(token),
                     .expr = left,
                     .increment = t == .plus_plus,
-                    .span = .{ .start = stmt_start, .end = self.tokenEnd(tok) },
+                    .span = .{ .start = stmt_start, .end = self.tokenEnd(token) },
                 };
                 return Ast.Stmt{ .incr_decr = node };
             }
             if (assignOpFromTag(t)) |op| {
-                const tok = w.eatAnyToken().?;
+                const token = w.eatAnyToken().?;
                 const right_n = w.eatAnyNode() orelse return null;
                 const right = try self.lowerExpr(right_n);
                 const node = try self.arena.create(Ast.AssignStmt);
                 node.* = .{
-                    .loc = self.tokenStart(tok),
+                    .loc = self.tokenStart(token),
                     .op = op,
                     .left = left,
                     .right = right,
@@ -1847,7 +1847,7 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const span = self.nonTriviaSpan(cur.node);
         var loc: u32 = span.start;
-        if (w.eatToken(.keyword_break)) |tok| loc = self.tokenStart(tok);
+        if (w.eatToken(.keyword_break)) |token| loc = self.tokenStart(token);
         const node = try self.arena.create(Ast.BreakStmt);
         node.* = .{ .loc = loc, .span = span };
         return node;
@@ -1868,7 +1868,7 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const span = self.nonTriviaSpan(cur.node);
         var loc: u32 = span.start;
-        if (w.eatToken(.keyword_continue)) |tok| loc = self.tokenStart(tok);
+        if (w.eatToken(.keyword_continue)) |token| loc = self.tokenStart(token);
         const node = try self.arena.create(Ast.ContinueStmt);
         node.* = .{ .loc = loc, .span = span };
         return node;
@@ -1878,7 +1878,7 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const span = self.nonTriviaSpan(cur.node);
         var loc: u32 = span.start;
-        if (w.eatToken(.keyword_discard)) |tok| loc = self.tokenStart(tok);
+        if (w.eatToken(.keyword_discard)) |token| loc = self.tokenStart(token);
         const node = try self.arena.create(Ast.DiscardStmt);
         node.* = .{ .loc = loc, .span = span };
         return node;
