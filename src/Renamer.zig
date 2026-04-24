@@ -159,14 +159,8 @@ pub const MinifyRenamer = struct {
         var indices: std.ArrayListUnmanaged(u32) = .empty;
         defer indices.deinit(self.arena);
         for (self.slots.items) |_| {
-            var name = numberToMinifiedName(&buf, name_index);
-            // Skip reserved words/names. 256 attempts is safe: WGSL has ~120
-            // reserved words plus keywords, and consecutive names rarely collide.
-            for (0..256) |_| {
-                if (!self.reserved_names.contains(name)) break;
-                name_index += 1;
-                name = numberToMinifiedName(&buf, name_index);
-            } else unreachable;
+            skipReservedNames(&buf, &name_index, &self.reserved_names);
+            const name = numberToMinifiedName(&buf, name_index);
             try indices.append(self.arena, name_index);
             total_len += name.len;
             name_index += 1;
@@ -206,6 +200,44 @@ pub const MinifyRenamer = struct {
 
 const head = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const tail = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+
+/// Advance `name_index.*` past any minified names present in `reserved`.
+/// After return, `numberToMinifiedName(buf, name_index.*)` yields a name
+/// that is guaranteed to be non-reserved.
+///
+/// Shared between `MinifyRenamer.assignNames` (production) and
+/// `estimateRenameLength` (dry-run). Keeping the skip policy in exactly
+/// one place means the estimator and real renamer cannot drift.
+///
+/// 256-iteration ceiling is safe: WGSL has ~120 reserved words plus
+/// keywords, so a run of consecutive collisions is bounded.
+fn skipReservedNames(buf: *[16]u8, name_index: *u32, reserved: *const std.StringHashMapUnmanaged(void)) void {
+    for (0..256) |_| {
+        const name = numberToMinifiedName(buf, name_index.*);
+        if (!reserved.contains(name)) return;
+        name_index.* += 1;
+    } else unreachable;
+}
+
+/// Fills `out[i]` with the byte length of the minified name that would
+/// be assigned to rank `i` (0 = most frequent), skipping any name in
+/// `reserved`. Pure — touches only the supplied slice.
+///
+/// Used by `MinifyEstimator` to compute per-symbol print lengths without
+/// running the full rename pass. Shares `skipReservedNames` +
+/// `numberToMinifiedName` with `MinifyRenamer.assignNames`, so the
+/// estimator and the real renamer produce identical length sequences
+/// given identical reserved sets.
+pub fn estimateRenameLength(reserved: *const std.StringHashMapUnmanaged(void), out: []u32) void {
+    var name_index: u32 = 0;
+    var buf: [16]u8 = undefined;
+    for (out) |*slot_len| {
+        skipReservedNames(&buf, &name_index, reserved);
+        const name = numberToMinifiedName(&buf, name_index);
+        slot_len.* = @intCast(name.len);
+        name_index += 1;
+    }
+}
 
 /// Convert a number to a minified identifier name.
 /// Sequence: a, b, ..., z, A, ..., Z, aa, ba, ca, ...
