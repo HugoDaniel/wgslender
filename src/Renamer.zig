@@ -104,6 +104,11 @@ pub const MinifyRenamer = struct {
 
     /// Assigns rename slots sorted by frequency (most-used symbols get shortest names).
     pub fn allocateSlots(self: *MinifyRenamer) Allocator.Error!void {
+        // Pre: caller must run accumulateSymbolUseCounts first; slots is
+        // expected to be empty so each symbol gets exactly one entry.
+        std.debug.assert(self.slots.items.len == 0);
+        std.debug.assert(self.top_level_slots.count() == 0);
+
         const SymWithCount = struct { idx: u32, count: u32 };
         var renameable: std.ArrayListUnmanaged(SymWithCount) = .empty;
         defer renameable.deinit(self.arena);
