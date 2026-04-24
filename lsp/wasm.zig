@@ -162,6 +162,8 @@ fn handleMessage(json: []const u8) void {
         handleOutgoingCalls(root, id);
     } else if (eql(method, "textDocument/diagnostic")) {
         handlePullDiagnostic(root, id);
+    } else if (eql(method, "workspace/executeCommand")) {
+        handleExecuteCommand(root, id);
     } else if (id != null) {
         sendResult(id, "null");
     }
@@ -245,6 +247,40 @@ fn handleDidSave(root: std.json.ObjectMap) void {
 fn handleDidChangeConfiguration(_: std.json.ObjectMap) void {
     if (!client_supports_configuration) return;
     sendConfigurationRequest();
+}
+
+fn handleExecuteCommand(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const params = root.getPtr("params") orelse {
+        if (id != null) sendErrorCode(id, -32602, "missing params");
+        return;
+    };
+    const command = strVal(objGet(params, "command")) orelse {
+        if (id != null) sendErrorCode(id, -32602, "missing command");
+        return;
+    };
+    // `arguments` may be omitted, null, or an array of LSPAny. Extract the
+    // slice (null/missing → null).
+    var args_slice: ?[]const std.json.Value = null;
+    if (objGet(params, "arguments")) |a| switch (a.*) {
+        .array => |arr| args_slice = arr.items,
+        .null => {},
+        else => {
+            if (id != null) sendErrorCode(id, -32602, "arguments must be an array");
+            return;
+        },
+    };
+    handler.executeCommand(command, args_slice) catch |err| {
+        if (id == null) return;
+        switch (err) {
+            error.UnknownCommand => sendErrorCode(id, -32601, "unknown command"),
+            error.InvalidParams => sendErrorCode(id, -32602, "invalid command arguments"),
+        }
+        return;
+    };
+    // Re-publish diagnostics for every open document so any minify-mode
+    // change takes effect immediately.
+    republishAllDocuments();
+    if (id != null) sendResult(id, "null");
 }
 
 fn handleInitialize(root: std.json.ObjectMap) void {
@@ -1071,6 +1107,35 @@ fn sendResult(id: ?std.json.Value, result_json: []const u8) void {
 
 fn enqueue(msg: []u8) void {
     outbox.append(wasm_allocator, msg) catch wasm_allocator.free(msg);
+}
+
+fn sendErrorCode(id: ?std.json.Value, code: i32, message: []const u8) void {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"id\":");
+    if (id) |id_val| switch (id_val) {
+        .integer => |n| {
+            var num_buf: [20]u8 = undefined;
+            const s = std.fmt.bufPrint(&num_buf, "{d}", .{n}) catch return;
+            buf.appendSlice(wasm_allocator, s) catch return;
+        },
+        .string => |s| {
+            buf.append(wasm_allocator, '"') catch return;
+            buf.appendSlice(wasm_allocator, s) catch return;
+            buf.append(wasm_allocator, '"') catch return;
+        },
+        else => appendStr(&buf, "null"),
+    } else appendStr(&buf, "null");
+    appendStr(&buf, ",\"error\":{\"code\":");
+    var num_buf: [12]u8 = undefined;
+    const s = std.fmt.bufPrint(&num_buf, "{d}", .{code}) catch return;
+    buf.appendSlice(wasm_allocator, s) catch return;
+    appendStr(&buf, ",\"message\":\"");
+    for (message) |c| {
+        if (c == '"' or c == '\\') buf.append(wasm_allocator, '\\') catch return;
+        buf.append(wasm_allocator, c) catch return;
+    }
+    appendStr(&buf, "\"}}");
+    enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
 }
 
 // =========================================================================

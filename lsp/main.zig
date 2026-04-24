@@ -116,8 +116,32 @@ const NativeServer = struct {
                         .workspaceDiagnostics = false,
                     },
                 },
+                .executeCommandProvider = .{
+                    .commands = &.{
+                        "wgslender.setMinifyMode",
+                        "wgslender.toggleMinifyMode",
+                    },
+                },
             },
         };
+    }
+
+    /// Handles `workspace/executeCommand`. Dispatches to `Handler.executeCommand`
+    /// which mutates internal settings; on success returns `null` (no workspace
+    /// edit). Errors surface as LSP error responses.
+    pub fn @"workspace/executeCommand"(
+        self: *NativeServer,
+        _: std.mem.Allocator,
+        params: lsp.types.workspace.execute_command.Params,
+    ) !?std.json.Value {
+        self.handler.executeCommand(params.command, params.arguments) catch |err| switch (err) {
+            error.UnknownCommand => return error.MethodNotFound,
+            error.InvalidParams => return error.InvalidParams,
+        };
+        // Re-publish diagnostics so any minify-mode change takes effect
+        // immediately across all open documents.
+        self.republishAllDocuments();
+        return null;
     }
 
     /// No-op acknowledgement of the initialized notification.

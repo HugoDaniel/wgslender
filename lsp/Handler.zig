@@ -10,12 +10,20 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const WgslDiagnostic = wgslender.Diagnostic;
+const MinifySettings = wgslender.MinifySettings;
 
 const Handler = @This();
 
 gpa: std.mem.Allocator,
 documents: std.StringHashMapUnmanaged(Document),
 settings: Settings = .{},
+/// Client-provided minifier-mode layer (from `workspace/configuration` or
+/// `workspace/didChangeConfiguration`). Merged with the project-config
+/// layer and the per-document magic-comment layer in `effectiveMinify()`.
+workspace_minify: MinifySettings.Partial = .{},
+/// Project-config layer — seeded from `wgslender.json` via `Config.discover`
+/// before the first settings pull. Empty until the LSP entry point wires it.
+project_minify: MinifySettings.Partial = .{},
 
 /// Client-provided LSP settings. Pulled from the client via
 /// `workspace/configuration` (section `"wgslender"`) or seeded from
@@ -100,7 +108,7 @@ pub const LspCodeAction = struct {
 
 /// Server capabilities as a JSON string (shared by native and WASM).
 pub const capabilities_json =
-    \\{"textDocumentSync":{"openClose":true,"change":2,"save":{"includeText":false}},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{},"documentFormattingProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenTypes":["keyword","function","struct","parameter","variable","number","type","comment","decorator"],"tokenModifiers":["declaration","readonly","defaultLibrary"]}},"selectionRangeProvider":true,"callHierarchyProvider":true,"documentHighlightProvider":true,"diagnosticProvider":{"interFileDependencies":false,"workspaceDiagnostics":false}}
+    \\{"textDocumentSync":{"openClose":true,"change":2,"save":{"includeText":false}},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{},"documentFormattingProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenTypes":["keyword","function","struct","parameter","variable","number","type","comment","decorator"],"tokenModifiers":["declaration","readonly","defaultLibrary"]}},"selectionRangeProvider":true,"callHierarchyProvider":true,"documentHighlightProvider":true,"diagnosticProvider":{"interFileDependencies":false,"workspaceDiagnostics":false},"executeCommandProvider":{"commands":["wgslender.setMinifyMode","wgslender.toggleMinifyMode"]}}
 ;
 
 /// Creates a handler with an empty document store.
@@ -251,7 +259,14 @@ pub fn handleDidSave(self: *Handler, uri: []const u8) void {
 /// permissive behavior of `Config.parseJson` for project config files.
 ///
 /// Schema:
-///   { "inlayHints": { "enabled": bool }, "diagnostics": { "enabled": bool } }
+///   {
+///     "inlayHints":     { "enabled": bool },
+///     "diagnostics":    { "enabled": bool },
+///     "minifyMode":     "off" | "insights" | "strict",
+///     "minifyInsights": { "format": "delta"|"bytes"|"both",
+///                         "functionSize": bool, "declSize": bool, "totalSize": bool },
+///     "minifyLints":    { "enabled": bool }
+///   }
 pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
     const obj = switch (value) {
         .object => |o| o,
@@ -271,6 +286,87 @@ pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
         },
         else => {},
     };
+    if (obj.get("minifyMode")) |v| switch (v) {
+        .string => |s| if (MinifySettings.Mode.fromString(s)) |m| {
+            self.workspace_minify.mode = m;
+        },
+        else => {},
+    };
+    if (obj.get("minifyInsights")) |v| switch (v) {
+        .object => |o| {
+            if (o.get("format")) |f| switch (f) {
+                .string => |s| if (MinifySettings.InsightsFormat.fromString(s)) |fmt| {
+                    self.workspace_minify.format = fmt;
+                },
+                else => {},
+            };
+            if (o.get("functionSize")) |b| switch (b) {
+                .bool => |x| self.workspace_minify.function_size = x,
+                else => {},
+            };
+            if (o.get("declSize")) |b| switch (b) {
+                .bool => |x| self.workspace_minify.decl_size = x,
+                else => {},
+            };
+            if (o.get("totalSize")) |b| switch (b) {
+                .bool => |x| self.workspace_minify.total_size = x,
+                else => {},
+            };
+        },
+        else => {},
+    };
+    if (obj.get("minifyLints")) |v| switch (v) {
+        .object => |o| if (o.get("enabled")) |b| switch (b) {
+            .bool => |x| self.workspace_minify.lints_enabled = x,
+            else => {},
+        },
+        else => {},
+    };
+}
+
+/// Resolve the effective minifier-mode state by merging the project-config,
+/// workspace (client), and magic-comment layers in precedence order. The
+/// magic-comment layer is always empty here (per-document; picked up when
+/// the LSP feature paths query per-doc settings in Phase 2).
+pub fn effectiveMinify(self: *const Handler) MinifySettings.Effective {
+    return MinifySettings.resolve(self.project_minify, self.workspace_minify, .{});
+}
+
+// =========================================================================
+// workspace/executeCommand
+// =========================================================================
+
+pub const CommandError = error{
+    UnknownCommand,
+    InvalidParams,
+};
+
+/// Dispatch a `workspace/executeCommand` request. `args` matches the LSP
+/// `ExecuteCommandParams.arguments` shape: `null` when the client sent no
+/// arguments, otherwise a slice of `LSPAny` (= `std.json.Value`).
+pub fn executeCommand(self: *Handler, name: []const u8, args: ?[]const std.json.Value) CommandError!void {
+    if (std.mem.eql(u8, name, "wgslender.setMinifyMode")) {
+        const items = args orelse return error.InvalidParams;
+        if (items.len < 1) return error.InvalidParams;
+        const s = switch (items[0]) {
+            .string => |x| x,
+            else => return error.InvalidParams,
+        };
+        const m = MinifySettings.Mode.fromString(s) orelse return error.InvalidParams;
+        self.workspace_minify.mode = m;
+        return;
+    }
+    if (std.mem.eql(u8, name, "wgslender.toggleMinifyMode")) {
+        const current = self.effectiveMinify().mode;
+        const next: MinifySettings.Mode = switch (current) {
+            .off => .insights,
+            .insights => .strict,
+            .strict => .off,
+        };
+        self.workspace_minify.mode = next;
+        return;
+    }
+    return error.UnknownCommand;
 }
 
 /// Returns cached analysis result for a document, running analysis if needed.
