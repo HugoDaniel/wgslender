@@ -11,11 +11,21 @@ const SourceMap = @import("SourceMap.zig");
 const Printer = @This();
 
 pub const Options = struct {
+    /// Strip inter-token whitespace and indentation. Pretty-print when false.
     minify_whitespace: bool = false,
+    /// Emit renamed identifiers via `renamer`. Ignored when `renamer` is null.
     minify_identifiers: bool = false,
+    /// Apply syntactic simplifications (e.g. drop redundant parens).
     minify_syntax: bool = false,
+    /// Emit only declarations reachable from entry points. Upstream Dce must
+    /// have marked `Symbol.is_live` before this flag takes effect.
     tree_shaking: bool = false,
+    /// Custom renaming policy. When null, identifiers print their source name
+    /// regardless of `minify_identifiers`.
     renamer: ?*const Renamer = null,
+    /// Source-map emitter. When non-null, every token print appends a segment
+    /// to the generator's mappings. Only meaningful alongside `minify_whitespace`
+    /// — pretty-printed output drifts from source positions unpredictably.
     source_map_gen: ?*SourceMap.Generator = null,
 };
 

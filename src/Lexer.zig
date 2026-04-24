@@ -22,7 +22,10 @@ pos: u32,
 tokens: std.MultiArrayList(Token),
 
 pub const Token = struct {
+    /// Classification (keyword, literal, punctuation, trivia …). Dictates
+    /// whether `start`/`end` bound a meaningful lexeme or a skippable run.
     tag: Tag,
+    /// Byte offset into `source` where the token begins (inclusive).
     start: u32,
     /// One past the last source byte of the token (half-open). For trivia
     /// tokens this covers the whole trivia run (not per-character). For

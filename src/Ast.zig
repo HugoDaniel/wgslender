@@ -89,8 +89,14 @@ pub const SymbolIndex = enum(u32) {
 pub const Symbol = struct {
     /// The name as it appears in source. Never empty for valid symbols.
     original_name: []const u8,
+    /// Declaration category (var / const / fn / struct / …). Determines
+    /// which kinds of references can bind and how Dce treats the symbol.
     kind: Kind,
+    /// Packed flag bits (renamability, liveness, external binding …).
     flags: Flags,
+    /// For function and struct symbols: index of the scope they introduce
+    /// in the parent scope's `children`. Null for symbols that open no
+    /// nested scope. Used by `StableId` to stabilize paths across reparses.
     nested_scope_slot: ?u32 = null,
     /// Number of references found during the visit pass. Only symbols with
     /// `use_count > 0` are candidates for renaming.
@@ -181,8 +187,15 @@ pub const Scope = struct {
 // =========================================================================
 
 pub const Module = struct {
+    /// The WGSL source text this AST was parsed from. Sentinel-terminated
+    /// so downstream walkers can safely peek without bounds checks. Read
+    /// by every consumer that resolves byte offsets (Validator, Printer,
+    /// LSP hover, StableId).
     source: [:0]const u8,
+    /// Top-level `enable`/`requires`/`diagnostic` directives in source order.
     directives: std.ArrayListUnmanaged(Directive),
+    /// Top-level declarations (fn / var / const / override / struct / alias)
+    /// in source order. Printer and Dce iterate this list.
     declarations: std.ArrayListUnmanaged(Decl),
     /// Global symbol table. `SymbolIndex` values are indices into this list.
     symbols: std.ArrayListUnmanaged(Symbol),

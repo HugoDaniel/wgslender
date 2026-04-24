@@ -80,7 +80,11 @@ pub const Options = struct {
 
 /// Validation result.
 pub const Result = struct {
+    /// True iff no `.error`-severity diagnostic was emitted. Warnings alone
+    /// still report `valid = true` unless `Options.strict_mode` was set.
     valid: bool,
+    /// All diagnostics produced by this run, in emission (roughly source)
+    /// order. Lifetime is tied to the internal arena owned by this Result.
     diagnostics: *Diagnostic,
     _arena: ?std.heap.ArenaAllocator = null,
 
@@ -171,14 +175,27 @@ const Expectation = union(enum) {
 const AbstractHandling = enum { keep, concretize };
 
 pub const AnalysisResult = struct {
+    /// True iff validation surfaced no errors (same semantics as `Result.valid`).
     valid: bool,
+    /// All diagnostics produced during analysis. Lifetime = this result's arena.
     diagnostics: *Diagnostic,
     /// The parsed AST module. Null only when parsing failed entirely.
     module: ?*Ast.Module = null,
+    /// `SymbolIndex` → resolved type. Populated for every declared symbol
+    /// that survived inference. Used by LSP hover and go-to-definition.
     symbol_types: std.AutoHashMapUnmanaged(u32, Types.Type) = .{},
+    /// struct name → layout-resolved type. Keys are declaration-time names
+    /// (pre-rename). Cycles / unresolved nesting are stored as null-body types.
     struct_types: std.StringHashMapUnmanaged(*Types.Struct) = .{},
+    /// `alias X = T;` mapping. Null value means the alias target failed to
+    /// resolve; the key is still present so references don't spuriously
+    /// report "unknown identifier".
     alias_types: std.StringHashMapUnmanaged(?Types.Type) = .{},
+    /// `SymbolIndex` → folded integer value for const-evaluable expressions.
+    /// Used by `@workgroup_size` / array-length / `const_assert` validation.
     const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
+    /// Byte-offset of expression start → type + end-offset. Populated on the
+    /// fly during the checkExpr walk; read by LSP hover and inlay hints.
     expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
     _arena: ?std.heap.ArenaAllocator = null,
 

@@ -86,6 +86,8 @@ pub const Fix = struct {
 
 /// A single diagnostic message.
 pub const Entry = struct {
+    /// Severity bucket. Defaults to `.error` so a bare `Entry{}` never slips
+    /// through as informational — callers must opt into lower severities.
     severity: Severity = .@"error",
     /// Error code (e.g. "E0001", "type-mismatch").
     code: []const u8 = "",
