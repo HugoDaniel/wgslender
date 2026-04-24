@@ -52,6 +52,13 @@ pub const Position = struct {
     column: u32 = 0,
 };
 
+comptime {
+    // Pin Position layout — three u32s. LSP wire format and source-map
+    // VLQ encoding both assume this packing; a stray field widening
+    // would silently break either consumer.
+    std.debug.assert(@sizeOf(Position) == 12);
+}
+
 /// A range in source code.
 pub const Range = struct {
     start: Position = .{},
@@ -298,6 +305,9 @@ line_offset: i32 = 0,
 /// parse errors on invalid fragments without meaningfully bloating the
 /// common, clean-shader case.
 pub fn init(allocator: Allocator, source: []const u8) Allocator.Error!Diagnostic {
+    // Pre: byte offsets in Entry / Position are u32. A source larger than
+    // that ceiling would silently truncate every offset stamped from it.
+    std.debug.assert(source.len < std.math.maxInt(u32));
     var line_index = try LineIndex.init(allocator, source);
     errdefer line_index.deinit(allocator);
 
