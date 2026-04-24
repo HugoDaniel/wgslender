@@ -821,13 +821,13 @@ pub const DiagnosticFilter = struct {
     }
 
     /// Set the severity for a diagnostic rule.
-    pub fn setRule(self: *DiagnosticFilter, allocator: Allocator, rule: []const u8, severity: Severity) void {
-        self.rules.put(allocator, rule, severity) catch {};
+    pub fn setRule(self: *DiagnosticFilter, allocator: Allocator, rule: []const u8, severity: Severity) Allocator.Error!void {
+        try self.rules.put(allocator, rule, severity);
     }
 
     /// Disable a diagnostic rule.
-    pub fn disableRule(self: *DiagnosticFilter, allocator: Allocator, rule: []const u8) void {
-        self.rules.put(allocator, rule, .disabled) catch {};
+    pub fn disableRule(self: *DiagnosticFilter, allocator: Allocator, rule: []const u8) Allocator.Error!void {
+        try self.rules.put(allocator, rule, .disabled);
     }
 
     /// True if the rule has been disabled.
@@ -999,11 +999,11 @@ test "diagnostic: DiagnosticFilter" {
     try std.testing.expectEqual(Severity.@"error", filter.getSeverity("derivative_uniformity", .@"error"));
 
     // Set a rule
-    filter.setRule(allocator, "derivative_uniformity", .warning);
+    try filter.setRule(allocator, "derivative_uniformity", .warning);
     try std.testing.expectEqual(Severity.warning, filter.getSeverity("derivative_uniformity", .@"error"));
 
     // Disable a rule
-    filter.disableRule(allocator, "subgroup_uniformity");
+    try filter.disableRule(allocator, "subgroup_uniformity");
     try std.testing.expect(filter.isDisabled("subgroup_uniformity"));
     // Disabled rule returns default when queried (caller should check isDisabled)
     try std.testing.expectEqual(Severity.@"error", filter.getSeverity("subgroup_uniformity", .@"error"));
