@@ -47,13 +47,23 @@ test {
 // =========================================================================
 
 /// Minify WGSL source with default options.
-/// Call `result.deinit(gpa)` to free all memory.
+///
+/// - Complexity: linear in source length for parse + DCE; the rename pass
+///   is O(N log N) over the symbol table.
+/// - Thread-safe: yes — every call gets a private arena under `gpa`.
+/// - Memory: returns a result owning an internal ArenaAllocator;
+///   `result.deinit(gpa)` bulk-frees every intermediate allocation.
 pub fn minify(gpa: Allocator, source: [:0]const u8) !Minifier.Result {
     return minifyWithOptions(gpa, source, Minifier.defaultOptions());
 }
 
 /// Minify WGSL source with custom options.
-/// Call `result.deinit(gpa)` to free all memory.
+///
+/// - Complexity: same as `minify`; `options.sort_declarations` adds an
+///   O(N log N) sort over module-level decls.
+/// - Thread-safe: yes — private arena per call.
+/// - Memory: see `minify`. `options.keep_names` is borrowed for the
+///   duration of the call; the result does not retain it.
 pub fn minifyWithOptions(gpa: Allocator, source: [:0]const u8, options: Minifier.Options) !Minifier.Result {
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
@@ -63,8 +73,14 @@ pub fn minifyWithOptions(gpa: Allocator, source: [:0]const u8, options: Minifier
     return result;
 }
 
-/// Minify and reflect in a single pass.
-/// Call `result.deinit(gpa)` to free all memory.
+/// Minify and reflect in a single pass — shares one parse + analysis
+/// between the two outputs.
+///
+/// - Complexity: dominated by `minify`; reflection adds a linear scan
+///   over module declarations.
+/// - Thread-safe: yes — private arena per call.
+/// - Memory: single arena owns both the minified source and the
+///   reflection report; `result.deinit(gpa)` releases both.
 pub fn minifyAndReflect(gpa: Allocator, source: [:0]const u8, options: Minifier.Options) !Minifier.MinifyAndReflectResult {
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
@@ -79,7 +95,12 @@ pub fn minifyAndReflect(gpa: Allocator, source: [:0]const u8, options: Minifier.
 // =========================================================================
 
 /// Compile WGSL source to a .wasm binary that generates the shader at runtime.
-/// Call `result.deinit(gpa)` to free all memory.
+///
+/// - Complexity: linear in minified source length for the BPE compressor
+///   (single pass over the byte stream, capped at 64 rules).
+/// - Thread-safe: yes — private arena per call.
+/// - Memory: result owns the WASM binary slice + an internal arena;
+///   `result.deinit(gpa)` releases both.
 pub fn compile(gpa: Allocator, source: [:0]const u8, options: Compiler.CompileOptions) !Compiler.CompileResult {
     return Compiler.compile(gpa, source, options);
 }
@@ -89,13 +110,21 @@ pub fn compile(gpa: Allocator, source: [:0]const u8, options: Compiler.CompileOp
 // =========================================================================
 
 /// Validate WGSL source with default options.
-/// Call `result.deinit(gpa)` to free all memory.
+///
+/// - Complexity: linear in source length for parse; the type-check + uniformity
+///   pass is roughly linear in AST node count.
+/// - Thread-safe: yes — private arena per call.
+/// - Memory: result owns an internal arena; `result.deinit(gpa)` releases
+///   the diagnostics list and the parsed AST it indexes into.
 pub fn validate(gpa: Allocator, source: [:0]const u8) !Validator.Result {
     return validateWithOptions(gpa, source, .{});
 }
 
 /// Validate WGSL source with custom options.
-/// Call `result.deinit(gpa)` to free all memory.
+///
+/// - Complexity: same as `validate`.
+/// - Thread-safe: yes — private arena per call.
+/// - Memory: see `validate`.
 pub fn validateWithOptions(gpa: Allocator, source: [:0]const u8, options: Validator.Options) !Validator.Result {
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
@@ -141,13 +170,22 @@ pub fn validateWithOptions(gpa: Allocator, source: [:0]const u8, options: Valida
 
 /// Analyze WGSL source with default options, retaining semantic state.
 /// Returns resolved types, struct layouts, and the full AST module.
-/// Call `result.deinit(gpa)` to free all memory.
+///
+/// - Complexity: same as `validate` plus retention of the typed-symbol
+///   tables — no extra pass.
+/// - Thread-safe: yes — private arena per call.
+/// - Memory: result holds the AST module + symbol/type tables alive in
+///   the arena. The LSP layers retain analysis between requests; call
+///   `result.deinit(gpa)` exactly once when the document closes.
 pub fn analyze(gpa: Allocator, source: [:0]const u8) !Validator.AnalysisResult {
     return analyzeWithOptions(gpa, source, .{});
 }
 
 /// Analyze WGSL source with custom options, retaining semantic state.
-/// Call `result.deinit(gpa)` to free all memory.
+///
+/// - Complexity: same as `analyze`.
+/// - Thread-safe: yes — private arena per call.
+/// - Memory: see `analyze`.
 pub fn analyzeWithOptions(gpa: Allocator, source: [:0]const u8, options: Validator.Options) !Validator.AnalysisResult {
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
@@ -198,7 +236,13 @@ pub fn analyzeWithOptions(gpa: Allocator, source: [:0]const u8, options: Validat
 /// Lint WGSL source. Runs the analyzer, then every enabled lint rule
 /// against the resolved module. Returns the lint diagnostics separately
 /// from any validation errors surfaced on `result.analysis.diagnostics`.
-/// Call `result.deinit(gpa)` to free all memory.
+///
+/// - Complexity: `analyze` cost plus one read-only walk per enabled rule.
+///   Most rules are O(N) over the AST; complexity-bounded rules walk
+///   each function body once.
+/// - Thread-safe: yes — private arenas per call (one for analysis, one
+///   for lint diagnostics + fixes).
+/// - Memory: result owns two arenas; `result.deinit(gpa)` releases both.
 pub fn lint(gpa: Allocator, source: [:0]const u8, options: Linter.Options) !LintResult {
     var analysis = try analyzeWithOptions(gpa, source, .{
         .line_offset = options.line_offset,
@@ -227,7 +271,12 @@ pub const LintResult = struct {
 // =========================================================================
 
 /// Reflect WGSL source (extract bindings, layouts, entry points).
-/// Call `result.deinit(gpa)` to free all memory.
+///
+/// - Complexity: parse cost + a single linear scan over module decls
+///   that compute layouts and group entries.
+/// - Thread-safe: yes — private arena per call.
+/// - Memory: result owns the reflection report + an internal arena;
+///   `result.deinit(gpa)` releases both.
 pub fn reflect(gpa: Allocator, source: [:0]const u8) !Reflect.ReflectResult {
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
