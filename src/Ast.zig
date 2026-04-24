@@ -4,6 +4,36 @@
 //! flat MultiArrayList approach from the Zig compiler. This keeps the port
 //! close to the Go original for correctness verification against snapshots.
 //! A future optimization pass can flatten to MultiArrayList.
+//!
+//! Shape:
+//!
+//!   Module
+//!   ├── source       : [:0]const u8     // borrowed; lifetime owned by caller
+//!   ├── symbols      : []Symbol         // append-only; SymbolIndex is u32 offset
+//!   ├── scope        : *Scope           // module-root scope; child per fn / block
+//!   ├── directives   : []Directive      // enable / requires / diagnostic
+//!   └── declarations : []Decl
+//!         ├── Struct / Alias / Override / Const / Var / Let / Function
+//!         └── (function bodies own statements which own expressions)
+//!
+//!   Stmt = compound | if | switch | for | while | loop | return | break | …
+//!   Expr = literal | ident | unary | binary | call | index | member | paren
+//!
+//!   Symbols & scopes run in parallel:
+//!     - Module.symbols is a flat append-only array; SymbolIndex(u32)
+//!       is its offset, with `none` = maxInt(u32) as the sentinel.
+//!     - Module.scope is a tree of binding maps (`scope.parent` walks
+//!       outward); each scope holds the symbol indices declared in it.
+//!
+//! Invariants:
+//!   - Every Symbol has a non-empty `original_name` unless `kind == .unbound`.
+//!     Asserted at the end of `Parser.parse`.
+//!   - SymbolIndex values are always < symbols.len OR equal to `none`.
+//!     `.isValid()` returns true exactly when the index is in-bounds.
+//!   - The module-root scope has `parent == null`. Every other scope has
+//!     a non-null parent forming an acyclic tree.
+//!   - `Module.source` is sentinel-terminated and the AST's `loc` and
+//!     `span` fields index into it directly.
 
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
