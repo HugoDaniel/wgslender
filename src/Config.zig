@@ -6,6 +6,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Minifier = @import("Minifier.zig");
+const MinifySettings = @import("MinifySettings.zig");
 
 const Config = @This();
 
@@ -20,6 +21,11 @@ sort_declarations: ?bool = null,
 scope_local_rename: ?bool = null,
 source_map: ?bool = null,
 source_map_sources: ?bool = null,
+/// LSP-only minifier-mode settings. Project-config layer of the resolver
+/// in `MinifySettings.resolve`. Keys live under a nested `"lsp"` object
+/// so they don't collide with the flat `minifyWhitespace` / etc. fields
+/// that drive the CLI minifier.
+lsp_minify: MinifySettings.Partial = .{},
 
 pub const config_file_names = [_][]const u8{
     "wgslender.json",
@@ -87,7 +93,41 @@ pub fn parseJson(allocator: Allocator, content: []const u8) !Config {
         if (v == .bool) config.source_map_sources = v.bool;
     }
 
+    if (root.object.get("lsp")) |lsp| {
+        if (lsp == .object) parseLspSection(&config.lsp_minify, lsp.object);
+    }
+
     return config;
+}
+
+fn parseLspSection(out: *MinifySettings.Partial, lsp: std.json.ObjectMap) void {
+    if (lsp.get("minifyMode")) |v| {
+        if (v == .string) out.mode = MinifySettings.Mode.fromString(v.string);
+    }
+    if (lsp.get("minifyInsights")) |v| {
+        if (v == .object) {
+            const ins = v.object;
+            if (ins.get("format")) |f| {
+                if (f == .string) out.format = MinifySettings.InsightsFormat.fromString(f.string);
+            }
+            if (ins.get("functionSize")) |b| {
+                if (b == .bool) out.function_size = b.bool;
+            }
+            if (ins.get("declSize")) |b| {
+                if (b == .bool) out.decl_size = b.bool;
+            }
+            if (ins.get("totalSize")) |b| {
+                if (b == .bool) out.total_size = b.bool;
+            }
+        }
+    }
+    if (lsp.get("minifyLints")) |v| {
+        if (v == .object) {
+            if (v.object.get("enabled")) |b| {
+                if (b == .bool) out.lints_enabled = b.bool;
+            }
+        }
+    }
 }
 
 /// Search for a config file starting from `start_dir`, walking up to parent directories.

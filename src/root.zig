@@ -34,6 +34,7 @@ pub const Cst = @import("Cst.zig");
 pub const CstLower = @import("CstLower.zig");
 pub const Incremental = @import("Incremental.zig");
 pub const Linter = @import("lint/Linter.zig");
+pub const MinifySettings = @import("MinifySettings.zig");
 
 test {
     // Force test discovery for modules that have no call-site references

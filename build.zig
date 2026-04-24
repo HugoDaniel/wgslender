@@ -338,6 +338,9 @@ pub fn build(b: *std.Build) void {
     // `workspace/configuration` + `workspace/didChangeConfiguration`
     // settings merge semantics and inlay-hint gating.
     _ = addTestStep(b, test_step, "tests/lsp_configuration_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // Minify-mode settings resolver (precedence merge of magic comment,
+    // workspace, and project-config layers).
+    _ = addTestStep(b, test_step, "tests/minify_settings_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/formatting_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/semantic_tokens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/selection_range_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
