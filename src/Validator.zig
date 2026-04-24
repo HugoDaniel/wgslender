@@ -299,7 +299,7 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     try v.resolveStructLayouts();
 
     // Phase 2.5: Detect recursive struct definitions
-    v.checkRecursiveStructs();
+    try v.checkRecursiveStructs();
 
     // Phase 3: Validate declarations
     try v.validateDeclarations();
@@ -318,7 +318,7 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     v.checkSuspiciousBindingPatterns();
 
     // Phase 5: Uniformity analysis
-    v.analyzeUniformity();
+    try v.analyzeUniformity();
 
     // Phase 6: Scope-tree shadow detection (W0100)
     v.detectShadowing();
@@ -372,14 +372,14 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
     v.checkReservedIdentifiers();
     try v.collectTypeDeclarations();
     try v.resolveStructLayouts();
-    v.checkRecursiveStructs();
+    try v.checkRecursiveStructs();
     try v.validateDeclarations();
     try v.registerFunctionSignatures();
     try v.checkRecursiveFunctions();
     try v.validateFunctions();
     try v.validatePerEntryPointBindings();
     v.checkSuspiciousBindingPatterns();
-    v.analyzeUniformity();
+    try v.analyzeUniformity();
     v.detectShadowing();
     v.checkOperatorPrecedence();
     diags.deduplicate();
@@ -513,7 +513,7 @@ fn collectTypeDeclarations(v: *Validator) Allocator.Error!void {
                 const name = v.symbolName(d.name);
                 if (name.len == 0) continue;
                 // Create struct type placeholder
-                const st = v.arena.create(Types.Struct) catch continue;
+                const st = try v.arena.create(Types.Struct);
                 st.* = .{
                     .name = name,
                     .fields = &.{},
@@ -660,10 +660,10 @@ fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!voi
 // Phase 2.5: Detect Recursive Struct Definitions
 // =========================================================================
 
-fn checkRecursiveStructs(v: *Validator) void {
+fn checkRecursiveStructs(v: *Validator) Allocator.Error!void {
     var iter = v.struct_types.iterator();
     while (iter.next()) |entry| {
-        if (v.structContainsCycle(entry.key_ptr.*, entry.value_ptr.*)) {
+        if (try v.structContainsCycle(entry.key_ptr.*, entry.value_ptr.*)) {
             v.addErrorWithCodeR(v.findStructRange(entry.key_ptr.*), Diagnostic.Code.recursive_type, v.fmtError("struct '{s}' contains itself recursively", .{entry.key_ptr.*}));
         }
     }
@@ -671,10 +671,10 @@ fn checkRecursiveStructs(v: *Validator) void {
 
 /// Iterative cycle detection using a worklist. Returns true if `root_name`
 /// is reachable from any nested struct field of `start`.
-fn structContainsCycle(v: *Validator, root_name: []const u8, start: *Types.Struct) bool {
+fn structContainsCycle(v: *Validator, root_name: []const u8, start: *Types.Struct) Allocator.Error!bool {
     var visited: std.StringHashMapUnmanaged(void) = .{};
     var worklist: std.ArrayListUnmanaged(*Types.Struct) = .empty;
-    worklist.append(v.arena, start) catch return false;
+    try worklist.append(v.arena, start);
 
     // Bounded iteration — struct count is finite and small.
     const max_iterations = v.struct_types.count() + 1;
@@ -684,8 +684,8 @@ fn structContainsCycle(v: *Validator, root_name: []const u8, start: *Types.Struc
             const nested = extractNestedStruct(field.typ) orelse continue;
             if (std.mem.eql(u8, nested.name, root_name)) return true;
             if (visited.get(nested.name) != null) continue;
-            visited.put(v.arena, nested.name, {}) catch continue;
-            worklist.append(v.arena, nested) catch continue;
+            try visited.put(v.arena, nested.name, {});
+            try worklist.append(v.arena, nested);
         }
     }
     return false;
@@ -805,7 +805,7 @@ fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u
             v.addErrorWithCodeR(v.symbolRange(sym_idx), Diagnostic.Code.recursive_function, v.fmtError("function '{s}' is recursive", .{v.symbolName(sym_idx)}));
         } else if (callee_color == 0) {
             // White → push new frame
-            color.put(v.arena, callee, 1) catch continue; // gray
+            try color.put(v.arena, callee, 1); // gray
             try stack.append(v.arena, .{ .fn_idx = callee, .callee_idx = 0 });
         }
         // black (2) = already fully processed, skip
@@ -1753,7 +1753,7 @@ fn validateEntryPointInputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator
                         if (input_builtins.get(bn)) |_| {
                             v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate @builtin({s}) in entry point input", .{bn}));
                         } else {
-                            input_builtins.put(v.arena, bn, v.symbolLoc(member.name)) catch {};
+                            try input_builtins.put(v.arena, bn, v.symbolLoc(member.name));
                         }
                     }
                     // @builtin stage/direction + required type.
@@ -1850,7 +1850,7 @@ fn validateEntryPointOutputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocato
                         if (output_builtins.get(bn)) |_| {
                             v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate @builtin({s}) in entry point output", .{bn}));
                         } else {
-                            output_builtins.put(v.arena, bn, v.symbolLoc(member.name)) catch {};
+                            try output_builtins.put(v.arena, bn, v.symbolLoc(member.name));
                         }
                     }
                     // @builtin stage/direction + required type on output members.
@@ -2965,10 +2965,10 @@ fn checkExprE(v: *Validator, expr: Ast.Expr, exp: Expectation) Allocator.Error!I
             .paren => null,
         };
         if (key) |k| {
-            v.expr_types.put(v.arena, k, .{
+            try v.expr_types.put(v.arena, k, .{
                 .typ = typ,
                 .end_offset = exprSpan(expr).end,
-            }) catch {};
+            });
         }
     }
     return result;
@@ -4896,14 +4896,14 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!InferResult {
 // Phase 5: Uniformity Analysis
 // =========================================================================
 
-fn analyzeUniformity(v: *Validator) void {
+fn analyzeUniformity(v: *Validator) Allocator.Error!void {
     var ua = UniformityAnalyzer{
         .module = v.module,
         .diags = v.diags,
         .arena = v.arena,
         .filters = if (v.options.diagnostic_filters) |f| f else null,
     };
-    ua.analyze();
+    try ua.analyze();
 }
 
 /// Uniformity analysis detects non-uniform control flow violations.
@@ -4936,16 +4936,16 @@ const UniformityAnalyzer = struct {
         builtin_name: []const u8,
     };
 
-    fn analyze(ua: *UniformityAnalyzer) void {
+    fn analyze(ua: *UniformityAnalyzer) Allocator.Error!void {
         for (ua.module.declarations.items) |decl| {
             switch (decl) {
-                .function => |fn_decl| ua.analyzeFunction(fn_decl),
+                .function => |fn_decl| try ua.analyzeFunction(fn_decl),
                 else => {},
             }
         }
     }
 
-    fn analyzeFunction(ua: *UniformityAnalyzer, fn_decl: *Ast.FunctionDecl) void {
+    fn analyzeFunction(ua: *UniformityAnalyzer, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
         ua.current_func = fn_decl;
         ua.state = .uniform;
         ua.non_uniform_sources = .empty;
@@ -4963,7 +4963,7 @@ const UniformityAnalyzer = struct {
         }
 
         // Parameters may introduce non-uniformity
-        ua.analyzeParameters(fn_decl.parameters.items);
+        try ua.analyzeParameters(fn_decl.parameters.items);
 
         // Analyze function body
         if (fn_decl.body) |body| {
@@ -4973,18 +4973,18 @@ const UniformityAnalyzer = struct {
         ua.current_func = null;
     }
 
-    fn analyzeParameters(ua: *UniformityAnalyzer, params: []const Ast.Parameter) void {
+    fn analyzeParameters(ua: *UniformityAnalyzer, params: []const Ast.Parameter) Allocator.Error!void {
         for (params) |param| {
             for (param.attributes.items) |attr| {
                 if (std.mem.eql(u8, attr.name, "builtin") and attr.args.items.len > 0) {
                     switch (attr.args.items[0]) {
                         .ident => |ident| {
                             if (isNonUniformBuiltin(ident.name)) {
-                                ua.non_uniform_sources.append(ua.arena, .{
+                                try ua.non_uniform_sources.append(ua.arena, .{
                                     .loc = ident.loc,
                                     .reason = "builtin input is non-uniform",
                                     .builtin_name = ident.name,
-                                }) catch {};
+                                });
                             }
                         },
                         else => {},
