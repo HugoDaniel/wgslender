@@ -411,9 +411,6 @@ fn runValidate(
     line_offset: i32,
     input_path: ?[]const u8,
 ) !void {
-    const File = std.Io.File;
-    const Diagnostic = wgslender.Diagnostic;
-
     var result = try wgslender.validateWithOptions(arena, source, .{
         .strict_mode = strict,
         .line_offset = line_offset,
@@ -425,55 +422,72 @@ fn runValidate(
         result.valid;
 
     switch (format) {
-        .json => {
-            var json_buf: std.ArrayListUnmanaged(u8) = .empty;
-            try json_buf.appendSlice(arena, "{\"valid\":");
-            try json_buf.appendSlice(arena, if (is_valid) "true" else "false");
-            try json_buf.appendSlice(arena, ",\"diagnostics\":[");
-            for (result.diagnostics.diagnostics.items, 0..) |*entry, i| {
-                if (i > 0) try json_buf.append(arena, ',');
-                try Diagnostic.entryToJson(&json_buf, arena, entry);
-            }
-            try json_buf.appendSlice(arena, "],\"errorCount\":");
-            try Diagnostic.appendInt(&json_buf, arena, result.diagnostics.errorCount());
-            try json_buf.appendSlice(arena, ",\"warningCount\":");
-            try Diagnostic.appendInt(&json_buf, arena, result.diagnostics.warningCount());
-            try json_buf.appendSlice(arena, "}\n");
-            try File.stdout().writeStreamingAll(io, json_buf.items);
-        },
-        .stylish, .text => {
-            const file_prefix = input_path orelse "<stdin>";
-            for (result.diagnostics.diagnostics.items) |entry| {
-                var tmp: [20]u8 = undefined;
-                try File.stderr().writeStreamingAll(io, file_prefix);
-                try File.stderr().writeStreamingAll(io, ":");
-                const line_s = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.line}) catch "";
-                try File.stderr().writeStreamingAll(io, line_s);
-                try File.stderr().writeStreamingAll(io, ":");
-                const col_s = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.column}) catch "";
-                try File.stderr().writeStreamingAll(io, col_s);
-                try File.stderr().writeStreamingAll(io, ": ");
-                try File.stderr().writeStreamingAll(io, entry.severity.string());
-                try File.stderr().writeStreamingAll(io, ": ");
-                try File.stderr().writeStreamingAll(io, entry.message);
-                if (entry.code.len > 0) {
-                    try File.stderr().writeStreamingAll(io, " [");
-                    try File.stderr().writeStreamingAll(io, entry.code);
-                    try File.stderr().writeStreamingAll(io, "]");
-                }
-                try File.stderr().writeStreamingAll(io, "\n");
-            }
-
-            if (is_valid) {
-                try File.stdout().writeStreamingAll(io, "valid\n");
-            } else {
-                try File.stdout().writeStreamingAll(io, "invalid\n");
-            }
-        },
+        .json => try emitValidateJson(arena, io, &result, is_valid),
+        .stylish, .text => try emitValidateText(io, &result, is_valid, input_path),
     }
 
     if (!is_valid) {
         std.process.exit(1);
+    }
+}
+
+fn emitValidateJson(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    result: *const wgslender.Validator.Result,
+    is_valid: bool,
+) !void {
+    const File = std.Io.File;
+    const Diagnostic = wgslender.Diagnostic;
+    var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+    try json_buf.appendSlice(arena, "{\"valid\":");
+    try json_buf.appendSlice(arena, if (is_valid) "true" else "false");
+    try json_buf.appendSlice(arena, ",\"diagnostics\":[");
+    for (result.diagnostics.diagnostics.items, 0..) |*entry, i| {
+        if (i > 0) try json_buf.append(arena, ',');
+        try Diagnostic.entryToJson(&json_buf, arena, entry);
+    }
+    try json_buf.appendSlice(arena, "],\"errorCount\":");
+    try Diagnostic.appendInt(&json_buf, arena, result.diagnostics.errorCount());
+    try json_buf.appendSlice(arena, ",\"warningCount\":");
+    try Diagnostic.appendInt(&json_buf, arena, result.diagnostics.warningCount());
+    try json_buf.appendSlice(arena, "}\n");
+    try File.stdout().writeStreamingAll(io, json_buf.items);
+}
+
+fn emitValidateText(
+    io: std.Io,
+    result: *const wgslender.Validator.Result,
+    is_valid: bool,
+    input_path: ?[]const u8,
+) !void {
+    const File = std.Io.File;
+    const file_prefix = input_path orelse "<stdin>";
+    for (result.diagnostics.diagnostics.items) |entry| {
+        var tmp: [20]u8 = undefined;
+        try File.stderr().writeStreamingAll(io, file_prefix);
+        try File.stderr().writeStreamingAll(io, ":");
+        const line_s = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.line}) catch "";
+        try File.stderr().writeStreamingAll(io, line_s);
+        try File.stderr().writeStreamingAll(io, ":");
+        const col_s = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.column}) catch "";
+        try File.stderr().writeStreamingAll(io, col_s);
+        try File.stderr().writeStreamingAll(io, ": ");
+        try File.stderr().writeStreamingAll(io, entry.severity.string());
+        try File.stderr().writeStreamingAll(io, ": ");
+        try File.stderr().writeStreamingAll(io, entry.message);
+        if (entry.code.len > 0) {
+            try File.stderr().writeStreamingAll(io, " [");
+            try File.stderr().writeStreamingAll(io, entry.code);
+            try File.stderr().writeStreamingAll(io, "]");
+        }
+        try File.stderr().writeStreamingAll(io, "\n");
+    }
+
+    if (is_valid) {
+        try File.stdout().writeStreamingAll(io, "valid\n");
+    } else {
+        try File.stdout().writeStreamingAll(io, "invalid\n");
     }
 }
 
