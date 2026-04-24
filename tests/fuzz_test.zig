@@ -28,6 +28,9 @@ test "fuzz: parser no crash" {
     });
 }
 
+/// Property: Parser.parse never crashes on arbitrary byte sequences,
+/// even when the lexer produces nonsense token streams. Errors must
+/// surface through Parser.errors, never through panic / unreachable.
 fn testParserNoCrash(_: void, smith: *std.testing.Smith) !void {
     @disableInstrumentation();
     var buf: [512]u8 = undefined;
@@ -61,6 +64,9 @@ test "fuzz: minify no crash" {
     });
 }
 
+/// Property: full minify pipeline (parse → DCE → rename → print) is
+/// crash-safe on arbitrary input. Result.errors signals invalid input;
+/// no panic / OOB / use-after-free.
 fn testMinifyNoCrash(_: void, smith: *std.testing.Smith) !void {
     @disableInstrumentation();
     var buf: [1024]u8 = undefined;
@@ -88,6 +94,9 @@ test "fuzz: validate no crash" {
     });
 }
 
+/// Property: Validator.validate is crash-safe on arbitrary parsed
+/// input. Diagnostics list captures every spec violation; nothing
+/// escapes as a panic.
 fn testValidateNoCrash(_: void, smith: *std.testing.Smith) !void {
     @disableInstrumentation();
     var buf: [512]u8 = undefined;
@@ -114,6 +123,9 @@ test "fuzz: minify idempotence" {
     });
 }
 
+/// Property: minify(minify(x)) == minify(x) when minify_identifiers
+/// is off. Identifier renaming is frequency-based and so not idempotent
+/// — we deliberately exclude it from this check.
 fn testMinifyIdempotence(_: void, smith: *std.testing.Smith) !void {
     @disableInstrumentation();
     var buf: [512]u8 = undefined;
@@ -166,6 +178,9 @@ test "fuzz: reflect no crash" {
     });
 }
 
+/// Property: Reflect.reflect is crash-safe on arbitrary input. The
+/// returned ReflectResult may be empty for invalid shaders, but the
+/// pipeline never panics.
 fn testReflectNoCrash(_: void, smith: *std.testing.Smith) !void {
     @disableInstrumentation();
     var buf: [512]u8 = undefined;
@@ -191,6 +206,10 @@ test "fuzz: compile no crash" {
     });
 }
 
+/// Property: WGSL→WASM Compiler.compile is crash-safe on arbitrary
+/// input. Even when Parser produces zero declarations, the WASM
+/// assembler still emits a valid magic header (asserted at the API
+/// boundary). Errors propagate; nothing panics.
 fn testCompileNoCrash(_: void, smith: *std.testing.Smith) !void {
     @disableInstrumentation();
     var buf: [512]u8 = undefined;
