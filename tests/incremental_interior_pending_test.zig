@@ -310,7 +310,7 @@ test "IP-read-02: StableId.locateType returns current coords after an edit" {
     var cur = try stepEdit(gpa, &base, .{
         .start = @intCast(close_f),
         .end = @intCast(close_f),
-        .new_text = " let scratch = 1;",
+        .new_text = " let tmp = 1;",
     });
     defer cur.deinit();
 
