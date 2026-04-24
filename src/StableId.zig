@@ -206,7 +206,7 @@ pub fn locateStableId(
 /// parameter (those are not standalone declarations — use
 /// `locateStableId` for their name range).
 pub fn locateDeclaration(
-    module: *const Ast.Module,
+    module: *Ast.Module,
     id_bytes: []const u8,
 ) ?Range {
     const sym = symbolForStableId(module, id_bytes);

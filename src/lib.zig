@@ -656,7 +656,7 @@ fn locateRangeImplC(
     source_len: u32,
     id_ptr: [*]const u8,
     id_len: u32,
-    locator: *const fn (*const wgslender.Ast.Module, []const u8) ?StableIdMod.Range,
+    locator: *const fn (*wgslender.Ast.Module, []const u8) ?StableIdMod.Range,
 ) WgslenderJsonResult {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
