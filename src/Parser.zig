@@ -38,6 +38,14 @@ scopes_in_order: std.ArrayListUnmanaged(*Ast.Scope),
 errors: std.ArrayListUnmanaged(ParseError),
 expr_context: []const u8 = "",
 
+/// Sticky OOM flag. Set by the `markOom` helper when an arena allocation
+/// inside a void-returning helper (CST builder close, error-list append,
+/// duplicate-declaration message) hits `error.OutOfMemory`. Checked at
+/// `parse()` return and translated to `error.OutOfMemory`, so the caller
+/// sees OOM exactly once. After OOM, the AST, error list, and CST state
+/// are all potentially incomplete — callers must not inspect them.
+oom: bool = false,
+
 /// Recursive descent depth counters. Each `parseExpression` /
 /// `parseStatement` / `parseType` entry bumps the matching counter and
 /// emits a `nesting_too_deep` diagnostic if it would exceed the limit
@@ -285,7 +293,16 @@ pub fn parse(self: *Parser) !*Ast.Module {
     std.debug.assert(self.stmt_depth == 0);
     std.debug.assert(self.type_depth == 0);
 
+    // Surface any OOM seen by void-returning helpers (see `self.oom`).
+    if (self.oom) return error.OutOfMemory;
+
     return module;
+}
+
+/// Called by helpers that can't propagate `error.OutOfMemory` through
+/// their signature. Sets the sticky flag consumed at `parse()` return.
+fn markOom(self: *Parser) void {
+    self.oom = true;
 }
 
 // =========================================================================
@@ -347,7 +364,7 @@ fn cstOpen(self: *Parser) ?Cst.Marker {
 
 fn cstClose(self: *Parser, maybe_marker: ?Cst.Marker, kind: Cst.Kind) void {
     if (self.cst) |builder| {
-        if (maybe_marker) |m| builder.close(m, kind) catch {};
+        if (maybe_marker) |m| builder.close(m, kind) catch self.markOom();
     }
 }
 
@@ -564,7 +581,7 @@ fn prevTokenEnd(self: *const Parser) u32 {
 fn addError(self: *Parser, message: []const u8) void {
     const start = self.currentStart();
     const text = self.currentText();
-    self.errors.append(self.arena, .{ .message = message, .pos = start, .end = start +| @as(u32, @intCast(text.len)) }) catch {};
+    self.errors.append(self.arena, .{ .message = message, .pos = start, .end = start +| @as(u32, @intCast(text.len)) }) catch self.markOom();
 }
 
 fn addErrorWithCode(self: *Parser, message: []const u8, code: []const u8) void {
@@ -575,7 +592,7 @@ fn addErrorWithCode(self: *Parser, message: []const u8, code: []const u8) void {
         .pos = start,
         .end = start +| @as(u32, @intCast(text.len)),
         .code = code,
-    }) catch {};
+    }) catch self.markOom();
 }
 
 fn isIdentLike(self: *const Parser) bool {
@@ -597,7 +614,7 @@ fn eatIdent(self: *Parser) ?[]const u8 {
             std.fmt.allocPrint(self.arena, "identifier '{s}' must not start with '__'", .{text}) catch "identifier must not start with '__'"
         else
             std.fmt.allocPrint(self.arena, "'{s}' is a reserved word and cannot be used as an identifier", .{text}) catch "use of reserved word";
-        self.errors.append(self.arena, .{ .message = msg, .pos = self.currentStart(), .code = "E0004" }) catch {};
+        self.errors.append(self.arena, .{ .message = msg, .pos = self.currentStart(), .code = "E0004" }) catch self.markOom();
         return text;
     }
     if (self.currentTag() == .ident) {
@@ -614,7 +631,7 @@ fn declareSymbol(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, flags: 
     // Check for duplicate declaration in the same scope
     if (self.scope.members.get(name) != null) {
         const msg = std.fmt.allocPrint(self.arena, "redeclaration of '{s}'", .{name}) catch "redeclaration of identifier";
-        self.errors.append(self.arena, .{ .message = msg, .pos = loc, .code = "E0101" }) catch {};
+        self.errors.append(self.arena, .{ .message = msg, .pos = loc, .code = "E0101" }) catch self.markOom();
     }
     std.debug.assert(self.symbols.items.len < std.math.maxInt(u32));
     const idx: u32 = @intCast(self.symbols.items.len);
@@ -865,7 +882,7 @@ fn parseAttributes(self: *Parser) !std.ArrayListUnmanaged(Ast.Attribute) {
             for (attrs.items) |existing| {
                 if (std.mem.eql(u8, existing.name, attr.name)) {
                     const msg = std.fmt.allocPrint(self.arena, "duplicate attribute '@{s}'", .{attr.name}) catch "duplicate attribute";
-                    self.errors.append(self.arena, .{ .message = msg, .pos = attr_loc, .code = "E0401" }) catch {};
+                    self.errors.append(self.arena, .{ .message = msg, .pos = attr_loc, .code = "E0401" }) catch self.markOom();
                     break;
                 }
             }
@@ -1312,7 +1329,7 @@ fn parseAddressSpace(self: *Parser) Ast.AddressSpace {
         if (Suggest.suggestName(text, &Suggest.address_spaces, 3)) |s| {
             const end = pos +| @as(u32, @intCast(text.len));
             const msg = std.fmt.allocPrint(self.arena, "unknown address space '{s}'; did you mean '{s}'?", .{ text, s }) catch "unknown address space";
-            self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0304" }) catch {};
+            self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0304" }) catch self.markOom();
         }
         return .none;
     }
@@ -1333,7 +1350,7 @@ fn parseAccessMode(self: *Parser) Ast.AccessMode {
         if (Suggest.suggestName(text, &Suggest.access_modes, 3)) |s| {
             const end = pos +| @as(u32, @intCast(text.len));
             const msg = std.fmt.allocPrint(self.arena, "unknown access mode '{s}'; did you mean '{s}'?", .{ text, s }) catch "unknown access mode";
-            self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0305" }) catch {};
+            self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0305" }) catch self.markOom();
         }
         return .none;
     }
@@ -2597,6 +2614,8 @@ fn expectParseErrorMessage(input: [:0]const u8, expected_msg: []const u8) !void 
 
     const tokens = try Lexer.tokenize(alloc, input);
     var parser = try Parser.init(alloc, input, tokens);
+    // Test helper: we only care about the populated `errors` list; swallow
+    // parse failures (including OOM on the sticky flag path) to inspect state.
     _ = parser.parse() catch {};
     if (parser.errors.items.len == 0) return error.TestExpectedError;
 
