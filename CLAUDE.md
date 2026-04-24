@@ -202,6 +202,11 @@ await initialize({ wasmURL: '/wgslender.wasm' });
 - `SymbolIndex` uses `enum(u32)` with `none = maxInt(u32)`
 - All AST nodes use tagged unions
 - Arena allocator for all intermediate data — single `deinit` frees everything
+- **Reserve `usize` for slice indexing and platform-word-sized math.** Use
+  `u32` for shader-bounded counts and offsets (token indices, symbol
+  indices, byte offsets in source / WASM) — they fit by construction and
+  match `Diagnostic.Position`'s wire format. Use `u8` for vec width / mat
+  cols/rows (already enforced by `Types.zig`).
 
 ## Gotchas
 
