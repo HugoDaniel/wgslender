@@ -47,6 +47,16 @@ pub const ExportKind = enum(u8) {
     global = 0x03,
 };
 
+comptime {
+    // The WASM binary format encodes a section header as a single byte
+    // followed by a ULEB128 length. Pin the underlying integer width so
+    // a stray promotion to u16 doesn't silently double the section
+    // header in every emitted module.
+    std.debug.assert(@sizeOf(SectionId) == 1);
+    std.debug.assert(@sizeOf(ExportKind) == 1);
+    std.debug.assert(@sizeOf(ValType) == 1);
+}
+
 // =========================================================================
 // LEB128 encoding
 // =========================================================================
