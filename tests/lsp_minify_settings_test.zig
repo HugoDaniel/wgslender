@@ -238,3 +238,106 @@ test "executeCommand: wgslender.toggleMinifyMode cycles off → insights → str
     try h.executeCommand("wgslender.toggleMinifyMode", args.value.array.items);
     try std.testing.expectEqual(MinifySettings.Mode.off, h.effectiveMinify().mode);
 }
+
+// =========================================================================
+// Phase 2 — magic-comment layer via effectiveMinifyFor(uri)
+// =========================================================================
+
+test "effectiveMinifyFor: magic comment overrides workspace minify.mode" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson("{\"minifyMode\":\"insights\"}");
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try h.openDocument("file:///a.wgsl", "// wgslender-minify-strict\nfn main() {}\n", 1);
+
+    const eff = h.effectiveMinifyFor("file:///a.wgsl");
+    try std.testing.expectEqual(MinifySettings.Mode.strict, eff.mode);
+    try std.testing.expect(eff.lintsActive());
+}
+
+test "effectiveMinifyFor: didChange updates magic layer" {
+    const h = try setup();
+    defer teardown(h);
+
+    try h.openDocument("file:///a.wgsl", "// wgslender-minify-insights\nfn main() {}\n", 1);
+    try std.testing.expectEqual(
+        MinifySettings.Mode.insights,
+        h.effectiveMinifyFor("file:///a.wgsl").mode,
+    );
+
+    try h.changeDocument("file:///a.wgsl", "// wgslender-minify-strict\nfn main() {}\n");
+    try std.testing.expectEqual(
+        MinifySettings.Mode.strict,
+        h.effectiveMinifyFor("file:///a.wgsl").mode,
+    );
+}
+
+test "effectiveMinifyFor: removing magic comment falls back to workspace" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson("{\"minifyMode\":\"insights\"}");
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try h.openDocument("file:///a.wgsl", "// wgslender-minify-strict\nfn main() {}\n", 1);
+    try std.testing.expectEqual(
+        MinifySettings.Mode.strict,
+        h.effectiveMinifyFor("file:///a.wgsl").mode,
+    );
+
+    try h.changeDocument("file:///a.wgsl", "fn main() {}\n");
+    try std.testing.expectEqual(
+        MinifySettings.Mode.insights,
+        h.effectiveMinifyFor("file:///a.wgsl").mode,
+    );
+}
+
+test "effectiveMinifyFor: unknown URI falls back to workspace + project" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson("{\"minifyMode\":\"insights\"}");
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    const eff = h.effectiveMinifyFor("file:///nonexistent.wgsl");
+    try std.testing.expectEqual(MinifySettings.Mode.insights, eff.mode);
+}
+
+test "effectiveMinifyFor: default (no settings, no magic) is off" {
+    const h = try setup();
+    defer teardown(h);
+
+    try h.openDocument("file:///a.wgsl", "fn main() {}\n", 1);
+    const eff = h.effectiveMinifyFor("file:///a.wgsl");
+    try std.testing.expectEqual(MinifySettings.Mode.off, eff.mode);
+    try std.testing.expect(!eff.insightsActive());
+}
+
+test "effectiveMinifyFor: changeDocumentIncremental re-scans magic layer" {
+    const h = try setup();
+    defer teardown(h);
+
+    // Source layout (column offsets 0-based):
+    //   "// wgslender-minify-insights\n"
+    //    0  3              20      28
+    // `insights` occupies [20, 28); replace it with `strict` to flip mode.
+    try h.openDocument("file:///a.wgsl", "// wgslender-minify-insights\nfn main() {}\n", 1);
+    try std.testing.expectEqual(
+        MinifySettings.Mode.insights,
+        h.effectiveMinifyFor("file:///a.wgsl").mode,
+    );
+
+    try h.changeDocumentIncremental("file:///a.wgsl", .{
+        .start = .{ .line = 0, .character = 20 },
+        .end = .{ .line = 0, .character = 28 },
+    }, "strict");
+    try std.testing.expectEqual(
+        MinifySettings.Mode.strict,
+        h.effectiveMinifyFor("file:///a.wgsl").mode,
+    );
+}

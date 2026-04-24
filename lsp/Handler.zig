@@ -57,6 +57,11 @@ pub const Document = struct {
     /// `analyzeDocument` to skip re-tokenize + re-parse when valid.
     /// `null` if initial parse failed.
     parse: ?wgslender.Incremental.ReparseResult = null,
+    /// Per-document magic-comment layer for minifier-mode resolution.
+    /// Refreshed on `openDocument` / `changeDocument*` via `rebuildMagic`.
+    /// `MinifySettings.Partial` is POD (no heap tail), so the cached
+    /// value survives arena teardown in `rebuildMagic` without copying.
+    magic_minify: MinifySettings.Partial = .{},
 };
 
 // =========================================================================
@@ -169,6 +174,20 @@ fn rebuildParse(self: *Handler, doc: *Document) void {
     doc.parse = result;
 }
 
+/// (Re)scan `doc.source` for magic-comment directives and cache the
+/// resulting `Partial`. The scan runs on a transient arena so the M0000
+/// diagnostics it emits are discarded; later phases surface them through
+/// the publish/pull diagnostic paths via a dedicated scan at query time.
+fn rebuildMagic(self: *Handler, doc: *Document) void {
+    var arena_state = std.heap.ArenaAllocator.init(self.gpa);
+    defer arena_state.deinit();
+    const result = wgslender.MagicComment.scan(arena_state.allocator(), doc.source) catch {
+        doc.magic_minify = .{};
+        return;
+    };
+    doc.magic_minify = result.partial;
+}
+
 // =========================================================================
 // Document management
 // =========================================================================
@@ -195,6 +214,7 @@ pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: 
     }
     gop.value_ptr.* = .{ .source = new_source, .version = version };
     self.rebuildParse(gop.value_ptr);
+    self.rebuildMagic(gop.value_ptr);
 }
 
 /// Replaces the source text of an already-open document.
@@ -212,6 +232,7 @@ pub fn changeDocument(self: *Handler, uri: []const u8, text: []const u8) !void {
     const prev_version = if (doc.parse) |*p| p.module_version else 0;
     self.rebuildParse(doc);
     if (doc.parse) |*p| p.module_version = prev_version +% 1;
+    self.rebuildMagic(doc);
 }
 
 /// Removes a document and frees its source and URI.
@@ -324,12 +345,24 @@ pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
     };
 }
 
-/// Resolve the effective minifier-mode state by merging the project-config,
-/// workspace (client), and magic-comment layers in precedence order. The
-/// magic-comment layer is always empty here (per-document; picked up when
-/// the LSP feature paths query per-doc settings in Phase 2).
+/// Resolve the effective minifier-mode state for callers without a
+/// document context (e.g. command handlers that act on the whole server).
+/// The magic-comment layer is empty here — feature paths that operate on
+/// a specific document must use `effectiveMinifyFor(uri)` instead.
 pub fn effectiveMinify(self: *const Handler) MinifySettings.Effective {
     return MinifySettings.resolve(self.project_minify, self.workspace_minify, .{});
+}
+
+/// Resolve the effective minifier-mode state for a specific document.
+/// Merges project → workspace → per-document magic-comment layers in
+/// precedence order. Falls back to `effectiveMinify()` when `uri` is
+/// unknown so callers can treat the accessor as total.
+pub fn effectiveMinifyFor(self: *const Handler, uri: []const u8) MinifySettings.Effective {
+    const magic: MinifySettings.Partial = if (self.documents.get(uri)) |doc|
+        doc.magic_minify
+    else
+        .{};
+    return MinifySettings.resolve(self.project_minify, self.workspace_minify, magic);
 }
 
 // =========================================================================
@@ -3218,6 +3251,9 @@ pub fn changeDocumentIncremental(self: *Handler, uri: []const u8, range: Range, 
         .end = @intCast(end),
         .new_text = text,
     });
+    // Magic-comment scan reads `doc.source` directly; re-run after any
+    // source mutation so the cached layer tracks the current document.
+    self.rebuildMagic(doc);
 }
 
 fn updateParseAfterEdit(self: *Handler, doc: *Document, edit: wgslender.Incremental.Edit) void {
