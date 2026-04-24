@@ -13,3 +13,6 @@
 [submodule "external/naga"]
 	path = external/naga
 	url = git@github.com:gogpu/naga.git
+[submodule "external/eslint"]
+	path = external/eslint
+	url = git@github.com:eslint/eslint.git
