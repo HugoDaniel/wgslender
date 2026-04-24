@@ -752,7 +752,7 @@ fn checkRecursiveFunctions(v: *Validator) Allocator.Error!void {
 
 /// Iterative DFS cycle detection using an explicit stack.
 fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)), color: *std.AutoHashMapUnmanaged(u32, u2), start: u32) Allocator.Error!void {
-    const Frame = struct { fn_idx: u32, callee_idx: usize };
+    const Frame = struct { fn_idx: u32, callee_idx: u32 };
     var stack: std.ArrayListUnmanaged(Frame) = .empty;
     defer stack.deinit(v.arena);
 
@@ -4342,7 +4342,7 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8
             }
         },
         .vector => |ve| {
-            const width: usize = ve.width;
+            const width: u8 = ve.width;
 
             // 0 args: zero-value constructor
             if (arg_count == 0) return t;
@@ -4359,7 +4359,7 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8
                             return t; // splat
                         }
                         if (at == .vector) {
-                            const src_width: usize = at.vector.width;
+                            const src_width: u8 = at.vector.width;
                             if (src_width != width) {
                                 if (v.suggestVecForComponents(callee_name, src_width)) |suggestion| {
                                     v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, width, src_width, suggestion }));
@@ -4413,8 +4413,8 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8
             }
         },
         .matrix => |mt| {
-            const cols: usize = mt.cols;
-            const rows: usize = mt.rows;
+            const cols: u8 = mt.cols;
+            const rows: u8 = mt.rows;
 
             // 0 args: zero-value constructor
             if (arg_count == 0) return t;

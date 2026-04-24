@@ -93,12 +93,12 @@ pub fn encodeVlqSingle(value: i32) VlqSingleResult {
 
 /// Decode a VLQ value from `input`. Returns the decoded value and the number
 /// of bytes consumed, or `null` if the input is empty or invalid.
-pub fn decodeVlq(input: []const u8) ?struct { value: i32, consumed: usize } {
+pub fn decodeVlq(input: []const u8) ?struct { value: i32, consumed: u32 } {
     if (input.len == 0) return null;
 
     var vlq: u32 = 0;
     var shift: u5 = 0;
-    var consumed: usize = 0;
+    var consumed: u32 = 0;
 
     for (input) |c| {
         if (c >= 128) return null;
