@@ -97,8 +97,12 @@ fn testOne(
 // =========================================================================
 
 test "incremental fuzz: deterministic edit sweep over hand-picked bases" {
+    // Property: every random splice over a hand-picked base produces a
+    // re-parse whose source and decl count match a fresh full parse of the
+    // edited source. Seed comes from std.testing.random_seed so a CI
+    // failure can reproduce by passing the same `--seed` back.
     const gpa = std.testing.allocator;
-    var rng = std.Random.DefaultPrng.init(0xC057A1AB);
+    var rng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const rand = rng.random();
 
     for (bases) |base| {
@@ -113,8 +117,10 @@ test "incremental fuzz: deterministic edit sweep over hand-picked bases" {
 }
 
 test "incremental fuzz: random inverse edits round-trip" {
+    // Property: forward(edit) → backward(inverse-edit) restores the
+    // original source byte-for-byte. Seed from std.testing.random_seed.
     const gpa = std.testing.allocator;
-    var rng = std.Random.DefaultPrng.init(0xFEEDC0DE);
+    var rng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const rand = rng.random();
 
     const base = bases[0];

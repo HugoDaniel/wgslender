@@ -177,8 +177,11 @@ test "F4: reused path preserves symbol indices (same name + kind by index)" {
 }
 
 test "F5: random local-decl append into a function body always hot-paths" {
+    // Property: appending a let/var into any function body must engage
+    // the hot path (no full reparse fallback). Seed from
+    // std.testing.random_seed so a CI failure can reproduce.
     const gpa = std.testing.allocator;
-    var rng = std.Random.DefaultPrng.init(0xA99EDCAF);
+    var rng = std.Random.DefaultPrng.init(std.testing.random_seed);
     const rand = rng.random();
 
     const shader_bases = [_][:0]const u8{
