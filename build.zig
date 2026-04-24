@@ -81,11 +81,14 @@ pub fn build(b: *std.Build) void {
     lib_step.dependOn(&install_lib.step);
     lib_step.dependOn(&install_header.step);
 
-    // LSP server (native)
-    const lsp_kit_dep = b.dependency("lsp_kit", .{
+    // LSP server (native). lsp_kit is marked `.lazy = true`, so it's only
+    // fetched when a step that actually needs it is in the build graph
+    // (lsp / lsp-wasm / test). If it hasn't been fetched yet, skip the
+    // LSP graph — Zig will re-invoke build() after the fetch completes.
+    const lsp_kit_dep = b.lazyDependency("lsp_kit", .{
         .target = target,
         .optimize = optimize,
-    });
+    }) orelse return;
     const lsp_mod = lsp_kit_dep.module("lsp");
 
     // Handler and bridge modules (registered here so both the LSP

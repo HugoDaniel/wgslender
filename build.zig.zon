@@ -14,6 +14,7 @@
     .dependencies = .{
         .lsp_kit = .{
             .path = "external/lsp-kit",
+            .lazy = true,
         },
     },
 }
