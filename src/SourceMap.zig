@@ -674,8 +674,8 @@ fn appendStr(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: []const 
 }
 
 fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: u32) Allocator.Error!void {
-    var tmp: [20]u8 = undefined;
-    const s = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return;
+    var scratch: [20]u8 = undefined;
+    const s = std.fmt.bufPrint(&scratch, "{d}", .{value}) catch return;
     try appendStr(buf, allocator, s);
 }
 
@@ -691,8 +691,8 @@ fn appendJsonString(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: [
             else => {
                 if (c < 0x20) {
                     // Control character — emit \u00XX.
-                    var tmp: [6]u8 = undefined;
-                    const hex = std.fmt.bufPrint(&tmp, "\\u{x:0>4}", .{c}) catch continue;
+                    var scratch: [6]u8 = undefined;
+                    const hex = std.fmt.bufPrint(&scratch, "\\u{x:0>4}", .{c}) catch continue;
                     try appendStr(buf, allocator, hex);
                 } else {
                     try buf.append(allocator, c);

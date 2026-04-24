@@ -203,8 +203,8 @@ pub fn appendJsonEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator,
 }
 
 pub fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: anytype) Allocator.Error!void {
-    var tmp: [20]u8 = undefined;
-    const s = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return;
+    var scratch: [20]u8 = undefined;
+    const s = std.fmt.bufPrint(&scratch, "{d}", .{value}) catch return;
     try buf.appendSlice(allocator, s);
 }
 

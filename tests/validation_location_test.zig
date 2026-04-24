@@ -840,7 +840,7 @@ test "validation location: did-you-mean suggests close struct member" {
         \\@fragment
         \\fn main() {
         \\    var s : Vertex;
-        \\    let tmp = s.positon;
+        \\    let scratch = s.positon;
         \\}
     ;
     var result = try validateSource(source);
@@ -854,7 +854,7 @@ test "validation location: did-you-mean suggests struct member with transpositio
         \\@fragment
         \\fn main() {
         \\    var s : Mesh;
-        \\    let tmp = s.colro;
+        \\    let scratch = s.colro;
         \\}
     ;
     var result = try validateSource(source);
@@ -868,7 +868,7 @@ test "validation location: no suggestion for completely wrong struct member" {
         \\@fragment
         \\fn main() {
         \\    var s : S;
-        \\    let tmp = s.foobar;
+        \\    let scratch = s.foobar;
         \\}
     ;
     var result = try validateSource(source);
@@ -889,7 +889,7 @@ test "validation location: did-you-mean struct member off-by-one char" {
         \\@fragment
         \\fn main() {
         \\    var s : S;
-        \\    let tmp = s.norml;
+        \\    let scratch = s.norml;
         \\}
     ;
     var result = try validateSource(source);
@@ -903,7 +903,7 @@ test "validation location: did-you-mean struct member picks best from multiple" 
         \\@fragment
         \\fn main() {
         \\    var s : S;
-        \\    let tmp = s.positon;
+        \\    let scratch = s.positon;
         \\}
     ;
     var result = try validateSource(source);
@@ -993,7 +993,7 @@ test "validation location: did-you-mean suggests close variable name" {
         \\@fragment
         \\fn main() {
         \\    var position : f32 = 1.0;
-        \\    let tmp = positon;
+        \\    let scratch = positon;
         \\}
     ;
     var result = try validateSource(source);
@@ -1019,7 +1019,7 @@ test "validation location: did-you-mean suggests builtin function name" {
     const source =
         \\@fragment
         \\fn main() {
-        \\    let tmp = sine(1.0);
+        \\    let scratch = sine(1.0);
         \\}
     ;
     var result = try validateSource(source);
@@ -1032,7 +1032,7 @@ test "validation location: no suggestion for completely wrong identifier" {
     const source =
         \\@fragment
         \\fn main() {
-        \\    let tmp = xyzzyplugh;
+        \\    let scratch = xyzzyplugh;
         \\}
     ;
     var result = try validateSource(source);
@@ -1055,7 +1055,7 @@ test "validation location: did-you-mean suggests close builtin function call" {
     const source =
         \\@fragment
         \\fn main() {
-        \\    let tmp = coss(1.0);
+        \\    let scratch = coss(1.0);
         \\}
     ;
     var result = try validateSource(source);
@@ -1069,7 +1069,7 @@ test "validation location: did-you-mean suggests close user function call" {
         \\fn calculate() -> f32 { return 1.0; }
         \\@fragment
         \\fn main() {
-        \\    let tmp = calculat();
+        \\    let scratch = calculat();
         \\}
     ;
     var result = try validateSource(source);
@@ -1082,7 +1082,7 @@ test "validation location: no suggestion for completely wrong call" {
     const source =
         \\@fragment
         \\fn main() {
-        \\    let tmp = fooBarBaz();
+        \\    let scratch = fooBarBaz();
         \\}
     ;
     var result = try validateSource(source);
@@ -1101,7 +1101,7 @@ test "validation location: did-you-mean prefers vec3f for 3-arg call" {
     const source =
         \\@fragment
         \\fn main() {
-        \\    let tmp = vec5f(0.0, 1.0, 2.0);
+        \\    let scratch = vec5f(0.0, 1.0, 2.0);
         \\}
     ;
     var result = try validateSource(source);
@@ -1113,7 +1113,7 @@ test "validation location: did-you-mean prefers vec4f for 4-arg call" {
     const source =
         \\@fragment
         \\fn main() {
-        \\    let tmp = vec5f(0.0, 1.0, 2.0, 3.0);
+        \\    let scratch = vec5f(0.0, 1.0, 2.0, 3.0);
         \\}
     ;
     var result = try validateSource(source);
@@ -1125,7 +1125,7 @@ test "validation location: did-you-mean prefers vec2i for 2-arg call" {
     const source =
         \\@fragment
         \\fn main() {
-        \\    let tmp = vec5i(0, 1);
+        \\    let scratch = vec5i(0, 1);
         \\}
     ;
     var result = try validateSource(source);
@@ -1685,7 +1685,7 @@ test "validation location: swizzle error shows valid components hint" {
         \\@fragment
         \\fn main() {
         \\    var v : vec3f;
-        \\    let tmp = v.q;
+        \\    let scratch = v.q;
         \\}
     ;
     var result = try validateSource(source);
@@ -1699,7 +1699,7 @@ test "validation location: swizzle with invalid character in multi-component sho
         \\@fragment
         \\fn main() {
         \\    var v : vec3f;
-        \\    let tmp = v.xq;
+        \\    let scratch = v.xq;
         \\}
     ;
     var result = try validateSource(source);
@@ -1712,7 +1712,7 @@ test "validation location: swizzle out-of-bounds does not show components hint" 
         \\@fragment
         \\fn main() {
         \\    var v : vec2f;
-        \\    let tmp = v.z;
+        \\    let scratch = v.z;
         \\}
     ;
     var result = try validateSource(source);

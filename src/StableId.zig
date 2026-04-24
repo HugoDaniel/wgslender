@@ -473,8 +473,8 @@ fn writeScopePath(
                 try buf.appendSlice(arena, name);
             },
             .block => {
-                var tmp: [24]u8 = undefined;
-                const slice = std.fmt.bufPrint(&tmp, "block#{d}", .{s.sibling_index}) catch
+                var scratch: [24]u8 = undefined;
+                const slice = std.fmt.bufPrint(&scratch, "block#{d}", .{s.sibling_index}) catch
                     return error.IdTooLong;
                 try buf.appendSlice(arena, slice);
             },

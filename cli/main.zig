@@ -321,13 +321,13 @@ fn readSource(arena: std.mem.Allocator, io: std.Io, input_path: ?[]const u8) ![:
         source_bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
     } else {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
-        var tmp: [4096]u8 = undefined;
+        var scratch: [4096]u8 = undefined;
         // Unbounded by design: input length is whatever the user pipes in.
         // Terminates on EOF (n == 0) or stdin read error.
         while (true) {
-            const n = std.Io.File.stdin().readStreaming(io, &.{&tmp}) catch break;
+            const n = std.Io.File.stdin().readStreaming(io, &.{&scratch}) catch break;
             if (n == 0) break;
-            try buf.appendSlice(arena, tmp[0..n]);
+            try buf.appendSlice(arena, scratch[0..n]);
         }
         source_bytes = buf.items;
     }
@@ -464,13 +464,13 @@ fn emitValidateText(
     const File = std.Io.File;
     const file_prefix = input_path orelse "<stdin>";
     for (result.diagnostics.diagnostics.items) |entry| {
-        var tmp: [20]u8 = undefined;
+        var scratch: [20]u8 = undefined;
         try File.stderr().writeStreamingAll(io, file_prefix);
         try File.stderr().writeStreamingAll(io, ":");
-        const line_s = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.line}) catch "";
+        const line_s = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.line}) catch "";
         try File.stderr().writeStreamingAll(io, line_s);
         try File.stderr().writeStreamingAll(io, ":");
-        const col_s = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.column}) catch "";
+        const col_s = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.column}) catch "";
         try File.stderr().writeStreamingAll(io, col_s);
         try File.stderr().writeStreamingAll(io, ": ");
         try File.stderr().writeStreamingAll(io, entry.severity.string());
@@ -541,12 +541,12 @@ fn runCompile(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, output
     }
 
     // Print stats to stderr
-    var tmp: [64]u8 = undefined;
+    var scratch: [64]u8 = undefined;
     try File.stderr().writeStreamingAll(io, "Original: ");
-    var s = std.fmt.bufPrint(&tmp, "{d}", .{result.original_size}) catch "";
+    var s = std.fmt.bufPrint(&scratch, "{d}", .{result.original_size}) catch "";
     try File.stderr().writeStreamingAll(io, s);
     try File.stderr().writeStreamingAll(io, " bytes -> WASM: ");
-    s = std.fmt.bufPrint(&tmp, "{d}", .{result.wasm_size}) catch "";
+    s = std.fmt.bufPrint(&scratch, "{d}", .{result.wasm_size}) catch "";
     try File.stderr().writeStreamingAll(io, s);
     try File.stderr().writeStreamingAll(io, " bytes\n");
 }
@@ -649,13 +649,13 @@ fn emitText(
     const File = std.Io.File;
     _ = arena;
     for (entries) |entry| {
-        var tmp: [32]u8 = undefined;
+        var scratch: [32]u8 = undefined;
         try File.stderr().writeStreamingAll(io, file_prefix);
         try File.stderr().writeStreamingAll(io, ":");
-        const ls = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.line}) catch "";
+        const ls = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.line}) catch "";
         try File.stderr().writeStreamingAll(io, ls);
         try File.stderr().writeStreamingAll(io, ":");
-        const cs = std.fmt.bufPrint(&tmp, "{d}", .{entry.range.start.column}) catch "";
+        const cs = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.column}) catch "";
         try File.stderr().writeStreamingAll(io, cs);
         try File.stderr().writeStreamingAll(io, ": ");
         try File.stderr().writeStreamingAll(io, entry.severity.string());
@@ -683,9 +683,9 @@ fn emitStylish(
     try out.appendSlice(arena, file_prefix);
     try out.appendSlice(arena, "\n");
     for (entries) |entry| {
-        var tmp: [32]u8 = undefined;
+        var scratch: [32]u8 = undefined;
         try out.appendSlice(arena, "  ");
-        const ls = std.fmt.bufPrint(&tmp, "{d}:{d}", .{ entry.range.start.line, entry.range.start.column }) catch "";
+        const ls = std.fmt.bufPrint(&scratch, "{d}:{d}", .{ entry.range.start.line, entry.range.start.column }) catch "";
         try out.appendSlice(arena, ls);
         // Pad so messages align
         const pad = if (ls.len < 8) 8 - ls.len else 1;

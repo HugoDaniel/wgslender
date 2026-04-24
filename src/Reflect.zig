@@ -1027,8 +1027,8 @@ fn appendStr(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, s: []const u8) 
 }
 
 fn appendInt(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, value: anytype) Allocator.Error!void {
-    var tmp: [20]u8 = undefined;
-    const s = std.fmt.bufPrint(&tmp, "{d}", .{value}) catch return;
+    var scratch: [20]u8 = undefined;
+    const s = std.fmt.bufPrint(&scratch, "{d}", .{value}) catch return;
     try appendStr(buf, arena, s);
 }
 
@@ -1043,8 +1043,8 @@ fn appendJsonStr(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, s: []const 
             '\t' => try appendStr(buf, arena, "\\t"),
             else => {
                 if (c < 0x20) {
-                    var tmp: [6]u8 = undefined;
-                    const hex = std.fmt.bufPrint(&tmp, "\\u{x:0>4}", .{c}) catch continue;
+                    var scratch: [6]u8 = undefined;
+                    const hex = std.fmt.bufPrint(&scratch, "\\u{x:0>4}", .{c}) catch continue;
                     try appendStr(buf, arena, hex);
                 } else {
                     try buf.append(arena, c);

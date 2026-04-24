@@ -1640,10 +1640,10 @@ fn formatBuiltinHover(self: *Handler, buf: *[1024]u8, name: []const u8, builtin:
 fn formatStructLayout(gpa: std.mem.Allocator, name: []const u8, st: *wgslender.Types.Struct) ![]const u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(gpa);
-    var tmp: [256]u8 = undefined;
+    var scratch: [256]u8 = undefined;
 
     // Header: struct Name (size: NB, align: MB)
-    const header = std.fmt.bufPrint(&tmp, "struct {s} (size: {d}B, align: {d}B)", .{ name, st.size_bytes, st.align_bytes }) catch return try gpa.dupe(u8, name);
+    const header = std.fmt.bufPrint(&scratch, "struct {s} (size: {d}B, align: {d}B)", .{ name, st.size_bytes, st.align_bytes }) catch return try gpa.dupe(u8, name);
     try out.appendSlice(gpa, header);
 
     for (st.fields, 0..) |field, fi| {
@@ -1656,13 +1656,13 @@ fn formatStructLayout(gpa: std.mem.Allocator, name: []const u8, st: *wgslender.T
             const prev_end = prev.offset + prev.typ.size();
             if (field.offset > prev_end) {
                 const padding = field.offset - prev_end;
-                const pad_line = std.fmt.bufPrint(&tmp, "\n  @{d}  [{d}B padding]", .{ prev_end, padding }) catch continue;
+                const pad_line = std.fmt.bufPrint(&scratch, "\n  @{d}  [{d}B padding]", .{ prev_end, padding }) catch continue;
                 try out.appendSlice(gpa, pad_line);
             }
         }
 
         // Field line
-        const fld_line = std.fmt.bufPrint(&tmp, "\n  @{d}  {s}: {s}  ({d}B, align {d})", .{ field.offset, field.name, field.typ.string(), field_size, field_align }) catch continue;
+        const fld_line = std.fmt.bufPrint(&scratch, "\n  @{d}  {s}: {s}  ({d}B, align {d})", .{ field.offset, field.name, field.typ.string(), field_size, field_align }) catch continue;
         try out.appendSlice(gpa, fld_line);
     }
 
@@ -1672,7 +1672,7 @@ fn formatStructLayout(gpa: std.mem.Allocator, name: []const u8, st: *wgslender.T
         const last_end = last.offset + last.typ.size();
         if (st.size_bytes > last_end) {
             const trailing = st.size_bytes - last_end;
-            const trail_line = std.fmt.bufPrint(&tmp, "\n  @{d}  [{d}B padding]", .{ last_end, trailing }) catch "";
+            const trail_line = std.fmt.bufPrint(&scratch, "\n  @{d}  [{d}B padding]", .{ last_end, trailing }) catch "";
             try out.appendSlice(gpa, trail_line);
         }
     }
@@ -2845,7 +2845,7 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
 fn collectBindingSummary(gpa: std.mem.Allocator, module: *const Ast.Module) ?[]const u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     defer out.deinit(gpa);
-    var tmp: [128]u8 = undefined;
+    var scratch: [128]u8 = undefined;
     var count: usize = 0;
 
     for (module.declarations.items) |decl| {
@@ -2875,7 +2875,7 @@ fn collectBindingSummary(gpa: std.mem.Allocator, module: *const Ast.Module) ?[]c
                         .ident => |t| t.name,
                         else => "var",
                     } else "var";
-                    const entry = std.fmt.bufPrint(&tmp, "@group({d}) @binding({d}) {s}", .{ group.?, binding.?, type_label }) catch continue;
+                    const entry = std.fmt.bufPrint(&scratch, "@group({d}) @binding({d}) {s}", .{ group.?, binding.?, type_label }) catch continue;
                     out.appendSlice(gpa, entry) catch {};
                     count += 1;
                 }

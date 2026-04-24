@@ -229,9 +229,9 @@ pub fn run(
     }
 
     if (options.report_unused_disable_directives) {
-        var tmp: std.ArrayListUnmanaged(Diagnostic.Entry) = .empty;
-        try Disable.reportUnused(alloc, module.source, &directives, &tmp);
-        for (tmp.items) |e| diags.add(alloc, e);
+        var scratch: std.ArrayListUnmanaged(Diagnostic.Entry) = .empty;
+        try Disable.reportUnused(alloc, module.source, &directives, &scratch);
+        for (scratch.items) |e| diags.add(alloc, e);
     }
 
     return .{
