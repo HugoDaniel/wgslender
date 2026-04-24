@@ -194,7 +194,7 @@ fn printModule(self: *Printer, m: *const Ast.Module) !void {
     std.debug.assert(self.indent == 0);
 }
 
-fn printDirective(self: *Printer, d: Ast.Directive) !void {
+pub fn printDirective(self: *Printer, d: Ast.Directive) !void {
     switch (d) {
         .enable => |dir| {
             try self.emit("enable ");

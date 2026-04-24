@@ -36,6 +36,7 @@ pub const Incremental = @import("Incremental.zig");
 pub const Linter = @import("lint/Linter.zig");
 pub const MinifySettings = @import("MinifySettings.zig");
 pub const MagicComment = @import("MagicComment.zig");
+pub const MinifyEstimator = @import("MinifyEstimator.zig");
 
 test {
     // Force test discovery for modules that have no call-site references
@@ -474,4 +475,5 @@ comptime {
     _ = StableId;
     _ = Linter;
     _ = MagicComment;
+    _ = MinifyEstimator;
 }

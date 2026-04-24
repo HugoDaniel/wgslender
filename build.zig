@@ -344,6 +344,10 @@ pub fn build(b: *std.Build) void {
     // Per-document magic-comment scanner for `// wgslender-minify-*`
     // directives that override workspace/project mode.
     _ = addTestStep(b, test_step, "tests/magic_comment_test.zig", target, optimize, &.{w});
+    // Phase 3 byte-size estimator: dry-run Printer + length-only renamer.
+    // Ground-truth parity against wgslender.minifyWithOptions on the
+    // compute.toys corpus plus correctness tests on small fixtures.
+    _ = addTestStep(b, test_step, "tests/minify_estimator_test.zig", target, optimize, &.{w});
     // LSP-layer plumbing for minifier-mode: Handler settings parse,
     // effectiveMinify accessor, workspace/executeCommand dispatch.
     _ = addTestStep(b, test_step, "tests/lsp_minify_settings_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
