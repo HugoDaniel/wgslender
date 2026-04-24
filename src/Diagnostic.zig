@@ -770,6 +770,12 @@ pub const Code = struct {
     pub const lint_max_depth: []const u8 = "W0221";
     pub const lint_complexity: []const u8 = "W0222";
     pub const lint_max_lines_per_function: []const u8 = "W0223";
+
+    // Minifier-mode advisories (M0xxx). M0000 is reserved for magic-comment
+    // directive-parsing diagnostics (scoped carve-out in §2.8 of the
+    // minifier-mode design note). Higher M-code buckets land with each
+    // minifier-mode rule phase.
+    pub const unknown_minify_directive: []const u8 = "M0000";
 };
 
 /// Map a diagnostic code to a WGSL spec section slug.
@@ -793,6 +799,7 @@ pub fn specRefFor(code: []const u8) []const u8 {
     if (std.mem.startsWith(u8, code, "W01")) return "module-scope-declarations";
     if (std.mem.startsWith(u8, code, "W02")) return "linting";
     if (std.mem.startsWith(u8, code, "W00")) return "linting";
+    if (code[0] == 'M') return "minify";
     return "";
 }
 
