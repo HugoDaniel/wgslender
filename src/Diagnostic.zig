@@ -23,6 +23,10 @@ pub const Severity = enum(u8) {
     info,
     /// Additional context for another diagnostic.
     note,
+    /// Advisory feedback that surfaces in editors as a low-key hint
+    /// (LSP `DiagnosticSeverity.Hint`). Used by minifier-mode rules so
+    /// they don't compete visually with real warnings.
+    hint,
 
     /// Sentinel used by DiagnosticFilter to mark a rule as disabled.
     disabled = 255,
@@ -33,6 +37,7 @@ pub const Severity = enum(u8) {
             .warning => "warning",
             .info => "info",
             .note => "note",
+            .hint => "hint",
             .disabled => "unknown",
         };
     }
@@ -866,6 +871,7 @@ test "diagnostic: Severity.string" {
     try std.testing.expectEqualStrings("warning", Severity.warning.string());
     try std.testing.expectEqualStrings("info", Severity.info.string());
     try std.testing.expectEqualStrings("note", Severity.note.string());
+    try std.testing.expectEqualStrings("hint", Severity.hint.string());
 }
 
 test "diagnostic: LineIndex basic" {

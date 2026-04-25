@@ -610,6 +610,7 @@ fn convertDiagnostic(gpa: std.mem.Allocator, entry: *const WgslDiagnostic.Entry)
         .severity = switch (entry.severity) {
             .@"error" => .@"error",
             .warning => .warning,
+            .hint => .hint,
             .note => .information,
             else => .information,
         },
