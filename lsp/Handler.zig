@@ -24,6 +24,15 @@ workspace_minify: MinifySettings.Partial = .{},
 /// Project-config layer — seeded from `wgslender.json` via `Config.discover`
 /// before the first settings pull. Empty until the LSP entry point wires it.
 project_minify: MinifySettings.Partial = .{},
+/// Per-rule severity overrides keyed by diagnostic **code** (e.g. `"M0100"`)
+/// — the JSON shape from `minifyLints.severities` in the client's
+/// configuration payload. Translated into `Linter.Options.RuleOverride[]`
+/// at validate-time via `Linter.registry.byCode`. Lifetime is workspace-
+/// scoped: re-populated whenever `applyClientSettings` sees a fresh
+/// `severities` object, freed on `Handler.deinit`. Keys are dup'd into
+/// `gpa` because the parsed JSON they came from is freed by the caller
+/// after `applyClientSettings` returns.
+workspace_minify_severities: std.StringHashMapUnmanaged(WgslDiagnostic.Severity) = .empty,
 
 /// Client-provided LSP settings. Pulled from the client via
 /// `workspace/configuration` (section `"wgslender"`) or seeded from
@@ -142,6 +151,18 @@ pub fn deinit(self: *Handler) void {
         self.gpa.free(entry.value_ptr.source);
     }
     self.documents.deinit(self.gpa);
+
+    self.clearMinifySeverities();
+    self.workspace_minify_severities.deinit(self.gpa);
+}
+
+/// Free every key in `workspace_minify_severities` and clear the map.
+/// Used both by the workspace settings refresh path (when the user
+/// supplies a new severities object) and by `deinit`.
+fn clearMinifySeverities(self: *Handler) void {
+    var sit = self.workspace_minify_severities.iterator();
+    while (sit.next()) |kv| self.gpa.free(kv.key_ptr.*);
+    self.workspace_minify_severities.clearRetainingCapacity();
 }
 
 fn invalidateAnalysis(self: *Handler, uri: []const u8) void {
@@ -338,9 +359,20 @@ pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
         else => {},
     };
     if (obj.get("minifyLints")) |v| switch (v) {
-        .object => |o| if (o.get("enabled")) |b| switch (b) {
-            .bool => |x| self.workspace_minify.lints_enabled = x,
-            else => {},
+        .object => |o| {
+            if (o.get("enabled")) |b| switch (b) {
+                .bool => |x| self.workspace_minify.lints_enabled = x,
+                else => {},
+            };
+            if (o.get("severities")) |sv| switch (sv) {
+                .object => |sm| self.applyMinifySeverities(sm) catch |err| switch (err) {
+                    // OOM during settings parse: leave previous map intact
+                    // rather than half-applying a partial set. Mirrors the
+                    // permissive behaviour for malformed individual entries.
+                    error.OutOfMemory => {},
+                },
+                else => {},
+            };
         },
         else => {},
     };
@@ -348,6 +380,39 @@ pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
         .bool => |x| self.workspace_minify.mangle_external_bindings = x,
         else => {},
     };
+}
+
+/// Replace the workspace-scoped severity map with the contents of a
+/// fresh `severities` object from `minifyLints`. Keys are dup'd because
+/// the source JSON is freed by the caller. Invalid severity strings and
+/// non-string values are silently skipped, matching the permissive
+/// behaviour of the other settings parsers.
+fn applyMinifySeverities(self: *Handler, sm: std.json.ObjectMap) !void {
+    self.clearMinifySeverities();
+    var it = sm.iterator();
+    while (it.next()) |kv| {
+        const sev_str = switch (kv.value_ptr.*) {
+            .string => |s| s,
+            else => continue,
+        };
+        const sev = parseMinifySeverity(sev_str) orelse continue;
+        const key_dup = try self.gpa.dupe(u8, kv.key_ptr.*);
+        errdefer self.gpa.free(key_dup);
+        try self.workspace_minify_severities.put(self.gpa, key_dup, sev);
+    }
+}
+
+/// String → Diagnostic.Severity mapping for the `severities` JSON map.
+/// Accepts `off` (= disabled), `hint`, `info`, `warn` / `warning`, and
+/// `error`. Returns null for anything else so the caller can drop the
+/// entry.
+fn parseMinifySeverity(s: []const u8) ?WgslDiagnostic.Severity {
+    if (std.mem.eql(u8, s, "off")) return .disabled;
+    if (std.mem.eql(u8, s, "hint")) return .hint;
+    if (std.mem.eql(u8, s, "info")) return .info;
+    if (std.mem.eql(u8, s, "warn") or std.mem.eql(u8, s, "warning")) return .warning;
+    if (std.mem.eql(u8, s, "error")) return .@"error";
+    return null;
 }
 
 /// Resolve the effective minifier-mode state for callers without a
@@ -573,7 +638,7 @@ pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
     if (eff_minify.lintsActive()) {
         var minify_arena = std.heap.ArenaAllocator.init(self.gpa);
         defer minify_arena.deinit();
-        const overrides = try buildMinifyRuleOverrides(minify_arena.allocator(), eff_minify);
+        const overrides = try self.buildMinifyRuleOverrides(minify_arena.allocator(), eff_minify);
 
         var lint_result = try wgslender.Linter.run(self.gpa, analysis, .{
             .extends = &.{"@wgslender/minify"},
@@ -589,24 +654,70 @@ pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
 }
 
 /// Build per-rule overrides synthesizing fields from the resolved
-/// `MinifySettings.Effective` into the Linter's `Options.rules` slice.
+/// `MinifySettings.Effective` and the workspace severities map into the
+/// Linter's `Options.rules` slice.
 ///
-/// Phase 5b: gates `M0100 minify/external-binding-blocks-rename` via
-/// `{"mangleExternalBindings": true}` when the user has opted into
-/// renaming. Future phases extend this with the `minifyLints.severities`
-/// map.
+/// Two contributions, merged per rule id:
+///   1. `minifyLints.severities` (code → severity string) — escalates
+///      or silences any registered minify rule by code. Codes are
+///      resolved via `Linter.registry.byCode`; unknown codes are
+///      ignored silently.
+///   2. The M0100 mangle gate — when the user has opted into
+///      `--mangle-external-bindings`, attach
+///      `{"mangleExternalBindings": true}` to that rule's options so
+///      the rule no-ops.
+///
+/// When both apply to M0100, severity is taken from (1) and options are
+/// taken from (2). The Linter consumes a flat list, so we accumulate
+/// per-rule first and emit the merged entries last.
 fn buildMinifyRuleOverrides(
+    self: *const Handler,
     arena: std.mem.Allocator,
     eff: MinifySettings.Effective,
 ) ![]wgslender.Linter.Options.RuleOverride {
-    var overrides: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
+    const Acc = struct {
+        id: []const u8,
+        severity: ?WgslDiagnostic.Severity = null,
+        options: ?std.json.Value = null,
+    };
+    var by_id: std.StringHashMapUnmanaged(Acc) = .empty;
+
+    // Severities map (code → rule id via registry lookup).
+    var sev_it = self.workspace_minify_severities.iterator();
+    while (sev_it.next()) |kv| {
+        const r = wgslender.Linter.registry.byCode(kv.key_ptr.*) orelse continue;
+        const gop = try by_id.getOrPut(arena, r.meta.id);
+        if (!gop.found_existing) gop.value_ptr.* = .{ .id = r.meta.id };
+        gop.value_ptr.severity = kv.value_ptr.*;
+    }
+
+    // M0100 mangleExternalBindings gate.
     if (eff.mangle_external_bindings) {
+        const m0100_id: []const u8 = "minify/external-binding-blocks-rename";
         var obj: std.json.ObjectMap = .empty;
         try obj.put(arena, "mangleExternalBindings", .{ .bool = true });
+        const gop = try by_id.getOrPut(arena, m0100_id);
+        if (!gop.found_existing) gop.value_ptr.* = .{ .id = m0100_id };
+        gop.value_ptr.options = .{ .object = obj };
+    }
+
+    var overrides: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
+    var it = by_id.iterator();
+    while (it.next()) |kv| {
+        const acc = kv.value_ptr.*;
+        // No severity override → preserve the pack's default by
+        // restating the rule's `default_severity`. The Linter applies
+        // `extends` first and overrides last, so a no-severity merge
+        // here would otherwise force a recompute. We pull the default
+        // off the registry to avoid hard-coding `.hint`.
+        const sev = acc.severity orelse blk: {
+            const r = wgslender.Linter.registry.byId(acc.id) orelse break :blk WgslDiagnostic.Severity.hint;
+            break :blk r.meta.default_severity;
+        };
         try overrides.append(arena, .{
-            .id = "minify/external-binding-blocks-rename",
-            .severity = .hint,
-            .options = .{ .object = obj },
+            .id = acc.id,
+            .severity = sev,
+            .options = acc.options,
         });
     }
     return overrides.toOwnedSlice(arena);

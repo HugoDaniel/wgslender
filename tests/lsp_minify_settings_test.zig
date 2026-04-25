@@ -160,6 +160,110 @@ test "applyClientSettings: mangleExternalBindings wrong type silently ignored" {
     try std.testing.expect(!h.effectiveMinify().mangle_external_bindings);
 }
 
+test "applyClientSettings: minifyLints.severities populates per-code map" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson(
+        \\{"minifyLints":{"severities":{"M0100":"warning","M0201":"off"}}}
+    );
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try std.testing.expectEqual(@as(u32, 2), h.workspace_minify_severities.count());
+
+    const m0100 = h.workspace_minify_severities.get("M0100") orelse {
+        std.debug.print("no M0100 entry in severities map\n", .{});
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, m0100);
+
+    const m0201 = h.workspace_minify_severities.get("M0201") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(wgslender.Diagnostic.Severity.disabled, m0201);
+}
+
+test "applyClientSettings: severities accepts hint / info / warn / warning / error / off" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson(
+        \\{"minifyLints":{"severities":{"M0100":"hint","M0101":"info","M0200":"warn","M0201":"warning","M0202":"error"}}}
+    );
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try std.testing.expectEqual(wgslender.Diagnostic.Severity.hint, h.workspace_minify_severities.get("M0100").?);
+    try std.testing.expectEqual(wgslender.Diagnostic.Severity.info, h.workspace_minify_severities.get("M0101").?);
+    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, h.workspace_minify_severities.get("M0200").?);
+    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, h.workspace_minify_severities.get("M0201").?);
+    try std.testing.expectEqual(wgslender.Diagnostic.Severity.@"error", h.workspace_minify_severities.get("M0202").?);
+}
+
+test "applyClientSettings: severities empty object clears prior entries" {
+    const h = try setup();
+    defer teardown(h);
+
+    var first = try parseJson(
+        \\{"minifyLints":{"severities":{"M0100":"warning"}}}
+    );
+    defer first.deinit();
+    h.applyClientSettings(first.value);
+    try std.testing.expectEqual(@as(u32, 1), h.workspace_minify_severities.count());
+
+    var second = try parseJson(
+        \\{"minifyLints":{"severities":{}}}
+    );
+    defer second.deinit();
+    h.applyClientSettings(second.value);
+    try std.testing.expectEqual(@as(u32, 0), h.workspace_minify_severities.count());
+}
+
+test "applyClientSettings: severities absent leaves prior map intact" {
+    const h = try setup();
+    defer teardown(h);
+
+    var first = try parseJson(
+        \\{"minifyLints":{"severities":{"M0100":"warning"}}}
+    );
+    defer first.deinit();
+    h.applyClientSettings(first.value);
+
+    var second = try parseJson("{\"minifyMode\":\"strict\"}");
+    defer second.deinit();
+    h.applyClientSettings(second.value);
+
+    try std.testing.expectEqual(@as(u32, 1), h.workspace_minify_severities.count());
+    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, h.workspace_minify_severities.get("M0100").?);
+}
+
+test "applyClientSettings: invalid severity strings silently skipped" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson(
+        \\{"minifyLints":{"severities":{"M0100":"loud","M0201":"warning"}}}
+    );
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try std.testing.expectEqual(@as(u32, 1), h.workspace_minify_severities.count());
+    try std.testing.expect(h.workspace_minify_severities.get("M0100") == null);
+    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, h.workspace_minify_severities.get("M0201").?);
+}
+
+test "applyClientSettings: severities non-object silently ignored" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson(
+        \\{"minifyLints":{"severities":"warn-everything"}}
+    );
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try std.testing.expectEqual(@as(u32, 0), h.workspace_minify_severities.count());
+}
+
 test "applyClientSettings: minifyLints.enabled=false in strict keeps lints off" {
     const h = try setup();
     defer teardown(h);

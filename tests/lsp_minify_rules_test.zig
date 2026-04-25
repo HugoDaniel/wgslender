@@ -320,6 +320,120 @@ test "lsp minify rules: mangleExternalBindings=false (default) keeps M0100 firin
     }
 }
 
+// =========================================================================
+// Phase 5b — minifyLints.severities map → Linter.Options.RuleOverride[]
+// =========================================================================
+
+test "lsp minify rules: severities map flips M0201 to warning" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0201":"warning"}}}
+    );
+
+    try h.openDocument("file:///a.wgsl", "const UNUSED_K: f32 = 3.14;\n", 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    var saw_warning = false;
+    for (diags) |d| {
+        if (!std.mem.eql(u8, d.code, "M0201")) continue;
+        try std.testing.expectEqual(Handler.DiagnosticSeverity.warning, d.severity);
+        saw_warning = true;
+    }
+    if (!saw_warning) {
+        dump("expected M0201 stamped at warning", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: severities map M0100=error escalates" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0100":"error"}}}
+    );
+
+    const src: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> uniforms: f32;
+        \\@compute @workgroup_size(1) fn main() { let _v = uniforms; }
+    ;
+    try h.openDocument("file:///a.wgsl", src, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    var saw_error = false;
+    for (diags) |d| {
+        if (!std.mem.eql(u8, d.code, "M0100")) continue;
+        try std.testing.expectEqual(Handler.DiagnosticSeverity.@"error", d.severity);
+        saw_error = true;
+    }
+    if (!saw_error) {
+        dump("expected M0100 stamped at error", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: severities map M0201=off silences" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0201":"off"}}}
+    );
+
+    try h.openDocument("file:///a.wgsl", "const UNUSED_K: f32 = 3.14;\n", 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0201")) {
+        dump("expected severities=off to silence M0201", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: unknown severities key silently ignored" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"severities":{"M9999":"warning","M0201":"warning"}}}
+    );
+
+    try h.openDocument("file:///a.wgsl", "const UNUSED_K: f32 = 3.14;\n", 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    var saw_warning = false;
+    for (diags) |d| {
+        if (!std.mem.eql(u8, d.code, "M0201")) continue;
+        try std.testing.expectEqual(Handler.DiagnosticSeverity.warning, d.severity);
+        saw_warning = true;
+    }
+    try std.testing.expect(saw_warning);
+}
+
+test "lsp minify rules: severities + mangleExternalBindings compose (gate beats severity)" {
+    // User escalated M0100 to error AND opted into renaming. The gate
+    // wins because the rule no-ops before producing any diagnostic.
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","mangleExternalBindings":true,"minifyLints":{"severities":{"M0100":"error"}}}
+    );
+
+    const src: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> uniforms: f32;
+        \\@compute @workgroup_size(1) fn main() { let _v = uniforms; }
+    ;
+    try h.openDocument("file:///a.wgsl", src, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0100")) {
+        dump("expected mangle gate to silence M0100 even with severity=error", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
 test "lsp minify rules: mangleExternalBindings=true does not silence other M-codes" {
     // The gate is M0100-only — flipping it should leave M0201 / M0202 alone.
     const h = try setup();
