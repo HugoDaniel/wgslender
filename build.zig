@@ -354,6 +354,11 @@ pub fn build(b: *std.Build) void {
     // Phase 4 byte-size inlay hints emitted by the LSP when minifier-mode
     // is `insights` or `strict`.
     _ = addTestStep(b, test_step, "tests/lsp_minify_inlay_hints_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // Phase 5a — minify lint rules (`minify/unused-const`,
+    // `minify/unused-override`, `minify/external-binding-blocks-rename`)
+    // and the LSP wiring that surfaces them in `mode=strict`.
+    _ = addTestStep(b, test_step, "tests/lint_minify_rules_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/lsp_minify_rules_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/formatting_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/semantic_tokens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/selection_range_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });

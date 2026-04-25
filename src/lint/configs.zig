@@ -70,6 +70,21 @@ pub const portability = Config{
     },
 };
 
+/// Minifier-mode advisory pack. Surfaces only when the user opts in
+/// (`extends: ["@wgslender/minify"]` in `wgslender.json`, or the LSP
+/// running with `minifyMode = "strict"`). Severities are `.hint` so the
+/// rules surface as low-key inline hints rather than competing with
+/// real warnings; users can escalate per-rule via the standard
+/// `rules` override.
+pub const minify = Config{
+    .name = "@wgslender/minify",
+    .rules = &.{
+        .{ .id = "minify/external-binding-blocks-rename", .severity = .hint },
+        .{ .id = "minify/unused-const", .severity = .hint },
+        .{ .id = "minify/unused-override", .severity = .hint },
+    },
+};
+
 /// "Opt-in strictness" meta-pack: everything except rules that are
 /// typically noisy (no-magic-numbers). Useful for CI gates on new
 /// projects.
@@ -108,6 +123,7 @@ pub const all = [_]*const Config{
     &style,
     &performance,
     &portability,
+    &minify,
     &strict,
 };
 

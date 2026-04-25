@@ -31,6 +31,9 @@ const max_params = @import("rules/max_params.zig");
 const max_depth = @import("rules/max_depth.zig");
 const complexity = @import("rules/complexity.zig");
 const max_lines_per_function = @import("rules/max_lines_per_function.zig");
+const minify_unused_const = @import("rules/minify_unused_const.zig");
+const minify_unused_override = @import("rules/minify_unused_override.zig");
+const minify_external_binding_blocks_rename = @import("rules/minify_external_binding_blocks_rename.zig");
 
 /// Every lint rule the linter knows about. Declaration order is the order
 /// rules execute in per-file; rules may depend on module-wide analysis but
@@ -61,6 +64,9 @@ pub const all = [_]Rule{
     max_depth.rule,
     complexity.rule,
     max_lines_per_function.rule,
+    minify_external_binding_blocks_rename.rule,
+    minify_unused_const.rule,
+    minify_unused_override.rule,
 };
 
 /// Look up a rule by its public id (e.g. `"no-unused-vars"`).
