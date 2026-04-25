@@ -119,6 +119,55 @@ test "resolve: explicit lints_enabled=true in insights mode enables lints" {
     try std.testing.expect(!eff.lintsActive());
 }
 
+// =========================================================================
+// mangle_external_bindings — Phase 5b
+// =========================================================================
+//
+// The field is a build-pipeline opt-in: when the user runs the CLI with
+// `--mangle-external-bindings`, the LSP needs to know so M0100 (the hint
+// that flags external bindings as un-renameable) can be silenced.
+
+test "resolve: mangle_external_bindings defaults to false" {
+    const eff = MinifySettings.resolve(.{}, .{}, .{});
+    try std.testing.expect(!eff.mangle_external_bindings);
+}
+
+test "resolve: project mangle_external_bindings=true propagates" {
+    const eff = MinifySettings.resolve(
+        .{ .mangle_external_bindings = true },
+        .{},
+        .{},
+    );
+    try std.testing.expect(eff.mangle_external_bindings);
+}
+
+test "resolve: workspace mangle_external_bindings overrides project" {
+    const eff = MinifySettings.resolve(
+        .{ .mangle_external_bindings = false },
+        .{ .mangle_external_bindings = true },
+        .{},
+    );
+    try std.testing.expect(eff.mangle_external_bindings);
+}
+
+test "resolve: magic mangle_external_bindings beats workspace + project" {
+    const eff = MinifySettings.resolve(
+        .{ .mangle_external_bindings = false },
+        .{ .mangle_external_bindings = false },
+        .{ .mangle_external_bindings = true },
+    );
+    try std.testing.expect(eff.mangle_external_bindings);
+}
+
+test "resolve: workspace null leaves project mangle_external_bindings intact" {
+    const eff = MinifySettings.resolve(
+        .{ .mangle_external_bindings = true },
+        .{},
+        .{},
+    );
+    try std.testing.expect(eff.mangle_external_bindings);
+}
+
 test "Mode.fromString: accepts exactly the three canonical values" {
     try std.testing.expectEqual(MinifySettings.Mode.off, MinifySettings.Mode.fromString("off").?);
     try std.testing.expectEqual(MinifySettings.Mode.insights, MinifySettings.Mode.fromString("insights").?);
@@ -198,6 +247,22 @@ test "Config: lsp.minifyLints.enabled parses" {
         "{\"lsp\":{\"minifyLints\":{\"enabled\":true}}}",
     );
     try std.testing.expectEqual(@as(?bool, true), cfg.lsp_minify.lints_enabled);
+}
+
+test "Config: lsp.mangleExternalBindings parses into Partial" {
+    const cfg = try wgslender.Config.parseJson(
+        std.testing.allocator,
+        "{\"lsp\":{\"mangleExternalBindings\":true}}",
+    );
+    try std.testing.expectEqual(@as(?bool, true), cfg.lsp_minify.mangle_external_bindings);
+}
+
+test "Config: lsp.mangleExternalBindings absent leaves Partial null" {
+    const cfg = try wgslender.Config.parseJson(
+        std.testing.allocator,
+        "{\"lsp\":{\"minifyMode\":\"strict\"}}",
+    );
+    try std.testing.expectEqual(@as(?bool, null), cfg.lsp_minify.mangle_external_bindings);
 }
 
 test "Config: lsp section with wrong types silently ignored" {

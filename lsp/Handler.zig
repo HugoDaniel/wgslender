@@ -281,12 +281,13 @@ pub fn handleDidSave(self: *Handler, uri: []const u8) void {
 ///
 /// Schema:
 ///   {
-///     "inlayHints":     { "enabled": bool },
-///     "diagnostics":    { "enabled": bool },
-///     "minifyMode":     "off" | "insights" | "strict",
-///     "minifyInsights": { "format": "delta"|"bytes"|"both",
-///                         "functionSize": bool, "declSize": bool, "totalSize": bool },
-///     "minifyLints":    { "enabled": bool }
+///     "inlayHints":             { "enabled": bool },
+///     "diagnostics":            { "enabled": bool },
+///     "minifyMode":             "off" | "insights" | "strict",
+///     "minifyInsights":         { "format": "delta"|"bytes"|"both",
+///                                 "functionSize": bool, "declSize": bool, "totalSize": bool },
+///     "minifyLints":            { "enabled": bool },
+///     "mangleExternalBindings": bool
 ///   }
 pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
     const obj = switch (value) {
@@ -341,6 +342,10 @@ pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
             .bool => |x| self.workspace_minify.lints_enabled = x,
             else => {},
         },
+        else => {},
+    };
+    if (obj.get("mangleExternalBindings")) |v| switch (v) {
+        .bool => |x| self.workspace_minify.mangle_external_bindings = x,
         else => {},
     };
 }

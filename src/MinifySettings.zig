@@ -53,12 +53,20 @@ pub const Partial = struct {
     total_size: ?bool = null,
     format: ?InsightsFormat = null,
     lints_enabled: ?bool = null,
+    /// Build-pipeline flag mirroring `Minifier.Options.mangle_external_bindings`.
+    /// Lets the LSP know the user has opted into renaming `@group/@binding`
+    /// vars so it can silence the `M0100 minify/external-binding-blocks-rename`
+    /// hint.
+    mangle_external_bindings: ?bool = null,
 };
 
 pub const Effective = struct {
     mode: Mode = .off,
     insights: InsightsSwitches = .{},
     lints: LintsSwitches = .{},
+    /// Resolved view of `Partial.mangle_external_bindings`. Rules and code
+    /// lenses read this to decide whether external-binding rename is on.
+    mangle_external_bindings: bool = false,
 
     pub fn insightsActive(self: Effective) bool {
         return self.mode != .off;
@@ -87,6 +95,7 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
         .insights, .strict => .{},
     };
     var lints: LintsSwitches = .{ .enabled = mode == .strict };
+    var mangle_external_bindings: bool = false;
 
     inline for ([_]Partial{ project, workspace, magic }) |layer| {
         if (layer.function_size) |v| insights.function_size = v;
@@ -94,7 +103,13 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
         if (layer.total_size) |v| insights.total_size = v;
         if (layer.format) |v| insights.format = v;
         if (layer.lints_enabled) |v| lints.enabled = v;
+        if (layer.mangle_external_bindings) |v| mangle_external_bindings = v;
     }
 
-    return .{ .mode = mode, .insights = insights, .lints = lints };
+    return .{
+        .mode = mode,
+        .insights = insights,
+        .lints = lints,
+        .mangle_external_bindings = mangle_external_bindings,
+    };
 }

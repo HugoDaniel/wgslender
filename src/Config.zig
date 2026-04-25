@@ -128,6 +128,9 @@ fn parseLspSection(out: *MinifySettings.Partial, lsp: std.json.ObjectMap) void {
             }
         }
     }
+    if (lsp.get("mangleExternalBindings")) |v| {
+        if (v == .bool) out.mangle_external_bindings = v.bool;
+    }
 }
 
 /// Search for a config file starting from `start_dir`, walking up to parent directories.

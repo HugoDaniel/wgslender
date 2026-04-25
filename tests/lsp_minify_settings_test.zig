@@ -125,6 +125,41 @@ test "applyClientSettings: minifyInsights sub-switches parse" {
     try std.testing.expect(eff.insights.total_size);
 }
 
+test "applyClientSettings: mangleExternalBindings=true sets workspace flag" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson("{\"mangleExternalBindings\":true}");
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    const eff = h.effectiveMinify();
+    try std.testing.expect(eff.mangle_external_bindings);
+}
+
+test "applyClientSettings: mangleExternalBindings absent leaves field false" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson("{\"minifyMode\":\"strict\"}");
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    const eff = h.effectiveMinify();
+    try std.testing.expect(!eff.mangle_external_bindings);
+}
+
+test "applyClientSettings: mangleExternalBindings wrong type silently ignored" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson("{\"mangleExternalBindings\":\"yes\"}");
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try std.testing.expect(!h.effectiveMinify().mangle_external_bindings);
+}
+
 test "applyClientSettings: minifyLints.enabled=false in strict keeps lints off" {
     const h = try setup();
     defer teardown(h);
