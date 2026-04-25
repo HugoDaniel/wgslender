@@ -482,3 +482,175 @@ test "@wgslender/minify pack enables M0200" {
     try std.testing.expect(hasCode(r, "M0200"));
 }
 
+// =========================================================================
+// minify/long-entry-point-name (M0101) — Phase 5b
+// =========================================================================
+//
+// Entry-point function names ship verbatim to the host (the JS / wgpu API
+// looks them up by name), so any character above the configured threshold
+// is shipping bytes the renamer can't recover. Default threshold is 8 —
+// `main`, `frag`, `vertex` all pass; `computePassMain` does not.
+//
+// Configurable via the standard `Linter.RuleOverride.options` shape:
+// `["warn", { "max": 4 }]` flips the threshold to 4 chars.
+
+test "minify/long-entry-point-name: positive — long entry name fires" {
+    const src: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn computeKernelMain() {}
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    if (!hasCodeContaining(r, "M0101", "computeKernelMain")) {
+        dump("expected M0101 on computeKernelMain", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "minify/long-entry-point-name: negative — short entry name is silent" {
+    const src: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn main() {}
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0101"));
+}
+
+test "minify/long-entry-point-name: negative — exact-threshold name is silent" {
+    // Default max = 8. "fragMain" is exactly 8 chars; threshold check is
+    // strictly greater-than, so 8 is OK.
+    const src: [:0]const u8 =
+        \\@fragment fn fragMain() -> @location(0) vec4f { return vec4f(0.0); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0101"));
+}
+
+test "minify/long-entry-point-name: negative — long non-entry helper is silent" {
+    // The rule is entry-point-only; long internal helper names are still
+    // renamable so they're not in scope.
+    const src: [:0]const u8 =
+        \\fn longHelperFunctionName() -> f32 { return 1.0; }
+        \\@compute @workgroup_size(1) fn main() { let _v = longHelperFunctionName(); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0101"));
+}
+
+test "minify/long-entry-point-name: range covers the decl name span" {
+    const src: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn computeKernelMain() {}
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    const d = firstWithCode(r, "M0101") orelse {
+        dump("no M0101 emitted", r);
+        return error.TestUnexpectedResult;
+    };
+    // `@compute @workgroup_size(1) fn computeKernelMain() {}` —
+    // `computeKernelMain` starts at col 32 (1-based), length 17 → end col 49.
+    try std.testing.expectEqual(@as(u32, 1), d.range.start.line);
+    try std.testing.expectEqual(@as(u32, 32), d.range.start.column);
+    try std.testing.expectEqual(@as(u32, 49), d.range.end.column);
+}
+
+test "minify/long-entry-point-name: default severity is hint" {
+    const src: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn computeKernelMain() {}
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasSeverity(r, "M0101", .hint));
+}
+
+test "minify/long-entry-point-name: per-rule override escalates to warning" {
+    const src: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn computeKernelMain() {}
+    ;
+    var r = try runLint(src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{ .id = "minify/long-entry-point-name", .severity = .warning },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasSeverity(r, "M0101", .warning));
+}
+
+test "minify/long-entry-point-name: options.max=3 makes 'main' fire" {
+    // Default threshold (8) leaves `main` (4 chars) silent; a per-rule
+    // option flip to max=3 should escalate it.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts_json = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"max\":3}",
+        .{},
+    );
+    const src: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn main() {}
+    ;
+    var r = try runLint(src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/long-entry-point-name",
+                .severity = .hint,
+                .options = opts_json,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    if (!hasCodeContaining(r, "M0101", "main")) {
+        dump("expected M0101 on main with max=3", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "minify/long-entry-point-name: options.max=20 silences 'computeKernelMain'" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts_json = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"max\":20}",
+        .{},
+    );
+    const src: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn computeKernelMain() {}
+    ;
+    var r = try runLint(src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/long-entry-point-name",
+                .severity = .hint,
+                .options = opts_json,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0101"));
+}
+
+test "minify/long-entry-point-name: spec_ref points at minify slug" {
+    const src: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn computeKernelMain() {}
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    const d = firstWithCode(r, "M0101") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("minify", d.spec_ref);
+}
+
+test "@wgslender/minify pack enables M0101" {
+    const src: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn computeKernelMain() {}
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "M0101"));
+}
+

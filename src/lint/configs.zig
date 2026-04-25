@@ -83,6 +83,7 @@ pub const minify = Config{
         .{ .id = "minify/unused-const", .severity = .hint },
         .{ .id = "minify/unused-override", .severity = .hint },
         .{ .id = "minify/dead-code-kept", .severity = .hint },
+        .{ .id = "minify/long-entry-point-name", .severity = .hint },
     },
 };
 

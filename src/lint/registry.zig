@@ -35,6 +35,7 @@ const minify_unused_const = @import("rules/minify_unused_const.zig");
 const minify_unused_override = @import("rules/minify_unused_override.zig");
 const minify_external_binding_blocks_rename = @import("rules/minify_external_binding_blocks_rename.zig");
 const minify_dead_code_kept = @import("rules/minify_dead_code_kept.zig");
+const minify_long_entry_point_name = @import("rules/minify_long_entry_point_name.zig");
 
 /// Every lint rule the linter knows about. Declaration order is the order
 /// rules execute in per-file; rules may depend on module-wide analysis but
@@ -69,6 +70,7 @@ pub const all = [_]Rule{
     minify_unused_const.rule,
     minify_unused_override.rule,
     minify_dead_code_kept.rule,
+    minify_long_entry_point_name.rule,
 };
 
 /// Look up a rule by its public id (e.g. `"no-unused-vars"`).
