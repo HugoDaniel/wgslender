@@ -273,3 +273,73 @@ test "lsp minify rules: validator errors still flow through alongside M-diagnost
     try std.testing.expect(saw_error);
     try std.testing.expect(saw_minify);
 }
+
+// =========================================================================
+// Phase 5b — mangleExternalBindings gate on M0100
+// =========================================================================
+//
+// The hint exists to nudge the user to enable `--mangle-external-bindings`.
+// Once they have, surfacing the hint is just noise — gate it out via the
+// resolved `MinifySettings.Effective.mangle_external_bindings` field.
+
+test "lsp minify rules: mangleExternalBindings=true silences M0100 in strict" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h, "{\"minifyMode\":\"strict\",\"mangleExternalBindings\":true}");
+
+    const src: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> uniforms: f32;
+        \\@compute @workgroup_size(1) fn main() { let _v = uniforms; }
+    ;
+    try h.openDocument("file:///a.wgsl", src, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0100")) {
+        dump("expected mangleExternalBindings=true to silence M0100", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: mangleExternalBindings=false (default) keeps M0100 firing" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+
+    const src: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> uniforms: f32;
+        \\@compute @workgroup_size(1) fn main() { let _v = uniforms; }
+    ;
+    try h.openDocument("file:///a.wgsl", src, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (!hasCode(diags, "M0100")) {
+        dump("expected M0100 to still fire when mangleExternalBindings is unset", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: mangleExternalBindings=true does not silence other M-codes" {
+    // The gate is M0100-only — flipping it should leave M0201 / M0202 alone.
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h, "{\"minifyMode\":\"strict\",\"mangleExternalBindings\":true}");
+
+    const src: [:0]const u8 =
+        \\const UNUSED_K: f32 = 3.14;
+        \\@id(0) override UNUSED_OVR: u32 = 8;
+        \\@group(0) @binding(0) var<uniform> uniforms: f32;
+        \\@compute @workgroup_size(1) fn main() { let _v = uniforms; }
+    ;
+    try h.openDocument("file:///a.wgsl", src, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0100")) {
+        dump("expected M0100 silenced by mangleExternalBindings=true", diags);
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expect(hasCode(diags, "M0201"));
+    try std.testing.expect(hasCode(diags, "M0202"));
+}

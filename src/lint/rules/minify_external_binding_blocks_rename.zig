@@ -6,16 +6,15 @@
 //! binding (and emits a `let` alias if the renamer rewrites the body)
 //! so host code that looked up a binding by name still works after
 //! minification. The author can opt in to renaming via
-//! `--mangle-external-bindings` once the host side is ready, but that
-//! flag is CLI-only and therefore invisible at LSP edit time. This rule
-//! makes the cost visible: every long binding name is shipped bytes
-//! that could be reduced to a single character with the right flag.
+//! `--mangle-external-bindings` once the host side is ready; this rule
+//! makes the cost visible until they do.
 //!
-//! Phase 5b will gate this rule on the resolved
-//! `effective_minify.mangle_external_bindings` so the hint disappears
-//! once the user has opted in. For now the field doesn't exist; the
-//! rule fires unconditionally on any external binding so the surface is
-//! at least visible.
+//! Gating: when `ctx.options.mangleExternalBindings == true`, the user
+//! has already opted into renaming and the hint is just noise — skip.
+//! The LSP synthesizes that option from the resolved
+//! `MinifySettings.Effective.mangle_external_bindings` field; CLI lint
+//! invocations can pass the same option via the standard
+//! `Linter.RuleOverride.options` JSON shape.
 
 const std = @import("std");
 
@@ -36,6 +35,8 @@ pub const rule = Rule{
 };
 
 fn run(ctx: *Context) error{OutOfMemory}!void {
+    if (mangleExternalBindings(ctx)) return;
+
     for (ctx.module.symbols.items) |sym| {
         if (!sym.flags.is_external_binding) continue;
         if (sym.original_name.len == 0) continue;
@@ -51,4 +52,11 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
             .range = ctx.makeRange(sym.loc, end),
         });
     }
+}
+
+fn mangleExternalBindings(ctx: *const Context) bool {
+    const opts = ctx.options orelse return false;
+    if (opts != .object) return false;
+    const v = opts.object.get("mangleExternalBindings") orelse return false;
+    return v == .bool and v.bool;
 }

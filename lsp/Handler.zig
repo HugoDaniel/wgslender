@@ -569,9 +569,15 @@ pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
     // The Linter owns its own arena; `convertDiagnostic` dupes every
     // borrowed slice into the handler's allocator, so the arena teardown
     // immediately after the loop is safe.
-    if (self.effectiveMinifyFor(uri).lintsActive()) {
+    const eff_minify = self.effectiveMinifyFor(uri);
+    if (eff_minify.lintsActive()) {
+        var minify_arena = std.heap.ArenaAllocator.init(self.gpa);
+        defer minify_arena.deinit();
+        const overrides = try buildMinifyRuleOverrides(minify_arena.allocator(), eff_minify);
+
         var lint_result = try wgslender.Linter.run(self.gpa, analysis, .{
             .extends = &.{"@wgslender/minify"},
+            .rules = overrides,
         });
         defer lint_result.deinit(self.gpa);
         for (lint_result.diagnostics.items()) |entry| {
@@ -580,6 +586,30 @@ pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
     }
 
     return try diags.toOwnedSlice(self.gpa);
+}
+
+/// Build per-rule overrides synthesizing fields from the resolved
+/// `MinifySettings.Effective` into the Linter's `Options.rules` slice.
+///
+/// Phase 5b: gates `M0100 minify/external-binding-blocks-rename` via
+/// `{"mangleExternalBindings": true}` when the user has opted into
+/// renaming. Future phases extend this with the `minifyLints.severities`
+/// map.
+fn buildMinifyRuleOverrides(
+    arena: std.mem.Allocator,
+    eff: MinifySettings.Effective,
+) ![]wgslender.Linter.Options.RuleOverride {
+    var overrides: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
+    if (eff.mangle_external_bindings) {
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(arena, "mangleExternalBindings", .{ .bool = true });
+        try overrides.append(arena, .{
+            .id = "minify/external-binding-blocks-rename",
+            .severity = .hint,
+            .options = .{ .object = obj },
+        });
+    }
+    return overrides.toOwnedSlice(arena);
 }
 
 fn freeSingleDiagnostic(gpa: std.mem.Allocator, d: LspDiagnostic) void {
