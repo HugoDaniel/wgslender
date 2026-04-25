@@ -558,6 +558,22 @@ pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
     appendDeadCodeWarnings(self.gpa, analysis, &diags);
     appendUnusedBindingWarnings(self.gpa, analysis, &diags);
 
+    // Phase 5a — when the document's effective minifier-mode escalates to
+    // strict (workspace setting or per-document magic comment), surface the
+    // `@wgslender/minify` lint pack alongside the validator's diagnostics.
+    // The Linter owns its own arena; `convertDiagnostic` dupes every
+    // borrowed slice into the handler's allocator, so the arena teardown
+    // immediately after the loop is safe.
+    if (self.effectiveMinifyFor(uri).lintsActive()) {
+        var lint_result = try wgslender.Linter.run(self.gpa, analysis, .{
+            .extends = &.{"@wgslender/minify"},
+        });
+        defer lint_result.deinit(self.gpa);
+        for (lint_result.diagnostics.items()) |entry| {
+            try diags.append(self.gpa, convertDiagnostic(self.gpa, &entry));
+        }
+    }
+
     return try diags.toOwnedSlice(self.gpa);
 }
 
