@@ -343,3 +343,142 @@ test "wgslender-disable-file minify/external-binding-blocks-rename silences M010
     defer r.deinit(std.testing.allocator);
     try std.testing.expect(!hasCode(r, "M0100"));
 }
+
+// =========================================================================
+// minify/dead-code-kept (M0200) — Phase 5b
+// =========================================================================
+//
+// Mirrors `no-dead-code` (W0002) shape but at hint severity inside the
+// minify pack. Fires on symbols with `is_live = false` after DCE that are
+// still referenced (`use_count > 0`) — i.e., reachable from another decl
+// that's also dead. Library mode (no entry points) silences the rule
+// because DCE conservatively marks every symbol live.
+
+test "minify/dead-code-kept: positive — referenced-only-from-dead fires" {
+    // `orphan` is called by `sibling`, but `sibling` is never called from
+    // the entry point — so both end up `is_live = false`, but `orphan`'s
+    // `use_count > 0` distinguishes it from a never-referenced decl.
+    const src: [:0]const u8 =
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    if (!hasCodeContaining(r, "M0200", "orphan")) {
+        dump("expected M0200 on orphan", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "minify/dead-code-kept: negative — reachable helper is silent" {
+    const src: [:0]const u8 =
+        \\fn helper() -> f32 { return 1.0; }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(helper()); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0200"));
+}
+
+test "minify/dead-code-kept: negative — never-referenced decl is silent (W0001 territory)" {
+    // `use_count == 0` belongs to `no-unused-vars` / `minify/unused-const`;
+    // M0200 only flags decls that other dead code keeps alive.
+    const src: [:0]const u8 =
+        \\fn totally_unused() {}
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0200"));
+}
+
+test "minify/dead-code-kept: negative — library mode silences" {
+    // No entry points → DCE marks everything live conservatively, so
+    // there's no "dead" set against which to flag.
+    const src: [:0]const u8 =
+        \\fn helper() -> f32 { return 1.0; }
+        \\fn process() -> f32 { return helper(); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0200"));
+}
+
+test "minify/dead-code-kept: negative — entry point itself is never flagged" {
+    const src: [:0]const u8 =
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0200"));
+}
+
+test "minify/dead-code-kept: range covers the decl name span" {
+    const src: [:0]const u8 =
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    const d = firstWithCode(r, "M0200") orelse {
+        dump("no M0200 emitted", r);
+        return error.TestUnexpectedResult;
+    };
+    // `fn orphan() ...` — `orphan` starts at col 4, length 6 → ends at col 10.
+    try std.testing.expectEqual(@as(u32, 1), d.range.start.line);
+    try std.testing.expectEqual(@as(u32, 4), d.range.start.column);
+    try std.testing.expectEqual(@as(u32, 10), d.range.end.column);
+}
+
+test "minify/dead-code-kept: default severity is hint" {
+    const src: [:0]const u8 =
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasSeverity(r, "M0200", .hint));
+}
+
+test "minify/dead-code-kept: per-rule override escalates to warning" {
+    const src: [:0]const u8 =
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    ;
+    var r = try runLint(src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{ .id = "minify/dead-code-kept", .severity = .warning },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasSeverity(r, "M0200", .warning));
+}
+
+test "minify/dead-code-kept: spec_ref points at minify slug" {
+    const src: [:0]const u8 =
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    const d = firstWithCode(r, "M0200") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("minify", d.spec_ref);
+}
+
+test "@wgslender/minify pack enables M0200" {
+    const src: [:0]const u8 =
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    ;
+    var r = try runLint(src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "M0200"));
+}
+

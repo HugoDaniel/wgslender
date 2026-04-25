@@ -82,6 +82,7 @@ pub const minify = Config{
         .{ .id = "minify/external-binding-blocks-rename", .severity = .hint },
         .{ .id = "minify/unused-const", .severity = .hint },
         .{ .id = "minify/unused-override", .severity = .hint },
+        .{ .id = "minify/dead-code-kept", .severity = .hint },
     },
 };
 
