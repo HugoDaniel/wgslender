@@ -14,8 +14,7 @@ fn teardown(ctx: anytype) void {
 }
 
 fn freeLenses(lenses: []const Handler.CodeLensInfo) void {
-    for (lenses) |l| std.testing.allocator.free(l.title);
-    std.testing.allocator.free(lenses);
+    Handler.freeCodeLens(std.testing.allocator, lenses);
 }
 
 test "code lens: function with references" {

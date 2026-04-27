@@ -359,6 +359,9 @@ pub fn build(b: *std.Build) void {
     // and the LSP wiring that surfaces them in `mode=strict`.
     _ = addTestStep(b, test_step, "tests/lint_minify_rules_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/lsp_minify_rules_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // Phase 6 — module-level total-size code lens + showMinifiedOutput
+    // command. Lives next to the other lsp_minify_* suites.
+    _ = addTestStep(b, test_step, "tests/lsp_minify_code_lens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/formatting_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/semantic_tokens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/selection_range_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });

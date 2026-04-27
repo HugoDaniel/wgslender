@@ -269,11 +269,47 @@ fn handleExecuteCommand(root: std.json.ObjectMap, id: ?std.json.Value) void {
             return;
         },
     };
+    if (std.mem.eql(u8, command, "wgslender.showMinifiedOutput")) {
+        if (id == null) return;
+        const items = args_slice orelse return sendErrorCode(id, -32602, "missing uri");
+        if (items.len < 1) return sendErrorCode(id, -32602, "missing uri");
+        const uri = switch (items[0]) {
+            .string => |s| s,
+            else => return sendErrorCode(id, -32602, "uri must be a string"),
+        };
+        var arena = std.heap.ArenaAllocator.init(wasm_allocator);
+        defer arena.deinit();
+        const result = handler.runShowMinifiedOutput(arena.allocator(), uri) catch |err| {
+            switch (err) {
+                error.UnknownCommand => sendErrorCode(id, -32601, "unknown command"),
+                error.InvalidParams => sendErrorCode(id, -32602, "invalid command arguments"),
+                error.DocumentNotFound => sendErrorCode(id, -32602, "document not found"),
+                error.MinifyFailed => sendErrorCode(id, -32603, "minify failed"),
+                error.OutOfMemory => sendErrorCode(id, -32603, "out of memory"),
+            }
+            return;
+        };
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        appendStr(&buf, "{\"uri\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, result.uri) catch return;
+        appendStr(&buf, "\",\"minified_text\":\"");
+        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, result.minified_text) catch return;
+        appendStr(&buf, "\",\"byte_count\":");
+        appendUint(&buf, result.byte_count);
+        appendStr(&buf, ",\"gz_count\":");
+        appendUint(&buf, result.gz_count);
+        appendStr(&buf, "}");
+        sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+        return;
+    }
     handler.executeCommand(command, args_slice) catch |err| {
         if (id == null) return;
         switch (err) {
             error.UnknownCommand => sendErrorCode(id, -32601, "unknown command"),
             error.InvalidParams => sendErrorCode(id, -32602, "invalid command arguments"),
+            error.DocumentNotFound => sendErrorCode(id, -32602, "document not found"),
+            error.MinifyFailed => sendErrorCode(id, -32603, "minify failed"),
+            error.OutOfMemory => sendErrorCode(id, -32603, "out of memory"),
         }
         return;
     };
@@ -835,10 +871,7 @@ fn handleCodeLens(root: std.json.ObjectMap, id: ?std.json.Value) void {
     const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
     const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
     const lenses = handler.computeCodeLens(uri) catch return sendResult(id, "null");
-    defer {
-        for (lenses) |l| handler.gpa.free(l.title);
-        handler.gpa.free(lenses);
-    }
+    defer Handler.freeCodeLens(handler.gpa, lenses);
     if (lenses.len == 0) return sendResult(id, "null");
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -849,7 +882,27 @@ fn handleCodeLens(root: std.json.ObjectMap, id: ?std.json.Value) void {
         formatRange(&buf, l.range);
         appendStr(&buf, ",\"command\":{\"title\":\"");
         Diagnostic.appendJsonEscaped(&buf, wasm_allocator, l.title) catch return;
-        appendStr(&buf, "\",\"command\":\"\"}}");
+        appendStr(&buf, "\",\"command\":\"");
+        if (l.command) |c| {
+            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, c) catch return;
+        }
+        appendStr(&buf, "\"");
+        if (l.arguments) |args| {
+            appendStr(&buf, ",\"arguments\":[");
+            for (args, 0..) |arg, j| {
+                if (j > 0) appendStr(&buf, ",");
+                switch (arg) {
+                    .string => |s| {
+                        appendStr(&buf, "\"");
+                        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, s) catch return;
+                        appendStr(&buf, "\"");
+                    },
+                    else => appendStr(&buf, "null"),
+                }
+            }
+            appendStr(&buf, "]");
+        }
+        appendStr(&buf, "}}");
     }
     appendStr(&buf, "]");
     sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);

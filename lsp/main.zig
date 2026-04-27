@@ -120,6 +120,7 @@ const NativeServer = struct {
                     .commands = &.{
                         "wgslender.setMinifyMode",
                         "wgslender.toggleMinifyMode",
+                        "wgslender.showMinifiedOutput",
                     },
                 },
             },
@@ -127,16 +128,42 @@ const NativeServer = struct {
     }
 
     /// Handles `workspace/executeCommand`. Dispatches to `Handler.executeCommand`
-    /// which mutates internal settings; on success returns `null` (no workspace
-    /// edit). Errors surface as LSP error responses.
+    /// for the void-returning mode commands, or `runShowMinifiedOutput` for
+    /// the data-returning minified-text command. Mode commands re-publish
+    /// diagnostics on success; the show-minified command does not (it's a
+    /// pure read).
     pub fn @"workspace/executeCommand"(
         self: *NativeServer,
-        _: std.mem.Allocator,
+        arena: std.mem.Allocator,
         params: lsp.types.workspace.execute_command.Params,
     ) !?std.json.Value {
+        if (std.mem.eql(u8, params.command, "wgslender.showMinifiedOutput")) {
+            const items = params.arguments orelse return error.InvalidParams;
+            if (items.len < 1) return error.InvalidParams;
+            const uri = switch (items[0]) {
+                .string => |s| s,
+                else => return error.InvalidParams,
+            };
+            const result = self.handler.runShowMinifiedOutput(arena, uri) catch |err| switch (err) {
+                error.UnknownCommand => return error.MethodNotFound,
+                error.InvalidParams => return error.InvalidParams,
+                error.DocumentNotFound => return error.InvalidParams,
+                error.MinifyFailed => return error.InternalError,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
+            var obj: std.json.ObjectMap = .empty;
+            try obj.put(arena, "uri", .{ .string = result.uri });
+            try obj.put(arena, "minified_text", .{ .string = result.minified_text });
+            try obj.put(arena, "byte_count", .{ .integer = @as(i64, result.byte_count) });
+            try obj.put(arena, "gz_count", .{ .integer = @as(i64, result.gz_count) });
+            return .{ .object = obj };
+        }
         self.handler.executeCommand(params.command, params.arguments) catch |err| switch (err) {
             error.UnknownCommand => return error.MethodNotFound,
             error.InvalidParams => return error.InvalidParams,
+            error.DocumentNotFound => return error.InvalidParams,
+            error.MinifyFailed => return error.InternalError,
+            error.OutOfMemory => return error.OutOfMemory,
         };
         // Re-publish diagnostics so any minify-mode change takes effect
         // immediately across all open documents.
@@ -744,13 +771,22 @@ const NativeServer = struct {
         params: lsp.types.code_lens.Params,
     ) ?[]const lsp.types.code_lens.Response {
         const lenses = self.handler.computeCodeLens(params.textDocument.uri) catch return null;
-        defer {
-            for (lenses) |l| self.handler.gpa.free(l.title);
-            self.handler.gpa.free(lenses);
-        }
+        defer Handler.freeCodeLens(self.handler.gpa, lenses);
         if (lenses.len == 0) return null;
         const lsp_lenses = arena.alloc(lsp.types.code_lens.Response, lenses.len) catch return null;
         for (lenses, 0..) |l, i| {
+            const cmd_name: []const u8 = if (l.command) |c| arena.dupe(u8, c) catch "" else "";
+            // Re-encode the JSON args slice into the arena so the LSP
+            // serializer can read it after the Handler-owned buffer is
+            // freed by the defer above.
+            const args: ?[]std.json.Value = if (l.arguments) |src| blk: {
+                const dst = arena.alloc(std.json.Value, src.len) catch break :blk null;
+                for (src, 0..) |arg, j| dst[j] = switch (arg) {
+                    .string => |s| .{ .string = arena.dupe(u8, s) catch "" },
+                    else => arg,
+                };
+                break :blk dst;
+            } else null;
             lsp_lenses[i] = .{
                 .range = .{
                     .start = .{ .line = l.range.start.line, .character = l.range.start.character },
@@ -758,7 +794,8 @@ const NativeServer = struct {
                 },
                 .command = .{
                     .title = arena.dupe(u8, l.title) catch "",
-                    .command = "",
+                    .command = cmd_name,
+                    .arguments = args,
                 },
             };
         }

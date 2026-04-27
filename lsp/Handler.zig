@@ -455,11 +455,31 @@ pub fn effectiveMinifyFor(self: *const Handler, uri: []const u8) MinifySettings.
 pub const CommandError = error{
     UnknownCommand,
     InvalidParams,
+    DocumentNotFound,
+    OutOfMemory,
+    MinifyFailed,
+};
+
+/// Result of running `wgslender.showMinifiedOutput`. Mirrors master-plan
+/// §9.2: the client opens a virtual document with `minified_text` and
+/// uses the byte counts for status-bar / lens display without
+/// re-deriving them. All four fields are owned by the request arena
+/// passed into `runShowMinifiedOutput`; the caller serialises them and
+/// the arena's `deinit` releases everything.
+pub const MinifyCommandResult = struct {
+    uri: []const u8,
+    minified_text: []const u8,
+    byte_count: u32,
+    gz_count: u32,
 };
 
 /// Dispatch a `workspace/executeCommand` request. `args` matches the LSP
 /// `ExecuteCommandParams.arguments` shape: `null` when the client sent no
 /// arguments, otherwise a slice of `LSPAny` (= `std.json.Value`).
+///
+/// Used for the void-returning commands (mode toggles). Data-returning
+/// commands (e.g. `wgslender.showMinifiedOutput`) live on dedicated
+/// methods because the wire shape — and the arena lifetime — differs.
 pub fn executeCommand(self: *Handler, name: []const u8, args: ?[]const std.json.Value) CommandError!void {
     if (std.mem.eql(u8, name, "wgslender.setMinifyMode")) {
         const items = args orelse return error.InvalidParams;
@@ -483,6 +503,58 @@ pub fn executeCommand(self: *Handler, name: []const u8, args: ?[]const std.json.
         return;
     }
     return error.UnknownCommand;
+}
+
+/// Run `wgslender.showMinifiedOutput` for `uri`. The full minifier
+/// pipeline runs against the document's current source — this is the
+/// "cold path" the master plan §2.4 reserves for on-command requests
+/// (the lens title itself uses the cheap `MinifyEstimator`). All
+/// returned slices are owned by `arena`; the caller's request arena is
+/// the right home because the bridge layer serialises the result and
+/// tears the arena down right after.
+///
+/// `byte_count` / `gz_count` come from a parallel `MinifyEstimator`
+/// pass so the JSON response carries the same numbers the lens title
+/// already showed. Using estimator output here (rather than
+/// `result.minified_size`) keeps the lens / response numbers in
+/// lockstep — the estimator is the authoritative source for in-LSP
+/// size hints.
+pub fn runShowMinifiedOutput(
+    self: *Handler,
+    arena: std.mem.Allocator,
+    uri: []const u8,
+) CommandError!MinifyCommandResult {
+    const doc = self.documents.getPtr(uri) orelse return error.DocumentNotFound;
+    const eff = self.effectiveMinifyFor(uri);
+
+    // Minifier.minify wants sentinel-terminated source.
+    const source = try arena.dupeZ(u8, doc.source);
+
+    const result = wgslender.Minifier.minify(arena, source, .{
+        .mangle_external_bindings = eff.mangle_external_bindings,
+    }) catch return error.MinifyFailed;
+
+    // Estimator runs against the analysis module so byte_count matches
+    // what the code lens displayed. It mutates `is_live`, so a scratch
+    // arena keeps the side-effects scoped to this call.
+    var est_arena = std.heap.ArenaAllocator.init(self.gpa);
+    defer est_arena.deinit();
+
+    const analysis = self.analyzeDocument(uri) catch return error.MinifyFailed;
+    const module = analysis.module orelse return error.MinifyFailed;
+
+    const est = wgslender.MinifyEstimator.estimate(
+        est_arena.allocator(),
+        @constCast(module),
+        .{ .mangle_external_bindings = eff.mangle_external_bindings },
+    ) catch return error.MinifyFailed;
+
+    return .{
+        .uri = try arena.dupe(u8, uri),
+        .minified_text = result.code,
+        .byte_count = est.total_min,
+        .gz_count = est.total_gz,
+    };
 }
 
 /// Returns cached analysis result for a document, running analysis if needed.
@@ -3210,7 +3282,32 @@ pub fn appendUnusedBindingWarnings(
 pub const CodeLensInfo = struct {
     range: Range,
     title: []const u8,
+    /// Optional command to invoke when the lens is clicked. Existing
+    /// reference / binding / workgroup lenses leave this null and surface
+    /// as plain title-only lenses (`command = ""` in the LSP wire shape).
+    /// The total-size lens sets it to `wgslender.showMinifiedOutput`.
+    command: ?[]const u8 = null,
+    /// JSON arguments forwarded to the command. Owned by the same
+    /// allocator as `title`; `freeCodeLens` releases both. The
+    /// individual `std.json.Value` entries are leaf values that own
+    /// no further allocations (we only stamp `.string` URIs today),
+    /// so freeing the slice is sufficient.
+    arguments: ?[]std.json.Value = null,
 };
+
+pub fn freeCodeLens(gpa: std.mem.Allocator, lenses: []const CodeLensInfo) void {
+    for (lenses) |l| {
+        gpa.free(l.title);
+        if (l.arguments) |args| {
+            for (args) |arg| switch (arg) {
+                .string => |s| gpa.free(s),
+                else => {},
+            };
+            gpa.free(args);
+        }
+    }
+    gpa.free(lenses);
+}
 
 pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
     const analysis = self.analyzeDocument(uri) catch return &.{};
@@ -3278,7 +3375,85 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
         }
     }
 
+    // Phase 6: module-level total-size lens. Only when the resolved
+    // mode requests the total (insights / strict, with the
+    // `totalSize` sub-switch on by default — matches the inlay-hints
+    // gating). Estimator runs in a scratch arena so its hash maps don't
+    // outlive this call; we copy out only the four u32s and the click
+    // command into the returned lens.
+    if (self.effectiveMinifyFor(uri).insights.total_size) {
+        self.appendTotalSizeLens(uri, module, source, &lenses) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+        };
+    }
+
     return try self.gpa.dupe(CodeLensInfo, lenses.items);
+}
+
+/// Phase 6 — append the module-level total-size code lens.
+///
+/// Title shape: `"<src> B → <min> B min → <gz> B gz"`, with a
+/// ` (over budget)` suffix when an `Effective.budget_bytes` is set
+/// and the estimator's `total_min` exceeds it. ASCII-only badge for
+/// client renderer portability (see plan §"Decisions resolved").
+///
+/// Click target: `wgslender.showMinifiedOutput`, with `[uri]` as the
+/// argument. The command produces the actual minified text via
+/// `Minifier.minify`; the lens itself only relies on the cheap
+/// estimator.
+fn appendTotalSizeLens(
+    self: *Handler,
+    uri: []const u8,
+    module: *const Ast.Module,
+    source: [:0]const u8,
+    lenses: *std.ArrayListUnmanaged(CodeLensInfo),
+) !void {
+    const MinifyEstimator = wgslender.MinifyEstimator;
+    var arena = std.heap.ArenaAllocator.init(self.gpa);
+    defer arena.deinit();
+    // `@constCast` mirrors the inlay-hints path. The estimator
+    // re-runs symbol-usage accounting + DCE in place; the Linter's
+    // `requires_dce` rules already mutate the same flags via the
+    // same const-cast, so the convention is consistent.
+    const result = MinifyEstimator.estimate(arena.allocator(), @constCast(module), .{}) catch return;
+
+    const eff = self.effectiveMinifyFor(uri);
+    const original: u32 = @intCast(source.len);
+    const over_budget: bool = if (eff.budget_bytes) |b| result.total_min > b else false;
+
+    var buf: [128]u8 = undefined;
+    const title = if (over_budget)
+        std.fmt.bufPrint(
+            &buf,
+            "{d} B \u{2192} {d} B min \u{2192} {d} B gz (over budget)",
+            .{ original, result.total_min, result.total_gz },
+        ) catch return
+    else
+        std.fmt.bufPrint(
+            &buf,
+            "{d} B \u{2192} {d} B min \u{2192} {d} B gz",
+            .{ original, result.total_min, result.total_gz },
+        ) catch return;
+
+    const title_dup = try self.gpa.dupe(u8, title);
+    errdefer self.gpa.free(title_dup);
+
+    const uri_dup = try self.gpa.dupe(u8, uri);
+    errdefer self.gpa.free(uri_dup);
+
+    const args = try self.gpa.alloc(std.json.Value, 1);
+    errdefer self.gpa.free(args);
+    args[0] = .{ .string = uri_dup };
+
+    try lenses.append(self.gpa, .{
+        .range = .{
+            .start = .{ .line = 0, .character = 0 },
+            .end = .{ .line = 0, .character = 0 },
+        },
+        .title = title_dup,
+        .command = "wgslender.showMinifiedOutput",
+        .arguments = args,
+    });
 }
 
 /// Collect a one-line summary of all @group/@binding declarations in the module.

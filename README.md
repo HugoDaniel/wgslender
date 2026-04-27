@@ -360,15 +360,53 @@ A full-featured WGSL language server built from the same analyzer as the CLI.
 | Document symbols | Hierarchical outline — structs, fields, functions, params, locals |
 | Folding ranges | Blocks, functions, structs |
 | Inlay hints | Evaluated `const` array sizes and other computed values (toggleable) |
-| Code lens | Binding / entry-point annotations |
+| Code lens | Binding / entry-point annotations + module total-size lens (`<src> B → <min> B min → <gz> B gz`, click → minified text) |
 | Document formatting | Pretty-print the full file |
 | Semantic tokens | 9 token types × 3 modifiers (keyword, function, struct, parameter, variable, number, type, comment, decorator) |
 | Selection range | Smart expand/shrink up the AST |
 | Call hierarchy | Incoming and outgoing calls |
 | Incremental sync | `TextDocumentSyncKind.Incremental` — only changed ranges are reparsed |
-| `workspace/configuration` | Pulls `wgslender` section (`inlayHints.enabled`, `diagnostics.enabled`) |
+| `workspace/configuration` | Pulls `wgslender` section (`inlayHints.enabled`, `diagnostics.enabled`, `minifyMode`, `minifyLints.{enabled,severities,budgetBytes}`, `mangleExternalBindings`) |
+| `workspace/executeCommand` | `wgslender.setMinifyMode`, `wgslender.toggleMinifyMode`, `wgslender.showMinifiedOutput` |
 
 Both transports (native stdio and browser WASM) expose the same capability set.
+
+#### Minifier-mode size budget
+
+When `minifyMode = "strict"` is on, the LSP runs the minifier-mode lint
+pack (`@wgslender/minify`). The `M0500 minify/shader-exceeds-size-budget`
+rule fires when the estimated minified size exceeds a configured byte
+budget. Set the budget through workspace config:
+
+```json
+{
+    "minifyMode": "strict",
+    "minifyLints": {
+        "enabled": true,
+        "budgetBytes": 8192,
+        "severities": { "M0500": "warning" }
+    }
+}
+```
+
+The same `budgetBytes` value powers an `(over budget)` badge on the
+module-level total-size code lens. Without `budgetBytes`, the rule
+stays a no-op and the lens shows just the size triple. CLI users can
+supply the budget via the standard rule-options shape:
+
+```json
+{
+    "rules": {
+        "minify/shader-exceeds-size-budget": ["warn", { "maxBytes": 8192 }]
+    }
+}
+```
+
+Clicking the total-size lens triggers `workspace/executeCommand` with
+`wgslender.showMinifiedOutput`. The server runs the full minifier and
+returns `{ uri, minified_text, byte_count, gz_count }`; the client is
+expected to open a virtual document (e.g. `wgslender-minified:` URI
+scheme) with the returned text — wgslender does not create files.
 
 ### Native (VS Code / Neovim)
 
