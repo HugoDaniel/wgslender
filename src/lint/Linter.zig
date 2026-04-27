@@ -36,6 +36,7 @@ const Ast = @import("../Ast.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const Validator = @import("../Validator.zig");
 const Dce = @import("../Dce.zig");
+const MinifyEstimator = @import("../MinifyEstimator.zig");
 
 pub const Rule = @import("Rule.zig");
 pub const Context = @import("Context.zig");
@@ -73,6 +74,16 @@ pub const Options = struct {
     /// directive that didn't match any diagnostic. Off by default because
     /// dangling directives after a bug-fix are normal; CI lints flip it on.
     report_unused_disable_directives: bool = false,
+    /// Optional pre-computed `MinifyEstimator` result the caller has
+    /// already produced for this module/version. When set, rules that
+    /// would otherwise run the estimator (M0500, future M-rules) reuse
+    /// this pointer — letting the LSP coalesce inlay-hint, code-lens and
+    /// lint-rule estimator work into a single per-document run.
+    ///
+    /// The pointer must remain valid for the entire `Linter.run` call;
+    /// the Linter does not take ownership and never frees it. Null in
+    /// the CLI lint path keeps existing semantics (rule estimates fresh).
+    cached_minify_estimate: ?*const MinifyEstimator.EstimateResult = null,
 
     pub const RuleOverride = struct {
         id: []const u8,
@@ -200,6 +211,7 @@ pub fn run(
             .effective_severity = setting.severity,
             .options = setting.options,
             .line_offset = options.line_offset,
+            .cached_minify_estimate = options.cached_minify_estimate,
         };
         try r.run(&ctx);
 

@@ -120,6 +120,8 @@ fn handleMessage(json: []const u8) void {
         handleDidSave(root);
     } else if (eql(method, "workspace/didChangeConfiguration")) {
         handleDidChangeConfiguration(root);
+    } else if (eql(method, "wgslender/recomputeMinifyInsights")) {
+        handleRecomputeMinifyInsights(root);
     } else if (eql(method, "textDocument/codeAction")) {
         handleCodeAction(root, id);
     } else if (eql(method, "textDocument/hover")) {
@@ -247,6 +249,22 @@ fn handleDidSave(root: std.json.ObjectMap) void {
 fn handleDidChangeConfiguration(_: std.json.ObjectMap) void {
     if (!client_supports_configuration) return;
     sendConfigurationRequest();
+}
+
+/// Phase 7 — `wgslender/recomputeMinifyInsights` notification. The WASM
+/// transport doesn't have a native idle timer, so the JS client owns the
+/// debounce window: it batches `didChange` notifications, waits for the
+/// idle gap, then sends this notification to ask the server to warm the
+/// per-document estimator cache and re-emit diagnostics. The notification
+/// shape matches LSP convention — `params.textDocument.uri` carries the
+/// target. Unknown URIs / inactive minify modes turn into no-ops inside
+/// the handler.
+fn handleRecomputeMinifyInsights(root: std.json.ObjectMap) void {
+    const params = root.getPtr("params") orelse return;
+    const td = objGet(params, "textDocument") orelse return;
+    const uri = strVal(objGet(td, "uri")) orelse return;
+    handler.refreshMinifyInsights(uri);
+    emitDiagnostics(uri);
 }
 
 fn handleExecuteCommand(root: std.json.ObjectMap, id: ?std.json.Value) void {

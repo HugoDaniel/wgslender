@@ -121,6 +121,7 @@ const NativeServer = struct {
                         "wgslender.setMinifyMode",
                         "wgslender.toggleMinifyMode",
                         "wgslender.showMinifiedOutput",
+                        "wgslender.recomputeMinifyInsights",
                     },
                 },
             },

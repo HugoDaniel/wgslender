@@ -65,10 +65,19 @@ pub const EstimateResult = struct {
 /// the compile-pipeline integration lands; the public API stays the same.
 const gz_ratio: f32 = 0.35;
 
+/// Process-global counter of `estimate` calls. Bumped on every entry into
+/// the estimator. Used by the LSP perf smoke test
+/// (`tests/lsp_minify_perf_test.zig`) to prove that the per-document cache
+/// in the Handler coalesces redundant estimator runs across inlay-hint /
+/// code-lens / lint paths. Not thread-safe; tests are single-threaded.
+pub var estimate_count: u64 = 0;
+
 /// Estimate minified byte counts for `module` under the given options.
 /// Allocations live in `arena`; the result becomes invalid when the arena
 /// is deinit'd. Safe to call multiple times on the same module.
 pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !EstimateResult {
+    estimate_count += 1;
+
     // Step 1: populate `is_live` so both Printer.tree_shaking and
     // sortDeclarations see accurate liveness. Mirrors Minifier.minify
     // lines 136-143.

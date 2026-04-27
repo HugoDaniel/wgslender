@@ -45,22 +45,33 @@ pub const rule = Rule{
 fn run(ctx: *Context) error{OutOfMemory}!void {
     const max = readMaxBytes(ctx) orelse return;
 
-    // Estimator wants `*Ast.Module` because it mutates `is_live` (DCE) and
-    // re-runs symbol-usage accounting in place. The Linter's contract
-    // already allows `requires_dce` rules to mutate the same flag, so the
-    // const-cast is consistent with the rest of the lint framework.
-    const result = MinifyEstimator.estimate(
-        ctx.arena,
-        @constCast(ctx.module),
-        .{},
-    ) catch return;
+    // Reuse the caller-supplied estimate if one is available — the LSP's
+    // per-document `MinifyCache` populates this so a single shader-edit
+    // burst runs the estimator once across inlay hints, code lens, and
+    // this rule. CLI lint paths leave it null, so the rule estimates
+    // fresh into the linter arena (preserving the previous semantics).
+    const total_min: u32 = if (ctx.cached_minify_estimate) |cached|
+        cached.total_min
+    else blk: {
+        // Estimator wants `*Ast.Module` because it mutates `is_live` (DCE)
+        // and re-runs symbol-usage accounting in place. The Linter's
+        // contract already allows `requires_dce` rules to mutate the same
+        // flag, so the const-cast is consistent with the rest of the lint
+        // framework.
+        const result = MinifyEstimator.estimate(
+            ctx.arena,
+            @constCast(ctx.module),
+            .{},
+        ) catch return;
+        break :blk result.total_min;
+    };
 
-    if (result.total_min <= max) return;
+    if (total_min <= max) return;
 
     const range = firstDeclNameRange(ctx);
     const msg = try ctx.fmt(
         "minified shader is {d} bytes; exceeds configured budget of {d} bytes",
-        .{ result.total_min, max },
+        .{ total_min, max },
     );
     ctx.report(.{
         .message = msg,

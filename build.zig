@@ -362,6 +362,11 @@ pub fn build(b: *std.Build) void {
     // Phase 6 — module-level total-size code lens + showMinifiedOutput
     // command. Lives next to the other lsp_minify_* suites.
     _ = addTestStep(b, test_step, "tests/lsp_minify_code_lens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // Phase 7 — per-document `MinifyEstimator` cache + recompute
+    // notification. Drives the Handler through inlay-hint / code-lens /
+    // M-rule paths and verifies a single cached estimator run is
+    // shared across all of them, plus the invalidation hooks.
+    _ = addTestStep(b, test_step, "tests/lsp_minify_perf_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/formatting_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/semantic_tokens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/selection_range_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });

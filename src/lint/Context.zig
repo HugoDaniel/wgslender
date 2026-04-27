@@ -21,6 +21,7 @@ const Ast = @import("../Ast.zig");
 const Types = @import("../Types.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const Validator = @import("../Validator.zig");
+const MinifyEstimator = @import("../MinifyEstimator.zig");
 const Rule = @import("Rule.zig");
 
 const Context = @This();
@@ -47,6 +48,12 @@ options: ?std.json.Value = null,
 /// Line-number offset applied to every reported entry. Mirrors
 /// `Validator.Options.line_offset`.
 line_offset: i32 = 0,
+/// Optional pre-computed minify-size estimate the caller produced before
+/// running the linter. M-rules read this first and only fall back to a
+/// fresh `MinifyEstimator.estimate` call when it's null. Threaded from
+/// `Linter.Options.cached_minify_estimate`. The pointer lives in the
+/// caller's arena and is read-only here.
+cached_minify_estimate: ?*const MinifyEstimator.EstimateResult = null,
 
 /// Append a diagnostic produced by the current rule. Missing fields are
 /// filled from the rule's `Meta`: `code`, `source`, and `severity` default

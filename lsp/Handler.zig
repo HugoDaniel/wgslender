@@ -11,8 +11,37 @@ const wgslender = @import("wgslender");
 
 const WgslDiagnostic = wgslender.Diagnostic;
 const MinifySettings = wgslender.MinifySettings;
+const MinifyEstimator = wgslender.MinifyEstimator;
 
 const Handler = @This();
+
+/// Per-document `MinifyEstimator` cache. Phase 7 (master plan §10): the
+/// estimator runs through the production Printer and is non-trivial on
+/// large shaders. Every estimator-using site (`collectMinifyHints`,
+/// `appendTotalSizeLens`, the M0500 lint rule via `Linter.Options`) hits
+/// this cache instead of allocating a fresh arena per call, so a 100-edit
+/// burst followed by one refresh ≈ one estimator run total (vs. ~100
+/// before the cache).
+///
+/// Cache key is `(module_version, options)`:
+///   * `module_version` matches `Document.parse.?.module_version` at
+///     compute time. Any reparse that bumps the version invalidates.
+///   * `options` is compared by struct equality so the three default-
+///     options sites (`Options{}`) share a slot, while the
+///     `runShowMinifiedOutput` cold path (different options) bypasses
+///     the cache.
+///
+/// The result lives in `arena`; teardown frees the hashmaps in one shot.
+pub const MinifyCache = struct {
+    arena: std.heap.ArenaAllocator,
+    module_version: u32,
+    options: MinifyEstimator.Options,
+    result: MinifyEstimator.EstimateResult,
+
+    fn deinit(self: *MinifyCache) void {
+        self.arena.deinit();
+    }
+};
 
 gpa: std.mem.Allocator,
 documents: std.StringHashMapUnmanaged(Document),
@@ -71,6 +100,12 @@ pub const Document = struct {
     /// `MinifySettings.Partial` is POD (no heap tail), so the cached
     /// value survives arena teardown in `rebuildMagic` without copying.
     magic_minify: MinifySettings.Partial = .{},
+    /// Cached `MinifyEstimator` result for the current parse + options.
+    /// Populated lazily by `getMinifyEstimate`. Invalidated by every path
+    /// that bumps `parse.module_version` (didChange / didOpen / didClose
+    /// re-open) and by minify-settings or magic-comment changes that
+    /// could shift the resolved options.
+    minify_cache: ?MinifyCache = null,
 };
 
 // =========================================================================
@@ -122,7 +157,7 @@ pub const LspCodeAction = struct {
 
 /// Server capabilities as a JSON string (shared by native and WASM).
 pub const capabilities_json =
-    \\{"textDocumentSync":{"openClose":true,"change":2,"save":{"includeText":false}},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{},"documentFormattingProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenTypes":["keyword","function","struct","parameter","variable","number","type","comment","decorator"],"tokenModifiers":["declaration","readonly","defaultLibrary"]}},"selectionRangeProvider":true,"callHierarchyProvider":true,"documentHighlightProvider":true,"diagnosticProvider":{"interFileDependencies":false,"workspaceDiagnostics":false},"executeCommandProvider":{"commands":["wgslender.setMinifyMode","wgslender.toggleMinifyMode"]}}
+    \\{"textDocumentSync":{"openClose":true,"change":2,"save":{"includeText":false}},"positionEncoding":"utf-16","codeActionProvider":{"codeActionKinds":["quickfix"]},"hoverProvider":true,"definitionProvider":true,"referencesProvider":true,"renameProvider":{"prepareProvider":true},"completionProvider":{"triggerCharacters":[".","@"]},"signatureHelpProvider":{"triggerCharacters":["(",","]},"documentSymbolProvider":true,"foldingRangeProvider":true,"typeDefinitionProvider":true,"inlayHintProvider":true,"codeLensProvider":{},"documentFormattingProvider":true,"semanticTokensProvider":{"full":true,"legend":{"tokenTypes":["keyword","function","struct","parameter","variable","number","type","comment","decorator"],"tokenModifiers":["declaration","readonly","defaultLibrary"]}},"selectionRangeProvider":true,"callHierarchyProvider":true,"documentHighlightProvider":true,"diagnosticProvider":{"interFileDependencies":false,"workspaceDiagnostics":false},"executeCommandProvider":{"commands":["wgslender.setMinifyMode","wgslender.toggleMinifyMode","wgslender.recomputeMinifyInsights"]}}
 ;
 
 /// Creates a handler with an empty document store.
@@ -147,6 +182,7 @@ pub fn deinit(self: *Handler) void {
         if (entry.value_ptr.parse) |*p| {
             p.deinit();
         }
+        if (entry.value_ptr.minify_cache) |*c| c.deinit();
         self.gpa.free(entry.key_ptr.*);
         self.gpa.free(entry.value_ptr.source);
     }
@@ -181,6 +217,25 @@ fn invalidateAnalysisAt(self: *Handler, doc: *Document) void {
         doc.analysis_source = null;
     }
     doc.analysis_module_version = 0;
+    invalidateMinifyCacheAt(doc);
+}
+
+/// Drop the per-document `MinifyEstimator` cache. Free function so paths
+/// that don't have `*Handler` (only the `Document`) can call it.
+fn invalidateMinifyCacheAt(doc: *Document) void {
+    if (doc.minify_cache) |*c| {
+        c.deinit();
+        doc.minify_cache = null;
+    }
+}
+
+/// Drop every document's minify-estimator cache. Called whenever a
+/// settings layer that could shift `effectiveMinifyFor(uri)` changes —
+/// the resolved `MinifyEstimator.Options` flow into the cache key, so
+/// stale entries can no longer be trusted.
+fn invalidateAllMinifyCaches(self: *Handler) void {
+    var it = self.documents.iterator();
+    while (it.next()) |entry| invalidateMinifyCacheAt(entry.value_ptr);
 }
 
 /// (Re)build the persistent `doc.parse` from `doc.source`. Best-effort:
@@ -200,6 +255,10 @@ fn rebuildParse(self: *Handler, doc: *Document) void {
 /// diagnostics it emits are discarded; later phases surface them through
 /// the publish/pull diagnostic paths via a dedicated scan at query time.
 fn rebuildMagic(self: *Handler, doc: *Document) void {
+    // Magic comments contribute to `effectiveMinifyFor`, so any change to
+    // the magic layer can shift the resolved `MinifyEstimator.Options`
+    // and must drop the cached estimate.
+    invalidateMinifyCacheAt(doc);
     var arena_state = std.heap.ArenaAllocator.init(self.gpa);
     defer arena_state.deinit();
     const result = wgslender.MagicComment.scan(arena_state.allocator(), doc.source) catch {
@@ -264,6 +323,7 @@ pub fn closeDocument(self: *Handler, uri: []const u8) void {
     if (value.parse) |*p| {
         p.deinit();
     }
+    if (value.minify_cache) |*c| c.deinit();
     self.gpa.free(entry.key);
     self.gpa.free(value.source);
 }
@@ -315,6 +375,11 @@ pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
         .object => |o| o,
         else => return,
     };
+    // Any settings refresh can shift `effectiveMinifyFor` (mode toggle,
+    // mangle flag, severities map) — over-invalidating once per
+    // configuration pull is far cheaper than a per-field dirty check
+    // and matches the once-per-user-action cadence of this entry point.
+    self.invalidateAllMinifyCaches();
     if (obj.get("inlayHints")) |ih| switch (ih) {
         .object => |o| if (o.get("enabled")) |b| switch (b) {
             .bool => |v| self.settings.inlay_hints_enabled = v,
@@ -502,6 +567,25 @@ pub fn executeCommand(self: *Handler, name: []const u8, args: ?[]const std.json.
         self.workspace_minify.mode = next;
         return;
     }
+    if (std.mem.eql(u8, name, "wgslender.recomputeMinifyInsights")) {
+        // Phase 7 native debounce shim. lsp-kit's `basic_server.run`
+        // dispatch only knows method names registered with the
+        // generator, so a custom `wgslender/recomputeMinifyInsights`
+        // notification can't be routed by the native transport. We
+        // expose the same operation as a command instead — clients
+        // send `workspace/executeCommand` with `[uri]` as the only
+        // argument. The WASM transport keeps the notification name
+        // (raw dispatch matches strings directly) and converges on
+        // `Handler.refreshMinifyInsights`.
+        const items = args orelse return error.InvalidParams;
+        if (items.len < 1) return error.InvalidParams;
+        const uri = switch (items[0]) {
+            .string => |s| s,
+            else => return error.InvalidParams,
+        };
+        self.refreshMinifyInsights(uri);
+        return;
+    }
     return error.UnknownCommand;
 }
 
@@ -669,6 +753,94 @@ fn analyzeFromScratch(
 }
 
 // =========================================================================
+// MinifyEstimator cache
+// =========================================================================
+
+/// Errors `getMinifyEstimate` and `refreshMinifyInsights` can surface.
+/// Three failure modes: the doc is unknown, the analysis didn't yield a
+/// module (parser fully failed), or the cache allocator ran out.
+pub const MinifyEstimateError = error{
+    DocumentNotFound,
+    NoModule,
+    OutOfMemory,
+};
+
+/// Return the cached `MinifyEstimator.EstimateResult` for `uri`, computing
+/// it on demand if the cache is cold or stale. The pointer is owned by
+/// the document's cache arena and stays valid until the cache is
+/// invalidated (next parse-version bump, settings refresh, magic-comment
+/// rescan, document close, or handler deinit).
+///
+/// Cache-hit conditions: the doc has a populated cache whose
+/// `module_version` matches the live `parse.module_version` AND whose
+/// `options` are byte-identical to the requested ones. Any miss replaces
+/// the entry with a fresh estimate; cache state is single-slot per doc
+/// because the only realistic divergence is `Options{}` (the inlay/lens/
+/// M0500 path) vs. `Options{ .mangle_external_bindings = true }` (the
+/// `runShowMinifiedOutput` cold path), which already manages its own
+/// scratch arena and does not call this helper.
+pub fn getMinifyEstimate(
+    self: *Handler,
+    uri: []const u8,
+    options: MinifyEstimator.Options,
+) MinifyEstimateError!*const MinifyEstimator.EstimateResult {
+    const doc = self.documents.getPtr(uri) orelse return error.DocumentNotFound;
+
+    // Run / reuse analysis so the cache key (`module_version`) and the
+    // module pointer come from the same source of truth.
+    const analysis = self.analyzeDocument(uri) catch return error.NoModule;
+    const module = analysis.module orelse return error.NoModule;
+
+    const version: u32 = if (doc.parse) |*p| p.module_version else 0;
+
+    if (doc.minify_cache) |*hot| {
+        if (hot.module_version == version and optionsEql(hot.options, options)) {
+            return &hot.result;
+        }
+        hot.deinit();
+        doc.minify_cache = null;
+    }
+
+    var arena: std.heap.ArenaAllocator = .init(self.gpa);
+    errdefer arena.deinit();
+    const result = MinifyEstimator.estimate(arena.allocator(), @constCast(module), options) catch
+        return error.OutOfMemory;
+
+    doc.minify_cache = .{
+        .arena = arena,
+        .module_version = version,
+        .options = options,
+        .result = result,
+    };
+    return &doc.minify_cache.?.result;
+}
+
+/// Field-by-field equality for `MinifyEstimator.Options`. Spelling it out
+/// future-proofs the cache-hit predicate against anyone adding a
+/// non-trivially-comparable field (e.g. a slice).
+fn optionsEql(a: MinifyEstimator.Options, b: MinifyEstimator.Options) bool {
+    return a.mangle_external_bindings == b.mangle_external_bindings and
+        a.sort_declarations == b.sort_declarations and
+        a.scope_local_rename == b.scope_local_rename and
+        a.tree_shaking == b.tree_shaking;
+}
+
+/// Public refresh entry point. Phase 7 native debounce + WASM
+/// `wgslender/recomputeMinifyInsights` notification both call this to
+/// warm the cache for the document's currently-resolved minify state.
+/// No-op when the doc is unknown, the parse failed, or
+/// `effectiveMinifyFor(uri)` resolves to a state that needs no estimator
+/// work (mode = off with no insights/lints active) — that's how the
+/// "no recomputation when mode=off regardless of edits" test stays
+/// honest.
+pub fn refreshMinifyInsights(self: *Handler, uri: []const u8) void {
+    if (!self.documents.contains(uri)) return;
+    const eff = self.effectiveMinifyFor(uri);
+    if (!eff.insightsActive() and !eff.lintsActive()) return;
+    _ = self.getMinifyEstimate(uri, .{}) catch return;
+}
+
+// =========================================================================
 // Diagnostics
 // =========================================================================
 
@@ -693,7 +865,29 @@ pub fn validateDocument(self: *Handler, source: []const u8) ![]LspDiagnostic {
 
 /// Validate a document using the analysis cache and append unused symbol warnings.
 /// This is used by publishDiagnostics to produce a complete diagnostic set.
+/// Phase 7: when the doc's effective minifier-mode requires lint output,
+/// the cached `MinifyEstimator.EstimateResult` is threaded into the
+/// linter so M0500 (and any future M-rule) shares the per-document
+/// cache instead of re-running the estimator from scratch.
 pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
+    return self.validateDocumentInner(uri, .{ .include_minify_lints = true });
+}
+
+/// Phase 7 cheap path: validator + unused/dead-code warnings, without
+/// the M-rule lint block. The push-on-`didChange` path on both transports
+/// uses this so a 100-keystroke burst never enters the (potentially
+/// estimator-heavy) minify lint pipeline. The full path runs from the
+/// debounce timer (native) or the `wgslender/recomputeMinifyInsights`
+/// notification (WASM), each call warming the cache exactly once.
+pub fn validateDocumentCheap(self: *Handler, uri: []const u8) ![]LspDiagnostic {
+    return self.validateDocumentInner(uri, .{ .include_minify_lints = false });
+}
+
+const ValidateOptions = struct {
+    include_minify_lints: bool,
+};
+
+fn validateDocumentInner(self: *Handler, uri: []const u8, options: ValidateOptions) ![]LspDiagnostic {
     const analysis = try self.analyzeDocument(uri);
 
     const entries = analysis.diagnostics.diagnostics.items;
@@ -720,14 +914,22 @@ pub fn validateDocumentFull(self: *Handler, uri: []const u8) ![]LspDiagnostic {
     // borrowed slice into the handler's allocator, so the arena teardown
     // immediately after the loop is safe.
     const eff_minify = self.effectiveMinifyFor(uri);
-    if (eff_minify.lintsActive()) {
+    if (options.include_minify_lints and eff_minify.lintsActive()) {
         var minify_arena = std.heap.ArenaAllocator.init(self.gpa);
         defer minify_arena.deinit();
         const overrides = try self.buildMinifyRuleOverrides(minify_arena.allocator(), eff_minify);
 
+        // Phase 7 cache hand-off: warm the per-document estimator cache
+        // once and let M-rules read the same pointer. `getMinifyEstimate`
+        // returns null on parse-failure paths; in that case the rule
+        // falls back to its own estimate (matching CLI lint behaviour).
+        const cached_estimate: ?*const MinifyEstimator.EstimateResult =
+            self.getMinifyEstimate(uri, .{}) catch null;
+
         var lint_result = try wgslender.Linter.run(self.gpa, analysis, .{
             .extends = &.{"@wgslender/minify"},
             .rules = overrides,
+            .cached_minify_estimate = cached_estimate,
         });
         defer lint_result.deinit(self.gpa);
         for (lint_result.diagnostics.items()) |entry| {
@@ -2767,10 +2969,14 @@ fn collectMinifyHints(
     const eff = self.effectiveMinifyFor(uri);
     if (!eff.insightsActive()) return;
 
-    const MinifyEstimator = wgslender.MinifyEstimator;
-    var arena = std.heap.ArenaAllocator.init(self.gpa);
-    defer arena.deinit();
-    const result = MinifyEstimator.estimate(arena.allocator(), @constCast(module), .{}) catch return;
+    // Phase 7: shared per-document cache. The first inlay-hint /
+    // code-lens / lint-rule call after a parse-version bump pays the
+    // estimator cost; every subsequent call within the same version
+    // returns the same pointer. `module` is still consumed below for
+    // its declarations list — the cache only replaces the estimator's
+    // arena, not the caller's traversal.
+    const cached = self.getMinifyEstimate(uri, .{}) catch return;
+    const result = cached;
 
     if (eff.insights.total_size) {
         const original: u32 = @intCast(source.len);
@@ -3382,7 +3588,7 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
     // outlive this call; we copy out only the four u32s and the click
     // command into the returned lens.
     if (self.effectiveMinifyFor(uri).insights.total_size) {
-        self.appendTotalSizeLens(uri, module, source, &lenses) catch |err| switch (err) {
+        self.appendTotalSizeLens(uri, source, &lenses) catch |err| switch (err) {
             error.OutOfMemory => return err,
         };
     }
@@ -3404,18 +3610,14 @@ pub fn computeCodeLens(self: *Handler, uri: []const u8) ![]CodeLensInfo {
 fn appendTotalSizeLens(
     self: *Handler,
     uri: []const u8,
-    module: *const Ast.Module,
     source: [:0]const u8,
     lenses: *std.ArrayListUnmanaged(CodeLensInfo),
 ) !void {
-    const MinifyEstimator = wgslender.MinifyEstimator;
-    var arena = std.heap.ArenaAllocator.init(self.gpa);
-    defer arena.deinit();
-    // `@constCast` mirrors the inlay-hints path. The estimator
-    // re-runs symbol-usage accounting + DCE in place; the Linter's
-    // `requires_dce` rules already mutate the same flags via the
-    // same const-cast, so the convention is consistent.
-    const result = MinifyEstimator.estimate(arena.allocator(), @constCast(module), .{}) catch return;
+    // Phase 7 — read through the per-document cache. The first
+    // codeLens / inlayHint / minify-lint pass after a parse-version
+    // bump pays the estimator cost; subsequent ones in the same
+    // version return the same pointer.
+    const result = self.getMinifyEstimate(uri, .{}) catch return;
 
     const eff = self.effectiveMinifyFor(uri);
     const original: u32 = @intCast(source.len);
