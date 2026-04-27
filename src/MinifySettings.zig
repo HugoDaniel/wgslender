@@ -58,6 +58,14 @@ pub const Partial = struct {
     /// vars so it can silence the `M0100 minify/external-binding-blocks-rename`
     /// hint.
     mangle_external_bindings: ?bool = null,
+    /// LSP-side budget for `M0500 minify/shader-exceeds-size-budget`.
+    /// When the resolved value is non-null, the LSP forwards it as
+    /// `{"maxBytes": N}` to the rule's `RuleOverride.options`. `null`
+    /// keeps the rule a no-op (matches its CLI default — see the rule
+    /// docstring for the rationale against a defensible default).
+    /// JSON-only knob; magic comments do not set this field, mirroring
+    /// the precedent for `severities` (§18 entry 13 of the design plan).
+    budget_bytes: ?u32 = null,
 };
 
 pub const Effective = struct {
@@ -67,6 +75,11 @@ pub const Effective = struct {
     /// Resolved view of `Partial.mangle_external_bindings`. Rules and code
     /// lenses read this to decide whether external-binding rename is on.
     mangle_external_bindings: bool = false,
+    /// Resolved view of `Partial.budget_bytes`. The Handler forwards this
+    /// to M0500's `RuleOverride.options` when non-null; the total-size
+    /// code lens compares against it to render the over-budget badge.
+    /// `null` = unset (M0500 stays a no-op).
+    budget_bytes: ?u32 = null,
 
     pub fn insightsActive(self: Effective) bool {
         return self.mode != .off;
@@ -96,6 +109,7 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
     };
     var lints: LintsSwitches = .{ .enabled = mode == .strict };
     var mangle_external_bindings: bool = false;
+    var budget_bytes: ?u32 = null;
 
     inline for ([_]Partial{ project, workspace, magic }) |layer| {
         if (layer.function_size) |v| insights.function_size = v;
@@ -104,6 +118,7 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
         if (layer.format) |v| insights.format = v;
         if (layer.lints_enabled) |v| lints.enabled = v;
         if (layer.mangle_external_bindings) |v| mangle_external_bindings = v;
+        if (layer.budget_bytes) |v| budget_bytes = v;
     }
 
     return .{
@@ -111,5 +126,6 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
         .insights = insights,
         .lints = lints,
         .mangle_external_bindings = mangle_external_bindings,
+        .budget_bytes = budget_bytes,
     };
 }

@@ -126,6 +126,11 @@ fn parseLspSection(out: *MinifySettings.Partial, lsp: std.json.ObjectMap) void {
             if (v.object.get("enabled")) |b| {
                 if (b == .bool) out.lints_enabled = b.bool;
             }
+            if (v.object.get("budgetBytes")) |b| {
+                if (b == .integer and b.integer >= 0) {
+                    out.budget_bytes = @intCast(b.integer);
+                }
+            }
         }
     }
     if (lsp.get("mangleExternalBindings")) |v| {

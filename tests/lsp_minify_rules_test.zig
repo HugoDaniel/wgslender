@@ -556,3 +556,133 @@ test "lsp minify rules: severities M0500=off is a no-op (already silent)" {
         return error.TestUnexpectedResult;
     }
 }
+
+// =========================================================================
+// Phase 6 — minifyLints.budgetBytes knob
+// =========================================================================
+//
+// Phase 6 closes the gap left by Phase 5c: the LSP can now supply
+// `maxBytes` to M0500 via `minifyLints.budgetBytes`, so users driving
+// the LSP can finally fire the rule. CLI users were already covered
+// through the `Linter.RuleOverride.options` shape; this is a pure
+// LSP-side wiring exercise.
+
+test "lsp minify rules: minifyLints.budgetBytes fires M0500 when shader exceeds budget" {
+    const h = try setup();
+    defer teardown(h);
+    // Tiny budget guarantees the multi-decl sample blows past it. The
+    // estimator's exact byte count for `sample_with_many_decls` is
+    // implementation-detail; comparing against `1` keeps the test
+    // robust to estimator tweaks while still pinning "fires when over".
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":1}}
+    );
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (!hasCode(diags, "M0500")) {
+        dump("expected M0500 with budgetBytes=1 (any non-empty shader exceeds it)", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: minifyLints.budgetBytes silent when under budget" {
+    const h = try setup();
+    defer teardown(h);
+    // 1 MiB ceiling — no realistic test fixture will brush against it.
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":1048576}}
+    );
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0500")) {
+        dump("unexpected M0500 — shader is well under 1 MiB budget", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: minifyLints.budgetBytes still silent at mode=insights" {
+    // Lints aren't active at mode=insights regardless of budget value;
+    // this guards against a regression where the budget knob accidentally
+    // gates `lintsActive()` instead of being a per-rule input.
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"insights","minifyLints":{"budgetBytes":1}}
+    );
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0500")) {
+        dump("unexpected M0500 at mode=insights even with budgetBytes set", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: minifyLints.budgetBytes negative value silently ignored" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":-1}}
+    );
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0500")) {
+        dump("unexpected M0500 — negative budget must be treated as unset", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: minifyLints.budgetBytes wrong type silently ignored" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":"1024"}}
+    );
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0500")) {
+        dump("unexpected M0500 — string budget must be treated as unset", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: minifyLints.budgetBytes composes with severities map" {
+    // Severity=warning + budget=1 should both apply: M0500 fires
+    // (because of the budget) and is stamped at warning (because of the
+    // severities map), confirming the override accumulator merges the
+    // two paths into a single RuleOverride entry.
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":1,"severities":{"M0500":"warning"}}}
+    );
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    var saw_warning = false;
+    for (diags) |d| {
+        if (!std.mem.eql(u8, d.code, "M0500")) continue;
+        try std.testing.expectEqual(Handler.DiagnosticSeverity.warning, d.severity);
+        saw_warning = true;
+    }
+    if (!saw_warning) {
+        dump("expected M0500 stamped at warning with budget=1", diags);
+        return error.TestUnexpectedResult;
+    }
+}

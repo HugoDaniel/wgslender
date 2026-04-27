@@ -168,6 +168,57 @@ test "resolve: workspace null leaves project mangle_external_bindings intact" {
     try std.testing.expect(eff.mangle_external_bindings);
 }
 
+// =========================================================================
+// budget_bytes — Phase 6
+// =========================================================================
+//
+// Mirror the `mangle_external_bindings` block: confirm the field
+// threads through `Partial` → `Effective` and respects the standard
+// magic > workspace > project precedence. Tri-state (`?u32`) means a
+// zero budget is meaningful (M0500 fires on anything), distinct from
+// "unset" (rule no-ops).
+
+test "resolve: budget_bytes defaults to null" {
+    const eff = MinifySettings.resolve(.{}, .{}, .{});
+    try std.testing.expectEqual(@as(?u32, null), eff.budget_bytes);
+}
+
+test "resolve: project budget_bytes propagates" {
+    const eff = MinifySettings.resolve(
+        .{ .budget_bytes = 4096 },
+        .{},
+        .{},
+    );
+    try std.testing.expectEqual(@as(?u32, 4096), eff.budget_bytes);
+}
+
+test "resolve: workspace budget_bytes overrides project" {
+    const eff = MinifySettings.resolve(
+        .{ .budget_bytes = 4096 },
+        .{ .budget_bytes = 8192 },
+        .{},
+    );
+    try std.testing.expectEqual(@as(?u32, 8192), eff.budget_bytes);
+}
+
+test "resolve: workspace null leaves project budget_bytes intact" {
+    const eff = MinifySettings.resolve(
+        .{ .budget_bytes = 4096 },
+        .{},
+        .{},
+    );
+    try std.testing.expectEqual(@as(?u32, 4096), eff.budget_bytes);
+}
+
+test "resolve: budget_bytes=0 is meaningful (distinct from null)" {
+    const eff = MinifySettings.resolve(
+        .{ .budget_bytes = 0 },
+        .{},
+        .{},
+    );
+    try std.testing.expectEqual(@as(?u32, 0), eff.budget_bytes);
+}
+
 test "Mode.fromString: accepts exactly the three canonical values" {
     try std.testing.expectEqual(MinifySettings.Mode.off, MinifySettings.Mode.fromString("off").?);
     try std.testing.expectEqual(MinifySettings.Mode.insights, MinifySettings.Mode.fromString("insights").?);
@@ -247,6 +298,30 @@ test "Config: lsp.minifyLints.enabled parses" {
         "{\"lsp\":{\"minifyLints\":{\"enabled\":true}}}",
     );
     try std.testing.expectEqual(@as(?bool, true), cfg.lsp_minify.lints_enabled);
+}
+
+test "Config: lsp.minifyLints.budgetBytes parses into Partial" {
+    const cfg = try wgslender.Config.parseJson(
+        std.testing.allocator,
+        "{\"lsp\":{\"minifyLints\":{\"budgetBytes\":4096}}}",
+    );
+    try std.testing.expectEqual(@as(?u32, 4096), cfg.lsp_minify.budget_bytes);
+}
+
+test "Config: lsp.minifyLints.budgetBytes negative silently ignored" {
+    const cfg = try wgslender.Config.parseJson(
+        std.testing.allocator,
+        "{\"lsp\":{\"minifyLints\":{\"budgetBytes\":-1}}}",
+    );
+    try std.testing.expectEqual(@as(?u32, null), cfg.lsp_minify.budget_bytes);
+}
+
+test "Config: lsp.minifyLints.budgetBytes absent leaves Partial null" {
+    const cfg = try wgslender.Config.parseJson(
+        std.testing.allocator,
+        "{\"lsp\":{\"minifyLints\":{\"enabled\":true}}}",
+    );
+    try std.testing.expectEqual(@as(?u32, null), cfg.lsp_minify.budget_bytes);
 }
 
 test "Config: lsp.mangleExternalBindings parses into Partial" {

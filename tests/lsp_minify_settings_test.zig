@@ -280,6 +280,64 @@ test "applyClientSettings: minifyLints.enabled=false in strict keeps lints off" 
     try std.testing.expect(!eff.lintsActive());
 }
 
+test "applyClientSettings: minifyLints.budgetBytes integer sets workspace field" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson(
+        \\{"minifyLints":{"budgetBytes":4096}}
+    );
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try std.testing.expectEqual(@as(?u32, 4096), h.effectiveMinify().budget_bytes);
+}
+
+test "applyClientSettings: minifyLints.budgetBytes negative integer treated as unset" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson(
+        \\{"minifyLints":{"budgetBytes":-1}}
+    );
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try std.testing.expectEqual(@as(?u32, null), h.effectiveMinify().budget_bytes);
+}
+
+test "applyClientSettings: minifyLints.budgetBytes wrong type silently ignored" {
+    const h = try setup();
+    defer teardown(h);
+
+    var parsed = try parseJson(
+        \\{"minifyLints":{"budgetBytes":"1024"}}
+    );
+    defer parsed.deinit();
+    h.applyClientSettings(parsed.value);
+
+    try std.testing.expectEqual(@as(?u32, null), h.effectiveMinify().budget_bytes);
+}
+
+test "applyClientSettings: minifyLints.budgetBytes=null clears prior value" {
+    const h = try setup();
+    defer teardown(h);
+
+    var on = try parseJson(
+        \\{"minifyLints":{"budgetBytes":2048}}
+    );
+    defer on.deinit();
+    h.applyClientSettings(on.value);
+    try std.testing.expectEqual(@as(?u32, 2048), h.effectiveMinify().budget_bytes);
+
+    var off = try parseJson(
+        \\{"minifyLints":{"budgetBytes":null}}
+    );
+    defer off.deinit();
+    h.applyClientSettings(off.value);
+    try std.testing.expectEqual(@as(?u32, null), h.effectiveMinify().budget_bytes);
+}
+
 test "applyClientSettings: preserves existing non-minify fields" {
     const h = try setup();
     defer teardown(h);

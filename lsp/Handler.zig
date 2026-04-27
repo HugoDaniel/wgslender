@@ -373,6 +373,19 @@ pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
                 },
                 else => {},
             };
+            // `budgetBytes` (M0500 size budget). Negative values and
+            // non-integers are silently ignored — same permissive shape
+            // as the rest of this parser. `null`/missing leaves the
+            // previous value in place; clients reset by sending an
+            // explicit `null` or by re-issuing the whole settings block
+            // without the key (workspace replays clear all fields).
+            if (o.get("budgetBytes")) |bv| switch (bv) {
+                .integer => |i| {
+                    self.workspace_minify.budget_bytes = if (i >= 0) @intCast(i) else null;
+                },
+                .null => self.workspace_minify.budget_bytes = null,
+                else => {},
+            };
         },
         else => {},
     };
@@ -698,6 +711,17 @@ fn buildMinifyRuleOverrides(
         try obj.put(arena, "mangleExternalBindings", .{ .bool = true });
         const gop = try by_id.getOrPut(arena, m0100_id);
         if (!gop.found_existing) gop.value_ptr.* = .{ .id = m0100_id };
+        gop.value_ptr.options = .{ .object = obj };
+    }
+
+    // M0500 maxBytes gate. JSON integers are i64, so widen `u32`
+    // through that signed path before stamping the option value.
+    if (eff.budget_bytes) |budget| {
+        const m0500_id: []const u8 = "minify/shader-exceeds-size-budget";
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(arena, "maxBytes", .{ .integer = @as(i64, budget) });
+        const gop = try by_id.getOrPut(arena, m0500_id);
+        if (!gop.found_existing) gop.value_ptr.* = .{ .id = m0500_id };
         gop.value_ptr.options = .{ .object = obj };
     }
 
