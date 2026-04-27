@@ -654,3 +654,227 @@ test "@wgslender/minify pack enables M0101" {
     try std.testing.expect(hasCode(r, "M0101"));
 }
 
+// =========================================================================
+// minify/shader-exceeds-size-budget (M0500) — Phase 5c
+// =========================================================================
+//
+// Module-level advisory that fires when the estimated minified byte size
+// exceeds a user-supplied `maxBytes` threshold. No-ops without `maxBytes`
+// — there's no defensible default budget so the rule is opt-in via the
+// standard `Linter.RuleOverride.options` shape (`["warn", {"maxBytes": N}]`).
+//
+// The diagnostic anchors at the first declaration's name span so editors
+// have a stable place to surface the squiggle; if the module has no
+// declarations it falls back to (0..0).
+
+fn parseOptionsLeaky(arena: std.mem.Allocator, json: []const u8) !std.json.Value {
+    return std.json.parseFromSliceLeaky(std.json.Value, arena, json, .{});
+}
+
+const m0500_large_src: [:0]const u8 =
+    \\fn helper_one() -> f32 { return 1.0; }
+    \\fn helper_two() -> f32 { return 2.0; }
+    \\fn helper_three() -> f32 { return 3.0; }
+    \\@compute @workgroup_size(1) fn main() {
+    \\    let _v = helper_one() + helper_two() + helper_three();
+    \\}
+;
+
+test "minify/shader-exceeds-size-budget: positive — over-budget source fires" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts = try parseOptionsLeaky(arena.allocator(), "{\"maxBytes\":10}");
+
+    var r = try runLint(m0500_large_src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/shader-exceeds-size-budget",
+                .severity = .hint,
+                .options = opts,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    if (!hasCode(r, "M0500")) {
+        dump("expected M0500 to fire on over-budget source", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "minify/shader-exceeds-size-budget: positive — message reports both numbers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts = try parseOptionsLeaky(arena.allocator(), "{\"maxBytes\":10}");
+
+    var r = try runLint(m0500_large_src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/shader-exceeds-size-budget",
+                .severity = .hint,
+                .options = opts,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    const d = firstWithCode(r, "M0500") orelse {
+        dump("no M0500 emitted", r);
+        return error.TestUnexpectedResult;
+    };
+    // Message must mention both the (estimated) actual size and the budget
+    // — without that, the user has no idea by how much they're over.
+    try std.testing.expect(std.mem.indexOf(u8, d.message, "10") != null);
+    try std.testing.expect(std.mem.indexOf(u8, d.message, "bytes") != null);
+}
+
+test "minify/shader-exceeds-size-budget: negative — no maxBytes is silent regardless of size" {
+    // Even a giant source file is silent without an explicit budget. The
+    // pack-default (no options) must never fire on its own.
+    var r = try runLint(m0500_large_src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0500"));
+}
+
+test "minify/shader-exceeds-size-budget: negative — under-budget source is silent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // 100 KB is comfortably above any minified shader the test fixtures
+    // produce, so even with the budget knob set the rule must stay quiet.
+    const opts = try parseOptionsLeaky(arena.allocator(), "{\"maxBytes\":100000}");
+
+    var r = try runLint(m0500_large_src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/shader-exceeds-size-budget",
+                .severity = .hint,
+                .options = opts,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0500"));
+}
+
+test "minify/shader-exceeds-size-budget: negative — empty module is silent even with maxBytes=0" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts = try parseOptionsLeaky(arena.allocator(), "{\"maxBytes\":0}");
+
+    var r = try runLint("", .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/shader-exceeds-size-budget",
+                .severity = .hint,
+                .options = opts,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    // Empty source minifies to 0 bytes — strictly-greater check means a
+    // 0-byte budget on a 0-byte module stays silent.
+    try std.testing.expect(!hasCode(r, "M0500"));
+}
+
+test "minify/shader-exceeds-size-budget: range covers the first decl name span" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts = try parseOptionsLeaky(arena.allocator(), "{\"maxBytes\":1}");
+
+    // First decl is `const FIRST: f32 = 3.14;` — name `FIRST` starts at
+    // col 7 (1-based), length 5 → end col 12.
+    const src: [:0]const u8 =
+        \\const FIRST: f32 = 3.14;
+        \\const SECOND: f32 = 2.71;
+        \\@compute @workgroup_size(1) fn main() { let _v = FIRST + SECOND; }
+    ;
+    var r = try runLint(src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/shader-exceeds-size-budget",
+                .severity = .hint,
+                .options = opts,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    const d = firstWithCode(r, "M0500") orelse {
+        dump("no M0500 emitted", r);
+        return error.TestUnexpectedResult;
+    };
+    try std.testing.expectEqual(@as(u32, 1), d.range.start.line);
+    try std.testing.expectEqual(@as(u32, 7), d.range.start.column);
+    try std.testing.expectEqual(@as(u32, 12), d.range.end.column);
+}
+
+test "minify/shader-exceeds-size-budget: default severity is hint" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts = try parseOptionsLeaky(arena.allocator(), "{\"maxBytes\":10}");
+
+    var r = try runLint(m0500_large_src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/shader-exceeds-size-budget",
+                .severity = .hint,
+                .options = opts,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasSeverity(r, "M0500", .hint));
+}
+
+test "minify/shader-exceeds-size-budget: per-rule override escalates to warning" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts = try parseOptionsLeaky(arena.allocator(), "{\"maxBytes\":10}");
+
+    var r = try runLint(m0500_large_src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/shader-exceeds-size-budget",
+                .severity = .warning,
+                .options = opts,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasSeverity(r, "M0500", .warning));
+}
+
+test "minify/shader-exceeds-size-budget: spec_ref points at minify slug" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts = try parseOptionsLeaky(arena.allocator(), "{\"maxBytes\":10}");
+
+    var r = try runLint(m0500_large_src, .{
+        .extends = &.{"@wgslender/minify"},
+        .rules = &.{
+            .{
+                .id = "minify/shader-exceeds-size-budget",
+                .severity = .hint,
+                .options = opts,
+            },
+        },
+    });
+    defer r.deinit(std.testing.allocator);
+    const d = firstWithCode(r, "M0500") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("minify", d.spec_ref);
+}
+
+test "@wgslender/minify pack lists M0500 (silent without maxBytes)" {
+    // The pack opts the rule in at default severity but the rule is a
+    // no-op until `maxBytes` is supplied — confirm the pack alone doesn't
+    // fire it on a fixture that would otherwise blow past any reasonable
+    // budget.
+    var r = try runLint(m0500_large_src, minify_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(!hasCode(r, "M0500"));
+}
+

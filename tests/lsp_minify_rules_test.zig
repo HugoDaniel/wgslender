@@ -457,3 +457,102 @@ test "lsp minify rules: mangleExternalBindings=true does not silence other M-cod
     try std.testing.expect(hasCode(diags, "M0201"));
     try std.testing.expect(hasCode(diags, "M0202"));
 }
+
+// =========================================================================
+// Phase 5c — minify/shader-exceeds-size-budget (M0500) LSP integration
+// =========================================================================
+//
+// M0500 is opt-in via the rule's `options.maxBytes` shape. Phase 5c
+// intentionally does NOT ship an LSP-side `minifyLints.budgetBytes`
+// knob — that wiring is deferred to Phase 6 alongside the total-size
+// code lens (see §18 entry 16). These tests lock the current behaviour
+// so a future regression is caught:
+//
+//   * mode=insights and mode=off never run lint rules, so M0500 is
+//     silent regardless of any severity flip.
+//   * mode=strict + no LSP-side budget knob → silent (the rule no-ops
+//     without `maxBytes`).
+//   * the `severities` map can still address M0500 (e.g. set it to off)
+//     without crashing — confirms the registry lookup wires the code
+//     correctly even though the rule itself stays quiet.
+
+const sample_with_many_decls: [:0]const u8 =
+    \\fn helper_one() -> f32 { return 1.0; }
+    \\fn helper_two() -> f32 { return 2.0; }
+    \\fn helper_three() -> f32 { return 3.0; }
+    \\@compute @workgroup_size(1) fn main() {
+    \\    let _v = helper_one() + helper_two() + helper_three();
+    \\}
+;
+
+test "lsp minify rules: mode=insights does not fire M0500" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0500")) {
+        dump("unexpected M0500 at mode=insights", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: mode=strict alone does not fire M0500 (deferred budgetBytes knob)" {
+    // Phase 5c §18 entry 16: there is intentionally no LSP-side
+    // `minifyLints.budgetBytes` setting yet. The rule must stay silent
+    // until that wiring lands (Phase 6) so the LSP doesn't surface a
+    // diagnostic the user has no UI to configure.
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0500")) {
+        dump("unexpected M0500 — strict mode without a budget knob must stay silent", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: severities map can address M0500 without crashing" {
+    // The severities map flips severity but cannot supply `maxBytes`,
+    // so M0500 stays silent here too. The point of this test is to
+    // confirm the registry lookup resolves "M0500" → the rule id and
+    // doesn't panic / leak.
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0500":"warning"}}}
+    );
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0500")) {
+        dump("unexpected M0500 — severity flip cannot supply maxBytes", diags);
+        return error.TestUnexpectedResult;
+    }
+}
+
+test "lsp minify rules: severities M0500=off is a no-op (already silent)" {
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h,
+        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0500":"off"}}}
+    );
+
+    try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
+    const diags = try h.validateDocumentFull("file:///a.wgsl");
+    defer freeDiags(diags);
+
+    if (hasCode(diags, "M0500")) {
+        dump("unexpected M0500 — severity=off must stay silent", diags);
+        return error.TestUnexpectedResult;
+    }
+}
