@@ -162,6 +162,44 @@ test "perf: cache invalidated by minify settings change" {
     try std.testing.expectEqual(@as(u64, 2), MinifyEstimator.estimate_count - before);
 }
 
+test "perf: rapid didChange coalesces to single estimator run" {
+    // The acceptance criterion from master plan §10.3: a 100-keystroke
+    // burst followed by one refresh runs the estimator once. The
+    // Handler-level contract guaranteeing this is:
+    //   1. `changeDocumentIncremental` invalidates the cache without
+    //      itself touching the estimator.
+    //   2. `refreshMinifyInsights` is the only estimator-running entry
+    //      point on the hot path (transports route through it once on
+    //      idle / on `wgslender.recomputeMinifyInsights`).
+    // Drive that contract here without a transport stub.
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try h.openDocument("file:///burst.wgsl", sample_shader, 1);
+
+    const before = MinifyEstimator.estimate_count;
+
+    var i: u32 = 0;
+    while (i < 100) : (i += 1) {
+        try h.changeDocumentIncremental(
+            "file:///burst.wgsl",
+            .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } },
+            " ",
+        );
+    }
+
+    // No estimator runs during the burst — the cache is invalidated on
+    // every parse-version bump but never recomputed without an explicit
+    // pull (inlay/lens/lint) or the refresh entry point.
+    try std.testing.expectEqual(@as(u64, 0), MinifyEstimator.estimate_count - before);
+
+    h.refreshMinifyInsights("file:///burst.wgsl");
+
+    // One estimator run after the burst, comfortably inside the master
+    // plan's "≤ 2× total" allowance.
+    try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+}
+
 test "perf: refreshMinifyInsights hand-off (recomputeMinifyInsights path)" {
     // The WASM transport's `wgslender/recomputeMinifyInsights` notification
     // (lsp/wasm.zig:handleRecomputeMinifyInsights) and the native

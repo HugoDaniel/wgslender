@@ -221,7 +221,10 @@ fn handleDidChange(root: std.json.ObjectMap) void {
             handler.changeDocument(uri, text) catch continue;
         }
     }
-    emitDiagnostics(uri);
+    // Phase 7: cheap-path on the hot edit channel. The JS client is
+    // responsible for sending `wgslender/recomputeMinifyInsights` after
+    // typing settles to surface M-rule diagnostics.
+    emitDiagnosticsCheap(uri);
 }
 
 fn handleDidClose(root: std.json.ObjectMap) void {
@@ -1089,9 +1092,32 @@ fn handleOutgoingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
 // Diagnostics (reuses Handler.validateDocument + Handler.LspDiagnostic)
 // =========================================================================
 
+/// Emit diagnostics for `uri`. The full variant runs the validator AND
+/// the minify lint pack — used for paths that explicitly want M-rules:
+/// didOpen (initial impression), didSave, and the
+/// `wgslender/recomputeMinifyInsights` notification (which warms the
+/// cache up front so the estimator runs at most once).
 fn emitDiagnostics(uri: []const u8) void {
+    emitDiagnosticsImpl(uri, true);
+}
+
+/// Phase 7 cheap-path emit for the WASM transport. Skips the minify
+/// lint pack so a rapid `didChange` burst doesn't hit the estimator
+/// every keystroke. JS clients that care about M-rule diagnostics
+/// schedule a `wgslender/recomputeMinifyInsights` notification on
+/// idle (≈300ms) — that's the contract documented in master plan
+/// §18.5. The native transport will pick up the same split when its
+/// idle-timer thread lands.
+fn emitDiagnosticsCheap(uri: []const u8) void {
+    emitDiagnosticsImpl(uri, false);
+}
+
+fn emitDiagnosticsImpl(uri: []const u8, include_minify_lints: bool) void {
     if (!handler.settings.diagnostics_enabled) return;
-    const diags = handler.validateDocumentFull(uri) catch return;
+    const diags = if (include_minify_lints)
+        handler.validateDocumentFull(uri) catch return
+    else
+        handler.validateDocumentCheap(uri) catch return;
     defer Handler.freeDiagnostics(handler.gpa, diags);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;

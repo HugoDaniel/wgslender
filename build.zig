@@ -327,6 +327,10 @@ pub fn build(b: *std.Build) void {
     // Lives under lsp/ so sibling file imports for Handler.zig and
     // diagnostic_json.zig stay inside the test module's path.
     _ = addTestStep(b, test_step, "lsp/diagnostic_corruption_test.zig", target, optimize, &.{w});
+    // Phase 7 idle-debounce data structure. Pure unit tests against the
+    // arm / clear / popDue / nextDeadline contract that the native
+    // timer thread will later drive.
+    _ = addTestStep(b, test_step, "lsp/Debouncer.zig", target, optimize, &.{});
     // LSP analyze perf smoke: records Lexer.tokenize invocations
     // across a 200-keystroke burst against bridge.wgsl. Enforces a
     // generous upper bound so a reintroduced tokenize path in
