@@ -8,6 +8,21 @@
 //!
 //! See `src/lint/Linter.zig` for the orchestrator and `src/lint/Context.zig`
 //! for the per-invocation state passed to each rule.
+//!
+//! Invariants (apply to every rule under `src/lint/rules/`):
+//!   - `meta.id` is unique across the registry; `Linter.run` indexes rules
+//!     by id when applying user severity overrides.
+//!   - `run` is read-only against `ctx.module`; rules MUST NOT mutate the
+//!     AST, the symbol table, or any other shared state. Side effects are
+//!     limited to `ctx.report` (and, for fixable rules, `Entry.fix`).
+//!   - `meta.fixable = true` implies `run` always attaches an `Entry.fix`
+//!     when it reports a diagnostic; `Fixer.applyFixes` requires this.
+//!   - `meta.requires_dce = true` implies the rule reads `Symbol.is_live`;
+//!     the Linter runs `Dce.mark` before invoking such rules.
+//!   - Individual rule files do NOT repeat the above; their `//!` headers
+//!     describe what they detect and (for configurable rules) the option
+//!     schema. Rules with no further invariants beyond the shared contract
+//!     above are intentionally silent on invariants in their headers.
 
 const Diagnostic = @import("../Diagnostic.zig");
 const Context = @import("Context.zig");

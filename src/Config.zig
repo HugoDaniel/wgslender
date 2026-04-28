@@ -2,6 +2,14 @@
 //!
 //! Supports wgslender.json / .wgslenderrc config files.
 //! Walks up directory tree to find config.
+//!
+//! Invariants:
+//!   - All option fields are `?T` so unset → fallback to `Minifier.Options`
+//!     defaults. Layered config (CLI flag > workspace > project) merges
+//!     by treating `null` as "inherit"; non-null wins at each layer.
+//!   - Auto-discovery walks parent directories until a config file or
+//!     filesystem root is hit; symlinks are followed but loops bail out
+//!     after a fixed depth budget to avoid infinite recursion.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

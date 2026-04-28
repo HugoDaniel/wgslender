@@ -9,6 +9,16 @@
 //!
 //! Error recovery: CST `error_tree` subtrees are skipped. A clean-parse
 //! source is assumed; malformed input coverage stays in `fuzz_test.zig`.
+//!
+//! Invariants:
+//!   - For any clean-parse source, `lowerTree(cst).module` deep-equals
+//!     `Parser.parse(source)` (same symbol indices, same scope tree, same
+//!     `use_count` values). Pass 2 is the same Visitor as Parser uses.
+//!   - Every `Ast` node's `loc` / `span` references bytes in the same
+//!     `module.source` the CST was built against — not relocated copies.
+//!   - The lowering is single-pass (no fixups), so AST construction order
+//!     is the CST traversal order; downstream code that depends on
+//!     declaration order (`module.declarations`) sees the source order.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

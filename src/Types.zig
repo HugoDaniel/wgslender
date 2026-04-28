@@ -2,6 +2,21 @@
 //!
 //! Implements the type system as defined in WGSL spec section 6,
 //! supporting type inference, type checking, and overload resolution.
+//!
+//! Invariants:
+//!   - `Type` payloads (`Vector`, `Matrix`, `Array`, …) are owned by the
+//!     Validator's arena allocator. A `Type` is therefore safe to copy by
+//!     value but only valid for the lifetime of the analysis arena it was
+//!     created in.
+//!   - `Vector.width` is one of {2, 3, 4}; `Matrix.cols`/`rows` are each
+//!     {2, 3, 4}. Enforced at construction (the parser only accepts the
+//!     `vec2/3/4` and `mat2x2…mat4x4` shorthands and templated forms).
+//!   - Abstract types (`AbstractInt`, `AbstractFloat`) are concretized at
+//!     each use site. A type that escapes the validator must be concrete;
+//!     `isConcrete()` is the load-bearing predicate.
+//!   - `Scalar.size()` returns 0 for abstract scalars (intentional — they
+//!     have no in-source bit width) and the byte size for concretes.
+//!     Callers that compute storage layout MUST handle the 0 case.
 
 const std = @import("std");
 const Ast = @import("Ast.zig");

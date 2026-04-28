@@ -21,12 +21,17 @@
 //! Separators `/`, `#`, `:` never appear in WGSL identifiers, so no escaping
 //! is required. The `v1:` prefix reserves room for future format changes.
 //!
-//! Stability contract:
-//!   IDs are stable under any edit that does not add, remove, or reorder a
-//!   `.block` compound scope at or above the symbol's declaration, and does
-//!   not rename a function or struct on the path. Whitespace-only edits,
-//!   comment edits, renaming unrelated symbols, and statement-level edits
-//!   that do not introduce a new block do not change any existing ID.
+//! Invariants:
+//!   - IDs are stable under any edit that does not add, remove, or reorder
+//!     a `.block` compound scope at or above the symbol's declaration, and
+//!     does not rename a function or struct on the path. Whitespace edits,
+//!     comment edits, renaming unrelated symbols, and statement-level
+//!     edits that do not introduce a new block do not change any ID.
+//!   - Every emitted ID parses back to a `SymbolIndex` via `lookup()`
+//!     against the same module; round-trip equality is the property
+//!     `tests/stable_id_test.zig` enforces.
+//!   - IDs are bounded by `max_stable_id_len` bytes; longer IDs surface as
+//!     `error.IdTooLong` and the caller falls back to byte-offset edits.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

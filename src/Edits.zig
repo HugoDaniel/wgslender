@@ -9,6 +9,17 @@
 //! other trivia the parser discards. A caller who wants to modify a
 //! shader gets edits, applies them to the source string, and re-runs
 //! `analyze()` — no AST round-trip through the printer, no lost trivia.
+//!
+//! Invariants:
+//!   - Every `TextEdit` has `start <= end` and both offsets index into the
+//!     original `module.source`. Callers must apply edits in reverse byte
+//!     order (last edit first) to keep offsets valid.
+//!   - A returned `TextEdit` list is non-overlapping. Producers that build
+//!     multi-edit operations (rename, change-type) verify this before
+//!     returning so the apply order doesn't depend on edit-list order
+//!     beyond reversal.
+//!   - Edits are owned by the caller's allocator; the module/AST is read
+//!     only and not mutated by any function in this file.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

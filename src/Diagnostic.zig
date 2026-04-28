@@ -3,6 +3,16 @@
 //! Compatible with WebGPU Dawn Tint compiler error reporting: accurate source
 //! locations, severity levels, and WGSL spec references. Provides a LineIndex
 //! for efficient byte-offset to line/column conversion.
+//!
+//! Invariants:
+//!   - Every `Diagnostic.Code` is unique and matches the W0xxx / E0xxx /
+//!     I0xxx coding scheme. New entries must avoid colliding with both the
+//!     existing src codes and the lint-rule codes (W02xx range reserved).
+//!   - Byte offsets in a diagnostic's `range` always index into the same
+//!     `source` the diagnostic was built against. `LineIndex` is a 1:1
+//!     companion: passing offsets from a different source is undefined.
+//!   - `deduplicate()` is idempotent; running it twice is a no-op. Phases
+//!     that produce overlapping diagnostics rely on this for safety.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

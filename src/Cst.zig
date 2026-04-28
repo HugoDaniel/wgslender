@@ -5,6 +5,19 @@
 //! as an enclosing node's range. The AST is lowered from the CST in
 //! `CstLower.zig`; consumers that don't care about layout stay on the AST.
 //!
+//! Invariants:
+//!   - Lossless: concatenating every leaf token in tree order reproduces
+//!     the original source byte-for-byte. Asserted on every parsed shader
+//!     by `tests/cst_roundtrip_test.zig`.
+//!   - `Tree.nodes` are stored in pre-order; a node's children occupy a
+//!     contiguous range immediately following it. `Range.start <= end`
+//!     and ranges never cross a node boundary.
+//!   - `spliceSubtree` produces a tree structurally equal to a fresh parse
+//!     of the spliced source. `tests/cst_splice_test.zig` enforces this.
+//!   - Errors live in the tree as `error_tree` nodes, not separate state.
+//!     A consumer that walks the tree and ignores `error_tree` sees the
+//!     same shape it would for a clean-parse source.
+//!
 //! Build model (rust-analyzer style):
 //!   - Parser emits an `Event` stream via `Builder.open` / `.close` /
 //!     `.token` / `.err`.

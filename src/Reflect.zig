@@ -3,6 +3,17 @@
 //! Extracts binding information, struct layouts, and entry points from a
 //! parsed WGSL module. All layout computations follow the WGSL specification
 //! for alignment and size rules.
+//!
+//! Invariants:
+//!   - Every reported binding has non-negative `(group, binding)` — the
+//!     WGSL parser permits any int there, but `extractBinding` filters
+//!     entries with negative values. Asserted in `reflectWithRenamer`.
+//!   - Struct layouts follow WGSL §6.2.10 (host-shareable layout rules);
+//!     `align_of` is always a power of two and `size` is always rounded
+//!     up to a multiple of `align_of` for the struct itself.
+//!   - With a `MinifyRenamer` provided, `name_mapped` and `type_mapped`
+//!     fields reflect the post-rename names; without one they equal the
+//!     original names.
 
 const std = @import("std");
 const StableId = @import("StableId.zig");
@@ -251,6 +262,12 @@ pub fn reflectWithRenamer(
     module: *Ast.Module,
     renamer: ?*const Printer.Renamer,
 ) Allocator.Error!ReflectResult {
+    // Pre: module came from a parse — its scope tree must be rooted, and
+    // the symbol table must fit u32 (StableId encoding + Diagnostic offsets
+    // both index by u32).
+    std.debug.assert(module.scope.parent == null);
+    std.debug.assert(module.symbols.items.len <= std.math.maxInt(u32));
+
     // Drain any deferred incremental-splice bias so `.loc` and `.span`
     // reads below see current coordinates.
     module.absorbInteriors();
@@ -328,6 +345,14 @@ pub fn reflectWithRenamer(
         },
         else => {},
     };
+
+    // Post: every binding has a non-negative (group, binding) — extractBinding
+    // would have returned null otherwise — and entry points are tagged with
+    // valid stages.
+    for (result.bindings.items) |b| {
+        std.debug.assert(b.group >= 0);
+        std.debug.assert(b.binding >= 0);
+    }
 
     return result;
 }

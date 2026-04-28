@@ -2,6 +2,16 @@
 //!
 //! Implements the builtin function table as defined in WGSL spec section 17,
 //! supporting overload resolution and validation of builtin function calls.
+//!
+//! Invariants:
+//!   - The `builtins` table is sorted and unique by name; lookup uses a
+//!     comptime `StaticStringMap` so collisions are a build-time error.
+//!   - Every builtin signature's `min_args` and `max_args` bracket exactly
+//!     the arity of every overload in its `overloads` array. The Validator
+//!     relies on this for the arg-count rejection at the call site.
+//!   - `pure` and `uniform` flags are properties of the builtin itself,
+//!     not of any specific overload; the Validator combines them with
+//!     argument purity / uniformity in the surrounding expression.
 
 const std = @import("std");
 const Overload = @import("Overload.zig");

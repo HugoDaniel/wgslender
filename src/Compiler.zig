@@ -5,6 +5,15 @@
 //! with a ~110-byte WASM decoder. All WGSL knowledge lives in Zig at compile
 //! time; the generated WASM has zero knowledge of WGSL syntax.
 //!
+//! Invariants:
+//!   - The BPE rule table is bounded at 64 entries (encoded as 2 bytes
+//!     each: the byte pair the rule replaces). Beyond that the compressor
+//!     stops finding new pairs and emits the remainder uncompressed.
+//!   - The generated WASM exports `memory` and `generate() → i32`. Callers
+//!     read `output_len` bytes from offset 0 of `memory` after `generate`
+//!     returns; that contract is what `npm/wgslender` and the runtime
+//!     test harness drive.
+//!
 //! Pipeline:
 //!   WGSL → Parse → Minify → Sort declarations → Scope-local rename
 //!        → Print text → BPE compress → WASM module

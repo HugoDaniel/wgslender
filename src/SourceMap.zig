@@ -6,6 +6,16 @@
 //! Provides VLQ encoding/decoding, a LineIndex for byte-offset to line/column
 //! conversion (with UTF-16 column support), and a Generator that builds
 //! source maps incrementally with delta compression.
+//!
+//! Invariants:
+//!   - VLQ encoding emits the minimum number of base-64 digits per signed
+//!     integer; decoders that pad with leading zeros are tolerated.
+//!   - All offsets in the encoded mappings are delta-compressed against
+//!     the previous record's value within the same generated line.
+//!   - The "names" and "sources" arrays are appended-only and uniqued at
+//!     insertion; an index emitted into the mappings is always in range.
+//!   - `LineIndex` reports columns in UTF-16 code units to match the LSP
+//!     position-encoding contract advertised in `initialize`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
