@@ -577,70 +577,7 @@ fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!voi
     var fields: std.ArrayListUnmanaged(Types.StructField) = .empty;
     var seen_members: std.StringHashMapUnmanaged(LocRange) = .{};
     for (d.members.items) |member| {
-        const member_name = v.symbolName(member.name);
-        const member_range = v.symbolRange(member.name);
-        if (seen_members.get(member_name)) |first_range| {
-            v.addErrorWithRelatedR(member_range, Diagnostic.Code.duplicate_symbol, v.fmtError("duplicate member '{s}' in struct '{s}'", .{ member_name, name }), v.makeRelatedR(first_range, "first declared here"));
-            continue;
-        }
-        try seen_members.put(v.arena, member_name, member_range);
-        const member_type = v.resolveType(member.typ) orelse {
-            if (member.typ != .ident)
-                v.addErrorR(member_range, v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
-            continue;
-        };
-        // Validate @align and @size attributes
-        for (member.attributes.items) |attr| {
-            const ar = attrRange(&attr);
-            if (std.mem.eql(u8, attr.name, "align") and attr.args.items.len > 0) {
-                if (v.classifyExprStage(attr.args.items[0]) != .const_expr) {
-                    v.addErrorWithCodeR(ar, Diagnostic.Code.expression_not_const, "@align value must be a const-expression");
-                } else if (v.tryExtractIntValue(attr.args.items[0])) |val| {
-                    if (val <= 0 or (@as(u64, @intCast(val)) & (@as(u64, @intCast(val)) - 1)) != 0) {
-                        v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@align value must be a positive power of 2, got {d}", .{val}));
-                    }
-                }
-            }
-            if (std.mem.eql(u8, attr.name, "size") and attr.args.items.len > 0) {
-                if (v.classifyExprStage(attr.args.items[0]) != .const_expr) {
-                    v.addErrorWithCodeR(ar, Diagnostic.Code.expression_not_const, "@size value must be a const-expression");
-                } else if (v.tryExtractIntValue(attr.args.items[0])) |val| {
-                    const type_size = member_type.size();
-                    if (val <= 0) {
-                        v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@size value must be positive, got {d}", .{val}));
-                    } else if (type_size > 0 and @as(u32, @intCast(val)) < type_size) {
-                        v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@size({d}) is less than the byte size of the type ({d})", .{ val, type_size }));
-                    }
-                }
-            }
-        }
-        // Opaque types (texture, sampler) cannot appear in structs (WGSL spec section 6.2.10).
-        if (member_type == .texture or member_type == .sampler) {
-            v.addErrorWithCodeR(member_range, Diagnostic.Code.opaque_in_struct, v.fmtError("struct member '{s}' has opaque type '{s}' which cannot appear in a struct", .{ member_name, member_type.string() }));
-        }
-
-        // Array members in structs must have const counts, not override-expression counts.
-        if (member.typ == .array) {
-            if (member.typ.array.size) |size_expr| {
-                const stage = v.classifyExprStage(size_expr);
-                if (stage == .override_expr) {
-                    v.addErrorWithCodeR(member_range, Diagnostic.Code.invalid_array_count, v.fmtError("struct member '{s}' has override-expression array count; must be const", .{member_name}));
-                }
-            }
-        }
-
-        // A struct containing a runtime-sized array cannot be used as a member of another struct.
-        if (member_type == .@"struct") {
-            if (member_type.@"struct".has_runtime_array) {
-                v.addErrorWithCodeR(member_range, Diagnostic.Code.runtime_array_not_last, v.fmtError("struct member '{s}' contains a runtime-sized array and cannot be nested in struct '{s}'", .{ member_name, name }));
-            }
-        }
-
-        try fields.append(v.arena, .{
-            .name = member_name,
-            .typ = member_type,
-            .offset = 0,
-        });
+        try validateStructMember(v, name, member, &fields, &seen_members);
     }
 
     // Runtime-sized array must be the last member (WGSL spec section 6.2.10).
@@ -654,6 +591,77 @@ fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!voi
 
     st.fields = fields.items;
     st.computeLayout();
+}
+
+fn validateStructMember(v: *Validator, struct_name: []const u8, member: anytype, fields: *std.ArrayListUnmanaged(Types.StructField), seen_members: *std.StringHashMapUnmanaged(LocRange)) Allocator.Error!void {
+    const member_name = v.symbolName(member.name);
+    const member_range = v.symbolRange(member.name);
+    if (seen_members.get(member_name)) |first_range| {
+        v.addErrorWithRelatedR(member_range, Diagnostic.Code.duplicate_symbol, v.fmtError("duplicate member '{s}' in struct '{s}'", .{ member_name, struct_name }), v.makeRelatedR(first_range, "first declared here"));
+        return;
+    }
+    try seen_members.put(v.arena, member_name, member_range);
+    const member_type = v.resolveType(member.typ) orelse {
+        if (member.typ != .ident)
+            v.addErrorR(member_range, v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
+        return;
+    };
+    // Validate @align and @size attributes
+    for (member.attributes.items) |attr| {
+        validateStructMemberAttr(v, attr, member_type);
+    }
+    // Opaque types (texture, sampler) cannot appear in structs (WGSL spec section 6.2.10).
+    if (member_type == .texture or member_type == .sampler) {
+        v.addErrorWithCodeR(member_range, Diagnostic.Code.opaque_in_struct, v.fmtError("struct member '{s}' has opaque type '{s}' which cannot appear in a struct", .{ member_name, member_type.string() }));
+    }
+
+    // Array members in structs must have const counts, not override-expression counts.
+    if (member.typ == .array) {
+        if (member.typ.array.size) |size_expr| {
+            const stage = v.classifyExprStage(size_expr);
+            if (stage == .override_expr) {
+                v.addErrorWithCodeR(member_range, Diagnostic.Code.invalid_array_count, v.fmtError("struct member '{s}' has override-expression array count; must be const", .{member_name}));
+            }
+        }
+    }
+
+    // A struct containing a runtime-sized array cannot be used as a member of another struct.
+    if (member_type == .@"struct") {
+        if (member_type.@"struct".has_runtime_array) {
+            v.addErrorWithCodeR(member_range, Diagnostic.Code.runtime_array_not_last, v.fmtError("struct member '{s}' contains a runtime-sized array and cannot be nested in struct '{s}'", .{ member_name, struct_name }));
+        }
+    }
+
+    try fields.append(v.arena, .{
+        .name = member_name,
+        .typ = member_type,
+        .offset = 0,
+    });
+}
+
+fn validateStructMemberAttr(v: *Validator, attr: Ast.Attribute, member_type: Types.Type) void {
+    const ar = attrRange(&attr);
+    if (std.mem.eql(u8, attr.name, "align") and attr.args.items.len > 0) {
+        if (v.classifyExprStage(attr.args.items[0]) != .const_expr) {
+            v.addErrorWithCodeR(ar, Diagnostic.Code.expression_not_const, "@align value must be a const-expression");
+        } else if (v.tryExtractIntValue(attr.args.items[0])) |val| {
+            if (val <= 0 or (@as(u64, @intCast(val)) & (@as(u64, @intCast(val)) - 1)) != 0) {
+                v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@align value must be a positive power of 2, got {d}", .{val}));
+            }
+        }
+    }
+    if (std.mem.eql(u8, attr.name, "size") and attr.args.items.len > 0) {
+        if (v.classifyExprStage(attr.args.items[0]) != .const_expr) {
+            v.addErrorWithCodeR(ar, Diagnostic.Code.expression_not_const, "@size value must be a const-expression");
+        } else if (v.tryExtractIntValue(attr.args.items[0])) |val| {
+            const type_size = member_type.size();
+            if (val <= 0) {
+                v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@size value must be positive, got {d}", .{val}));
+            } else if (type_size > 0 and @as(u32, @intCast(val)) < type_size) {
+                v.addErrorWithCodeR(ar, Diagnostic.Code.invalid_attribute, v.fmtError("@size({d}) is less than the byte size of the type ({d})", .{ val, type_size }));
+            }
+        }
+    }
 }
 
 // =========================================================================
@@ -1480,18 +1488,7 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
     v.in_loop = false;
     v.in_switch = false;
     v.has_return = false;
-
-    // Determine shader stage
-    v.current_stage = .none;
-    for (fn_decl.attributes.items) |attr| {
-        if (std.mem.eql(u8, attr.name, "vertex")) {
-            v.current_stage = .vertex;
-        } else if (std.mem.eql(u8, attr.name, "fragment")) {
-            v.current_stage = .fragment;
-        } else if (std.mem.eql(u8, attr.name, "compute")) {
-            v.current_stage = .compute;
-        }
-    }
+    v.current_stage = determineShaderStage(fn_decl);
 
     // WGSL spec §11.2.3: @workgroup_size is valid only on compute entry points.
     for (fn_decl.attributes.items) |attr| {
@@ -1517,34 +1514,12 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
         v.return_type = null;
     }
 
-    // Resolve parameter types and build function type
-    var param_types: std.ArrayListUnmanaged(Types.Type) = .empty;
-    for (fn_decl.parameters.items) |param| {
-        const param_type = v.resolveType(param.typ);
-        if (param_type) |pt| {
-            try v.setSymbolType(param.name, pt);
-            try param_types.append(v.arena, pt);
-            // WGSL spec section 8.6: parameters must be constructible, pointer, texture, or sampler.
-            if (!pt.isConstructible() and pt != .pointer and pt != .texture and pt != .sampler) {
-                v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_arg_type, v.fmtError("parameter '{s}' has non-constructible type '{s}'; must be constructible, pointer, texture, or sampler", .{ v.symbolName(param.name), pt.string() }));
-            }
-            // Pointer parameters: address space must be function or private by default.
-            // With 'enable unrestricted_pointer_parameters', all address spaces are allowed.
-            if (pt == .pointer and !v.enabled_features.contains("unrestricted_pointer_parameters")) {
-                const space = pt.pointer.address_space;
-                if (space != .function and space != .private and space != .none) {
-                    v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_address_space, v.fmtError("pointer parameter '{s}' must use 'function' or 'private' address space, got '{s}' (enable 'unrestricted_pointer_parameters' to allow this)", .{ v.symbolName(param.name), space.string() }));
-                }
-            }
-        }
-        try v.validateParameterAttributes(param);
-    }
-
+    const param_types = try resolveFunctionParameters(v, fn_decl);
     v.validateReturnAttributes(fn_decl);
 
     // Register function type in symbol_types so calls can resolve it
     if (fn_decl.name.isValid()) {
-        const fn_type = Types.functionType(v.arena, param_types.items, v.return_type) catch null;
+        const fn_type = Types.functionType(v.arena, param_types, v.return_type) catch null;
         if (fn_type) |ft| {
             try v.setSymbolType(fn_decl.name, ft);
         }
@@ -1567,6 +1542,40 @@ fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!v
 
     v.current_func = null;
     v.return_type = null;
+}
+
+fn determineShaderStage(fn_decl: *Ast.FunctionDecl) ShaderStage {
+    for (fn_decl.attributes.items) |attr| {
+        if (std.mem.eql(u8, attr.name, "vertex")) return .vertex;
+        if (std.mem.eql(u8, attr.name, "fragment")) return .fragment;
+        if (std.mem.eql(u8, attr.name, "compute")) return .compute;
+    }
+    return .none;
+}
+
+fn resolveFunctionParameters(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error![]Types.Type {
+    var param_types: std.ArrayListUnmanaged(Types.Type) = .empty;
+    for (fn_decl.parameters.items) |param| {
+        const param_type = v.resolveType(param.typ);
+        if (param_type) |pt| {
+            try v.setSymbolType(param.name, pt);
+            try param_types.append(v.arena, pt);
+            // WGSL spec section 8.6: parameters must be constructible, pointer, texture, or sampler.
+            if (!pt.isConstructible() and pt != .pointer and pt != .texture and pt != .sampler) {
+                v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_arg_type, v.fmtError("parameter '{s}' has non-constructible type '{s}'; must be constructible, pointer, texture, or sampler", .{ v.symbolName(param.name), pt.string() }));
+            }
+            // Pointer parameters: address space must be function or private by default.
+            // With 'enable unrestricted_pointer_parameters', all address spaces are allowed.
+            if (pt == .pointer and !v.enabled_features.contains("unrestricted_pointer_parameters")) {
+                const space = pt.pointer.address_space;
+                if (space != .function and space != .private and space != .none) {
+                    v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_address_space, v.fmtError("pointer parameter '{s}' must use 'function' or 'private' address space, got '{s}' (enable 'unrestricted_pointer_parameters' to allow this)", .{ v.symbolName(param.name), space.string() }));
+                }
+            }
+        }
+        try v.validateParameterAttributes(param);
+    }
+    return param_types.items;
 }
 
 fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) Allocator.Error!void {
@@ -1795,120 +1804,133 @@ fn validateEntryPointInputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator
 
 fn validateEntryPointOutputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
     const fn_range = v.symbolRange(fn_decl.name);
-    var output_builtins: std.StringHashMapUnmanaged(u32) = .{};
     // Check output locations (return type)
     var output_locations: std.AutoHashMapUnmanaged(i64, OutputLocEntry) = .{};
     if (getLocationInfo(fn_decl.return_attr)) |info| {
         try output_locations.put(v.arena, info.value, .{ .loc = info.loc, .blend_src = null });
     }
-    // Members with @blend_src, collected for post-walk dual-source pairing validation.
+    const rt = fn_decl.return_type orelse return;
+    const ret_type = v.resolveType(rt) orelse return;
+    if (ret_type == .@"struct") {
+        try validateEntryPointStructOutput(v, fn_decl, ret_type, fn_range, &output_locations);
+    } else {
+        try validateEntryPointDirectOutput(v, fn_decl, ret_type, fn_range);
+    }
+}
+
+fn validateEntryPointStructOutput(v: *Validator, fn_decl: *Ast.FunctionDecl, ret_type: Types.Type, fn_range: LocRange, output_locations: *std.AutoHashMapUnmanaged(i64, OutputLocEntry)) Allocator.Error!void {
+    _ = fn_decl;
+    const sd = v.findStructDecl(ret_type.@"struct".name) orelse return;
+    var output_builtins: std.StringHashMapUnmanaged(u32) = .{};
     var blend_src_members: std.ArrayListUnmanaged(BlendSrcEntry) = .empty;
-    if (fn_decl.return_type) |rt| {
-        const ret_type = v.resolveType(rt) orelse return;
-        if (ret_type == .@"struct") {
-            if (v.findStructDecl(ret_type.@"struct".name)) |sd| {
-                for (sd.members.items) |member| {
-                    // Nested struct in output I/O is invalid.
-                    const out_mt = v.resolveType(member.typ);
-                    if (out_mt != null and out_mt.? == .@"struct") {
-                        v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("entry point I/O member '{s}' cannot be a struct type", .{v.symbolName(member.name)}));
-                    }
-                    if (!hasLocationOrBuiltin(member.attributes)) {
-                        v.addErrorWithCodeR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("entry point struct member '{s}' must have @builtin or @location", .{v.symbolName(member.name)}));
-                    }
-                    // Collect @blend_src info for pairing & attribute-site validation.
-                    const bs_info = getBlendSrcInfo(member.attributes);
-                    if (getLocationInfo(member.attributes)) |info| {
-                        if (output_locations.get(info.value)) |first| {
-                            // Duplicate @location is permitted only when both members carry
-                            // @blend_src with valid values (0 & 1) — the pairing check below
-                            // validates the full rule.
-                            const both_blend_src = first.blend_src != null and bs_info != null;
-                            if (!both_blend_src) {
-                                v.addErrorWithRelatedR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first.loc, .end = first.loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
-                            }
-                        } else {
-                            try output_locations.put(v.arena, info.value, .{ .loc = info.loc, .blend_src = if (bs_info) |b| b.value else null });
-                        }
-                    }
-                    // @blend_src attribute-site validation (output/fragment).
-                    if (bs_info) |bs| {
-                        const bs_range: LocRange = .{ .start = bs.loc, .end = bs.loc +| 9 };
-                        if (v.current_stage != .fragment) {
-                            v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, "@blend_src is only valid on fragment outputs");
-                        } else if (!hasAttr(member.attributes, "location")) {
-                            v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, "@blend_src requires a @location attribute on the same member");
-                        } else if (bs.value != 0 and bs.value != 1) {
-                            v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, v.fmtError("@blend_src value must be 0 or 1, got {d}", .{bs.value}));
-                        }
-                        const loc_val: i64 = if (getLocationInfo(member.attributes)) |li| li.value else -1;
-                        try blend_src_members.append(v.arena, .{ .location = loc_val, .value = bs.value, .typ = out_mt, .member_range = v.symbolRange(member.name), .attr_loc = bs.loc });
-                    }
-                    // Validate @interpolate on vertex outputs
-                    if (v.current_stage == .vertex) {
-                        v.validateInterpolation(member.attributes, out_mt, v.symbolLoc(member.name));
-                    }
-                    v.validateInvariantAttr(member.attributes, v.symbolLoc(member.name));
-                    if (hasAttr(member.attributes, "location") and hasAttr(member.attributes, "builtin")) {
-                        v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.duplicate_attribute, v.fmtError("member '{s}' cannot have both @location and @builtin", .{v.symbolName(member.name)}));
-                    }
-                    if (getBuiltinAttrName(member.attributes)) |bn| {
-                        if (output_builtins.get(bn)) |_| {
-                            v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate @builtin({s}) in entry point output", .{bn}));
-                        } else {
-                            try output_builtins.put(v.arena, bn, v.symbolLoc(member.name));
-                        }
-                    }
-                    // @builtin stage/direction + required type on output members.
-                    for (member.attributes.items) |a| {
-                        if (!std.mem.eql(u8, a.name, "builtin") or a.args.items.len == 0) continue;
-                        switch (a.args.items[0]) {
-                            .ident => |ident| try v.validateBuiltinAttr(ident.name, false, a.loc, out_mt, v.symbolRange(member.name)),
-                            else => {},
-                        }
-                    }
-                    // @location type check on output members.
-                    if (hasAttr(member.attributes, "location")) {
-                        if (out_mt) |member_type| {
-                            v.validateLocationType(member_type, v.symbolRange(member.name));
-                        }
-                        for (member.attributes.items) |*a| {
-                            if (std.mem.eql(u8, a.name, "location")) v.validateLocationArgExpr(a);
-                        }
-                    }
-                }
-                // Post-walk: validate @blend_src dual-source pairing (WGSL spec §11.3,
-                // §12.3.1.2). Each location with @blend_src must have exactly 2 members
-                // with values {0, 1} of the same type.
-                v.validateBlendSrcPairing(blend_src_members.items, fn_range);
+    for (sd.members.items) |member| {
+        try validateEntryPointStructOutputMember(v, member, fn_range, output_locations, &output_builtins, &blend_src_members);
+    }
+    // Post-walk: validate @blend_src dual-source pairing (WGSL spec §11.3,
+    // §12.3.1.2). Each location with @blend_src must have exactly 2 members
+    // with values {0, 1} of the same type.
+    v.validateBlendSrcPairing(blend_src_members.items, fn_range);
+}
+
+fn validateEntryPointStructOutputMember(v: *Validator, member: anytype, fn_range: LocRange, output_locations: *std.AutoHashMapUnmanaged(i64, OutputLocEntry), output_builtins: *std.StringHashMapUnmanaged(u32), blend_src_members: *std.ArrayListUnmanaged(BlendSrcEntry)) Allocator.Error!void {
+    const out_mt = v.resolveType(member.typ);
+    // Nested struct in output I/O is invalid.
+    if (out_mt != null and out_mt.? == .@"struct") {
+        v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("entry point I/O member '{s}' cannot be a struct type", .{v.symbolName(member.name)}));
+    }
+    if (!hasLocationOrBuiltin(member.attributes)) {
+        v.addErrorWithCodeR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("entry point struct member '{s}' must have @builtin or @location", .{v.symbolName(member.name)}));
+    }
+    // Collect @blend_src info for pairing & attribute-site validation.
+    const bs_info = getBlendSrcInfo(member.attributes);
+    if (getLocationInfo(member.attributes)) |info| {
+        if (output_locations.get(info.value)) |first| {
+            // Duplicate @location is permitted only when both members carry
+            // @blend_src with valid values (0 & 1) — the pairing check below
+            // validates the full rule.
+            const both_blend_src = first.blend_src != null and bs_info != null;
+            if (!both_blend_src) {
+                v.addErrorWithRelatedR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first.loc, .end = first.loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
             }
         } else {
-            // Direct (non-struct) return: validate @builtin stage/direction + type,
-            // @location type, plus @invariant and @interpolate (vertex-output only).
-            for (fn_decl.return_attr.items) |a| {
-                if (std.mem.eql(u8, a.name, "builtin") and a.args.items.len > 0) {
-                    switch (a.args.items[0]) {
-                        .ident => |ident| try v.validateBuiltinAttr(ident.name, false, a.loc, ret_type, fn_range),
-                        else => {},
-                    }
-                }
-            }
-            if (hasAttr(fn_decl.return_attr, "location")) {
-                v.validateLocationType(ret_type, fn_range);
-                for (fn_decl.return_attr.items) |*a| {
-                    if (std.mem.eql(u8, a.name, "location")) v.validateLocationArgExpr(a);
-                }
-            }
-            // @blend_src is only valid on struct members, not direct returns.
-            if (hasAttr(fn_decl.return_attr, "blend_src")) {
-                const bs_loc = attrLocByName(fn_decl.return_attr, "blend_src");
-                v.addErrorWithCodeR(.{ .start = bs_loc, .end = bs_loc +| 9 }, Diagnostic.Code.invalid_attribute, "@blend_src must only be applied to a struct member");
-            }
-            v.validateInvariantAttr(fn_decl.return_attr, fn_range.start);
-            if (v.current_stage == .vertex) {
-                v.validateInterpolation(fn_decl.return_attr, ret_type, fn_range.start);
+            try output_locations.put(v.arena, info.value, .{ .loc = info.loc, .blend_src = if (bs_info) |b| b.value else null });
+        }
+    }
+    if (bs_info) |bs| {
+        try checkBlendSrcAttr(v, member, bs, out_mt, blend_src_members);
+    }
+    // Validate @interpolate on vertex outputs
+    if (v.current_stage == .vertex) {
+        v.validateInterpolation(member.attributes, out_mt, v.symbolLoc(member.name));
+    }
+    v.validateInvariantAttr(member.attributes, v.symbolLoc(member.name));
+    if (hasAttr(member.attributes, "location") and hasAttr(member.attributes, "builtin")) {
+        v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.duplicate_attribute, v.fmtError("member '{s}' cannot have both @location and @builtin", .{v.symbolName(member.name)}));
+    }
+    if (getBuiltinAttrName(member.attributes)) |bn| {
+        if (output_builtins.get(bn)) |_| {
+            v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate @builtin({s}) in entry point output", .{bn}));
+        } else {
+            try output_builtins.put(v.arena, bn, v.symbolLoc(member.name));
+        }
+    }
+    // @builtin stage/direction + required type on output members.
+    for (member.attributes.items) |a| {
+        if (!std.mem.eql(u8, a.name, "builtin") or a.args.items.len == 0) continue;
+        switch (a.args.items[0]) {
+            .ident => |ident| try v.validateBuiltinAttr(ident.name, false, a.loc, out_mt, v.symbolRange(member.name)),
+            else => {},
+        }
+    }
+    // @location type check on output members.
+    if (hasAttr(member.attributes, "location")) {
+        if (out_mt) |member_type| {
+            v.validateLocationType(member_type, v.symbolRange(member.name));
+        }
+        for (member.attributes.items) |*a| {
+            if (std.mem.eql(u8, a.name, "location")) v.validateLocationArgExpr(a);
+        }
+    }
+}
+
+fn checkBlendSrcAttr(v: *Validator, member: anytype, bs: anytype, out_mt: ?Types.Type, blend_src_members: *std.ArrayListUnmanaged(BlendSrcEntry)) Allocator.Error!void {
+    const bs_range: LocRange = .{ .start = bs.loc, .end = bs.loc +| 9 };
+    if (v.current_stage != .fragment) {
+        v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, "@blend_src is only valid on fragment outputs");
+    } else if (!hasAttr(member.attributes, "location")) {
+        v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, "@blend_src requires a @location attribute on the same member");
+    } else if (bs.value != 0 and bs.value != 1) {
+        v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, v.fmtError("@blend_src value must be 0 or 1, got {d}", .{bs.value}));
+    }
+    const loc_val: i64 = if (getLocationInfo(member.attributes)) |li| li.value else -1;
+    try blend_src_members.append(v.arena, .{ .location = loc_val, .value = bs.value, .typ = out_mt, .member_range = v.symbolRange(member.name), .attr_loc = bs.loc });
+}
+
+fn validateEntryPointDirectOutput(v: *Validator, fn_decl: *Ast.FunctionDecl, ret_type: Types.Type, fn_range: LocRange) Allocator.Error!void {
+    // Direct (non-struct) return: validate @builtin stage/direction + type,
+    // @location type, plus @invariant and @interpolate (vertex-output only).
+    for (fn_decl.return_attr.items) |a| {
+        if (std.mem.eql(u8, a.name, "builtin") and a.args.items.len > 0) {
+            switch (a.args.items[0]) {
+                .ident => |ident| try v.validateBuiltinAttr(ident.name, false, a.loc, ret_type, fn_range),
+                else => {},
             }
         }
+    }
+    if (hasAttr(fn_decl.return_attr, "location")) {
+        v.validateLocationType(ret_type, fn_range);
+        for (fn_decl.return_attr.items) |*a| {
+            if (std.mem.eql(u8, a.name, "location")) v.validateLocationArgExpr(a);
+        }
+    }
+    // @blend_src is only valid on struct members, not direct returns.
+    if (hasAttr(fn_decl.return_attr, "blend_src")) {
+        const bs_loc = attrLocByName(fn_decl.return_attr, "blend_src");
+        v.addErrorWithCodeR(.{ .start = bs_loc, .end = bs_loc +| 9 }, Diagnostic.Code.invalid_attribute, "@blend_src must only be applied to a struct member");
+    }
+    v.validateInvariantAttr(fn_decl.return_attr, fn_range.start);
+    if (v.current_stage == .vertex) {
+        v.validateInterpolation(fn_decl.return_attr, ret_type, fn_range.start);
     }
 }
 
@@ -2773,45 +2795,8 @@ fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
     const lhs_type = (try v.checkExpr(s.left)).typ orelse return;
     const rhs_type = (try v.checkExpr(s.right)).typ orelse return;
 
-    // Check for assignment to immutable bindings (WGSL spec section 9.4).
-    if (s.left == .ident) {
-        const ident = s.left.ident;
-        if (ident.ref.isValid()) {
-            const idx = ident.ref.index();
-            if (idx < v.module.symbols.items.len) {
-                const kind = v.module.symbols.items[idx].kind;
-                switch (kind) {
-                    .let => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to 'let' variable '{s}'", .{ident.name})),
-                    .@"const" => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to 'const' '{s}'", .{ident.name})),
-                    .override => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to 'override' '{s}'", .{ident.name})),
-                    .parameter => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to parameter '{s}'", .{ident.name})),
-                    else => {},
-                }
-            }
-        }
-    }
-
-    // Swizzle write-target rules, WGSL §5.3.4 and §9.4:
-    // 1. A multi-letter swizzle always yields a value (rvalue), so it
-    //    cannot appear on the LHS of an assignment.
-    // 2. Even single-occurrence multi-letter swizzles like `.xy` are
-    //    invalid as write targets; only single-letter swizzles are
-    //    lvalues.
-    // 3. Duplicate components (`.xx`, `.xyx`) are trivially invalid.
-    if (s.left == .member) {
-        const member = s.left.member;
-        if (member.base == .ident or member.base == .member) {
-            const is_swiz = isSwizzleName(member.member_name);
-            const is_multi = member.member_name.len > 1;
-            if (is_swiz and is_multi) {
-                if (hasDuplicateSwizzleChars(member.member_name)) {
-                    v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("swizzle assignment target '{s}' has duplicate components", .{member.member_name}));
-                } else {
-                    v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("multi-letter swizzle '{s}' cannot appear on the left-hand side of an assignment", .{member.member_name}));
-                }
-            }
-        }
-    }
+    checkAssignToImmutable(v, s);
+    checkSwizzleAssignTarget(v, s);
 
     if (s.op == .simple) {
         // Simple assignment: RHS must be convertible to LHS.
@@ -2821,9 +2806,61 @@ fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
         return;
     }
 
-    // Compound assignment (+=, -=, *=, etc.): v op= e is defined as v = v op e.
-    // Compute the result type of the binary operation, then verify assignability.
-    const result_type: ?Types.Type = switch (s.op) {
+    const result_type = compoundAssignResultType(v, s.op, lhs_type, rhs_type);
+    if (result_type == null) {
+        const op_range: LocRange = .{ .start = s.loc, .end = s.loc +| @as(u32, @intCast(s.op.string().len)) };
+        v.addErrorWithCodeR(op_range, Diagnostic.Code.invalid_operand, v.fmtError("invalid operands for '{s}': '{s}' and '{s}'", .{ s.op.string(), lhs_type.string(), rhs_type.string() }));
+        return;
+    }
+
+    if (!Types.canConvertTo(result_type.?, lhs_type)) {
+        const op_range: LocRange = .{ .start = s.loc, .end = s.loc +| @as(u32, @intCast(s.op.string().len)) };
+        v.addErrorWithCodeR(op_range, Diagnostic.Code.type_mismatch, v.fmtError("result type '{s}' of '{s}' is not assignable to '{s}'", .{ result_type.?.string(), s.op.string(), lhs_type.string() }));
+    }
+}
+
+/// WGSL spec section 9.4: assignment to `let`, `const`, `override`, or
+/// parameter is invalid.
+fn checkAssignToImmutable(v: *Validator, s: *Ast.AssignStmt) void {
+    if (s.left != .ident) return;
+    const ident = s.left.ident;
+    if (!ident.ref.isValid()) return;
+    const idx = ident.ref.index();
+    if (idx >= v.module.symbols.items.len) return;
+    const kind = v.module.symbols.items[idx].kind;
+    switch (kind) {
+        .let => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to 'let' variable '{s}'", .{ident.name})),
+        .@"const" => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to 'const' '{s}'", .{ident.name})),
+        .override => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to 'override' '{s}'", .{ident.name})),
+        .parameter => v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("cannot assign to parameter '{s}'", .{ident.name})),
+        else => {},
+    }
+}
+
+/// Swizzle write-target rules, WGSL §5.3.4 and §9.4:
+/// 1. A multi-letter swizzle always yields a value (rvalue), so it
+///    cannot appear on the LHS of an assignment.
+/// 2. Even single-occurrence multi-letter swizzles like `.xy` are
+///    invalid as write targets; only single-letter swizzles are lvalues.
+/// 3. Duplicate components (`.xx`, `.xyx`) are trivially invalid.
+fn checkSwizzleAssignTarget(v: *Validator, s: *Ast.AssignStmt) void {
+    if (s.left != .member) return;
+    const member = s.left.member;
+    if (member.base != .ident and member.base != .member) return;
+    const is_swiz = isSwizzleName(member.member_name);
+    const is_multi = member.member_name.len > 1;
+    if (!is_swiz or !is_multi) return;
+    if (hasDuplicateSwizzleChars(member.member_name)) {
+        v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("swizzle assignment target '{s}' has duplicate components", .{member.member_name}));
+    } else {
+        v.addErrorWithCodeR(exprRange(s.left), Diagnostic.Code.invalid_assignment, v.fmtError("multi-letter swizzle '{s}' cannot appear on the left-hand side of an assignment", .{member.member_name}));
+    }
+}
+
+/// Compound assignment (`v op= e`) is defined as `v = v op e`. Compute
+/// the result type of the binary operation; caller verifies assignability.
+fn compoundAssignResultType(v: *Validator, op: Ast.AssignOp, lhs_type: Types.Type, rhs_type: Types.Type) ?Types.Type {
+    return switch (op) {
         .add, .sub => Types.addSubResultType(v.arena, lhs_type, rhs_type) catch null,
         .mul => Types.multiplyResultType(v.arena, lhs_type, rhs_type) catch null,
         .div => Types.divResultType(v.arena, lhs_type, rhs_type) catch null,
@@ -2843,17 +2880,6 @@ fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
             null,
         .simple => unreachable,
     };
-
-    if (result_type == null) {
-        const op_range: LocRange = .{ .start = s.loc, .end = s.loc +| @as(u32, @intCast(s.op.string().len)) };
-        v.addErrorWithCodeR(op_range, Diagnostic.Code.invalid_operand, v.fmtError("invalid operands for '{s}': '{s}' and '{s}'", .{ s.op.string(), lhs_type.string(), rhs_type.string() }));
-        return;
-    }
-
-    if (!Types.canConvertTo(result_type.?, lhs_type)) {
-        const op_range: LocRange = .{ .start = s.loc, .end = s.loc +| @as(u32, @intCast(s.op.string().len)) };
-        v.addErrorWithCodeR(op_range, Diagnostic.Code.type_mismatch, v.fmtError("result type '{s}' of '{s}' is not assignable to '{s}'", .{ result_type.?.string(), s.op.string(), lhs_type.string() }));
-    }
 }
 
 fn validateIncrDecrStmt(v: *Validator, s: *Ast.IncrDecrStmt) Allocator.Error!void {
@@ -3408,137 +3434,158 @@ fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocator.E
 
     const er = exprRange(.{ .binary = e }); // operator range
     const op_str = e.op.string();
-    switch (e.op) {
-        .logical_and, .logical_or => {
-            if (!left_type.eql(Types.Bool) or !right_type.eql(Types.Bool)) {
-                v.addErrorWithCodeR(exprRange(.{ .binary = e }), Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires 'bool' operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-                return InferResult.fail;
-            }
-            return InferResult.some(Types.Bool, stage);
-        },
-        .eq, .ne => {
-            if (!left_type.eql(right_type) and
-                !Types.canConvertTo(left_type, right_type) and
-                !Types.canConvertTo(right_type, left_type))
-            {
-                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-                return InferResult.fail;
-            }
-            // Vector comparisons return vec<N, bool>
-            if (left_type == .vector) {
-                const bvec = v.arena.create(Types.Vector) catch return InferResult.some(Types.Bool, stage);
-                bvec.* = .{ .width = left_type.vector.width, .element = Types.scalar_bool_ptr };
-                return InferResult.some(.{ .vector = bvec }, stage);
-            }
-            return InferResult.some(Types.Bool, stage);
-        },
-        .lt, .le, .gt, .ge => {
-            if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type)) {
-                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires numeric operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-                return InferResult.fail;
-            }
-            // WGSL §17.1 "Comparison Expressions": operands must share a
-            // common numeric type. Mixing signed and unsigned integers
-            // (`1i < 2u`) has no matching overload — reject rather than
-            // silently picking a winner via implicit conversion.
-            if (!left_type.eql(right_type) and
-                !Types.canConvertTo(left_type, right_type) and
-                !Types.canConvertTo(right_type, left_type))
-            {
-                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-                return InferResult.fail;
-            }
-            // Vector comparisons return vec<N, bool>
-            if (left_type == .vector) {
-                const bvec = v.arena.create(Types.Vector) catch return InferResult.some(Types.Bool, stage);
-                bvec.* = .{ .width = left_type.vector.width, .element = Types.scalar_bool_ptr };
-                return InferResult.some(.{ .vector = bvec }, stage);
-            }
-            return InferResult.some(Types.Bool, stage);
-        },
-        .add, .sub => {
-            const result = Types.addSubResultType(v.arena, left_type, right_type) catch return InferResult.fail;
-            if (result) |r| {
-                return InferResult.some(r, stage);
-            }
-            v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires numeric types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-            return InferResult.fail;
-        },
-        .mul => {
-            const result = Types.multiplyResultType(v.arena, left_type, right_type) catch return InferResult.fail;
-            if (result) |r| {
-                return InferResult.some(r, stage);
-            }
-            v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot multiply '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
-            return InferResult.fail;
-        },
-        .div => {
-            const result = Types.divResultType(v.arena, left_type, right_type) catch return InferResult.fail;
-            if (result) |r| {
-                // Const division by zero
-                if (v.tryExtractIntValue(e.right)) |rhs_val| {
-                    if (rhs_val == 0) {
-                        v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
-                    }
-                }
-                return InferResult.some(r, stage);
-            }
-            v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot divide '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
-            return InferResult.fail;
-        },
-        .mod => {
-            // WGSL % works on both integers and floats (unlike C where fmod is separate).
-            if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type)) {
-                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '%' requires numeric operands, got '{s}' and '{s}'", .{ left_type.string(), right_type.string() }));
-                return InferResult.fail;
-            }
-            // Const modulo by zero
-            if (v.tryExtractIntValue(e.right)) |rhs_val| {
-                if (rhs_val == 0) {
-                    v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
-                }
-            }
-            const common = Types.commonType(left_type, right_type) orelse return InferResult.fail;
-            return InferResult.some(common, stage);
-        },
-        .@"and", .@"or", .xor => {
-            if (left_type.eql(Types.Bool) and right_type.eql(Types.Bool)) {
-                return InferResult.some(Types.Bool, stage);
-            }
-            if (Types.isInteger(left_type) and Types.isInteger(right_type)) {
-                const common = Types.commonType(left_type, right_type) orelse return InferResult.fail;
-                return InferResult.some(common, stage);
-            }
-            v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer or bool, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-            return InferResult.fail;
-        },
-        .shl, .shr => {
-            if (!Types.isInteger(left_type)) {
-                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer left operand, got '{s}'", .{ op_str, left_type.string() }));
-                return InferResult.fail;
-            }
-            if (!right_type.eql(Types.U32) and !Types.canConvertTo(right_type, Types.U32)) {
-                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'u32', got '{s}'", .{right_type.string()}));
-                return InferResult.fail;
-            }
-            // Shift amount must be less than the bit width of the LHS type (WGSL spec section 8.7).
-            // AbstractInt LHS has no in-source bit width (`Scalar.size()` is 0);
-            // per spec it concretizes to i32/u32 so a 32-bit cap is the right
-            // shader-creation-time ceiling. Preserves spec-literal behavior
-            // for concrete `i32`/`u32` LHS (also 32-bit).
-            if (v.tryExtractIntValue(e.right)) |shift_val| {
-                const bit_width: i64 = blk: {
-                    if (left_type != .scalar) break :blk 32;
-                    const sz = left_type.scalar.size();
-                    break :blk if (sz == 0) 32 else @as(i64, sz) * 8;
-                };
-                if (shift_val < 0 or shift_val >= bit_width) {
-                    v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.invalid_operand, v.fmtError("shift amount {d} exceeds bit width of {d}", .{ shift_val, bit_width }));
-                }
-            }
-            return InferResult.some(left_type, stage);
-        },
+    return switch (e.op) {
+        .logical_and, .logical_or => checkLogicalBinary(v, e, left_type, right_type, stage, op_str),
+        .eq, .ne => checkEqualityBinary(v, e, left_type, right_type, stage, er, op_str),
+        .lt, .le, .gt, .ge => checkComparisonBinary(v, e, left_type, right_type, stage, er, op_str),
+        .add, .sub => checkAdditiveBinary(v, e, left_type, right_type, stage, er, op_str),
+        .mul => checkMulBinary(v, e, left_type, right_type, stage, er),
+        .div => checkDivBinary(v, e, left_type, right_type, stage, er),
+        .mod => checkModBinary(v, e, left_type, right_type, stage, er),
+        .@"and", .@"or", .xor => checkBitwiseBinary(v, e, left_type, right_type, stage, er, op_str),
+        .shl, .shr => checkShiftBinary(v, e, left_type, right_type, stage, er, op_str),
+    };
+}
+
+fn checkLogicalBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, op_str: []const u8) InferResult {
+    if (!left_type.eql(Types.Bool) or !right_type.eql(Types.Bool)) {
+        v.addErrorWithCodeR(exprRange(.{ .binary = e }), Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires 'bool' operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
+        return InferResult.fail;
     }
+    return InferResult.some(Types.Bool, stage);
+}
+
+fn checkEqualityBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
+    _ = e;
+    if (!left_type.eql(right_type) and
+        !Types.canConvertTo(left_type, right_type) and
+        !Types.canConvertTo(right_type, left_type))
+    {
+        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
+        return InferResult.fail;
+    }
+    return vectorOrBool(v, left_type, stage);
+}
+
+fn checkComparisonBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
+    _ = e;
+    if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type)) {
+        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires numeric operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
+        return InferResult.fail;
+    }
+    // WGSL §17.1 "Comparison Expressions": operands must share a
+    // common numeric type. Mixing signed and unsigned integers
+    // (`1i < 2u`) has no matching overload — reject rather than
+    // silently picking a winner via implicit conversion.
+    if (!left_type.eql(right_type) and
+        !Types.canConvertTo(left_type, right_type) and
+        !Types.canConvertTo(right_type, left_type))
+    {
+        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
+        return InferResult.fail;
+    }
+    return vectorOrBool(v, left_type, stage);
+}
+
+/// Vector comparisons return vec<N, bool>; scalar comparisons return bool.
+fn vectorOrBool(v: *Validator, left_type: Types.Type, stage: ExprStage) InferResult {
+    if (left_type == .vector) {
+        const bvec = v.arena.create(Types.Vector) catch return InferResult.some(Types.Bool, stage);
+        bvec.* = .{ .width = left_type.vector.width, .element = Types.scalar_bool_ptr };
+        return InferResult.some(.{ .vector = bvec }, stage);
+    }
+    return InferResult.some(Types.Bool, stage);
+}
+
+fn checkAdditiveBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
+    _ = e;
+    const result = Types.addSubResultType(v.arena, left_type, right_type) catch return InferResult.fail;
+    if (result) |r| {
+        return InferResult.some(r, stage);
+    }
+    v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires numeric types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
+    return InferResult.fail;
+}
+
+fn checkMulBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) InferResult {
+    _ = e;
+    const result = Types.multiplyResultType(v.arena, left_type, right_type) catch return InferResult.fail;
+    if (result) |r| {
+        return InferResult.some(r, stage);
+    }
+    v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot multiply '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
+    return InferResult.fail;
+}
+
+fn checkDivBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) InferResult {
+    const result = Types.divResultType(v.arena, left_type, right_type) catch return InferResult.fail;
+    if (result) |r| {
+        // Const division by zero
+        if (v.tryExtractIntValue(e.right)) |rhs_val| {
+            if (rhs_val == 0) {
+                v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
+            }
+        }
+        return InferResult.some(r, stage);
+    }
+    v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot divide '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
+    return InferResult.fail;
+}
+
+fn checkModBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) InferResult {
+    // WGSL % works on both integers and floats (unlike C where fmod is separate).
+    if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type)) {
+        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '%' requires numeric operands, got '{s}' and '{s}'", .{ left_type.string(), right_type.string() }));
+        return InferResult.fail;
+    }
+    // Const modulo by zero
+    if (v.tryExtractIntValue(e.right)) |rhs_val| {
+        if (rhs_val == 0) {
+            v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
+        }
+    }
+    const common = Types.commonType(left_type, right_type) orelse return InferResult.fail;
+    return InferResult.some(common, stage);
+}
+
+fn checkBitwiseBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
+    _ = e;
+    if (left_type.eql(Types.Bool) and right_type.eql(Types.Bool)) {
+        return InferResult.some(Types.Bool, stage);
+    }
+    if (Types.isInteger(left_type) and Types.isInteger(right_type)) {
+        const common = Types.commonType(left_type, right_type) orelse return InferResult.fail;
+        return InferResult.some(common, stage);
+    }
+    v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer or bool, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
+    return InferResult.fail;
+}
+
+fn checkShiftBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
+    if (!Types.isInteger(left_type)) {
+        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer left operand, got '{s}'", .{ op_str, left_type.string() }));
+        return InferResult.fail;
+    }
+    if (!right_type.eql(Types.U32) and !Types.canConvertTo(right_type, Types.U32)) {
+        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'u32', got '{s}'", .{right_type.string()}));
+        return InferResult.fail;
+    }
+    // Shift amount must be less than the bit width of the LHS type (WGSL spec section 8.7).
+    // AbstractInt LHS has no in-source bit width (`Scalar.size()` is 0);
+    // per spec it concretizes to i32/u32 so a 32-bit cap is the right
+    // shader-creation-time ceiling. Preserves spec-literal behavior
+    // for concrete `i32`/`u32` LHS (also 32-bit).
+    if (v.tryExtractIntValue(e.right)) |shift_val| {
+        const bit_width: i64 = blk: {
+            if (left_type != .scalar) break :blk 32;
+            const sz = left_type.scalar.size();
+            break :blk if (sz == 0) 32 else @as(i64, sz) * 8;
+        };
+        if (shift_val < 0 or shift_val >= bit_width) {
+            v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.invalid_operand, v.fmtError("shift amount {d} exceeds bit width of {d}", .{ shift_val, bit_width }));
+        }
+    }
+    return InferResult.some(left_type, stage);
 }
 
 /// Syntactic approximation of whether an expression can denote a reference
@@ -3829,23 +3876,7 @@ fn checkAddrOfUnary(v: *Validator, e: *Ast.UnaryExpr, er: LocRange, operand_type
 }
 
 fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
-    // Get callee name
-    var callee_name: []const u8 = "";
-    if (e.func) |func| {
-        switch (func) {
-            .ident => |ident| {
-                callee_name = ident.name;
-            },
-            .member => {
-                // Method call — simplified, treat as unknown
-                callee_name = "";
-            },
-            else => {
-                v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, "expression is not callable");
-                return InferResult.fail;
-            },
-        }
-    }
+    const callee_name = extractCalleeName(v, e) orelse return InferResult.fail;
 
     // bitcast<T>(expr) — WGSL §17.9.5. The template T is resolved to a
     // concrete Types.Type by `resolveType`, then we pick the matching sig
@@ -3855,34 +3886,12 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
     // verified post-resolution so cross-shape sigs can't produce
     // ill-sized pairs. See `checkBitcastCall` below.
     if (std.mem.eql(u8, callee_name, "bitcast")) {
-        if (e.template_type) |tt| {
-            const dest_type = v.resolveType(tt) orelse return InferResult.fail;
-            return try v.checkBitcastCall(e, dest_type);
-        }
-        v.addErrorWithCodeR(
-            exprRange(.{ .call = e }),
-            Diagnostic.Code.invalid_conversion,
-            v.fmtError("'bitcast' requires a template type argument, e.g. 'bitcast<u32>(x)'", .{}),
-        );
-        return InferResult.fail;
+        return try checkBitcastDispatch(v, e);
     }
 
     // Template type constructor (e.g. array<vec3f, 7>(...), vec3<f32>(...))
     if (e.template_type) |tt| {
-        const resolved = v.resolveType(tt) orelse return InferResult.fail;
-        // Use type string as callee_name when the parser doesn't set func
-        const name = if (callee_name.len > 0) callee_name else resolved.string();
-        // Validate constructor arguments against the resolved type
-        var constructor_arg_types: std.ArrayListUnmanaged(?Types.Type) = .empty;
-        var args_stage: ExprStage = .const_expr;
-        for (e.args.items) |arg| {
-            const ar = try v.checkExpr(arg);
-            try constructor_arg_types.append(v.arena, ar.typ);
-            args_stage = ExprStage.combine(args_stage, ar.stage);
-        }
-        const ret = v.checkTypeConstructor(e, name, resolved, constructor_arg_types.items) orelse
-            return .{ .typ = null, .stage = args_stage };
-        return InferResult.some(ret, args_stage);
+        return try checkTemplateTypeCtor(v, e, tt, callee_name);
     }
 
     // Check if it's a builtin function
@@ -3901,16 +3910,7 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
 
     // Check if it's a type constructor
     if (v.lookupType(callee_name)) |t| {
-        // Bare vec/mat constructors (`vec2`, `mat3x3`, …) infer their
-        // element type from the argument list per WGSL §14.462 rather than
-        // defaulting to f32. parseVectorShorthand / parseMatrixShorthand
-        // return a f32-default type; swap its element with the arg-unified
-        // scalar before validation so `let x = vec2(1, 2)` is vec2<i32>
-        // (or vec2<abstract-int> in contexts that retain abstractness).
-        const effective_t = v.inferGenericCtorElement(callee_name, t, constructor_arg_types.items) orelse t;
-        const ret = v.checkTypeConstructor(e, callee_name, effective_t, constructor_arg_types.items) orelse
-            return .{ .typ = null, .stage = args_stage };
-        return InferResult.some(ret, args_stage);
+        return checkBareTypeCtor(v, e, callee_name, t, constructor_arg_types.items, args_stage);
     }
 
     // Check if it's a user-defined function
@@ -3926,6 +3926,61 @@ fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
         v.reportNotCallable(e, callee_name);
     }
     return InferResult.fail;
+}
+
+fn extractCalleeName(v: *Validator, e: *Ast.CallExpr) ?[]const u8 {
+    const func = e.func orelse return "";
+    return switch (func) {
+        .ident => |ident| ident.name,
+        .member => "", // Method call — simplified, treat as unknown
+        else => blk: {
+            v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, "expression is not callable");
+            break :blk null;
+        },
+    };
+}
+
+fn checkBitcastDispatch(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
+    if (e.template_type) |tt| {
+        const dest_type = v.resolveType(tt) orelse return InferResult.fail;
+        return try v.checkBitcastCall(e, dest_type);
+    }
+    v.addErrorWithCodeR(
+        exprRange(.{ .call = e }),
+        Diagnostic.Code.invalid_conversion,
+        v.fmtError("'bitcast' requires a template type argument, e.g. 'bitcast<u32>(x)'", .{}),
+    );
+    return InferResult.fail;
+}
+
+fn checkTemplateTypeCtor(v: *Validator, e: *Ast.CallExpr, tt: Ast.Type, callee_name: []const u8) Allocator.Error!InferResult {
+    const resolved = v.resolveType(tt) orelse return InferResult.fail;
+    // Use type string as callee_name when the parser doesn't set func
+    const name = if (callee_name.len > 0) callee_name else resolved.string();
+    // Validate constructor arguments against the resolved type
+    var constructor_arg_types: std.ArrayListUnmanaged(?Types.Type) = .empty;
+    var args_stage: ExprStage = .const_expr;
+    for (e.args.items) |arg| {
+        const ar = try v.checkExpr(arg);
+        try constructor_arg_types.append(v.arena, ar.typ);
+        args_stage = ExprStage.combine(args_stage, ar.stage);
+    }
+    const ret = v.checkTypeConstructor(e, name, resolved, constructor_arg_types.items) orelse
+        return .{ .typ = null, .stage = args_stage };
+    return InferResult.some(ret, args_stage);
+}
+
+fn checkBareTypeCtor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type, args_stage: ExprStage) InferResult {
+    // Bare vec/mat constructors (`vec2`, `mat3x3`, …) infer their
+    // element type from the argument list per WGSL §14.462 rather than
+    // defaulting to f32. parseVectorShorthand / parseMatrixShorthand
+    // return a f32-default type; swap its element with the arg-unified
+    // scalar before validation so `let x = vec2(1, 2)` is vec2<i32>
+    // (or vec2<abstract-int> in contexts that retain abstractness).
+    const effective_t = v.inferGenericCtorElement(callee_name, t, arg_types) orelse t;
+    const ret = v.checkTypeConstructor(e, callee_name, effective_t, arg_types) orelse
+        return .{ .typ = null, .stage = args_stage };
+    return InferResult.some(ret, args_stage);
 }
 
 fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, builtin_fn: Builtins.Builtin) Allocator.Error!InferResult {
@@ -4342,213 +4397,223 @@ fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8
         return null;
     }
 
-    switch (t) {
-        .scalar => {
-            if (arg_count > 1) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor takes at most 1 argument, got {d}", .{ callee_name, arg_count }));
+    return switch (t) {
+        .scalar => checkScalarCtor(v, range, callee_name, t, arg_types, arg_count),
+        .vector => |ve| checkVectorCtor(v, range, callee_name, t, ve, arg_types, arg_count),
+        .matrix => |mt| checkMatrixCtor(v, range, callee_name, t, mt, arg_types, arg_count),
+        .@"struct" => |st| checkStructCtor(v, range, callee_name, t, st, arg_types, arg_count),
+        .array => |arr| checkArrayCtor(v, range, callee_name, t, arr, arg_types, arg_count),
+        else => t,
+    };
+}
+
+fn checkScalarCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
+    if (arg_count > 1) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor takes at most 1 argument, got {d}", .{ callee_name, arg_count }));
+        return null;
+    }
+    // Scalar value constructors are explicit conversions — any scalar
+    // to any scalar is valid (e.g. f32(i32_value), i32(0.9)).
+    if (arg_count == 1 and arg_types.len > 0) {
+        if (arg_types[0]) |at| {
+            if (at != .scalar) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
                 return null;
             }
-            // Scalar value constructors are explicit conversions — any scalar
-            // to any scalar is valid (e.g. f32(i32_value), i32(0.9)).
-            if (arg_count == 1 and arg_types.len > 0) {
-                if (arg_types[0]) |at| {
-                    if (at != .scalar) {
-                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
-                        return null;
-                    }
-                    // W0101: argument's concrete scalar type already matches
-                    // the constructor target — the cast is a no-op.
-                    if (at.scalar.kind == t.scalar.kind and t.scalar.isConcrete()) {
-                        v.addWarningWithCodeR(range, Diagnostic.Code.redundant_cast, v.fmtError("redundant cast: '{s}' is already '{s}'", .{ at.string(), t.string() }));
-                    }
-                }
+            // W0101: argument's concrete scalar type already matches
+            // the constructor target — the cast is a no-op.
+            if (at.scalar.kind == t.scalar.kind and t.scalar.isConcrete()) {
+                v.addWarningWithCodeR(range, Diagnostic.Code.redundant_cast, v.fmtError("redundant cast: '{s}' is already '{s}'", .{ at.string(), t.string() }));
             }
-        },
-        .vector => |ve| {
-            const width: u8 = ve.width;
+        }
+    }
+    return t;
+}
 
-            // 0 args: zero-value constructor
-            if (arg_count == 0) return t;
+fn checkVectorCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
+    if (arg_count == 0) return t;
+    if (arg_count == 1) return checkVectorCtorOne(v, range, callee_name, t, ve, arg_types);
+    return checkVectorCtorMulti(v, range, callee_name, t, ve, arg_types);
+}
 
-            // 1 arg: splat (scalar) or copy/convert (matching-width vector)
-            if (arg_count == 1) {
-                if (arg_types.len > 0) {
-                    if (arg_types[0]) |at| {
-                        if (at == .scalar) {
-                            if (!canConvertScalarTo(at.scalar, ve.element)) {
-                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.string(), ve.element.string(), callee_name }));
-                                return null;
-                            }
-                            return t; // splat
-                        }
-                        if (at == .vector) {
-                            const src_width: u8 = at.vector.width;
-                            if (src_width != width) {
-                                if (v.suggestVecForComponents(callee_name, src_width)) |suggestion| {
-                                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, width, src_width, suggestion }));
-                                } else {
-                                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, width, src_width }));
-                                }
-                                return null;
-                            }
-                            // Same width — check element type conversion
-                            if (!canConvertScalarTo(at.vector.element, ve.element)) {
-                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
-                                return null;
-                            }
-                            return t;
-                        }
-                    }
-                }
-                return t; // unknown arg type, skip validation
-            }
+fn checkVectorCtorOne(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Types.Type {
+    if (arg_types.len == 0) return t;
+    const at = arg_types[0] orelse return t; // unknown arg type, skip validation
 
-            // Multiple args: count total components (scalars + vector widths)
-            var total: usize = 0;
-            for (arg_types) |at_opt| {
-                const at = at_opt orelse return t; // unknown type, skip
-                if (at == .scalar) {
-                    total += 1;
-                } else if (at == .vector) {
-                    total += at.vector.width;
-                } else {
-                    return t; // non-scalar/vector arg, skip validation
-                }
-            }
-
-            if (total != width) {
-                if (v.suggestVecForComponents(callee_name, total)) |suggestion| {
-                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, width, total, suggestion }));
-                } else {
-                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, width, total }));
-                }
-                return null;
-            }
-
-            // Check element type compatibility for each argument
-            for (arg_types) |at_opt| {
-                const at = at_opt orelse continue;
-                const src_elem = elementTypeOf(at) orelse continue;
-                if (!canConvertScalarTo(src_elem, ve.element)) {
-                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ src_elem.string(), ve.element.string(), callee_name }));
-                    return null;
-                }
-            }
-        },
-        .matrix => |mt| {
-            const cols: u8 = mt.cols;
-            const rows: u8 = mt.rows;
-
-            // 0 args: zero-value constructor
-            if (arg_count == 0) return t;
-
-            // 1 arg: copy/convert (matching-dimension matrix)
-            if (arg_count == 1) {
-                if (arg_types.len > 0) {
-                    if (arg_types[0]) |at| {
-                        if (at == .matrix) {
-                            if (at.matrix.cols != mt.cols or at.matrix.rows != mt.rows) {
-                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
-                                return null;
-                            }
-                            if (!canConvertScalarTo(at.matrix.element, mt.element)) {
-                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
-                                return null;
-                            }
-                        }
-                    }
-                }
-                return t;
-            }
-
-            // Classify args: all scalars or all vectors
-            var all_scalar = true;
-            var all_vector = true;
-            for (arg_types) |at_opt| {
-                const at = at_opt orelse return t; // unknown type, skip
-                if (at != .scalar) all_scalar = false;
-                if (at != .vector) all_vector = false;
-            }
-
-            if (all_scalar) {
-                // C*R scalars required
-                if (arg_count != cols * rows) {
-                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' scalar constructor requires {d} values, got {d}", .{ callee_name, cols * rows, arg_count }));
-                    return null;
-                }
-                // Check scalar element type compatibility
-                for (arg_types) |at_opt| {
-                    const at = at_opt orelse continue;
-                    if (at == .scalar and !canConvertScalarTo(at.scalar, mt.element)) {
-                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.scalar.string(), mt.element.string(), callee_name }));
-                        return null;
-                    }
-                }
-            } else if (all_vector) {
-                // C column vectors of height R required
-                if (arg_count != cols) {
-                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' column constructor requires {d} vectors, got {d}", .{ callee_name, cols, arg_count }));
-                    return null;
-                }
-                // Check each column vector has height == rows and compatible element type
-                for (arg_types) |at_opt| {
-                    if (at_opt) |at| {
-                        if (at == .vector) {
-                            if (at.vector.width != rows) {
-                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' column vectors must have {d} components, got {d}", .{ callee_name, rows, at.vector.width }));
-                                return null;
-                            }
-                            if (!canConvertScalarTo(at.vector.element, mt.element)) {
-                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.vector.element.string(), mt.element.string(), callee_name }));
-                                return null;
-                            }
-                        }
-                    }
-                }
+    if (at == .scalar) {
+        if (!canConvertScalarTo(at.scalar, ve.element)) {
+            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.string(), ve.element.string(), callee_name }));
+            return null;
+        }
+        return t; // splat
+    }
+    if (at == .vector) {
+        const src_width: u8 = at.vector.width;
+        if (src_width != ve.width) {
+            if (v.suggestVecForComponents(callee_name, src_width)) |suggestion| {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, ve.width, src_width, suggestion }));
             } else {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' constructor requires all scalar values or all column vectors, not a mix", .{callee_name}));
-                return null;
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, ve.width, src_width }));
             }
-        },
-        .@"struct" => |st| {
-            if (arg_count != 0 and arg_count != st.fields.len) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor expects {d} arguments, got {d}", .{ callee_name, st.fields.len, arg_count }));
-                return null;
-            }
-            if (arg_count == st.fields.len) {
-                for (st.fields, 0..) |field, i| {
-                    if (i < arg_types.len) {
-                        if (arg_types[i]) |at| {
-                            if (!at.eql(field.typ) and !Types.canConvertTo(at, field.typ)) {
-                                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' for field '{s}'", .{ at.string(), field.typ.string(), field.name }));
-                                return null;
-                            }
-                        }
-                    }
+            return null;
+        }
+        // Same width — check element type conversion
+        if (!canConvertScalarTo(at.vector.element, ve.element)) {
+            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
+            return null;
+        }
+        return t;
+    }
+    return t;
+}
+
+fn checkVectorCtorMulti(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Types.Type {
+    // Count total components (scalars + vector widths)
+    var total: usize = 0;
+    for (arg_types) |at_opt| {
+        const at = at_opt orelse return t; // unknown type, skip
+        if (at == .scalar) {
+            total += 1;
+        } else if (at == .vector) {
+            total += at.vector.width;
+        } else {
+            return t; // non-scalar/vector arg, skip validation
+        }
+    }
+
+    if (total != ve.width) {
+        if (v.suggestVecForComponents(callee_name, total)) |suggestion| {
+            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, ve.width, total, suggestion }));
+        } else {
+            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, ve.width, total }));
+        }
+        return null;
+    }
+
+    // Check element type compatibility for each argument
+    for (arg_types) |at_opt| {
+        const at = at_opt orelse continue;
+        const src_elem = elementTypeOf(at) orelse continue;
+        if (!canConvertScalarTo(src_elem, ve.element)) {
+            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ src_elem.string(), ve.element.string(), callee_name }));
+            return null;
+        }
+    }
+    return t;
+}
+
+fn checkMatrixCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
+    if (arg_count == 0) return t;
+    if (arg_count == 1) return checkMatrixCtorOne(v, range, t, mt, arg_types);
+    return checkMatrixCtorMulti(v, range, callee_name, t, mt, arg_types, arg_count);
+}
+
+fn checkMatrixCtorOne(v: *Validator, range: LocRange, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type) ?Types.Type {
+    if (arg_types.len > 0) {
+        if (arg_types[0]) |at| {
+            if (at == .matrix) {
+                if (at.matrix.cols != mt.cols or at.matrix.rows != mt.rows) {
+                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
+                    return null;
+                }
+                if (!canConvertScalarTo(at.matrix.element, mt.element)) {
+                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
+                    return null;
                 }
             }
-        },
-        .array => |arr| {
-            // 0 args: zero-value constructor
-            if (arg_count == 0) return t;
+        }
+    }
+    return t;
+}
 
-            // Check element count if the array has a fixed size
-            if (arr.count > 0 and arg_count != arr.count) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor expects {d} elements, got {d}", .{ callee_name, arr.count, arg_count }));
+fn checkMatrixCtorMulti(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
+    // Classify args: all scalars or all vectors
+    var all_scalar = true;
+    var all_vector = true;
+    for (arg_types) |at_opt| {
+        const at = at_opt orelse return t; // unknown type, skip
+        if (at != .scalar) all_scalar = false;
+        if (at != .vector) all_vector = false;
+    }
+
+    if (all_scalar) {
+        // C*R scalars required
+        if (arg_count != mt.cols * mt.rows) {
+            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' scalar constructor requires {d} values, got {d}", .{ callee_name, mt.cols * mt.rows, arg_count }));
+            return null;
+        }
+        for (arg_types) |at_opt| {
+            const at = at_opt orelse continue;
+            if (at == .scalar and !canConvertScalarTo(at.scalar, mt.element)) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.scalar.string(), mt.element.string(), callee_name }));
                 return null;
             }
-
-            // Check each element type
-            for (arg_types, 0..) |at_opt, i| {
-                if (at_opt) |at| {
-                    if (!at.eql(arr.element) and !Types.canConvertTo(at, arr.element)) {
-                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' for element {d}", .{ at.string(), arr.element.string(), i }));
+        }
+        return t;
+    }
+    if (all_vector) {
+        // C column vectors of height R required
+        if (arg_count != mt.cols) {
+            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' column constructor requires {d} vectors, got {d}", .{ callee_name, mt.cols, arg_count }));
+            return null;
+        }
+        for (arg_types) |at_opt| {
+            if (at_opt) |at| {
+                if (at == .vector) {
+                    if (at.vector.width != mt.rows) {
+                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' column vectors must have {d} components, got {d}", .{ callee_name, mt.rows, at.vector.width }));
+                        return null;
+                    }
+                    if (!canConvertScalarTo(at.vector.element, mt.element)) {
+                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.vector.element.string(), mt.element.string(), callee_name }));
                         return null;
                     }
                 }
             }
-        },
-        else => {},
+        }
+        return t;
+    }
+    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' constructor requires all scalar values or all column vectors, not a mix", .{callee_name}));
+    return null;
+}
+
+fn checkStructCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, st: *const Types.Struct, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
+    if (arg_count != 0 and arg_count != st.fields.len) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor expects {d} arguments, got {d}", .{ callee_name, st.fields.len, arg_count }));
+        return null;
+    }
+    if (arg_count == st.fields.len) {
+        for (st.fields, 0..) |field, i| {
+            if (i < arg_types.len) {
+                if (arg_types[i]) |at| {
+                    if (!at.eql(field.typ) and !Types.canConvertTo(at, field.typ)) {
+                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' for field '{s}'", .{ at.string(), field.typ.string(), field.name }));
+                        return null;
+                    }
+                }
+            }
+        }
+    }
+    return t;
+}
+
+fn checkArrayCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, arr: *const Types.Array, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
+    if (arg_count == 0) return t;
+
+    // Check element count if the array has a fixed size
+    if (arr.count > 0 and arg_count != arr.count) {
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor expects {d} elements, got {d}", .{ callee_name, arr.count, arg_count }));
+        return null;
+    }
+
+    // Check each element type
+    for (arg_types, 0..) |at_opt, i| {
+        if (at_opt) |at| {
+            if (!at.eql(arr.element) and !Types.canConvertTo(at, arr.element)) {
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' for element {d}", .{ at.string(), arr.element.string(), i }));
+                return null;
+            }
+        }
     }
     return t;
 }
@@ -5304,182 +5369,198 @@ fn isNonUniformBuiltin(name: []const u8) bool {
 // =========================================================================
 
 fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
-    switch (ast_type) {
-        .ident => |t| {
-            if (v.lookupType(t.name)) |typ| return typ;
-            // Type not found — report with suggestion if close match exists.
-            if (v.suggestType(t.name, null)) |suggestion| {
-                v.addErrorWithCodeR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'; did you mean '{s}'?", .{ t.name, suggestion }));
-            } else {
-                v.addErrorWithCodeR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'", .{t.name}));
-            }
-            return null;
-        },
-        .vec => |t| {
-            var elem_scalar: *const Types.Scalar = Types.scalar_f32_ptr;
-            if (t.elem_type) |et| {
-                if (v.resolveType(et)) |resolved| {
-                    switch (resolved) {
-                        .scalar => |s| elem_scalar = s,
-                        else => {},
-                    }
-                }
-            } else if (t.shorthand.len > 0) {
-                elem_scalar = shorthandElement(t.shorthand);
-            }
-            const result = v.arena.create(Types.Vector) catch return null;
-            result.* = .{ .width = t.size, .element = elem_scalar };
-            return .{ .vector = result };
-        },
-        .mat => |t| {
-            var elem_scalar: *const Types.Scalar = Types.scalar_f32_ptr;
-            if (t.elem_type) |et| {
-                if (v.resolveType(et)) |resolved| {
-                    switch (resolved) {
-                        .scalar => |s| {
-                            // Spec: matrix element type must be f32, f16, or AbstractFloat.
-                            if (!s.isFloat()) {
-                                v.addErrorWithCodeR(astTypeRange(.{ .mat = t }), Diagnostic.Code.invalid_matrix_element, v.fmtError("matrix element type must be f32 or f16, got '{s}'", .{resolved.string()}));
-                                return null;
-                            }
-                            elem_scalar = s;
-                        },
-                        else => {
-                            v.addErrorWithCodeR(astTypeRange(.{ .mat = t }), Diagnostic.Code.invalid_matrix_element, v.fmtError("matrix element type must be scalar, got '{s}'", .{resolved.string()}));
-                            return null;
-                        },
-                    }
-                }
-            } else if (t.shorthand.len > 0) {
-                elem_scalar = shorthandElement(t.shorthand);
-            }
-            const result = v.arena.create(Types.Matrix) catch return null;
-            result.* = .{ .cols = t.cols, .rows = t.rows, .element = elem_scalar };
-            return .{ .matrix = result };
-        },
-        .array => |t| {
-            const elem_type = if (t.elem_type) |et| (v.resolveType(et) orelse return null) else return null;
-            var count: u32 = 0;
-            if (t.size) |size_expr| {
-                // Array element count must be a const-expression or override-expression
-                const size_stage = v.classifyExprStage(size_expr);
-                if (size_stage == .runtime_expr) {
-                    v.addErrorWithCodeR(exprRange(size_expr), Diagnostic.Code.expression_not_const, "array element count must be a const-expression or override-expression");
-                }
-                // Try to evaluate constant expression for array size
-                if (v.tryExtractIntValue(size_expr)) |val| {
-                    if (val <= 0) {
-                        // Spec: array element count must be > 0
-                        v.addErrorWithCodeR(exprRange(size_expr), Diagnostic.Code.invalid_array_count, "array element count must be greater than 0");
-                        return null;
-                    }
-                    count = @intCast(val);
-                }
-                // If we couldn't extract the value (identifier, complex expr), leave count=0
-            }
-            const result = v.arena.create(Types.Array) catch return null;
-            result.* = .{ .element = elem_type, .count = count };
-            return .{ .array = result };
-        },
-        .ptr => |t| {
-            const elem_type = v.resolveType(t.elem_type) orelse return null;
-            // Spec: pointer element type must not be a pointer, reference, sampler, or texture.
-            switch (elem_type) {
-                .pointer, .reference => {
-                    v.addErrorWithCodeR(astTypeRange(.{ .ptr = t }), Diagnostic.Code.type_mismatch, "pointer element type must not be a pointer or reference");
-                    return null;
-                },
-                .sampler => {
-                    v.addErrorWithCodeR(astTypeRange(.{ .ptr = t }), Diagnostic.Code.type_mismatch, "pointer element type must not be a sampler");
-                    return null;
-                },
-                .texture => {
-                    v.addErrorWithCodeR(astTypeRange(.{ .ptr = t }), Diagnostic.Code.type_mismatch, "pointer element type must not be a texture");
-                    return null;
-                },
+    return switch (ast_type) {
+        .ident => |t| resolveIdentType(v, t),
+        .vec => |t| resolveVecType(v, t),
+        .mat => |t| resolveMatType(v, t),
+        .array => |t| resolveArrayType(v, t),
+        .ptr => |t| resolvePtrType(v, t),
+        .atomic => |t| resolveAtomicType(v, t),
+        .sampler => |t| resolveSamplerType(v, t),
+        .texture => |t| resolveTextureType(v, t),
+    };
+}
+
+fn resolveIdentType(v: *Validator, t: anytype) ?Types.Type {
+    if (v.lookupType(t.name)) |typ| return typ;
+    // Type not found — report with suggestion if close match exists.
+    if (v.suggestType(t.name, null)) |suggestion| {
+        v.addErrorWithCodeR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'; did you mean '{s}'?", .{ t.name, suggestion }));
+    } else {
+        v.addErrorWithCodeR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'", .{t.name}));
+    }
+    return null;
+}
+
+fn resolveVecType(v: *Validator, t: anytype) ?Types.Type {
+    var elem_scalar: *const Types.Scalar = Types.scalar_f32_ptr;
+    if (t.elem_type) |et| {
+        if (v.resolveType(et)) |resolved| {
+            switch (resolved) {
+                .scalar => |s| elem_scalar = s,
                 else => {},
             }
-            const result = v.arena.create(Types.Pointer) catch return null;
-            result.* = .{
-                .address_space = t.address_space,
-                .element = elem_type,
-                .access_mode = t.access_mode,
-            };
-            return .{ .pointer = result };
-        },
-        .atomic => |t| {
-            const elem_type = v.resolveType(t.elem_type) orelse return null;
-            switch (elem_type) {
+        }
+    } else if (t.shorthand.len > 0) {
+        elem_scalar = shorthandElement(t.shorthand);
+    }
+    const result = v.arena.create(Types.Vector) catch return null;
+    result.* = .{ .width = t.size, .element = elem_scalar };
+    return .{ .vector = result };
+}
+
+fn resolveMatType(v: *Validator, t: anytype) ?Types.Type {
+    var elem_scalar: *const Types.Scalar = Types.scalar_f32_ptr;
+    if (t.elem_type) |et| {
+        if (v.resolveType(et)) |resolved| {
+            switch (resolved) {
                 .scalar => |s| {
-                    // Spec: atomic type requires i32 or u32 only.
-                    if (s.kind != .i32 and s.kind != .u32) {
-                        v.addErrorWithCodeR(astTypeRange(.{ .atomic = t }), Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires i32 or u32, got '{s}'", .{elem_type.string()}));
+                    // Spec: matrix element type must be f32, f16, or AbstractFloat.
+                    if (!s.isFloat()) {
+                        v.addErrorWithCodeR(astTypeRange(.{ .mat = t }), Diagnostic.Code.invalid_matrix_element, v.fmtError("matrix element type must be f32 or f16, got '{s}'", .{resolved.string()}));
                         return null;
                     }
-                    const result = v.arena.create(Types.Atomic) catch return null;
-                    result.* = .{ .element = s };
-                    return .{ .atomic = result };
+                    elem_scalar = s;
                 },
                 else => {
-                    v.addErrorWithCodeR(astTypeRange(.{ .atomic = t }), Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires scalar element, got '{s}'", .{elem_type.string()}));
+                    v.addErrorWithCodeR(astTypeRange(.{ .mat = t }), Diagnostic.Code.invalid_matrix_element, v.fmtError("matrix element type must be scalar, got '{s}'", .{resolved.string()}));
                     return null;
                 },
             }
+        }
+    } else if (t.shorthand.len > 0) {
+        elem_scalar = shorthandElement(t.shorthand);
+    }
+    const result = v.arena.create(Types.Matrix) catch return null;
+    result.* = .{ .cols = t.cols, .rows = t.rows, .element = elem_scalar };
+    return .{ .matrix = result };
+}
+
+fn resolveArrayType(v: *Validator, t: anytype) ?Types.Type {
+    const elem_type = if (t.elem_type) |et| (v.resolveType(et) orelse return null) else return null;
+    var count: u32 = 0;
+    if (t.size) |size_expr| {
+        // Array element count must be a const-expression or override-expression
+        const size_stage = v.classifyExprStage(size_expr);
+        if (size_stage == .runtime_expr) {
+            v.addErrorWithCodeR(exprRange(size_expr), Diagnostic.Code.expression_not_const, "array element count must be a const-expression or override-expression");
+        }
+        // Try to evaluate constant expression for array size
+        if (v.tryExtractIntValue(size_expr)) |val| {
+            if (val <= 0) {
+                // Spec: array element count must be > 0
+                v.addErrorWithCodeR(exprRange(size_expr), Diagnostic.Code.invalid_array_count, "array element count must be greater than 0");
+                return null;
+            }
+            count = @intCast(val);
+        }
+        // If we couldn't extract the value (identifier, complex expr), leave count=0
+    }
+    const result = v.arena.create(Types.Array) catch return null;
+    result.* = .{ .element = elem_type, .count = count };
+    return .{ .array = result };
+}
+
+fn resolvePtrType(v: *Validator, t: anytype) ?Types.Type {
+    const elem_type = v.resolveType(t.elem_type) orelse return null;
+    // Spec: pointer element type must not be a pointer, reference, sampler, or texture.
+    switch (elem_type) {
+        .pointer, .reference => {
+            v.addErrorWithCodeR(astTypeRange(.{ .ptr = t }), Diagnostic.Code.type_mismatch, "pointer element type must not be a pointer or reference");
+            return null;
         },
-        .sampler => |t| {
-            const result = v.arena.create(Types.Sampler) catch return null;
-            result.* = .{ .comparison = t.comparison };
-            return .{ .sampler = result };
+        .sampler => {
+            v.addErrorWithCodeR(astTypeRange(.{ .ptr = t }), Diagnostic.Code.type_mismatch, "pointer element type must not be a sampler");
+            return null;
         },
-        .texture => |t| {
-            const tex_range = astTypeRange(.{ .texture = t });
-            const kind = astTextureKindToType(t.kind);
-            const dimension = astTextureDimToType(t.dimension);
+        .texture => {
+            v.addErrorWithCodeR(astTypeRange(.{ .ptr = t }), Diagnostic.Code.type_mismatch, "pointer element type must not be a texture");
+            return null;
+        },
+        else => {},
+    }
+    const result = v.arena.create(Types.Pointer) catch return null;
+    result.* = .{
+        .address_space = t.address_space,
+        .element = elem_type,
+        .access_mode = t.access_mode,
+    };
+    return .{ .pointer = result };
+}
 
-            var sampled_scalar: ?*const Types.Scalar = null;
-            if (t.sampled_type) |st| {
-                if (v.resolveType(st)) |resolved| {
-                    switch (resolved) {
-                        .scalar => |s| sampled_scalar = s,
-                        else => {},
-                    }
-                }
+fn resolveAtomicType(v: *Validator, t: anytype) ?Types.Type {
+    const elem_type = v.resolveType(t.elem_type) orelse return null;
+    switch (elem_type) {
+        .scalar => |s| {
+            // Spec: atomic type requires i32 or u32 only.
+            if (s.kind != .i32 and s.kind != .u32) {
+                v.addErrorWithCodeR(astTypeRange(.{ .atomic = t }), Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires i32 or u32, got '{s}'", .{elem_type.string()}));
+                return null;
             }
-
-            // Spec: sampled and multisampled texture element types must be f32, i32, or u32.
-            if (kind == .sampled or kind == .multisampled) {
-                if (sampled_scalar) |s| {
-                    if (s.kind != .f32 and s.kind != .i32 and s.kind != .u32) {
-                        v.addErrorWithCodeR(tex_range, Diagnostic.Code.type_mismatch, v.fmtError("texture element type must be f32, i32, or u32, got '{s}'", .{s.string()}));
-                    }
-                }
-            }
-
-            // Spec: multisampled textures must be 2D.
-            if (kind == .multisampled or kind == .depth_multisampled) {
-                if (dimension != .@"2d") {
-                    v.addErrorWithCodeR(tex_range, Diagnostic.Code.type_mismatch, v.fmtError("multisampled texture must be 2d, got '{s}'", .{dimension.string()}));
-                }
-            }
-
-            // Spec: storage textures must not use cube or cube_array dimensions.
-            if (kind == .storage) {
-                if (dimension == .cube or dimension == .cube_array) {
-                    v.addErrorWithCodeR(tex_range, Diagnostic.Code.type_mismatch, v.fmtError("storage texture must not use '{s}' dimension", .{dimension.string()}));
-                }
-            }
-
-            const result = v.arena.create(Types.Texture) catch return null;
-            result.* = .{
-                .kind = kind,
-                .dimension = dimension,
-                .sampled_type = sampled_scalar,
-                .texel_format = t.texel_format,
-                .access_mode = t.access_mode,
-            };
-            return .{ .texture = result };
+            const result = v.arena.create(Types.Atomic) catch return null;
+            result.* = .{ .element = s };
+            return .{ .atomic = result };
+        },
+        else => {
+            v.addErrorWithCodeR(astTypeRange(.{ .atomic = t }), Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires scalar element, got '{s}'", .{elem_type.string()}));
+            return null;
         },
     }
+}
+
+fn resolveSamplerType(v: *Validator, t: anytype) ?Types.Type {
+    const result = v.arena.create(Types.Sampler) catch return null;
+    result.* = .{ .comparison = t.comparison };
+    return .{ .sampler = result };
+}
+
+fn resolveTextureType(v: *Validator, t: anytype) ?Types.Type {
+    const tex_range = astTypeRange(.{ .texture = t });
+    const kind = astTextureKindToType(t.kind);
+    const dimension = astTextureDimToType(t.dimension);
+
+    var sampled_scalar: ?*const Types.Scalar = null;
+    if (t.sampled_type) |st| {
+        if (v.resolveType(st)) |resolved| {
+            switch (resolved) {
+                .scalar => |s| sampled_scalar = s,
+                else => {},
+            }
+        }
+    }
+
+    // Spec: sampled and multisampled texture element types must be f32, i32, or u32.
+    if (kind == .sampled or kind == .multisampled) {
+        if (sampled_scalar) |s| {
+            if (s.kind != .f32 and s.kind != .i32 and s.kind != .u32) {
+                v.addErrorWithCodeR(tex_range, Diagnostic.Code.type_mismatch, v.fmtError("texture element type must be f32, i32, or u32, got '{s}'", .{s.string()}));
+            }
+        }
+    }
+
+    // Spec: multisampled textures must be 2D.
+    if (kind == .multisampled or kind == .depth_multisampled) {
+        if (dimension != .@"2d") {
+            v.addErrorWithCodeR(tex_range, Diagnostic.Code.type_mismatch, v.fmtError("multisampled texture must be 2d, got '{s}'", .{dimension.string()}));
+        }
+    }
+
+    // Spec: storage textures must not use cube or cube_array dimensions.
+    if (kind == .storage) {
+        if (dimension == .cube or dimension == .cube_array) {
+            v.addErrorWithCodeR(tex_range, Diagnostic.Code.type_mismatch, v.fmtError("storage texture must not use '{s}' dimension", .{dimension.string()}));
+        }
+    }
+
+    const result = v.arena.create(Types.Texture) catch return null;
+    result.* = .{
+        .kind = kind,
+        .dimension = dimension,
+        .sampled_type = sampled_scalar,
+        .texel_format = t.texel_format,
+        .access_mode = t.access_mode,
+    };
+    return .{ .texture = result };
 }
 
 fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
