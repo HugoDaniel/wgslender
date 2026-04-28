@@ -290,6 +290,66 @@ test "no-dead-code: source field stamped" {
     }
 }
 
+test "no-dead-code: suppresses body locals inside an unused function" {
+    // The function `dashed_segment` is itself unused, so no-unused-vars
+    // (W0001) flags its name. The body's `r` and `theta` are "dead" only
+    // because their enclosing function is — flagging each one separately
+    // is just noise. Expect a single W0001 on the function name and no
+    // W0002 on the locals.
+    var r = try runLint(
+        \\@compute @workgroup_size(1) fn main() {}
+        \\fn dashed_segment() {
+        \\  let r = 1.0;
+        \\  let theta = 2.0 * r;
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0001", "dashed_segment"));
+    for (r.lint.diagnostics.items()) |d| {
+        if (!std.mem.eql(u8, d.code, "W0002")) continue;
+        if (std.mem.indexOf(u8, d.message, "'r'") != null or
+            std.mem.indexOf(u8, d.message, "'theta'") != null)
+        {
+            dump("unexpected W0002 on locals of an unused fn", r);
+            return error.TestUnexpectedResult;
+        }
+    }
+}
+
+test "no-dead-code: still fires on transitively-dead module decls" {
+    // `helper` is referenced (use_count > 0) and unreachable (is_live ==
+    // false) — exactly W0002's territory. The only decl that could
+    // suppress it would be an enclosing function, but `helper` lives at
+    // module scope, so the suppression introduced for body locals must
+    // not apply here.
+    var r = try runLint(
+        \\@compute @workgroup_size(1) fn main() {}
+        \\fn helper() -> f32 { return 1.0; }
+        \\fn outer() -> f32 { return helper(); }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0001", "outer"));
+    try std.testing.expect(hasCodeContaining(r, "W0002", "helper"));
+}
+
+test "no-dead-code: locals inside a live entry-point fn never get W0002" {
+    // The locals here have is_live == true (main is the entry point), so
+    // no-dead-code never fires on them — independent of whether they're
+    // referenced. This guards against the suppression widening into
+    // entry-point bodies (which would wrongly silence real bugs there
+    // were the rule ever to start flagging them).
+    var r = try runLint(
+        \\@group(0) @binding(0) var<storage, read_write> out: f32;
+        \\@compute @workgroup_size(1) fn main() {
+        \\  let r = 1.0;
+        \\  let theta = 2.0 * r;
+        \\  out = theta;
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0002"));
+}
+
 // =========================================================================
 // no-unused-binding (W0003)
 // =========================================================================
