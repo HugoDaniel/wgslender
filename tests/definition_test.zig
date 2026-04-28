@@ -274,3 +274,96 @@ test "definition: unknown struct member returns null" {
     const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }
+
+test "definition: const in @group attribute argument" {
+    const source: [:0]const u8 = "const BG_INDEX: u32 = 0; @group(BG_INDEX) @binding(0) var<uniform> u: vec4f;";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "BG_INDEX") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
+}
+
+test "definition: const in @binding attribute argument" {
+    const source: [:0]const u8 = "const BIND_IDX: u32 = 0; @group(0) @binding(BIND_IDX) var<uniform> u: vec4f;";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "BIND_IDX") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
+}
+
+test "definition: override in @workgroup_size attribute argument" {
+    const source: [:0]const u8 = "override WG_X: u32 = 16; @compute @workgroup_size(WG_X) fn cs() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "WG_X") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 9), result.?.start.character);
+}
+
+test "definition: const in struct member @location attribute argument" {
+    const source: [:0]const u8 = "const LOC: u32 = 0; struct V { @location(LOC) p: vec4f }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "LOC") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
+}
+
+test "definition: const in fn parameter @location attribute argument" {
+    const source: [:0]const u8 = "const PARAM_LOC: u32 = 0; fn vs(@location(PARAM_LOC) p: vec4f) -> vec4f { return p; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "PARAM_LOC") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
+}
+
+test "definition: const in return-type @location attribute argument" {
+    const source: [:0]const u8 = "const RET_LOC: u32 = 0; @vertex fn vs() -> @location(RET_LOC) vec4f { return vec4f(0); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "RET_LOC") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
+}
+
+test "definition: unknown ident in attribute argument returns null" {
+    const source: [:0]const u8 = "@group(NOPE_INDEX) @binding(0) var<uniform> u: vec4f;";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "NOPE_INDEX") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result == null);
+}
+
+test "definition: literal arg in attribute returns null" {
+    const source: [:0]const u8 = "@group(0) @binding(0) var<uniform> u: vec4f;";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // First '0' lives at offset 7 (right after '@group(')
+    const usage = std.mem.indexOf(u8, source, "0") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result == null);
+}
