@@ -123,10 +123,12 @@ fn collectDeclDeps(
             if (d.typ) |t| try collectTypeRefs(arena, t, &refs);
         },
         .override => |d| {
+            try collectAttrRefs(arena, d.attributes.items, &refs);
             if (d.initializer) |init_expr| try collectExprRefs(arena, init_expr, &refs);
             if (d.typ) |t| try collectTypeRefs(arena, t, &refs);
         },
         .@"var" => |d| {
+            try collectAttrRefs(arena, d.attributes.items, &refs);
             if (d.initializer) |init_expr| try collectExprRefs(arena, init_expr, &refs);
             if (d.typ) |t| try collectTypeRefs(arena, t, &refs);
         },
@@ -135,18 +137,43 @@ fn collectDeclDeps(
             if (d.typ) |t| try collectTypeRefs(arena, t, &refs);
         },
         .function => |d| {
-            for (d.parameters.items) |param| try collectTypeRefs(arena, param.typ, &refs);
+            try collectAttrRefs(arena, d.attributes.items, &refs);
+            for (d.parameters.items) |param| {
+                try collectAttrRefs(arena, param.attributes.items, &refs);
+                try collectTypeRefs(arena, param.typ, &refs);
+            }
             if (d.return_type) |rt| try collectTypeRefs(arena, rt, &refs);
+            try collectAttrRefs(arena, d.return_attr.items, &refs);
             if (d.body) |body| try collectStmtRefs(arena, .{ .compound = body }, &refs);
         },
         .@"struct" => |d| {
-            for (d.members.items) |member| try collectTypeRefs(arena, member.typ, &refs);
+            for (d.members.items) |member| {
+                try collectAttrRefs(arena, member.attributes.items, &refs);
+                try collectTypeRefs(arena, member.typ, &refs);
+            }
         },
         .alias => |d| try collectTypeRefs(arena, d.typ, &refs),
         .const_assert => {},
     }
 
     try deps.put(arena, sym_idx, refs);
+}
+
+/// Collects symbol references from attribute args, mirroring `AstVisit`'s
+/// `visitAttributes` filter. `@builtin`/`@interpolate`/`@diagnostic` are
+/// skipped — full-parse Pass 2 doesn't bind their idents, so DCE must not
+/// trace through them either; otherwise an entry-reachable attr could
+/// keep a same-named user const "alive" even though no symbol-ref
+/// actually exists.
+fn collectAttrRefs(
+    arena: Allocator,
+    attrs: []const Ast.Attribute,
+    refs: *std.ArrayListUnmanaged(u32),
+) Allocator.Error!void {
+    for (attrs) |attr| {
+        if (!Ast.attributeArgsResolveSymbols(attr.name)) continue;
+        for (attr.args.items) |arg| try collectExprRefs(arena, arg, refs);
+    }
 }
 
 /// Iteratively collects symbol references from an expression tree using a worklist.
@@ -1395,4 +1422,210 @@ test "mark: propagates OOM" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const result = mark(failing.allocator(), module);
     try std.testing.expect(result == error.OutOfMemory);
+}
+
+// =========================================================================
+// Attribute-arg reachability — tests for the gap closure across
+// `Ast.attributeArgsResolveSymbols`. Pre-fix: an entry-point-reachable
+// `@workgroup_size(WG_X)` with `WG_X` declared but unreferenced anywhere
+// else would DCE `WG_X`, making `Printer.zig`'s `is_live` gate drop the
+// `const WG_X` decl and produce an unresolvable attribute. These tests
+// pin that those references now propagate liveness end-to-end.
+// =========================================================================
+
+fn assertNamedSymLive(module: *const Ast.Module, name: []const u8) !void {
+    for (module.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.original_name, name)) {
+            if (!sym.flags.is_live) {
+                std.debug.print("expected '{s}' to be live, but it was DCE'd\n", .{name});
+                return error.SymbolWasDeadButShouldBeLive;
+            }
+            return;
+        }
+    }
+    return error.SymbolNotFound;
+}
+
+fn assertNamedSymDead(module: *const Ast.Module, name: []const u8) !void {
+    for (module.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.original_name, name)) {
+            if (sym.flags.is_live) {
+                std.debug.print("expected '{s}' to be dead, but it was kept\n", .{name});
+                return error.SymbolWasLiveButShouldBeDead;
+            }
+            return;
+        }
+    }
+    return error.SymbolNotFound;
+}
+
+test "attribute-arg reachability: @workgroup_size(WG_X) keeps WG_X live" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const WG_X: u32 = 16;
+        \\@compute @workgroup_size(WG_X) fn main() {}
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "WG_X");
+    try assertNamedSymLive(module, "main");
+}
+
+test "attribute-arg reachability: @group(BG) on a referenced var keeps BG live" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const BG: u32 = 0;
+        \\@group(BG) @binding(0) var<uniform> u: vec4f;
+        \\@compute @workgroup_size(1) fn main() { let _v = u; }
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "BG");
+    try assertNamedSymLive(module, "u");
+}
+
+test "attribute-arg reachability: @binding(IDX) on a referenced var keeps IDX live" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const IDX: u32 = 2;
+        \\@group(0) @binding(IDX) var<uniform> u: vec4f;
+        \\@compute @workgroup_size(1) fn main() { let _v = u; }
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "IDX");
+}
+
+test "attribute-arg reachability: @id(MY_ID) on a referenced override keeps MY_ID live" {
+    // `@id` takes a const-expression — MY_ID must be `const`, not
+    // `override` (validator E0315 otherwise). We pin DCE liveness here;
+    // validator semantics are covered separately in tests/validation_test.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const MY_ID: u32 = 7;
+        \\@id(MY_ID) override x: f32;
+        \\@compute @workgroup_size(1) fn main() { let _v = x; }
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "MY_ID");
+}
+
+test "attribute-arg reachability: struct member @align(A) keeps A live" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const A: u32 = 16;
+        \\struct S { @align(A) x: f32, y: i32 }
+        \\@group(0) @binding(0) var<storage> s: S;
+        \\@compute @workgroup_size(1) fn main() { let _v = s; }
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "A");
+    try assertNamedSymLive(module, "S");
+}
+
+test "attribute-arg reachability: struct member @size(SZ) keeps SZ live" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const SZ: u32 = 32;
+        \\struct S { @size(SZ) x: f32, y: i32 }
+        \\@group(0) @binding(0) var<storage> s: S;
+        \\@compute @workgroup_size(1) fn main() { let _v = s; }
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "SZ");
+}
+
+test "attribute-arg reachability: param @location(L) keeps L live" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const L: u32 = 3;
+        \\@vertex fn main(@location(L) p: vec4f) -> @builtin(position) vec4f { return p; }
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "L");
+}
+
+test "attribute-arg reachability: return @location(RL) keeps RL live" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const RL: u32 = 1;
+        \\@fragment fn main() -> @location(RL) vec4f { return vec4f(0.0); }
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "RL");
+}
+
+test "attribute-arg reachability: cascading consts traced through @workgroup_size" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const A: u32 = 1;
+        \\const B: u32 = A + 1;
+        \\@compute @workgroup_size(B) fn main() {}
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "A");
+    try assertNamedSymLive(module, "B");
+}
+
+test "attribute-arg reachability: same const referenced multiple times keeps it live, others dead" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const N: u32 = 8;
+        \\const UNUSED: u32 = 99;
+        \\@compute @workgroup_size(N, N, N) fn main() {}
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "N");
+    try assertNamedSymDead(module, "UNUSED");
+}
+
+test "attribute-arg reachability: nested expression in attr keeps inner const live" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const N: u32 = 4;
+        \\@compute @workgroup_size(N * 2) fn main() {}
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymLive(module, "N");
+}
+
+test "attribute-arg reachability: deny-list — same-named const is NOT kept by @interpolate" {
+    // The user has declared `const linear: f32 = 1.0;` — it's NOT
+    // referenced anywhere outside the `@interpolate` deny-list attr.
+    // DCE must mark it dead even though `@interpolate(linear)` syntactically
+    // mentions the same name; the predicate denies symbol resolution there.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const linear: f32 = 1.0;
+        \\struct V { @location(0) @interpolate(linear) p: vec4f }
+        \\@group(0) @binding(0) var<storage> v: V;
+        \\@compute @workgroup_size(1) fn main() { let _v = v; }
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymDead(module, "linear");
+}
+
+test "attribute-arg reachability: @group(BG) on unreferenced var leaves BG dead" {
+    // BG appears in `@group(BG)` on a var that itself isn't reached from
+    // the entry point — the var is dead, so its attribute walks aren't
+    // visited by BFS. BG stays dead. (Negative test: we don't over-mark.)
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const module = parseModule(arena.allocator(),
+        \\const BG: u32 = 0;
+        \\@group(BG) @binding(0) var<uniform> unused_u: vec4f;
+        \\@compute @workgroup_size(1) fn main() {}
+    ) orelse return error.TestParseFailed;
+    _ = try mark(arena.allocator(), module);
+    try assertNamedSymDead(module, "BG");
+    try assertNamedSymDead(module, "unused_u");
 }

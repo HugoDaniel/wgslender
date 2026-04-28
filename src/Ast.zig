@@ -710,6 +710,23 @@ pub const Attribute = struct {
     span: Span = .empty,
 };
 
+/// Whether this attribute's args are const-expressions that may reference
+/// user symbols (`@group(BG)`, `@workgroup_size(WG_X, ...)`, `@id(MY_ID)`,
+/// `@align(N)`, `@size(N)`, `@location(N)`, `@binding(N)`, `@blend_src(N)`)
+/// vs. enum-like keyword args that are NOT user references (`@builtin(...)`,
+/// `@interpolate(...)`, `@diagnostic(...)`). The parser builds args as `Expr`
+/// for both kinds, so traversers (Pass 2 visit, DCE deps, minifier usage,
+/// incremental hot path) must filter explicitly. Default `true` — new
+/// attributes walk by default; only the small enum-arg set is denied.
+/// No-arg attrs (`@vertex`, `@must_use`, etc.) trivially pass through:
+/// `attr.args` is empty so the predicate's answer is moot.
+pub fn attributeArgsResolveSymbols(name: []const u8) bool {
+    if (std.mem.eql(u8, name, "builtin")) return false;
+    if (std.mem.eql(u8, name, "interpolate")) return false;
+    if (std.mem.eql(u8, name, "diagnostic")) return false;
+    return true;
+}
+
 // =========================================================================
 // Types
 // =========================================================================

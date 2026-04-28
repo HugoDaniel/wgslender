@@ -115,12 +115,15 @@ fn at(haystack: []const u8, needle: []const u8) u32 {
 // M1 — Attribute-argument expression mutation.
 //
 // Stresses the only path through which a hot-path anchor can land inside
-// an attribute: `findSlotInAttribute` (`src/Incremental.zig:1122`).
-// `AstVisit.visitDecl` deliberately does NOT walk `attr.args`, so attribute
-// arguments contribute nothing to `use_count` in either the original parse
-// or the oracle — making M1's correctness oracle especially sharp:
-// per-symbol counts must be unchanged across an attribute-arg edit, no
-// matter what idents the edit introduces or removes.
+// an attribute: `findSlotInAttribute`. `AstVisit.visitAttributes` walks the
+// args of const-expression attrs (`@group`, `@workgroup_size`, `@id`,
+// `@align`, `@size`, `@location`, `@binding`, `@blend_src`) and skips the
+// enum-keyword set (`@builtin`, `@interpolate`, `@diagnostic`). The hot
+// path mirrors via `Ast.attributeArgsResolveSymbols`, plumbed through
+// `AstSlotInfo.attr_resolves_symbols`. Oracle equality on `use_count`
+// across edits keeps both walks honest: every literal ↔ literal, ident ↔
+// ident, and ident ↔ literal swap must leave hot-path and full-parse
+// agreeing per-symbol.
 // =========================================================================
 
 test "M1.a: workgroup_size literal flip on fn main" {
@@ -205,23 +208,21 @@ test "M1.f: @location literal flip on an entry-point return attribute" {
     );
 }
 
-// M1.g — Attribute-argument IDENT swaps (the bug that M1.a–M1.f couldn't
-// reach). `AstVisit.visitDecl` never descends into `attr.args` during the
-// full-parse Pass 2, so the oracle records zero `use_count` contribution
-// from attr-arg idents. The incremental hot path's add-walk previously
-// diverged: it ran `AstVisit.visitSubtreeExpr(.add)` over the spliced
-// subtree and bumped every resolved ident. Fix lives in
-// `findAstSlot`/`tryAddSubSpliceInPlace` — slot info now carries an
-// `in_attribute` flag and both sub/add walks skip when it's set. These
-// scenarios lock that parity in with a per-symbol `use_count` oracle.
+// M1.g — Attribute-argument IDENT swaps (the case M1.a–M1.f's literal
+// flips can't reach). `AstVisit.visitAttributes` walks args of const-expr
+// attrs, so `@workgroup_size(WG_X)` makes `WG_X.use_count == 1` in both
+// the oracle and the hot path. Each ident swap is one decrement (sub-walk
+// on the OLD ident) plus one increment (add-walk on the NEW ident); the
+// counts oscillate in lockstep. These scenarios pin per-symbol parity
+// after every edit.
 
-test "M1.g.1: @workgroup_size ident→ident swap (hot path exercises the fix)" {
-    // Two sibling consts, both unreferenced outside the attribute. Swap
-    // the one currently named in `@workgroup_size` for the other. Anchor
-    // is `ident_expr` in both old and new, so kind-match succeeds and
-    // `tryAddSubSpliceInPlace` runs — the exact branch that the fix
-    // gates on `info.in_attribute`. Pre-fix: `B.use_count` would land at
-    // 1 after the edit while the oracle keeps it at 0.
+test "M1.g.1: @workgroup_size ident→ident swap (hot path exercises the predicate)" {
+    // Two sibling consts. Swap the one currently named in `@workgroup_size`
+    // for the other. Anchor: `ident_expr` in both old and new, so the
+    // kind-match succeeds and `tryAddSubSpliceInPlace` runs the sub+add
+    // walks — gated by `attr_resolves_symbols`, which is true for
+    // `@workgroup_size`. After the edit, `A.use_count == 0` (decremented)
+    // and `B.use_count == 1` (incremented), matching the oracle.
     const src: [:0]const u8 = "const A: u32 = 8; const B: u32 = 16; @compute @workgroup_size(A) fn main() {}";
     const new_src: []const u8 = "const A: u32 = 8; const B: u32 = 16; @compute @workgroup_size(B) fn main() {}";
     const off: u32 = at(src, "@workgroup_size(") + @as(u32, @intCast("@workgroup_size(".len));
@@ -339,12 +340,12 @@ test "M1.g.6: return-attribute @location(ident) ident→ident swap routes throug
 }
 
 test "M1.g.7: @workgroup_size(A, B, 1) second-arg ident↔ident swap keeps first arg's use_count still" {
-    // Multi-arg attribute; edit hits only the second arg ident. Both A
-    // and B are module-const scalars unreferenced outside the attribute,
-    // so the oracle keeps both at `use_count == 0`. The first arg's
-    // ident token is untouched by the splice, so this scenario pins that
-    // only the edited slot's ident-resolution is skipped (the fix is
-    // scoped to the spliced subtree, not the whole attribute).
+    // Multi-arg attribute; edit hits only the second arg ident. After the
+    // swap, A.use_count stays at 1 (first arg, untouched), B.use_count
+    // drops 1→0 (decremented by sub-walk on the OLD second arg), and
+    // C.use_count rises 0→1 (incremented by add-walk on the NEW second
+    // arg). Pins that the splice is scoped to the edited slot, not the
+    // whole attribute — the first arg's bookkeeping is left alone.
     const src: [:0]const u8 =
         "const A: u32 = 8; const B: u32 = 16; const C: u32 = 32; @compute @workgroup_size(A, B, 1) fn main() {}";
     const new_src: []const u8 =
@@ -365,8 +366,9 @@ test "M1.g.8: call_expr anchor inside attr-args — whole callee swap stays hot"
     // call, so `findAnchor` settles on `call_expr` rather than the inner
     // `ident_expr` (which would greedily re-parse past itself and trip
     // `AnchorKindMismatch`). Both sides are `call_expr`, kind matches,
-    // hot path runs — and the inner ident (`a` or `b`) must not bump its
-    // callee's `use_count` under the fix.
+    // hot path runs. Each call's inner ident bumps `use_count` of its
+    // callee by 1; oracle and hot path agree across the swap (a→b means
+    // a.use_count drops 1→0 and b.use_count rises 0→1).
     const src: [:0]const u8 =
         "fn a() -> u32 { return 8u; } fn b() -> u32 { return 16u; } @compute @workgroup_size(a()) fn main() {}";
     const new_src: []const u8 =
@@ -384,8 +386,10 @@ test "M1.g.8: call_expr anchor inside attr-args — whole callee swap stays hot"
 
 test "M1.g.9: binary_expr inside attr-args — operator flip leaves use_counts put" {
     // `@workgroup_size(N * 2)` → `@workgroup_size(N + 2)`. Anchor is the
-    // binary_expr inside attribute_args. Full-parse leaves N at 0; pre-fix
-    // the add-walk bumped N on every reparse.
+    // binary_expr inside attribute_args. Both old and new contain a
+    // single ident reference to N, so N.use_count stays at 1 across the
+    // edit (sub-walk decrements 1→0, add-walk increments 0→1). Operator
+    // flips that don't change ident set are oracle-quiet on use_count.
     const src: [:0]const u8 =
         "const N: u32 = 4; @compute @workgroup_size(N * 2) fn main() {}";
     const new_src: []const u8 =
@@ -455,11 +459,12 @@ test "M1.g.11: ident↔ident round-trip leaves source and use_counts pristine" {
 }
 
 test "M1.g.12: 20-edit ident↔ident chain on @workgroup_size(A|B) holds oracle every step" {
-    // Alternates `A` ↔ `B` in `@workgroup_size`. Pre-fix, each iteration
-    // would introduce constant +1 drift relative to the oracle (the
-    // sub-walk would decrement from the previous incorrect bump, then
-    // the add-walk would re-bump). Post-fix: both walks skip and the
-    // oracle matches after every reparse.
+    // Alternates `A` ↔ `B` in `@workgroup_size`. The currently-named const
+    // has use_count == 1; the other has 0. Each edit decrements the OLD
+    // ident (1→0) and increments the NEW (0→1) — counts oscillate cleanly
+    // with the oracle. Pre-fix this same chain would have drifted: the
+    // oracle held 0 while the hot path's add-walk bumped to 1+ without a
+    // matching decrement. Now both paths agree post-fix.
     const gpa = std.testing.allocator;
     const base: [:0]const u8 =
         "const A: u32 = 8; const B: u32 = 16; @compute @workgroup_size(A) fn main() {}";
@@ -487,9 +492,12 @@ test "M1.g.12: 20-edit ident↔ident chain on @workgroup_size(A|B) holds oracle 
     }
 }
 
-test "M1.g.13: 20-edit ident↔ident chain on @group(A|B) holds zeros throughout" {
-    // Both A and B must stay at use_count == 0 across all 20 iterations;
-    // pre-fix one of them would grow without bound as the chain drifted.
+test "M1.g.13: 20-edit ident↔ident chain on @group(A|B) tracks attr-arg use_count both sides" {
+    // After the attr-arg ident gap fix: full-parse Pass 2 binds `@group(X)`
+    // to symbol X and bumps X.use_count. The hot path mirrors. The currently
+    // referenced const has use_count == 1; the unreferenced one has 0. Across
+    // 20 swaps the counts oscillate 1↔0 in lockstep with the oracle, never
+    // drifting.
     const gpa = std.testing.allocator;
     const base: [:0]const u8 =
         "const A: u32 = 0; const B: u32 = 1; @group(A) @binding(0) var<uniform> u: f32;";
@@ -511,10 +519,13 @@ test "M1.g.13: 20-edit ident↔ident chain on @group(A|B) holds zeros throughout
         var oracle = try Incremental.parseFull(gpa, next.source);
         defer oracle.deinit();
         try expectUseCountsMatch(next.module, oracle.module);
-        // Spot-check: both module-const symbols are dead regardless of
-        // which one is currently named in the attribute arg.
-        try std.testing.expectEqual(@as(u32, 0), useCountOf(next.module, "A"));
-        try std.testing.expectEqual(@as(u32, 0), useCountOf(next.module, "B"));
+        // After this edit, exactly one of A/B is named in `@group(...)`.
+        // Iteration even (i==0,2,...): new_text=="B" → B is referenced.
+        // Iteration odd: new_text=="A" → A is referenced.
+        const expect_a: u32 = if (i % 2 == 0) 0 else 1;
+        const expect_b: u32 = if (i % 2 == 0) 1 else 0;
+        try std.testing.expectEqual(expect_a, useCountOf(next.module, "A"));
+        try std.testing.expectEqual(expect_b, useCountOf(next.module, "B"));
 
         prev.deinit();
         prev = next;
@@ -553,6 +564,86 @@ test "M1.g.15: zero-delta whitespace swap inside attr-args takes the trivia shor
         std.testing.allocator,
         src,
         .{ .start = space_off, .end = space_off + 1, .new_text = "\t" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.16: @id(ident) ident↔ident swap on override (override decl path)" {
+    // Override decls also carry attributes. `@id` is in the const-expression
+    // set, so the spliced ident binds and bumps. Pre-fix the override path
+    // wasn't even on the table — `findSlotInDecl`'s `.override` branch had
+    // the in_attribute gate; now it routes through `attr_resolves_symbols`.
+    const src: [:0]const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @id(A) override x: f32;";
+    const new_src: []const u8 =
+        "const A: u32 = 0; const B: u32 = 1; @id(B) override x: f32;";
+    const off: u32 = at(src, "@id(") + @as(u32, @intCast("@id(".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "B" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.17: @size(ident) ident↔ident swap on struct member" {
+    // Struct-member attribute path with a different attr name from M1.g.4
+    // (which uses @align). Both attrs share the const-expression bucket,
+    // so the parity behavior is identical — pinning that the predicate
+    // applies attr-by-attr (not just for `@align`).
+    const src: [:0]const u8 =
+        "const A: u32 = 4; const B: u32 = 8; struct S { @size(A) x: f32, y: i32 }";
+    const new_src: []const u8 =
+        "const A: u32 = 4; const B: u32 = 8; struct S { @size(B) x: f32, y: i32 }";
+    const off: u32 = at(src, "@size(") + @as(u32, @intCast("@size(".len));
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "B" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.18: @interpolate(ident) ident swap stays oracle-quiet (deny-list keyword args)" {
+    // `@interpolate(linear, center)` etc. take enum-keyword args, NOT
+    // user-symbol references. `Ast.attributeArgsResolveSymbols` denies
+    // them, so full-parse Pass 2 doesn't bind/bump and the hot path's
+    // add-walk skips. Even though `linear` and `flat` are valid WGSL
+    // identifiers, no user-symbol use_count moves on either side.
+    const src: [:0]const u8 =
+        "struct V { @location(0) @interpolate(linear) p: vec4f }";
+    const new_src: []const u8 =
+        "struct V { @location(0) @interpolate(flat) p: vec4f }";
+    const off: u32 = at(src, "@interpolate(") + @as(u32, @intCast("@interpolate(".len));
+    const old_len: u32 = @intCast("linear".len);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + old_len, .new_text = "flat" },
+        new_src,
+        true,
+    );
+}
+
+test "M1.g.19: @interpolate(ident) edit ignores a same-named user const (deny-list wins)" {
+    // The user has a const named `linear` at module scope. Pre fix or
+    // post fix, the deny list says `@interpolate` doesn't resolve user
+    // symbols — so swapping `linear` → `flat` inside the attribute leaves
+    // `const linear`'s use_count untouched (oracle holds it at 0). The
+    // const stays unused; nothing in the attribute is a real reference.
+    const src: [:0]const u8 =
+        "const linear: f32 = 1.0; struct V { @location(0) @interpolate(linear) p: vec4f }";
+    const new_src: []const u8 =
+        "const linear: f32 = 1.0; struct V { @location(0) @interpolate(flat) p: vec4f }";
+    const off: u32 = at(src, "@interpolate(") + @as(u32, @intCast("@interpolate(".len));
+    const old_len: u32 = @intCast("linear".len);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + old_len, .new_text = "flat" },
         new_src,
         true,
     );
@@ -2332,10 +2423,12 @@ test "M14.a: M1 attr-arg 300-edit chain holds invariants and coalesces" {
 
 test "M14.a.ident: M1 attr-arg ident-swap 300-edit chain holds invariants and coalesces" {
     // `@binding(A|B)` ident flips `A`↔`B` 300×. Anchor: ident_expr
-    // inside attribute args (M1.g path — post-fix). Mirrors M14.a's
-    // literal-churn but flips the knob that would have leaked +1 drift
-    // per iteration under the pre-fix add-walk, so every iteration
-    // pressure-tests the `info.in_attribute` gate in addition to the
+    // inside attribute args (M1.g path). Post attr-arg gap fix:
+    // `@binding(...)` is a const-expression attribute, so full-parse
+    // and the hot path BOTH bind and bump the referenced ident's
+    // use_count. Across the chain the counts oscillate 1↔0 in lockstep
+    // (pre-fix this same chain would have held both at 0, masking the
+    // actual reachability link). Pressure-tests the predicate gate plus
     // arena / coalesce bookkeeping.
     const gpa = std.testing.allocator;
     const base_src: [:0]const u8 =
@@ -2368,10 +2461,10 @@ test "M14.a.ident: M1 attr-arg ident-swap 300-edit chain holds invariants and co
     defer oracle.deinit();
     try expectShapesMatch(gpa, prev.module, oracle.module);
     try expectUseCountsMatch(prev.module, oracle.module);
-    // Both sibling consts are only ever named inside the attribute, so
-    // the oracle holds them at `use_count == 0` — pinning that the chain
-    // did not leak any residual +1 onto either symbol.
-    try std.testing.expectEqual(@as(u32, 0), useCountOf(prev.module, "A"));
+    // After the final edit (i==299, ch=='A'), the source ends at
+    // `@binding(A)`, so A.use_count == 1 and B.use_count == 0. Pins
+    // that the 300-edit chain didn't leak drift onto either symbol.
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(prev.module, "A"));
     try std.testing.expectEqual(@as(u32, 0), useCountOf(prev.module, "B"));
 }
 

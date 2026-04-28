@@ -428,9 +428,11 @@ fn countDeclUsage(arena: Allocator, decl: Ast.Decl, uses: *std.AutoHashMapUnmana
             if (d.initializer) |init_expr| try countExprUsage(arena, init_expr, uses);
         },
         .override => |d| {
+            try countAttrUsage(arena, d.attributes.items, uses);
             if (d.initializer) |init_expr| try countExprUsage(arena, init_expr, uses);
         },
         .@"var" => |d| {
+            try countAttrUsage(arena, d.attributes.items, uses);
             if (d.initializer) |init_expr| try countExprUsage(arena, init_expr, uses);
         },
         .let => |d| {
@@ -442,9 +444,35 @@ fn countDeclUsage(arena: Allocator, decl: Ast.Decl, uses: *std.AutoHashMapUnmana
                 const entry = try uses.getOrPutValue(arena, d.name, 0);
                 entry.value_ptr.* += 1;
             }
+            try countAttrUsage(arena, d.attributes.items, uses);
+            for (d.parameters.items) |param| {
+                try countAttrUsage(arena, param.attributes.items, uses);
+            }
+            try countAttrUsage(arena, d.return_attr.items, uses);
             if (d.body) |body| try countStmtUsage(arena, .{ .compound = body }, uses);
         },
-        .@"struct", .alias, .const_assert => {},
+        .@"struct" => |d| {
+            for (d.members.items) |member| {
+                try countAttrUsage(arena, member.attributes.items, uses);
+            }
+        },
+        .alias, .const_assert => {},
+    }
+}
+
+/// Counts symbol-ref usage in attribute args, mirroring `AstVisit`'s
+/// `visitAttributes` filter. The renamer's frequency model needs the
+/// same view as DCE: bumps for const-expression attrs (`@group`,
+/// `@workgroup_size`, etc.), skips for enum-keyword attrs (`@builtin`,
+/// `@interpolate`, `@diagnostic`).
+fn countAttrUsage(
+    arena: Allocator,
+    attrs: []const Ast.Attribute,
+    uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
+) Allocator.Error!void {
+    for (attrs) |attr| {
+        if (!Ast.attributeArgsResolveSymbols(attr.name)) continue;
+        for (attr.args.items) |arg| try countExprUsage(arena, arg, uses);
     }
 }
 

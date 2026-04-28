@@ -694,3 +694,167 @@ test "U10: sub-walk leaves a seeded errors bucket byte-identical after a subtree
     try std.testing.expectEqualStrings("E0102", errs.items[1].code);
     try std.testing.expectEqual(@as(u32, 13), errs.items[1].pos);
 }
+
+// =========================================================================
+// Attribute-arg Pass 2 binding — the gap closure (full-parse must bind &
+// bump for `Ast.attributeArgsResolveSymbols(name) == true` and skip for
+// the deny-list). Drives `parseFull` and inspects symbol use_counts so
+// regressions in `visitAttributes` show up here directly, not behind a
+// minify or DCE chain.
+// =========================================================================
+
+test "U-ATTR-1: @workgroup_size(WG_X) bumps WG_X.use_count to 1" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const WG_X: u32 = 16; @compute @workgroup_size(WG_X) fn main() {}",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "WG_X"));
+}
+
+test "U-ATTR-2: @workgroup_size(N, N, N) bumps N.use_count to 3 (multi-use single attr)" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const N: u32 = 8; @compute @workgroup_size(N, N, N) fn main() {}",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 3), useCountOf(base.module, "N"));
+}
+
+test "U-ATTR-3: nested @workgroup_size(N * 2) bumps N exactly once" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const N: u32 = 4; @compute @workgroup_size(N * 2) fn main() {}",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "N"));
+}
+
+test "U-ATTR-4: @group(BG) @binding(BG) on var bumps BG twice" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const BG: u32 = 0; @group(BG) @binding(BG) var<uniform> u: f32;",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 2), useCountOf(base.module, "BG"));
+}
+
+test "U-ATTR-5: @location on parameter binds at module scope" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const LOC: u32 = 3; @vertex fn f(@location(LOC) p: vec4f) -> @builtin(position) vec4f { return p; }",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "LOC"));
+}
+
+test "U-ATTR-6: @location on return type binds at module scope" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const RL: u32 = 1; @fragment fn f() -> @location(RL) vec4f { return vec4f(0.0); }",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "RL"));
+}
+
+test "U-ATTR-7: @align and @size on struct member each bump independently" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const A: u32 = 16; const SZ: u32 = 32; struct S { @align(A) @size(SZ) x: f32, y: i32 }",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "A"));
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "SZ"));
+}
+
+test "U-ATTR-8: @id(MY_ID) on override decl bumps MY_ID" {
+    // `@id` takes a const-expression. MY_ID must be `const`, not
+    // `override`. Pass 2's job here is to bind the IdentExpr in the
+    // attribute to the `const MY_ID` symbol — independently of whether
+    // Validator later approves the const-ness.
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const MY_ID: u32 = 7; @id(MY_ID) override x: f32;",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "MY_ID"));
+}
+
+test "U-ATTR-DENY-1: @interpolate(linear) does NOT bind a same-named user const" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const linear: f32 = 1.0; struct V { @location(0) @interpolate(linear) p: vec4f }",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 0), useCountOf(base.module, "linear"));
+}
+
+test "U-ATTR-DENY-2: @builtin(vertex_index) does NOT bind a same-named user const" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const vertex_index: u32 = 5; struct V { @builtin(vertex_index) idx: u32 }",
+    );
+    defer base.deinit();
+    try std.testing.expectEqual(@as(u32, 0), useCountOf(base.module, "vertex_index"));
+}
+
+test "U-ATTR-PARITY: add-walk over an attr-arg subtree, then sub-walk, leaves use_count balanced" {
+    // Drive the .add/.sub modes directly on an attr-arg ident expression.
+    // After add-walk, WG_X.use_count == 1 (Pass 2 already bumped, then
+    // visitSubtreeExpr in .add bumps a second time). After sub-walk,
+    // it returns to 1 (decrement) — the flag-paired protocol guarantees
+    // exactly one decrement per increment.
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(
+        gpa,
+        "const WG_X: u32 = 16; @compute @workgroup_size(WG_X) fn main() {}",
+    );
+    defer base.deinit();
+
+    // After parseFull (which runs Pass 2 with the new visitAttributes),
+    // WG_X.use_count is already 1.
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "WG_X"));
+
+    // Reach the @workgroup_size's first arg, an IdentExpr referencing WG_X.
+    var attr_arg: ?Ast.Expr = null;
+    for (base.module.declarations.items) |d| {
+        if (d != .function) continue;
+        for (d.function.attributes.items) |a| {
+            if (!std.mem.eql(u8, a.name, "workgroup_size")) continue;
+            if (a.args.items.len > 0) attr_arg = a.args.items[0];
+        }
+    }
+    const expr = attr_arg orelse return error.TestUnexpectedNull;
+
+    // Add-walk: bumps WG_X to 2.
+    var add_errs: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer add_errs.deinit(gpa);
+    var add_ctx: AstVisit.Context = .{
+        .arena = gpa,
+        .symbols = base.module.symbols.items,
+        .scopes_in_order = &.{},
+        .scope = base.module.scope,
+        .errors = &add_errs,
+        .safety_budget = @max(64, base.cst.tokens.len * 2),
+        .mode = .add,
+    };
+    _ = try AstVisit.visitSubtreeExpr(&add_ctx, expr);
+    try std.testing.expectEqual(@as(u32, 2), useCountOf(base.module, "WG_X"));
+
+    // Sub-walk: must decrement exactly once (flag-paired) → back to 1.
+    var sub_errs: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer sub_errs.deinit(gpa);
+    var sub_ctx = subContext(gpa, &base, &sub_errs);
+    _ = try AstVisit.visitSubtreeExpr(&sub_ctx, expr);
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "WG_X"));
+}

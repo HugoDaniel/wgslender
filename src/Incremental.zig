@@ -923,16 +923,15 @@ fn tryAddSubSpliceInPlace(
     const slot = info.slot;
 
     // 2. Sub-walk: decrement use_counts for every resolved ident in the
-    //    old subtree. Skipped when the slot sits inside an attribute:
-    //    `AstVisit.visitDecl` never descends into `attr.args`, so a
-    //    full-parse Pass 2 never bumps `use_count` for attr-arg idents —
-    //    and thus never sets `flags.use_count_incremented` either.
-    //    Sub-walking would be a no-op in the clean case, but keeping the
-    //    walks in lockstep with the add-walk makes the parity property
-    //    symmetric and robust to any stale bit that slipped in from
-    //    pre-fix in-place runs (a follow-up edit whose add-walk was
-    //    skipped will leave the stale bit undisturbed, awaiting the
-    //    eventual `parseFull` coalesce to clear).
+    //    old subtree. Skipped only for slots inside an attribute whose
+    //    args are NOT user-symbol references — `@builtin`, `@interpolate`,
+    //    `@diagnostic` (per `Ast.attributeArgsResolveSymbols`). For those,
+    //    full-parse Pass 2 never bumps `use_count` and never sets
+    //    `flags.use_count_incremented`, so a sub-walk would correctly do
+    //    nothing — but skipping keeps the hot path symmetric with the
+    //    add-walk's own predicate gate. For const-expression attrs
+    //    (`@group`, `@workgroup_size`, `@id`, ...), full-parse DOES bump,
+    //    so the hot path must decrement here to maintain parity.
     var discard_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
     defer discard_errors.deinit(prev_arena);
     var sub_ctx = AstVisit.Context{
@@ -944,7 +943,8 @@ fn tryAddSubSpliceInPlace(
         .safety_budget = @max(64, prev.cst.tokens.len * 2),
         .mode = .sub,
     };
-    if (!info.in_attribute) switch (slot) {
+    const should_walk = !info.in_attribute or info.attr_resolves_symbols;
+    if (should_walk) switch (slot) {
         .stmt => |p| try AstVisit.visitSubtreeStmt(&sub_ctx, p.*),
         .expr => |p| _ = try AstVisit.visitSubtreeExpr(&sub_ctx, p.*),
     };
@@ -983,12 +983,13 @@ fn tryAddSubSpliceInPlace(
     try buildScopeForCstNodeMap(prev_arena, &tmp_result);
     const anchor_scope = scopeAtCstNode(&tmp_result, new_subtree_node);
 
-    // 7. Add-walk. Skipped for attr-arg slots — see the step-2 comment on
-    //    `info.in_attribute`. Full-parse's Pass 2 never resolves idents
-    //    inside `attr.args`, so the hot path must not either; leaving the
-    //    walk in place would bump `use_count` on sibling symbols that the
-    //    oracle leaves at zero (e.g., a `const N` referenced only from
-    //    `@workgroup_size(N)`).
+    // 7. Add-walk. Skipped only for attr-arg slots whose enclosing
+    //    attribute's args are enum-keyword (per the step-2 comment). For
+    //    const-expression attrs, full-parse Pass 2 binds and bumps via
+    //    `AstVisit.visitAttributes`, so the hot path mirrors here. The
+    //    historical hazard the gate guarded against — bumping `use_count`
+    //    on sibling symbols that the oracle leaves at zero — is now
+    //    closed by the predicate filter in both paths.
     var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
     defer add_errors.deinit(prev_arena);
     var add_ctx = AstVisit.Context{
@@ -1000,7 +1001,7 @@ fn tryAddSubSpliceInPlace(
         .safety_budget = @max(64, new_tree.tokens.len * 2),
         .mode = .add,
     };
-    if (!info.in_attribute) switch (slot) {
+    if (should_walk) switch (slot) {
         .stmt => |p| try AstVisit.visitSubtreeStmt(&add_ctx, p.*),
         .expr => |p| p.* = try AstVisit.visitSubtreeExpr(&add_ctx, p.*),
     };
@@ -1607,12 +1608,16 @@ const AstSlot = union(enum) {
 
 /// Slot lookup result. `in_attribute` is true when the slot was reached
 /// via `findSlotInAttribute` (i.e., it sits inside an `Ast.Attribute`'s
-/// `args`). The hot-path add/sub walks skip such slots to match
-/// `AstVisit.visitDecl`'s behavior of never descending into attributes
-/// during a full parse's Pass 2.
+/// `args`). `attr_resolves_symbols` (only meaningful when `in_attribute`
+/// is true) records whether the enclosing attribute's args are user-symbol
+/// references — `AstVisit.visitDecl` walks those, and the hot-path add/sub
+/// walks must mirror. False means the attribute is `@builtin`, `@interpolate`,
+/// or `@diagnostic` (enum-keyword args); full-parse Pass 2 leaves their idents
+/// at `use_count = 0`, so the hot path skips them too to keep parity.
 const AstSlotInfo = struct {
     slot: AstSlot,
     in_attribute: bool,
+    attr_resolves_symbols: bool = false,
 };
 
 /// Walks the module's AST looking for the slot whose span equals
@@ -1647,36 +1652,40 @@ fn bareSlot(s: ?AstSlot) ?AstSlotInfo {
     return if (s) |slot| .{ .slot = slot, .in_attribute = false } else null;
 }
 
-fn attrSlot(s: ?AstSlot) ?AstSlotInfo {
-    return if (s) |slot| .{ .slot = slot, .in_attribute = true } else null;
+fn attrSlot(s: ?AstSlot, attr_name: []const u8) ?AstSlotInfo {
+    return if (s) |slot| .{
+        .slot = slot,
+        .in_attribute = true,
+        .attr_resolves_symbols = Ast.attributeArgsResolveSymbols(attr_name),
+    } else null;
 }
 
 fn findSlotInDecl(decl: Ast.Decl, target: Ast.Span, kind: Cst.Kind) ?AstSlotInfo {
     return switch (decl) {
         .@"const" => |d| if (d.initializer != null) bareSlot(findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind)) else null,
         .override => |d| blk: {
-            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
+            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m, a.name);
             if (d.initializer != null) break :blk bareSlot(findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind));
             break :blk null;
         },
         .@"var" => |d| blk: {
-            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
+            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m, a.name);
             if (d.initializer != null) break :blk bareSlot(findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind));
             break :blk null;
         },
         .let => |d| if (d.initializer != null) bareSlot(findSlotInExprField(&d.initializer.?, d.initializer.?, target, kind)) else null,
         .function => |d| blk: {
-            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
+            for (d.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m, a.name);
             for (d.parameters.items) |*p| {
-                for (p.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
+                for (p.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m, a.name);
             }
-            for (d.return_attr.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m);
+            for (d.return_attr.items) |*a| if (findSlotInAttribute(a, target, kind)) |m| break :blk attrSlot(m, a.name);
             if (d.body) |body| break :blk findSlotInCompound(body, target, kind);
             break :blk null;
         },
         .@"struct" => |d| blk: {
             for (d.members.items) |*m| {
-                for (m.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |match| break :blk attrSlot(match);
+                for (m.attributes.items) |*a| if (findSlotInAttribute(a, target, kind)) |match| break :blk attrSlot(match, a.name);
             }
             break :blk null;
         },

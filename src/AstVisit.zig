@@ -76,10 +76,12 @@ fn visitDecl(ctx: *Context, d: Ast.Decl) error{OutOfMemory}!void {
             if (decl.initializer) |init_expr| decl.initializer = try visitExpr(ctx, init_expr);
         },
         .override => |decl| {
+            try visitAttributes(ctx, decl.attributes.items);
             if (decl.typ) |t| try visitType(ctx, t);
             if (decl.initializer) |init_expr| decl.initializer = try visitExpr(ctx, init_expr);
         },
         .@"var" => |decl| {
+            try visitAttributes(ctx, decl.attributes.items);
             if (decl.typ) |t| try visitType(ctx, t);
             if (decl.initializer) |init_expr| decl.initializer = try visitExpr(ctx, init_expr);
         },
@@ -90,6 +92,7 @@ fn visitDecl(ctx: *Context, d: Ast.Decl) error{OutOfMemory}!void {
         .function => |decl| try visitFunctionDecl(ctx, decl),
         .@"struct" => |decl| {
             for (decl.members.items) |member| {
+                try visitAttributes(ctx, member.attributes.items);
                 try visitType(ctx, member.typ);
             }
         },
@@ -99,13 +102,32 @@ fn visitDecl(ctx: *Context, d: Ast.Decl) error{OutOfMemory}!void {
 }
 
 fn visitFunctionDecl(ctx: *Context, decl: *Ast.FunctionDecl) error{OutOfMemory}!void {
+    try visitAttributes(ctx, decl.attributes.items);
     for (decl.parameters.items) |param| {
+        try visitAttributes(ctx, param.attributes.items);
         try visitType(ctx, param.typ);
     }
     if (decl.return_type) |rt| try visitType(ctx, rt);
+    try visitAttributes(ctx, decl.return_attr.items);
     enterNextScope(ctx);
     if (decl.body) |body| try visitCompoundStmt(ctx, body);
     exitScope(ctx);
+}
+
+/// Walk attribute args as Pass 2 expressions, but only for attributes
+/// whose args are user-symbol references (per `Ast.attributeArgsResolveSymbols`).
+/// Enum-keyword attrs (`@builtin`, `@interpolate`, `@diagnostic`) are skipped so
+/// a user-declared `let linear = ...` doesn't accidentally bind to the keyword
+/// in `@interpolate(linear)` and get its `use_count` bumped — that would let the
+/// renamer mangle it into invalid WGSL. Sub-mode is symmetric: same predicate,
+/// so `flags.use_count_incremented` parity is preserved without an extra check.
+fn visitAttributes(ctx: *Context, attrs: []Ast.Attribute) error{OutOfMemory}!void {
+    for (attrs) |*attr| {
+        if (!Ast.attributeArgsResolveSymbols(attr.name)) continue;
+        for (attr.args.items, 0..) |arg, i| {
+            attr.args.items[i] = try visitExpr(ctx, arg);
+        }
+    }
 }
 
 const Work = union(enum) {

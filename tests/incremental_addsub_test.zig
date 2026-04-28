@@ -306,6 +306,44 @@ test "S-BULK-01: attribute argument literal bump preserves use_counts" {
     );
 }
 
+test "S-BULK-02: attribute argument ident swap propagates use_count add+sub" {
+    // Same shape as S-BULK-01 but the edit flips one ident to another
+    // user-symbol ident. Post attr-arg gap fix, the hot-path add/sub
+    // walks run for `@workgroup_size(...)` (a const-expression attr),
+    // so A.use_count drops 1→0 and B.use_count rises 0→1 across the edit.
+    const src: [:0]const u8 =
+        "const A: u32 = 8; const B: u32 = 16; @compute @workgroup_size(A) fn main() {}";
+    const new_src: []const u8 =
+        "const A: u32 = 8; const B: u32 = 16; @compute @workgroup_size(B) fn main() {}";
+    const off: u32 = @intCast(std.mem.indexOf(u8, src, "@workgroup_size(").? + "@workgroup_size(".len);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "B" },
+        new_src,
+        true,
+    );
+}
+
+test "S-BULK-03: parameter @location(IDENT) literal-to-ident edit (kind change → fallback)" {
+    // Edit changes `@location(0)` → `@location(L)`. The CST anchor kind
+    // changes from `literal_expr` to `ident_expr`, so the hot path falls
+    // back via `AnchorKindMismatch`. The full reparse must still bind
+    // and bump L.use_count to match the oracle.
+    const src: [:0]const u8 =
+        "const L: u32 = 3; @vertex fn main(@location(0) p: vec4f) -> @builtin(position) vec4f { return p; }";
+    const new_src: []const u8 =
+        "const L: u32 = 3; @vertex fn main(@location(L) p: vec4f) -> @builtin(position) vec4f { return p; }";
+    const off: u32 = @intCast(std.mem.indexOf(u8, src, "@location(").? + "@location(".len);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = off, .end = off + 1, .new_text = "L" },
+        new_src,
+        false,
+    );
+}
+
 // =========================================================================
 // C-* compound_stmt anchor — function-body / nested-block replacement lands
 // on the in-place scope-splice path. Oracle assertion is per-symbol-name

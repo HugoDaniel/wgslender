@@ -896,3 +896,84 @@ test "DCE: external bindings" {
     );
     try std.testing.expectEqual(@as(usize, 1), countOccurrences(result, "var<uniform>"));
 }
+
+// =========================================================================
+// Attribute-arg reachability — exercises the gap closure end-to-end at
+// the minifier output level. Pre-fix: `const WG_X` referenced only via
+// `@workgroup_size(WG_X)` would be DCE'd, leaving an unresolvable
+// attribute in the output. Post-fix: the const is preserved AND the
+// referenced ident in the attribute matches whatever the renamer chose.
+// =========================================================================
+
+test "attr-arg DCE: @workgroup_size(WG_X) keeps const WG_X in output" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try dce(arena.allocator(),
+        \\const WG_X: u32 = 16;
+        \\@compute @workgroup_size(WG_X) fn main() {}
+    );
+    try std.testing.expect(std.mem.indexOf(u8, result, "WG_X") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "const WG_X") != null);
+}
+
+test "attr-arg DCE: @group(BG) on a referenced var keeps const BG" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try dce(arena.allocator(),
+        \\const BG: u32 = 0;
+        \\@group(BG) @binding(0) var<uniform> u: vec4f;
+        \\@compute @workgroup_size(1) fn main() { let _v = u; }
+    );
+    try std.testing.expect(std.mem.indexOf(u8, result, "const BG") != null);
+}
+
+test "attr-arg DCE: cascading @workgroup_size(B) where B = A + 1 keeps both" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try dce(arena.allocator(),
+        \\const A: u32 = 4;
+        \\const B: u32 = A + 1;
+        \\@compute @workgroup_size(B) fn main() {}
+    );
+    try std.testing.expectEqual(@as(usize, 2), countOccurrences(result, "const "));
+}
+
+test "attr-arg minify rename: @workgroup_size(WG_X) const gets renamed and attribute updates" {
+    // Full minify (whitespace + identifiers + syntax). The const should be
+    // renamed (was un-renamed pre-fix because use_count == 0 from the gap),
+    // AND the attribute arg must reference the same renamed identifier so
+    // the output is valid WGSL.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try full(arena.allocator(),
+        \\const WG_X: u32 = 16;
+        \\@compute @workgroup_size(WG_X) fn main() {}
+    );
+    // No `WG_X` should remain — both the const decl and the attr arg
+    // are renamed in lockstep.
+    try std.testing.expect(std.mem.indexOf(u8, result, "WG_X") == null);
+    // The renamed name appears in both the const decl and the attribute.
+    // Find the renamed token by stripping "const " prefix in output.
+    const const_idx = std.mem.indexOf(u8, result, "const ") orelse return error.ConstDeclMissing;
+    const after_const = result[const_idx + "const ".len ..];
+    const colon_idx = std.mem.indexOf(u8, after_const, ":") orelse return error.ColonMissing;
+    const renamed_name = after_const[0..colon_idx];
+    // Must show up after `@workgroup_size(`.
+    const attr_idx = std.mem.indexOf(u8, result, "@workgroup_size(") orelse return error.AttrMissing;
+    const after_attr = result[attr_idx + "@workgroup_size(".len ..];
+    try std.testing.expect(std.mem.startsWith(u8, after_attr, renamed_name));
+}
+
+test "attr-arg minify deny-list: @interpolate keyword arg passes through unchanged" {
+    // `@interpolate(linear)` must keep `linear` as a keyword regardless of
+    // whether the user happens to declare a same-named const at module
+    // scope. The deny list keeps `linear` from being treated as a symbol
+    // reference, so the renamer never touches it.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try full(arena.allocator(),
+        \\struct V { @location(0) @interpolate(linear) p: vec4f }
+        \\@vertex fn main() -> V { return V(vec4f(0.0)); }
+    );
+    try std.testing.expect(std.mem.indexOf(u8, result, "@interpolate(linear)") != null);
+}
