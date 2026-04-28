@@ -66,6 +66,12 @@ pub const Partial = struct {
     /// JSON-only knob; magic comments do not set this field, mirroring
     /// the precedent for `severities` (§18 entry 13 of the design plan).
     budget_bytes: ?u32 = null,
+    /// Phase 8 — opt-in: when true, the LSP runs the heavy
+    /// full-minify estimator path (production renamer + gzip-of-output)
+    /// instead of the cheap length-only estimator. Documented tradeoff:
+    /// slower interactivity, ground-truth byte and gzip counts. JSON
+    /// shape: `wgslender.minifyEstimator.useFullMinify`.
+    use_full_minify: ?bool = null,
 };
 
 pub const Effective = struct {
@@ -80,6 +86,11 @@ pub const Effective = struct {
     /// code lens compares against it to render the over-budget badge.
     /// `null` = unset (M0500 stays a no-op).
     budget_bytes: ?u32 = null,
+    /// Resolved view of `Partial.use_full_minify`. The Handler folds
+    /// this into the `MinifyEstimator.Options` it builds for the cache
+    /// key, so flipping the setting forces a clean recompute via
+    /// `invalidateAllMinifyCaches` + the new key mismatch.
+    use_full_minify: bool = false,
 
     pub fn insightsActive(self: Effective) bool {
         return self.mode != .off;
@@ -110,6 +121,7 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
     var lints: LintsSwitches = .{ .enabled = mode == .strict };
     var mangle_external_bindings: bool = false;
     var budget_bytes: ?u32 = null;
+    var use_full_minify: bool = false;
 
     inline for ([_]Partial{ project, workspace, magic }) |layer| {
         if (layer.function_size) |v| insights.function_size = v;
@@ -119,6 +131,7 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
         if (layer.lints_enabled) |v| lints.enabled = v;
         if (layer.mangle_external_bindings) |v| mangle_external_bindings = v;
         if (layer.budget_bytes) |v| budget_bytes = v;
+        if (layer.use_full_minify) |v| use_full_minify = v;
     }
 
     return .{
@@ -127,5 +140,6 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
         .lints = lints,
         .mangle_external_bindings = mangle_external_bindings,
         .budget_bytes = budget_bytes,
+        .use_full_minify = use_full_minify,
     };
 }
