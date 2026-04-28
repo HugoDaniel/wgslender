@@ -1176,101 +1176,109 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
 }
 
 fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
-    if (isVecName(name)) {
-        const size = name[3] - '0';
-        const elem = try self.parseType("in vector type");
-        _ = self.expectTemplateClose();
-        const typ = try self.arena.create(Ast.VecType);
-        typ.* = .{
-            .size = size,
-            .elem_type = elem,
-            .loc = name_loc,
-            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
-        };
-        return .{ .vec = typ };
-    }
+    if (isVecName(name)) return try self.parseTemplatedVec(name, name_loc);
+    if (isMatName(name)) return try self.parseTemplatedMat(name, name_loc);
+    if (std.mem.eql(u8, name, "array")) return try self.parseTemplatedArray(name_loc);
+    if (std.mem.eql(u8, name, "ptr")) return try self.parseTemplatedPtr(name_loc);
+    if (std.mem.eql(u8, name, "atomic")) return try self.parseTemplatedAtomic(name_loc);
+    if (parseTextureTypeInfo(name)) |info| return try self.parseTemplatedTexture(info, name_loc);
+    return try self.parseTemplatedGeneric(name, name_loc);
+}
 
-    if (isMatName(name)) {
-        const cols = name[3] - '0';
-        const rows = name[5] - '0';
-        const elem = try self.parseType("in matrix type");
-        _ = self.expectTemplateClose();
-        const typ = try self.arena.create(Ast.MatType);
-        typ.* = .{
-            .cols = cols,
-            .rows = rows,
-            .elem_type = elem,
-            .loc = name_loc,
-            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
-        };
-        return .{ .mat = typ };
-    }
+fn parseTemplatedVec(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
+    const size = name[3] - '0';
+    const elem = try self.parseType("in vector type");
+    _ = self.expectTemplateClose();
+    const typ = try self.arena.create(Ast.VecType);
+    typ.* = .{
+        .size = size,
+        .elem_type = elem,
+        .loc = name_loc,
+        .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+    };
+    return .{ .vec = typ };
+}
 
-    if (std.mem.eql(u8, name, "array")) {
-        const elem = try self.parseType("in array type");
-        var size: ?Ast.Expr = null;
-        if (self.eat(.comma)) {
-            self.expr_context = "in array size";
-            size = try self.parseTemplateArgExpr();
+fn parseTemplatedMat(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
+    const cols = name[3] - '0';
+    const rows = name[5] - '0';
+    const elem = try self.parseType("in matrix type");
+    _ = self.expectTemplateClose();
+    const typ = try self.arena.create(Ast.MatType);
+    typ.* = .{
+        .cols = cols,
+        .rows = rows,
+        .elem_type = elem,
+        .loc = name_loc,
+        .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+    };
+    return .{ .mat = typ };
+}
+
+fn parseTemplatedArray(self: *Parser, name_loc: u32) !Ast.Type {
+    const elem = try self.parseType("in array type");
+    var size: ?Ast.Expr = null;
+    if (self.eat(.comma)) {
+        self.expr_context = "in array size";
+        size = try self.parseTemplateArgExpr();
+    }
+    _ = self.expectTemplateClose();
+    const typ = try self.arena.create(Ast.ArrayType);
+    typ.* = .{
+        .elem_type = elem,
+        .size = size,
+        .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+    };
+    return .{ .array = typ };
+}
+
+fn parseTemplatedPtr(self: *Parser, name_loc: u32) !Ast.Type {
+    const addr = self.parseAddressSpace();
+    _ = self.expect(.comma);
+    const elem = try self.parseType("in pointer type");
+    var access: Ast.AccessMode = .none;
+    if (self.eat(.comma)) access = self.parseAccessMode();
+    _ = self.expectTemplateClose();
+    const typ = try self.arena.create(Ast.PtrType);
+    typ.* = .{
+        .address_space = addr,
+        .elem_type = elem,
+        .access_mode = access,
+        .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+    };
+    return .{ .ptr = typ };
+}
+
+fn parseTemplatedAtomic(self: *Parser, name_loc: u32) !Ast.Type {
+    const elem = try self.parseType("in atomic type");
+    _ = self.expectTemplateClose();
+    const typ = try self.arena.create(Ast.AtomicType);
+    typ.* = .{
+        .elem_type = elem,
+        .loc = name_loc,
+        .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
+    };
+    return .{ .atomic = typ };
+}
+
+fn parseTemplatedTexture(self: *Parser, info: TextureInfo, name_loc: u32) !Ast.Type {
+    const typ = try self.arena.create(Ast.TextureType);
+    typ.* = .{ .kind = info.kind, .dimension = info.dim };
+    if (info.kind == .storage) {
+        if (self.eatIdent()) |texel_name| {
+            typ.texel_format = texel_name;
+            self.advance();
         }
-        _ = self.expectTemplateClose();
-        const typ = try self.arena.create(Ast.ArrayType);
-        typ.* = .{
-            .elem_type = elem,
-            .size = size,
-            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
-        };
-        return .{ .array = typ };
+        if (self.eat(.comma)) typ.access_mode = self.parseAccessMode();
+    } else if (info.kind != .depth and info.kind != .depth_multisampled) {
+        typ.sampled_type = try self.parseType("in texture type");
     }
+    _ = self.expectTemplateClose();
+    typ.span = .{ .start = name_loc, .end = self.prevTokenEnd() };
+    return .{ .texture = typ };
+}
 
-    if (std.mem.eql(u8, name, "ptr")) {
-        const addr = self.parseAddressSpace();
-        _ = self.expect(.comma);
-        const elem = try self.parseType("in pointer type");
-        var access: Ast.AccessMode = .none;
-        if (self.eat(.comma)) access = self.parseAccessMode();
-        _ = self.expectTemplateClose();
-        const typ = try self.arena.create(Ast.PtrType);
-        typ.* = .{
-            .address_space = addr,
-            .elem_type = elem,
-            .access_mode = access,
-            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
-        };
-        return .{ .ptr = typ };
-    }
-
-    if (std.mem.eql(u8, name, "atomic")) {
-        const elem = try self.parseType("in atomic type");
-        _ = self.expectTemplateClose();
-        const typ = try self.arena.create(Ast.AtomicType);
-        typ.* = .{
-            .elem_type = elem,
-            .loc = name_loc,
-            .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
-        };
-        return .{ .atomic = typ };
-    }
-
-    // Texture types
-    if (parseTextureTypeInfo(name)) |info| {
-        const typ = try self.arena.create(Ast.TextureType);
-        typ.* = .{ .kind = info.kind, .dimension = info.dim };
-        if (info.kind == .storage) {
-            if (self.eatIdent()) |texel_name| {
-                typ.texel_format = texel_name;
-                self.advance();
-            }
-            if (self.eat(.comma)) typ.access_mode = self.parseAccessMode();
-        } else if (info.kind != .depth and info.kind != .depth_multisampled) {
-            typ.sampled_type = try self.parseType("in texture type");
-        }
-        _ = self.expectTemplateClose();
-        typ.span = .{ .start = name_loc, .end = self.prevTokenEnd() };
-        return .{ .texture = typ };
-    }
-
-    // Generic templated type
+fn parseTemplatedGeneric(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
     _ = try self.parseType("in template arguments");
     while (self.eat(.comma)) _ = try self.parseType("in template arguments");
     _ = self.expectTemplateClose();
