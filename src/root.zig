@@ -476,4 +476,5 @@ comptime {
     _ = Linter;
     _ = MagicComment;
     _ = MinifyEstimator;
+    _ = @import("unicode_xid.zig");
 }

@@ -381,8 +381,9 @@ test "L-append-03: append a multi-line decl with mid-expression trivia" {
 }
 
 test "L-append-04: append a decl with an underscore/digit identifier" {
-    // WGSL identifiers are ASCII in this parser; use a long ASCII name
-    // with a digit suffix to stress the tokenizer's identifier path.
+    // Stress the tokenizer's identifier path with a long ASCII name and a
+    // digit suffix. (XID Unicode identifiers are exercised separately in
+    // `tests/cst_roundtrip_test.zig`.)
     const gpa = std.testing.allocator;
     var base = try Incremental.parseFull(gpa, "fn f() {}");
     defer base.deinit();

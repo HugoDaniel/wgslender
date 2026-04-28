@@ -1165,13 +1165,13 @@ const LowerCtx = struct {
             while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
             if (pos < src.len and src[pos] == '.') {
                 const nid = pos + 1 < src.len and Lexer.isDigit(src[pos + 1]);
-                const nie = pos + 1 < src.len and Lexer.isIdentStart(src[pos + 1]);
+                const nie = Lexer.peekIdentStart(src, pos + 1);
                 const ae = pos + 1 >= src.len;
                 // `1.f` / `1.h` — digit, dot, float-suffix, no trailing ident
                 // chars — is a complete float literal (matches the lexer).
                 const nfs = pos + 1 < src.len and
                     (src[pos + 1] == 'f' or src[pos + 1] == 'h') and
-                    (pos + 2 >= src.len or !Lexer.isIdentContinue(src[pos + 2]));
+                    !Lexer.peekIdentContinue(src, pos + 2);
                 if (nid or ae or !nie or nfs) {
                     pos += 1;
                     while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;

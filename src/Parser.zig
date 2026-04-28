@@ -461,9 +461,8 @@ fn tokenText(self: *const Parser, pos: u32) []const u8 {
     const src = self.source;
     if (end >= src.len) return "";
     const ch = src[end];
-    if (Lexer.isIdentStart(ch)) {
-        end += 1;
-        while (end < src.len and Lexer.isIdentContinue(src[end])) end += 1;
+    if (Lexer.peekIdentStart(src, end)) {
+        end = Lexer.scanIdentEnd(src, end);
     } else if (Lexer.isDigit(ch) or (ch == '.' and end + 1 < src.len and Lexer.isDigit(src[end + 1]))) {
         return self.scanNumberText(start);
     } else {
@@ -532,13 +531,13 @@ fn scanNumberText(self: *const Parser, start: u32) []const u8 {
         while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
         if (pos < src.len and src[pos] == '.') {
             const nid = pos + 1 < src.len and Lexer.isDigit(src[pos + 1]);
-            const nie = pos + 1 < src.len and Lexer.isIdentStart(src[pos + 1]);
+            const nie = Lexer.peekIdentStart(src, pos + 1);
             const ae = pos + 1 >= src.len;
             // `1.f` / `1.h` — digit, dot, float-suffix, no trailing ident
             // chars — is a complete float literal (matches the lexer).
             const nfs = pos + 1 < src.len and
                 (src[pos + 1] == 'f' or src[pos + 1] == 'h') and
-                (pos + 2 >= src.len or !Lexer.isIdentContinue(src[pos + 2]));
+                !Lexer.peekIdentContinue(src, pos + 2);
             // `1.e…` — dot followed directly by an exponent is a float too
             // (WGSL §6.1.2 rule 4 — fractional digits optional).
             const nex = pos + 1 < src.len and (src[pos + 1] == 'e' or src[pos + 1] == 'E');

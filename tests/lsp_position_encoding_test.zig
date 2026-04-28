@@ -133,6 +133,26 @@ test "lspPositionToOffset: mid-surrogate-pair snaps to boundary before the pair"
     try std.testing.expectEqual(@as(usize, 3), offset.?);
 }
 
+test "definition: identifier contains a UTF-16 surrogate pair" {
+    // U+20000 — XID_Start, 4-byte UTF-8 (F0 A0 80 80), 2 UTF-16 code units.
+    // Both the declaration and the call site are named with this codepoint;
+    // a UTF-16-correct lspPositionToOffset must land inside the call-site
+    // identifier when given the LSP column derived from its byte offset.
+    const ext = "\xF0\xA0\x80\x80";
+    const source: [:0]const u8 = "fn " ++ ext ++ "() {} fn caller() { " ++ ext ++ "(); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+
+    const call_site = std.mem.lastIndexOf(u8, source, ext) orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(call_site)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    // The declaration sits on line 0; the supplementary-plane name starts
+    // at byte offset 3 / UTF-16 column 3 (preceded by `fn ` — 3 ASCII chars).
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 3), result.?.start.character);
+}
+
 test "round-trip: offsetToLspPosition ∘ lspPositionToOffset on mixed-width source" {
     // Identity round-trip at every UTF-8 boundary in a string mixing
     // 1/2/3/4-byte sequences and CRLF line breaks.

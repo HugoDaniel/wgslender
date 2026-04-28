@@ -125,6 +125,46 @@ test "cst roundtrip: unicode in comment" {
     );
 }
 
+// -------------------------------------------------------------------------
+// XID identifiers — surrogate-pair coverage at the CST level.
+//
+// WGSL §2.4 (referencing UAX31-R1) admits XID_Start XID_Continue* as
+// identifiers, including supplementary-plane codepoints that require a
+// UTF-16 surrogate pair. The lexer decodes UTF-8, classifies via
+// `unicode_xid`, and the CST round-trip must hold byte-for-byte.
+// -------------------------------------------------------------------------
+
+test "cst roundtrip: BMP latin-1 ident (caf\u{00E9})" {
+    // é = U+00E9 = C3 A9 (2-byte UTF-8, 1 UTF-16 unit).
+    try expectRoundtrip(std.testing.allocator, "let caf\xC3\xA9 = 1;\n");
+}
+
+test "cst roundtrip: BMP CJK ident" {
+    // 中文 = E4 B8 AD E6 96 87.
+    try expectRoundtrip(
+        std.testing.allocator,
+        "fn \xE4\xB8\xAD\xE6\x96\x87() {}\n",
+    );
+}
+
+test "cst roundtrip: supplementary-plane ident (UTF-16 surrogate pair)" {
+    // U+20000 — XID_Start, 4-byte UTF-8 F0 A0 80 80, 2 UTF-16 code units.
+    try expectRoundtrip(std.testing.allocator, "let \xF0\xA0\x80\x80 = 1;\n");
+}
+
+test "cst roundtrip: combining mark in continue position" {
+    // e + combining acute (U+0301 = CC 81) — single XID identifier.
+    try expectRoundtrip(std.testing.allocator, "let e\xCC\x81 = 1;\n");
+}
+
+test "cst roundtrip: mixed ASCII + Unicode idents in body" {
+    // 𝐀 = U+1D400, also requires a UTF-16 surrogate pair.
+    try expectRoundtrip(
+        std.testing.allocator,
+        "fn caf\xC3\xA9() { let \xF0\x9D\x90\x80 = 1; }\n",
+    );
+}
+
 // =========================================================================
 // Bulk corpus — real shaders
 // =========================================================================

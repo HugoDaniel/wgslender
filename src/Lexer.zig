@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const Ast = @import("Ast.zig");
+const unicode_xid = @import("unicode_xid.zig");
 
 const Lexer = @This();
 
@@ -285,6 +286,79 @@ pub fn isDigit(c: u8) bool {
 /// Returns true if `c` is an ASCII hexadecimal digit.
 pub fn isHexDigit(c: u8) bool {
     return isDigit(c) or (c >= 'a' and c <= 'f') or (c >= 'A' and c <= 'F');
+}
+
+// -------------------------------------------------------------------------
+// UTF-8 / XID helpers
+//
+// WGSL §2.4 references UAX31-R1: an identifier is `XID_Start XID_Continue*`.
+// The ASCII fast paths above stay byte-correct; these helpers cover the
+// non-ASCII case by decoding one UTF-8 codepoint and consulting the XID
+// tables in `unicode_xid.zig`.
+// -------------------------------------------------------------------------
+
+/// Decode the UTF-8 sequence starting at `src[pos]`. Returns null if the
+/// leading byte is ASCII (caller's fast path already handled it) or if the
+/// sequence is malformed/truncated.
+pub fn decodeNonAsciiAt(src: []const u8, pos: u32) ?struct { cp: u21, len: u3 } {
+    if (pos >= src.len) return null;
+    const lead = src[pos];
+    if (lead < 0x80) return null;
+    const len = std.unicode.utf8ByteSequenceLength(lead) catch return null;
+    if (@as(usize, pos) + len > src.len) return null;
+    const cp = std.unicode.utf8Decode(src[pos..][0..len]) catch return null;
+    return .{ .cp = @intCast(cp), .len = @intCast(len) };
+}
+
+/// True if codepoint may begin a WGSL identifier.
+pub fn isIdentStartCp(cp: u21) bool {
+    return unicode_xid.isXidStart(cp);
+}
+
+/// True if codepoint may continue a WGSL identifier.
+pub fn isIdentContinueCp(cp: u21) bool {
+    return unicode_xid.isXidContinue(cp);
+}
+
+/// True if the byte at `src[pos]` may begin a WGSL identifier — handles
+/// both ASCII and UTF-8 XID_Start codepoints. Used by float-vs-ident
+/// disambiguation (`1.f` vs `1.foo`).
+pub fn peekIdentStart(src: []const u8, pos: u32) bool {
+    if (pos >= src.len) return false;
+    const c = src[pos];
+    if (c < 0x80) return isIdentStart(c);
+    if (decodeNonAsciiAt(src, pos)) |dec| return unicode_xid.isXidStart(dec.cp);
+    return false;
+}
+
+/// True if the byte at `src[pos]` may continue a WGSL identifier — handles
+/// both ASCII and UTF-8 XID_Continue codepoints.
+pub fn peekIdentContinue(src: []const u8, pos: u32) bool {
+    if (pos >= src.len) return false;
+    const c = src[pos];
+    if (c < 0x80) return isIdentContinue(c);
+    if (decodeNonAsciiAt(src, pos)) |dec| return unicode_xid.isXidContinue(dec.cp);
+    return false;
+}
+
+/// Scan an identifier starting at `start` (which must be a valid XID_Start
+/// boundary). Returns the byte offset one past the last identifier byte.
+/// The hot ASCII loop matches the in-line `.identifier` state machine; the
+/// non-ASCII branch decodes one codepoint per step.
+pub fn scanIdentEnd(src: []const u8, start: u32) u32 {
+    var pos: u32 = start;
+    while (pos < src.len) {
+        const c = src[pos];
+        if (c < 0x80) {
+            if (!isIdentContinue(c)) return pos;
+            pos += 1;
+            continue;
+        }
+        const dec = decodeNonAsciiAt(src, pos) orelse return pos;
+        if (!unicode_xid.isXidContinue(dec.cp)) return pos;
+        pos += dec.len;
+    }
+    return pos;
 }
 
 // -------------------------------------------------------------------------
@@ -608,6 +682,28 @@ fn next(self: *Lexer) TokenResult {
                 kind = .comma;
                 self.pos += 1;
             },
+            0x80...0xFF => {
+                // UTF-8 lead byte. Decode and either start an identifier
+                // (if XID_Start) or emit an error spanning the whole UTF-8
+                // sequence (so the byte-cover invariant of `tokenizeAll`
+                // holds for non-XID multi-byte chars like emoji).
+                if (decodeNonAsciiAt(src, self.pos)) |dec| {
+                    if (unicode_xid.isXidStart(dec.cp)) {
+                        kind = .ident;
+                        self.pos += dec.len;
+                        continue :state .identifier;
+                    }
+                    kind = .@"error";
+                    self.pos += dec.len;
+                } else {
+                    // Malformed lead byte (e.g. UTF-8 BOM 0xEF taken alone,
+                    // truncated sequences). Advance one byte to keep the
+                    // existing per-byte error behavior pinned by the BOM
+                    // round-trip test.
+                    kind = .@"error";
+                    self.pos += 1;
+                }
+            },
             else => {
                 kind = .@"error";
                 self.pos += 1;
@@ -678,6 +774,27 @@ fn next(self: *Lexer) TokenResult {
             'a'...'z', 'A'...'Z', '0'...'9', '_' => {
                 self.pos += 1;
                 continue :state .identifier;
+            },
+            0x80...0xFF => {
+                if (decodeNonAsciiAt(src, self.pos)) |dec| {
+                    if (unicode_xid.isXidContinue(dec.cp)) {
+                        self.pos += dec.len;
+                        continue :state .identifier;
+                    }
+                }
+                // Non-XID byte (or malformed UTF-8) terminates the
+                // identifier. Fall through to keyword/reserved
+                // classification on the bytes scanned so far.
+                const text = src[start..self.pos];
+                if (keywords_map.get(text)) |kw_tag| {
+                    kind = kw_tag;
+                } else if (text.len == 1 and text[0] == '_') {
+                    kind = .underscore;
+                } else if (reserved_words.has(text)) {
+                    kind = .reserved_ident;
+                } else if (text.len >= 2 and text[0] == '_' and text[1] == '_') {
+                    kind = .reserved_ident;
+                }
             },
             else => {
                 const text = src[start..self.pos];
@@ -752,11 +869,11 @@ fn next(self: *Lexer) TokenResult {
         .int_dot => {
             const after_dot = src[self.pos + 1]; // safe: sentinel
             const next_is_digit = after_dot >= '0' and after_dot <= '9';
-            const next_is_ident = isIdentStart(after_dot);
+            const next_is_ident = peekIdentStart(src, self.pos + 1);
             const at_end = self.pos + 1 >= src.len;
             // Accept 1.f and 1.h — float suffix after decimal point with no fractional digits
             const next_is_float_suffix = (after_dot == 'f' or after_dot == 'h') and
-                !isIdentContinue(src[self.pos + 2]); // safe: sentinel guarantees valid read
+                !peekIdentContinue(src, self.pos + 2); // safe: sentinel guarantees valid read
             // WGSL §6.1.2 rule 4 admits omitted fractional digits before the
             // exponent, so `0.e+4f` / `1.E-3` must enter float mode here.
             const next_is_exponent = after_dot == 'e' or after_dot == 'E';
@@ -1196,11 +1313,11 @@ fn retokenizeEnd(self: *const Lexer, start: u32, tag: Tag, bound: u32) []const u
 
     const ch = src[pos];
 
-    // Identifier/keyword
-    if (isIdentStart(ch)) {
-        pos += 1;
-        while (pos < bound and pos < src.len and isIdentContinue(src[pos])) pos += 1;
-        return src[start..pos];
+    // Identifier/keyword (ASCII or UTF-8 XID_Start)
+    if (peekIdentStart(src, pos)) {
+        const end = scanIdentEnd(src, pos);
+        const capped = if (end > bound) bound else end;
+        return src[start..capped];
     }
 
     // Number
@@ -1222,11 +1339,11 @@ fn retokenizeEnd(self: *const Lexer, start: u32, tag: Tag, bound: u32) []const u
             while (pos < src.len and isDigit(src[pos])) pos += 1;
             if (pos < src.len and src[pos] == '.') {
                 const nid = pos + 1 < src.len and isDigit(src[pos + 1]);
-                const nie = pos + 1 < src.len and isIdentStart(src[pos + 1]);
+                const nie = peekIdentStart(src, pos + 1);
                 const ae = pos + 1 >= src.len;
                 const nfs = pos + 1 < src.len and
                     (src[pos + 1] == 'f' or src[pos + 1] == 'h') and
-                    (pos + 2 >= src.len or !isIdentContinue(src[pos + 2]));
+                    !peekIdentContinue(src, pos + 2);
                 if (nid or ae or !nie or nfs) {
                     pos += 1;
                     while (pos < src.len and isDigit(src[pos])) pos += 1;
@@ -1405,6 +1522,52 @@ test "lexer: tokenizeAll round-trip whitespace only" {
 
 test "lexer: tokenizeAll round-trip comment adjacent to token" {
     try expectTriviaRoundtrip("fn/*x*/f(){}");
+}
+
+test "lexer: BMP latin-1 identifier tokenizes as single .ident" {
+    // café = 'c' 'a' 'f' (ASCII) + é (U+00E9 = C3 A9, XID_Start/Continue).
+    try expectToken("caf\xC3\xA9", .ident);
+}
+
+test "lexer: BMP CJK identifier tokenizes as single .ident" {
+    // 中文 = E4 B8 AD E6 96 87 — both XID_Start.
+    try expectToken("\xE4\xB8\xAD\xE6\x96\x87", .ident);
+}
+
+test "lexer: supplementary-plane identifier tokenizes as single .ident" {
+    // U+20000 — XID_Start, 4-byte UTF-8 F0 A0 80 80, requires UTF-16 surrogate pair.
+    try expectToken("\xF0\xA0\x80\x80", .ident);
+    // Followed by ASCII XID_Continue: still one .ident.
+    try expectToken("\xF0\xA0\x80\x80x", .ident);
+}
+
+test "lexer: emoji in identifier position emits one error spanning the whole UTF-8 sequence" {
+    // 🎉 = F0 9F 8E 89 (4 bytes), not XID. Error token must span all 4
+    // bytes so the trivia round-trip byte-cover invariant still holds.
+    const src: [:0]const u8 = "\xF0\x9F\x8E\x89";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var lexer: Lexer = .{ .source = src, .pos = 0, .tokens = std.MultiArrayList(Token){} };
+    const tok = lexer.next();
+    try std.testing.expectEqual(Tag.@"error", tok.tag);
+    try std.testing.expectEqual(@as(u32, 0), tok.start);
+    try std.testing.expectEqual(@as(u32, 4), tok.end);
+}
+
+test "lexer: tokenizeAll round-trip XID identifiers" {
+    try expectTriviaRoundtrip("fn caf\xC3\xA9() { let \xF0\xA0\x80\x80 = 1; }");
+}
+
+test "lexer: int_dot disambiguation respects UTF-8 XID_Start" {
+    // `1.中foo` — per WGSL the dot here is the float-literal dot; the
+    // remainder `中foo` is an identifier. Without UTF-8 awareness in
+    // .int_dot, `next_is_ident` would be false and `1.` would parse as
+    // a float; with awareness, `next_is_ident` is true so the dot is
+    // not consumed and we get int + dot + ident.
+    try expectTokenSequence(
+        "1.\xE4\xB8\xADfoo",
+        &.{ .int_literal, .dot, .ident, .eof },
+    );
 }
 
 test "lexer: tokenizeAll emits trivia tags adjacent to real tokens" {
@@ -2312,7 +2475,55 @@ test "lexer: isIdentContinue rejects operators and non-ASCII" {
     try std.testing.expect(!isIdentContinue(' '));
     try std.testing.expect(!isIdentContinue('@'));
     try std.testing.expect(!isIdentContinue('.'));
-    try std.testing.expect(!isIdentContinue(0x80)); // non-ASCII
+    // Byte-level predicate: 0x80 is a continuation byte alone — rejected.
+    // The codepoint-level `isIdentStartCp` / `isIdentContinueCp` and
+    // UTF-8-aware `peekIdent*` helpers handle multi-byte XID characters.
+    try std.testing.expect(!isIdentContinue(0x80));
+}
+
+test "lexer: isIdentStartCp accepts XID_Start codepoints" {
+    try std.testing.expect(isIdentStartCp('a'));
+    try std.testing.expect(isIdentStartCp('_'));
+    try std.testing.expect(isIdentStartCp(0x00E9)); // é
+    try std.testing.expect(isIdentStartCp(0x4E2D)); // 中
+    try std.testing.expect(isIdentStartCp(0x1D400)); // 𝐀 supplementary plane
+    try std.testing.expect(isIdentStartCp(0x20000)); // 𠀀 supplementary plane
+}
+
+test "lexer: isIdentStartCp rejects non-XID codepoints" {
+    try std.testing.expect(!isIdentStartCp('0'));
+    try std.testing.expect(!isIdentStartCp(0x1F389)); // 🎉
+    try std.testing.expect(!isIdentStartCp(0x0301)); // combining acute (continue-only)
+    try std.testing.expect(!isIdentStartCp(0x200D)); // ZWJ
+}
+
+test "lexer: isIdentContinueCp accepts continue-only XID codepoints" {
+    try std.testing.expect(isIdentContinueCp(0x0301)); // combining acute
+    try std.testing.expect(isIdentContinueCp(0x4E2D));
+    try std.testing.expect(isIdentContinueCp(0x20000));
+    try std.testing.expect(!isIdentContinueCp(0x1F389)); // 🎉 still rejected
+}
+
+test "lexer: peekIdentStart handles ASCII and UTF-8" {
+    try std.testing.expect(peekIdentStart("abc", 0));
+    try std.testing.expect(peekIdentStart("_x", 0));
+    try std.testing.expect(!peekIdentStart("0a", 0));
+    // 中 = E4 B8 AD, valid XID_Start
+    try std.testing.expect(peekIdentStart("\xE4\xB8\xAD", 0));
+    // 🎉 = F0 9F 8E 89, not XID
+    try std.testing.expect(!peekIdentStart("\xF0\x9F\x8E\x89", 0));
+    // Truncated UTF-8 — defensive false
+    try std.testing.expect(!peekIdentStart("\xE4\xB8", 0));
+}
+
+test "lexer: scanIdentEnd walks ASCII + UTF-8 XID" {
+    try std.testing.expectEqual(@as(u32, 3), scanIdentEnd("foo bar", 0));
+    // 中文 = E4 B8 AD E6 96 87 (6 bytes), both XID_Start
+    try std.testing.expectEqual(@as(u32, 6), scanIdentEnd("\xE4\xB8\xAD\xE6\x96\x87()", 0));
+    // 𠀀 (4 bytes, supplementary plane) followed by ASCII letter
+    try std.testing.expectEqual(@as(u32, 5), scanIdentEnd("\xF0\xA0\x80\x80x ", 0));
+    // Combining acute (XID_Continue, not XID_Start) after ASCII start
+    try std.testing.expectEqual(@as(u32, 3), scanIdentEnd("e\xCC\x81 ", 0));
 }
 
 test "lexer: isDigit" {
