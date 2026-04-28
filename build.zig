@@ -113,6 +113,20 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // NativeServer dispatcher — extracted from main.zig so the Phase 7
+    // perf tests can drive the timer-thread + debouncer integration
+    // without spawning a real stdio LSP.
+    const native_server_mod = b.addModule("NativeServer", .{
+        .root_source_file = b.path("lsp/NativeServer.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "bridge", .module = bridge_mod },
+        },
+    });
+
     const lsp_exe = b.addExecutable(.{
         .name = "wgslender-lsp",
         .root_module = b.createModule(.{
@@ -120,10 +134,8 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "wgslender", .module = wgslender_mod },
                 .{ .name = "lsp", .module = lsp_mod },
-                .{ .name = "Handler", .module = handler_mod },
-                .{ .name = "bridge", .module = bridge_mod },
+                .{ .name = "NativeServer", .module = native_server_mod },
             },
         }),
     });
@@ -370,7 +382,12 @@ pub fn build(b: *std.Build) void {
     // notification. Drives the Handler through inlay-hint / code-lens /
     // M-rule paths and verifies a single cached estimator run is
     // shared across all of them, plus the invalidation hooks.
-    _ = addTestStep(b, test_step, "tests/lsp_minify_perf_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "tests/lsp_minify_perf_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "NativeServer", .module = native_server_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+    });
     _ = addTestStep(b, test_step, "tests/formatting_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/semantic_tokens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/selection_range_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });

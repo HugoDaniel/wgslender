@@ -18,6 +18,8 @@
 
 const std = @import("std");
 const Handler = @import("Handler");
+const NativeServer = @import("NativeServer");
+const lsp = @import("lsp");
 const wgslender = @import("wgslender");
 const MinifyEstimator = wgslender.MinifyEstimator;
 
@@ -197,6 +199,152 @@ test "perf: rapid didChange coalesces to single estimator run" {
 
     // One estimator run after the burst, comfortably inside the master
     // plan's "≤ 2× total" allowance.
+    try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+}
+
+// =========================================================================
+// Native LSP timer-thread integration
+// =========================================================================
+//
+// These tests exercise the Phase-7 native idle-debounce wiring inside
+// `NativeServer` without spawning the real timer thread (it would race
+// with wall-clock waits and slow the suite). Instead we drive `tick(now_ms)`
+// directly with synthetic monotonic timestamps and assert on the
+// estimator counter — same coverage, deterministic timing.
+
+/// Discards every `writeNotification` / `writeJsonMessage` so tests can
+/// run NativeServer methods that publish diagnostics without a real
+/// stdio pipe.
+const NullTransport = struct {
+    transport: lsp.Transport = .{
+        .vtable = &.{
+            .readJsonMessage = readJsonMessage,
+            .writeJsonMessage = writeJsonMessage,
+        },
+    },
+
+    fn readJsonMessage(_: *lsp.Transport, _: std.Io, _: std.mem.Allocator) lsp.Transport.ReadError![]u8 {
+        return error.EndOfStream;
+    }
+
+    fn writeJsonMessage(_: *lsp.Transport, _: std.Io, _: []const u8) lsp.Transport.WriteError!void {}
+};
+
+fn setupServer(debounce_ms: i64) !*NativeServer {
+    const ptr = try std.testing.allocator.create(NativeServer);
+    const transport_box = try std.testing.allocator.create(NullTransport);
+    transport_box.* = .{};
+    ptr.* = NativeServer.init(std.testing.allocator, &transport_box.transport, std.testing.io);
+    ptr.debounce_ms = debounce_ms;
+    return ptr;
+}
+
+fn teardownServer(server: *NativeServer) void {
+    // Recover the NullTransport box from the transport pointer. NativeServer
+    // never frees the transport — that's the caller's responsibility (in
+    // production it's a stack-allocated `lsp.Transport.Stdio`).
+    const transport_box: *NullTransport = @fieldParentPtr("transport", server.transport);
+    server.deinit();
+    std.testing.allocator.destroy(transport_box);
+    std.testing.allocator.destroy(server);
+}
+
+fn driveDidChange(server: *NativeServer, uri: []const u8, text: []const u8) !void {
+    const partial: lsp.types.TextDocument.ContentChangeEvent = .{
+        .text_document_content_change_partial = .{
+            .range = .{
+                .start = .{ .line = 0, .character = 0 },
+                .end = .{ .line = 0, .character = 0 },
+            },
+            .text = text,
+        },
+    };
+    var changes = [_]lsp.types.TextDocument.ContentChangeEvent{partial};
+    try server.@"textDocument/didChange"(std.testing.allocator, .{
+        .textDocument = .{ .uri = uri, .version = 1 },
+        .contentChanges = &changes,
+    });
+}
+
+test "perf: native LSP timer debounces 300ms idle" {
+    // Drive a 16-edit burst against a NativeServer in `mode=strict` and
+    // assert the estimator never runs during the burst — every didChange
+    // hits the cheap path and arms the debouncer for `now + debounce_ms`.
+    // A `tick` before the deadline fires nothing; a `tick` after it
+    // fires exactly once for the latest version.
+    const server = try setupServer(300);
+    defer teardownServer(server);
+
+    try applySettings(&server.handler, "{\"minifyMode\":\"strict\"}");
+    try server.handler.openDocument("file:///burst.wgsl", sample_shader, 1);
+    const before = MinifyEstimator.estimate_count;
+
+    // 16 edits — `didChange` runs the cheap path (no estimator) and
+    // arms the debouncer for `now + 300`. The latest arm wins.
+    var i: u32 = 0;
+    while (i < 16) : (i += 1) {
+        try driveDidChange(server, "file:///burst.wgsl", " ");
+    }
+    try std.testing.expectEqual(@as(u64, 0), MinifyEstimator.estimate_count - before);
+
+    // Compute a deadline aligned with the debouncer's own clock so the
+    // test doesn't depend on wall-clock skew between `nowMs` calls.
+    const dl = server.debouncer.nextDeadline() orelse return error.TestUnexpectedResult;
+
+    // Tick 50 ms before the deadline → nothing fires.
+    server.tick(dl - 50);
+    try std.testing.expectEqual(@as(u64, 0), MinifyEstimator.estimate_count - before);
+
+    // Tick at the deadline → drain runs, refreshes, full-publishes.
+    // One estimator run total for the burst.
+    server.tick(dl);
+    try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+}
+
+test "perf: native settings change resets debounce timer" {
+    // Acceptance for master plan §10.1 "settings change resets debounce
+    // timer": after `applyClientSettings` the deadline for every open
+    // doc is pushed forward to `now + debounce_ms`, so any in-flight
+    // debounce window from prior typing no longer fires at its old
+    // deadline.
+    const server = try setupServer(300);
+    defer teardownServer(server);
+
+    try applySettings(&server.handler, "{\"minifyMode\":\"strict\"}");
+    try server.handler.openDocument("file:///settings.wgsl", sample_shader, 1);
+
+    // Arm via a didChange — deadline = now + 300.
+    try driveDidChange(server, "file:///settings.wgsl", " ");
+    const dl1 = server.debouncer.nextDeadline() orelse return error.TestUnexpectedResult;
+    const before = MinifyEstimator.estimate_count;
+
+    // Tiny wall-clock wait so the re-arm's `nowMs()` reads strictly
+    // after the original arm — otherwise `dl2` may equal `dl1` on
+    // platforms where `Clock.awake` resolution is coarser than the
+    // microseconds between the two calls, and a `tick(dl1)` would
+    // fire the re-armed entry too.
+    std.Io.sleep(std.testing.io, .fromMilliseconds(5), .awake) catch {};
+
+    // Simulate a settings refresh by going through the same code path
+    // that `onResponse` uses: re-apply settings + re-arm every open
+    // doc. This is what the timer thread observes when the client
+    // pushes a `workspace/configuration` response.
+    try applySettings(&server.handler, "{\"minifyMode\":\"strict\"}");
+    server.rearmAllOpenDocsForTest();
+
+    const dl2 = server.debouncer.nextDeadline() orelse return error.TestUnexpectedResult;
+
+    // The new deadline is strictly after the original one — the
+    // settings refresh shifted the debounce window forward.
+    try std.testing.expect(dl2 >= dl1);
+
+    // Ticking at the original deadline now does nothing — the entry
+    // was re-armed past it.
+    server.tick(dl1);
+    try std.testing.expectEqual(@as(u64, 0), MinifyEstimator.estimate_count - before);
+
+    // Ticking at the new deadline drains and runs the estimator once.
+    server.tick(dl2);
     try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
 }
 
