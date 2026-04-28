@@ -1666,7 +1666,12 @@ fn findLocationAttrRange(self: *Handler, diag_range: Range) ?Range {
 /// Convert an LSP 0-based line:character position to a byte offset in source.
 /// `pos.character` is interpreted as a count of UTF-16 code units (the LSP
 /// default and what we advertise in `capabilities_json`). Handles LF, CR,
-/// and CRLF line endings. A `pos.character` that lands inside a UTF-16
+/// and CRLF line endings. Returns `null` on any out-of-domain input: line
+/// past EOF, character past EOL (we deliberately do not clamp to line
+/// length — callers `orelse return null` and treat malformed positions as
+/// drop-the-request, matching `offsetToLspPosition`'s mid-UTF-8
+/// rejection), character past EOF on the last line, or a position that
+/// lands mid-UTF-8-sequence. A `pos.character` that lands inside a UTF-16
 /// surrogate pair (the back half of a 4-byte UTF-8 sequence) snaps to the
 /// boundary before the pair — the LSP spec is silent on mid-pair positions
 /// and most servers do the same.
@@ -5333,6 +5338,99 @@ test "lspPositionToOffset: character past EOL with multi-byte chars" {
     try std.testing.expectEqual(@as(usize, 4), lspPositionToOffset(source, .{ .line = 0, .character = 2 }).?);
     // char 3 (one past) returns null — the next byte is '\n'.
     try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 3 }) == null);
+}
+
+// =========================================================================
+// Past-EOL Rejection Contract — audit B coverage
+// =========================================================================
+//
+// Pin every line-ending × line-position × multi-byte combination so a
+// future edit can't silently re-broaden the input domain to LSP-spec
+// clamping. The pre-f04612d helper computed `offset = i + pos.character`
+// after walking line breaks and returned a wrong-but-non-null offset for
+// past-EOL — this block locks that bug out.
+
+test "lspPositionToOffset: past-EOL regression — pre-f04612d byte-add bug" {
+    // The pre-fix helper would have returned 5 (the 's' in "rest") for
+    // line=0, char=5. Post-fix must reject — character past EOL must NOT
+    // walk into the next line.
+    const source = "ab\nrest";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 5 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL on first line, LF" {
+    const source = "ab\ncd\nef";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 10 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL on middle line, LF" {
+    const source = "ab\ncd\nef";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 1, .character = 10 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL on last line, no trailing newline" {
+    const source = "ab\ncd\nef";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 2, .character = 10 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL on first line, CRLF" {
+    const source = "ab\r\ncd\r\nef";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 10 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL on middle line, CRLF" {
+    const source = "ab\r\ncd\r\nef";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 1, .character = 10 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL on first line, CR-only" {
+    const source = "ab\rcd\ref";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 10 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL on middle line, CR-only" {
+    const source = "ab\rcd\ref";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 1, .character = 10 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL on empty line, LF" {
+    const source = "a\n\nb";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 1, .character = 1 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL on empty line, CRLF" {
+    const source = "a\r\n\r\nb";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 1, .character = 1 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL by 1 unit after 4-byte char as last on line" {
+    // Line 0 = "ab🎉" = 4 UTF-16 units (a=1, b=1, 🎉=2). char=5 is one past.
+    const source = "ab\xF0\x9F\x8E\x89\nrest";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 5 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL by 2 units (full surrogate past) after 4-byte last char" {
+    const source = "ab\xF0\x9F\x8E\x89\nrest";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 6 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL by 100 after 4-byte last char" {
+    const source = "ab\xF0\x9F\x8E\x89\nrest";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 100 }) == null);
+}
+
+test "lspPositionToOffset: past-EOL by 1 on line ending with 4-byte char + CRLF" {
+    // Line 0 = "🎉" = 2 UTF-16 units. char=3 is one past.
+    const source = "\xF0\x9F\x8E\x89\r\nrest";
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 3 }) == null);
+}
+
+test "lspPositionToOffset: char exactly at EOL is OK (negative-space pin)" {
+    // Pin the boundary: at-EOL must still resolve. char=3 on "abc\ndef" is the
+    // position of the LF byte — past-EOL rejection must not regress to
+    // rejecting at-EOL.
+    const source = "abc\ndef";
+    try std.testing.expectEqual(@as(usize, 3), lspPositionToOffset(source, .{ .line = 0, .character = 3 }).?);
 }
 
 test "offsetToLspPosition: 2-byte UTF-8 boundary" {
