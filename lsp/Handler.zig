@@ -885,7 +885,7 @@ pub fn validateDocument(self: *Handler, source: []const u8) ![]LspDiagnostic {
     const diags = try self.gpa.alloc(LspDiagnostic, entries.len);
 
     for (entries, 0..) |entry, i| {
-        diags[i] = convertDiagnostic(self.gpa, &entry);
+        diags[i] = convertDiagnostic(self.gpa, source_z, &entry);
     }
 
     return diags;
@@ -917,6 +917,7 @@ const ValidateOptions = struct {
 
 fn validateDocumentInner(self: *Handler, uri: []const u8, options: ValidateOptions) ![]LspDiagnostic {
     const analysis = try self.analyzeDocument(uri);
+    const source: []const u8 = if (analysis.module) |m| m.source else self.getDocumentSource(uri) orelse "";
 
     const entries = analysis.diagnostics.diagnostics.items;
     var diags: std.ArrayListUnmanaged(LspDiagnostic) = .empty;
@@ -927,7 +928,7 @@ fn validateDocumentInner(self: *Handler, uri: []const u8, options: ValidateOptio
 
     try diags.ensureTotalCapacity(self.gpa, entries.len + 8);
     for (entries) |entry| {
-        try diags.append(self.gpa, convertDiagnostic(self.gpa, &entry));
+        try diags.append(self.gpa, convertDiagnostic(self.gpa, source, &entry));
     }
 
     // Append unused symbol warnings, dead code warnings, and unused binding warnings
@@ -961,7 +962,7 @@ fn validateDocumentInner(self: *Handler, uri: []const u8, options: ValidateOptio
         });
         defer lint_result.deinit(self.gpa);
         for (lint_result.diagnostics.items()) |entry| {
-            try diags.append(self.gpa, convertDiagnostic(self.gpa, &entry));
+            try diags.append(self.gpa, convertDiagnostic(self.gpa, source, &entry));
         }
     }
 
@@ -1062,22 +1063,26 @@ fn freeSingleDiagnostic(gpa: std.mem.Allocator, d: LspDiagnostic) void {
 
 const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
 
-fn convertDiagnostic(gpa: std.mem.Allocator, entry: *const WgslDiagnostic.Entry) LspDiagnostic {
+/// Convert a wgslender `Diagnostic.Entry` (1-based line/column, byte
+/// `offset` field) to an LSP `Diagnostic` (0-based line, UTF-16 code-unit
+/// `character`). The `source` argument is the document the diagnostic was
+/// produced against — used by `offsetRangeToLspRange` to count UTF-16
+/// units across multi-byte UTF-8 sequences. Falls back to a zero-range
+/// if either offset doesn't resolve, which preserves graceful degradation
+/// for malformed entries (in practice every Validator/Linter site sets a
+/// valid `offset`).
+fn convertDiagnostic(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    entry: *const WgslDiagnostic.Entry,
+) LspDiagnostic {
+    const zero_range: Range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } };
     var related: []const LspRelatedInfo = &.{};
     if (entry.related.len > 0) {
         if (gpa.alloc(LspRelatedInfo, entry.related.len)) |rel| {
             for (entry.related, 0..) |r, ri| {
                 rel[ri] = .{
-                    .range = .{
-                        .start = .{
-                            .line = if (r.range.start.line > 0) r.range.start.line - 1 else 0,
-                            .character = if (r.range.start.column > 0) r.range.start.column - 1 else 0,
-                        },
-                        .end = .{
-                            .line = if (r.range.end.line > 0) r.range.end.line - 1 else 0,
-                            .character = if (r.range.end.column > 0) r.range.end.column - 1 else 0,
-                        },
-                    },
+                    .range = offsetRangeToLspRange(source, r.range.start.offset, r.range.end.offset) orelse zero_range,
                     .message = gpa.dupe(u8, r.message) catch "",
                 };
             }
@@ -1085,16 +1090,7 @@ fn convertDiagnostic(gpa: std.mem.Allocator, entry: *const WgslDiagnostic.Entry)
         } else |_| {}
     }
     return .{
-        .range = .{
-            .start = .{
-                .line = if (entry.range.start.line > 0) entry.range.start.line - 1 else 0,
-                .character = if (entry.range.start.column > 0) entry.range.start.column - 1 else 0,
-            },
-            .end = .{
-                .line = if (entry.range.end.line > 0) entry.range.end.line - 1 else 0,
-                .character = if (entry.range.end.column > 0) entry.range.end.column - 1 else 0,
-            },
-        },
+        .range = offsetRangeToLspRange(source, entry.range.start.offset, entry.range.end.offset) orelse zero_range,
         .severity = switch (entry.severity) {
             .@"error" => .@"error",
             .warning => .warning,
@@ -1668,48 +1664,77 @@ fn findLocationAttrRange(self: *Handler, diag_range: Range) ?Range {
 }
 
 /// Convert an LSP 0-based line:character position to a byte offset in source.
-/// Handles LF, CR, and CRLF line endings.
+/// `pos.character` is interpreted as a count of UTF-16 code units (the LSP
+/// default and what we advertise in `capabilities_json`). Handles LF, CR,
+/// and CRLF line endings. A `pos.character` that lands inside a UTF-16
+/// surrogate pair (the back half of a 4-byte UTF-8 sequence) snaps to the
+/// boundary before the pair — the LSP spec is silent on mid-pair positions
+/// and most servers do the same.
 pub fn lspPositionToOffset(source: []const u8, pos: Position) ?usize {
     var line: u32 = 0;
     var i: usize = 0;
     while (line < pos.line and i < source.len) {
         if (source[i] == '\r') {
             line += 1;
-            // Skip LF in CRLF pair
-            if (i + 1 < source.len and source[i + 1] == '\n') {
-                i += 1;
-            }
+            if (i + 1 < source.len and source[i + 1] == '\n') i += 1;
         } else if (source[i] == '\n') {
             line += 1;
         }
         i += 1;
     }
     if (line != pos.line) return null;
-    const offset = i + pos.character;
-    if (offset > source.len) return null;
-    return offset;
+
+    var col: u32 = 0;
+    var snapped = false;
+    while (col < pos.character and i < source.len) {
+        if (source[i] == '\r' or source[i] == '\n') return null;
+        const seq_len = std.unicode.utf8ByteSequenceLength(source[i]) catch return null;
+        if (i + seq_len > source.len) return null;
+        const units: u32 = if (seq_len == 4) 2 else 1;
+        if (col + units > pos.character) {
+            // pos.character lands mid-surrogate-pair — snap to the
+            // boundary before the pair. LSP spec is silent on mid-pair
+            // positions; this matches what most servers do.
+            snapped = true;
+            break;
+        }
+        col += units;
+        i += seq_len;
+    }
+    if (col != pos.character and !snapped) return null;
+    return i;
 }
 
-/// Convert a byte offset to an LSP 0-based Position.
-/// Uses a simple linear scan (suitable for typical shader sizes).
+/// Convert a byte offset to an LSP 0-based Position. Columns are emitted
+/// in UTF-16 code units to match the encoding advertised in
+/// `capabilities_json`. Uses a simple linear scan (suitable for typical
+/// shader sizes). Returns `null` if `offset` is past end-of-source or
+/// lands mid-UTF-8-sequence.
 pub fn offsetToLspPosition(source: []const u8, offset: u32) ?Position {
     if (offset > source.len) return null;
     var line: u32 = 0;
     var col: u32 = 0;
     var i: u32 = 0;
-    while (i < offset) : (i += 1) {
-        if (source[i] == '\n') {
+    while (i < offset) {
+        const c = source[i];
+        if (c == '\n') {
             line += 1;
             col = 0;
-        } else if (source[i] == '\r') {
-            line += 1;
-            col = 0;
-            if (i + 1 < offset and source[i + 1] == '\n') {
-                i += 1; // skip LF in CRLF
-            }
-        } else {
-            col += 1;
+            i += 1;
+            continue;
         }
+        if (c == '\r') {
+            line += 1;
+            col = 0;
+            i += 1;
+            if (i < offset and i < source.len and source[i] == '\n') i += 1;
+            continue;
+        }
+        const seq_len = std.unicode.utf8ByteSequenceLength(c) catch return null;
+        if (i + seq_len > source.len) return null;
+        if (i + seq_len > offset) return null;
+        col += if (seq_len == 4) 2 else 1;
+        i += @intCast(seq_len);
     }
     return .{ .line = line, .character = col };
 }
@@ -4832,27 +4857,27 @@ test "analyzeDocument returns semantic data" {
 
 test "convertDiagnostic preserves code" {
     const entry = WgslDiagnostic.Entry{ .code = "E0200" };
-    const result = convertDiagnostic(std.testing.allocator, &entry);
+    const result = convertDiagnostic(std.testing.allocator, "", &entry);
     try std.testing.expectEqualStrings("E0200", result.code);
 }
 
 test "convertDiagnostic builds spec_url from spec_ref" {
     const entry = WgslDiagnostic.Entry{ .code = "E0700", .spec_ref = "uniformity" };
-    const result = convertDiagnostic(std.testing.allocator, &entry);
+    const result = convertDiagnostic(std.testing.allocator, "", &entry);
     defer std.testing.allocator.free(result.spec_url);
     try std.testing.expectEqualStrings("https://www.w3.org/TR/WGSL/#uniformity", result.spec_url);
 }
 
 test "convertDiagnostic omits code and spec_url when empty" {
     const entry = WgslDiagnostic.Entry{};
-    const result = convertDiagnostic(std.testing.allocator, &entry);
+    const result = convertDiagnostic(std.testing.allocator, "", &entry);
     try std.testing.expectEqual(@as(usize, 0), result.code.len);
     try std.testing.expectEqual(@as(usize, 0), result.spec_url.len);
 }
 
 test "convertDiagnostic omits spec_url when code empty" {
     const entry = WgslDiagnostic.Entry{ .spec_ref = "uniformity" };
-    const result = convertDiagnostic(std.testing.allocator, &entry);
+    const result = convertDiagnostic(std.testing.allocator, "", &entry);
     try std.testing.expectEqual(@as(usize, 0), result.spec_url.len);
 }
 
@@ -5213,6 +5238,119 @@ test "lspPositionToOffset: character beyond line length" {
     try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 100 }) == null);
 }
 
+// =========================================================================
+// UTF-16 Code-Unit Tests
+// =========================================================================
+//
+// We advertise `positionEncoding: utf-16`, so `pos.character` is a count
+// of UTF-16 code units. UTF-8 → UTF-16 unit map: 1/2/3-byte sequences
+// produce 1 unit; 4-byte sequences produce 2 (a surrogate pair).
+
+test "lspPositionToOffset: 2-byte UTF-8 (Latin Extended)" {
+    // "fn ä() {}" — 'ä' is 0xC3 0xA4 (2 bytes, 1 UTF-16 unit).
+    const source = "fn ä() {}";
+    // char 0..2 are ASCII "fn ", same byte and unit count.
+    try std.testing.expectEqual(@as(usize, 3), lspPositionToOffset(source, .{ .line = 0, .character = 3 }).?);
+    // char 4 lands after the 2-byte 'ä' → byte offset 5.
+    try std.testing.expectEqual(@as(usize, 5), lspPositionToOffset(source, .{ .line = 0, .character = 4 }).?);
+    // char 5 lands on '(' at byte 6.
+    try std.testing.expectEqual(@as(usize, 6), lspPositionToOffset(source, .{ .line = 0, .character = 5 }).?);
+}
+
+test "lspPositionToOffset: 3-byte UTF-8 (CJK ideograph)" {
+    // "const 中: i32 = 1;" — '中' is 0xE4 0xB8 0xAD (3 bytes, 1 UTF-16 unit).
+    const source = "const 中: i32 = 1;";
+    // After "const " (6 ASCII bytes / 6 units).
+    try std.testing.expectEqual(@as(usize, 6), lspPositionToOffset(source, .{ .line = 0, .character = 6 }).?);
+    // After '中' — 1 unit, 3 bytes → byte 9.
+    try std.testing.expectEqual(@as(usize, 9), lspPositionToOffset(source, .{ .line = 0, .character = 7 }).?);
+    // ':' at byte 9, then ' ' at byte 10. char 8 → byte 10.
+    try std.testing.expectEqual(@as(usize, 10), lspPositionToOffset(source, .{ .line = 0, .character = 8 }).?);
+}
+
+test "lspPositionToOffset: 4-byte UTF-8 surrogate pair (emoji)" {
+    // "// 🎉\nfn f(){}" — 🎉 is 0xF0 0x9F 0x8E 0x89 (4 bytes, 2 UTF-16 units).
+    const source = "// \xF0\x9F\x8E\x89\nfn f(){}";
+    // char 3 (just before emoji) → byte 3.
+    try std.testing.expectEqual(@as(usize, 3), lspPositionToOffset(source, .{ .line = 0, .character = 3 }).?);
+    // char 5 (after the surrogate pair) → byte 7 (3 ASCII + 4 UTF-8).
+    try std.testing.expectEqual(@as(usize, 7), lspPositionToOffset(source, .{ .line = 0, .character = 5 }).?);
+    // char 4 lands mid-surrogate-pair → snap to boundary before emoji
+    // (deterministic; matches what most servers do).
+    try std.testing.expectEqual(@as(usize, 3), lspPositionToOffset(source, .{ .line = 0, .character = 4 }).?);
+    // Line 1, char 0 → after "\n" at byte 8.
+    try std.testing.expectEqual(@as(usize, 8), lspPositionToOffset(source, .{ .line = 1, .character = 0 }).?);
+}
+
+test "lspPositionToOffset: character past EOL with multi-byte chars" {
+    // Line 0 has 1 'visible' character (the emoji = 2 UTF-16 units), no more.
+    const source = "\xF0\x9F\x8E\x89\nrest";
+    // char 2 (end of emoji) is OK → byte 4.
+    try std.testing.expectEqual(@as(usize, 4), lspPositionToOffset(source, .{ .line = 0, .character = 2 }).?);
+    // char 3 (one past) returns null — the next byte is '\n'.
+    try std.testing.expect(lspPositionToOffset(source, .{ .line = 0, .character = 3 }) == null);
+}
+
+test "offsetToLspPosition: 2-byte UTF-8 boundary" {
+    const source = "fn ä() {}";
+    // After "fn " (3 ASCII bytes) → char 3.
+    try std.testing.expectEqual(@as(u32, 3), offsetToLspPosition(source, 3).?.character);
+    // After 'ä' (2 bytes) → char 4.
+    try std.testing.expectEqual(@as(u32, 4), offsetToLspPosition(source, 5).?.character);
+    // Mid-sequence (byte 4) → null.
+    try std.testing.expect(offsetToLspPosition(source, 4) == null);
+}
+
+test "offsetToLspPosition: 3-byte UTF-8 boundary" {
+    const source = "const 中: i32 = 1;";
+    try std.testing.expectEqual(@as(u32, 6), offsetToLspPosition(source, 6).?.character);
+    // After '中' (3 bytes) → char 7.
+    try std.testing.expectEqual(@as(u32, 7), offsetToLspPosition(source, 9).?.character);
+    // Mid-sequence offsets → null.
+    try std.testing.expect(offsetToLspPosition(source, 7) == null);
+    try std.testing.expect(offsetToLspPosition(source, 8) == null);
+}
+
+test "offsetToLspPosition: 4-byte UTF-8 emits surrogate pair" {
+    const source = "// \xF0\x9F\x8E\x89\nfn f(){}";
+    // After the emoji (4 bytes) → char 5 (3 ASCII + 2 surrogate units).
+    const after = offsetToLspPosition(source, 7).?;
+    try std.testing.expectEqual(@as(u32, 0), after.line);
+    try std.testing.expectEqual(@as(u32, 5), after.character);
+    // Mid-surrogate offsets → null.
+    try std.testing.expect(offsetToLspPosition(source, 4) == null);
+    try std.testing.expect(offsetToLspPosition(source, 5) == null);
+    try std.testing.expect(offsetToLspPosition(source, 6) == null);
+    // After the LF → line 1, char 0.
+    const next_line = offsetToLspPosition(source, 8).?;
+    try std.testing.expectEqual(@as(u32, 1), next_line.line);
+    try std.testing.expectEqual(@as(u32, 0), next_line.character);
+}
+
+test "offsetToLspPosition / lspPositionToOffset: round-trip across mixed UTF-8 widths" {
+    // 1-byte 'a', 2-byte 'ä', 3-byte '中', 4-byte 🎉.
+    const source = "a\xC3\xA4 \xE4\xB8\xAD \xF0\x9F\x8E\x89 end";
+    // Walk every UTF-8 boundary; identity round-trip at each.
+    const boundaries = [_]u32{ 0, 1, 3, 4, 7, 8, 12, 13, 14, 15, 16 };
+    for (boundaries) |off| {
+        if (off > source.len) continue;
+        const pos = offsetToLspPosition(source, off) orelse return error.PositionNull;
+        const back = lspPositionToOffset(source, pos) orelse return error.OffsetNull;
+        try std.testing.expectEqual(@as(usize, off), back);
+    }
+}
+
+test "offsetRangeToLspRange: range spans a 4-byte char" {
+    // Range covering "// 🎉" → start at 0, end at 7 (after emoji).
+    const source = "// \xF0\x9F\x8E\x89\nfn f(){}";
+    const range = offsetRangeToLspRange(source, 0, 7).?;
+    try std.testing.expectEqual(@as(u32, 0), range.start.line);
+    try std.testing.expectEqual(@as(u32, 0), range.start.character);
+    try std.testing.expectEqual(@as(u32, 0), range.end.line);
+    // 3 ASCII + 2 surrogate units = 5.
+    try std.testing.expectEqual(@as(u32, 5), range.end.character);
+}
+
 test "extractDidYouMean: suggestion with underscores" {
     const result = extractDidYouMean("use of undeclared identifier 'global_id'; did you mean 'global_invocation_id'?");
     try std.testing.expectEqualStrings("global_invocation_id", result.?);
@@ -5451,7 +5589,7 @@ test "convertDiagnostic OOM on message dupe yields empty message" {
     const alloc = failing.allocator();
 
     const entry = WgslDiagnostic.Entry{ .message = "some error" };
-    const result = convertDiagnostic(alloc, &entry);
+    const result = convertDiagnostic(alloc, "", &entry);
 
     // OOM fallback: message should be empty, not a dangling borrowed slice.
     try std.testing.expectEqual(@as(usize, 0), result.message.len);
@@ -5474,7 +5612,7 @@ test "convertDiagnostic OOM on related message dupe yields empty message" {
         .message = "main error",
         .related = &related,
     };
-    const result = convertDiagnostic(alloc, &entry);
+    const result = convertDiagnostic(alloc, "", &entry);
 
     // The related array was allocated (alloc #0), but the dupe (#1) failed.
     if (result.related.len > 0) {
@@ -5497,7 +5635,7 @@ test "convertDiagnostic with message and related round-trips through freeDiagnos
         .code = "E0100",
         .related = &related,
     };
-    const result = convertDiagnostic(std.testing.allocator, &entry);
+    const result = convertDiagnostic(std.testing.allocator, "", &entry);
 
     // Verify all strings were duped (owned, not borrowed).
     try std.testing.expectEqualStrings("duplicate definition", result.message);

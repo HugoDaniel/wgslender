@@ -309,6 +309,11 @@ pub fn build(b: *std.Build) void {
     // on the document's current source (the strongest consistency check
     // for the incremental wiring).
     _ = addTestStep(b, test_step, "tests/lsp_analysis_cache_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // UTF-16 position-encoding regressions: pin that
+    // lspPositionToOffset / offsetToLspPosition + the helper-routed
+    // diagnostic ranges count UTF-16 code units (matching the
+    // `positionEncoding: utf-16` we advertise in initialize).
+    _ = addTestStep(b, test_step, "tests/lsp_position_encoding_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // End-to-end publishDiagnostics JSON payload tests — drive WGSL
     // sources through validateDocument + bridge + writeNotification and
     // assert the serialized code / codeDescription.href / relatedInformation
