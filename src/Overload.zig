@@ -352,112 +352,124 @@ fn unifyArg(p: *const Pattern, arg: Types.Type, bindings: *[max_tparams]Binding)
         }
     }
 
-    switch (p.*) {
-        .concrete => |t| {
-            return Types.conversionRank(a, t) orelse return error.Mismatch;
-        },
-        .tparam_scalar => |ts| {
-            if (a != .scalar) return error.Mismatch;
-            const sk = promoteForFamily(a.scalar.kind, ts.family);
-            if (!ts.family.accepts(sk)) return error.Mismatch;
-            return try bindScalar(bindings, ts.idx, sk, ts.family);
-        },
-        .tparam_vector => |tv| {
-            if (a != .vector) return error.Mismatch;
-            const v = a.vector;
-            if (tv.n_fixed != 0) {
-                if (v.width != tv.n_fixed) return error.Mismatch;
-            } else if (tv.n_idx != Pattern.no_tparam) {
-                if (!try bindWidth(bindings, tv.n_idx, v.width)) return error.Mismatch;
-            }
-            const elem_kind = promoteForFamily(v.element.kind, tv.elem_family);
-            if (!tv.elem_family.accepts(elem_kind)) return error.Mismatch;
-            return try bindScalar(bindings, tv.elem_idx, elem_kind, tv.elem_family);
-        },
-        .tparam_matrix => |tm| {
-            if (a != .matrix) return error.Mismatch;
-            const m = a.matrix;
-            if (!try bindWidth(bindings, tm.cols_idx, m.cols)) return error.Mismatch;
-            if (!try bindWidth(bindings, tm.rows_idx, m.rows)) return error.Mismatch;
-            if (!tm.elem_family.accepts(m.element.kind)) return error.Mismatch;
-            return try bindScalar(bindings, tm.elem_idx, m.element.kind, tm.elem_family);
-        },
-        .tparam_ptr_atomic => |tp| {
-            if (a != .pointer) return error.Mismatch;
-            const pp = a.pointer;
-            if (pp.element != .atomic) return error.Mismatch;
-            const elem_kind = pp.element.atomic.element.kind;
-            if (!tp.elem_family.accepts(elem_kind)) return error.Mismatch;
-            if (!try bindAddressSpace(bindings, tp.as_idx, pp.address_space)) return error.Mismatch;
-            if (!try bindAccessMode(bindings, tp.am_idx, pp.access_mode)) return error.Mismatch;
-            _ = try bindScalar(bindings, tp.elem_idx, elem_kind, tp.elem_family);
-            return 0;
-        },
-        .tparam_ptr => |tp| {
-            if (a != .pointer) return error.Mismatch;
-            const pp = a.pointer;
-            if (pp.address_space != tp.as_fixed) return error.Mismatch;
-            // Record elem as a whole-Type binding via scalar-only shortcut.
-            // Used by workgroupUniformLoad: when the pointee is a scalar we
-            // bind the scalar kind directly; when it's an atomic we bind its
-            // inner scalar; non-scalar pointees are still matched shape-only
-            // here and recovered from the arg type in `buildResult`.
-            if (!try bindAccessMode(bindings, tp.am_idx, pp.access_mode)) return error.Mismatch;
-            if (pp.element == .scalar) {
-                _ = try bindScalar(bindings, tp.elem_idx, pp.element.scalar.kind, .numeric);
-            } else if (pp.element == .atomic) {
-                _ = try bindScalar(bindings, tp.elem_idx, pp.element.atomic.element.kind, .numeric);
-            }
-            return 0;
-        },
-        .tparam_ptr_runtime_array => |tp| {
-            if (a != .pointer) return error.Mismatch;
-            const pp = a.pointer;
-            if (pp.element != .array) return error.Mismatch;
-            if (!pp.element.array.isRuntimeSized()) return error.Mismatch;
-            if (!try bindAddressSpace(bindings, tp.as_idx, pp.address_space)) return error.Mismatch;
-            if (!try bindAccessMode(bindings, tp.am_idx, pp.access_mode)) return error.Mismatch;
-            return 0;
-        },
-        .tparam_texture => |tt| {
-            if (a != .texture) return error.Mismatch;
-            const t = a.texture;
-            if (t.kind != tt.kind) return error.Mismatch;
-            if (t.dimension != tt.dimension) return error.Mismatch;
-            if (tt.elem_idx == Pattern.no_tparam) return 0;
-            // Extract the element scalar. Depth / depth_multisampled /
-            // external have no element, so a pattern binding elem_idx
-            // against them is a sig-author error — reject defensively.
-            const elem_kind: Types.ScalarKind = switch (tt.kind) {
-                .sampled, .multisampled => blk: {
-                    const st = t.sampled_type orelse return error.Mismatch;
-                    break :blk st.kind;
-                },
-                .storage => blk: {
-                    if (t.texel_format.len == 0) return error.Mismatch;
-                    break :blk Types.texelFormatToScalar(t.texel_format).kind;
-                },
-                .depth, .depth_multisampled, .external => return error.Mismatch,
-            };
-            if (!tt.elem_family.accepts(elem_kind)) return error.Mismatch;
-            return try bindScalar(bindings, tt.elem_idx, elem_kind, tt.elem_family);
-        },
-        .bound_scalar => |idx| {
-            // `bound_scalar` in a param position means "the scalar T already
-            // bound by an earlier param" — arg must convert to that scalar.
-            // Used by atomicAdd/Sub/... and atomicCompareExchangeWeak to
-            // require arg[1..] to match arg[0]'s underlying atomic<T>.
-            const b = bindings[idx];
-            const target_kind = (if (b.bound) b.scalar_kind else null) orelse return error.Mismatch;
-            const target: Types.Type = .{ .scalar = kindPtr(target_kind) };
-            return Types.conversionRank(a, target) orelse return error.Mismatch;
-        },
-        .bound_vector, .bound_matrix_transposed => {
-            // These only appear in result rules today (frexp/modf/transpose);
-            // adding them as param patterns is a later-phase extension.
-            return error.Mismatch;
-        },
+    return switch (p.*) {
+        .concrete => |t| Types.conversionRank(a, t) orelse error.Mismatch,
+        .tparam_scalar => |ts| try unifyTparamScalar(ts, a, bindings),
+        .tparam_vector => |tv| try unifyTparamVector(tv, a, bindings),
+        .tparam_matrix => |tm| try unifyTparamMatrix(tm, a, bindings),
+        .tparam_ptr_atomic => |tp| try unifyTparamPtrAtomic(tp, a, bindings),
+        .tparam_ptr => |tp| try unifyTparamPtr(tp, a, bindings),
+        .tparam_ptr_runtime_array => |tp| try unifyTparamPtrRuntimeArray(tp, a, bindings),
+        .tparam_texture => |tt| try unifyTparamTexture(tt, a, bindings),
+        .bound_scalar => |idx| try unifyBoundScalar(idx, a, bindings),
+        // `bound_vector` / `bound_matrix_transposed` only appear in result rules
+        // today (frexp/modf/transpose); param-position is a later-phase extension.
+        .bound_vector, .bound_matrix_transposed => error.Mismatch,
+    };
+}
+
+fn unifyTparamScalar(ts: anytype, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
+    if (a != .scalar) return error.Mismatch;
+    const sk = promoteForFamily(a.scalar.kind, ts.family);
+    if (!ts.family.accepts(sk)) return error.Mismatch;
+    return try bindScalar(bindings, ts.idx, sk, ts.family);
+}
+
+fn unifyTparamVector(tv: anytype, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
+    if (a != .vector) return error.Mismatch;
+    const v = a.vector;
+    if (tv.n_fixed != 0) {
+        if (v.width != tv.n_fixed) return error.Mismatch;
+    } else if (tv.n_idx != Pattern.no_tparam) {
+        if (!try bindWidth(bindings, tv.n_idx, v.width)) return error.Mismatch;
     }
+    const elem_kind = promoteForFamily(v.element.kind, tv.elem_family);
+    if (!tv.elem_family.accepts(elem_kind)) return error.Mismatch;
+    return try bindScalar(bindings, tv.elem_idx, elem_kind, tv.elem_family);
+}
+
+fn unifyTparamMatrix(tm: anytype, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
+    if (a != .matrix) return error.Mismatch;
+    const m = a.matrix;
+    if (!try bindWidth(bindings, tm.cols_idx, m.cols)) return error.Mismatch;
+    if (!try bindWidth(bindings, tm.rows_idx, m.rows)) return error.Mismatch;
+    if (!tm.elem_family.accepts(m.element.kind)) return error.Mismatch;
+    return try bindScalar(bindings, tm.elem_idx, m.element.kind, tm.elem_family);
+}
+
+fn unifyTparamPtrAtomic(tp: anytype, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
+    if (a != .pointer) return error.Mismatch;
+    const pp = a.pointer;
+    if (pp.element != .atomic) return error.Mismatch;
+    const elem_kind = pp.element.atomic.element.kind;
+    if (!tp.elem_family.accepts(elem_kind)) return error.Mismatch;
+    if (!try bindAddressSpace(bindings, tp.as_idx, pp.address_space)) return error.Mismatch;
+    if (!try bindAccessMode(bindings, tp.am_idx, pp.access_mode)) return error.Mismatch;
+    _ = try bindScalar(bindings, tp.elem_idx, elem_kind, tp.elem_family);
+    return 0;
+}
+
+fn unifyTparamPtr(tp: anytype, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
+    if (a != .pointer) return error.Mismatch;
+    const pp = a.pointer;
+    if (pp.address_space != tp.as_fixed) return error.Mismatch;
+    // Record elem as a whole-Type binding via scalar-only shortcut.
+    // Used by workgroupUniformLoad: when the pointee is a scalar we
+    // bind the scalar kind directly; when it's an atomic we bind its
+    // inner scalar; non-scalar pointees are still matched shape-only
+    // here and recovered from the arg type in `buildResult`.
+    if (!try bindAccessMode(bindings, tp.am_idx, pp.access_mode)) return error.Mismatch;
+    if (pp.element == .scalar) {
+        _ = try bindScalar(bindings, tp.elem_idx, pp.element.scalar.kind, .numeric);
+    } else if (pp.element == .atomic) {
+        _ = try bindScalar(bindings, tp.elem_idx, pp.element.atomic.element.kind, .numeric);
+    }
+    return 0;
+}
+
+fn unifyTparamPtrRuntimeArray(tp: anytype, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
+    if (a != .pointer) return error.Mismatch;
+    const pp = a.pointer;
+    if (pp.element != .array) return error.Mismatch;
+    if (!pp.element.array.isRuntimeSized()) return error.Mismatch;
+    if (!try bindAddressSpace(bindings, tp.as_idx, pp.address_space)) return error.Mismatch;
+    if (!try bindAccessMode(bindings, tp.am_idx, pp.access_mode)) return error.Mismatch;
+    return 0;
+}
+
+fn unifyTparamTexture(tt: anytype, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
+    if (a != .texture) return error.Mismatch;
+    const t = a.texture;
+    if (t.kind != tt.kind) return error.Mismatch;
+    if (t.dimension != tt.dimension) return error.Mismatch;
+    if (tt.elem_idx == Pattern.no_tparam) return 0;
+    // Extract the element scalar. Depth / depth_multisampled / external have
+    // no element, so a pattern binding elem_idx against them is a sig-author
+    // error — reject defensively.
+    const elem_kind: Types.ScalarKind = switch (tt.kind) {
+        .sampled, .multisampled => blk: {
+            const st = t.sampled_type orelse return error.Mismatch;
+            break :blk st.kind;
+        },
+        .storage => blk: {
+            if (t.texel_format.len == 0) return error.Mismatch;
+            break :blk Types.texelFormatToScalar(t.texel_format).kind;
+        },
+        .depth, .depth_multisampled, .external => return error.Mismatch,
+    };
+    if (!tt.elem_family.accepts(elem_kind)) return error.Mismatch;
+    return try bindScalar(bindings, tt.elem_idx, elem_kind, tt.elem_family);
+}
+
+/// `bound_scalar` in a param position means "the scalar T already bound by an
+/// earlier param" — arg must convert to that scalar. Used by atomicAdd/Sub/…
+/// and atomicCompareExchangeWeak to require arg[1..] to match arg[0]'s
+/// underlying atomic<T>.
+fn unifyBoundScalar(idx: u8, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
+    const b = bindings[idx];
+    const target_kind = (if (b.bound) b.scalar_kind else null) orelse return error.Mismatch;
+    const target: Types.Type = .{ .scalar = kindPtr(target_kind) };
+    return Types.conversionRank(a, target) orelse error.Mismatch;
 }
 
 fn bindScalar(
