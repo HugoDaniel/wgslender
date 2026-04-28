@@ -2384,12 +2384,16 @@ pub fn computeDefinition(self: *Handler, uri: []const u8, position: Position) !?
     const module = analysis.module orelse return null;
 
     const node = findNodeAtOffset(module, offset);
+    return symbolToRange(module, source, nodeSymbolIndex(node));
+}
+
+fn nodeSymbolIndex(node: NodeAtPosition) Ast.SymbolIndex {
     return switch (node) {
-        .ident => |id| symbolToRange(module, source, id.ref),
-        .type_ref => |tr| symbolToRange(module, source, tr.ref),
-        .decl_name => |dn| symbolToRange(module, source, dn.sym_idx),
-        .member_access => |ma| symbolToRange(module, source, ma.ref),
-        .binary_expr, .none => null,
+        .ident => |id| id.ref,
+        .type_ref => |tr| tr.ref,
+        .decl_name => |dn| dn.sym_idx,
+        .member_access => |ma| ma.ref,
+        .binary_expr, .none => .none,
     };
 }
 
