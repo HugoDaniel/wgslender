@@ -173,3 +173,104 @@ test "definition: alias type reference" {
     const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
     try std.testing.expect(result != null);
 }
+
+// =========================================================================
+// Struct field navigation (foo.bar -> field declaration)
+// =========================================================================
+
+test "definition: struct field on parameter base" {
+    const source: [:0]const u8 = "struct P { x: f32, y: f32 } fn f(p: P) -> f32 { return p.x; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Cursor on the 'x' in 'p.x'
+    const dot = std.mem.lastIndexOf(u8, source, ".x") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(dot + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    // 'x' is declared at offset 11 ("struct P { x"); single-char field.
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 11), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 0), result.?.end.line);
+    try std.testing.expectEqual(@as(u32, 12), result.?.end.character);
+}
+
+test "definition: struct field on local var base" {
+    const source: [:0]const u8 = "struct P { x: f32, y: f32 } fn f() -> f32 { var p: P = P(0.0, 0.0); return p.x; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const dot = std.mem.lastIndexOf(u8, source, ".x") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(dot + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 11), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 0), result.?.end.line);
+    try std.testing.expectEqual(@as(u32, 12), result.?.end.character);
+}
+
+test "definition: chained member access jumps to deepest field" {
+    const source: [:0]const u8 = "struct B { v: f32 } struct A { b: B } fn f(a: A) -> f32 { return a.b.v; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Cursor on the 'v' in 'a.b.v'
+    const dot_v = std.mem.lastIndexOf(u8, source, ".v") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(dot_v + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    // 'v' declared at offset 11 in "struct B { v: f32 }"
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 11), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 0), result.?.end.line);
+    try std.testing.expectEqual(@as(u32, 12), result.?.end.character);
+}
+
+test "definition: chained member access jumps to intermediate field" {
+    const source: [:0]const u8 = "struct B { v: f32 } struct A { b: B } fn f(a: A) -> f32 { return a.b.v; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Cursor on the 'b' in 'a.b.v' — should jump to A's field 'b'
+    const dot_b = std.mem.lastIndexOf(u8, source, ".b") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(dot_b + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    // 'b' declared at offset 31 in "struct A { b: B }"
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 31), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 0), result.?.end.line);
+    try std.testing.expectEqual(@as(u32, 32), result.?.end.character);
+}
+
+test "definition: pointer-base field via explicit deref" {
+    const source: [:0]const u8 = "struct P { x: f32 } fn f() -> f32 { var p: P = P(0.0); let q = &p; return (*q).x; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    // Cursor on the 'x' in '(*q).x'
+    const dot = std.mem.lastIndexOf(u8, source, ").x") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(dot + 2)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 11), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 0), result.?.end.line);
+    try std.testing.expectEqual(@as(u32, 12), result.?.end.character);
+}
+
+test "definition: vector swizzle returns null" {
+    const source: [:0]const u8 = "fn f() { let v = vec3f(0.0); let s = v.xyz; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const dot = std.mem.lastIndexOf(u8, source, ".xyz") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(dot + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result == null);
+}
+
+test "definition: unknown struct member returns null" {
+    const source: [:0]const u8 = "struct P { x: f32 } fn f(p: P) -> f32 { return p.nope; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const dot = std.mem.lastIndexOf(u8, source, ".nope") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(dot + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result == null);
+}

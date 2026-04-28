@@ -4854,6 +4854,14 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!InferResult {
     switch (base_type) {
         .@"struct" => |st| {
             if (st.getField(e.member_name)) |field| {
+                if (v.findStructDecl(st.name)) |sd| {
+                    for (sd.members.items) |m| {
+                        if (std.mem.eql(u8, v.symbolName(m.name), e.member_name)) {
+                            e.member_ref = m.name;
+                            break;
+                        }
+                    }
+                }
                 return InferResult.some(field.typ, stage);
             }
             const related = if (v.findStructDecl(st.name)) |sd|

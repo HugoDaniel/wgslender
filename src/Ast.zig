@@ -951,6 +951,7 @@ pub const MemberExpr = struct {
     loc: u32 = 0,
     base: Expr,
     member_name: []const u8,
+    member_ref: SymbolIndex = .none,
     flags: ExprFlags = .{},
     span: Span = .empty,
 };

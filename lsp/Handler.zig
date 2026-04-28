@@ -1731,7 +1731,7 @@ pub const NodeAtPosition = union(enum) {
     /// An identifier expression referencing a symbol.
     ident: struct { name: []const u8, ref: Ast.SymbolIndex, loc: u32 },
     /// A member access expression (e.g., `s.field`).
-    member_access: struct { member: []const u8, loc: u32, base: Ast.Expr },
+    member_access: struct { member: []const u8, loc: u32, base: Ast.Expr, ref: Ast.SymbolIndex },
     /// A declaration name (the identifier in fn/struct/var/const/let/alias).
     decl_name: struct { sym_idx: Ast.SymbolIndex, loc: u32 },
     /// A type reference (e.g., `f32`, `MyStruct` in a type annotation).
@@ -1936,7 +1936,7 @@ fn findInExpr(expr: Ast.Expr, offset: u32) ?NodeAtPosition {
             // e.loc is the dot position; member name starts at dot + 1
             const member_loc = e.loc + 1;
             if (offset >= member_loc and offset < member_loc + @as(u32, @intCast(e.member_name.len))) {
-                return .{ .member_access = .{ .member = e.member_name, .loc = member_loc, .base = e.base } };
+                return .{ .member_access = .{ .member = e.member_name, .loc = member_loc, .base = e.base, .ref = e.member_ref } };
             }
             return findInExpr(e.base, offset);
         },
@@ -2310,24 +2310,19 @@ pub fn computeDefinition(self: *Handler, uri: []const u8, position: Position) !?
     const module = analysis.module orelse return null;
 
     const node = findNodeAtOffset(module, offset);
-    switch (node) {
-        .ident => |id| {
-            if (!id.ref.isValid()) return null;
-            const sym = module.symbols.items[id.ref.index()];
-            return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
-        },
-        .type_ref => |tr| {
-            if (!tr.ref.isValid()) return null;
-            const sym = module.symbols.items[tr.ref.index()];
-            return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
-        },
-        .decl_name => |dn| {
-            if (!dn.sym_idx.isValid()) return null;
-            const sym = module.symbols.items[dn.sym_idx.index()];
-            return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
-        },
-        .member_access, .binary_expr, .none => return null,
-    }
+    return switch (node) {
+        .ident => |id| symbolToRange(module, source, id.ref),
+        .type_ref => |tr| symbolToRange(module, source, tr.ref),
+        .decl_name => |dn| symbolToRange(module, source, dn.sym_idx),
+        .member_access => |ma| symbolToRange(module, source, ma.ref),
+        .binary_expr, .none => null,
+    };
+}
+
+fn symbolToRange(module: *const Ast.Module, source: []const u8, ref: Ast.SymbolIndex) ?Range {
+    if (!ref.isValid()) return null;
+    const sym = module.symbols.items[ref.index()];
+    return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
 }
 
 // =========================================================================
