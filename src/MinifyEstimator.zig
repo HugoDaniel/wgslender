@@ -1,22 +1,31 @@
 //! Fast byte-size estimator for minified WGSL output.
 //!
-//! Phase 3 strategy: Option B (dry-run Printer with length-only renamer).
-//! The estimator reuses the production `Printer` and substitutes a
-//! `LengthRenamer` that returns dummy 'x'-filled slices whose lengths
-//! match what the real `MinifyRenamer` would have assigned. Since the
-//! Printer is the authority on minified output, total_min matches
-//! `Minifier.minify(...).code.len` exactly on well-formed shaders (tighter
-//! than the plan's 5% parity guard).
+//! Two paths:
+//!   * Cheap (default, Phase 3): dry-run Printer + `LengthRenamer` that
+//!     returns 'x'-filled slices whose lengths match what the real
+//!     `MinifyRenamer` would have assigned. Since the Printer is the
+//!     authority on minified output, `total_min` matches
+//!     `Minifier.minify(...).code.len` exactly on well-formed shaders.
+//!     `total_gz` uses the documented heuristic `total_min * 0.35`.
+//!   * Full-minify (Phase 8, opt-in via `Options.use_full_minify`): runs
+//!     the production `MinifyRenamer` end-to-end so the printed output
+//!     contains real names, then gzip-encodes it for an exact `total_gz`.
+//!     Slower in exchange for ground truth — the LSP exposes this as a
+//!     workspace setting and per-document cache invalidates correctly
+//!     because the heavy path participates in the same module-version
+//!     cache key as the cheap path.
 //!
-//! The gzip total is a documented heuristic: `total_gz ≈ total_min * 0.35`.
-//! BPE integration (phase 8+) may replace this with a histogram-based
-//! approximation; the shape of `EstimateResult` won't change.
+//! Mutation policy: the estimator does NOT permanently mutate the
+//! module's symbol table. The cheap path encodes `markAPIFacingSymbols`
+//! locally via `isRenameable` and never writes back. The full-minify
+//! path uses the production renamer (which mutates `use_count` +
+//! `must_not_be_renamed`) but saves and restores those fields around the
+//! pass — the LSP cache keeps modules alive across many estimator calls,
+//! so leaking a single mutation would skew every subsequent run.
 //!
-//! Mutation policy: the estimator does NOT mutate `must_not_be_renamed`
-//! (that side-effect is inlined via `isRenameable`). It DOES invoke
-//! `Dce.mark` when `options.tree_shaking` is set — idempotent, matches the
-//! real pipeline, and necessary so `Printer.tree_shaking` + `sortDeclarations`
-//! see correct `is_live` flags.
+//! Both paths invoke `Dce.mark` when `options.tree_shaking` is set
+//! (idempotent, matches the real pipeline, necessary so
+//! `Printer.tree_shaking` + `sortDeclarations` see correct `is_live`).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -43,6 +52,12 @@ pub const Options = struct {
     /// Tree-shake unreachable declarations. Mirrors
     /// `Minifier.Options.tree_shaking`.
     tree_shaking: bool = true,
+    /// Phase 8 — opt-in: replace the cheap length-only renamer with the
+    /// production `MinifyRenamer` so output contains real names and
+    /// `total_gz` reflects an actual gzip of the minified text instead
+    /// of the `total_min * 0.35` heuristic. Slower; the LSP gates this
+    /// behind `wgslender.minifyEstimator.useFullMinify`.
+    use_full_minify: bool = false,
 };
 
 pub const PerFunction = struct {
@@ -103,77 +118,33 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
         }
     }
 
-    // Step 4: rank renameable symbols by use_count DESC, breaking ties on
-    // symbol index ASC. Same rule as MinifyRenamer.allocateSlots, with the
-    // accumulate-use-counts step inlined: parser Pass 2 already populated
-    // `sym.use_count` for identifier/type bindings, and
-    // `computeSymbolUsage` adds references the parser didn't walk (e.g.,
-    // function-name call sites). Their sum is the quantity the real
-    // renamer ranks against.
-    const RankedSym = struct { idx: u32, count: u32 };
-    var ranked: std.ArrayListUnmanaged(RankedSym) = .empty;
-    for (module.symbols.items, 0..) |*sym, i| {
-        if (!isRenameable(sym, options)) continue;
-        const ref: Ast.SymbolIndex = @enumFromInt(@as(u32, @intCast(i)));
-        const uses_delta = uses.get(ref) orelse 0;
-        const total_count = sym.use_count + uses_delta;
-        if (total_count == 0) continue;
-        try ranked.append(arena, .{ .idx = @intCast(i), .count = total_count });
-    }
-    std.mem.sort(RankedSym, ranked.items, {}, struct {
-        fn lessThan(_: void, a: RankedSym, b: RankedSym) bool {
-            if (a.count != b.count) return a.count > b.count;
-            return a.idx < b.idx;
-        }
-    }.lessThan);
+    // Step 4: build the renamer the Printer will route every identifier
+    // through. The cheap path uses a `LengthRenamer` that emits
+    // 'x'-filled slices of the right length; the full-minify path uses
+    // the production `MinifyRenamer` directly so the buffered output
+    // can be gzipped for an exact `total_gz`.
+    const saved_state: ?SavedSymbolState = if (options.use_full_minify)
+        try saveAndMarkAPIFacing(arena, module, options)
+    else
+        null;
+    defer if (saved_state) |s| s.restore(module);
 
-    // Step 5: per-rank lengths via the shared helper. Same
-    // skip-reserved-word policy as MinifyRenamer.assignNames.
-    const rank_lengths = try arena.alloc(u32, ranked.items.len);
-    Renamer.estimateRenameLength(&reserved, rank_lengths);
-
-    // Step 6: per-symbol byte lengths. Non-ranked symbols (unused,
-    // non-renameable) print their original name, so use its byte length.
-    const sym_lengths = try arena.alloc(u32, module.symbols.items.len);
-    for (module.symbols.items, 0..) |*sym, i| {
-        sym_lengths[i] = @intCast(sym.original_name.len);
-    }
-    for (ranked.items, 0..) |rs, rank| {
-        sym_lengths[rs.idx] = rank_lengths[rank];
-    }
-
-    // Step 7: scratch buffer the LengthRenamer slices into. Content is
-    // irrelevant — Printer.emit just appends bytes and emitSpace adjacency
-    // depends on token state, not identifier content.
-    var max_len: u32 = 1;
-    for (sym_lengths) |len| {
-        if (len > max_len) max_len = len;
-    }
-    const scratch = try arena.alloc(u8, max_len);
-    @memset(scratch, 'x');
-
-    const length_renamer = try arena.create(LengthRenamer);
-    length_renamer.* = .{
-        .sym_lengths = sym_lengths,
-        .scratch = scratch,
-        .ren = undefined,
-    };
-    length_renamer.ren = .{
-        .ptr = @ptrCast(length_renamer),
-        .nameForSymbolFn = &lengthRenamerNameFor,
-    };
+    const base_renamer: *const Printer.Renamer = if (options.use_full_minify)
+        try buildMinifyRenamer(arena, module, &uses, reserved)
+    else
+        try buildLengthRenamer(arena, module, &uses, reserved, options);
 
     // Optional scope-local wrapping. Mirrors Minifier.printWithRenamer
     // lines 336-339. ScopeLocalRenamer produces real canonical names for
     // locals/params; their lengths match what a real minify run produces,
-    // so byte counts stay accurate.
-    var active_renamer: *const Printer.Renamer = &length_renamer.ren;
+    // so byte counts stay accurate on either path.
+    var active_renamer: *const Printer.Renamer = base_renamer;
     if (options.scope_local_rename) {
-        const scope = try Minifier.ScopeLocalRenamer.init(arena, module, &length_renamer.ren);
+        const scope = try Minifier.ScopeLocalRenamer.init(arena, module, base_renamer);
         active_renamer = &scope.ren;
     }
 
-    // Step 8: Printer set up identically to the real minify's minimum
+    // Step 5: Printer set up identically to the real minify's minimum
     // configuration (whitespace + identifier + syntax minification on,
     // tree-shaking from options). `sort_declarations` is handled by the
     // per-decl loop below.
@@ -192,11 +163,23 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
         .per_decl = .empty,
     };
 
+    // The full-minify path keeps every decl in the same buffer so the
+    // accumulated bytes can be gzipped once at the end. The cheap path
+    // clears the buffer between decls — its total is summed from the
+    // per-decl sizes. Both produce identical per-decl byte counts; the
+    // printer's `needs_space` flag is always false at decl boundaries
+    // (each top-level decl ends with `;` or `}` which clears it), so
+    // accumulation is byte-equivalent to the clear-and-print pattern.
+    const accumulate = options.use_full_minify;
+
     // Directives first (enable/requires/diagnostic).
     for (module.directives.items) |dir| {
-        printer.buf.clearRetainingCapacity();
+        const before: u32 = @intCast(printer.buf.items.len);
+        if (!accumulate) printer.buf.clearRetainingCapacity();
         try printer.printDirective(dir);
-        result.total_min += @intCast(printer.buf.items.len);
+        const after: u32 = @intCast(printer.buf.items.len);
+        const size: u32 = if (accumulate) after - before else after;
+        result.total_min += size;
     }
 
     // Declarations. When sort_declarations is on, use Minifier's sort
@@ -213,9 +196,11 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
             if (!Dce.isDeclarationLive(decl, module.symbols.items)) continue;
         }
 
-        printer.buf.clearRetainingCapacity();
+        const before: u32 = @intCast(printer.buf.items.len);
+        if (!accumulate) printer.buf.clearRetainingCapacity();
         try printer.printDecl(decl);
-        const size: u32 = @intCast(printer.buf.items.len);
+        const after: u32 = @intCast(printer.buf.items.len);
+        const size: u32 = if (accumulate) after - before else after;
         result.total_min += size;
 
         const name_ref = decl.nameRef();
@@ -230,7 +215,14 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
         }
     }
 
-    result.total_gz = estimateGz(result.total_min);
+    if (accumulate) {
+        // Ground-truth gzip on the actual minified bytes. Falls back to
+        // the heuristic on compress failure so callers keep a usable
+        // figure even if the codec misbehaves.
+        result.total_gz = gzipSize(arena, printer.buf.items) catch estimateGz(result.total_min);
+    } else {
+        result.total_gz = estimateGz(result.total_min);
+    }
     return result;
 }
 
@@ -263,6 +255,161 @@ fn lengthRenamerNameFor(ptr: *const anyopaque, ref: Ast.SymbolIndex) []const u8 
     const len = self.sym_lengths[idx];
     if (len == 0) return "";
     return self.scratch[0..len];
+}
+
+/// Build the cheap path's length-only renamer. Allocates rank+length
+/// arrays in `arena` and returns a pointer suitable for plugging into
+/// `Printer.Options.renamer`.
+fn buildLengthRenamer(
+    arena: Allocator,
+    module: *Ast.Module,
+    uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
+    reserved: std.StringHashMapUnmanaged(void),
+    options: Options,
+) !*const Printer.Renamer {
+    // Rank renameable symbols by use_count DESC, breaking ties on
+    // symbol index ASC. Same rule as MinifyRenamer.allocateSlots, with
+    // the accumulate-use-counts step inlined: parser Pass 2 already
+    // populated `sym.use_count` for identifier/type bindings, and
+    // `computeSymbolUsage` adds references the parser didn't walk
+    // (e.g., function-name call sites). Their sum is the quantity the
+    // real renamer ranks against.
+    const RankedSym = struct { idx: u32, count: u32 };
+    var ranked: std.ArrayListUnmanaged(RankedSym) = .empty;
+    for (module.symbols.items, 0..) |*sym, i| {
+        if (!isRenameable(sym, options)) continue;
+        const ref: Ast.SymbolIndex = @enumFromInt(@as(u32, @intCast(i)));
+        const uses_delta = uses.get(ref) orelse 0;
+        const total_count = sym.use_count + uses_delta;
+        if (total_count == 0) continue;
+        try ranked.append(arena, .{ .idx = @intCast(i), .count = total_count });
+    }
+    std.mem.sort(RankedSym, ranked.items, {}, struct {
+        fn lessThan(_: void, a: RankedSym, b: RankedSym) bool {
+            if (a.count != b.count) return a.count > b.count;
+            return a.idx < b.idx;
+        }
+    }.lessThan);
+
+    // Per-rank lengths via the shared helper. Same skip-reserved-word
+    // policy as MinifyRenamer.assignNames.
+    var reserved_local = reserved;
+    const rank_lengths = try arena.alloc(u32, ranked.items.len);
+    Renamer.estimateRenameLength(&reserved_local, rank_lengths);
+
+    // Per-symbol byte lengths. Non-ranked symbols (unused, non-
+    // renameable) print their original name, so use its byte length.
+    const sym_lengths = try arena.alloc(u32, module.symbols.items.len);
+    for (module.symbols.items, 0..) |*sym, i| {
+        sym_lengths[i] = @intCast(sym.original_name.len);
+    }
+    for (ranked.items, 0..) |rs, rank| {
+        sym_lengths[rs.idx] = rank_lengths[rank];
+    }
+
+    // Scratch buffer the LengthRenamer slices into. Content is
+    // irrelevant — Printer.emit just appends bytes and emitSpace
+    // adjacency depends on token state, not identifier content.
+    var max_len: u32 = 1;
+    for (sym_lengths) |len| {
+        if (len > max_len) max_len = len;
+    }
+    const scratch = try arena.alloc(u8, max_len);
+    @memset(scratch, 'x');
+
+    const length_renamer = try arena.create(LengthRenamer);
+    length_renamer.* = .{
+        .sym_lengths = sym_lengths,
+        .scratch = scratch,
+        .ren = undefined,
+    };
+    length_renamer.ren = .{
+        .ptr = @ptrCast(length_renamer),
+        .nameForSymbolFn = &lengthRenamerNameFor,
+    };
+    return &length_renamer.ren;
+}
+
+/// Build the full-minify path's renamer — the production
+/// `MinifyRenamer`, configured exactly like `Minifier.minify` does. The
+/// caller is responsible for saving/restoring `use_count` and
+/// `must_not_be_renamed` around this call (see `saveAndMarkAPIFacing`):
+/// `MinifyRenamer.accumulateSymbolUseCounts` and `markAPIFacingSymbols`-
+/// equivalent flag setup both mutate the symbol table in place.
+fn buildMinifyRenamer(
+    arena: Allocator,
+    module: *Ast.Module,
+    uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
+    reserved: std.StringHashMapUnmanaged(void),
+) !*const Printer.Renamer {
+    const r = try arena.create(Renamer.MinifyRenamer);
+    r.* = Renamer.MinifyRenamer.init(arena, module.symbols.items, reserved);
+    r.accumulateSymbolUseCounts(uses);
+    try r.allocateSlots();
+    try r.reserveUnrenamedSymbolNames();
+    try r.assignNames();
+    r.renamer.ptr = @ptrCast(r);
+    return &r.renamer;
+}
+
+/// Snapshot of the symbol-table fields the full-minify path mutates.
+/// The cheap path encodes the same logic locally and never writes back
+/// to the module — but the production renamer (used by the heavy path)
+/// updates `use_count` in `accumulateSymbolUseCounts`, and the
+/// API-facing markup we apply pre-rename touches `must_not_be_renamed`.
+/// Both fields are restored on scope exit so the LSP's cached module
+/// stays pristine across estimator calls.
+const SavedSymbolState = struct {
+    counts: []u32,
+    unrenameable: []bool,
+
+    fn restore(self: SavedSymbolState, module: *Ast.Module) void {
+        for (module.symbols.items, 0..) |*sym, i| {
+            sym.use_count = self.counts[i];
+            sym.flags.must_not_be_renamed = self.unrenameable[i];
+        }
+    }
+};
+
+fn saveAndMarkAPIFacing(arena: Allocator, module: *Ast.Module, options: Options) !SavedSymbolState {
+    const counts = try arena.alloc(u32, module.symbols.items.len);
+    const unrenameable = try arena.alloc(bool, module.symbols.items.len);
+    for (module.symbols.items, 0..) |*sym, i| {
+        counts[i] = sym.use_count;
+        unrenameable[i] = sym.flags.must_not_be_renamed;
+    }
+    // Mirror `Minifier.markAPIFacingSymbols`: anything the real pipeline
+    // would prevent renaming gets `must_not_be_renamed = true` so
+    // `MinifyRenamer.allocateSlots` skips it. The cheap path encodes
+    // this via `isRenameable` without mutating; the heavy path needs
+    // the flag itself because `MinifyRenamer` reads it directly.
+    for (module.symbols.items) |*sym| {
+        if (sym.flags.is_entry_point) sym.flags.must_not_be_renamed = true;
+        if (sym.kind == .builtin or sym.kind == .override) sym.flags.must_not_be_renamed = true;
+        if (sym.flags.is_external_binding and !options.mangle_external_bindings) {
+            sym.flags.must_not_be_renamed = true;
+        }
+    }
+    return .{ .counts = counts, .unrenameable = unrenameable };
+}
+
+/// gzip-encode `data` and return the compressed byte count. Used by the
+/// full-minify path so `total_gz` reflects ground-truth compression of
+/// the actual minified text instead of the cheap-path heuristic.
+fn gzipSize(arena: Allocator, data: []const u8) !u32 {
+    const flate = std.compress.flate;
+    // Output capacity: gzip's worst case for incompressible data is
+    // input + ~5 bytes per 64KB block + 18 bytes header/footer. A
+    // generous `2 * len + 256` fits everything plus the empty-block
+    // edge case.
+    const out_capacity: usize = @max(data.len * 2 + 256, 256);
+    const out_buf = try arena.alloc(u8, out_capacity);
+    var out_w: std.Io.Writer = .fixed(out_buf);
+    const deflate_buf = try arena.alloc(u8, flate.max_window_len);
+    var deflate_w = try flate.Compress.init(&out_w, deflate_buf, .gzip, flate.Compress.Options.default);
+    try deflate_w.writer.writeAll(data);
+    try deflate_w.finish();
+    return @intCast(out_w.end);
 }
 
 // =========================================================================

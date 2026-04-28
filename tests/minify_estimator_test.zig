@@ -481,6 +481,75 @@ test "tree_shaking=false keeps dead code in total" {
 }
 
 // =========================================================================
+// Phase 8 — opt-in full-minify estimator fallback
+// =========================================================================
+
+test "estimator.useFullMinify=true runs real pipeline" {
+    // Phase 8 acceptance test: the heavy path must produce ground-truth
+    // numbers — i.e. the byte count returned by the estimator equals the
+    // byte count produced by `wgslender.minifyWithOptions` exactly.
+    const gpa = testing.allocator;
+    const source = try sentinel(gpa,
+        \\fn helper() -> f32 { return 1.0; }
+        \\@compute @workgroup_size(1) fn main() { let _v = helper(); }
+    );
+    defer gpa.free(source);
+
+    var opts: MinifyEstimator.Options = .{};
+    opts.use_full_minify = true;
+    const total = try estimateTotal(gpa, source, opts);
+    const real = try realMinifySize(gpa, source, defaultMinifyOptions());
+    try testing.expectEqual(@as(u32, @intCast(real)), total);
+}
+
+test "estimator.useFullMinify=true populates per_decl + per_function" {
+    // Same shape contract as the cheap path — downstream sites (inlay
+    // hints, code lens, M-rules) read these maps regardless of which
+    // path produced the result.
+    const gpa = testing.allocator;
+    const source = try sentinel(gpa,
+        \\fn a() {}
+        \\fn b() { a(); }
+        \\@compute @workgroup_size(1) fn main() { b(); }
+    );
+    defer gpa.free(source);
+
+    var opts: MinifyEstimator.Options = .{};
+    opts.use_full_minify = true;
+    var ctx = try Ctx.init(gpa, source, opts);
+    defer ctx.deinit(gpa);
+
+    const module = ctx.analysis.module.?;
+    var fn_count: u32 = 0;
+    for (module.declarations.items) |decl| {
+        if (decl != .function) continue;
+        fn_count += 1;
+        const name_ref = decl.nameRef();
+        try testing.expect(name_ref.isValid());
+        try testing.expect(ctx.estimate.per_function.contains(name_ref));
+    }
+    try testing.expect(fn_count >= 3);
+    try testing.expectEqual(fn_count, @as(u32, @intCast(ctx.estimate.per_function.count())));
+}
+
+test "estimator.useFullMinify=true bumps estimate_count" {
+    // The counter must track BOTH paths so the LSP perf tests (which
+    // assert deltas across a Handler-driven burst) stay honest when
+    // a doc has `useFullMinify=true` resolved.
+    const gpa = testing.allocator;
+    const source = try sentinel(gpa,
+        \\@compute @workgroup_size(1) fn main() {}
+    );
+    defer gpa.free(source);
+
+    var opts: MinifyEstimator.Options = .{};
+    opts.use_full_minify = true;
+    const before = MinifyEstimator.estimate_count;
+    _ = try estimateTotal(gpa, source, opts);
+    try testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+}
+
+// =========================================================================
 // estimateRenameLength helper — shared with production MinifyRenamer
 // =========================================================================
 
