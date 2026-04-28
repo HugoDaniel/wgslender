@@ -348,6 +348,97 @@ test "perf: native settings change resets debounce timer" {
     try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
 }
 
+// =========================================================================
+// Phase 8 — full-minify estimator fallback caching
+// =========================================================================
+
+const full_minify_settings: []const u8 =
+    \\{"minifyMode":"strict","minifyEstimator":{"useFullMinify":true}}
+;
+
+test "perf: full-minify result cached by module version" {
+    // Same module + same resolved options → second refresh is a cache
+    // hit, not a re-run. Mirrors §11.1 "full-minify result cached by
+    // AST structural hash" (module_version is the structural-hash
+    // surrogate the rest of the Handler keys against).
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h, full_minify_settings);
+    try h.openDocument("file:///full.wgsl", sample_shader, 1);
+
+    const before = MinifyEstimator.estimate_count;
+
+    h.refreshMinifyInsights("file:///full.wgsl");
+    try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+
+    h.refreshMinifyInsights("file:///full.wgsl");
+    try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+}
+
+test "perf: full-minify cache hit across getMinifyEstimate calls" {
+    // §11.1 "full-minify cache hit avoids re-run" — direct
+    // `getMinifyEstimate` exercises the same cache from the LSP-side
+    // entry without going through `refreshMinifyInsights`.
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h, full_minify_settings);
+    try h.openDocument("file:///full.wgsl", sample_shader, 1);
+
+    const before = MinifyEstimator.estimate_count;
+
+    var opts: MinifyEstimator.Options = .{};
+    opts.use_full_minify = true;
+    _ = try h.getMinifyEstimate("file:///full.wgsl", opts);
+    try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+
+    _ = try h.getMinifyEstimate("file:///full.wgsl", opts);
+    try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+}
+
+test "perf: full-minify cache invalidated by AST mutation" {
+    // §11.1 "AST mutation invalidates full-minify cache" — the cache
+    // key includes the parse `module_version`, so a single
+    // `didChange` bumps it and forces a recompute on the next refresh.
+    const h = try setup();
+    defer teardown(h);
+    try applySettings(h, full_minify_settings);
+    try h.openDocument("file:///full.wgsl", sample_shader, 1);
+
+    const before = MinifyEstimator.estimate_count;
+    h.refreshMinifyInsights("file:///full.wgsl");
+    try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+
+    try h.changeDocumentIncremental(
+        "file:///full.wgsl",
+        .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } },
+        " ",
+    );
+    h.refreshMinifyInsights("file:///full.wgsl");
+    try std.testing.expectEqual(@as(u64, 2), MinifyEstimator.estimate_count - before);
+}
+
+test "perf: full-minify burst coalesces to single estimator run" {
+    // Same acceptance gate as Phase 7 but with the heavier path armed:
+    // the timer-thread debounce coalesces a 100-edit burst into one
+    // estimator fire, regardless of which branch the estimator takes.
+    const server = try setupServer(300);
+    defer teardownServer(server);
+
+    try applySettings(&server.handler, full_minify_settings);
+    try server.handler.openDocument("file:///burst.wgsl", sample_shader, 1);
+    const before = MinifyEstimator.estimate_count;
+
+    var i: u32 = 0;
+    while (i < 100) : (i += 1) {
+        try driveDidChange(server, "file:///burst.wgsl", " ");
+    }
+    try std.testing.expectEqual(@as(u64, 0), MinifyEstimator.estimate_count - before);
+
+    const dl = server.debouncer.nextDeadline() orelse return error.TestUnexpectedResult;
+    server.tick(dl);
+    try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
+}
+
 test "perf: refreshMinifyInsights hand-off (recomputeMinifyInsights path)" {
     // The WASM transport's `wgslender/recomputeMinifyInsights` notification
     // (lsp/wasm.zig:handleRecomputeMinifyInsights) and the native

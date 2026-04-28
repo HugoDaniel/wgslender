@@ -367,7 +367,8 @@ pub fn handleDidSave(self: *Handler, uri: []const u8) void {
 ///     "minifyMode":             "off" | "insights" | "strict",
 ///     "minifyInsights":         { "format": "delta"|"bytes"|"both",
 ///                                 "functionSize": bool, "declSize": bool, "totalSize": bool },
-///     "minifyLints":            { "enabled": bool },
+///     "minifyLints":            { "enabled": bool, "budgetBytes": int?, "severities": { code: severity } },
+///     "minifyEstimator":        { "useFullMinify": bool },
 ///     "mangleExternalBindings": bool
 ///   }
 pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
@@ -456,6 +457,20 @@ pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
     };
     if (obj.get("mangleExternalBindings")) |v| switch (v) {
         .bool => |x| self.workspace_minify.mangle_external_bindings = x,
+        else => {},
+    };
+    // `wgslender.minifyEstimator.useFullMinify` (Phase 8): flips the
+    // estimator from the cheap length-only pass to the production
+    // MinifyRenamer + gzip-of-output pass for ground-truth byte/gz
+    // counts. Wrong type is silently ignored, matching the rest of
+    // this parser.
+    if (obj.get("minifyEstimator")) |v| switch (v) {
+        .object => |o| {
+            if (o.get("useFullMinify")) |b| switch (b) {
+                .bool => |x| self.workspace_minify.use_full_minify = x,
+                else => {},
+            };
+        },
         else => {},
     };
 }
@@ -822,7 +837,20 @@ fn optionsEql(a: MinifyEstimator.Options, b: MinifyEstimator.Options) bool {
     return a.mangle_external_bindings == b.mangle_external_bindings and
         a.sort_declarations == b.sort_declarations and
         a.scope_local_rename == b.scope_local_rename and
-        a.tree_shaking == b.tree_shaking;
+        a.tree_shaking == b.tree_shaking and
+        a.use_full_minify == b.use_full_minify;
+}
+
+/// Translate the document's resolved minify settings into the
+/// `MinifyEstimator.Options` the cache + estimator pass-through every
+/// hot-path site (inlay hints, code lens, M-rules, refresh) uses.
+/// Centralised so flipping a Phase-8 setting propagates everywhere
+/// without each call site reaching back into `effectiveMinifyFor`.
+fn estimatorOptionsFor(self: *const Handler, uri: []const u8) MinifyEstimator.Options {
+    const eff = self.effectiveMinifyFor(uri);
+    return .{
+        .use_full_minify = eff.use_full_minify,
+    };
 }
 
 /// Public refresh entry point. Phase 7 native debounce + WASM
@@ -837,7 +865,7 @@ pub fn refreshMinifyInsights(self: *Handler, uri: []const u8) void {
     if (!self.documents.contains(uri)) return;
     const eff = self.effectiveMinifyFor(uri);
     if (!eff.insightsActive() and !eff.lintsActive()) return;
-    _ = self.getMinifyEstimate(uri, .{}) catch return;
+    _ = self.getMinifyEstimate(uri, self.estimatorOptionsFor(uri)) catch return;
 }
 
 // =========================================================================
@@ -924,7 +952,7 @@ fn validateDocumentInner(self: *Handler, uri: []const u8, options: ValidateOptio
         // returns null on parse-failure paths; in that case the rule
         // falls back to its own estimate (matching CLI lint behaviour).
         const cached_estimate: ?*const MinifyEstimator.EstimateResult =
-            self.getMinifyEstimate(uri, .{}) catch null;
+            self.getMinifyEstimate(uri, self.estimatorOptionsFor(uri)) catch null;
 
         var lint_result = try wgslender.Linter.run(self.gpa, analysis, .{
             .extends = &.{"@wgslender/minify"},
@@ -2975,7 +3003,7 @@ fn collectMinifyHints(
     // returns the same pointer. `module` is still consumed below for
     // its declarations list — the cache only replaces the estimator's
     // arena, not the caller's traversal.
-    const cached = self.getMinifyEstimate(uri, .{}) catch return;
+    const cached = self.getMinifyEstimate(uri, self.estimatorOptionsFor(uri)) catch return;
     const result = cached;
 
     if (eff.insights.total_size) {
@@ -3617,7 +3645,7 @@ fn appendTotalSizeLens(
     // codeLens / inlayHint / minify-lint pass after a parse-version
     // bump pays the estimator cost; subsequent ones in the same
     // version return the same pointer.
-    const result = self.getMinifyEstimate(uri, .{}) catch return;
+    const result = self.getMinifyEstimate(uri, self.estimatorOptionsFor(uri)) catch return;
 
     const eff = self.effectiveMinifyFor(uri);
     const original: u32 = @intCast(source.len);
