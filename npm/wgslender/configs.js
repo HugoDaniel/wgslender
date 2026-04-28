@@ -93,10 +93,61 @@ const strict = {
   },
 };
 
+/**
+ * Shape of the `wgslender.*` settings object the LSP reads. Mirrors
+ * the parser in `lsp/Handler.zig::applyClientSettings`; documented
+ * here so editor configurations (VS Code `contributes.configuration`,
+ * CodeMirror lsp-client wrappers) can synthesise UI without
+ * reaching into the Zig source.
+ */
+const lspSettingsSchema = Object.freeze({
+  type: 'object',
+  properties: {
+    inlayHints: { type: 'object', properties: { enabled: { type: 'boolean' } } },
+    diagnostics: { type: 'object', properties: { enabled: { type: 'boolean' } } },
+    minifyMode: { type: 'string', enum: ['off', 'insights', 'strict'] },
+    minifyInsights: {
+      type: 'object',
+      properties: {
+        format: { type: 'string', enum: ['delta', 'bytes', 'both'] },
+        functionSize: { type: 'boolean' },
+        declSize: { type: 'boolean' },
+        totalSize: { type: 'boolean' },
+      },
+    },
+    minifyLints: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean' },
+        budgetBytes: { type: ['integer', 'null'] },
+        severities: {
+          type: 'object',
+          additionalProperties: {
+            type: 'string',
+            enum: ['off', 'hint', 'info', 'warn', 'warning', 'error'],
+          },
+        },
+      },
+    },
+    minifyEstimator: {
+      type: 'object',
+      properties: {
+        // Phase 8 — opt-in ground-truth estimator. Slower to
+        // recompute on every edit (runs the production MinifyRenamer
+        // + gzip-of-output), but produces exact byte and gzip
+        // counts instead of the cheap length-only heuristic.
+        useFullMinify: { type: 'boolean', default: false },
+      },
+    },
+    mangleExternalBindings: { type: 'boolean' },
+  },
+});
+
 module.exports = {
   recommended,
   style,
   performance,
   portability,
   strict,
+  lspSettingsSchema,
 };
