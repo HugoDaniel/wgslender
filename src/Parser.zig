@@ -1932,7 +1932,12 @@ fn parseTemplateUnaryExpr(self: *Parser) !?Ast.Expr {
         self.cst_last_closed_expr = outer_marker;
         return .{ .unary = node };
     }
-    return self.parseTemplatePrimaryExpr();
+    return self.parseTemplatePostfixExpr();
+}
+
+fn parseTemplatePostfixExpr(self: *Parser) !?Ast.Expr {
+    const primary = (try self.parseTemplatePrimaryExpr()) orelse return null;
+    return self.applyPostfixSuffixes(primary, self.cst_last_closed_expr);
 }
 
 fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
