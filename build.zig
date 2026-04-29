@@ -205,6 +205,10 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/regression_test.zig", target, optimize, &.{w});
     // Parser recursive-descent depth limit regressions
     _ = addTestStep(b, test_step, "tests/depth_limits_test.zig", target, optimize, &.{w});
+    // Parser template-arg postfix-suffix tests (member/index/call inside
+    // array<T, ...> template args) — guards against the regression where
+    // `parseTemplatePrimaryExprInner` silently dropped postfix suffixes.
+    _ = addTestStep(b, test_step, "tests/parser_template_postfix_test.zig", target, optimize, &.{w});
     // Reflect tests
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/reflect_wgslreflect_test.zig", target, optimize, &.{w});
