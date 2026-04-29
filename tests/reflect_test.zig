@@ -1587,6 +1587,49 @@ test "reflect: const chain unlocks runtime-sized recovery" {
     try std.testing.expectEqual(@as(?i32, 4), arr.element_count);
 }
 
+test "reflect: array<T, struct.member> resolves elementCount" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The user-reported repro for the template-arg postfix bug. Before
+    // the parser fix, the `.x` was silently dropped — array reflected as
+    // runtime-sized with count == null. Now evalMember resolves
+    // `Pair(4u, 0u).x → 4`.
+    const source: [:0]const u8 =
+        \\struct Pair { x: u32, y: u32 }
+        \\const P = Pair(4u, 0u);
+        \\@group(0) @binding(0) var<uniform> u: array<f32, P.x>;
+    ;
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    const b = findBinding(result.bindings.items, "u") orelse return error.TestExpectedBinding;
+    const arr = b.array orelse return error.TestExpectedArray;
+    try std.testing.expectEqual(@as(?i32, 4), arr.element_count);
+    try std.testing.expectEqual(@as(?i32, 16), arr.total_size);
+}
+
+test "reflect: array<T, struct.member + N> resolves elementCount" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Combines the postfix .member parse with the binary-add path so
+    // both AST shapes have to land for elementCount to resolve.
+    const source: [:0]const u8 =
+        \\struct Pair { x: u32, y: u32 }
+        \\const P = Pair(4u, 0u);
+        \\@group(0) @binding(0) var<uniform> u: array<f32, P.x + 1>;
+    ;
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    const b = findBinding(result.bindings.items, "u") orelse return error.TestExpectedBinding;
+    const arr = b.array orelse return error.TestExpectedArray;
+    try std.testing.expectEqual(@as(?i32, 5), arr.element_count);
+}
+
 test "reflect: alias-of-struct member layout in nested struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
