@@ -1536,10 +1536,11 @@ test "reflect: const member access on struct constructor" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    // Mirrors wgsl_reflect's `alias struct` shape but uses an intermediate
-    // const for the `.num_wheels` access; the wgslender parser does not
-    // currently accept member-access expressions directly inside an
-    // `array<T, ...>` template position (tracked separately).
+    // The parser now accepts `.member` directly inside an `array<T, ...>`
+    // template position; the direct-shape port lives in
+    // `tests/reflect_wgslreflect_test.zig` ("alias struct"). This test
+    // is kept as a back-stop using an intermediate const so a regression
+    // in either evalMember or the parser fix surfaces independently.
     const source: [:0]const u8 =
         \\alias foo = u32;
         \\alias bar = foo;

@@ -593,6 +593,43 @@ test "wgsl_reflect: struct_layout B torture (size 208, 8 members)" {
 }
 
 // =========================================================================
+// test_reflect.js — direct re-port of "alias struct"
+// =========================================================================
+
+test "wgsl_reflect: alias struct (array<Ship, a_bicycle.num_wheels>)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Direct port of wgsl_reflect's `alias struct` test. The
+    // `array<Ship, a_bicycle.num_wheels>` template arg now parses
+    // correctly — previously the `.num_wheels` was silently dropped, so
+    // a workaround using an intermediate `const bike_wheels =
+    // a_bicycle.num_wheels` was needed (still kept in
+    // tests/reflect_test.zig as a redundant back-stop).
+    const r = try reflectSource(a,
+        \\alias foo = u32;
+        \\alias bar = foo;
+        \\struct Vehicle {
+        \\  num_wheels: bar,
+        \\  mass_kg: f32,
+        \\}
+        \\alias Car = Vehicle;
+        \\const num_cars = 2 * 2;
+        \\struct Ship {
+        \\    cars: array<Car, num_cars>,
+        \\}
+        \\const a_bicycle = Car(2, 10.5);
+        \\const bike_num_wheels = a_bicycle.num_wheels;
+        \\struct Ocean {
+        \\    things: array<Ship, a_bicycle.num_wheels>,
+        \\}
+        \\@group(0) @binding(0) var<uniform> ocean: Ocean;
+    );
+    try expectUniformSize(&r, "ocean", 64);
+}
+
+// =========================================================================
 // PORT-DEFER markers — features not yet surfaced
 // =========================================================================
 //
@@ -604,8 +641,6 @@ test "wgsl_reflect: struct_layout B torture (size 208, 8 members)" {
 // PORT-DEFER: "uniform buffer info" — `members[].type.format.name` chain
 //             requires TypeInfo links from FieldInfo (we currently emit a
 //             struct-name reference).
-// PORT-DEFER: "alias struct" with `array<Ship, a_bicycle.num_wheels>` —
-//             const evaluator doesn't constant-fold struct-init member access.
 // PORT-DEFER: "const2" with `radians`/`sin` — runtime const evaluator
 //             doesn't model float builtins; tracked in the Reflect TODO.
 // PORT-DEFER: "entry functions" `getBindGroups()` parity — covered on the
