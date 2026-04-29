@@ -183,6 +183,9 @@ pub const BindingInfo = struct {
     type_mapped: []const u8,
     layout: ?StructLayout = null,
     array: ?ArrayInfo = null,
+    /// Structured type tree mirroring `typ`. `null` on parse-failure
+    /// paths only — every successful binding gets a populated `TypeInfo`.
+    type_info: ?*const TypeInfo = null,
 };
 
 pub const ArrayInfo = struct {
@@ -219,6 +222,96 @@ pub const FieldInfo = struct {
     size: u32,
     alignment: u32,
     layout: ?StructLayout = null,
+    /// Structured type description. Walks the same shape as `typ`/`layout`
+    /// but as a programmatic tree — siblings of `array`/`atomic`/`ptr`
+    /// link to inner `*TypeInfo`. `null` only on parse-failure paths.
+    type_info: ?*const TypeInfo = null,
+};
+
+// =========================================================================
+// TypeInfo — structured (recursive) type description
+// =========================================================================
+//
+// Mirrors the shape of WGSL types programmatically so consumers can walk a
+// binding's type tree without reparsing the textual `typ` string. Fields
+// with size/alignment/stride are pre-computed during reflection — they
+// match the values reported on `BindingInfo.layout` / `FieldInfo` for the
+// same physical type.
+
+pub const TypeInfo = union(enum) {
+    scalar: ScalarInfo,
+    vec: VecInfo,
+    mat: MatInfo,
+    array: ArrayTypeInfo,
+    @"struct": StructTypeRef,
+    atomic: AtomicInfo,
+    texture: TextureInfo,
+    sampler: SamplerInfo,
+    ptr: PtrInfo,
+
+    pub const ScalarInfo = struct {
+        name: []const u8,
+        size: u32,
+        alignment: u32,
+    };
+    pub const VecInfo = struct {
+        width: u8,
+        format: *const TypeInfo,
+        size: u32,
+        alignment: u32,
+    };
+    pub const MatInfo = struct {
+        cols: u8,
+        rows: u8,
+        format: *const TypeInfo,
+        size: u32,
+        alignment: u32,
+        stride: u32,
+    };
+    pub const ArrayTypeInfo = struct {
+        format: *const TypeInfo,
+        /// `null` for runtime-sized arrays.
+        count: ?u32,
+        /// `null` when the element count is not const-known. `count * stride` otherwise.
+        size: ?u32,
+        stride: u32,
+        alignment: u32,
+    };
+    /// Struct reference by name. Look up the full layout via
+    /// `ReflectResult.structs.get(name)`.
+    pub const StructTypeRef = struct {
+        name: []const u8,
+        size: u32,
+        alignment: u32,
+    };
+    pub const AtomicInfo = struct {
+        format: *const TypeInfo,
+        size: u32,
+        alignment: u32,
+    };
+    pub const SamplerInfo = struct {
+        comparison: bool,
+    };
+    pub const PtrInfo = struct {
+        address_space: Ast.AddressSpace,
+        format: *const TypeInfo,
+        access: Ast.AccessMode,
+    };
+};
+
+/// Structured texture description. Carries the same information as the
+/// WGSL textual form (`texture_storage_2d<rgba8unorm, write>`,
+/// `texture_depth_2d`, `texture_2d<f32>`, …) but split into typed fields.
+pub const TextureInfo = struct {
+    dim: Ast.TextureDimension,
+    kind: Ast.TextureKind,
+    /// Texel format string (e.g. `"rgba8unorm"`) for storage textures;
+    /// empty otherwise.
+    format: []const u8 = "",
+    access: Ast.AccessMode = .none,
+    /// Sample-type leaf for sampled / multisampled textures
+    /// (e.g. `"f32"` / `"i32"` / `"u32"`); empty otherwise.
+    sample_type: []const u8 = "",
 };
 
 pub const EntryPointInfo = struct {
@@ -407,6 +500,7 @@ fn extractBinding(
         .address_space = addressSpaceToString(address_space),
         .typ = if (var_decl.typ) |t| lc.typeToStringMapped(t, false) else "",
         .type_mapped = if (var_decl.typ) |t| lc.typeToStringMapped(t, true) else "",
+        .type_info = if (var_decl.typ) |t| lc.buildTypeInfo(t) else null,
     };
 
     // Add access mode for storage bindings.
@@ -820,6 +914,257 @@ const LayoutComputer = struct {
         };
     }
 
+    // -----------------------------------------------------------------
+    // TypeInfo construction
+    // -----------------------------------------------------------------
+
+    /// Build a structured `TypeInfo` tree for `t`. The returned pointer is
+    /// allocated from `self.arena` and lives as long as the reflect
+    /// arena; safe to embed in `BindingInfo.type_info` / `FieldInfo.type_info`.
+    /// Aliases are followed (so a binding declared as `var<uniform> u: MyAlias`
+    /// gets the underlying form). Returns `null` on allocation failure.
+    fn buildTypeInfo(self: *LayoutComputer, t: Ast.Type) ?*const TypeInfo {
+        return self.buildTypeInfoImpl(t, 0);
+    }
+
+    fn buildTypeInfoImpl(self: *LayoutComputer, t: Ast.Type, depth: u32) ?*const TypeInfo {
+        // Cap recursion to match other walkers in this file.
+        if (depth > 64) return null;
+        const resolved = self.resolveAliasType(t);
+        switch (resolved) {
+            .ident => |ident| {
+                if (primitive_layouts.get(ident.name)) |pl| {
+                    return self.buildPrimitiveTypeInfo(ident.name, pl);
+                }
+                // Handle-ident types: the parser surfaces sampler /
+                // texture spellings as `.ident` (with the full name in
+                // `ident.name`) rather than `.sampler` / `.texture`. Map
+                // them to the corresponding structured TypeInfo arm.
+                if (handleIdentToTypeInfo(ident.name)) |ti| {
+                    return self.alloc(ti);
+                }
+                if (ident.ref.isValid()) {
+                    if (self.getStructLayout(ident.ref)) |sl| {
+                        return self.alloc(TypeInfo{ .@"struct" = .{
+                            .name = ident.name,
+                            .size = sl.size,
+                            .alignment = sl.alignment,
+                        } });
+                    }
+                }
+                // Unknown ident — fall back to a nominal scalar entry so
+                // callers always see a node. Layout values are 0; consumer
+                // can detect via `.size == 0`.
+                return self.alloc(TypeInfo{ .scalar = .{
+                    .name = ident.name,
+                    .size = 0,
+                    .alignment = 0,
+                } });
+            },
+            .vec => |vec| return self.buildVecTypeInfo(vec, depth),
+            .mat => |mat| return self.buildMatTypeInfo(mat, depth),
+            .array => |arr| return self.buildArrayTypeInfo(arr, depth),
+            .atomic => |at| {
+                const layout = self.computeTypeLayout(.{ .atomic = at });
+                const inner = self.buildTypeInfoImpl(at.elem_type, depth + 1) orelse return null;
+                return self.alloc(TypeInfo{ .atomic = .{
+                    .format = inner,
+                    .size = layout.size,
+                    .alignment = layout.alignment,
+                } });
+            },
+            .sampler => |s| return self.alloc(TypeInfo{ .sampler = .{ .comparison = s.comparison } }),
+            .texture => |tex| return self.buildTextureTypeInfo(tex),
+            .ptr => |p| {
+                const inner = self.buildTypeInfoImpl(p.elem_type, depth + 1) orelse return null;
+                return self.alloc(TypeInfo{ .ptr = .{
+                    .address_space = p.address_space,
+                    .format = inner,
+                    .access = p.access_mode,
+                } });
+            },
+        }
+    }
+
+    fn buildPrimitiveTypeInfo(self: *LayoutComputer, name: []const u8, pl: PrimitiveLayout) ?*const TypeInfo {
+        // Detect the vec/mat shorthand spellings (vec3f / mat4x4f / …) so
+        // they get a structured `vec`/`mat` node rather than a scalar one.
+        if (parseVecShorthand(name)) |info| {
+            const elem_pl = primitive_layouts.get(info.elem_name) orelse return self.alloc(TypeInfo{ .scalar = .{
+                .name = name,
+                .size = pl.size,
+                .alignment = pl.alignment,
+            } });
+            const elem = self.alloc(TypeInfo{ .scalar = .{
+                .name = info.elem_name,
+                .size = elem_pl.size,
+                .alignment = elem_pl.alignment,
+            } }) orelse return null;
+            return self.alloc(TypeInfo{ .vec = .{
+                .width = info.width,
+                .format = elem,
+                .size = pl.size,
+                .alignment = pl.alignment,
+            } });
+        }
+        if (parseMatShorthand(name)) |info| {
+            const elem_pl = primitive_layouts.get(info.elem_name) orelse return self.alloc(TypeInfo{ .scalar = .{
+                .name = name,
+                .size = pl.size,
+                .alignment = pl.alignment,
+            } });
+            const elem = self.alloc(TypeInfo{ .scalar = .{
+                .name = info.elem_name,
+                .size = elem_pl.size,
+                .alignment = elem_pl.alignment,
+            } }) orelse return null;
+            const col_layout = computeVecLayout(info.rows, elem_pl.size);
+            const stride = roundUp(col_layout.size, col_layout.alignment);
+            return self.alloc(TypeInfo{ .mat = .{
+                .cols = info.cols,
+                .rows = info.rows,
+                .format = elem,
+                .size = pl.size,
+                .alignment = pl.alignment,
+                .stride = stride,
+            } });
+        }
+        return self.alloc(TypeInfo{ .scalar = .{
+            .name = name,
+            .size = pl.size,
+            .alignment = pl.alignment,
+        } });
+    }
+
+    fn buildVecTypeInfo(self: *LayoutComputer, vec: *Ast.VecType, depth: u32) ?*const TypeInfo {
+        const layout = self.computeVecTypeLayout(vec);
+        const elem_t: Ast.Type = vec.elem_type orelse {
+            // Shorthand without explicit element type — infer from suffix.
+            if (vec.shorthand.len > 0) {
+                if (parseVecShorthand(vec.shorthand)) |info| {
+                    if (primitive_layouts.get(info.elem_name)) |epl| {
+                        const elem = self.alloc(TypeInfo{ .scalar = .{
+                            .name = info.elem_name,
+                            .size = epl.size,
+                            .alignment = epl.alignment,
+                        } }) orelse return null;
+                        return self.alloc(TypeInfo{ .vec = .{
+                            .width = vec.size,
+                            .format = elem,
+                            .size = layout.size,
+                            .alignment = layout.alignment,
+                        } });
+                    }
+                }
+            }
+            // Fall through: unknown element — emit a sentinel scalar leaf.
+            const sentinel = self.alloc(TypeInfo{ .scalar = .{ .name = "", .size = 0, .alignment = 0 } }) orelse return null;
+            return self.alloc(TypeInfo{ .vec = .{
+                .width = vec.size,
+                .format = sentinel,
+                .size = layout.size,
+                .alignment = layout.alignment,
+            } });
+        };
+        const elem = self.buildTypeInfoImpl(elem_t, depth + 1) orelse return null;
+        return self.alloc(TypeInfo{ .vec = .{
+            .width = vec.size,
+            .format = elem,
+            .size = layout.size,
+            .alignment = layout.alignment,
+        } });
+    }
+
+    fn buildMatTypeInfo(self: *LayoutComputer, mat: *Ast.MatType, depth: u32) ?*const TypeInfo {
+        const layout = self.computeMatTypeLayout(mat);
+        var elem_size: u32 = 4;
+        const elem: *const TypeInfo = blk: {
+            if (mat.elem_type) |et| {
+                const inner = self.buildTypeInfoImpl(et, depth + 1) orelse return null;
+                if (sizeOfTypeInfo(inner)) |s| elem_size = s;
+                break :blk inner;
+            }
+            // Shorthand: derive element from suffix.
+            if (mat.shorthand.len > 0) {
+                if (parseMatShorthand(mat.shorthand)) |info| {
+                    if (primitive_layouts.get(info.elem_name)) |epl| {
+                        elem_size = epl.size;
+                        const ti = self.alloc(TypeInfo{ .scalar = .{
+                            .name = info.elem_name,
+                            .size = epl.size,
+                            .alignment = epl.alignment,
+                        } }) orelse return null;
+                        break :blk ti;
+                    }
+                }
+            }
+            const sentinel = self.alloc(TypeInfo{ .scalar = .{ .name = "", .size = 0, .alignment = 0 } }) orelse return null;
+            break :blk sentinel;
+        };
+        const col_layout = computeVecLayout(mat.rows, elem_size);
+        const stride = roundUp(col_layout.size, col_layout.alignment);
+        return self.alloc(TypeInfo{ .mat = .{
+            .cols = mat.cols,
+            .rows = mat.rows,
+            .format = elem,
+            .size = layout.size,
+            .alignment = layout.alignment,
+            .stride = stride,
+        } });
+    }
+
+    fn buildArrayTypeInfo(self: *LayoutComputer, arr: *Ast.ArrayType, depth: u32) ?*const TypeInfo {
+        const layout = self.computeArrayTypeLayout(arr);
+        const et = arr.elem_type orelse {
+            const sentinel = self.alloc(TypeInfo{ .scalar = .{ .name = "", .size = 0, .alignment = 0 } }) orelse return null;
+            return self.alloc(TypeInfo{ .array = .{
+                .format = sentinel,
+                .count = null,
+                .size = null,
+                .stride = layout.stride,
+                .alignment = layout.alignment,
+            } });
+        };
+        const elem = self.buildTypeInfoImpl(et, depth + 1) orelse return null;
+        var count: ?u32 = null;
+        var total_size: ?u32 = null;
+        if (arr.size) |size_expr| {
+            const c = self.evaluateConstExpr(size_expr);
+            if (c >= 0) {
+                count = @intCast(c);
+                total_size = @as(u32, @intCast(c)) * layout.stride;
+            }
+        }
+        return self.alloc(TypeInfo{ .array = .{
+            .format = elem,
+            .count = count,
+            .size = total_size,
+            .stride = layout.stride,
+            .alignment = layout.alignment,
+        } });
+    }
+
+    fn buildTextureTypeInfo(self: *LayoutComputer, tex: *Ast.TextureType) ?*const TypeInfo {
+        var info = TextureInfo{
+            .dim = tex.dimension,
+            .kind = tex.kind,
+            .format = tex.texel_format,
+            .access = tex.access_mode,
+        };
+        if (tex.kind == .sampled or tex.kind == .multisampled) {
+            if (tex.sampled_type) |st| {
+                info.sample_type = self.typeToStringMapped(st, false);
+            }
+        }
+        return self.alloc(TypeInfo{ .texture = info });
+    }
+
+    fn alloc(self: *LayoutComputer, value: TypeInfo) ?*const TypeInfo {
+        const ptr = self.arena.create(TypeInfo) catch return null;
+        ptr.* = value;
+        return ptr;
+    }
+
     /// Evaluate a const-expression to an `i32` (positive — array sizes,
     /// workgroup_size args, attribute values are all required to be a
     /// non-negative integer).  Returns `-1` if the expression doesn't
@@ -1178,6 +1523,7 @@ const LayoutComputer = struct {
                 .offset = offset,
                 .size = member_layout.size,
                 .alignment = member_layout.alignment,
+                .type_info = self.buildTypeInfo(member_type),
             };
 
             // Nested struct layout. Resolve aliases so members typed
@@ -1433,6 +1779,109 @@ pub fn roundUp(x: u32, alignment: u32) u32 {
     return ((x + alignment - 1) / alignment) * alignment;
 }
 
+const VecShorthand = struct {
+    width: u8,
+    elem_name: []const u8,
+};
+
+/// Parse a vec shorthand spelling (vec2i, vec3f, vec4h, vec2u, vec3b, …)
+/// into width + element-type name. Returns `null` if `name` isn't a
+/// shorthand recognised in `primitive_layouts`.
+fn parseVecShorthand(name: []const u8) ?VecShorthand {
+    if (name.len != 5) return null;
+    if (name[0] != 'v' or name[1] != 'e' or name[2] != 'c') return null;
+    const width: u8 = switch (name[3]) {
+        '2' => 2,
+        '3' => 3,
+        '4' => 4,
+        else => return null,
+    };
+    const elem_name: []const u8 = switch (name[4]) {
+        'i' => "i32",
+        'u' => "u32",
+        'f' => "f32",
+        'h' => "f16",
+        'b' => "bool",
+        else => return null,
+    };
+    return .{ .width = width, .elem_name = elem_name };
+}
+
+const MatShorthand = struct {
+    cols: u8,
+    rows: u8,
+    elem_name: []const u8,
+};
+
+/// Parse a mat shorthand spelling (mat2x2f, mat4x4h, …) into cols/rows
+/// plus element-type name.
+fn parseMatShorthand(name: []const u8) ?MatShorthand {
+    // matCxRT — 7 chars exactly (e.g. mat2x2f).
+    if (name.len != 7) return null;
+    if (name[0] != 'm' or name[1] != 'a' or name[2] != 't') return null;
+    if (name[4] != 'x') return null;
+    const cols: u8 = switch (name[3]) {
+        '2' => 2,
+        '3' => 3,
+        '4' => 4,
+        else => return null,
+    };
+    const rows: u8 = switch (name[5]) {
+        '2' => 2,
+        '3' => 3,
+        '4' => 4,
+        else => return null,
+    };
+    const elem_name: []const u8 = switch (name[6]) {
+        'f' => "f32",
+        'h' => "f16",
+        else => return null,
+    };
+    return .{ .cols = cols, .rows = rows, .elem_name = elem_name };
+}
+
+/// Pull the size out of a built `TypeInfo` node. Used to size stride
+/// computations when descending into a child element type.
+fn sizeOfTypeInfo(t: *const TypeInfo) ?u32 {
+    return switch (t.*) {
+        .scalar => |s| s.size,
+        .vec => |v| v.size,
+        .mat => |m| m.size,
+        .array => |a| a.size,
+        .@"struct" => |s| s.size,
+        .atomic => |a| a.size,
+        .sampler, .texture, .ptr => null,
+    };
+}
+
+/// Map a sampler / texture spelling that the parser surfaces as
+/// `.ident` to a structured `TypeInfo` value. Returns `null` for any
+/// other ident.
+fn handleIdentToTypeInfo(name: []const u8) ?TypeInfo {
+    if (std.mem.eql(u8, name, "sampler")) return .{ .sampler = .{ .comparison = false } };
+    if (std.mem.eql(u8, name, "sampler_comparison")) return .{ .sampler = .{ .comparison = true } };
+    // Texture spellings carry no template args at this site — that path is
+    // handled by `buildTextureTypeInfo`. Here we cover only the no-arg
+    // forms (e.g. `texture_external` and the depth/depth-array variants).
+    const Tk = Ast.TextureKind;
+    const Td = Ast.TextureDimension;
+    const TexEntry = struct { name: []const u8, dim: Td, kind: Tk };
+    const handle_textures = [_]TexEntry{
+        .{ .name = "texture_external", .dim = .@"2d", .kind = .external },
+        .{ .name = "texture_depth_2d", .dim = .@"2d", .kind = .depth },
+        .{ .name = "texture_depth_2d_array", .dim = .@"2d_array", .kind = .depth },
+        .{ .name = "texture_depth_cube", .dim = .cube, .kind = .depth },
+        .{ .name = "texture_depth_cube_array", .dim = .cube_array, .kind = .depth },
+        .{ .name = "texture_depth_multisampled_2d", .dim = .@"2d", .kind = .depth_multisampled },
+    };
+    for (handle_textures) |h| {
+        if (std.mem.eql(u8, name, h.name)) {
+            return .{ .texture = .{ .dim = h.dim, .kind = h.kind } };
+        }
+    }
+    return null;
+}
+
 // Literal parsing for const-expression evaluation.
 
 fn evalLiteral(lit: *Ast.LiteralExpr) ?ConstValue {
@@ -1594,6 +2043,10 @@ fn writeBindingJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, b: *cons
         try appendStr(buf, arena, ",\"array\":");
         try writeArrayInfoJson(buf, arena, arr);
     }
+    if (b.type_info) |ti| {
+        try appendStr(buf, arena, ",\"typeInfo\":");
+        try writeTypeInfoJson(buf, arena, ti);
+    }
     try appendStr(buf, arena, "}");
 }
 
@@ -1636,7 +2089,139 @@ fn writeFieldInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, f: *co
         try appendStr(buf, arena, ",\"layout\":");
         try writeStructLayoutJson(buf, arena, layout);
     }
+    if (f.type_info) |ti| {
+        try appendStr(buf, arena, ",\"typeInfo\":");
+        try writeTypeInfoJson(buf, arena, ti);
+    }
     try appendStr(buf, arena, "}");
+}
+
+fn writeTypeInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, t: *const TypeInfo) Allocator.Error!void {
+    switch (t.*) {
+        .scalar => |s| {
+            try appendStr(buf, arena, "{\"kind\":\"scalar\",\"name\":");
+            try appendJsonStr(buf, arena, s.name);
+            try appendStr(buf, arena, ",\"size\":");
+            try appendInt(buf, arena, s.size);
+            try appendStr(buf, arena, ",\"alignment\":");
+            try appendInt(buf, arena, s.alignment);
+            try appendStr(buf, arena, "}");
+        },
+        .vec => |v| {
+            try appendStr(buf, arena, "{\"kind\":\"vec\",\"width\":");
+            try appendInt(buf, arena, v.width);
+            try appendStr(buf, arena, ",\"format\":");
+            try writeTypeInfoJson(buf, arena, v.format);
+            try appendStr(buf, arena, ",\"size\":");
+            try appendInt(buf, arena, v.size);
+            try appendStr(buf, arena, ",\"alignment\":");
+            try appendInt(buf, arena, v.alignment);
+            try appendStr(buf, arena, "}");
+        },
+        .mat => |m| {
+            try appendStr(buf, arena, "{\"kind\":\"mat\",\"cols\":");
+            try appendInt(buf, arena, m.cols);
+            try appendStr(buf, arena, ",\"rows\":");
+            try appendInt(buf, arena, m.rows);
+            try appendStr(buf, arena, ",\"format\":");
+            try writeTypeInfoJson(buf, arena, m.format);
+            try appendStr(buf, arena, ",\"size\":");
+            try appendInt(buf, arena, m.size);
+            try appendStr(buf, arena, ",\"alignment\":");
+            try appendInt(buf, arena, m.alignment);
+            try appendStr(buf, arena, ",\"stride\":");
+            try appendInt(buf, arena, m.stride);
+            try appendStr(buf, arena, "}");
+        },
+        .array => |a| {
+            try appendStr(buf, arena, "{\"kind\":\"array\",\"format\":");
+            try writeTypeInfoJson(buf, arena, a.format);
+            try appendStr(buf, arena, ",\"count\":");
+            if (a.count) |c| try appendInt(buf, arena, c) else try appendStr(buf, arena, "null");
+            try appendStr(buf, arena, ",\"size\":");
+            if (a.size) |s| try appendInt(buf, arena, s) else try appendStr(buf, arena, "null");
+            try appendStr(buf, arena, ",\"stride\":");
+            try appendInt(buf, arena, a.stride);
+            try appendStr(buf, arena, ",\"alignment\":");
+            try appendInt(buf, arena, a.alignment);
+            try appendStr(buf, arena, "}");
+        },
+        .@"struct" => |s| {
+            try appendStr(buf, arena, "{\"kind\":\"struct\",\"name\":");
+            try appendJsonStr(buf, arena, s.name);
+            try appendStr(buf, arena, ",\"size\":");
+            try appendInt(buf, arena, s.size);
+            try appendStr(buf, arena, ",\"alignment\":");
+            try appendInt(buf, arena, s.alignment);
+            try appendStr(buf, arena, "}");
+        },
+        .atomic => |a| {
+            try appendStr(buf, arena, "{\"kind\":\"atomic\",\"format\":");
+            try writeTypeInfoJson(buf, arena, a.format);
+            try appendStr(buf, arena, ",\"size\":");
+            try appendInt(buf, arena, a.size);
+            try appendStr(buf, arena, ",\"alignment\":");
+            try appendInt(buf, arena, a.alignment);
+            try appendStr(buf, arena, "}");
+        },
+        .sampler => |sm| {
+            try appendStr(buf, arena, "{\"kind\":\"sampler\",\"comparison\":");
+            try appendStr(buf, arena, if (sm.comparison) "true" else "false");
+            try appendStr(buf, arena, "}");
+        },
+        .texture => |tx| {
+            try appendStr(buf, arena, "{\"kind\":\"texture\",\"dim\":");
+            try appendJsonStr(buf, arena, textureDimString(tx.dim));
+            try appendStr(buf, arena, ",\"texKind\":");
+            try appendJsonStr(buf, arena, textureKindString(tx.kind));
+            if (tx.format.len > 0) {
+                try appendStr(buf, arena, ",\"format\":");
+                try appendJsonStr(buf, arena, tx.format);
+            }
+            if (tx.access != .none) {
+                try appendStr(buf, arena, ",\"access\":");
+                try appendJsonStr(buf, arena, tx.access.string());
+            }
+            if (tx.sample_type.len > 0) {
+                try appendStr(buf, arena, ",\"sampleType\":");
+                try appendJsonStr(buf, arena, tx.sample_type);
+            }
+            try appendStr(buf, arena, "}");
+        },
+        .ptr => |p| {
+            try appendStr(buf, arena, "{\"kind\":\"ptr\",\"addressSpace\":");
+            try appendJsonStr(buf, arena, p.address_space.string());
+            try appendStr(buf, arena, ",\"format\":");
+            try writeTypeInfoJson(buf, arena, p.format);
+            if (p.access != .none) {
+                try appendStr(buf, arena, ",\"access\":");
+                try appendJsonStr(buf, arena, p.access.string());
+            }
+            try appendStr(buf, arena, "}");
+        },
+    }
+}
+
+fn textureDimString(dim: Ast.TextureDimension) []const u8 {
+    return switch (dim) {
+        .@"1d" => "1d",
+        .@"2d" => "2d",
+        .@"2d_array" => "2d_array",
+        .@"3d" => "3d",
+        .cube => "cube",
+        .cube_array => "cube_array",
+    };
+}
+
+fn textureKindString(kind: Ast.TextureKind) []const u8 {
+    return switch (kind) {
+        .sampled => "sampled",
+        .multisampled => "multisampled",
+        .storage => "storage",
+        .depth => "depth",
+        .depth_multisampled => "depth_multisampled",
+        .external => "external",
+    };
 }
 
 fn writeArrayInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, arr: *const ArrayInfo) Allocator.Error!void {

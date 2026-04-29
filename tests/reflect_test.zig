@@ -1626,3 +1626,207 @@ test "reflect: alias-of-struct member layout in nested struct" {
     try std.testing.expectEqualStrings("lights", lights_field.name);
     try std.testing.expect(lights_field.size > 0);
 }
+
+// =========================================================================
+// TypeInfo (structured type tree on bindings/fields)
+// =========================================================================
+
+test "reflect: TypeInfo on scalar binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> a1: f32;
+    );
+    const b = findBinding(result.bindings.items, "a1") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .scalar);
+    try std.testing.expectEqualStrings("f32", ti.scalar.name);
+    try std.testing.expectEqual(@as(u32, 4), ti.scalar.size);
+    try std.testing.expectEqual(@as(u32, 4), ti.scalar.alignment);
+}
+
+test "reflect: TypeInfo on vec3f binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> v: vec3f;
+    );
+    const b = findBinding(result.bindings.items, "v") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .vec);
+    try std.testing.expectEqual(@as(u8, 3), ti.vec.width);
+    try std.testing.expectEqual(@as(u32, 12), ti.vec.size);
+    try std.testing.expectEqual(@as(u32, 16), ti.vec.alignment);
+    try std.testing.expect(ti.vec.format.* == .scalar);
+    try std.testing.expectEqualStrings("f32", ti.vec.format.scalar.name);
+}
+
+test "reflect: TypeInfo on mat3x3h binding" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\enable f16;
+        \\@group(0) @binding(0) var<uniform> m: mat3x3h;
+    );
+    const b = findBinding(result.bindings.items, "m") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .mat);
+    try std.testing.expectEqual(@as(u8, 3), ti.mat.cols);
+    try std.testing.expectEqual(@as(u8, 3), ti.mat.rows);
+    try std.testing.expectEqual(@as(u32, 24), ti.mat.size);
+    try std.testing.expectEqual(@as(u32, 8), ti.mat.alignment);
+    try std.testing.expectEqual(@as(u32, 8), ti.mat.stride);
+    try std.testing.expect(ti.mat.format.* == .scalar);
+    try std.testing.expectEqualStrings("f16", ti.mat.format.scalar.name);
+}
+
+test "reflect: TypeInfo on nested array<array<vec3f, 5>, 6>" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> a: array<array<vec3f, 5>, 6>;
+    );
+    const b = findBinding(result.bindings.items, "a") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .array);
+    try std.testing.expectEqual(@as(?u32, 6), ti.array.count);
+    // outer stride = inner array size rounded up to inner alignment
+    // inner array: 5 * 16 (vec3f stride) = 80, alignment 16
+    // outer: count=6, stride=80, size=480
+    try std.testing.expectEqual(@as(u32, 80), ti.array.stride);
+    try std.testing.expectEqual(@as(?u32, 480), ti.array.size);
+
+    const inner = ti.array.format;
+    try std.testing.expect(inner.* == .array);
+    try std.testing.expectEqual(@as(?u32, 5), inner.array.count);
+    try std.testing.expectEqual(@as(u32, 16), inner.array.stride);
+    try std.testing.expectEqual(@as(?u32, 80), inner.array.size);
+
+    const leaf = inner.array.format;
+    try std.testing.expect(leaf.* == .vec);
+    try std.testing.expectEqual(@as(u8, 3), leaf.vec.width);
+}
+
+test "reflect: TypeInfo on struct ref" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\struct U { a: f32, b: vec3f, }
+        \\@group(0) @binding(0) var<uniform> u: U;
+    );
+    const b = findBinding(result.bindings.items, "u") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .@"struct");
+    try std.testing.expectEqualStrings("U", ti.@"struct".name);
+    try std.testing.expect(ti.@"struct".size > 0);
+}
+
+test "reflect: TypeInfo on storage texture (rgba8unorm, write)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var t: texture_storage_2d<rgba8unorm, write>;
+    );
+    const b = findBinding(result.bindings.items, "t") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .texture);
+    try std.testing.expectEqualStrings("rgba8unorm", ti.texture.format);
+    try std.testing.expectEqual(@import("wgslender").Ast.AccessMode.write, ti.texture.access);
+}
+
+test "reflect: TypeInfo on sampled texture_2d<f32>" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var t: texture_2d<f32>;
+    );
+    const b = findBinding(result.bindings.items, "t") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .texture);
+    try std.testing.expectEqualStrings("f32", ti.texture.sample_type);
+}
+
+test "reflect: TypeInfo on comparison sampler" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var s: sampler_comparison;
+    );
+    const b = findBinding(result.bindings.items, "s") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .sampler);
+    try std.testing.expect(ti.sampler.comparison);
+}
+
+test "reflect: TypeInfo follows alias chain" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\struct Foo { x: f32 }
+        \\alias Foo1 = Foo;
+        \\alias Foo2 = Foo1;
+        \\@group(0) @binding(0) var<uniform> u: Foo2;
+    );
+    const b = findBinding(result.bindings.items, "u") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .@"struct");
+    try std.testing.expectEqualStrings("Foo", ti.@"struct".name);
+}
+
+test "reflect: TypeInfo on FieldInfo of a struct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\struct Inner { x: f32, y: f32 }
+        \\struct Outer { a: vec3f, b: Inner }
+        \\@group(0) @binding(0) var<uniform> u: Outer;
+    );
+    const b = findBinding(result.bindings.items, "u") orelse return error.TestExpectedBinding;
+    const layout = b.layout orelse return error.TestExpectedLayout;
+    try std.testing.expectEqual(@as(usize, 2), layout.fields.items.len);
+
+    const fa = layout.fields.items[0];
+    const ti_a = fa.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti_a.* == .vec);
+    try std.testing.expectEqual(@as(u8, 3), ti_a.vec.width);
+
+    const fb = layout.fields.items[1];
+    const ti_b = fb.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti_b.* == .@"struct");
+    try std.testing.expectEqualStrings("Inner", ti_b.@"struct".name);
+}
+
+test "reflect: TypeInfo JSON includes typeInfo key" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> v: vec3f;
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJson(&buf, alloc);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"typeInfo\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"vec\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"width\":3") != null);
+}
