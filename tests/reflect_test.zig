@@ -2223,3 +2223,152 @@ test "reflect: entry I/O JSON output" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"location\":0") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"builtin\":\"position\"") != null);
 }
+
+// =========================================================================
+// Call graph + per-entry-point resource attribution
+// =========================================================================
+
+fn findFunction(fns: []const wgslender.Reflect.FunctionInfo, name: []const u8) ?*const wgslender.Reflect.FunctionInfo {
+    for (fns) |*f| {
+        if (std.mem.eql(u8, f.name, name)) return f;
+    }
+    return null;
+}
+
+fn findEntryByName(eps: []const wgslender.Reflect.EntryPointInfo, name: []const u8) ?*const wgslender.Reflect.EntryPointInfo {
+    for (eps) |*e| {
+        if (std.mem.eql(u8, e.name, name)) return e;
+    }
+    return null;
+}
+
+test "reflect: function direct resources collected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> u: f32;
+        \\@group(0) @binding(1) var<storage, read_write> s: array<f32>;
+        \\fn helper() -> f32 { return u + s[0]; }
+        \\@compute @workgroup_size(1) fn cs() { let x = helper(); }
+    );
+    const helper = findFunction(result.functions.items, "helper") orelse return error.TestExpectedFunction;
+    try std.testing.expectEqual(@as(usize, 2), helper.direct_resources.items.len);
+    try std.testing.expectEqualStrings("u", helper.direct_resources.items[0]);
+    try std.testing.expectEqualStrings("s", helper.direct_resources.items[1]);
+    try std.testing.expectEqual(@as(usize, 0), helper.calls.items.len);
+
+    const cs = findFunction(result.functions.items, "cs") orelse return error.TestExpectedFunction;
+    try std.testing.expectEqual(@as(usize, 1), cs.calls.items.len);
+    try std.testing.expectEqualStrings("helper", cs.calls.items[0]);
+    try std.testing.expectEqual(@as(usize, 0), cs.direct_resources.items.len);
+}
+
+test "reflect: transitive resources flow to entry point" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> u1: f32;
+        \\@group(0) @binding(1) var<uniform> u2: f32;
+        \\@group(0) @binding(2) var<uniform> u3: f32;
+        \\fn inner() -> f32 { return u3; }
+        \\fn middle() -> f32 { return u2 + inner(); }
+        \\@compute @workgroup_size(1) fn cs() { let x = u1 + middle(); }
+    );
+    const ep = findEntryByName(result.entry_points.items, "cs") orelse return error.TestExpectedEntry;
+    try std.testing.expectEqual(@as(usize, 3), ep.resources.items.len);
+    // Order = first-observed during BFS (entry, then callees).
+    try std.testing.expectEqualStrings("u1", ep.resources.items[0]);
+    try std.testing.expectEqualStrings("u2", ep.resources.items[1]);
+    try std.testing.expectEqualStrings("u3", ep.resources.items[2]);
+}
+
+test "reflect: in_use marks reachable functions only" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\fn used() -> f32 { return 1.0; }
+        \\fn unused() -> f32 { return 2.0; }
+        \\@compute @workgroup_size(1) fn cs() { let x = used(); }
+    );
+    try std.testing.expect((findFunction(result.functions.items, "used") orelse return error.TestExpectedFunction).in_use);
+    try std.testing.expect((findFunction(result.functions.items, "cs") orelse return error.TestExpectedFunction).in_use);
+    try std.testing.expect(!(findFunction(result.functions.items, "unused") orelse return error.TestExpectedFunction).in_use);
+}
+
+test "reflect: textureSample records bidirectional relations" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var samp: sampler;
+        \\@group(0) @binding(1) var tex: texture_2d<f32>;
+        \\@fragment fn fs(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
+        \\  return textureSample(tex, samp, uv);
+        \\}
+    );
+    const tex = findBinding(result.bindings.items, "tex") orelse return error.TestExpectedBinding;
+    const samp = findBinding(result.bindings.items, "samp") orelse return error.TestExpectedBinding;
+    try std.testing.expectEqual(@as(usize, 1), tex.relations.items.len);
+    try std.testing.expectEqualStrings("samp", tex.relations.items[0]);
+    try std.testing.expectEqual(@as(usize, 1), samp.relations.items.len);
+    try std.testing.expectEqualStrings("tex", samp.relations.items[0]);
+}
+
+test "reflect: transitive overrides flow to entry point" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\override SCALE: f32 = 1.0;
+        \\override BIAS: f32 = 0.0;
+        \\fn helper(x: f32) -> f32 { return x * SCALE + BIAS; }
+        \\@compute @workgroup_size(1) fn cs() { let _x = helper(1.0); }
+    );
+    const ep = findEntryByName(result.entry_points.items, "cs") orelse return error.TestExpectedEntry;
+    try std.testing.expectEqual(@as(usize, 2), ep.overrides.items.len);
+    try std.testing.expectEqualStrings("SCALE", ep.overrides.items[0]);
+    try std.testing.expectEqualStrings("BIAS", ep.overrides.items[1]);
+}
+
+test "reflect: shadowed local var doesn't pollute resources" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> u1: f32;
+        \\@group(0) @binding(1) var<uniform> u2: f32;
+        \\@vertex fn vs() -> @builtin(position) vec4<f32> {
+        \\  var u2: f32 = 5.0;       // shadows global u2
+        \\  return vec4<f32>(u1 + u2, 0.0, 0.0, 1.0);
+        \\}
+    );
+    const ep = findEntryByName(result.entry_points.items, "vs") orelse return error.TestExpectedEntry;
+    // The shadowed local `u2` rebinds the symbol, so the global `u2`
+    // shouldn't surface in resources.
+    try std.testing.expectEqual(@as(usize, 1), ep.resources.items.len);
+    try std.testing.expectEqualStrings("u1", ep.resources.items[0]);
+}
+
+test "reflect: functions JSON output" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@compute @workgroup_size(1) fn cs() {}
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJson(&buf, alloc);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"functions\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"inUse\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"directResources\":") != null);
+}
