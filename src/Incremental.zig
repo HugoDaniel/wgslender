@@ -27,6 +27,7 @@ const CstLower = @import("CstLower.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 const AstVisit = @import("AstVisit.zig");
+const Errors = @import("incremental/Errors.zig");
 
 const Incremental = @This();
 
@@ -505,8 +506,8 @@ pub fn parseFull(gpa: Allocator, source: []const u8) !ReparseResult {
     // entries — Parser.parse runs its own Pass 2 over the discarded
     // Parser AST and would double-report E0102; CstLower's pass over the
     // canonical CST-lowered AST is the source of truth.
-    const parser_grammar = try filterNonVisitErrors(arena, parser.errors.items);
-    const errors_slice = try mergeErrorsByPos(arena, parser_grammar, visit_errors.items);
+    const parser_grammar = try Errors.filterNonVisitErrors(arena, parser.errors.items);
+    const errors_slice = try Errors.mergeErrorsByPos(arena, parser_grammar, visit_errors.items);
 
     // Pair CST scope-opener nodes with the AST scopes produced in the
     // same DFS order, so `scopeAtCstNode` resolves in O(CST depth).
@@ -1019,8 +1020,8 @@ fn tryAddSubSpliceInPlace(
     // matches what a fresh full parse of the new source would produce
     // (the F-* test families in tests/incremental_error_fixup_test.zig
     // verify this against a parseFull oracle).
-    const fixed = try fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
-    const merged = try mergeErrorsByPos(prev_arena, fixed, add_errors.items);
+    const fixed = try Errors.fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
+    const merged = try Errors.mergeErrorsByPos(prev_arena, fixed, add_errors.items);
 
     const result = ReparseResult{
         .gpa = gpa,
@@ -1200,8 +1201,8 @@ fn tryCompoundSpliceInPlace(
     // 10. Commit.
     prev.module.source = new_source;
 
-    const fixed = try fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
-    const merged = try mergeErrorsByPos(prev_arena, fixed, add_errors.items);
+    const fixed = try Errors.fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
+    const merged = try Errors.mergeErrorsByPos(prev_arena, fixed, add_errors.items);
 
     const result = ReparseResult{
         .gpa = gpa,
@@ -1395,8 +1396,8 @@ fn tryDeclStmtSpliceInPlace(
     // 10. Commit.
     prev.module.source = new_source;
 
-    const fixed = try fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
-    const merged = try mergeErrorsByPos(prev_arena, fixed, add_errors.items);
+    const fixed = try Errors.fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
+    const merged = try Errors.mergeErrorsByPos(prev_arena, fixed, add_errors.items);
 
     const result = ReparseResult{
         .gpa = gpa,
@@ -1487,115 +1488,6 @@ fn findCompoundInStmt(s: Ast.Stmt, target: Ast.Span) ?*Ast.CompoundStmt {
         },
         else => null,
     };
-}
-
-/// Splice prev's error list across the anchor edit. Drops entries that
-/// belonged to the old subtree (they're about to be replaced by the
-/// add-walk's output) and shifts downstream entries by `delta`.
-///
-/// Allocates a new slice in `arena`; does not mutate `prev_errors`.
-/// Both `pos` and `end` are shifted; an error whose `[pos, end)`
-/// straddles `old_anchor.start` is dropped because its end no longer
-/// describes a valid byte span after the splice.
-///
-/// Decision table (matches the wgsl-bidirectional-tooling roadmap §5):
-///
-/// | position vs old_anchor                         | action                |
-/// |------------------------------------------------|-----------------------|
-/// | pos < start AND end <= start                   | keep, unshifted       |
-/// | pos < start AND end > start (straddles)        | drop                  |
-/// | start <= pos < end (inside)                    | drop                  |
-/// | pos >= end                                     | keep, shift by delta  |
-fn fixupErrors(
-    arena: Allocator,
-    prev_errors: []const Parser.ParseError,
-    old_anchor: Ast.Span,
-    delta: i64,
-) Allocator.Error![]Parser.ParseError {
-    var out: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
-    try out.ensureTotalCapacity(arena, prev_errors.len);
-    for (prev_errors) |e| {
-        if (e.pos < old_anchor.start) {
-            // Strictly before the anchor. Drop only if a recorded
-            // `end` straddles into the deleted region (`end == 0` is
-            // the "no end recorded" sentinel — leave those alone).
-            if (e.end != 0 and e.end > old_anchor.start) continue;
-            out.appendAssumeCapacity(e);
-        } else if (e.pos < old_anchor.end) {
-            // Inside the deleted anchor. Belonged to the old subtree.
-            continue;
-        } else {
-            // Strictly after the anchor. Shift `pos`; shift `end` only
-            // when it was actually recorded (non-zero) so we don't turn
-            // the sentinel into a spurious offset.
-            const new_pos: i64 = @as(i64, e.pos) + delta;
-            const new_end: u32 = if (e.end == 0)
-                0
-            else
-                @intCast(@as(i64, e.end) + delta);
-            out.appendAssumeCapacity(.{
-                .message = e.message,
-                .pos = @intCast(new_pos),
-                .end = new_end,
-                .code = e.code,
-            });
-        }
-    }
-    return out.toOwnedSlice(arena);
-}
-
-/// Drop visit-pass errors (E0102) from a Parser-collected error list.
-/// `parseFull` calls this on `parser.errors.items` before merging with
-/// `CstLower.lowerTreeWithErrors`'s output: Parser.parse runs its own
-/// Pass 2 on the AST it builds (which we discard in favor of the CST
-/// lowering), so its E0102 entries duplicate the CstLower output. Pure
-/// grammar/redeclaration codes (E0001/E0004/E0101/E0401) are kept.
-fn filterNonVisitErrors(
-    arena: Allocator,
-    in: []const Parser.ParseError,
-) Allocator.Error![]Parser.ParseError {
-    var out: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
-    try out.ensureTotalCapacity(arena, in.len);
-    for (in) |e| {
-        if (std.mem.eql(u8, e.code, "E0102")) continue;
-        out.appendAssumeCapacity(e);
-    }
-    return out.toOwnedSlice(arena);
-}
-
-/// Two-pointer merge of two source-ordered ParseError lists into a
-/// freshly arena-allocated slice, also in source order. Used to combine
-/// (a) prev's parser errors with CstLower's visit-pass errors after a
-/// full parse, and (b) prev's spliced-through errors with the hot path's
-/// add-walk output. Both inputs may be empty.
-fn mergeErrorsByPos(
-    arena: Allocator,
-    a: []const Parser.ParseError,
-    b: []const Parser.ParseError,
-) Allocator.Error![]Parser.ParseError {
-    if (a.len == 0 and b.len == 0) return &.{};
-    var out = try arena.alloc(Parser.ParseError, a.len + b.len);
-    var i: usize = 0;
-    var j: usize = 0;
-    var k: usize = 0;
-    while (i < a.len and j < b.len) : (k += 1) {
-        if (a[i].pos <= b[j].pos) {
-            out[k] = a[i];
-            i += 1;
-        } else {
-            out[k] = b[j];
-            j += 1;
-        }
-    }
-    while (i < a.len) : ({
-        i += 1;
-        k += 1;
-    }) out[k] = a[i];
-    while (j < b.len) : ({
-        j += 1;
-        k += 1;
-    }) out[k] = b[j];
-    return out;
 }
 
 /// Mutable reference to a statement- or expression-slot inside an AST.
