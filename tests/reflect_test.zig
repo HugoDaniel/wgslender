@@ -1989,3 +1989,107 @@ test "reflect: @size override propagates to TypeInfo" {
     try std.testing.expect(ti.* == .scalar);
     try std.testing.expectEqual(@as(u32, 16), ti.scalar.size);
 }
+
+// =========================================================================
+// @override constants + workgroup_size linkage
+// =========================================================================
+
+test "reflect: collects @id-tagged overrides" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@id(0) override WG_X: u32 = 64u;
+        \\@id(1) override WG_Y: u32 = 1u;
+        \\override WG_Z: u32;
+        \\@compute @workgroup_size(WG_X, WG_Y, WG_Z)
+        \\fn main() {}
+    );
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 3), result.overrides.items.len);
+
+    // overrides[0] = @id(0) WG_X
+    try std.testing.expectEqualStrings("WG_X", result.overrides.items[0].name);
+    try std.testing.expectEqual(@as(?u32, 0), result.overrides.items[0].id);
+    try std.testing.expectEqualStrings("u32", result.overrides.items[0].typ);
+    try std.testing.expectEqualStrings("64u", result.overrides.items[0].default);
+
+    // overrides[2] = WG_Z (no id, no default)
+    try std.testing.expectEqualStrings("WG_Z", result.overrides.items[2].name);
+    try std.testing.expectEqual(@as(?u32, null), result.overrides.items[2].id);
+    try std.testing.expectEqualStrings("", result.overrides.items[2].default);
+}
+
+test "reflect: workgroup_size with override identifiers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\override WG_X: u32 = 64u;
+        \\override WG_Y: u32 = 1u;
+        \\override WG_Z: u32 = 1u;
+        \\@compute @workgroup_size(WG_X, WG_Y, WG_Z)
+        \\fn main() {}
+    );
+    try std.testing.expectEqual(@as(usize, 1), result.entry_points.items.len);
+    const ep = result.entry_points.items[0];
+    try std.testing.expect(ep.has_workgroup_size);
+    // Each axis is override-driven → reported as 0.
+    try std.testing.expectEqual([3]u32{ 0, 0, 0 }, ep.workgroup_size);
+    // overrides list captures the names in argument order.
+    try std.testing.expectEqual(@as(usize, 3), ep.overrides.items.len);
+    try std.testing.expectEqualStrings("WG_X", ep.overrides.items[0]);
+    try std.testing.expectEqualStrings("WG_Y", ep.overrides.items[1]);
+    try std.testing.expectEqualStrings("WG_Z", ep.overrides.items[2]);
+}
+
+test "reflect: workgroup_size mixed literal + override" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\override WG_X: u32 = 64u;
+        \\@compute @workgroup_size(WG_X, 8, 1)
+        \\fn main() {}
+    );
+    const ep = result.entry_points.items[0];
+    try std.testing.expectEqual([3]u32{ 0, 8, 1 }, ep.workgroup_size);
+    try std.testing.expectEqual(@as(usize, 1), ep.overrides.items.len);
+    try std.testing.expectEqualStrings("WG_X", ep.overrides.items[0]);
+}
+
+test "reflect: workgroup_size from const-expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\const WG: u32 = 8u * 2u;
+        \\@compute @workgroup_size(WG, 1, 1)
+        \\fn main() {}
+    );
+    const ep = result.entry_points.items[0];
+    try std.testing.expectEqual([3]u32{ 16, 1, 1 }, ep.workgroup_size);
+    try std.testing.expectEqual(@as(usize, 0), ep.overrides.items.len);
+}
+
+test "reflect: override JSON output" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@id(7) override S: f32 = 0.5;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJson(&buf, alloc);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"overrides\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"id\":7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"S\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"default\":\"0.5\"") != null);
+}

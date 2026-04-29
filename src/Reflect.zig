@@ -29,6 +29,7 @@ pub const ReflectResult = struct {
     bindings: std.ArrayListUnmanaged(BindingInfo) = .empty,
     structs: std.StringHashMapUnmanaged(StructLayout) = .{},
     entry_points: std.ArrayListUnmanaged(EntryPointInfo) = .empty,
+    overrides: std.ArrayListUnmanaged(OverrideInfo) = .empty,
     errors: std.ArrayListUnmanaged([]const u8) = .empty,
     _arena: ?std.heap.ArenaAllocator = null,
 
@@ -44,6 +45,7 @@ pub const ReflectResult = struct {
             self.bindings.deinit(arena);
             self.structs.deinit(arena);
             self.entry_points.deinit(arena);
+            self.overrides.deinit(arena);
             self.errors.deinit(arena);
         }
     }
@@ -69,6 +71,11 @@ pub const ReflectResult = struct {
         for (self.entry_points.items, 0..) |*ep, i| {
             if (i > 0) try appendStr(buf, arena, ",");
             try writeEntryPointJson(buf, arena, ep);
+        }
+        try appendStr(buf, arena, "],\"overrides\":[");
+        for (self.overrides.items, 0..) |*o, i| {
+            if (i > 0) try appendStr(buf, arena, ",");
+            try writeOverrideJson(buf, arena, o);
         }
         try appendStr(buf, arena, "]");
         if (self.errors.items.len > 0) {
@@ -327,6 +334,32 @@ pub const EntryPointInfo = struct {
     stage: []const u8,
     workgroup_size: [3]u32 = .{ 1, 1, 1 },
     has_workgroup_size: bool = false,
+    /// Names of `@override` constants referenced from this entry point's
+    /// `@workgroup_size(...)` arguments. When an axis is set from an
+    /// override, `workgroup_size[i]` is reported as `0` (the runtime
+    /// must supply the value). Empty if no overrides drive the size.
+    overrides: std.ArrayListUnmanaged([]const u8) = .empty,
+};
+
+pub const OverrideInfo = struct {
+    name: []const u8,
+    name_mapped: []const u8,
+    /// Byte offset of the declared name in the original source.
+    name_offset: u32 = 0,
+    /// Reparse-stable identifier for this override symbol; empty if absent.
+    stable_id: []const u8 = "",
+    /// Byte range of the full declaration (attributes through `;`).
+    decl_span: SpanInfo = .{},
+    /// `@id(N)` value if specified; `null` for pipeline-name-keyed overrides.
+    id: ?u32 = null,
+    /// Type spelled in source (e.g. `"f32"`); empty when omitted.
+    typ: []const u8 = "",
+    /// Structured type tree mirroring `typ`. `null` when type was omitted
+    /// or the source was malformed.
+    type_info: ?*const TypeInfo = null,
+    /// Default-value expression text as written in source, or empty when
+    /// no initializer was given.
+    default: []const u8 = "",
 };
 
 // =========================================================================
@@ -383,7 +416,52 @@ pub fn reflectWithRenamer(
         }
     }
 
-    // Second pass: collect bindings and entry points.
+    // Second pass: collect overrides. Entry-point extraction below uses
+    // `Symbol.kind == .override` to detect override-driven workgroup_size,
+    // so the actual references happen via SymbolIndex; this pass just
+    // surfaces the metadata to consumers.
+    for (module.declarations.items) |decl| switch (decl) {
+        .override => |o| {
+            var info = OverrideInfo{
+                .name = lc.getSymbolName(o.name),
+                .name_mapped = lc.getMappedName(o.name),
+                .name_offset = getSymbolLoc(o.name, module.symbols.items),
+                .decl_span = spanInfoFromAst(o.decl_span),
+            };
+            // @id(N) — pipeline-constant id
+            for (o.attributes.items) |attr| {
+                if (std.mem.eql(u8, attr.name, "id") and attr.args.items.len > 0) {
+                    const v = lc.evaluateConstExpr(attr.args.items[0]);
+                    if (v >= 0) info.id = @intCast(v);
+                }
+            }
+            if (o.typ) |t| {
+                info.typ = lc.typeToStringMapped(t, false);
+                info.type_info = lc.buildTypeInfo(t);
+            }
+            if (o.initializer) |expr| {
+                // Prefer the source slice when CstLower has stamped a span;
+                // fall back to a small renderer for the legacy parser path
+                // that leaves `expr.span` empty for literals/idents.
+                const sp = expr.span();
+                if (sp.end > sp.start and sp.end <= module.source.len) {
+                    info.default = module.source[sp.start..sp.end];
+                } else {
+                    info.default = try renderExprText(arena, expr);
+                }
+            }
+            if (StableId.stableIdFor(arena, module, o.name)) |maybe_id| {
+                if (maybe_id) |id| info.stable_id = id.bytes;
+            } else |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.IdTooLong => {},
+            }
+            try result.overrides.append(arena, info);
+        },
+        else => {},
+    };
+
+    // Third pass: collect bindings and entry points.
     for (module.declarations.items) |decl| {
         switch (decl) {
             .@"var" => |var_decl| {
@@ -401,7 +479,7 @@ pub fn reflectWithRenamer(
                 }
             },
             .function => |fn_decl| {
-                if (extractEntryPoint(fn_decl, module.symbols.items)) |ep| {
+                if (try extractEntryPoint(arena, fn_decl, module, &lc)) |ep| {
                     var info = ep;
                     if (StableId.stableIdFor(arena, module, fn_decl.name)) |maybe_id| {
                         if (maybe_id) |id| info.stable_id = id.bytes;
@@ -545,12 +623,15 @@ fn extractBinding(
 }
 
 fn extractEntryPoint(
+    arena: Allocator,
     fn_decl: *Ast.FunctionDecl,
-    symbols: []const Ast.Symbol,
-) ?EntryPointInfo {
+    module: *Ast.Module,
+    lc: *LayoutComputer,
+) Allocator.Error!?EntryPointInfo {
     var stage: []const u8 = "";
     var workgroup_size: [3]u32 = .{ 1, 1, 1 };
     var has_workgroup_size = false;
+    var overrides: std.ArrayListUnmanaged([]const u8) = .empty;
 
     for (fn_decl.attributes.items) |attr| {
         if (std.mem.eql(u8, attr.name, "vertex")) {
@@ -561,18 +642,19 @@ fn extractEntryPoint(
             stage = "compute";
         } else if (std.mem.eql(u8, attr.name, "workgroup_size")) {
             has_workgroup_size = true;
-            workgroup_size = parseWorkgroupSize(attr.args.items);
+            try parseWorkgroupSize(arena, attr.args.items, module, lc, &workgroup_size, &overrides);
         }
     }
 
     if (stage.len == 0) return null;
 
     return .{
-        .name = getSymbolName(fn_decl.name, symbols),
-        .name_offset = getSymbolLoc(fn_decl.name, symbols),
+        .name = getSymbolName(fn_decl.name, module.symbols.items),
+        .name_offset = getSymbolLoc(fn_decl.name, module.symbols.items),
         .stage = stage,
         .workgroup_size = workgroup_size,
         .has_workgroup_size = has_workgroup_size,
+        .overrides = overrides,
     };
 }
 
@@ -588,14 +670,42 @@ fn parseIntAttr(expr: Ast.Expr) i32 {
     return -1;
 }
 
-fn parseWorkgroupSize(args: []const Ast.Expr) [3]u32 {
-    var result: [3]u32 = .{ 1, 1, 1 };
+/// Parse `@workgroup_size(...)` arguments. For each axis (up to 3):
+/// - `int_literal` → use the value;
+/// - `ident` resolving to a `@const` symbol → evaluate via const-expr;
+/// - `ident` resolving to an `@override` symbol → axis becomes `0` and
+///   the override name is appended to the entry-point's `overrides`
+///   list (so consumers know which pipeline constants drive the size);
+/// - anything else falls back to `1`.
+fn parseWorkgroupSize(
+    arena: Allocator,
+    args: []const Ast.Expr,
+    module: *Ast.Module,
+    lc: *LayoutComputer,
+    out: *[3]u32,
+    overrides: *std.ArrayListUnmanaged([]const u8),
+) Allocator.Error!void {
+    out.* = .{ 1, 1, 1 };
     for (args, 0..) |arg, i| {
         if (i >= 3) break;
-        const val = parseIntAttr(arg);
-        result[i] = if (val >= 0) @intCast(val) else 1;
+        // Pipeline-override identifier?
+        if (arg == .ident) {
+            const id = arg.ident;
+            if (id.ref.isValid()) {
+                const idx = id.ref.index();
+                if (idx < module.symbols.items.len) {
+                    const sym = &module.symbols.items[idx];
+                    if (sym.kind == .override) {
+                        out[i] = 0;
+                        try overrides.append(arena, sym.original_name);
+                        continue;
+                    }
+                }
+            }
+        }
+        const val = lc.evaluateConstExpr(arg);
+        out[i] = if (val >= 0) @intCast(val) else 1;
     }
-    return result;
 }
 
 fn getSymbolName(ref: Ast.SymbolIndex, symbols: []const Ast.Symbol) []const u8 {
@@ -1914,6 +2024,71 @@ fn isPow2(x: u32) bool {
     return x > 0 and (x & (x - 1)) == 0;
 }
 
+/// Render an expression to its textual form, allocated from `arena`.
+/// Used when `Expr.span` is empty (the legacy parser path doesn't stamp
+/// expression spans). Handles literals, idents, unary/binary, paren,
+/// call, member, and index — i.e. every form that can appear inside an
+/// `@override` initializer or `@id(...)` value.
+fn renderExprText(arena: Allocator, expr: Ast.Expr) Allocator.Error![]const u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try renderExpr(&buf, arena, expr);
+    return buf.items;
+}
+
+fn renderExpr(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, expr: Ast.Expr) Allocator.Error!void {
+    switch (expr) {
+        .literal => |lit| try buf.appendSlice(arena, lit.value),
+        .ident => |id| try buf.appendSlice(arena, id.name),
+        .paren => |p| {
+            try buf.append(arena, '(');
+            try renderExpr(buf, arena, p.expr);
+            try buf.append(arena, ')');
+        },
+        .unary => |u| {
+            const op = unaryOpString(u.op);
+            try buf.appendSlice(arena, op);
+            try renderExpr(buf, arena, u.operand);
+        },
+        .binary => |b| {
+            try renderExpr(buf, arena, b.left);
+            try buf.append(arena, ' ');
+            try buf.appendSlice(arena, b.op.string());
+            try buf.append(arena, ' ');
+            try renderExpr(buf, arena, b.right);
+        },
+        .call => |c| {
+            if (c.func) |f| try renderExpr(buf, arena, f);
+            try buf.append(arena, '(');
+            for (c.args.items, 0..) |a, i| {
+                if (i > 0) try buf.appendSlice(arena, ", ");
+                try renderExpr(buf, arena, a);
+            }
+            try buf.append(arena, ')');
+        },
+        .member => |m| {
+            try renderExpr(buf, arena, m.base);
+            try buf.append(arena, '.');
+            try buf.appendSlice(arena, m.member_name);
+        },
+        .index => |ix| {
+            try renderExpr(buf, arena, ix.base);
+            try buf.append(arena, '[');
+            try renderExpr(buf, arena, ix.idx);
+            try buf.append(arena, ']');
+        },
+    }
+}
+
+fn unaryOpString(op: Ast.UnaryOp) []const u8 {
+    return switch (op) {
+        .neg => "-",
+        .not => "!",
+        .bit_not => "~",
+        .deref => "*",
+        .addr => "&",
+    };
+}
+
 const VecShorthand = struct {
     width: u8,
     elem_name: []const u8,
@@ -2414,6 +2589,47 @@ fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, ep: *
     } else {
         try appendStr(buf, arena, ",\"workgroupSize\":null");
     }
+    if (ep.overrides.items.len > 0) {
+        try appendStr(buf, arena, ",\"overrides\":[");
+        for (ep.overrides.items, 0..) |name, i| {
+            if (i > 0) try appendStr(buf, arena, ",");
+            try appendJsonStr(buf, arena, name);
+        }
+        try appendStr(buf, arena, "]");
+    }
+    try appendStr(buf, arena, "}");
+}
+
+fn writeOverrideJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, o: *const OverrideInfo) Allocator.Error!void {
+    try appendStr(buf, arena, "{\"name\":");
+    try appendJsonStr(buf, arena, o.name);
+    try appendStr(buf, arena, ",\"nameMapped\":");
+    try appendJsonStr(buf, arena, o.name_mapped);
+    try appendStr(buf, arena, ",\"nameOffset\":");
+    try appendInt(buf, arena, o.name_offset);
+    if (o.stable_id.len > 0) {
+        try appendStr(buf, arena, ",\"stableId\":");
+        try appendJsonStr(buf, arena, o.stable_id);
+    }
+    try writeSpanField(buf, arena, "declSpan", o.decl_span);
+    if (o.id) |id| {
+        try appendStr(buf, arena, ",\"id\":");
+        try appendInt(buf, arena, id);
+    } else {
+        try appendStr(buf, arena, ",\"id\":null");
+    }
+    if (o.typ.len > 0) {
+        try appendStr(buf, arena, ",\"type\":");
+        try appendJsonStr(buf, arena, o.typ);
+    }
+    if (o.type_info) |ti| {
+        try appendStr(buf, arena, ",\"typeInfo\":");
+        try writeTypeInfoJson(buf, arena, ti);
+    }
+    if (o.default.len > 0) {
+        try appendStr(buf, arena, ",\"default\":");
+        try appendJsonStr(buf, arena, o.default);
+    }
     try appendStr(buf, arena, "}");
 }
 
@@ -2488,12 +2704,9 @@ test "reflect: isHandleType sampler type" {
     try std.testing.expect(isHandleType(.{ .sampler = &s }));
 }
 
-test "reflect: parseWorkgroupSize" {
-    const testing = std.testing;
-    // Empty args -> default
-    const empty = parseWorkgroupSize(&.{});
-    try testing.expectEqual([3]u32{ 1, 1, 1 }, empty);
-}
+// (parseWorkgroupSize now takes a LayoutComputer + override list — its
+// behaviour is exercised end-to-end via the `tests/reflect_test.zig`
+// override tests rather than a unit fixture here.)
 
 test "reflect: getSymbolName valid ref" {
     const symbols = [_]Ast.Symbol{
