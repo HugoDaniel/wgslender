@@ -2093,3 +2093,133 @@ test "reflect: override JSON output" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"S\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"default\":\"0.5\"") != null);
 }
+
+// =========================================================================
+// Entry-point inputs / outputs (@location, @builtin, @interpolate)
+// =========================================================================
+
+test "reflect: vertex_main inputs by @location" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@vertex
+        \\fn vs_main(@location(0) position: vec3<f32>, @location(1) color: vec4<f32>) -> @builtin(position) vec4<f32> {
+        \\  return vec4<f32>(position, 1.0);
+        \\}
+    );
+    try std.testing.expectEqual(@as(usize, 1), result.entry_points.items.len);
+    const ep = result.entry_points.items[0];
+    try std.testing.expectEqualStrings("vertex", ep.stage);
+
+    try std.testing.expectEqual(@as(usize, 2), ep.inputs.items.len);
+    try std.testing.expectEqualStrings("position", ep.inputs.items[0].name);
+    try std.testing.expectEqual(@as(?u32, 0), ep.inputs.items[0].location);
+    try std.testing.expectEqualStrings("color", ep.inputs.items[1].name);
+    try std.testing.expectEqual(@as(?u32, 1), ep.inputs.items[1].location);
+
+    try std.testing.expectEqual(@as(usize, 1), ep.outputs.items.len);
+    try std.testing.expectEqualStrings("position", ep.outputs.items[0].builtin);
+}
+
+test "reflect: struct-typed return flattens into outputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\struct VsOut {
+        \\  @builtin(position) pos: vec4<f32>,
+        \\  @location(0) color: vec3<f32>,
+        \\  @location(1) @interpolate(flat) idx: u32,
+        \\}
+        \\@vertex fn vs() -> VsOut { var o: VsOut; return o; }
+    );
+    const ep = result.entry_points.items[0];
+    try std.testing.expectEqual(@as(usize, 3), ep.outputs.items.len);
+
+    try std.testing.expectEqualStrings("pos", ep.outputs.items[0].name);
+    try std.testing.expectEqualStrings("position", ep.outputs.items[0].builtin);
+
+    try std.testing.expectEqualStrings("color", ep.outputs.items[1].name);
+    try std.testing.expectEqual(@as(?u32, 0), ep.outputs.items[1].location);
+
+    try std.testing.expectEqualStrings("idx", ep.outputs.items[2].name);
+    try std.testing.expectEqual(@as(?u32, 1), ep.outputs.items[2].location);
+    const ii = ep.outputs.items[2].interpolate orelse return error.TestExpectedInterpolate;
+    try std.testing.expectEqualStrings("flat", ii.type);
+}
+
+test "reflect: struct-typed parameter flattens into inputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\struct FsIn {
+        \\  @location(0) uv: vec2<f32>,
+        \\  @builtin(position) coord: vec4<f32>,
+        \\}
+        \\@fragment fn fs(in: FsIn) -> @location(0) vec4<f32> { return vec4<f32>(0.0); }
+    );
+    const ep = result.entry_points.items[0];
+    try std.testing.expectEqual(@as(usize, 2), ep.inputs.items.len);
+    try std.testing.expectEqualStrings("uv", ep.inputs.items[0].name);
+    try std.testing.expectEqual(@as(?u32, 0), ep.inputs.items[0].location);
+    try std.testing.expectEqualStrings("coord", ep.inputs.items[1].name);
+    try std.testing.expectEqualStrings("position", ep.inputs.items[1].builtin);
+
+    try std.testing.expectEqual(@as(usize, 1), ep.outputs.items.len);
+    try std.testing.expectEqual(@as(?u32, 0), ep.outputs.items[0].location);
+}
+
+test "reflect: @interpolate type+sampling captured" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@vertex
+        \\fn vs(@location(0) @interpolate(linear, centroid) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+        \\  return vec4<f32>(p, 0.0, 1.0);
+        \\}
+    );
+    const ep = result.entry_points.items[0];
+    const ii = ep.inputs.items[0].interpolate orelse return error.TestExpectedInterpolate;
+    try std.testing.expectEqualStrings("linear", ii.type);
+    try std.testing.expectEqualStrings("centroid", ii.sampling);
+}
+
+test "reflect: compute entry has empty inputs/outputs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@compute @workgroup_size(8, 8) fn cs(@builtin(global_invocation_id) gid: vec3<u32>) {}
+    );
+    const ep = result.entry_points.items[0];
+    // @builtin(global_invocation_id) is still classified as an input.
+    try std.testing.expectEqual(@as(usize, 1), ep.inputs.items.len);
+    try std.testing.expectEqualStrings("global_invocation_id", ep.inputs.items[0].builtin);
+    try std.testing.expectEqual(@as(usize, 0), ep.outputs.items.len);
+}
+
+test "reflect: entry I/O JSON output" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@vertex fn vs(@location(0) p: vec3<f32>) -> @builtin(position) vec4<f32> {
+        \\  return vec4<f32>(p, 1.0);
+        \\}
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJson(&buf, alloc);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"inputs\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"outputs\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"location\":0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"builtin\":\"position\"") != null);
+}

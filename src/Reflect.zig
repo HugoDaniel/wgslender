@@ -339,6 +339,40 @@ pub const EntryPointInfo = struct {
     /// override, `workgroup_size[i]` is reported as `0` (the runtime
     /// must supply the value). Empty if no overrides drive the size.
     overrides: std.ArrayListUnmanaged([]const u8) = .empty,
+    /// One entry per `@location(N)`/`@builtin(name)` carrying input from
+    /// the prior pipeline stage. Struct-typed parameters are flattened
+    /// into one entry per attributed member.
+    inputs: std.ArrayListUnmanaged(InputOutputInfo) = .empty,
+    /// One entry per `@location(N)`/`@builtin(name)` produced by this
+    /// stage. Struct-typed return types are flattened.
+    outputs: std.ArrayListUnmanaged(InputOutputInfo) = .empty,
+};
+
+pub const InputOutputInfo = struct {
+    /// The parameter name (or struct member name when flattened from
+    /// a struct-typed parameter / return). Empty for a return value
+    /// where the type was attributed directly with no member context.
+    name: []const u8,
+    /// `@location(N)` value, or `null` when bound by `@builtin` instead.
+    location: ?u32 = null,
+    /// `@builtin(name)` value (e.g. `"position"`, `"vertex_index"`),
+    /// empty when bound by `@location`.
+    builtin: []const u8 = "",
+    /// `@interpolate(type, sampling)`. Always `null` for `@builtin`.
+    interpolate: ?InterpolateInfo = null,
+    /// Type spelled in source.
+    typ: []const u8 = "",
+    /// Structured type tree mirroring `typ`.
+    type_info: ?*const TypeInfo = null,
+};
+
+pub const InterpolateInfo = struct {
+    /// `"perspective"`, `"linear"`, or `"flat"` (default `"perspective"`
+    /// when omitted; explicit value preserved).
+    type: []const u8,
+    /// `"center"`, `"centroid"`, `"sample"`, `"first"`, `"either"`, …
+    /// Empty when not specified.
+    sampling: []const u8 = "",
 };
 
 pub const OverrideInfo = struct {
@@ -648,6 +682,11 @@ fn extractEntryPoint(
 
     if (stage.len == 0) return null;
 
+    var inputs: std.ArrayListUnmanaged(InputOutputInfo) = .empty;
+    var outputs: std.ArrayListUnmanaged(InputOutputInfo) = .empty;
+    try collectEntryInputs(arena, fn_decl, lc, &inputs);
+    try collectEntryOutputs(arena, fn_decl, lc, &outputs);
+
     return .{
         .name = getSymbolName(fn_decl.name, module.symbols.items),
         .name_offset = getSymbolLoc(fn_decl.name, module.symbols.items),
@@ -655,7 +694,105 @@ fn extractEntryPoint(
         .workgroup_size = workgroup_size,
         .has_workgroup_size = has_workgroup_size,
         .overrides = overrides,
+        .inputs = inputs,
+        .outputs = outputs,
     };
+}
+
+fn collectEntryInputs(
+    arena: Allocator,
+    fn_decl: *Ast.FunctionDecl,
+    lc: *LayoutComputer,
+    out: *std.ArrayListUnmanaged(InputOutputInfo),
+) Allocator.Error!void {
+    for (fn_decl.parameters.items) |p| {
+        const param_name = lc.getSymbolName(p.name);
+        try collectIoFromAttributedSlot(arena, p.attributes.items, p.typ, param_name, lc, out);
+    }
+}
+
+fn collectEntryOutputs(
+    arena: Allocator,
+    fn_decl: *Ast.FunctionDecl,
+    lc: *LayoutComputer,
+    out: *std.ArrayListUnmanaged(InputOutputInfo),
+) Allocator.Error!void {
+    const ret = fn_decl.return_type orelse return;
+    try collectIoFromAttributedSlot(arena, fn_decl.return_attr.items, ret, "", lc, out);
+}
+
+/// Shared by parameters and return values. If the slot is a struct
+/// (after alias resolve), flatten its members into one `InputOutputInfo`
+/// each. Otherwise use the attributes attached to the slot itself.
+fn collectIoFromAttributedSlot(
+    arena: Allocator,
+    attrs: []const Ast.Attribute,
+    typ: Ast.Type,
+    slot_name: []const u8,
+    lc: *LayoutComputer,
+    out: *std.ArrayListUnmanaged(InputOutputInfo),
+) Allocator.Error!void {
+    const resolved = lc.resolveAliasType(typ);
+    if (resolved == .ident) {
+        const ident = resolved.ident;
+        if (ident.ref.isValid()) {
+            const idx = ident.ref.index();
+            if (idx < lc.module.symbols.items.len and
+                lc.module.symbols.items[idx].kind == .@"struct")
+            {
+                const sym_idx = lc.resolveAliasRefToStruct(ident.ref) orelse {
+                    try out.append(arena, makeIoEntry(slot_name, attrs, typ, lc));
+                    return;
+                };
+                for (lc.module.declarations.items) |decl| switch (decl) {
+                    .@"struct" => |sd| {
+                        if (sd.name == sym_idx) {
+                            for (sd.members.items) |m| {
+                                const mname = lc.getSymbolName(m.name);
+                                try out.append(arena, makeIoEntry(mname, m.attributes.items, m.typ, lc));
+                            }
+                            return;
+                        }
+                    },
+                    else => {},
+                };
+                return;
+            }
+        }
+    }
+    try out.append(arena, makeIoEntry(slot_name, attrs, typ, lc));
+}
+
+fn makeIoEntry(
+    name: []const u8,
+    attrs: []const Ast.Attribute,
+    typ: Ast.Type,
+    lc: *LayoutComputer,
+) InputOutputInfo {
+    var info = InputOutputInfo{
+        .name = name,
+        .typ = lc.typeToStringMapped(typ, false),
+        .type_info = lc.buildTypeInfo(typ),
+    };
+    for (attrs) |attr| {
+        if (std.mem.eql(u8, attr.name, "location") and attr.args.items.len > 0) {
+            const v = lc.evaluateConstExpr(attr.args.items[0]);
+            if (v >= 0) info.location = @intCast(v);
+        } else if (std.mem.eql(u8, attr.name, "builtin") and attr.args.items.len > 0) {
+            // @builtin(name) — args[0] is an ident-keyword.
+            if (attr.args.items[0] == .ident) {
+                info.builtin = attr.args.items[0].ident.name;
+            }
+        } else if (std.mem.eql(u8, attr.name, "interpolate") and attr.args.items.len > 0) {
+            var ii = InterpolateInfo{ .type = "" };
+            if (attr.args.items[0] == .ident) ii.type = attr.args.items[0].ident.name;
+            if (attr.args.items.len > 1 and attr.args.items[1] == .ident) {
+                ii.sampling = attr.args.items[1].ident.name;
+            }
+            info.interpolate = ii;
+        }
+    }
+    return info;
 }
 
 fn parseIntAttr(expr: Ast.Expr) i32 {
@@ -2596,6 +2733,48 @@ fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, ep: *
             try appendJsonStr(buf, arena, name);
         }
         try appendStr(buf, arena, "]");
+    }
+    try appendStr(buf, arena, ",\"inputs\":[");
+    for (ep.inputs.items, 0..) |*io, i| {
+        if (i > 0) try appendStr(buf, arena, ",");
+        try writeIoJson(buf, arena, io);
+    }
+    try appendStr(buf, arena, "],\"outputs\":[");
+    for (ep.outputs.items, 0..) |*io, i| {
+        if (i > 0) try appendStr(buf, arena, ",");
+        try writeIoJson(buf, arena, io);
+    }
+    try appendStr(buf, arena, "]");
+    try appendStr(buf, arena, "}");
+}
+
+fn writeIoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, io: *const InputOutputInfo) Allocator.Error!void {
+    try appendStr(buf, arena, "{\"name\":");
+    try appendJsonStr(buf, arena, io.name);
+    if (io.location) |l| {
+        try appendStr(buf, arena, ",\"location\":");
+        try appendInt(buf, arena, l);
+    }
+    if (io.builtin.len > 0) {
+        try appendStr(buf, arena, ",\"builtin\":");
+        try appendJsonStr(buf, arena, io.builtin);
+    }
+    if (io.interpolate) |ii| {
+        try appendStr(buf, arena, ",\"interpolate\":{\"type\":");
+        try appendJsonStr(buf, arena, ii.type);
+        if (ii.sampling.len > 0) {
+            try appendStr(buf, arena, ",\"sampling\":");
+            try appendJsonStr(buf, arena, ii.sampling);
+        }
+        try appendStr(buf, arena, "}");
+    }
+    if (io.typ.len > 0) {
+        try appendStr(buf, arena, ",\"type\":");
+        try appendJsonStr(buf, arena, io.typ);
+    }
+    if (io.type_info) |ti| {
+        try appendStr(buf, arena, ",\"typeInfo\":");
+        try writeTypeInfoJson(buf, arena, ti);
     }
     try appendStr(buf, arena, "}");
 }
