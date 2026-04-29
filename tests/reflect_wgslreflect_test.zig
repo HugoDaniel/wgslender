@@ -596,6 +596,22 @@ test "wgsl_reflect: struct_layout B torture (size 208, 8 members)" {
 // test_reflect.js — direct re-port of "alias struct"
 // =========================================================================
 
+test "wgsl_reflect: const2 (array<vec4f, u32(sin(radians(90)) + 3)>)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    // Direct port of wgsl_reflect's `const2` test. With the parser fix,
+    // `u32(sin(radians(90)) + 3)` parses as a single template-arg
+    // expression — its `(args)` postfix suffix used to be dropped. The
+    // existing reflect_test.zig:1513 covers the same compute via
+    // intermediate consts; this one closes the loop on the inline form.
+    const r = try reflectSource(a,
+        \\@group(0) @binding(0) var<uniform> uni: array<vec4f, u32(sin(radians(90)) + 3)>;
+    );
+    try expectArraySize(&r, "uni", 16 * 4);
+}
+
 test "wgsl_reflect: alias struct (array<Ship, a_bicycle.num_wheels>)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -641,8 +657,6 @@ test "wgsl_reflect: alias struct (array<Ship, a_bicycle.num_wheels>)" {
 // PORT-DEFER: "uniform buffer info" — `members[].type.format.name` chain
 //             requires TypeInfo links from FieldInfo (we currently emit a
 //             struct-name reference).
-// PORT-DEFER: "const2" with `radians`/`sin` — runtime const evaluator
-//             doesn't model float builtins; tracked in the Reflect TODO.
 // PORT-DEFER: "entry functions" `getBindGroups()` parity — covered on the
 //             JS side by the new `getBindGroups()` helper in npm/wgslender.
 // PORT-DEFER: "enable", "requires", "f16 matN×M" — passthrough exists but
