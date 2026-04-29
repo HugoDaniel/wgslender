@@ -1642,11 +1642,22 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
 }
 
 fn parsePostfixExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parsePrimaryExpr()) orelse return null;
-    // `parsePrimaryExpr` sets `cst_last_closed_expr`; snapshot it here so
-    // nested expression parses inside postfix bodies (index, args) don't
-    // clobber our "left" wrap target.
-    var left_marker = self.cst_last_closed_expr;
+    const primary = (try self.parsePrimaryExpr()) orelse return null;
+    // `parsePrimaryExpr` sets `cst_last_closed_expr`; pass it as the wrap
+    // target so nested expression parses inside postfix bodies (index,
+    // args) don't clobber our "left" wrap target.
+    return self.applyPostfixSuffixes(primary, self.cst_last_closed_expr);
+}
+
+/// Drain `.dot` / `[expr]` / `(args)` suffixes off `left_in`, wrapping
+/// each into a `MemberExpr` / `IndexExpr` / `CallExpr` node and emitting
+/// the matching CST close. Used by both the regular and template-arg
+/// postfix paths — the suffix bodies parse via full `parseExpression` /
+/// `parseExpressionList` either way (the closing `]` / `)` disambiguates
+/// any inner `>` / `>=`).
+fn applyPostfixSuffixes(self: *Parser, left_in: Ast.Expr, left_marker_in: ?Cst.Marker) !?Ast.Expr {
+    var left = left_in;
+    var left_marker = left_marker_in;
 
     for (0..self.token_tags.len) |_| {
         switch (self.currentTag()) {
