@@ -122,6 +122,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "wgslender", .module = wgslender_mod },
             .{ .name = "Handler", .module = handler_mod },
             .{ .name = "bridge", .module = bridge_mod },
         },

@@ -538,6 +538,7 @@ pub const CommandError = error{
     DocumentNotFound,
     OutOfMemory,
     MinifyFailed,
+    ReflectFailed,
 };
 
 /// Result of running `wgslender.showMinifiedOutput`. Mirrors master-plan
@@ -551,6 +552,17 @@ pub const MinifyCommandResult = struct {
     minified_text: []const u8,
     byte_count: u32,
     gz_count: u32,
+};
+
+/// Result of `wgslender/reflect` (custom LSP request). The shared handler
+/// reflects the analyzed module and serialises the JSON itself so neither
+/// transport (native NativeServer / WASM lsp) needs to know the schema.
+/// All slices are owned by the request arena passed to `runReflect`.
+pub const ReflectCommandResult = struct {
+    uri: []const u8,
+    /// Compact JSON output (use `prettyPrint = true` to format).
+    json: []const u8,
+    version: wgslender.Reflect.JsonVersion,
 };
 
 /// Dispatch a `workspace/executeCommand` request. `args` matches the LSP
@@ -653,6 +665,40 @@ pub fn runShowMinifiedOutput(
         .minified_text = result.code,
         .byte_count = est.total_min,
         .gz_count = est.total_gz,
+    };
+}
+
+/// Reflect the document and serialise the result to JSON at the requested
+/// schema version. Reuses the cached analysis module (so a hot doc skips
+/// re-tokenize + re-parse) and serialises into the caller's arena.
+pub fn runReflect(
+    self: *Handler,
+    arena: std.mem.Allocator,
+    uri: []const u8,
+    version: wgslender.Reflect.JsonVersion,
+    pretty: bool,
+) CommandError!ReflectCommandResult {
+    if (self.documents.getPtr(uri) == null) return error.DocumentNotFound;
+
+    const analysis = self.analyzeDocument(uri) catch return error.ReflectFailed;
+    const module = analysis.module orelse return error.ReflectFailed;
+
+    var result = wgslender.Reflect.reflect(arena, @constCast(module)) catch
+        return error.ReflectFailed;
+    // `reflect()` allocates from `arena`; no internal arena to drain.
+    _ = &result;
+
+    var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+    if (pretty) {
+        result.toJsonPrettyVersion(&json_buf, arena, version) catch return error.OutOfMemory;
+    } else {
+        result.toJsonVersion(&json_buf, arena, version) catch return error.OutOfMemory;
+    }
+
+    return .{
+        .uri = try arena.dupe(u8, uri),
+        .json = json_buf.items,
+        .version = version,
     };
 }
 

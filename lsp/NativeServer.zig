@@ -32,6 +32,7 @@
 
 const std = @import("std");
 const lsp = @import("lsp");
+const wgslender = @import("wgslender");
 const Handler = @import("Handler");
 const bridge = @import("bridge");
 const Debouncer = @import("Debouncer.zig");
@@ -255,6 +256,7 @@ pub fn initialize(
                     "wgslender.toggleMinifyMode",
                     "wgslender.showMinifiedOutput",
                     "wgslender.recomputeMinifyInsights",
+                    "wgslender.reflect",
                 },
             },
         },
@@ -284,7 +286,7 @@ pub fn @"workspace/executeCommand"(
             error.UnknownCommand => return error.MethodNotFound,
             error.InvalidParams => return error.InvalidParams,
             error.DocumentNotFound => return error.InvalidParams,
-            error.MinifyFailed => return error.InternalError,
+            error.MinifyFailed, error.ReflectFailed => return error.InternalError,
             error.OutOfMemory => return error.OutOfMemory,
         };
         var obj: std.json.ObjectMap = .empty;
@@ -294,11 +296,58 @@ pub fn @"workspace/executeCommand"(
         try obj.put(arena, "gz_count", .{ .integer = @as(i64, result.gz_count) });
         return .{ .object = obj };
     }
+    if (std.mem.eql(u8, params.command, "wgslender.reflect")) {
+        const items = params.arguments orelse return error.InvalidParams;
+        if (items.len < 1) return error.InvalidParams;
+        const uri = switch (items[0]) {
+            .string => |s| s,
+            else => return error.InvalidParams,
+        };
+        var version: wgslender.Reflect.JsonVersion = .v2;
+        if (items.len >= 2) {
+            const fmt_str = switch (items[1]) {
+                .string => |s| s,
+                .null => "v2",
+                else => return error.InvalidParams,
+            };
+            if (std.mem.eql(u8, fmt_str, "v1")) {
+                version = .v1;
+            } else if (std.mem.eql(u8, fmt_str, "v2")) {
+                version = .v2;
+            } else return error.InvalidParams;
+        }
+        var pretty = false;
+        if (items.len >= 3) switch (items[2]) {
+            .bool => |b| pretty = b,
+            .null => {},
+            else => return error.InvalidParams,
+        };
+        const result = self.handler.runReflect(arena, uri, version, pretty) catch |err| switch (err) {
+            error.UnknownCommand => return error.MethodNotFound,
+            error.InvalidParams => return error.InvalidParams,
+            error.DocumentNotFound => return error.InvalidParams,
+            error.MinifyFailed, error.ReflectFailed => return error.InternalError,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        var obj: std.json.ObjectMap = .empty;
+        try obj.put(arena, "uri", .{ .string = result.uri });
+        try obj.put(arena, "version", .{ .integer = switch (result.version) {
+            .v1 => 1,
+            .v2 => 2,
+        } });
+        // Parse the reflect-emitted JSON back into LSPAny so the JSON-RPC
+        // response carries it as a structured object rather than a string.
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, result.json, .{
+            .max_value_len = null,
+        });
+        try obj.put(arena, "json", parsed);
+        return .{ .object = obj };
+    }
     self.handler.executeCommand(params.command, params.arguments) catch |err| switch (err) {
         error.UnknownCommand => return error.MethodNotFound,
         error.InvalidParams => return error.InvalidParams,
         error.DocumentNotFound => return error.InvalidParams,
-        error.MinifyFailed => return error.InternalError,
+        error.MinifyFailed, error.ReflectFailed => return error.InternalError,
         error.OutOfMemory => return error.OutOfMemory,
     };
     // Re-publish diagnostics so any minify-mode change takes effect
