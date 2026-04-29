@@ -207,6 +207,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/depth_limits_test.zig", target, optimize, &.{w});
     // Reflect tests
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/reflect_wgslreflect_test.zig", target, optimize, &.{w});
     // Edits tests — library-level rename / text edit primitives
     _ = addTestStep(b, test_step, "tests/edits_test.zig", target, optimize, &.{w});
     // StableId tests — reparse-stable symbol identifiers
