@@ -414,8 +414,12 @@ fn extractBinding(
         info.access_mode = var_decl.access_mode.string();
     }
 
+    // Resolve alias chains so aliased arrays/structs get the same
+    // treatment as their underlying types.
+    const resolved_typ: ?Ast.Type = if (var_decl.typ) |t| lc.resolveAliasType(t) else null;
+
     // Handle array types.
-    if (var_decl.typ) |t| {
+    if (resolved_typ) |t| {
         switch (t) {
             .array => |array_type| {
                 if (var_decl.address_space == .uniform or var_decl.address_space == .storage) {
@@ -429,7 +433,7 @@ fn extractBinding(
 
     // Add layout for non-array struct types (uniform/storage only).
     if (var_decl.address_space == .uniform or var_decl.address_space == .storage) {
-        if (var_decl.typ) |t| {
+        if (resolved_typ) |t| {
             switch (t) {
                 .ident => |ident_type| {
                     if (ident_type.ref.isValid()) {
@@ -635,9 +639,10 @@ const LayoutComputer = struct {
     // Type layout computation
     // -----------------------------------------------------------------
 
-    /// Iteratively computes type layout, unwrapping atomic wrappers.
+    /// Iteratively computes type layout, unwrapping atomic wrappers and
+    /// following alias chains.
     fn computeTypeLayout(self: *LayoutComputer, t: Ast.Type) TypeLayout {
-        var current = t;
+        var current = self.resolveAliasType(t);
         for (0..32) |_| {
             switch (current) {
                 .ident => |ident| {
@@ -657,10 +662,75 @@ const LayoutComputer = struct {
                 .vec => |vec| return self.computeVecTypeLayout(vec),
                 .mat => |mat| return self.computeMatTypeLayout(mat),
                 .array => |arr| return self.computeArrayTypeLayout(arr),
-                .atomic => |at| current = at.elem_type,
+                .atomic => |at| {
+                    current = self.resolveAliasType(at.elem_type);
+                    continue;
+                },
                 .sampler, .texture, .ptr => return .{},
             }
         } else unreachable;
+    }
+
+    /// Follow alias chains. If `t` is an `ident` whose symbol is an
+    /// `alias`, walk the chain to the underlying non-alias type. Capped
+    /// at 32 hops; returns the input on cycle / unresolved ref.
+    fn resolveAliasType(self: *const LayoutComputer, t: Ast.Type) Ast.Type {
+        var current = t;
+        var hops: u32 = 0;
+        while (hops < 32) : (hops += 1) {
+            const ident = switch (current) {
+                .ident => |i| i,
+                else => return current,
+            };
+            if (!ident.ref.isValid()) return current;
+            const idx = ident.ref.index();
+            if (idx >= self.module.symbols.items.len) return current;
+            if (self.module.symbols.items[idx].kind != .alias) return current;
+            const target = self.findAliasType(ident.ref) orelse return current;
+            current = target;
+        }
+        return current;
+    }
+
+    /// Find the target type of an alias declaration by symbol index.
+    fn findAliasType(self: *const LayoutComputer, ref: Ast.SymbolIndex) ?Ast.Type {
+        for (self.module.declarations.items) |decl| {
+            switch (decl) {
+                .alias => |a| if (a.name == ref) return a.typ,
+                else => {},
+            }
+        }
+        return null;
+    }
+
+    /// Walk alias chain for a SymbolIndex. If `ref` points to an alias
+    /// whose final target is a struct, returns that struct's
+    /// `SymbolIndex`. Returns `ref` unchanged if it already points at a
+    /// struct. Returns null on non-struct targets, cycles, or unresolved
+    /// refs.
+    fn resolveAliasRefToStruct(self: *const LayoutComputer, ref: Ast.SymbolIndex) ?Ast.SymbolIndex {
+        var current = ref;
+        var hops: u32 = 0;
+        while (hops < 32) : (hops += 1) {
+            const idx = current.index();
+            if (idx >= self.module.symbols.items.len) return null;
+            const sym = &self.module.symbols.items[idx];
+            switch (sym.kind) {
+                .@"struct" => return current,
+                .alias => {
+                    const target = self.findAliasType(current) orelse return null;
+                    switch (target) {
+                        .ident => |ident| {
+                            if (!ident.ref.isValid()) return null;
+                            current = ident.ref;
+                        },
+                        else => return null,
+                    }
+                },
+                else => return null,
+            }
+        }
+        return null;
     }
 
     fn computeVecTypeLayout(self: *LayoutComputer, vec: *Ast.VecType) TypeLayout {
@@ -737,7 +807,11 @@ const LayoutComputer = struct {
 
     fn getStructLayout(self: *LayoutComputer, ref: Ast.SymbolIndex) ?StructLayout {
         if (!ref.isValid()) return null;
-        const idx = ref.index();
+
+        // Follow alias chains: a binding type or struct member may name
+        // an alias whose final target is a struct.
+        const struct_ref = self.resolveAliasRefToStruct(ref) orelse return null;
+        const idx = struct_ref.index();
         if (idx >= self.module.symbols.items.len) return null;
 
         const sym = &self.module.symbols.items[idx];
@@ -748,7 +822,7 @@ const LayoutComputer = struct {
         for (self.module.declarations.items) |decl| {
             switch (decl) {
                 .@"struct" => |struct_decl| {
-                    if (struct_decl.name == ref) {
+                    if (struct_decl.name == struct_ref) {
                         return self.computeStructLayout(struct_decl) catch return null;
                     }
                 },
@@ -796,8 +870,10 @@ const LayoutComputer = struct {
                 .alignment = member_layout.alignment,
             };
 
-            // Nested struct layout.
-            switch (member_type) {
+            // Nested struct layout. Resolve aliases so members typed
+            // through alias chains still get their layout attached.
+            const resolved_member_type = self.resolveAliasType(member_type);
+            switch (resolved_member_type) {
                 .ident => |ident_type| {
                     if (ident_type.ref.isValid()) {
                         if (self.getStructLayout(ident_type.ref)) |nested| {
@@ -808,7 +884,8 @@ const LayoutComputer = struct {
                 .array => |array_type| {
                     // Array of structs — attach struct layout.
                     if (array_type.elem_type) |et| {
-                        switch (et) {
+                        const resolved_et = self.resolveAliasType(et);
+                        switch (resolved_et) {
                             .ident => |ident_type| {
                                 if (ident_type.ref.isValid()) {
                                     if (self.getStructLayout(ident_type.ref)) |nested| {
@@ -871,8 +948,11 @@ const LayoutComputer = struct {
             .element_type_mapped = self.typeToStringMapped(et, true),
         };
 
-        // Struct element layout.
-        switch (et) {
+        // Struct element layout. Resolve alias chains so an
+        // `alias LightArray = array<Light, 3>` element is recognised as
+        // a struct (or as a nested array).
+        const resolved_et = self.resolveAliasType(et);
+        switch (resolved_et) {
             .ident => |ident_type| {
                 if (ident_type.ref.isValid()) {
                     if (self.getStructLayout(ident_type.ref)) |sl| {

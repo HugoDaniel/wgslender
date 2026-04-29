@@ -1410,3 +1410,121 @@ test "reflect: name_offset points at field names" {
         try std.testing.expectEqualStrings(field.name, source[off .. off + field.name.len]);
     }
 }
+
+// --- Alias Chain Resolution (parity with wgsl_reflect) ---
+
+test "reflect: alias chain resolves to underlying struct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        \\struct Foo {
+        \\  a: u32,
+        \\  b: f32,
+        \\}
+        \\alias foo1 = Foo;
+        \\alias foo2 = foo1;
+        \\alias foo3 = foo2;
+        \\@group(0) @binding(1) var<storage> materials: foo3;
+    ;
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    const b = findBinding(result.bindings.items, "materials") orelse return error.TestExpectedBinding;
+    const layout = b.layout orelse return error.TestExpectedLayout;
+    try std.testing.expectEqual(@as(u32, 8), layout.size);
+    try std.testing.expectEqual(@as(usize, 2), layout.fields.items.len);
+    try std.testing.expectEqualStrings("a", layout.fields.items[0].name);
+    try std.testing.expectEqual(@as(u32, 0), layout.fields.items[0].offset);
+    try std.testing.expectEqualStrings("b", layout.fields.items[1].name);
+    try std.testing.expectEqual(@as(u32, 4), layout.fields.items[1].offset);
+}
+
+test "reflect: alias chain to array of struct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        \\struct Foo {
+        \\  a: u32,
+        \\  b: f32,
+        \\}
+        \\alias foo1 = Foo;
+        \\alias foo2 = foo1;
+        \\alias foo3 = foo2;
+        \\@group(0) @binding(1) var<storage> materials: array<foo3, 10>;
+    ;
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    const b = findBinding(result.bindings.items, "materials") orelse return error.TestExpectedBinding;
+    const arr = b.array orelse return error.TestExpectedArray;
+    try std.testing.expectEqual(@as(?i32, 10), arr.element_count);
+    try std.testing.expectEqual(@as(u32, 8), arr.element_stride);
+    try std.testing.expectEqual(@as(?i32, 80), arr.total_size);
+    const elem_layout = arr.element_layout orelse return error.TestExpectedElementLayout;
+    try std.testing.expectEqual(@as(usize, 2), elem_layout.fields.items.len);
+}
+
+test "reflect: alias-of-array binding resolves array info" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        \\struct Light {
+        \\  power: f32,
+        \\  position: vec2<i32>,
+        \\}
+        \\alias LightArray = array<Light, 3>;
+        \\@group(0) @binding(0) var<uniform> lights: LightArray;
+    ;
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    const b = findBinding(result.bindings.items, "lights") orelse return error.TestExpectedBinding;
+    const arr = b.array orelse return error.TestExpectedArray;
+    try std.testing.expectEqual(@as(?i32, 3), arr.element_count);
+}
+
+test "reflect: alias-of-struct member layout in nested struct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        \\struct Light {
+        \\  power: f32,
+        \\  position: vec2<i32>,
+        \\}
+        \\alias LightAlias = Light;
+        \\alias LightArray = array<Light, 3>;
+        \\struct Uniforms {
+        \\  size: vec2<f32>,
+        \\  light: LightAlias,
+        \\  lights: LightArray,
+        \\}
+        \\@group(0) @binding(0) var<uniform> uni: Uniforms;
+    ;
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    const b = findBinding(result.bindings.items, "uni") orelse return error.TestExpectedBinding;
+    const layout = b.layout orelse return error.TestExpectedLayout;
+    // Matches wgsl_reflect: size 72.
+    try std.testing.expectEqual(@as(u32, 72), layout.size);
+
+    // light (LightAlias → Light) should have its nested layout attached.
+    const light_field = layout.fields.items[1];
+    try std.testing.expectEqualStrings("light", light_field.name);
+    try std.testing.expect(light_field.layout != null);
+
+    // lights (LightArray → array<Light, 3>) is an array; the binding-level
+    // layout doesn't carry the array element layout (that goes on `array`),
+    // but the field's own size/alignment should be computed.
+    const lights_field = layout.fields.items[2];
+    try std.testing.expectEqualStrings("lights", lights_field.name);
+    try std.testing.expect(lights_field.size > 0);
+}
