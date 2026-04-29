@@ -25,12 +25,23 @@ const Printer = @import("Printer.zig");
 // Public types
 // =========================================================================
 
+/// JSON output schema version.
+///
+/// `v1` is the pre-versioned shape: `{bindings, structs, entryPoints,
+/// overrides, functions, errors?}`. `v2` adds a top-level `"version": 2`
+/// marker and four subset views — `uniforms[]`, `storage[]`, `textures[]`,
+/// `samplers[]` — filtered from `bindings[]` by address space + type, plus
+/// a top-level `aliases[]` collected from WGSL `alias T = U;` declarations.
+/// The legacy `bindings[]` array is still emitted in v2 as the union.
+pub const JsonVersion = enum { v1, v2 };
+
 pub const ReflectResult = struct {
     bindings: std.ArrayListUnmanaged(BindingInfo) = .empty,
     structs: std.StringHashMapUnmanaged(StructLayout) = .{},
     entry_points: std.ArrayListUnmanaged(EntryPointInfo) = .empty,
     overrides: std.ArrayListUnmanaged(OverrideInfo) = .empty,
     functions: std.ArrayListUnmanaged(FunctionInfo) = .empty,
+    aliases: std.ArrayListUnmanaged(AliasInfo) = .empty,
     errors: std.ArrayListUnmanaged([]const u8) = .empty,
     _arena: ?std.heap.ArenaAllocator = null,
 
@@ -48,18 +59,42 @@ pub const ReflectResult = struct {
             self.entry_points.deinit(arena);
             self.overrides.deinit(arena);
             self.functions.deinit(arena);
+            self.aliases.deinit(arena);
             self.errors.deinit(arena);
         }
     }
 
-    /// Serialize the reflect result to JSON.
+    /// Serialize the reflect result to JSON. Defaults to v2.
     pub fn toJson(self: *const ReflectResult, buf: *std.ArrayListUnmanaged(u8), arena: Allocator) Allocator.Error!void {
-        try appendStr(buf, arena, "{\"bindings\":[");
+        try self.toJsonVersion(buf, arena, .v2);
+    }
+
+    /// Serialize the reflect result to JSON at the requested schema version.
+    pub fn toJsonVersion(
+        self: *const ReflectResult,
+        buf: *std.ArrayListUnmanaged(u8),
+        arena: Allocator,
+        version: JsonVersion,
+    ) Allocator.Error!void {
+        try appendStr(buf, arena, "{");
+        if (version == .v2) {
+            try appendStr(buf, arena, "\"version\":2,");
+        }
+        try appendStr(buf, arena, "\"bindings\":[");
         for (self.bindings.items, 0..) |*b, i| {
             if (i > 0) try appendStr(buf, arena, ",");
             try writeBindingJson(buf, arena, b);
         }
-        try appendStr(buf, arena, "],\"structs\":{");
+        try appendStr(buf, arena, "]");
+
+        if (version == .v2) {
+            try writeBindingSubset(buf, arena, ",\"uniforms\":", self.bindings.items, isUniformBinding);
+            try writeBindingSubset(buf, arena, ",\"storage\":", self.bindings.items, isStorageBinding);
+            try writeBindingSubset(buf, arena, ",\"textures\":", self.bindings.items, isTextureBinding);
+            try writeBindingSubset(buf, arena, ",\"samplers\":", self.bindings.items, isSamplerBinding);
+        }
+
+        try appendStr(buf, arena, ",\"structs\":{");
         var struct_iter = self.structs.iterator();
         var first_struct = true;
         while (struct_iter.next()) |entry| {
@@ -85,6 +120,14 @@ pub const ReflectResult = struct {
             try writeFunctionJson(buf, arena, f);
         }
         try appendStr(buf, arena, "]");
+        if (version == .v2) {
+            try appendStr(buf, arena, ",\"aliases\":[");
+            for (self.aliases.items, 0..) |*a, i| {
+                if (i > 0) try appendStr(buf, arena, ",");
+                try writeAliasJson(buf, arena, a);
+            }
+            try appendStr(buf, arena, "]");
+        }
         if (self.errors.items.len > 0) {
             try appendStr(buf, arena, ",\"errors\":[");
             for (self.errors.items, 0..) |err, i| {
@@ -97,12 +140,75 @@ pub const ReflectResult = struct {
     }
 
     /// Serialize the reflect result to pretty-printed JSON (2-space indent).
+    /// Defaults to v2.
     pub fn toJsonPretty(self: *const ReflectResult, buf: *std.ArrayListUnmanaged(u8), arena: Allocator) Allocator.Error!void {
+        try self.toJsonPrettyVersion(buf, arena, .v2);
+    }
+
+    /// Serialize the reflect result to pretty-printed JSON at the requested
+    /// schema version.
+    pub fn toJsonPrettyVersion(
+        self: *const ReflectResult,
+        buf: *std.ArrayListUnmanaged(u8),
+        arena: Allocator,
+        version: JsonVersion,
+    ) Allocator.Error!void {
         var compact: std.ArrayListUnmanaged(u8) = .empty;
-        try self.toJson(&compact, arena);
+        try self.toJsonVersion(&compact, arena, version);
         try prettyPrintJson(buf, arena, compact.items);
     }
 };
+
+// =========================================================================
+// Subset-view filters (used by JsonVersion.v2)
+// =========================================================================
+//
+// A binding's slot in the v2 subset views is decided by the *binding's
+// declared address space + handle type*, not by the resolved struct
+// shape. `var<uniform>` → uniforms; `var<storage[, …]>` → storage;
+// handle-typed (texture / sampler) bindings → textures or samplers.
+// Storage textures are bound with a default address space but use a
+// `texture_storage_*` type — they appear in `textures[]`, mirroring what
+// the WebGPU bind-group layout sees on the JS side. (wgsl_reflect groups
+// storage textures under `storage[]`; we keep them under `textures[]` so
+// `samplers[]`/`textures[]` together cover every handle binding.)
+
+fn isUniformBinding(b: *const BindingInfo) bool {
+    return std.mem.eql(u8, b.address_space, "uniform");
+}
+
+fn isStorageBinding(b: *const BindingInfo) bool {
+    return std.mem.eql(u8, b.address_space, "storage");
+}
+
+fn isTextureBinding(b: *const BindingInfo) bool {
+    if (b.type_info) |ti| return ti.* == .texture;
+    return false;
+}
+
+fn isSamplerBinding(b: *const BindingInfo) bool {
+    if (b.type_info) |ti| return ti.* == .sampler;
+    return false;
+}
+
+fn writeBindingSubset(
+    buf: *std.ArrayListUnmanaged(u8),
+    arena: Allocator,
+    key: []const u8,
+    bindings: []const BindingInfo,
+    predicate: *const fn (*const BindingInfo) bool,
+) Allocator.Error!void {
+    try appendStr(buf, arena, key);
+    try appendStr(buf, arena, "[");
+    var first = true;
+    for (bindings) |*b| {
+        if (!predicate(b)) continue;
+        if (!first) try appendStr(buf, arena, ",");
+        first = false;
+        try writeBindingJson(buf, arena, b);
+    }
+    try appendStr(buf, arena, "]");
+}
 
 fn prettyPrintJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, json: []const u8) Allocator.Error!void {
     var depth: u32 = 0;
@@ -416,6 +522,28 @@ pub const FunctionInfo = struct {
     in_use: bool = false,
 };
 
+/// Metadata for a top-level WGSL `alias T = U;` declaration. The
+/// reflected `typ` / `type_info` resolve any nested aliases to their
+/// final form just like a binding's type would. Aliases participate in
+/// JSON v2 only.
+pub const AliasInfo = struct {
+    name: []const u8,
+    name_mapped: []const u8,
+    /// Byte offset of the declared name in the original source.
+    name_offset: u32 = 0,
+    /// Reparse-stable identifier for this alias symbol; empty if absent.
+    stable_id: []const u8 = "",
+    /// Byte range of the full declaration (`alias` keyword through `;`).
+    decl_span: SpanInfo = .{},
+    /// Right-hand-side type spelled in source (e.g. `"vec3<f32>"`).
+    typ: []const u8 = "",
+    /// Right-hand-side type with renamer-applied user type names; equal
+    /// to `typ` when no renamer is in play.
+    type_mapped: []const u8 = "",
+    /// Structured tree mirroring `typ`. `null` only on parse-failure paths.
+    type_info: ?*const TypeInfo = null,
+};
+
 pub const OverrideInfo = struct {
     name: []const u8,
     name_mapped: []const u8,
@@ -491,7 +619,35 @@ pub fn reflectWithRenamer(
         }
     }
 
-    // Second pass: collect overrides. Entry-point extraction below uses
+    // Second pass (a): collect type aliases. Aliases don't enter struct
+    // layouts or binding extraction — `typeToStringMapped` already follows
+    // `Symbol.kind == .alias` chains for nested types — so this pass is
+    // pure metadata for v2 consumers (and wgsl_reflect parity).
+    for (module.declarations.items) |decl| switch (decl) {
+        .alias => |a| {
+            const name = lc.getSymbolName(a.name);
+            if (name.len == 0) continue;
+            var info = AliasInfo{
+                .name = name,
+                .name_mapped = lc.getMappedName(a.name),
+                .name_offset = getSymbolLoc(a.name, module.symbols.items),
+                .decl_span = spanInfoFromAst(a.decl_span),
+                .typ = lc.typeToStringMapped(a.typ, false),
+                .type_mapped = lc.typeToStringMapped(a.typ, true),
+                .type_info = lc.buildTypeInfo(a.typ),
+            };
+            if (StableId.stableIdFor(arena, module, a.name)) |maybe_id| {
+                if (maybe_id) |id| info.stable_id = id.bytes;
+            } else |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.IdTooLong => {},
+            }
+            try result.aliases.append(arena, info);
+        },
+        else => {},
+    };
+
+    // Second pass (b): collect overrides. Entry-point extraction below uses
     // `Symbol.kind == .override` to detect override-driven workgroup_size,
     // so the actual references happen via SymbolIndex; this pass just
     // surfaces the metadata to consumers.
@@ -3194,6 +3350,29 @@ fn writeOverrideJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, o: *con
     if (o.default.len > 0) {
         try appendStr(buf, arena, ",\"default\":");
         try appendJsonStr(buf, arena, o.default);
+    }
+    try appendStr(buf, arena, "}");
+}
+
+fn writeAliasJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, a: *const AliasInfo) Allocator.Error!void {
+    try appendStr(buf, arena, "{\"name\":");
+    try appendJsonStr(buf, arena, a.name);
+    try appendStr(buf, arena, ",\"nameMapped\":");
+    try appendJsonStr(buf, arena, a.name_mapped);
+    try appendStr(buf, arena, ",\"nameOffset\":");
+    try appendInt(buf, arena, a.name_offset);
+    if (a.stable_id.len > 0) {
+        try appendStr(buf, arena, ",\"stableId\":");
+        try appendJsonStr(buf, arena, a.stable_id);
+    }
+    try writeSpanField(buf, arena, "declSpan", a.decl_span);
+    try appendStr(buf, arena, ",\"type\":");
+    try appendJsonStr(buf, arena, a.typ);
+    try appendStr(buf, arena, ",\"typeMapped\":");
+    try appendJsonStr(buf, arena, a.type_mapped);
+    if (a.type_info) |ti| {
+        try appendStr(buf, arena, ",\"typeInfo\":");
+        try writeTypeInfoJson(buf, arena, ti);
     }
     try appendStr(buf, arena, "}");
 }

@@ -2372,3 +2372,127 @@ test "reflect: functions JSON output" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"inUse\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"directResources\":") != null);
 }
+
+// =========================================================================
+// JSON schema versioning + v2 subset views
+// =========================================================================
+
+test "reflect: v2 JSON has version marker" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> u: vec3f;
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v2);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"version\":2") != null);
+}
+
+test "reflect: v1 JSON omits version + subset views" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> u: vec3f;
+        \\@group(0) @binding(1) var samp: sampler;
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v1);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"version\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"uniforms\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"samplers\":") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"aliases\":") == null);
+    // bindings[] is still present in v1 — that's the only place a sampler appears.
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"bindings\":[") != null);
+}
+
+test "reflect: v2 subset views filter bindings by kind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\struct U { v: vec4f }
+        \\struct S { data: array<f32> }
+        \\@group(0) @binding(0) var<uniform> u: U;
+        \\@group(0) @binding(1) var<storage, read_write> s: S;
+        \\@group(0) @binding(2) var tex: texture_2d<f32>;
+        \\@group(0) @binding(3) var samp: sampler;
+        \\@group(0) @binding(4) var depth: texture_depth_2d;
+        \\@group(0) @binding(5) var compare: sampler_comparison;
+        \\@compute @workgroup_size(1) fn cs() {
+        \\  let _ = u.v + textureSampleLevel(tex, samp, vec2f(0.0), 0.0);
+        \\  s.data[0] = textureSampleCompareLevel(depth, compare, vec2f(0.0), 0.0);
+        \\}
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v2);
+
+    // Each bucket exists.
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"uniforms\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"storage\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"textures\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"samplers\":[") != null);
+
+    // u went into uniforms, s into storage. Sanity-check the "uniforms" bucket
+    // contains "u" and not the storage var, by slicing between markers.
+    const u_key = std.mem.indexOf(u8, buf.items, "\"uniforms\":[").?;
+    const u_end = u_key + (std.mem.indexOf(u8, buf.items[u_key..], "],").?);
+    const u_slice = buf.items[u_key..u_end];
+    try std.testing.expect(std.mem.indexOf(u8, u_slice, "\"name\":\"u\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, u_slice, "\"name\":\"s\"") == null);
+}
+
+test "reflect: v2 aliases captured" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\alias Color = vec3f;
+        \\alias Material = u32;
+        \\@group(0) @binding(0) var<uniform> color: Color;
+    );
+    try std.testing.expectEqual(@as(usize, 2), result.aliases.items.len);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v2);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"aliases\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"Color\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"Material\"") != null);
+}
+
+test "reflect: v1 JSON does not surface aliases" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\alias Color = vec3f;
+    );
+    // Collected internally even when v1 hides them — keeps the in-memory
+    // shape stable across format choices.
+    try std.testing.expectEqual(@as(usize, 1), result.aliases.items.len);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v1);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"aliases\":") == null);
+}
+
+test "reflect: storage texture lands in textures[] subset" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var img: texture_storage_2d<rgba8unorm, write>;
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v2);
+    const tex_key = std.mem.indexOf(u8, buf.items, "\"textures\":[").?;
+    const tex_end = tex_key + (std.mem.indexOf(u8, buf.items[tex_key..], "],").?);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items[tex_key..tex_end], "\"name\":\"img\"") != null);
+}

@@ -17,6 +17,7 @@ const CliArgs = struct {
     strict: bool = false,
     line_offset: i32 = 0,
     compact: bool = false,
+    reflect_format: wgslender.Reflect.JsonVersion = .v2,
     show_help: bool = false,
     lint_options: LintOptions = .{},
 
@@ -52,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
             args.line_offset,
             args.input_path,
         ),
-        .reflect => try runReflect(arena, io, source, args.compact),
+        .reflect => try runReflect(arena, io, source, args.compact, args.reflect_format),
         .compile => try runCompile(arena, io, source, args.output_path, args.options),
         .lint => try runLint(
             arena,
@@ -181,6 +182,17 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             }
         } else if (std.mem.eql(u8, arg, "--compact")) {
             args.compact = true;
+        } else if (std.mem.eql(u8, arg, "--reflect-format")) {
+            if (args_iter.next()) |fmt| {
+                if (std.mem.eql(u8, fmt, "v1")) {
+                    args.reflect_format = .v1;
+                } else if (std.mem.eql(u8, fmt, "v2")) {
+                    args.reflect_format = .v2;
+                } else {
+                    File.stderr().writeStreamingAll(io, "error: --reflect-format must be v1 or v2\n") catch {};
+                    return null;
+                }
+            }
         } else if (std.mem.eql(u8, arg, "--version")) {
             File.stdout().writeStreamingAll(io, "wgslender v" ++ wgslender.version ++ "\n") catch {};
             return null;
@@ -491,7 +503,13 @@ fn emitValidateText(
     }
 }
 
-fn runReflect(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, compact: bool) !void {
+fn runReflect(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    source: [:0]const u8,
+    compact: bool,
+    version: wgslender.Reflect.JsonVersion,
+) !void {
     const File = std.Io.File;
 
     // Tokenize + parse
@@ -513,9 +531,9 @@ fn runReflect(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, compac
     // Serialize to JSON
     var json_buf: std.ArrayListUnmanaged(u8) = .empty;
     if (compact) {
-        try result.toJson(&json_buf, arena);
+        try result.toJsonVersion(&json_buf, arena, version);
     } else {
-        try result.toJsonPretty(&json_buf, arena);
+        try result.toJsonPrettyVersion(&json_buf, arena, version);
     }
 
     try File.stdout().writeStreamingAll(io, json_buf.items);
@@ -768,6 +786,7 @@ const usage_text =
     \\  --source-map-inline              Embed source map as inline data URI
     \\  --source-map-sources             Include original source in source map
     \\  --compact                        Compact JSON output (reflect)
+    \\  --reflect-format <v1|v2>          Reflect JSON schema (default: v2)
     \\  --format <text|json|stylish>      Output format for validate/lint (default: text)
     \\  --strict                         Treat warnings as errors (validate)
     \\  --line-offset <n>                Add n to reported line numbers (validate/lint)
