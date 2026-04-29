@@ -1830,3 +1830,162 @@ test "reflect: TypeInfo JSON includes typeInfo key" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"vec\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"width\":3") != null);
 }
+
+// =========================================================================
+// @align / @size / @stride member-attribute layout overrides
+// =========================================================================
+
+test "reflect: @size grows member size" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // From wgsl_reflect's struct_layout.js: `@size(16) x: f32` makes the
+    // f32 occupy 16 bytes. struct A has fields u/v/w/x with sizes 4/4/8/16.
+    const result = try reflectSource(alloc,
+        \\struct A {
+        \\  u: f32,
+        \\  v: f32,
+        \\  w: vec2<f32>,
+        \\  @size(16) x: f32,
+        \\}
+        \\@group(0) @binding(0) var<uniform> a: A;
+    );
+    const b = findBinding(result.bindings.items, "a") orelse return error.TestExpectedBinding;
+    const layout = b.layout orelse return error.TestExpectedLayout;
+    try std.testing.expectEqual(@as(u32, 32), layout.size);
+    try std.testing.expectEqual(@as(u32, 8), layout.alignment);
+
+    const x = layout.fields.items[3];
+    try std.testing.expectEqualStrings("x", x.name);
+    try std.testing.expectEqual(@as(u32, 16), x.offset);
+    try std.testing.expectEqual(@as(u32, 16), x.size);
+    try std.testing.expectEqual(@as(u32, 4), x.alignment);
+}
+
+test "reflect: @align(16) bumps member alignment" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\struct S {
+        \\  a: f32,
+        \\  @align(16) b: f32,
+        \\}
+        \\@group(0) @binding(0) var<uniform> s: S;
+    );
+    const b = findBinding(result.bindings.items, "s") orelse return error.TestExpectedBinding;
+    const layout = b.layout orelse return error.TestExpectedLayout;
+    // a at 0, b forced to align 16 → offset 16. Struct size rounds to 32.
+    try std.testing.expectEqual(@as(u32, 16), layout.alignment);
+    try std.testing.expectEqual(@as(u32, 32), layout.size);
+    try std.testing.expectEqual(@as(u32, 0), layout.fields.items[0].offset);
+    try std.testing.expectEqual(@as(u32, 16), layout.fields.items[1].offset);
+    try std.testing.expectEqual(@as(u32, 16), layout.fields.items[1].alignment);
+}
+
+test "reflect: struct_layout.js torture (struct B align=16 size=208)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\struct A {
+        \\  u: f32,
+        \\  v: f32,
+        \\  w: vec2<f32>,
+        \\  @size(16) x: f32,
+        \\}
+        \\struct B {
+        \\  a: vec2<f32>,
+        \\  b: vec3<f32>,
+        \\  c: f32,
+        \\  d: f32,
+        \\  @align(16) e: A,
+        \\  f: vec3<f32>,
+        \\  g: array<A, 3>,
+        \\  h: i32,
+        \\}
+        \\@group(0) @binding(0) var<uniform> uniform_buffer: B;
+    );
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+    const bind = findBinding(result.bindings.items, "uniform_buffer") orelse return error.TestExpectedBinding;
+    const layout = bind.layout orelse return error.TestExpectedLayout;
+    try std.testing.expectEqual(@as(u32, 16), layout.alignment);
+    try std.testing.expectEqual(@as(u32, 208), layout.size);
+
+    // Per offset table from wgsl_reflect's struct_layout.js:
+    // a:0,8 / b:16,12 / c:28,4 / d:32,4 / e:48,32 / f:80,12 / g:96,96 / h:192,4
+    const expected = [_]struct { name: []const u8, offset: u32, size: u32 }{
+        .{ .name = "a", .offset = 0, .size = 8 },
+        .{ .name = "b", .offset = 16, .size = 12 },
+        .{ .name = "c", .offset = 28, .size = 4 },
+        .{ .name = "d", .offset = 32, .size = 4 },
+        .{ .name = "e", .offset = 48, .size = 32 },
+        .{ .name = "f", .offset = 80, .size = 12 },
+        .{ .name = "g", .offset = 96, .size = 96 },
+        .{ .name = "h", .offset = 192, .size = 4 },
+    };
+    try std.testing.expectEqual(expected.len, layout.fields.items.len);
+    for (expected, 0..) |e, i| {
+        const f = layout.fields.items[i];
+        try std.testing.expectEqualStrings(e.name, f.name);
+        try std.testing.expectEqual(e.offset, f.offset);
+        try std.testing.expectEqual(e.size, f.size);
+    }
+}
+
+test "reflect: @align less than natural is ignored" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // vec3f naturally aligns to 16. @align(4) is invalid (validator
+    // emits diagnostic) — reflection silently keeps the natural value.
+    const result = try reflectSource(alloc,
+        \\struct S { @align(4) a: vec3<f32>, }
+        \\@group(0) @binding(0) var<uniform> s: S;
+    );
+    const b = findBinding(result.bindings.items, "s") orelse return error.TestExpectedBinding;
+    const layout = b.layout orelse return error.TestExpectedLayout;
+    try std.testing.expectEqual(@as(u32, 16), layout.alignment);
+    try std.testing.expectEqual(@as(u32, 16), layout.fields.items[0].alignment);
+}
+
+test "reflect: @stride overrides array stride" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // f32 array has natural stride 4; @stride(8) makes each element take
+    // 8 bytes. count=4 → total 32. Member alignment unchanged (4).
+    const result = try reflectSource(alloc,
+        \\struct S { @stride(8) data: array<f32, 4>, }
+        \\@group(0) @binding(0) var<storage, read> s: S;
+    );
+    const b = findBinding(result.bindings.items, "s") orelse return error.TestExpectedBinding;
+    const layout = b.layout orelse return error.TestExpectedLayout;
+    try std.testing.expectEqual(@as(u32, 32), layout.fields.items[0].size);
+
+    const ti = layout.fields.items[0].type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .array);
+    try std.testing.expectEqual(@as(u32, 8), ti.array.stride);
+    try std.testing.expectEqual(@as(?u32, 32), ti.array.size);
+}
+
+test "reflect: @size override propagates to TypeInfo" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\struct S { @size(16) x: f32, }
+        \\@group(0) @binding(0) var<uniform> s: S;
+    );
+    const b = findBinding(result.bindings.items, "s") orelse return error.TestExpectedBinding;
+    const layout = b.layout orelse return error.TestExpectedLayout;
+    const ti = layout.fields.items[0].type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expect(ti.* == .scalar);
+    try std.testing.expectEqual(@as(u32, 16), ti.scalar.size);
+}

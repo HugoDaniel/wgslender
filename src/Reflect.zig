@@ -1165,6 +1165,104 @@ const LayoutComputer = struct {
         return ptr;
     }
 
+    // -----------------------------------------------------------------
+    // Member layout-attribute scanning
+    // -----------------------------------------------------------------
+
+    const LayoutAttrOverrides = struct {
+        @"align": ?u32 = null,
+        size: ?u32 = null,
+        stride: ?u32 = null,
+    };
+
+    /// Scan a struct member's attributes for `@align(N)`, `@size(N)`, and
+    /// `@stride(N)`. Each attribute's argument must be a const-expression
+    /// reducing to a positive integer; otherwise that attribute is
+    /// ignored at the reflection layer (Validator emits diagnostics).
+    fn collectMemberLayoutAttrs(self: *LayoutComputer, member: Ast.StructMember) LayoutAttrOverrides {
+        var out = LayoutAttrOverrides{};
+        for (member.attributes.items) |attr| {
+            if (attr.args.items.len == 0) continue;
+            const v = self.evaluateConstExpr(attr.args.items[0]);
+            if (v <= 0) continue;
+            const u: u32 = @intCast(v);
+            if (std.mem.eql(u8, attr.name, "align")) out.@"align" = u;
+            if (std.mem.eql(u8, attr.name, "size")) out.size = u;
+            if (std.mem.eql(u8, attr.name, "stride")) out.stride = u;
+        }
+        return out;
+    }
+
+    /// Build the structured `TypeInfo` for a struct member, propagating
+    /// `@align`/`@size`/`@stride` overrides into the resulting nodes so
+    /// downstream consumers see the actual bytes-laid-out values rather
+    /// than the natural ones.
+    fn buildFieldTypeInfo(self: *LayoutComputer, t: Ast.Type, overrides: LayoutAttrOverrides) ?*const TypeInfo {
+        const ti = self.buildTypeInfo(t) orelse return null;
+        if (overrides.@"align" == null and overrides.size == null and overrides.stride == null) return ti;
+        // The TypeInfo tree is otherwise shared / immutable; clone the
+        // top-level node before patching so overrides on this member
+        // don't bleed into other fields with the same source type.
+        const patched = self.arena.create(TypeInfo) catch return ti;
+        patched.* = ti.*;
+        switch (patched.*) {
+            .scalar => |*s| {
+                if (overrides.@"align") |a| if (isPow2(a) and a >= s.alignment) {
+                    s.alignment = a;
+                };
+                if (overrides.size) |sz| if (sz >= s.size) {
+                    s.size = sz;
+                };
+            },
+            .vec => |*v| {
+                if (overrides.@"align") |a| if (isPow2(a) and a >= v.alignment) {
+                    v.alignment = a;
+                };
+                if (overrides.size) |sz| if (sz >= v.size) {
+                    v.size = sz;
+                };
+            },
+            .mat => |*m| {
+                if (overrides.@"align") |a| if (isPow2(a) and a >= m.alignment) {
+                    m.alignment = a;
+                };
+                if (overrides.size) |sz| if (sz >= m.size) {
+                    m.size = sz;
+                };
+            },
+            .array => |*a| {
+                if (overrides.@"align") |al| if (isPow2(al) and al >= a.alignment) {
+                    a.alignment = al;
+                };
+                if (overrides.stride) |st| if (st >= 1) {
+                    a.stride = st;
+                    if (a.count) |c| a.size = c * st;
+                };
+                if (overrides.size) |sz| if (a.size == null or sz >= a.size.?) {
+                    a.size = sz;
+                };
+            },
+            .@"struct" => |*s| {
+                if (overrides.@"align") |a| if (isPow2(a) and a >= s.alignment) {
+                    s.alignment = a;
+                };
+                if (overrides.size) |sz| if (sz >= s.size) {
+                    s.size = sz;
+                };
+            },
+            .atomic => |*a| {
+                if (overrides.@"align") |al| if (isPow2(al) and al >= a.alignment) {
+                    a.alignment = al;
+                };
+                if (overrides.size) |sz| if (sz >= a.size) {
+                    a.size = sz;
+                };
+            },
+            .sampler, .texture, .ptr => {},
+        }
+        return patched;
+    }
+
     /// Evaluate a const-expression to an `i32` (positive — array sizes,
     /// workgroup_size args, attribute values are all required to be a
     /// non-negative integer).  Returns `-1` if the expression doesn't
@@ -1512,6 +1610,38 @@ const LayoutComputer = struct {
             var member_layout = self.computeTypeLayout(member_type);
             if (member_layout.alignment == 0) member_layout.alignment = 1;
 
+            // Honor @align(N), @size(N), @stride(N) member attributes.
+            // Only applied if validity-checkable here (positive, ≥ natural,
+            // power-of-2 for @align). Validator emits diagnostics on
+            // violations; reflection silently keeps the natural value so
+            // a partially-invalid input still produces sensible output.
+            const overrides = self.collectMemberLayoutAttrs(member);
+            if (overrides.@"align") |a| {
+                if (isPow2(a) and a >= member_layout.alignment) {
+                    member_layout.alignment = a;
+                }
+            }
+            if (overrides.size) |s| {
+                if (s >= member_layout.size) member_layout.size = s;
+            }
+            if (overrides.stride) |st| {
+                // @stride only changes layout for array members; override
+                // the element stride and recompute the array's total size.
+                const resolved = self.resolveAliasType(member_type);
+                if (resolved == .array) {
+                    const arr = resolved.array;
+                    if (arr.size) |size_expr| {
+                        const count = self.evaluateConstExpr(size_expr);
+                        if (count >= 0 and st >= 1) {
+                            member_layout.stride = st;
+                            member_layout.size = @as(u32, @intCast(count)) * st;
+                        }
+                    } else if (st >= 1) {
+                        member_layout.stride = st;
+                    }
+                }
+            }
+
             offset = roundUp(offset, member_layout.alignment);
 
             var field = FieldInfo{
@@ -1523,7 +1653,7 @@ const LayoutComputer = struct {
                 .offset = offset,
                 .size = member_layout.size,
                 .alignment = member_layout.alignment,
-                .type_info = self.buildTypeInfo(member_type),
+                .type_info = self.buildFieldTypeInfo(member_type, overrides),
             };
 
             // Nested struct layout. Resolve aliases so members typed
@@ -1777,6 +1907,11 @@ fn computeMatLayout(cols: u8, rows: u8, elem_size: u32) TypeLayout {
 pub fn roundUp(x: u32, alignment: u32) u32 {
     if (alignment == 0) return x;
     return ((x + alignment - 1) / alignment) * alignment;
+}
+
+/// True iff `x` is a power of two (1, 2, 4, …). Zero is not a power of two.
+fn isPow2(x: u32) bool {
+    return x > 0 and (x & (x - 1)) == 0;
 }
 
 const VecShorthand = struct {
