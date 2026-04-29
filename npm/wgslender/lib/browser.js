@@ -446,10 +446,24 @@
     return _decoder.decode(new Uint8Array(_wasm.memory.buffer, ptr, len));
   }
 
+  function getBindGroups(bindingsOrResult) {
+    var bindings = Array.isArray(bindingsOrResult)
+      ? bindingsOrResult
+      : (bindingsOrResult && bindingsOrResult.bindings) || [];
+    var out = {};
+    for (var i = 0; i < bindings.length; i++) {
+      var b = bindings[i];
+      if (!out[b.group]) out[b.group] = {};
+      out[b.group][b.binding] = b;
+    }
+    return out;
+  }
+
   return {
     initialize: initialize,
     minify: minify,
     reflect: reflect,
+    getBindGroups: getBindGroups,
     validate: validate,
     findReferences: findReferences,
     rename: rename,

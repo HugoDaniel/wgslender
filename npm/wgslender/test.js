@@ -42,7 +42,7 @@ async function main() {
 
   const wgslender = require('./lib/main.js');
   const {
-    initialize, minify, reflect, validate, isInitialized,
+    initialize, minify, reflect, validate, isInitialized, getBindGroups,
     findReferences, rename, renameApply,
     stableIdAtOffset, locateStableId, renameByStableId,
     locateDeclaration, locateType,
@@ -286,6 +286,47 @@ fn computeValue(index: u32) -> f32 { return f32(index) * uniforms.scale; }
   {
     const r = reflect('fn foo() -> f32 { return 1.0; }');
     assert(r.bindings.length === 0, 'No bindings in source: empty bindings array');
+  }
+
+  // =============================================
+  // Reflect: v2 schema fields + subset views
+  // =============================================
+  {
+    const input = `@group(0) @binding(0) var<uniform> u: vec3f;
+@group(0) @binding(1) var samp: sampler;
+@group(0) @binding(2) var tex: texture_2d<f32>;
+alias Color = vec3f;`;
+    const r = reflect(input);
+    assert(r.version === 2, 'reflect emits version: 2');
+    assert(Array.isArray(r.uniforms) && r.uniforms.length === 1 && r.uniforms[0].name === 'u',
+      'reflect: uniforms[] subset view');
+    assert(Array.isArray(r.samplers) && r.samplers.length === 1 && r.samplers[0].name === 'samp',
+      'reflect: samplers[] subset view');
+    assert(Array.isArray(r.textures) && r.textures.length === 1 && r.textures[0].name === 'tex',
+      'reflect: textures[] subset view');
+    assert(Array.isArray(r.aliases) && r.aliases.length === 1 && r.aliases[0].name === 'Color',
+      'reflect: aliases[] populated');
+  }
+
+  // =============================================
+  // getBindGroups helper
+  // =============================================
+  {
+    const input = `@group(0) @binding(0) var<uniform> u: vec3f;
+@group(0) @binding(2) var samp: sampler;
+@group(1) @binding(0) var tex: texture_2d<f32>;`;
+    const r = reflect(input);
+    const grid = getBindGroups(r);
+    assert(grid[0] && grid[0][0] && grid[0][0].name === 'u',
+      'getBindGroups: group 0 binding 0 = u');
+    assert(grid[0][2] && grid[0][2].name === 'samp',
+      'getBindGroups: holes in binding sequence preserved (no entry at 0/1)');
+    assert(grid[0][1] === undefined, 'getBindGroups: missing slot is undefined');
+    assert(grid[1][0].name === 'tex', 'getBindGroups: separate group buckets');
+
+    // Accept BindingInfo[] directly too.
+    const grid2 = getBindGroups(r.bindings);
+    assert(grid2[0][0].name === 'u', 'getBindGroups: accepts bindings[] directly');
   }
 
   console.log('');

@@ -416,10 +416,23 @@ function getVersion() {
 
 export const version = { toString: getVersion, valueOf: getVersion };
 
+export function getBindGroups(bindingsOrResult) {
+  const bindings = Array.isArray(bindingsOrResult)
+    ? bindingsOrResult
+    : (bindingsOrResult && bindingsOrResult.bindings) || [];
+  const out = {};
+  for (const b of bindings) {
+    if (!out[b.group]) out[b.group] = {};
+    out[b.group][b.binding] = b;
+  }
+  return out;
+}
+
 export default {
   initialize,
   minify,
   reflect,
+  getBindGroups,
   validate,
   findReferences,
   rename,

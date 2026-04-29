@@ -91,17 +91,37 @@ export interface MinifyResult {
 }
 
 /**
- * Result of shader reflection.
+ * Result of shader reflection. Shape is JSON v2 (see Zig
+ * `Reflect.JsonVersion`) — `version` is the schema marker and the
+ * `uniforms` / `storage` / `textures` / `samplers` arrays are subset
+ * views over `bindings[]`. `aliases[]` lists top-level WGSL
+ * `alias T = U;` declarations.
  */
 export interface ReflectResult {
-  /** Binding declarations (@group/@binding variables) */
+  /** JSON schema version. Present in v2 output; absent in v1. */
+  version?: 2;
+  /** All bindings (the union of all subset views below). */
   bindings: BindingInfo[];
-  /** Struct type layouts */
+  /** Bindings whose `addressSpace === "uniform"`. (v2 only) */
+  uniforms?: BindingInfo[];
+  /** Bindings whose `addressSpace === "storage"`. (v2 only) */
+  storage?: BindingInfo[];
+  /** Bindings whose `typeInfo.kind === "texture"`. (v2 only) */
+  textures?: BindingInfo[];
+  /** Bindings whose `typeInfo.kind === "sampler"`. (v2 only) */
+  samplers?: BindingInfo[];
+  /** Struct type layouts keyed by name. */
   structs: Record<string, StructLayout>;
-  /** Entry point functions */
+  /** Entry point functions. */
   entryPoints: EntryPointInfo[];
-  /** Parse errors, if any */
-  errors: string[];
+  /** Pipeline-overridable constants (`@id` + override declarations). */
+  overrides: OverrideInfo[];
+  /** Per-function reflection records (entry points included). */
+  functions: FunctionInfo[];
+  /** Top-level `alias T = U;` declarations. (v2 only) */
+  aliases?: AliasInfo[];
+  /** Parse errors, if any. Omitted in successful reflection. */
+  errors?: string[];
 }
 
 /** A half-open byte range `[start, end)` into the original source. */
@@ -118,8 +138,12 @@ export interface BindingInfo {
   group: number;
   /** Binding index from @binding(n) */
   binding: number;
-  /** Variable name */
+  /** Variable name (post-rename if a renamer was provided). */
   name: string;
+  /** Original name, even when `name` was renamed by minification. */
+  nameMapped: string;
+  /** Byte offset of the declared name in the original source. */
+  nameOffset: number;
   /**
    * Reparse-stable identifier for this binding. Present when reflection
    * produced an ID; survives reparses that don't move the declaration.
@@ -136,14 +160,25 @@ export interface BindingInfo {
    * explicit type.
    */
   typeSpan?: Span;
-  /** Address space: "uniform", "storage", "handle", or "" */
+  /** Address space: "uniform", "storage", "handle", or "". */
   addressSpace: string;
-  /** Access mode for storage: "read", "write", "read_write", or undefined */
+  /** Access mode for storage: "read", "write", "read_write", or undefined. */
   accessMode?: string;
-  /** Type as a string (e.g., "MyStruct", "texture_2d<f32>") */
+  /** Type as a string (e.g., "MyStruct", "texture_2d<f32>"). */
   type: string;
-  /** Memory layout for struct types, null for textures/samplers */
-  layout: StructLayout | null;
+  /** Renamer-mapped form of `type` when minified; equal to `type` otherwise. */
+  typeMapped: string;
+  /** Memory layout for struct-typed bindings; absent for handle types. */
+  layout?: StructLayout;
+  /** Array element layout when the binding's type is `array<...>`. */
+  array?: ArrayInfo;
+  /** Structured type tree mirroring `type`. */
+  typeInfo?: TypeInfo;
+  /**
+   * Names of related bindings — for textures, the samplers paired with
+   * them in `textureSample*` calls (and vice versa). Absent when empty.
+   */
+  relations?: string[];
 }
 
 /**
@@ -164,12 +199,18 @@ export interface StructLayout {
 export interface FieldInfo {
   /** Field name */
   name: string;
+  /** Pre-rename source name (equal to `name` when not minified). */
+  nameMapped: string;
+  /** Byte offset of the declared field name in the original source. */
+  nameOffset: number;
   /** Reparse-stable identifier for this field. */
   stableId?: string;
   /** Byte range of just the member's type annotation. */
   typeSpan?: Span;
   /** Field type as a string */
   type: string;
+  /** Renamer-mapped form of `type`. */
+  typeMapped: string;
   /** Byte offset from start of struct */
   offset: number;
   /** Size in bytes */
@@ -178,6 +219,30 @@ export interface FieldInfo {
   alignment: number;
   /** Nested layout for struct or array-of-struct fields */
   layout?: StructLayout;
+  /** Structured type tree mirroring `type`. */
+  typeInfo?: TypeInfo;
+}
+
+/**
+ * Element-layout description for an `array<T, N>` binding.
+ */
+export interface ArrayInfo {
+  /** Array nesting depth (`array<array<T,4>,3>` = 2). */
+  depth: number;
+  /** Compile-time element count. `null` for runtime-sized arrays. */
+  elementCount: number | null;
+  /** Per-element stride (host-shareable layout). */
+  elementStride: number;
+  /** Total array size in bytes. `null` for runtime-sized arrays. */
+  totalSize: number | null;
+  /** Element type spelled in source. */
+  elementType: string;
+  /** Renamer-mapped form of `elementType`. */
+  elementTypeMapped: string;
+  /** Element struct layout when the element is itself a struct. */
+  elementLayout?: StructLayout;
+  /** Inner array info for nested arrays. */
+  nested?: ArrayInfo;
 }
 
 /**
@@ -186,6 +251,8 @@ export interface FieldInfo {
 export interface EntryPointInfo {
   /** Function name */
   name: string;
+  /** Byte offset of the declared function name. */
+  nameOffset: number;
   /** Reparse-stable identifier for this function symbol. */
   stableId?: string;
   /**
@@ -195,8 +262,129 @@ export interface EntryPointInfo {
   declSpan?: Span;
   /** Shader stage: "vertex", "fragment", or "compute" */
   stage: string;
-  /** Workgroup size [x, y, z] for compute, null otherwise */
+  /**
+   * Workgroup size [x, y, z] for compute, null otherwise. An axis is
+   * `0` when the value is supplied by an `@override` constant — see
+   * `overrides[]` for the override names.
+   */
   workgroupSize: [number, number, number] | null;
+  /**
+   * `@override` constants referenced from `@workgroup_size(...)`.
+   * Empty unless the entry point's workgroup size is override-driven.
+   */
+  overrides?: string[];
+  /** Per-attribute pipeline inputs (locations / builtins). */
+  inputs: InputOutputInfo[];
+  /** Per-attribute pipeline outputs. */
+  outputs: InputOutputInfo[];
+  /** Bindings reachable from this entry point's transitive call graph. */
+  resources: string[];
+}
+
+/**
+ * One pipeline input / output attribute (`@location(N)` or `@builtin`).
+ */
+export interface InputOutputInfo {
+  /** Parameter / struct-member name (empty when attributed at return). */
+  name: string;
+  /** `@location(N)` value, or null when bound by `@builtin`. */
+  location: number | null;
+  /** `@builtin(name)` value (e.g. `"position"`); empty otherwise. */
+  builtin: string;
+  /** `@interpolate(type, sampling)` settings, or null. */
+  interpolate: InterpolateInfo | null;
+  /** Type spelled in source. */
+  type: string;
+  /** Structured type tree mirroring `type`. */
+  typeInfo?: TypeInfo;
+}
+
+export interface InterpolateInfo {
+  /** "perspective" | "linear" | "flat". */
+  type: string;
+  /** "center" | "centroid" | "sample" | "first" | "either" | "". */
+  sampling: string;
+}
+
+/**
+ * `@override` (pipeline-overridable constant) declaration.
+ */
+export interface OverrideInfo {
+  name: string;
+  nameMapped: string;
+  nameOffset: number;
+  stableId?: string;
+  declSpan?: Span;
+  /** `@id(N)` value, or null for pipeline-name-keyed overrides. */
+  id: number | null;
+  /** Source-spelled type; empty when the type was inferred. */
+  type?: string;
+  typeInfo?: TypeInfo;
+  /** Default-value expression text from source; empty when omitted. */
+  default?: string;
+}
+
+/**
+ * Per-function reflection record. Includes entry points.
+ */
+export interface FunctionInfo {
+  name: string;
+  /** Renamer-mapped form of `name`; absent when no renamer was applied. */
+  nameMapped?: string;
+  nameOffset: number;
+  stableId?: string;
+  declSpan?: Span;
+  /** Direct callees (user functions only). */
+  calls: string[];
+  /** Module-scope `var`s referenced directly from this body. */
+  directResources: string[];
+  /** `@override` constants referenced directly. */
+  directOverrides: string[];
+  /** Entry-point or transitively reachable from one. */
+  inUse: boolean;
+}
+
+/**
+ * Top-level `alias T = U;` declaration.
+ */
+export interface AliasInfo {
+  name: string;
+  nameMapped: string;
+  nameOffset: number;
+  stableId?: string;
+  declSpan?: Span;
+  /** Right-hand-side type spelled in source. */
+  type: string;
+  typeMapped: string;
+  typeInfo?: TypeInfo;
+}
+
+/**
+ * Structured WGSL type description. Mirrors the textual form so
+ * consumers can walk a binding's type tree without reparsing.
+ */
+export type TypeInfo =
+  | { kind: "scalar"; name: string; size: number; alignment: number }
+  | { kind: "vec"; width: number; format: TypeInfo; size: number; alignment: number }
+  | { kind: "mat"; cols: number; rows: number; format: TypeInfo; size: number; alignment: number; stride: number }
+  | { kind: "array"; format: TypeInfo; count: number | null; size: number | null; stride: number; alignment: number }
+  | { kind: "struct"; name: string; size: number; alignment: number }
+  | { kind: "atomic"; format: TypeInfo; size: number; alignment: number }
+  | { kind: "texture"; texture: TextureInfo }
+  | { kind: "sampler"; comparison: boolean }
+  | { kind: "ptr"; addressSpace: string; format: TypeInfo; access: string };
+
+export interface TextureInfo {
+  /** "1d" | "2d" | "2d_array" | "3d" | "cube" | "cube_array" | "multisampled_2d" | … */
+  dim: string;
+  /** "sampled" | "depth" | "external" | "storage" | "multisampled" */
+  kind: string;
+  /** Texel format for storage textures (e.g. "rgba8unorm"); empty otherwise. */
+  format?: string;
+  /** Access mode for storage textures: "read" | "write" | "read_write". */
+  access?: string;
+  /** Sample-type leaf for sampled / multisampled textures (e.g. "f32"). */
+  sampleType?: string;
 }
 
 /**
@@ -290,6 +478,17 @@ export function minify(source: string, options?: MinifyOptions): MinifyResult;
  * @returns Reflection result with bindings, structs, entryPoints, and errors
  */
 export function reflect(source: string): ReflectResult;
+
+/**
+ * Pivot `bindings[]` into a `{[group]: {[binding]: BindingInfo}}` grid
+ * keyed by integer group / binding indices. Holes are left undefined.
+ *
+ * Pure helper — no WASM dependency. Accepts either `BindingInfo[]`
+ * directly or a full `ReflectResult`.
+ */
+export function getBindGroups(
+  bindingsOrResult: ReflectResult | BindingInfo[],
+): Record<number, Record<number, BindingInfo>>;
 
 /**
  * Validate WGSL source code for errors and warnings.

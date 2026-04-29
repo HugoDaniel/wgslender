@@ -276,4 +276,30 @@ function getVersion() {
 
 export const version = { toString: getVersion, valueOf: getVersion };
 
-export default { initialize, minify, reflect, validate, findReferences, rename, renameApply, isInitialized, version };
+/**
+ * Pivot a `ReflectResult.bindings[]` array into a `[group][binding]`
+ * grid keyed by integer `@group(g)` / `@binding(b)`. Holes (gaps in
+ * the binding number sequence) are left undefined; consumers that
+ * treat the result like a dense WebGPU bind-group layout should
+ * iterate with `Object.entries` rather than `for (let i ...)`.
+ *
+ * Pure helper — no WASM dependency. Accepts either `BindingInfo[]`
+ * directly or a full `ReflectResult` (in which case `bindings[]` is
+ * the source).
+ *
+ * @param {Object|Array} bindingsOrResult `ReflectResult` or `bindings[]`
+ * @returns {Record<number, Record<number, Object>>}
+ */
+export function getBindGroups(bindingsOrResult) {
+  const bindings = Array.isArray(bindingsOrResult)
+    ? bindingsOrResult
+    : (bindingsOrResult && bindingsOrResult.bindings) || [];
+  const out = {};
+  for (const b of bindings) {
+    if (!out[b.group]) out[b.group] = {};
+    out[b.group][b.binding] = b;
+  }
+  return out;
+}
+
+export default { initialize, minify, reflect, validate, findReferences, rename, renameApply, isInitialized, version, getBindGroups };

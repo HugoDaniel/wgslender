@@ -601,10 +601,23 @@ function getVersion() {
   return _decoder.decode(new Uint8Array(_wasm.memory.buffer, ptr, len));
 }
 
+function getBindGroups(bindingsOrResult) {
+  const bindings = Array.isArray(bindingsOrResult)
+    ? bindingsOrResult
+    : (bindingsOrResult && bindingsOrResult.bindings) || [];
+  const out = {};
+  for (const b of bindings) {
+    if (!out[b.group]) out[b.group] = {};
+    out[b.group][b.binding] = b;
+  }
+  return out;
+}
+
 module.exports = {
   initialize,
   minify,
   reflect,
+  getBindGroups,
   validate,
   lint,
   lintAndFix,
