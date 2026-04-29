@@ -35,6 +35,7 @@ const Parser = @import("../Parser.zig");
 const AstVisit = @import("../AstVisit.zig");
 const Incremental = @import("../Incremental.zig");
 const Errors = @import("Errors.zig");
+const ScopeMap = @import("ScopeMap.zig");
 
 /// For a `compound_stmt` or `decl_stmt` anchor, return the `compound_stmt`
 /// CST node we will revisit.
@@ -160,8 +161,8 @@ pub fn tryAddSubSpliceInPlace(
         .module = prev.module,
         .cst = new_tree,
     };
-    try Incremental.buildScopeForCstNodeMap(prev_arena, &tmp_result);
-    const anchor_scope = Incremental.scopeAtCstNode(&tmp_result, new_subtree_node);
+    try ScopeMap.buildScopeForCstNodeMap(prev_arena, &tmp_result);
+    const anchor_scope = ScopeMap.scopeAtCstNode(&tmp_result, new_subtree_node);
 
     // 7. Add-walk. Skipped only for attr-arg slots whose enclosing
     //    attribute's args are enum-keyword (per the step-2 comment). For
@@ -350,7 +351,7 @@ pub fn tryCompoundSpliceInPlace(
         .module = prev.module,
         .cst = new_tree,
     };
-    try Incremental.buildScopeForCstNodeMap(prev_arena, &tmp_result);
+    try ScopeMap.buildScopeForCstNodeMap(prev_arena, &tmp_result);
 
     // 9. Add-walk the updated compound. scopes_in_order must match what
     //    the walker will encounter: the compound's own scope first, then
@@ -552,7 +553,7 @@ pub fn tryDeclStmtSpliceInPlace(
         .module = prev.module,
         .cst = new_tree,
     };
-    try Incremental.buildScopeForCstNodeMap(prev_arena, &tmp_result);
+    try ScopeMap.buildScopeForCstNodeMap(prev_arena, &tmp_result);
 
     var add_scopes: std.ArrayListUnmanaged(*Ast.Scope) = .empty;
     defer add_scopes.deinit(prev_arena);
