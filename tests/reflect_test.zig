@@ -1489,6 +1489,104 @@ test "reflect: alias-of-array binding resolves array info" {
     try std.testing.expectEqual(@as(?i32, 3), arr.element_count);
 }
 
+// --- Const-Expression Evaluator (parity with wgsl_reflect) ---
+
+test "reflect: const arithmetic in array size" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        \\const NUM_COLORS = 10 + 2;
+        \\@group(0) @binding(0) var<uniform> uni: array<vec4f, NUM_COLORS>;
+    ;
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    const b = findBinding(result.bindings.items, "uni") orelse return error.TestExpectedBinding;
+    const arr = b.array orelse return error.TestExpectedArray;
+    try std.testing.expectEqual(@as(?i32, 12), arr.element_count);
+    try std.testing.expectEqual(@as(u32, 16), arr.element_stride);
+    try std.testing.expectEqual(@as(?i32, 16 * 12), arr.total_size);
+}
+
+test "reflect: const float math feeds u32 cast in array size" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // wgsl_reflect's `const2` test: NUM_COLORS = u32(sin(radians(90)) + 3) = u32(4.0) = 4.
+    const source: [:0]const u8 =
+        \\const FOO = radians(90);
+        \\const BAR = sin(FOO);
+        \\const NUM_COLORS = u32(BAR + 3);
+        \\@group(0) @binding(0) var<uniform> uni: array<vec4f, NUM_COLORS>;
+    ;
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    const b = findBinding(result.bindings.items, "uni") orelse return error.TestExpectedBinding;
+    const arr = b.array orelse return error.TestExpectedArray;
+    try std.testing.expectEqual(@as(?i32, 4), arr.element_count);
+    try std.testing.expectEqual(@as(?i32, 16 * 4), arr.total_size);
+}
+
+test "reflect: const member access on struct constructor" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Mirrors wgsl_reflect's `alias struct` shape but uses an intermediate
+    // const for the `.num_wheels` access; the wgslender parser does not
+    // currently accept member-access expressions directly inside an
+    // `array<T, ...>` template position (tracked separately).
+    const source: [:0]const u8 =
+        \\alias foo = u32;
+        \\alias bar = foo;
+        \\struct Vehicle {
+        \\  num_wheels: bar,
+        \\  mass_kg: f32,
+        \\}
+        \\alias Car = Vehicle;
+        \\const num_cars = 2 * 2;
+        \\struct Ship {
+        \\  cars: array<Car, num_cars>,
+        \\}
+        \\const a_bicycle = Car(2, 10.5);
+        \\const bike_wheels = a_bicycle.num_wheels;
+        \\struct Ocean {
+        \\  things: array<Ship, bike_wheels>,
+        \\}
+        \\@group(0) @binding(0) var<uniform> ocean: Ocean;
+    ;
+    const result = try reflectSource(alloc, source);
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+
+    // Vehicle = {u32, f32} = 8 bytes; Ship.cars = array<Car, 4> = 32;
+    // Ocean.things = array<Ship, bike_wheels=2> = 64.
+    const b = findBinding(result.bindings.items, "ocean") orelse return error.TestExpectedBinding;
+    const layout = b.layout orelse return error.TestExpectedLayout;
+    try std.testing.expectEqual(@as(u32, 64), layout.size);
+}
+
+test "reflect: const chain unlocks runtime-sized recovery" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Without const evaluation, this binding's array would be reported with
+    // element_count == null (treated as runtime-sized). With evaluation,
+    // count == 4.
+    const source: [:0]const u8 =
+        \\const N = 2 * 2;
+        \\@group(0) @binding(0) var<uniform> u: array<f32, N>;
+    ;
+    const result = try reflectSource(alloc, source);
+    const b = findBinding(result.bindings.items, "u") orelse return error.TestExpectedBinding;
+    const arr = b.array orelse return error.TestExpectedArray;
+    try std.testing.expectEqual(@as(?i32, 4), arr.element_count);
+}
+
 test "reflect: alias-of-struct member layout in nested struct" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
