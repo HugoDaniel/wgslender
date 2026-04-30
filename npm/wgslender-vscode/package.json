@@ -1,0 +1,184 @@
+{
+  "name": "wgslender-vscode",
+  "displayName": "wgslender — WGSL language support",
+  "description": "WGSL (WebGPU Shading Language) language server, minifier, linter, and binary-shader compiler powered by wgslender.",
+  "version": "0.1.0",
+  "publisher": "hugodaniel",
+  "license": "CC0-1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HugoDaniel/wgslender"
+  },
+  "homepage": "https://github.com/HugoDaniel/wgslender",
+  "categories": ["Programming Languages", "Linters", "Formatters"],
+  "keywords": ["wgsl", "webgpu", "shader", "minifier", "lsp"],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "main": "./dist/extension.js",
+  "browser": "./dist/web-extension.js",
+  "activationEvents": [
+    "onLanguage:wgsl"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "wgsl",
+        "aliases": ["WGSL", "WebGPU Shading Language"],
+        "extensions": [".wgsl"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "wgsl",
+        "scopeName": "source.wgsl",
+        "path": "./syntaxes/wgsl.tmLanguage.json"
+      }
+    ],
+    "commands": [
+      { "command": "wgslender.minifyPreview", "title": "wgslender: Minify Preview", "category": "wgslender" },
+      { "command": "wgslender.minifySaveAs", "title": "wgslender: Save Minified As…", "category": "wgslender" },
+      { "command": "wgslender.compile", "title": "wgslender: Compile to Binary Shader", "category": "wgslender" },
+      { "command": "wgslender.reflect", "title": "wgslender: Show Reflection JSON", "category": "wgslender" },
+      { "command": "wgslender.toggleMinifyMode", "title": "wgslender: Toggle Minify Insights Mode", "category": "wgslender" },
+      { "command": "wgslender.recomputeMinifyInsights", "title": "wgslender: Recompute Minify Insights", "category": "wgslender" },
+      { "command": "wgslender.showReflectionPanel", "title": "wgslender: Focus Reflection Panel", "category": "wgslender" },
+      { "command": "wgslender.refreshReflection", "title": "wgslender: Refresh Reflection", "category": "wgslender", "icon": "$(refresh)" }
+    ],
+    "menus": {
+      "commandPalette": [
+        { "command": "wgslender.minifyPreview", "when": "editorLangId == wgsl" },
+        { "command": "wgslender.minifySaveAs", "when": "editorLangId == wgsl" },
+        { "command": "wgslender.compile", "when": "editorLangId == wgsl" },
+        { "command": "wgslender.reflect", "when": "editorLangId == wgsl" },
+        { "command": "wgslender.toggleMinifyMode", "when": "editorLangId == wgsl" },
+        { "command": "wgslender.recomputeMinifyInsights", "when": "editorLangId == wgsl" }
+      ],
+      "view/title": [
+        { "command": "wgslender.refreshReflection", "when": "view == wgslenderReflection", "group": "navigation" }
+      ],
+      "editor/context": [
+        { "command": "wgslender.minifyPreview", "when": "editorLangId == wgsl", "group": "wgslender@1" },
+        { "command": "wgslender.compile", "when": "editorLangId == wgsl", "group": "wgslender@2" }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "wgslender",
+          "title": "wgslender",
+          "icon": "$(code)"
+        }
+      ]
+    },
+    "views": {
+      "wgslender": [
+        { "id": "wgslenderReflection", "name": "Reflection", "contextualTitle": "wgslender Reflection" }
+      ]
+    },
+    "configuration": {
+      "title": "wgslender",
+      "properties": {
+        "wgslender.lint.extends": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["@wgslender/recommended"],
+          "description": "Lint config packs to extend (e.g. @wgslender/recommended, @wgslender/style, @wgslender/strict)."
+        },
+        "wgslender.lint.rules": {
+          "type": "object",
+          "default": {},
+          "description": "Per-rule severity overrides. Keys are rule ids; values are 'off' | 'warn' | 'error'.",
+          "additionalProperties": { "type": "string", "enum": ["off", "warn", "error"] }
+        },
+        "wgslender.lint.fixOnSave": {
+          "type": "boolean",
+          "default": false,
+          "description": "Apply lint autofixes on save."
+        },
+        "wgslender.lint.reportUnusedDisableDirectives": {
+          "type": "boolean",
+          "default": false,
+          "description": "Report wgslender-disable comments that don't suppress any diagnostic."
+        },
+        "wgslender.minify.mode": {
+          "type": "string",
+          "enum": ["off", "insights", "strict"],
+          "default": "off",
+          "description": "Minifier inlay-hint mode (off / insights show estimated bytes / strict escalates minify rules to errors)."
+        },
+        "wgslender.minify.mangleExternalBindings": {
+          "type": "boolean",
+          "default": false,
+          "description": "Rename @group/@binding declarations directly instead of preserving them via aliases."
+        },
+        "wgslender.minify.sortDeclarations": {
+          "type": "boolean",
+          "default": false,
+          "description": "Sort top-level declarations to improve DEFLATE compression."
+        },
+        "wgslender.minify.scopeLocalRename": {
+          "type": "boolean",
+          "default": false,
+          "description": "Rename function-local symbols using a per-scope counter to improve DEFLATE compression."
+        },
+        "wgslender.minify.keepNames": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Names that must not be renamed by the minifier."
+        },
+        "wgslender.format.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable WGSL document formatting."
+        },
+        "wgslender.validate.strict": {
+          "type": "boolean",
+          "default": false,
+          "description": "Treat all validation warnings as errors."
+        },
+        "wgslender.reflect.version": {
+          "type": "string",
+          "enum": ["v1", "v2"],
+          "default": "v2",
+          "description": "Reflection JSON schema version."
+        },
+        "wgslender.compile.outputDirectory": {
+          "type": "string",
+          "default": "",
+          "description": "Default output directory for `compile`. Empty means alongside the source file."
+        },
+        "wgslender.trace.server": {
+          "type": "string",
+          "scope": "window",
+          "enum": ["off", "messages", "verbose"],
+          "default": "off",
+          "description": "Trace LSP communication."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "package": "vsce package",
+    "compile-tests": "tsc -p ./",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/test-electron": "^2.3.9",
+    "@vscode/vsce": "^2.24.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1",
+    "wgslender": "file:../wgslender",
+    "wgslender-lsp": "file:../wgslender-lsp"
+  }
+}

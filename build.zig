@@ -168,6 +168,20 @@ pub fn build(b: *std.Build) void {
     const lsp_wasm_step = b.step("lsp-wasm", "Build the WGSL LSP WASM module");
     lsp_wasm_step.dependOn(&install_lsp_wasm.step);
 
+    // VS Code extension assets — copy the WASM artefacts into
+    // npm/wgslender-vscode/dist/ so esbuild + vsce can pick them up.
+    const copy_lsp_wasm_to_vscode = b.addInstallFile(
+        lsp_wasm.getEmittedBin(),
+        "../npm/wgslender-vscode/dist/wgslender-lsp.wasm",
+    );
+    const copy_wasm_to_vscode = b.addInstallFile(
+        wasm.getEmittedBin(),
+        "../npm/wgslender-vscode/dist/wgslender.wasm",
+    );
+    const vscode_assets_step = b.step("vscode-assets", "Copy WASM artefacts into npm/wgslender-vscode/dist/");
+    vscode_assets_step.dependOn(&copy_lsp_wasm_to_vscode.step);
+    vscode_assets_step.dependOn(&copy_wasm_to_vscode.step);
+
     // Test data modules
     const validation_data_mod = b.addModule("validation_data", .{
         .root_source_file = b.path("tests/testdata_validation.zig"),
