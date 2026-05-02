@@ -89,6 +89,52 @@ pub fn defaultOptions() Options {
 /// Minify WGSL source code. Returns the minified code and statistics.
 /// The returned code is owned by the arena allocator.
 pub fn minify(arena: Allocator, source: [:0]const u8, options: Options) !Result {
+    const core = try minifyCore(arena, source, options);
+    return core.result;
+}
+
+pub const MinifyAndReflectResult = struct {
+    minify: Result,
+    reflect: Reflect.ReflectResult,
+    _arena: ?std.heap.ArenaAllocator = null,
+
+    pub fn deinit(self: *MinifyAndReflectResult, allocator: Allocator) void {
+        _ = allocator;
+        var arena = self._arena orelse return;
+        arena.deinit();
+        self._arena = null;
+    }
+};
+
+/// Minify and reflect in a single pass, sharing the parsed module and renamer.
+/// Reflection uses the minified names so callers can map bindings to the
+/// minified output.
+pub fn minifyAndReflect(arena: Allocator, source: [:0]const u8, options: Options) !MinifyAndReflectResult {
+    const core = try minifyCore(arena, source, options);
+    var out: MinifyAndReflectResult = .{ .minify = core.result, .reflect = .{} };
+    if (core.extras) |ex| {
+        out.reflect = try Reflect.reflectWithRenamer(arena, ex.module, ex.renamer);
+    } else {
+        for (core.result.errors) |err| {
+            try out.reflect.errors.append(arena, err.message);
+        }
+    }
+    return out;
+}
+
+const MinifyExtras = struct {
+    module: *Ast.Module,
+    renamer: *const Printer.Renamer,
+};
+
+const MinifyCore = struct {
+    result: Result,
+    /// Null when the parser-error early-return path was taken; populated on
+    /// the success path with the module and renamer needed by reflection.
+    extras: ?MinifyExtras,
+};
+
+fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyCore {
     // Pre-conditions: source is sentinel-terminated (enforced by type),
     // keep_names entries must not be empty strings, and the source size
     // fits the u32 ranges Diagnostic / source-map encoders use throughout.
@@ -118,7 +164,7 @@ pub fn minify(arena: Allocator, source: [:0]const u8, options: Options) !Result 
             result.code = source;
             result.minified_size = source.len;
             result.errors = parser.errors.items;
-            return result;
+            return .{ .result = result, .extras = null };
         },
     };
 
@@ -126,7 +172,7 @@ pub fn minify(arena: Allocator, source: [:0]const u8, options: Options) !Result 
         result.code = source;
         result.minified_size = source.len;
         result.errors = parser.errors.items;
-        return result;
+        return .{ .result = result, .extras = null };
     }
 
     // 3. Mark API-facing symbols
@@ -177,105 +223,10 @@ pub fn minify(arena: Allocator, source: [:0]const u8, options: Options) !Result 
     // reaching here, so on this path errors must be empty.
     std.debug.assert(result.errors.len == 0);
 
-    return result;
-}
-
-pub const MinifyAndReflectResult = struct {
-    minify: Result,
-    reflect: Reflect.ReflectResult,
-    _arena: ?std.heap.ArenaAllocator = null,
-
-    pub fn deinit(self: *MinifyAndReflectResult, allocator: Allocator) void {
-        _ = allocator;
-        var arena = self._arena orelse return;
-        arena.deinit();
-        self._arena = null;
-    }
-};
-
-/// Minify and reflect in a single pass, sharing the parsed module and renamer.
-/// Reflection uses the minified names so callers can map bindings to the
-/// minified output.
-pub fn minifyAndReflect(arena: Allocator, source: [:0]const u8, options: Options) !MinifyAndReflectResult {
-    var result = MinifyAndReflectResult{
-        .minify = .{
-            .code = "",
-            .errors = &.{},
-            .original_size = source.len,
-            .minified_size = 0,
-            .symbols_total = 0,
-            .symbols_dead = 0,
-        },
-        .reflect = .{},
+    return .{
+        .result = result,
+        .extras = .{ .module = module, .renamer = print_result.renamer },
     };
-
-    // 1. Tokenize
-    var tokens = try Lexer.tokenize(arena, source);
-    defer tokens.deinit(arena);
-
-    // 2. Parse
-    var parser = try Parser.init(arena, source, tokens);
-    const module = parser.parse() catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            result.minify.code = source;
-            result.minify.minified_size = source.len;
-            result.minify.errors = parser.errors.items;
-            for (parser.errors.items) |err| {
-                try result.reflect.errors.append(arena, err.message);
-            }
-            return result;
-        },
-    };
-
-    if (parser.errors.items.len > 0) {
-        result.minify.code = source;
-        result.minify.minified_size = source.len;
-        result.minify.errors = parser.errors.items;
-        for (parser.errors.items) |err| {
-            try result.reflect.errors.append(arena, err.message);
-        }
-        return result;
-    }
-
-    // 3–6. Mark API-facing, DCE, compute usage, build reserved names
-    markAPIFacingSymbols(module, options);
-
-    if (options.tree_shaking) {
-        result.minify.symbols_dead = try Dce.mark(arena, module);
-    } else {
-        for (module.symbols.items) |*sym| {
-            sym.flags.is_live = true;
-        }
-    }
-
-    var uses = try computeSymbolUsage(arena, module);
-    defer uses.deinit(arena);
-
-    var reserved = try RenamerMod.computeReservedNames(arena);
-    for (options.keep_names) |name| {
-        try reserved.put(arena, name, {});
-    }
-
-    // 7. Source map
-    const source_map_gen = try initSourceMapGen(arena, source, options);
-
-    // 8. Create renamer and print
-    const print_result = try printWithRenamer(arena, module, options, &uses, reserved, source_map_gen);
-    result.minify.code = print_result.code;
-
-    // 9. Finalize source map
-    if (source_map_gen) |gen| {
-        result.minify.source_map = try gen.generate();
-    }
-
-    result.minify.minified_size = result.minify.code.len;
-    result.minify.symbols_total = module.symbols.items.len;
-
-    // 10. Reflect using the same module and renamer
-    result.reflect = try Reflect.reflectWithRenamer(arena, module, print_result.renamer);
-
-    return result;
 }
 
 fn initSourceMapGen(arena: Allocator, source: [:0]const u8, options: Options) !?*SourceMap.Generator {
