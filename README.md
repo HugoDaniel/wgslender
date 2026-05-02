@@ -126,7 +126,8 @@ wgslender --source-map shader.wgsl -o shader.min.wgsl
 | `--source-map-sources`       | Include original source in source map|
 | `--config <file>`            | Use config file                      |
 | `--no-config`                | Ignore config files                  |
-| `--line-offset <n>`          | Add n to reported line numbers (validate) |
+| `--line-offset <n>`          | Add n to reported line numbers (validate/lint) |
+| `--reflect-format <v1\|v2>`  | Reflect JSON schema (default: v2)    |
 
 ### Subcommands
 
@@ -309,6 +310,11 @@ Create `wgslender.json` in your project:
 ```
 
 Config files are auto-discovered by walking parent directories. Supported names: `wgslender.json`, `.wgslenderrc`, `.wgslenderrc.json`.
+
+> **Note**: the `extends` and `rules` keys are honored by the LSP and the JS/C
+> APIs (`lint()`, `wgslender_lint_c`). The CLI `lint` subcommand currently
+> reads lint config only from `--extends` / `--rule` / `--no-recommended`
+> flags — it does not yet pick up these keys from `wgslender.json`.
 
 Pre-built configs available in `configs/`:
 
