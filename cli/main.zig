@@ -76,6 +76,21 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
+/// Tracks which flag *categories* the user passed, so we can warn when a
+/// flag is ignored by the chosen subcommand.
+const Passed = struct {
+    minify_flag: bool = false,
+    source_map_flag: bool = false,
+    output_path: bool = false,
+    config_flag: bool = false,
+    format_flag: bool = false,
+    strict_flag: bool = false,
+    line_offset_flag: bool = false,
+    compact_flag: bool = false,
+    reflect_format_flag: bool = false,
+    lint_flag: bool = false,
+};
+
 fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     const File = std.Io.File;
     var args = CliArgs{};
@@ -91,6 +106,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     var cli_minify_syntax: ?bool = null;
     var source_map_sources = false;
     var keep_names_raw: ?[]const u8 = null;
+    var passed: Passed = .{};
 
     var lint_extends: std.ArrayListUnmanaged([]const u8) = .empty;
     var lint_rule_overrides: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
@@ -108,13 +124,16 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         } else if (std.mem.eql(u8, arg, "lint")) {
             args.subcommand = .lint;
         } else if (std.mem.eql(u8, arg, "--extends")) {
+            passed.lint_flag = true;
             if (args_iter.next()) |name| {
                 lint_extends.append(arena, name) catch return null;
                 lint_use_recommended = false;
             }
         } else if (std.mem.eql(u8, arg, "--no-recommended")) {
+            passed.lint_flag = true;
             lint_use_recommended = false;
         } else if (std.mem.eql(u8, arg, "--rule")) {
+            passed.lint_flag = true;
             if (args_iter.next()) |spec| {
                 const override = parseRuleOverride(spec) orelse {
                     File.stderr().writeStreamingAll(io, "error: invalid --rule syntax (expected id=severity)\n") catch {};
@@ -123,54 +142,79 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
                 lint_rule_overrides.append(arena, override) catch return null;
             }
         } else if (std.mem.eql(u8, arg, "--max-warnings")) {
+            passed.lint_flag = true;
             if (args_iter.next()) |v| args.lint_options.max_warnings = std.fmt.parseInt(i32, v, 10) catch -1;
         } else if (std.mem.eql(u8, arg, "--quiet")) {
+            passed.lint_flag = true;
             args.lint_options.quiet = true;
         } else if (std.mem.eql(u8, arg, "--fix")) {
+            passed.lint_flag = true;
             args.lint_options.fix = true;
         } else if (std.mem.eql(u8, arg, "--fix-dry-run")) {
+            passed.lint_flag = true;
             args.lint_options.fix_dry_run = true;
         } else if (std.mem.eql(u8, arg, "--report-unused-disable-directives")) {
+            passed.lint_flag = true;
             args.lint_options.report_unused_disable_directives = true;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
+            passed.output_path = true;
             args.output_path = args_iter.next();
         } else if (std.mem.eql(u8, arg, "--config")) {
+            passed.config_flag = true;
             config_path = args_iter.next();
         } else if (std.mem.eql(u8, arg, "--no-config")) {
+            passed.config_flag = true;
             no_config = true;
         } else if (std.mem.eql(u8, arg, "--no-mangle")) {
+            passed.minify_flag = true;
             cli_no_mangle = true;
         } else if (std.mem.eql(u8, arg, "--no-whitespace")) {
+            passed.minify_flag = true;
             cli_no_whitespace = true;
         } else if (std.mem.eql(u8, arg, "--no-syntax")) {
+            passed.minify_flag = true;
             cli_no_syntax = true;
         } else if (std.mem.eql(u8, arg, "--minify")) {
+            passed.minify_flag = true;
             cli_minify_all = true;
         } else if (std.mem.eql(u8, arg, "--minify-whitespace")) {
+            passed.minify_flag = true;
             cli_minify_whitespace = true;
         } else if (std.mem.eql(u8, arg, "--minify-identifiers")) {
+            passed.minify_flag = true;
             cli_minify_identifiers = true;
         } else if (std.mem.eql(u8, arg, "--minify-syntax")) {
+            passed.minify_flag = true;
             cli_minify_syntax = true;
         } else if (std.mem.eql(u8, arg, "--mangle-external-bindings")) {
+            passed.minify_flag = true;
             args.options.mangle_external_bindings = true;
         } else if (std.mem.eql(u8, arg, "--no-tree-shaking")) {
+            passed.minify_flag = true;
             cli_no_tree_shaking = true;
         } else if (std.mem.eql(u8, arg, "--preserve-uniform-struct-types")) {
+            passed.minify_flag = true;
             args.options.preserve_uniform_struct_types = true;
         } else if (std.mem.eql(u8, arg, "--sort-declarations")) {
+            passed.minify_flag = true;
             args.options.sort_declarations = true;
         } else if (std.mem.eql(u8, arg, "--scope-local-rename")) {
+            passed.minify_flag = true;
             args.options.scope_local_rename = true;
         } else if (std.mem.eql(u8, arg, "--source-map")) {
+            passed.source_map_flag = true;
             args.source_map = true;
         } else if (std.mem.eql(u8, arg, "--source-map-inline")) {
+            passed.source_map_flag = true;
             args.source_map_inline = true;
         } else if (std.mem.eql(u8, arg, "--source-map-sources")) {
+            passed.source_map_flag = true;
             source_map_sources = true;
         } else if (std.mem.eql(u8, arg, "--keep-names")) {
+            passed.minify_flag = true;
             keep_names_raw = args_iter.next();
         } else if (std.mem.eql(u8, arg, "--format")) {
+            passed.format_flag = true;
             if (args_iter.next()) |fmt| {
                 if (std.mem.eql(u8, fmt, "json")) {
                     args.validate_format = .json;
@@ -181,16 +225,21 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
                 }
             }
         } else if (std.mem.eql(u8, arg, "--json")) {
+            passed.format_flag = true;
             args.validate_format = .json;
         } else if (std.mem.eql(u8, arg, "--strict")) {
+            passed.strict_flag = true;
             args.strict = true;
         } else if (std.mem.eql(u8, arg, "--line-offset")) {
+            passed.line_offset_flag = true;
             if (args_iter.next()) |val| {
                 args.line_offset = std.fmt.parseInt(i32, val, 10) catch 0;
             }
         } else if (std.mem.eql(u8, arg, "--compact")) {
+            passed.compact_flag = true;
             args.compact = true;
         } else if (std.mem.eql(u8, arg, "--reflect-format")) {
+            passed.reflect_format_flag = true;
             if (args_iter.next()) |fmt| {
                 if (std.mem.eql(u8, fmt, "v1")) {
                     args.reflect_format = .v1;
@@ -234,7 +283,75 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         args.lint_options.rule_overrides = lint_rule_overrides.items;
     }
 
+    warnIgnoredFlags(io, args.subcommand, passed);
+
     return args;
+}
+
+/// Emit a stderr warning for each flag passed by the user that the chosen
+/// subcommand ignores. Best-effort UX hint, never aborts.
+fn warnIgnoredFlags(
+    io: std.Io,
+    subcommand: @TypeOf(@as(CliArgs, undefined).subcommand),
+    passed: Passed,
+) void {
+    const W = struct {
+        fn warn(io_: std.Io, msg: []const u8) void {
+            const f = std.Io.File.stderr();
+            f.writeStreamingAll(io_, "warning: ") catch {};
+            f.writeStreamingAll(io_, msg) catch {};
+            f.writeStreamingAll(io_, "\n") catch {};
+        }
+    };
+
+    switch (subcommand) {
+        .minify => {
+            // Accepts: minify, source_map, output_path, config.
+            if (passed.format_flag) W.warn(io, "--format / --json has no effect on minify; only validate/lint use it");
+            if (passed.strict_flag) W.warn(io, "--strict has no effect on minify");
+            if (passed.line_offset_flag) W.warn(io, "--line-offset has no effect on minify");
+            if (passed.compact_flag) W.warn(io, "--compact has no effect on minify (reflect-only)");
+            if (passed.reflect_format_flag) W.warn(io, "--reflect-format has no effect on minify (reflect-only)");
+            if (passed.lint_flag) W.warn(io, "lint flags (--extends/--rule/--fix/...) have no effect on minify");
+        },
+        .compile => {
+            // Accepts: minify, output_path, config. (No source maps in compile.)
+            if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on compile (source maps are not embedded in the binary)");
+            if (passed.format_flag) W.warn(io, "--format / --json has no effect on compile");
+            if (passed.strict_flag) W.warn(io, "--strict has no effect on compile");
+            if (passed.line_offset_flag) W.warn(io, "--line-offset has no effect on compile");
+            if (passed.compact_flag) W.warn(io, "--compact has no effect on compile (reflect-only)");
+            if (passed.reflect_format_flag) W.warn(io, "--reflect-format has no effect on compile (reflect-only)");
+            if (passed.lint_flag) W.warn(io, "lint flags have no effect on compile");
+        },
+        .validate => {
+            // Accepts: format, strict, line_offset, config (auto-discovery only — no minify config keys apply).
+            if (passed.minify_flag) W.warn(io, "minify flags (--minify-*/--no-*/--keep-names/...) have no effect on validate");
+            if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on validate");
+            if (passed.output_path) W.warn(io, "-o/--output has no effect on validate (diagnostics go to stderr/stdout)");
+            if (passed.compact_flag) W.warn(io, "--compact has no effect on validate (reflect-only)");
+            if (passed.reflect_format_flag) W.warn(io, "--reflect-format has no effect on validate (reflect-only)");
+            if (passed.lint_flag) W.warn(io, "lint flags have no effect on validate");
+        },
+        .reflect => {
+            // Accepts: compact, reflect_format, output_path.
+            if (passed.minify_flag) W.warn(io, "minify flags have no effect on reflect");
+            if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on reflect");
+            if (passed.format_flag) W.warn(io, "--format / --json has no effect on reflect (use --compact / --reflect-format)");
+            if (passed.strict_flag) W.warn(io, "--strict has no effect on reflect");
+            if (passed.line_offset_flag) W.warn(io, "--line-offset has no effect on reflect");
+            if (passed.lint_flag) W.warn(io, "lint flags have no effect on reflect");
+        },
+        .lint => {
+            // Accepts: format, line_offset, lint_flag.
+            if (passed.minify_flag) W.warn(io, "minify flags have no effect on lint");
+            if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on lint");
+            if (passed.output_path) W.warn(io, "-o/--output has no effect on lint (--fix rewrites the input file in place)");
+            if (passed.strict_flag) W.warn(io, "--strict has no effect on lint; use --max-warnings 0 to fail on warnings");
+            if (passed.compact_flag) W.warn(io, "--compact has no effect on lint (reflect-only)");
+            if (passed.reflect_format_flag) W.warn(io, "--reflect-format has no effect on lint (reflect-only)");
+        },
+    }
 }
 
 /// Parse a `--rule id=severity` spec. Accepts `off` / `warn` / `error`.
