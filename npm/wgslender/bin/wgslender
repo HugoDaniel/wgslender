@@ -43,6 +43,7 @@ Options:
   --no-config                      Skip config file auto-discovery
   --no-mangle                      Disable identifier minification
   --no-whitespace                  Disable whitespace minification
+  --no-syntax                      Disable syntax-level optimizations
   --no-tree-shaking                Keep all declarations (disable dead code elimination)
   --mangle-external-bindings       Mangle uniform/storage variable names
   --preserve-uniform-struct-types  Keep struct names used in uniform/storage declarations
@@ -261,6 +262,9 @@ function runMinify(args) {
     } else if (arg === '--no-whitespace') {
       options.minifyWhitespace = false;
       cliFlags.add('minifyWhitespace');
+    } else if (arg === '--no-syntax') {
+      options.minifySyntax = false;
+      cliFlags.add('minifySyntax');
     } else if (arg === '--no-tree-shaking') {
       options.treeShaking = false;
       cliFlags.add('treeShaking');

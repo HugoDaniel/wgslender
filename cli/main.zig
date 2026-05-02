@@ -81,6 +81,8 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     var args = CliArgs{};
     var config_path: ?[]const u8 = null;
     var cli_no_mangle = false;
+    var cli_no_whitespace = false;
+    var cli_no_syntax = false;
     var cli_no_tree_shaking = false;
     var no_config = false;
     var cli_minify_all = false;
@@ -138,6 +140,10 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             no_config = true;
         } else if (std.mem.eql(u8, arg, "--no-mangle")) {
             cli_no_mangle = true;
+        } else if (std.mem.eql(u8, arg, "--no-whitespace")) {
+            cli_no_whitespace = true;
+        } else if (std.mem.eql(u8, arg, "--no-syntax")) {
+            cli_no_syntax = true;
         } else if (std.mem.eql(u8, arg, "--minify")) {
             cli_minify_all = true;
         } else if (std.mem.eql(u8, arg, "--minify-whitespace")) {
@@ -214,6 +220,8 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         cli_minify_identifiers,
         cli_minify_syntax,
         cli_no_mangle,
+        cli_no_whitespace,
+        cli_no_syntax,
         cli_no_tree_shaking,
     );
     if (keep_names_raw) |raw| args.options.keep_names = parseKeepNames(arena, raw) catch return null;
@@ -278,6 +286,7 @@ fn loadConfig(
 
 /// Apply CLI minification flag overrides with correct precedence.
 /// Granular flags (--minify-*) disable unspecified passes; --minify forces all on.
+/// `--no-*` post-overrides force a single pass off regardless of granular state.
 fn applyMinifyOverrides(
     options: *wgslender.Minifier.Options,
     cli_minify_all: bool,
@@ -285,6 +294,8 @@ fn applyMinifyOverrides(
     cli_minify_identifiers: ?bool,
     cli_minify_syntax: ?bool,
     cli_no_mangle: bool,
+    cli_no_whitespace: bool,
+    cli_no_syntax: bool,
     cli_no_tree_shaking: bool,
 ) void {
     const has_granular = cli_minify_whitespace != null or
@@ -300,6 +311,8 @@ fn applyMinifyOverrides(
         options.minify_syntax = true;
     }
     if (cli_no_mangle) options.minify_identifiers = false;
+    if (cli_no_whitespace) options.minify_whitespace = false;
+    if (cli_no_syntax) options.minify_syntax = false;
     if (cli_no_tree_shaking) options.tree_shaking = false;
 }
 
@@ -787,6 +800,8 @@ const usage_text =
     \\  --minify-identifiers             Only minify identifiers
     \\  --minify-syntax                  Only minify syntax
     \\  --no-mangle                      Don't rename identifiers
+    \\  --no-whitespace                  Don't minify whitespace
+    \\  --no-syntax                      Don't apply syntax-level optimizations
     \\  --mangle-external-bindings       Rename uniform/storage variables
     \\  --no-tree-shaking                Keep all declarations
     \\  --preserve-uniform-struct-types   Keep struct names used in uniforms
