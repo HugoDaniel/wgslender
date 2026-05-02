@@ -130,7 +130,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             args.lint_options.fix_dry_run = true;
         } else if (std.mem.eql(u8, arg, "--report-unused-disable-directives")) {
             args.lint_options.report_unused_disable_directives = true;
-        } else if (std.mem.eql(u8, arg, "-o")) {
+        } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             args.output_path = args_iter.next();
         } else if (std.mem.eql(u8, arg, "--config")) {
             config_path = args_iter.next();
@@ -193,7 +193,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
                     return null;
                 }
             }
-        } else if (std.mem.eql(u8, arg, "--version")) {
+        } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
             File.stdout().writeStreamingAll(io, "wgslender v" ++ wgslender.version ++ "\n") catch {};
             return null;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
@@ -777,7 +777,7 @@ const usage_text =
     \\  lint                             Run lint rules and emit diagnostics
     \\
     \\Options:
-    \\  -o <path>                        Output file
+    \\  -o, --output <path>              Output file
     \\  --config <path>                  Config file (JSON)
     \\  --no-config                      Ignore config files
     \\  --minify                         Enable all minification (default)
@@ -809,7 +809,7 @@ const usage_text =
     \\  --fix                            (lint) Apply autofixes in place (requires a file input)
     \\  --fix-dry-run                    (lint) Print fixed source to stdout without writing
     \\  --report-unused-disable-directives  (lint) Warn on wgslender-disable comments that never match
-    \\  --version                        Show version
+    \\  -v, --version                    Show version
     \\  -h, --help                       Show this help
     \\
     \\If no input file is given, reads from stdin.
