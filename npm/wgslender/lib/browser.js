@@ -157,6 +157,52 @@
   }
 
   /**
+   * Compile WGSL source to a binary `.wasm` shader.
+   * @param {string} source - WGSL source code
+   * @param {Object} [options] - Forwarded to the minifier pass.
+   * @returns {{wasm: Uint8Array, originalSize: number, wasmSize: number, errors: Array<{message: string}>}}
+   */
+  function compile(source, options) {
+    if (!_initialized) {
+      throw new Error('wgslender not initialized. Call initialize() first.');
+    }
+    if (typeof source !== 'string') {
+      throw new TypeError('source must be a string');
+    }
+
+    var opts = Object.assign({
+      minifyWhitespace: true,
+      minifyIdentifiers: true,
+      minifySyntax: true,
+      treeShaking: true,
+      sortDeclarations: true,
+      scopeLocalRename: true,
+    }, options);
+
+    var src = _writeString(source);
+    var optsJson = _writeString(JSON.stringify(opts));
+    var resultPtr = _wasm.wgslender_compile(src.ptr, src.len, optsJson.ptr, optsJson.len);
+    _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+    _wasm.wgslender_dealloc(optsJson.ptr, optsJson.allocLen);
+
+    if (!resultPtr) throw new Error('Compile failed: WASM returned null');
+
+    var view = new DataView(_wasm.memory.buffer);
+    var wasmLen = view.getUint32(resultPtr, true);
+    var originalSize = view.getUint32(resultPtr + 4, true);
+    var errorsLen = view.getUint32(resultPtr + 8, true);
+    var wasm = new Uint8Array(
+      new Uint8Array(_wasm.memory.buffer, resultPtr + 12, wasmLen)
+    );
+    var errors = JSON.parse(
+      _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 12 + wasmLen, errorsLen))
+    );
+    _wasm.wgslender_dealloc(resultPtr, 12 + wasmLen + errorsLen);
+
+    return { wasm: wasm, originalSize: originalSize, wasmSize: wasmLen, errors: errors };
+  }
+
+  /**
    * Reflect WGSL source to extract binding and struct information.
    * @param {string} source - WGSL source code
    * @returns {Object} Reflection result with bindings, structs, entryPoints, and errors
@@ -462,6 +508,7 @@
   return {
     initialize: initialize,
     minify: minify,
+    compile: compile,
     reflect: reflect,
     getBindGroups: getBindGroups,
     validate: validate,

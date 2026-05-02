@@ -473,6 +473,46 @@ export function initialize(options: InitializeOptions): Promise<void>;
 export function minify(source: string, options?: MinifyOptions): MinifyResult;
 
 /**
+ * Options for compiling a WGSL shader to a `.wasm` binary. Forwarded to the
+ * minifier pass that runs before BPE compression and codegen.
+ */
+export interface CompileOptions extends MinifyOptions {
+  /**
+   * Sort top-level declarations to improve DEFLATE compression of the
+   * embedded BPE payload.
+   * @default true
+   */
+  sortDeclarations?: boolean;
+  /**
+   * Rename function-local symbols using a per-scope counter to improve
+   * DEFLATE compression of the embedded BPE payload.
+   * @default true
+   */
+  scopeLocalRename?: boolean;
+}
+
+/**
+ * Result of a `compile()` call.
+ */
+export interface CompileResult {
+  /** Generated WebAssembly module bytes. Feed to `WebAssembly.instantiate`. */
+  wasm: Uint8Array;
+  /** Size of the input WGSL source in bytes. */
+  originalSize: number;
+  /** Size of the generated `.wasm` in bytes. */
+  wasmSize: number;
+  /** Errors collected during compile; empty on success. */
+  errors: { message: string }[];
+}
+
+/**
+ * Compile WGSL source to a binary `.wasm` shader. The output module exports
+ * a `generate()` function that, when called, writes the (BPE-decompressed)
+ * WGSL bytes into the module's linear memory and returns the byte length.
+ */
+export function compile(source: string, options?: CompileOptions): CompileResult;
+
+/**
  * Reflect WGSL source to extract binding and struct information.
  * @param source - WGSL source code to analyze
  * @returns Reflection result with bindings, structs, entryPoints, and errors

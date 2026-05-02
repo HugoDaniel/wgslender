@@ -831,6 +831,38 @@ fn get_time(g: Uniforms) -> f32 { return g.time; }
   assert(fixResult.warningCount >= 1, 'lintAndFix() reports diagnostics');
 
   // =============================================
+  // Compile
+  // =============================================
+  console.log('--- Compile ---');
+
+  {
+    const src = `@group(0) @binding(0) var<storage, read_write> out: array<u32>;
+@compute @workgroup_size(1) fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  out[gid.x] = gid.x * 2u;
+}`;
+    const { compile } = wgslender;
+    const result = compile(src, {});
+    assert(result.errors.length === 0, 'compile() succeeds on a basic compute shader');
+    assert(result.wasm instanceof Uint8Array, 'compile() returns wasm as Uint8Array');
+    assert(result.wasm.length > 8, `compile() returns a non-empty wasm (${result.wasm.length} bytes)`);
+    assert(result.wasm[0] === 0x00 && result.wasm[1] === 0x61 && result.wasm[2] === 0x73 && result.wasm[3] === 0x6d,
+      'compile() output starts with the WASM magic header');
+    assert(result.originalSize === src.length, 'compile() reports the original WGSL byte size');
+    assert(result.wasmSize === result.wasm.length, 'compile() reports the wasm byte size');
+
+    // Instantiate and verify the embedded shader can be regenerated.
+    const mod = await WebAssembly.instantiate(result.wasm, {});
+    const exports = mod.instance.exports;
+    assert(typeof exports.generate === 'function', 'compiled module exports generate()');
+    const len = exports.generate();
+    assert(len > 0, `generate() returns a positive byte length (${len})`);
+    const wgsl = new TextDecoder().decode(new Uint8Array(exports.memory.buffer, 0, len));
+    assert(wgsl.includes('@compute'), 'regenerated WGSL preserves the @compute attribute');
+  }
+
+  console.log('');
+
+  // =============================================
   // Summary
   // =============================================
   console.log(`\n${passed} passed, ${failed} failed`);

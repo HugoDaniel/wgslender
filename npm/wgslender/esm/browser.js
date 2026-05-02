@@ -144,6 +144,52 @@ export function minify(source, options) {
 }
 
 /**
+ * Compile WGSL source to a binary `.wasm` shader.
+ * @param {string} source - WGSL source code
+ * @param {Object} [options] - Forwarded to the minifier pass.
+ * @returns {{wasm: Uint8Array, originalSize: number, wasmSize: number, errors: Array<{message: string}>}}
+ */
+export function compile(source, options) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') {
+    throw new TypeError('source must be a string');
+  }
+
+  const opts = Object.assign({
+    minifyWhitespace: true,
+    minifyIdentifiers: true,
+    minifySyntax: true,
+    treeShaking: true,
+    sortDeclarations: true,
+    scopeLocalRename: true,
+  }, options);
+
+  const src = _writeString(source);
+  const optsJson = _writeString(JSON.stringify(opts));
+  const resultPtr = _wasm.wgslender_compile(src.ptr, src.len, optsJson.ptr, optsJson.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(optsJson.ptr, optsJson.allocLen);
+
+  if (!resultPtr) throw new Error('Compile failed: WASM returned null');
+
+  const view = new DataView(_wasm.memory.buffer);
+  const wasmLen = view.getUint32(resultPtr, true);
+  const originalSize = view.getUint32(resultPtr + 4, true);
+  const errorsLen = view.getUint32(resultPtr + 8, true);
+  const wasm = new Uint8Array(
+    new Uint8Array(_wasm.memory.buffer, resultPtr + 12, wasmLen)
+  );
+  const errors = JSON.parse(
+    _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 12 + wasmLen, errorsLen))
+  );
+  _wasm.wgslender_dealloc(resultPtr, 12 + wasmLen + errorsLen);
+
+  return { wasm, originalSize, wasmSize: wasmLen, errors };
+}
+
+/**
  * Reflect WGSL source to extract binding and struct information.
  * @param {string} source - WGSL source code
  * @returns {Object} Reflection result with bindings, structs, entryPoints, and errors
@@ -302,4 +348,4 @@ export function getBindGroups(bindingsOrResult) {
   return out;
 }
 
-export default { initialize, minify, reflect, validate, findReferences, rename, renameApply, isInitialized, version, getBindGroups };
+export default { initialize, minify, compile, reflect, validate, findReferences, rename, renameApply, isInitialized, version, getBindGroups };

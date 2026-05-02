@@ -23,6 +23,7 @@ const Validator = @import("Validator.zig");
 const Reflect = @import("Reflect.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const Config = @import("Config.zig");
+const Compiler = @import("Compiler.zig");
 const SourceMap = @import("SourceMap.zig");
 
 const wasm_allocator = std.heap.wasm_allocator;
@@ -336,6 +337,66 @@ fn minifyAndReflectJsonImpl(
     try json_buf.append(wasm_allocator, '}');
 
     return packJsonResult(json_buf.items);
+}
+
+// =========================================================================
+// Compile
+// =========================================================================
+
+/// Compile WGSL source to a binary `.wasm` shader.
+/// Input: source pointer+length, JSON options pointer+length (forwarded to
+///        `Config.parseJson`; the resulting `Minifier.Options` drives the
+///        minifier pass before BPE+codegen). Empty buffer → defaults.
+/// Output: `[u32 wasm_len][u32 original_size][u32 errors_json_len][u8... wasm][u8... errors_json]`.
+///         On parse failure `wasm_len == 0`; `errors_json` always carries a
+///         (possibly empty) JSON array.
+///         Returns null only on allocation failure.
+export fn wgslender_compile(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    opts_ptr: [*]const u8,
+    opts_len: u32,
+) callconv(.c) ?[*]u8 {
+    return compileImpl(source_ptr, source_len, opts_ptr, opts_len) catch return null;
+}
+
+fn compileImpl(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    opts_ptr: [*]const u8,
+    opts_len: u32,
+) Allocator.Error!?[*]u8 {
+    const source = makeSentinelSource(source_ptr, source_len) orelse return null;
+    defer wasm_allocator.free(source.ptr[0 .. source.len + 1]);
+
+    const opts_slice = opts_ptr[0..opts_len];
+    const config = Config.parseJson(wasm_allocator, opts_slice) catch Config{};
+    const minify_options = config.toOptions();
+
+    var result = Compiler.compile(wasm_allocator, source, .{
+        .minify = true,
+        .minify_options = minify_options,
+    }) catch {
+        // Compile failures don't surface a structured error list (Compiler
+        // collapses parse / codegen problems to OutOfMemory). Return an
+        // empty payload with a single generic error so the JS wrapper has
+        // something to show.
+        return packCompileResult(&.{}, source_len, "[{\"message\":\"compile failed\"}]");
+    };
+    defer result.deinit(wasm_allocator);
+
+    return packCompileResult(result.wasm, @intCast(result.original_size), "[]");
+}
+
+fn packCompileResult(wasm: []const u8, original_size: u32, errors_json: []const u8) Allocator.Error!?[*]u8 {
+    const total_len: u32 = @intCast(12 + wasm.len + errors_json.len);
+    const out_buf = try wasm_allocator.alloc(u8, total_len);
+    std.mem.writeInt(u32, out_buf[0..4], @intCast(wasm.len), .little);
+    std.mem.writeInt(u32, out_buf[4..8], original_size, .little);
+    std.mem.writeInt(u32, out_buf[8..12], @intCast(errors_json.len), .little);
+    @memcpy(out_buf[12..][0..wasm.len], wasm);
+    @memcpy(out_buf[12 + wasm.len ..][0..errors_json.len], errors_json);
+    return out_buf.ptr;
 }
 
 // =========================================================================

@@ -154,6 +154,54 @@ function reflect(source) {
 }
 
 /**
+ * Compile WGSL source to a binary `.wasm` shader.
+ * @param {string} source - WGSL source code
+ * @param {Object} [options] - Forwarded as JSON to the minifier (same shape
+ *   as `minify()` options). The compile pipeline always runs the minifier
+ *   pass; pass `{}` for defaults.
+ * @returns {{wasm: Uint8Array, originalSize: number, wasmSize: number, errors: Array<{message: string}>}}
+ */
+function compile(source, options) {
+  if (!_initialized) {
+    throw new Error('wgslender not initialized. Call initialize() first.');
+  }
+  if (typeof source !== 'string') {
+    throw new TypeError('source must be a string');
+  }
+
+  const opts = Object.assign({
+    minifyWhitespace: true,
+    minifyIdentifiers: true,
+    minifySyntax: true,
+    treeShaking: true,
+    sortDeclarations: true,
+    scopeLocalRename: true,
+  }, options);
+
+  const src = _writeString(source);
+  const optsJson = _writeString(JSON.stringify(opts));
+  const resultPtr = _wasm.wgslender_compile(src.ptr, src.len, optsJson.ptr, optsJson.len);
+  _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+  _wasm.wgslender_dealloc(optsJson.ptr, optsJson.allocLen);
+
+  if (!resultPtr) throw new Error('Compile failed: WASM returned null');
+
+  const view = new DataView(_wasm.memory.buffer);
+  const wasmLen = view.getUint32(resultPtr, true);
+  const originalSize = view.getUint32(resultPtr + 4, true);
+  const errorsLen = view.getUint32(resultPtr + 8, true);
+  const wasm = new Uint8Array(
+    new Uint8Array(_wasm.memory.buffer, resultPtr + 12, wasmLen)
+  );
+  const errors = JSON.parse(
+    _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 12 + wasmLen, errorsLen))
+  );
+  _wasm.wgslender_dealloc(resultPtr, 12 + wasmLen + errorsLen);
+
+  return { wasm, originalSize, wasmSize: wasmLen, errors };
+}
+
+/**
  * Validate WGSL source code.
  * @param {string} source - WGSL source code
  * @param {Object} [options] - Validation options (currently unused in Zig backend)
@@ -616,6 +664,7 @@ function getBindGroups(bindingsOrResult) {
 module.exports = {
   initialize,
   minify,
+  compile,
   reflect,
   getBindGroups,
   validate,
