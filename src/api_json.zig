@@ -1,0 +1,848 @@
+//! Shared JSON-producing layer between the C-ABI shell (`src/lib.zig`) and
+//! the WASM shell (`src/wasm.zig`). Each function here takes an allocator
+//! plus already-decoded slices and returns either a flat `[]u8` JSON blob
+//! or a small result struct for multi-part outputs. Allocator.Error is the
+//! only error returned: per-operation failures (parse error, missing
+//! symbol, etc.) collapse to a structured JSON payload that the caller
+//! returns verbatim.
+//!
+//! Both shells wrap a call into one `ArenaAllocator.init(<base>)` /
+//! `defer arena.deinit()` per request, so this layer can leak intermediates
+//! into the supplied allocator with no manual frees.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+
+const wgslender = @import("root.zig");
+const Ast = @import("Ast.zig");
+const Lexer = @import("Lexer.zig");
+const Parser = @import("Parser.zig");
+const Minifier = @import("Minifier.zig");
+const Validator = @import("Validator.zig");
+const Reflect = @import("Reflect.zig");
+const Diagnostic = @import("Diagnostic.zig");
+const Config = @import("Config.zig");
+const Compiler = @import("Compiler.zig");
+const Edits = @import("Edits.zig");
+const StableId = @import("StableId.zig");
+const Linter = @import("lint/Linter.zig");
+
+// =========================================================================
+// Result types for multi-part outputs
+// =========================================================================
+
+pub const ValidateResult = struct {
+    valid: bool,
+    error_count: u32,
+    json: []u8,
+};
+
+pub const LintResult = struct {
+    error_count: u32,
+    warning_count: u32,
+    json: []u8,
+};
+
+pub const LintFixResult = struct {
+    fixed: []u8,
+    error_count: u32,
+    warning_count: u32,
+    json: []u8,
+};
+
+pub const CompileResult = struct {
+    wasm: []u8,
+    original_size: u32,
+    errors_json: []u8,
+};
+
+// =========================================================================
+// Helpers
+// =========================================================================
+
+/// Make a sentinel-terminated copy of `raw` so the parser can consume it.
+pub fn makeSentinelSource(alloc: Allocator, raw: []const u8) Allocator.Error![:0]u8 {
+    const buf = try alloc.alloc(u8, raw.len + 1);
+    @memcpy(buf[0..raw.len], raw);
+    buf[raw.len] = 0;
+    return buf[0..raw.len :0];
+}
+
+/// `[]u8` clone of a comptime literal so callers can return a uniform type.
+fn dupeLiteral(alloc: Allocator, comptime literal: []const u8) Allocator.Error![]u8 {
+    return alloc.dupe(u8, literal);
+}
+
+fn finalize(buf: std.ArrayListUnmanaged(u8)) []u8 {
+    return buf.items;
+}
+
+fn analyzeOrNull(alloc: Allocator, source: [:0]const u8) Allocator.Error!Validator.AnalysisResult {
+    return wgslender.analyzeWithOptions(alloc, source, .{});
+}
+
+// =========================================================================
+// Minify
+// =========================================================================
+
+/// Flags-based minify. Returns the minified text bytes (no envelope).
+pub fn minifyFlagsToBytes(
+    alloc: Allocator,
+    source: [:0]const u8,
+    options: Minifier.Options,
+) Allocator.Error![]u8 {
+    const result = Minifier.minify(alloc, source, options) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    return alloc.dupe(u8, result.code);
+}
+
+/// JSON-options minify. Returns the full
+/// `{"code":"...","errors":[...],"originalSize":N,"minifiedSize":N,"sourceMap":...}`
+/// envelope. On OOM, propagates; on minification failure, returns the
+/// canonical error envelope.
+pub fn minifyJsonToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    opts_json: []const u8,
+) Allocator.Error![]u8 {
+    const config = Config.parseJson(alloc, opts_json) catch Config{};
+    var options = config.toOptions();
+    if (config.source_map) |sm| options.generate_source_map = sm;
+    if (config.source_map_sources) |sms| options.source_map_options.include_source = sms;
+
+    const result = Minifier.minify(alloc, source, options) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(alloc, "{\"code\":\"");
+    try Diagnostic.appendJsonEscaped(&buf, alloc, result.code);
+    try buf.appendSlice(alloc, "\",\"errors\":[");
+    for (result.errors, 0..) |err, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"message\":\"");
+        try Diagnostic.appendJsonEscaped(&buf, alloc, err.message);
+        try buf.appendSlice(alloc, "\"}");
+    }
+    try buf.appendSlice(alloc, "],\"originalSize\":");
+    try Diagnostic.appendInt(&buf, alloc, result.original_size);
+    try buf.appendSlice(alloc, ",\"minifiedSize\":");
+    try Diagnostic.appendInt(&buf, alloc, result.minified_size);
+    if (result.source_map) |sm| {
+        try buf.appendSlice(alloc, ",\"sourceMap\":");
+        try sm.toJson(&buf, alloc);
+    }
+    try buf.append(alloc, '}');
+    return finalize(buf);
+}
+
+/// Combined minify+reflect. Returns `{"minify":{...},"reflect":{...}}`.
+pub fn minifyAndReflectJsonToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    opts_json: []const u8,
+) Allocator.Error![]u8 {
+    const config = Config.parseJson(alloc, opts_json) catch Config{};
+    var options = config.toOptions();
+    if (config.source_map) |sm| options.generate_source_map = sm;
+    if (config.source_map_sources) |sms| options.source_map_options.include_source = sms;
+
+    const empty_result_json =
+        "{\"minify\":{\"code\":\"\",\"errors\":[{\"message\":\"minification failed\"}]," ++
+        "\"originalSize\":0,\"minifiedSize\":0}," ++
+        "\"reflect\":{\"bindings\":[],\"structs\":{},\"entryPoints\":[]}}";
+
+    const result = Minifier.minifyAndReflect(alloc, source, options) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+
+    try buf.appendSlice(alloc, "{\"minify\":{\"code\":\"");
+    try Diagnostic.appendJsonEscaped(&buf, alloc, result.minify.code);
+    try buf.appendSlice(alloc, "\",\"errors\":[");
+    for (result.minify.errors, 0..) |err, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"message\":\"");
+        try Diagnostic.appendJsonEscaped(&buf, alloc, err.message);
+        try buf.appendSlice(alloc, "\"}");
+    }
+    try buf.appendSlice(alloc, "],\"originalSize\":");
+    try Diagnostic.appendInt(&buf, alloc, result.minify.original_size);
+    try buf.appendSlice(alloc, ",\"minifiedSize\":");
+    try Diagnostic.appendInt(&buf, alloc, result.minify.minified_size);
+    if (result.minify.source_map) |sm| {
+        try buf.appendSlice(alloc, ",\"sourceMap\":");
+        try sm.toJson(&buf, alloc);
+    }
+    try buf.appendSlice(alloc, "},\"reflect\":");
+    try result.reflect.toJson(&buf, alloc);
+    try buf.append(alloc, '}');
+
+    _ = empty_result_json; // reserved for a future propagated-error path
+    return finalize(buf);
+}
+
+// =========================================================================
+// Validate
+// =========================================================================
+
+fn writeDiagnosticsBare(
+    buf: *std.ArrayListUnmanaged(u8),
+    alloc: Allocator,
+    entries: []const Diagnostic.Entry,
+) Allocator.Error!void {
+    try buf.append(alloc, '[');
+    for (entries, 0..) |*entry, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try Diagnostic.entryToJson(buf, alloc, entry);
+    }
+    try buf.append(alloc, ']');
+}
+
+/// Bare diagnostics array form (used by the WASM/npm surface). Returns
+/// `{ valid, error_count, json }` where `json` is the bare JSON array.
+pub fn validateBareDiagnosticsToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+) Allocator.Error!ValidateResult {
+    const result = wgslender.validateWithOptions(alloc, source, .{}) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try writeDiagnosticsBare(&buf, alloc, result.diagnostics.diagnostics.items);
+
+    return .{
+        .valid = result.valid,
+        .error_count = @intCast(result.diagnostics.diagnostics.items.len),
+        .json = finalize(buf),
+    };
+}
+
+/// Wrapped object form (used by the C ABI). Returns
+/// `{ valid, error_count, json }` where `json` is
+/// `{"valid":...,"diagnostics":[...],"errorCount":N,"warningCount":N}`.
+pub fn validateFlagsToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    strict: bool,
+) Allocator.Error!ValidateResult {
+    const result = wgslender.validateWithOptions(alloc, source, .{ .strict_mode = strict }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(alloc, "{\"valid\":");
+    try buf.appendSlice(alloc, if (result.valid) "true" else "false");
+    try buf.appendSlice(alloc, ",\"diagnostics\":");
+    try writeDiagnosticsBare(&buf, alloc, result.diagnostics.diagnostics.items);
+    try buf.appendSlice(alloc, ",\"errorCount\":");
+    try Diagnostic.appendInt(&buf, alloc, result.diagnostics.errorCount());
+    try buf.appendSlice(alloc, ",\"warningCount\":");
+    try Diagnostic.appendInt(&buf, alloc, result.diagnostics.warningCount());
+    try buf.append(alloc, '}');
+
+    return .{
+        .valid = result.valid,
+        .error_count = result.diagnostics.errorCount(),
+        .json = finalize(buf),
+    };
+}
+
+// =========================================================================
+// Reflect
+// =========================================================================
+
+/// Reflect WGSL source. On parse failure returns the canonical
+/// `{"bindings":[],"structs":{},"entryPoints":[],"errors":[...]}` envelope.
+pub fn reflectToJson(alloc: Allocator, source: [:0]const u8) Allocator.Error![]u8 {
+    var result = wgslender.reflect(alloc, source) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJson(&buf, alloc);
+    return finalize(buf);
+}
+
+// =========================================================================
+// Edits — find references / rename / rename-and-apply
+// =========================================================================
+
+fn writeEdit(
+    buf: *std.ArrayListUnmanaged(u8),
+    alloc: Allocator,
+    edit: Edits.TextEdit,
+    new_text: []const u8,
+) Allocator.Error!void {
+    try buf.appendSlice(alloc, "{\"start\":");
+    try Diagnostic.appendInt(buf, alloc, edit.start);
+    try buf.appendSlice(alloc, ",\"end\":");
+    try Diagnostic.appendInt(buf, alloc, edit.end);
+    try buf.appendSlice(alloc, ",\"newText\":\"");
+    try Diagnostic.appendJsonEscaped(buf, alloc, new_text);
+    try buf.appendSlice(alloc, "\"}");
+}
+
+fn writeEditsArray(
+    buf: *std.ArrayListUnmanaged(u8),
+    alloc: Allocator,
+    edits: []const Edits.TextEdit,
+    new_text: []const u8,
+) Allocator.Error!void {
+    try buf.append(alloc, '[');
+    for (edits, 0..) |e, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try writeEdit(buf, alloc, e, new_text);
+    }
+    try buf.append(alloc, ']');
+}
+
+fn editsEnvelopeJson(
+    alloc: Allocator,
+    edits: []const Edits.TextEdit,
+    new_text: []const u8,
+) Allocator.Error![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(alloc, "{\"edits\":");
+    try writeEditsArray(&buf, alloc, edits, new_text);
+    try buf.append(alloc, '}');
+    return finalize(buf);
+}
+
+fn renameApplySuccessJson(
+    alloc: Allocator,
+    rewritten: []const u8,
+    edits: []const Edits.TextEdit,
+    new_text: []const u8,
+) Allocator.Error![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(alloc, "{\"ok\":true,\"source\":\"");
+    try Diagnostic.appendJsonEscaped(&buf, alloc, rewritten);
+    try buf.appendSlice(alloc, "\",\"edits\":");
+    try writeEditsArray(&buf, alloc, edits, new_text);
+    try buf.append(alloc, '}');
+    return finalize(buf);
+}
+
+fn renameApplyFailureJson(
+    alloc: Allocator,
+    original: []const u8,
+    msg: []const u8,
+) Allocator.Error![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(alloc, "{\"ok\":false,\"source\":\"");
+    try Diagnostic.appendJsonEscaped(&buf, alloc, original);
+    try buf.appendSlice(alloc, "\",\"edits\":[],\"error\":\"");
+    try Diagnostic.appendJsonEscaped(&buf, alloc, msg);
+    try buf.appendSlice(alloc, "\"}");
+    return finalize(buf);
+}
+
+pub fn findReferencesToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    offset: u32,
+    include_declaration: bool,
+) Allocator.Error![]u8 {
+    const analysis = try analyzeOrNull(alloc, source);
+    const module = analysis.module orelse return dupeLiteral(alloc, "{\"references\":[],\"error\":\"parse error\"}");
+
+    const target = Edits.symbolAtOffset(module, offset);
+    if (!target.isValid()) return dupeLiteral(alloc, "{\"references\":[]}");
+
+    const refs = try Edits.findReferences(alloc, module, target, include_declaration);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(alloc, "{\"references\":[");
+    for (refs, 0..) |r, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"start\":");
+        try Diagnostic.appendInt(&buf, alloc, r.start);
+        try buf.appendSlice(alloc, ",\"end\":");
+        try Diagnostic.appendInt(&buf, alloc, r.end);
+        try buf.appendSlice(alloc, ",\"isWrite\":");
+        try buf.appendSlice(alloc, if (r.is_write) "true" else "false");
+        try buf.append(alloc, '}');
+    }
+    try buf.appendSlice(alloc, "]}");
+    return finalize(buf);
+}
+
+pub fn renameToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    offset: u32,
+    new_name: []const u8,
+) Allocator.Error![]u8 {
+    if (!Edits.isValidWgslIdentifier(new_name))
+        return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"invalid identifier\"}");
+
+    const analysis = try analyzeOrNull(alloc, source);
+    const module = analysis.module orelse return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"parse error\"}");
+
+    const target = Edits.symbolAtOffset(module, offset);
+    if (!target.isValid()) return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"symbol not found\"}");
+
+    const edits = (try Edits.renameEdits(alloc, module, target, new_name)) orelse
+        return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"invalid identifier\"}");
+
+    return editsEnvelopeJson(alloc, edits, new_name);
+}
+
+/// Same as renameToJson but parses against a sentinel-copy of `original`
+/// and applies edits against the raw bytes. Caller supplies both.
+pub fn renameApplyToJson(
+    alloc: Allocator,
+    source_sentinel: [:0]const u8,
+    original: []const u8,
+    offset: u32,
+    new_name: []const u8,
+) Allocator.Error![]u8 {
+    if (!Edits.isValidWgslIdentifier(new_name))
+        return renameApplyFailureJson(alloc, original, "invalid identifier");
+
+    const analysis = try analyzeOrNull(alloc, source_sentinel);
+    const module = analysis.module orelse return renameApplyFailureJson(alloc, original, "parse error");
+
+    const target = Edits.symbolAtOffset(module, offset);
+    if (!target.isValid()) return renameApplyFailureJson(alloc, original, "symbol not found");
+
+    const edits = (try Edits.renameEdits(alloc, module, target, new_name)) orelse
+        return renameApplyFailureJson(alloc, original, "invalid identifier");
+
+    const rewritten = try Edits.applyEdits(alloc, original, edits);
+    return renameApplySuccessJson(alloc, rewritten, edits, new_name);
+}
+
+// =========================================================================
+// Stable IDs
+// =========================================================================
+
+pub fn stableIdAtOffsetToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    offset: u32,
+) Allocator.Error![]u8 {
+    const analysis = try analyzeOrNull(alloc, source);
+    const module = analysis.module orelse return dupeLiteral(alloc, "{\"stableId\":null,\"error\":\"parse error\"}");
+
+    const maybe_id = StableId.stableIdAtOffset(alloc, module, offset) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.IdTooLong => return dupeLiteral(alloc, "{\"stableId\":null,\"error\":\"id too long\"}"),
+    };
+    if (maybe_id) |id| {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        try buf.appendSlice(alloc, "{\"stableId\":\"");
+        try Diagnostic.appendJsonEscaped(&buf, alloc, id.bytes);
+        try buf.appendSlice(alloc, "\"}");
+        return finalize(buf);
+    }
+    return dupeLiteral(alloc, "{\"stableId\":null}");
+}
+
+fn rangeJson(alloc: Allocator, range: StableId.Range) Allocator.Error![]u8 {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try buf.appendSlice(alloc, "{\"start\":");
+    try Diagnostic.appendInt(&buf, alloc, range.start);
+    try buf.appendSlice(alloc, ",\"end\":");
+    try Diagnostic.appendInt(&buf, alloc, range.end);
+    try buf.append(alloc, '}');
+    return finalize(buf);
+}
+
+pub fn locateStableIdToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    id_bytes: []const u8,
+) Allocator.Error![]u8 {
+    const analysis = try analyzeOrNull(alloc, source);
+    const module = analysis.module orelse return dupeLiteral(alloc, "{\"start\":null,\"end\":null,\"error\":\"parse error\"}");
+
+    if (StableId.locateStableId(module, id_bytes)) |range|
+        return rangeJson(alloc, range);
+    return dupeLiteral(alloc, "{\"start\":null,\"end\":null,\"error\":\"not found\"}");
+}
+
+pub fn locateDeclarationToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    id_bytes: []const u8,
+) Allocator.Error![]u8 {
+    const analysis = try analyzeOrNull(alloc, source);
+    const module = analysis.module orelse return dupeLiteral(alloc, "{\"start\":null,\"end\":null,\"error\":\"parse error\"}");
+
+    if (StableId.locateDeclaration(module, id_bytes)) |range|
+        return rangeJson(alloc, range);
+    return dupeLiteral(alloc, "{\"start\":null,\"end\":null,\"error\":\"not found\"}");
+}
+
+pub fn locateTypeToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    id_bytes: []const u8,
+) Allocator.Error![]u8 {
+    const analysis = try analyzeOrNull(alloc, source);
+    const module = analysis.module orelse return dupeLiteral(alloc, "{\"start\":null,\"end\":null,\"error\":\"parse error\"}");
+
+    if (StableId.locateType(module, id_bytes)) |range|
+        return rangeJson(alloc, range);
+    return dupeLiteral(alloc, "{\"start\":null,\"end\":null,\"error\":\"not found\"}");
+}
+
+pub fn renameByIdToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    id_bytes: []const u8,
+    new_name: []const u8,
+) Allocator.Error![]u8 {
+    if (!Edits.isValidWgslIdentifier(new_name))
+        return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"invalid identifier\"}");
+
+    const analysis = try analyzeOrNull(alloc, source);
+    const module = analysis.module orelse return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"parse error\"}");
+
+    const target = StableId.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"symbol not found\"}");
+
+    const edits = (try Edits.renameEdits(alloc, module, target, new_name)) orelse
+        return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"invalid identifier\"}");
+
+    return editsEnvelopeJson(alloc, edits, new_name);
+}
+
+pub fn removeDeclarationByIdToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    id_bytes: []const u8,
+) Allocator.Error![]u8 {
+    const analysis = try analyzeOrNull(alloc, source);
+    const module = analysis.module orelse return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"parse error\"}");
+
+    const target = StableId.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"symbol not found\"}");
+
+    const edits = (try Edits.removeDeclarationEdit(alloc, module, target)) orelse
+        return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"not a removable declaration\"}");
+
+    return editsEnvelopeJson(alloc, edits, "");
+}
+
+pub fn removeDeclarationApplyByIdToJson(
+    alloc: Allocator,
+    source_sentinel: [:0]const u8,
+    original: []const u8,
+    id_bytes: []const u8,
+) Allocator.Error![]u8 {
+    const analysis = try analyzeOrNull(alloc, source_sentinel);
+    const module = analysis.module orelse return renameApplyFailureJson(alloc, original, "parse error");
+
+    const target = StableId.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return renameApplyFailureJson(alloc, original, "symbol not found");
+
+    const edits = (try Edits.removeDeclarationEdit(alloc, module, target)) orelse
+        return renameApplyFailureJson(alloc, original, "not a removable declaration");
+
+    const rewritten = try Edits.applyEdits(alloc, original, edits);
+    return renameApplySuccessJson(alloc, rewritten, edits, "");
+}
+
+pub fn changeTypeByIdToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    id_bytes: []const u8,
+    new_type: []const u8,
+) Allocator.Error![]u8 {
+    const analysis = try analyzeOrNull(alloc, source);
+    const module = analysis.module orelse return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"parse error\"}");
+
+    const target = StableId.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"symbol not found\"}");
+
+    const edits = (try Edits.changeTypeEdit(alloc, module, target, new_type)) orelse
+        return dupeLiteral(alloc, "{\"edits\":[],\"error\":\"no type annotation or invalid replacement\"}");
+
+    return editsEnvelopeJson(alloc, edits, new_type);
+}
+
+pub fn changeTypeApplyByIdToJson(
+    alloc: Allocator,
+    source_sentinel: [:0]const u8,
+    original: []const u8,
+    id_bytes: []const u8,
+    new_type: []const u8,
+) Allocator.Error![]u8 {
+    const analysis = try analyzeOrNull(alloc, source_sentinel);
+    const module = analysis.module orelse return renameApplyFailureJson(alloc, original, "parse error");
+
+    const target = StableId.symbolForStableId(module, id_bytes);
+    if (!target.isValid()) return renameApplyFailureJson(alloc, original, "symbol not found");
+
+    const edits = (try Edits.changeTypeEdit(alloc, module, target, new_type)) orelse
+        return renameApplyFailureJson(alloc, original, "no type annotation or invalid replacement");
+
+    const rewritten = try Edits.applyEdits(alloc, original, edits);
+    return renameApplySuccessJson(alloc, rewritten, edits, new_type);
+}
+
+// =========================================================================
+// Lint
+// =========================================================================
+
+/// Parse the JSON config payload into `Linter.Options`. Empty or malformed
+/// payload degrades to defaults (zero rules enabled) rather than failing.
+pub fn parseLintConfig(
+    alloc: Allocator,
+    config_bytes: []const u8,
+) Allocator.Error!Linter.Options {
+    if (config_bytes.len == 0) return .{};
+    var parsed = std.json.parseFromSlice(std.json.Value, alloc, config_bytes, .{}) catch return .{};
+    defer parsed.deinit();
+    const root = parsed.value;
+    if (root != .object) return .{};
+
+    var extends_list: std.ArrayListUnmanaged([]const u8) = .empty;
+    if (root.object.get("extends")) |v| {
+        if (v == .array) {
+            for (v.array.items) |item| {
+                if (item == .string) {
+                    const duped = try alloc.dupe(u8, item.string);
+                    try extends_list.append(alloc, duped);
+                }
+            }
+        }
+    }
+
+    var rule_overrides: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
+    if (root.object.get("rules")) |v| {
+        if (v == .object) {
+            var it = v.object.iterator();
+            while (it.next()) |kv| {
+                const id = try alloc.dupe(u8, kv.key_ptr.*);
+                const sev = parseSeverity(kv.value_ptr.*) orelse continue;
+                try rule_overrides.append(alloc, .{
+                    .id = id,
+                    .severity = sev,
+                });
+            }
+        }
+    }
+
+    var report_unused = false;
+    if (root.object.get("reportUnusedDisableDirectives")) |v| {
+        if (v == .bool) report_unused = v.bool;
+    }
+
+    return .{
+        .extends = try extends_list.toOwnedSlice(alloc),
+        .rules = try rule_overrides.toOwnedSlice(alloc),
+        .report_unused_disable_directives = report_unused,
+    };
+}
+
+pub fn parseSeverity(value: std.json.Value) ?Diagnostic.Severity {
+    const s: []const u8 = switch (value) {
+        .string => |str| str,
+        .array => |arr| if (arr.items.len > 0 and arr.items[0] == .string) arr.items[0].string else return null,
+        else => return null,
+    };
+    if (std.mem.eql(u8, s, "off")) return .disabled;
+    if (std.mem.eql(u8, s, "warn") or std.mem.eql(u8, s, "warning")) return .warning;
+    if (std.mem.eql(u8, s, "error")) return .@"error";
+    return null;
+}
+
+fn writeLintDiagnostics(
+    buf: *std.ArrayListUnmanaged(u8),
+    alloc: Allocator,
+    result: *const wgslender.LintResult,
+) Allocator.Error!void {
+    try buf.append(alloc, '[');
+    var first = true;
+    for (result.analysis.diagnostics.items()) |*entry| {
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        try Diagnostic.entryToJson(buf, alloc, entry);
+    }
+    for (result.lint.diagnostics.items()) |*entry| {
+        if (!first) try buf.append(alloc, ',');
+        first = false;
+        try Diagnostic.entryToJson(buf, alloc, entry);
+    }
+    try buf.append(alloc, ']');
+}
+
+pub fn lintToResult(
+    alloc: Allocator,
+    source: [:0]const u8,
+    options: Linter.Options,
+) Allocator.Error!LintResult {
+    var result = wgslender.lint(alloc, source, options) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try writeLintDiagnostics(&buf, alloc, &result);
+
+    const error_count = result.analysis.diagnostics.errorCount() + result.lint.error_count;
+    return .{
+        .error_count = error_count,
+        .warning_count = result.lint.warning_count,
+        .json = finalize(buf),
+    };
+}
+
+pub fn lintFixToResult(
+    alloc: Allocator,
+    source: [:0]const u8,
+    options: Linter.Options,
+) Allocator.Error!LintFixResult {
+    var result = wgslender.lint(alloc, source, options) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    const fix_result = try Linter.Fixer.apply(
+        alloc,
+        source,
+        result.lint.diagnostics.items(),
+    );
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try writeLintDiagnostics(&buf, alloc, &result);
+
+    const error_count = result.analysis.diagnostics.errorCount() + result.lint.error_count;
+    return .{
+        .fixed = try alloc.dupe(u8, fix_result.fixed),
+        .error_count = error_count,
+        .warning_count = result.lint.warning_count,
+        .json = finalize(buf),
+    };
+}
+
+// =========================================================================
+// Compile
+// =========================================================================
+
+pub fn compileToResult(
+    alloc: Allocator,
+    source: [:0]const u8,
+    opts_json: []const u8,
+) Allocator.Error!CompileResult {
+    const config = Config.parseJson(alloc, opts_json) catch Config{};
+    const minify_options = config.toOptions();
+
+    // Compiler.compile collapses parse / codegen problems to OutOfMemory
+    // (see Compiler.zig). Mirror the WASM contract: any failure surfaces
+    // as a generic "compile failed" envelope rather than propagating —
+    // a real OOM will fail again on the dupeLiteral below.
+    const result = Compiler.compile(alloc, source, .{
+        .minify = true,
+        .minify_options = minify_options,
+    }) catch return .{
+        .wasm = try alloc.alloc(u8, 0),
+        .original_size = @intCast(source.len),
+        .errors_json = try dupeLiteral(alloc, "[{\"message\":\"compile failed\"}]"),
+    };
+
+    return .{
+        .wasm = try alloc.dupe(u8, result.wasm),
+        .original_size = @intCast(result.original_size),
+        .errors_json = try dupeLiteral(alloc, "[]"),
+    };
+}
+
+// =========================================================================
+// Tests
+// =========================================================================
+
+test "minifyJsonToJson: produces well-formed envelope" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "fn main() { let x = 1; }";
+    const json = try minifyJsonToJson(alloc, source, "{}");
+    try std.testing.expect(std.mem.startsWith(u8, json, "{\"code\":\""));
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"originalSize\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"minifiedSize\":") != null);
+}
+
+test "validateBareDiagnosticsToJson: returns array form" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
+    const r = try validateBareDiagnosticsToJson(alloc, source);
+    try std.testing.expect(r.valid);
+    try std.testing.expect(std.mem.startsWith(u8, r.json, "["));
+    try std.testing.expect(std.mem.endsWith(u8, r.json, "]"));
+}
+
+test "validateFlagsToJson: returns wrapped object form" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
+    const r = try validateFlagsToJson(alloc, source, false);
+    try std.testing.expect(r.valid);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "\"valid\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "\"diagnostics\":[") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "\"errorCount\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "\"warningCount\":") != null);
+}
+
+test "reflectToJson: produces bindings/structs/entryPoints" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "@group(0) @binding(0) var<uniform> u: f32; @compute @workgroup_size(1) fn main() {}";
+    const json = try reflectToJson(alloc, source);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"bindings\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"entryPoints\":") != null);
+}
+
+test "renameToJson: returns edits envelope" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "fn f() { let xy: i32 = 1; let _ = xy; }";
+    // Offset 16 lands on the `xy` declaration.
+    const json = try renameToJson(alloc, source, 13, "ab");
+    try std.testing.expect(std.mem.startsWith(u8, json, "{\"edits\":["));
+}
+
+test "lintToResult: returns diagnostics array" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
+    const r = try lintToResult(alloc, source, .{});
+    try std.testing.expect(std.mem.startsWith(u8, r.json, "["));
+    try std.testing.expect(std.mem.endsWith(u8, r.json, "]"));
+}
+
+test "compileToResult: produces a valid WASM header" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
+    const r = try compileToResult(alloc, source, "{}");
+    try std.testing.expect(r.wasm.len >= 8);
+    try std.testing.expect(std.mem.eql(u8, r.wasm[0..4], "\x00asm"));
+    try std.testing.expect(std.mem.eql(u8, r.errors_json, "[]"));
+}
