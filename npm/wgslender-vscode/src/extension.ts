@@ -12,6 +12,7 @@ import { registerCompileCommands } from './commands/compile';
 import { registerLspCommands } from './commands/lsp';
 import { registerMinifyCommands } from './commands/minify';
 import { registerReflectionView } from './reflection';
+import { registerMinifyStatusBar } from './status-bar';
 import { createInProcessTransports } from './transport';
 
 let client: LanguageClient | undefined;
@@ -42,6 +43,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
     ...registerMinifyCommands(context),
     ...registerCompileCommands(context),
     ...registerReflectionView(client),
+    ...registerMinifyStatusBar(context),
   );
 }
 
