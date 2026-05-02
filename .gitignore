@@ -4,6 +4,18 @@
 zig-out/
 .zig-cache/
 
+# C example binaries (built from examples/c/Makefile)
+/examples/c/minify
+/examples/c/validate
+/examples/c/reflect
+/examples/c/rename
+/examples/c/lint
+/examples/c/lint_fix
+/examples/c/compile
+/examples/c/minify_and_reflect
+/examples/c/remove_declaration_apply_by_id
+/examples/c/change_type_apply_by_id
+
 # Test artifacts
 *.test
 coverage.out
