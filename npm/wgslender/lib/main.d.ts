@@ -49,6 +49,22 @@ export interface MinifyOptions {
   keepNames?: string[];
 
   /**
+   * Sort top-level declarations by kind to improve DEFLATE compression of
+   * the minified output (5-29% gzip savings on real shaders).
+   * `compile()` defaults this to true; `minify()` defaults to false.
+   * @default false
+   */
+  sortDeclarations?: boolean;
+
+  /**
+   * Rename function-local symbols using a per-scope counter rather than a
+   * global frequency-sorted table, improving DEFLATE compression of the
+   * minified output. `compile()` defaults this to true; `minify()` to false.
+   * @default false
+   */
+  scopeLocalRename?: boolean;
+
+  /**
    * Generate a source map for the minified output.
    * @default false
    */
@@ -475,21 +491,12 @@ export function minify(source: string, options?: MinifyOptions): MinifyResult;
 /**
  * Options for compiling a WGSL shader to a `.wasm` binary. Forwarded to the
  * minifier pass that runs before BPE compression and codegen.
+ *
+ * Inherits all `MinifyOptions`. Note: `sortDeclarations` and
+ * `scopeLocalRename` default to `true` here (vs. `false` on `minify()`)
+ * because they materially improve compression of the embedded BPE payload.
  */
-export interface CompileOptions extends MinifyOptions {
-  /**
-   * Sort top-level declarations to improve DEFLATE compression of the
-   * embedded BPE payload.
-   * @default true
-   */
-  sortDeclarations?: boolean;
-  /**
-   * Rename function-local symbols using a per-scope counter to improve
-   * DEFLATE compression of the embedded BPE payload.
-   * @default true
-   */
-  scopeLocalRename?: boolean;
-}
+export interface CompileOptions extends MinifyOptions {}
 
 /**
  * Result of a `compile()` call.
