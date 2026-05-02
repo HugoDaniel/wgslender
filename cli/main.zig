@@ -174,6 +174,8 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
                     args.validate_format = .stylish;
                 }
             }
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            args.validate_format = .json;
         } else if (std.mem.eql(u8, arg, "--strict")) {
             args.strict = true;
         } else if (std.mem.eql(u8, arg, "--line-offset")) {
@@ -797,6 +799,7 @@ const usage_text =
     \\  --compact                        Compact JSON output (reflect)
     \\  --reflect-format <v1|v2>          Reflect JSON schema (default: v2)
     \\  --format <text|json|stylish>      Output format for validate/lint (default: text)
+    \\  --json                           Shorthand for --format json (validate/lint)
     \\  --strict                         Treat warnings as errors (validate)
     \\  --line-offset <n>                Add n to reported line numbers (validate/lint)
     \\  --extends <config>               (lint) Inherit rules from a shareable config
