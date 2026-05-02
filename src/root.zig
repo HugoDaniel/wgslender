@@ -292,14 +292,28 @@ pub fn reflect(gpa: Allocator, source: [:0]const u8) !Reflect.ReflectResult {
         error.OutOfMemory => return error.OutOfMemory,
         else => {
             var result = Reflect.ReflectResult{};
-            try result.errors.append(alloc, "parse error");
+            try appendParseErrors(&result, alloc, parser.errors.items);
+            if (result.errors.items.len == 0) try result.errors.append(alloc, "parse error");
             result._arena = arena;
             return result;
         },
     };
     var result = try Reflect.reflect(alloc, module);
+    if (parser.errors.items.len > 0) {
+        try appendParseErrors(&result, alloc, parser.errors.items);
+    }
     result._arena = arena;
     return result;
+}
+
+fn appendParseErrors(
+    result: *Reflect.ReflectResult,
+    arena: Allocator,
+    errors: []const Parser.ParseError,
+) !void {
+    for (errors) |err| {
+        try result.errors.append(arena, try arena.dupe(u8, err.message));
+    }
 }
 
 // =========================================================================
