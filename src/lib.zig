@@ -52,6 +52,7 @@ pub const WgslenderValidateResult = extern struct {
     json_ptr: ?[*]const u8,
     json_len: u32,
     error_count: u32,
+    warning_count: u32,
 };
 
 pub const WgslenderJsonResult = extern struct {
@@ -103,7 +104,7 @@ fn errorJsonResult() WgslenderJsonResult {
 }
 
 fn errorValidateResult() WgslenderValidateResult {
-    return .{ .valid = false, .json_ptr = null, .json_len = 0, .error_count = 0 };
+    return .{ .valid = false, .json_ptr = null, .json_len = 0, .error_count = 0, .warning_count = 0 };
 }
 
 /// Copy `data` into a fresh `page_allocator` slice. Null on OOM.
@@ -211,18 +212,20 @@ fn minifyAndReflectResultOut(json: []const u8) WgslenderMinifyAndReflectResult {
     };
 }
 
-fn validateResult(valid: bool, error_count: u32, data: []const u8) WgslenderValidateResult {
+fn validateResult(valid: bool, error_count: u32, warning_count: u32, data: []const u8) WgslenderValidateResult {
     const out = copyOut(data) orelse return .{
         .valid = valid,
         .json_ptr = null,
         .json_len = 0,
         .error_count = error_count,
+        .warning_count = warning_count,
     };
     return .{
         .valid = valid,
         .json_ptr = out.ptr,
         .json_len = @intCast(out.len),
         .error_count = error_count,
+        .warning_count = warning_count,
     };
 }
 
@@ -283,9 +286,9 @@ export fn wgslender_validate_c(
 
     const source = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch
         return errorValidateResult();
-    const r = api_json.validateFlagsToJson(alloc, source, flags & OPT_STRICT != 0) catch
+    const r = api_json.validateToJson(alloc, source, flags & OPT_STRICT != 0) catch
         return errorValidateResult();
-    return validateResult(r.valid, r.error_count, r.json);
+    return validateResult(r.valid, r.error_count, r.warning_count, r.json);
 }
 
 // =========================================================================

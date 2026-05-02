@@ -204,7 +204,8 @@ function compile(source, options) {
 /**
  * Validate WGSL source code.
  * @param {string} source - WGSL source code
- * @param {Object} [options] - Validation options (currently unused in Zig backend)
+ * @param {Object} [options] - Validation options
+ * @param {boolean} [options.strict=false] - Enable strict-mode validation
  * @returns {Object} Validation result with valid, diagnostics, errorCount, warningCount
  */
 function validate(source, options) {
@@ -216,30 +217,27 @@ function validate(source, options) {
     throw new TypeError('source must be a string');
   }
 
+  const flags = options && options.strict ? 1 : 0;
   const src = _writeString(source);
-  const resultPtr = _wasm.wgslender_validate(src.ptr, src.len);
+  const resultPtr = _wasm.wgslender_validate(src.ptr, src.len, flags);
   _wasm.wgslender_dealloc(src.ptr, src.allocLen);
 
   if (!resultPtr) {
     throw new Error('Validation failed: WASM returned null');
   }
 
-  // Read [u32 valid][u32 error_count][u32 json_len][json]
+  // Read [u32 valid][u32 error_count][u32 warning_count][u32 json_len][json]
   const view = new DataView(_wasm.memory.buffer);
   const valid = view.getUint32(resultPtr, true) === 1;
   const errorCount = view.getUint32(resultPtr + 4, true);
-  const jsonLen = view.getUint32(resultPtr + 8, true);
-  const diagnostics = JSON.parse(
-    _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 12, jsonLen))
+  const warningCount = view.getUint32(resultPtr + 8, true);
+  const jsonLen = view.getUint32(resultPtr + 12, true);
+  const wrapped = JSON.parse(
+    _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 16, jsonLen))
   );
-  _wasm.wgslender_dealloc(resultPtr, 12 + jsonLen);
+  _wasm.wgslender_dealloc(resultPtr, 16 + jsonLen);
 
-  let warningCount = 0;
-  for (const d of diagnostics) {
-    if (d.severity === 'warning') warningCount++;
-  }
-
-  return { valid, diagnostics, errorCount, warningCount };
+  return { valid, diagnostics: wrapped.diagnostics, errorCount, warningCount };
 }
 
 /**

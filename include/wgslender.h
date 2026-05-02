@@ -48,6 +48,7 @@ typedef struct {
     const uint8_t *json_ptr; /* JSON diagnostics (NULL on alloc failure). */
     uint32_t       json_len;
     uint32_t       error_count;
+    uint32_t       warning_count;
 } WgslenderValidateResult;
 
 typedef struct {

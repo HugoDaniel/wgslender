@@ -34,6 +34,7 @@ const Linter = @import("lint/Linter.zig");
 pub const ValidateResult = struct {
     valid: bool,
     error_count: u32,
+    warning_count: u32,
     json: []u8,
 };
 
@@ -201,30 +202,11 @@ fn writeDiagnosticsBare(
     try buf.append(alloc, ']');
 }
 
-/// Bare diagnostics array form (used by the WASM/npm surface). Returns
-/// `{ valid, error_count, json }` where `json` is the bare JSON array.
-pub fn validateBareDiagnosticsToJson(
-    alloc: Allocator,
-    source: [:0]const u8,
-) Allocator.Error!ValidateResult {
-    const result = wgslender.validateWithOptions(alloc, source, .{}) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-    };
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    try writeDiagnosticsBare(&buf, alloc, result.diagnostics.diagnostics.items);
-
-    return .{
-        .valid = result.valid,
-        .error_count = @intCast(result.diagnostics.diagnostics.items.len),
-        .json = finalize(buf),
-    };
-}
-
-/// Wrapped object form (used by the C ABI). Returns
-/// `{ valid, error_count, json }` where `json` is
-/// `{"valid":...,"diagnostics":[...],"errorCount":N,"warningCount":N}`.
-pub fn validateFlagsToJson(
+/// Validate WGSL source. Returns a wrapped-object envelope
+/// `{"valid":...,"diagnostics":[...],"errorCount":N,"warningCount":N}` plus
+/// authoritative severity-typed counts on the result struct. Both the C-ABI
+/// and WASM surfaces consume this same shape.
+pub fn validateToJson(
     alloc: Allocator,
     source: [:0]const u8,
     strict: bool,
@@ -233,20 +215,24 @@ pub fn validateFlagsToJson(
         error.OutOfMemory => return error.OutOfMemory,
     };
 
+    const error_count = result.diagnostics.errorCount();
+    const warning_count = result.diagnostics.warningCount();
+
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     try buf.appendSlice(alloc, "{\"valid\":");
     try buf.appendSlice(alloc, if (result.valid) "true" else "false");
     try buf.appendSlice(alloc, ",\"diagnostics\":");
     try writeDiagnosticsBare(&buf, alloc, result.diagnostics.diagnostics.items);
     try buf.appendSlice(alloc, ",\"errorCount\":");
-    try Diagnostic.appendInt(&buf, alloc, result.diagnostics.errorCount());
+    try Diagnostic.appendInt(&buf, alloc, error_count);
     try buf.appendSlice(alloc, ",\"warningCount\":");
-    try Diagnostic.appendInt(&buf, alloc, result.diagnostics.warningCount());
+    try Diagnostic.appendInt(&buf, alloc, warning_count);
     try buf.append(alloc, '}');
 
     return .{
         .valid = result.valid,
-        .error_count = result.diagnostics.errorCount(),
+        .error_count = error_count,
+        .warning_count = warning_count,
         .json = finalize(buf),
     };
 }
@@ -770,27 +756,14 @@ test "minifyJsonToJson: produces well-formed envelope" {
     try std.testing.expect(std.mem.indexOf(u8, json, "\"minifiedSize\":") != null);
 }
 
-test "validateBareDiagnosticsToJson: returns array form" {
+test "validateToJson: returns wrapped object form with severity-typed counts" {
     const a = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const alloc = arena.allocator();
 
     const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
-    const r = try validateBareDiagnosticsToJson(alloc, source);
-    try std.testing.expect(r.valid);
-    try std.testing.expect(std.mem.startsWith(u8, r.json, "["));
-    try std.testing.expect(std.mem.endsWith(u8, r.json, "]"));
-}
-
-test "validateFlagsToJson: returns wrapped object form" {
-    const a = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(a);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
-    const r = try validateFlagsToJson(alloc, source, false);
+    const r = try validateToJson(alloc, source, false);
     try std.testing.expect(r.valid);
     try std.testing.expect(std.mem.indexOf(u8, r.json, "\"valid\":true") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.json, "\"diagnostics\":[") != null);

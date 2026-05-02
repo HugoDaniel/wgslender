@@ -27,6 +27,8 @@ const OPT_TREE_SHAKING: u32 = 1 << 3;
 const OPT_MANGLE_EXTERNAL: u32 = 1 << 4;
 const OPT_PRESERVE_UNIFORM_STRUCTS: u32 = 1 << 5;
 
+const OPT_STRICT: u32 = 1 << 0;
+
 fn optionsFromFlags(flags: u32) Minifier.Options {
     return .{
         .minify_whitespace = flags & OPT_MINIFY_WHITESPACE != 0,
@@ -64,12 +66,13 @@ fn packLenPrefixed(bytes: []const u8) ?[*]u8 {
     return buf.ptr;
 }
 
-fn packValidate(valid: bool, error_count: u32, json: []const u8) ?[*]u8 {
-    const buf = wasm_allocator.alloc(u8, 12 + json.len) catch return null;
+fn packValidate(valid: bool, error_count: u32, warning_count: u32, json: []const u8) ?[*]u8 {
+    const buf = wasm_allocator.alloc(u8, 16 + json.len) catch return null;
     std.mem.writeInt(u32, buf[0..4], if (valid) 1 else 0, .little);
     std.mem.writeInt(u32, buf[4..8], error_count, .little);
-    std.mem.writeInt(u32, buf[8..12], @intCast(json.len), .little);
-    @memcpy(buf[12..][0..json.len], json);
+    std.mem.writeInt(u32, buf[8..12], warning_count, .little);
+    std.mem.writeInt(u32, buf[12..16], @intCast(json.len), .little);
+    @memcpy(buf[16..][0..json.len], json);
     return buf.ptr;
 }
 
@@ -156,15 +159,17 @@ export fn wgslender_minify_and_reflect_json(
 // Validate
 // =========================================================================
 
-/// Validate WGSL source. Output: `[u32 valid][u32 error_count][u32 json_len][u8... json]`.
-export fn wgslender_validate(source_ptr: [*]const u8, source_len: u32) callconv(.c) ?[*]u8 {
+/// Validate WGSL source.
+/// Output: `[u32 valid][u32 error_count][u32 warning_count][u32 json_len][u8... json]`
+/// where the JSON is `{"valid":...,"diagnostics":[...],"errorCount":N,"warningCount":N}`.
+export fn wgslender_validate(source_ptr: [*]const u8, source_len: u32, flags: u32) callconv(.c) ?[*]u8 {
     var arena = std.heap.ArenaAllocator.init(wasm_allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
     const source = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch return null;
-    const r = api_json.validateBareDiagnosticsToJson(alloc, source) catch return null;
-    return packValidate(r.valid, r.error_count, r.json);
+    const r = api_json.validateToJson(alloc, source, flags & OPT_STRICT != 0) catch return null;
+    return packValidate(r.valid, r.error_count, r.warning_count, r.json);
 }
 
 // =========================================================================

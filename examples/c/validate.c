@@ -8,7 +8,8 @@ static void validate(const char *label, const char *source, uint32_t flags) {
     WgslenderValidateResult r = wgslender_validate_c(
         (const uint8_t *)source, (uint32_t)strlen(source), flags);
 
-    printf("valid: %s, errors: %u\n", r.valid ? "true" : "false", r.error_count);
+    printf("valid: %s, errors: %u, warnings: %u\n",
+        r.valid ? "true" : "false", r.error_count, r.warning_count);
 
     if (r.json_ptr) {
         printf("diagnostics: %.*s\n", r.json_len, r.json_ptr);
