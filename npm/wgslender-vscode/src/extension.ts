@@ -11,6 +11,7 @@ import { LanguageClient, LanguageClientOptions, ServerOptions } from 'vscode-lan
 import { registerCompileCommands } from './commands/compile';
 import { registerLspCommands } from './commands/lsp';
 import { registerMinifyCommands } from './commands/minify';
+import { registerReflectionView } from './reflection';
 import { createInProcessTransports } from './transport';
 
 let client: LanguageClient | undefined;
@@ -40,6 +41,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
     ...registerLspCommands(client),
     ...registerMinifyCommands(context),
     ...registerCompileCommands(context),
+    ...registerReflectionView(client),
   );
 }
 
