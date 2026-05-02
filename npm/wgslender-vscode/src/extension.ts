@@ -15,11 +15,7 @@ let client: LanguageClient | undefined;
 export async function activate(context: ExtensionContext): Promise<void> {
   const wasmUri = Uri.joinPath(context.extensionUri, 'dist', 'wgslender-lsp.wasm');
   const wasmBytes = await workspace.fs.readFile(wasmUri);
-  // Re-wrap in a fresh ArrayBuffer-backed view so the type narrows from
-  // ArrayBufferLike to ArrayBuffer for WebAssembly.compile.
-  const buffer = new Uint8Array(wasmBytes.byteLength);
-  buffer.set(wasmBytes);
-  const wasmModule = await WebAssembly.compile(buffer);
+  const wasmModule = await WebAssembly.compile(wasmBytes as BufferSource);
 
   const lsp = await import('wgslender-lsp');
   await lsp.initialize({ wasmModule });

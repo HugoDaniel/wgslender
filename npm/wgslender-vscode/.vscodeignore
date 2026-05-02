@@ -12,10 +12,3 @@ esbuild.js
 tsconfig.json
 **/tsconfig.json
 node_modules/**
-!node_modules/wgslender/wgslender.wasm
-!node_modules/wgslender/lib/**
-!node_modules/wgslender/esm/**
-!node_modules/wgslender/configs.js
-!node_modules/wgslender/configs.d.ts
-!node_modules/wgslender-lsp/wgslender-lsp.wasm
-!node_modules/wgslender-lsp/index.*

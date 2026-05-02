@@ -4,7 +4,7 @@
 // it to the LanguageClient. The Worker is required in the browser host
 // because the synchronous WASM pump would otherwise block the UI thread.
 
-import { ExtensionContext, Uri } from 'vscode';
+import { ExtensionContext, Uri, workspace } from 'vscode';
 import { LanguageClient, LanguageClientOptions } from 'vscode-languageclient/browser';
 
 let client: LanguageClient | undefined;
@@ -18,6 +18,7 @@ export async function activate(context: ExtensionContext): Promise<void> {
     synchronize: {
       configurationSection: 'wgslender',
     },
+    initializationOptions: workspace.getConfiguration('wgslender'),
   };
 
   client = new LanguageClient('wgslender', 'wgslender Language Server', clientOptions, worker);

@@ -174,9 +174,7 @@
     "@vscode/test-electron": "^2.3.9",
     "@vscode/vsce": "^2.24.0",
     "esbuild": "^0.20.0",
-    "typescript": "^5.3.3"
-  },
-  "dependencies": {
+    "typescript": "^5.3.3",
     "vscode-languageclient": "^9.0.1",
     "wgslender": "file:../wgslender",
     "wgslender-lsp": "file:../wgslender-lsp"
