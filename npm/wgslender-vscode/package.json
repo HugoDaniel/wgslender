@@ -165,15 +165,18 @@
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "package": "vsce package",
-    "compile-tests": "tsc -p ./",
-    "test": "vscode-test"
+    "compile-tests": "tsc -p ./src/test/tsconfig.json",
+    "pretest": "npm run compile-tests && npm run build",
+    "test": "node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.6",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@vscode/test-electron": "^2.3.9",
     "@vscode/vsce": "^2.24.0",
     "esbuild": "^0.20.0",
+    "mocha": "^10.3.0",
     "typescript": "^5.3.3",
     "vscode-languageclient": "^9.0.1",
     "wgslender": "file:../wgslender",
