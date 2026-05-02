@@ -53,7 +53,7 @@ pub fn main(init: std.process.Init) !void {
             args.line_offset,
             args.input_path,
         ),
-        .reflect => try runReflect(arena, io, source, args.compact, args.reflect_format),
+        .reflect => try runReflect(arena, io, source, args.output_path, args.compact, args.reflect_format),
         .compile => try runCompile(arena, io, source, args.output_path, args.options),
         .lint => try runLint(
             arena,
@@ -507,10 +507,12 @@ fn runReflect(
     arena: std.mem.Allocator,
     io: std.Io,
     source: [:0]const u8,
+    output_path: ?[]const u8,
     compact: bool,
     version: wgslender.Reflect.JsonVersion,
 ) !void {
     const File = std.Io.File;
+    const Dir = std.Io.Dir;
 
     // Tokenize + parse
     const tokens = try wgslender.Lexer.tokenize(arena, source);
@@ -536,8 +538,15 @@ fn runReflect(
         try result.toJsonPrettyVersion(&json_buf, arena, version);
     }
 
-    try File.stdout().writeStreamingAll(io, json_buf.items);
-    try File.stdout().writeStreamingAll(io, "\n");
+    if (output_path) |path| {
+        const file = try Dir.cwd().createFile(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, json_buf.items);
+        try file.writeStreamingAll(io, "\n");
+    } else {
+        try File.stdout().writeStreamingAll(io, json_buf.items);
+        try File.stdout().writeStreamingAll(io, "\n");
+    }
 }
 
 fn runCompile(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, output_path: ?[]const u8, minify_options: wgslender.Minifier.Options) !void {
