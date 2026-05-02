@@ -60,6 +60,36 @@ pub const WgslenderJsonResult = extern struct {
     @"error": bool,
 };
 
+pub const WgslenderLintResult = extern struct {
+    error_count: u32,
+    warning_count: u32,
+    json_ptr: ?[*]const u8,
+    json_len: u32,
+};
+
+pub const WgslenderLintFixResult = extern struct {
+    error_count: u32,
+    warning_count: u32,
+    fixed_ptr: ?[*]const u8,
+    fixed_len: u32,
+    json_ptr: ?[*]const u8,
+    json_len: u32,
+};
+
+pub const WgslenderCompileResult = extern struct {
+    wasm_ptr: ?[*]const u8,
+    wasm_len: u32,
+    original_size: u32,
+    errors_json_ptr: ?[*]const u8,
+    errors_json_len: u32,
+};
+
+pub const WgslenderMinifyAndReflectResult = extern struct {
+    json_ptr: ?[*]const u8,
+    json_len: u32,
+    @"error": bool,
+};
+
 // =========================================================================
 // Helpers
 // =========================================================================
@@ -91,6 +121,94 @@ fn bytesResult(data: []const u8) WgslenderResult {
 fn jsonResult(data: []const u8) WgslenderJsonResult {
     const out = copyOut(data) orelse return errorJsonResult();
     return .{ .json_ptr = out.ptr, .json_len = @intCast(out.len), .@"error" = false };
+}
+
+fn errorLintResult() WgslenderLintResult {
+    return .{ .error_count = 0, .warning_count = 0, .json_ptr = null, .json_len = 0 };
+}
+
+fn errorLintFixResult() WgslenderLintFixResult {
+    return .{
+        .error_count = 0,
+        .warning_count = 0,
+        .fixed_ptr = null,
+        .fixed_len = 0,
+        .json_ptr = null,
+        .json_len = 0,
+    };
+}
+
+fn errorCompileResult(original_size: u32) WgslenderCompileResult {
+    return .{
+        .wasm_ptr = null,
+        .wasm_len = 0,
+        .original_size = original_size,
+        .errors_json_ptr = null,
+        .errors_json_len = 0,
+    };
+}
+
+fn errorMinifyAndReflectResult() WgslenderMinifyAndReflectResult {
+    return .{ .json_ptr = null, .json_len = 0, .@"error" = true };
+}
+
+fn lintResultOut(error_count: u32, warning_count: u32, json: []const u8) WgslenderLintResult {
+    const out = copyOut(json) orelse return errorLintResult();
+    return .{
+        .error_count = error_count,
+        .warning_count = warning_count,
+        .json_ptr = out.ptr,
+        .json_len = @intCast(out.len),
+    };
+}
+
+fn lintFixResultOut(
+    fixed: []const u8,
+    error_count: u32,
+    warning_count: u32,
+    json: []const u8,
+) WgslenderLintFixResult {
+    const fixed_out = copyOut(fixed) orelse return errorLintFixResult();
+    const json_out = copyOut(json) orelse {
+        page_allocator.free(fixed_out);
+        return errorLintFixResult();
+    };
+    return .{
+        .error_count = error_count,
+        .warning_count = warning_count,
+        .fixed_ptr = fixed_out.ptr,
+        .fixed_len = @intCast(fixed_out.len),
+        .json_ptr = json_out.ptr,
+        .json_len = @intCast(json_out.len),
+    };
+}
+
+fn compileResultOut(
+    wasm_bytes: []const u8,
+    original_size: u32,
+    errors_json: []const u8,
+) WgslenderCompileResult {
+    const wasm_out = copyOut(wasm_bytes) orelse return errorCompileResult(original_size);
+    const errors_out = copyOut(errors_json) orelse {
+        page_allocator.free(wasm_out);
+        return errorCompileResult(original_size);
+    };
+    return .{
+        .wasm_ptr = if (wasm_out.len > 0) wasm_out.ptr else null,
+        .wasm_len = @intCast(wasm_out.len),
+        .original_size = original_size,
+        .errors_json_ptr = errors_out.ptr,
+        .errors_json_len = @intCast(errors_out.len),
+    };
+}
+
+fn minifyAndReflectResultOut(json: []const u8) WgslenderMinifyAndReflectResult {
+    const out = copyOut(json) orelse return errorMinifyAndReflectResult();
+    return .{
+        .json_ptr = out.ptr,
+        .json_len = @intCast(out.len),
+        .@"error" = false,
+    };
 }
 
 fn validateResult(valid: bool, error_count: u32, data: []const u8) WgslenderValidateResult {
@@ -388,6 +506,133 @@ export fn wgslender_change_type_by_id_c(
         new_type_ptr[0..new_type_len],
     ) catch return errorJsonResult();
     return jsonResult(json);
+}
+
+export fn wgslender_remove_declaration_apply_by_id_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+) callconv(.c) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source_copy = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch
+        return errorJsonResult();
+    const json = api_json.removeDeclarationApplyByIdToJson(
+        alloc,
+        source_copy,
+        source_ptr[0..source_len],
+        id_ptr[0..id_len],
+    ) catch return errorJsonResult();
+    return jsonResult(json);
+}
+
+export fn wgslender_change_type_apply_by_id_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    id_ptr: [*]const u8,
+    id_len: u32,
+    new_type_ptr: [*]const u8,
+    new_type_len: u32,
+) callconv(.c) WgslenderJsonResult {
+    var arena = std.heap.ArenaAllocator.init(page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source_copy = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch
+        return errorJsonResult();
+    const json = api_json.changeTypeApplyByIdToJson(
+        alloc,
+        source_copy,
+        source_ptr[0..source_len],
+        id_ptr[0..id_len],
+        new_type_ptr[0..new_type_len],
+    ) catch return errorJsonResult();
+    return jsonResult(json);
+}
+
+// =========================================================================
+// Minify + Reflect (combined)
+// =========================================================================
+
+export fn wgslender_minify_and_reflect_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    opts_ptr: [*]const u8,
+    opts_len: u32,
+) callconv(.c) WgslenderMinifyAndReflectResult {
+    var arena = std.heap.ArenaAllocator.init(page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch
+        return errorMinifyAndReflectResult();
+    const json = api_json.minifyAndReflectJsonToJson(alloc, source, opts_ptr[0..opts_len]) catch
+        return errorMinifyAndReflectResult();
+    return minifyAndReflectResultOut(json);
+}
+
+// =========================================================================
+// Lint
+// =========================================================================
+
+export fn wgslender_lint_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    config_ptr: [*]const u8,
+    config_len: u32,
+) callconv(.c) WgslenderLintResult {
+    var arena = std.heap.ArenaAllocator.init(page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch
+        return errorLintResult();
+    const opts = api_json.parseLintConfig(alloc, config_ptr[0..config_len]) catch
+        return errorLintResult();
+    const r = api_json.lintToResult(alloc, source, opts) catch return errorLintResult();
+    return lintResultOut(r.error_count, r.warning_count, r.json);
+}
+
+export fn wgslender_lint_fix_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    config_ptr: [*]const u8,
+    config_len: u32,
+) callconv(.c) WgslenderLintFixResult {
+    var arena = std.heap.ArenaAllocator.init(page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch
+        return errorLintFixResult();
+    const opts = api_json.parseLintConfig(alloc, config_ptr[0..config_len]) catch
+        return errorLintFixResult();
+    const r = api_json.lintFixToResult(alloc, source, opts) catch return errorLintFixResult();
+    return lintFixResultOut(r.fixed, r.error_count, r.warning_count, r.json);
+}
+
+// =========================================================================
+// Compile
+// =========================================================================
+
+export fn wgslender_compile_c(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    opts_ptr: [*]const u8,
+    opts_len: u32,
+) callconv(.c) WgslenderCompileResult {
+    var arena = std.heap.ArenaAllocator.init(page_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch
+        return errorCompileResult(source_len);
+    const r = api_json.compileToResult(alloc, source, opts_ptr[0..opts_len]) catch
+        return errorCompileResult(source_len);
+    return compileResultOut(r.wasm, r.original_size, r.errors_json);
 }
 
 // =========================================================================

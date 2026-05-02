@@ -56,6 +56,36 @@ typedef struct {
     bool           error;
 } WgslenderJsonResult;
 
+typedef struct {
+    uint32_t       error_count;
+    uint32_t       warning_count;
+    const uint8_t *json_ptr; /* JSON diagnostics array (NULL on alloc failure). */
+    uint32_t       json_len;
+} WgslenderLintResult;
+
+typedef struct {
+    uint32_t       error_count;
+    uint32_t       warning_count;
+    const uint8_t *fixed_ptr; /* Rewritten source (NULL on alloc failure). */
+    uint32_t       fixed_len;
+    const uint8_t *json_ptr;  /* JSON diagnostics array. */
+    uint32_t       json_len;
+} WgslenderLintFixResult;
+
+typedef struct {
+    const uint8_t *wasm_ptr;        /* Generated WASM (NULL when wasm_len == 0). */
+    uint32_t       wasm_len;
+    uint32_t       original_size;
+    const uint8_t *errors_json_ptr; /* JSON array of error objects. */
+    uint32_t       errors_json_len;
+} WgslenderCompileResult;
+
+typedef struct {
+    const uint8_t *json_ptr;        /* {"minify":{...},"reflect":{...}} envelope. */
+    uint32_t       json_len;
+    bool           error;
+} WgslenderMinifyAndReflectResult;
+
 /* ── Functions ──────────────────────────────────────────────────── */
 
 /**
@@ -165,6 +195,101 @@ WgslenderJsonResult wgslender_rename_by_id_c(
     const uint8_t *source_ptr, uint32_t source_len,
     const uint8_t *id_ptr, uint32_t id_len,
     const uint8_t *new_name_ptr, uint32_t new_name_len);
+
+/**
+ * Resolve a stable ID to its full declaration byte range.
+ * Returns JSON: {"start":N,"end":N} or
+ * {"start":null,"end":null,"error":"..."}.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_locate_declaration_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len);
+
+/**
+ * Resolve a stable ID to its type-annotation byte range.
+ * Same JSON shape as wgslender_locate_declaration_c.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_locate_type_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len);
+
+/**
+ * Compute the edit that deletes the full declaration for a stable ID.
+ * Returns JSON: {"edits":[{...}]} or {"edits":[],"error":"..."}.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_remove_declaration_by_id_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len);
+
+/**
+ * Remove a declaration by stable ID and return the rewritten source.
+ * Same JSON shape as wgslender_rename_apply_c.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_remove_declaration_apply_by_id_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len);
+
+/**
+ * Compute the edit that replaces the type annotation for a stable ID.
+ * Returns JSON: {"edits":[{...}]} or {"edits":[],"error":"..."}.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_change_type_by_id_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len,
+    const uint8_t *new_type_ptr, uint32_t new_type_len);
+
+/**
+ * Change a type annotation by stable ID and return the rewritten source.
+ * Same JSON shape as wgslender_rename_apply_c.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderJsonResult wgslender_change_type_apply_by_id_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *id_ptr, uint32_t id_len,
+    const uint8_t *new_type_ptr, uint32_t new_type_len);
+
+/**
+ * Combined minify + reflect with JSON options. Returns
+ * {"minify":{...},"reflect":{...}} envelope.
+ * Free result.json_ptr with wgslender_free_c.
+ */
+WgslenderMinifyAndReflectResult wgslender_minify_and_reflect_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *opts_ptr, uint32_t opts_len);
+
+/**
+ * Lint WGSL source with a JSON config (extends + per-rule severity).
+ * Empty config buffer → defaults (no rules enabled).
+ * `json_ptr` carries a JSON diagnostics array.
+ * Free `json_ptr` with wgslender_free_c.
+ */
+WgslenderLintResult wgslender_lint_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *config_ptr, uint32_t config_len);
+
+/**
+ * Lint and apply autofixes in a single call. Same input shape as
+ * wgslender_lint_c.
+ * `fixed_ptr` carries the rewritten source; `json_ptr` carries the
+ * remaining diagnostics. Both must be freed with wgslender_free_c.
+ */
+WgslenderLintFixResult wgslender_lint_fix_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *config_ptr, uint32_t config_len);
+
+/**
+ * Compile WGSL source to a binary `.wasm` shader. `opts_ptr` accepts
+ * the same JSON keys as wgslender_minify_json_c.
+ * Free `wasm_ptr` and `errors_json_ptr` with wgslender_free_c.
+ */
+WgslenderCompileResult wgslender_compile_c(
+    const uint8_t *source_ptr, uint32_t source_len,
+    const uint8_t *opts_ptr, uint32_t opts_len);
 
 /**
  * Free memory returned by wgslender functions.
