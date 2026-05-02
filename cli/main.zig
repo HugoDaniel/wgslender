@@ -815,7 +815,8 @@ const usage_text =
     \\  --reflect-format <v1|v2>          Reflect JSON schema (default: v2)
     \\  --format <text|json|stylish>      Output format for validate/lint (default: text)
     \\  --json                           Shorthand for --format json (validate/lint)
-    \\  --strict                         Treat warnings as errors (validate)
+    \\  --strict                         Treat warnings as errors (validate only;
+    \\                                     for lint use --max-warnings 0)
     \\  --line-offset <n>                Add n to reported line numbers (validate/lint)
     \\  --extends <config>               (lint) Inherit rules from a shareable config
     \\                                     (@wgslender/recommended, @wgslender/performance,
