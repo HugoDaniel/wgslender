@@ -38,7 +38,7 @@ wgslender --config myconfig.json input.wgsl  # With config
 wgslender reflect input.wgsl                 # Reflect to JSON
 wgslender reflect --compact input.wgsl       # Compact JSON
 wgslender validate input.wgsl                # Validate shader
-wgslender validate --json input.wgsl         # Validation JSON
+wgslender validate --format json input.wgsl  # Validation JSON
 ```
 
 ### Node.js/Browser (WASM)
