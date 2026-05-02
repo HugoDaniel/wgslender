@@ -140,7 +140,7 @@ export fn wgslender_minify_json(
 }
 
 /// Combined minify+reflect. Output: `[u32 json_len][u8... json]`.
-export fn wgslender_minify_and_reflect_json(
+export fn wgslender_minify_and_reflect(
     source_ptr: [*]const u8,
     source_len: u32,
     opts_ptr: [*]const u8,
