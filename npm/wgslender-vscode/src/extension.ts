@@ -8,6 +8,7 @@
 import { ExtensionContext, Uri, workspace } from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions } from 'vscode-languageclient/node';
 
+import { registerLspCommands } from './commands/lsp';
 import { createInProcessTransports } from './transport';
 
 let client: LanguageClient | undefined;
@@ -32,6 +33,8 @@ export async function activate(context: ExtensionContext): Promise<void> {
 
   client = new LanguageClient('wgslender', 'wgslender Language Server', serverOptions, clientOptions);
   await client.start();
+
+  context.subscriptions.push(...registerLspCommands(client));
 }
 
 export async function deactivate(): Promise<void> {

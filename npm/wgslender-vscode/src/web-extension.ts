@@ -7,6 +7,8 @@
 import { ExtensionContext, Uri, workspace } from 'vscode';
 import { LanguageClient, LanguageClientOptions } from 'vscode-languageclient/browser';
 
+import { registerLspCommands } from './commands/lsp';
+
 let client: LanguageClient | undefined;
 
 export async function activate(context: ExtensionContext): Promise<void> {
@@ -23,6 +25,8 @@ export async function activate(context: ExtensionContext): Promise<void> {
 
   client = new LanguageClient('wgslender', 'wgslender Language Server', clientOptions, worker);
   await client.start();
+
+  context.subscriptions.push(...registerLspCommands(client));
 }
 
 export async function deactivate(): Promise<void> {
