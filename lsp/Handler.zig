@@ -1101,273 +1101,37 @@ const wgsl_type_names = [_][]const u8{
 };
 
 // =========================================================================
-// LSP Feature: Signature Help
+// LSP Feature: Signature Help — see lsp/handler/signature_help.zig
 // =========================================================================
 
-pub const SignatureInfo = struct {
-    label: []const u8,
-    parameters: []const []const u8,
-    active_parameter: u32,
-};
-
-pub fn computeSignatureHelp(self: *Handler, uri: []const u8, position: Position) !?SignatureInfo {
-    const doc = self.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
-
-    // Scan backward to find enclosing '(' and the function name before it
-    var paren_depth: i32 = 0;
-    var comma_count: u32 = 0;
-    var i: u32 = offset;
-    while (i > 0) {
-        i -= 1;
-        const c = source[i];
-        if (c == ')') {
-            paren_depth += 1;
-        } else if (c == '(') {
-            if (paren_depth == 0) break; // found the enclosing '('
-            paren_depth -= 1;
-        } else if (c == ',' and paren_depth == 0) {
-            comma_count += 1;
-        }
-    } else {
-        return null; // no enclosing '('
-    }
-
-    // i now points to '('. Find the function name before it.
-    if (i == 0) return null;
-    var name_end = i;
-    // Skip whitespace between name and '('
-    while (name_end > 0 and source[name_end - 1] == ' ') name_end -= 1;
-    if (name_end == 0) return null;
-    var name_start = name_end;
-    while (name_start > 0 and (std.ascii.isAlphanumeric(source[name_start - 1]) or source[name_start - 1] == '_')) name_start -= 1;
-    const func_name = source[name_start..name_end];
-    if (func_name.len == 0) return null;
-
-    // Check if it's a builtin
-    if (Builtins.lookup(func_name)) |builtin| {
-        var buf: [256]u8 = undefined;
-        const label = std.fmt.bufPrint(&buf, "{s}({d}..{d} args)", .{ func_name, builtin.min_args, builtin.max_args }) catch return null;
-        return .{
-            .label = try self.gpa.dupe(u8, label),
-            .parameters = &.{},
-            .active_parameter = comma_count,
-        };
-    }
-
-    // Check if it's a user-defined function
-    const analysis = try self.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-    for (module.declarations.items) |decl| {
-        switch (decl) {
-            .function => |f| {
-                if (!f.name.isValid()) continue;
-                const sym = module.symbols.items[f.name.index()];
-                if (!std.mem.eql(u8, sym.original_name, func_name)) continue;
-
-                // Build signature label and parameter names
-                var buf: [512]u8 = undefined;
-                var pos_in_buf: usize = 0;
-                const header = std.fmt.bufPrint(&buf, "fn {s}(", .{func_name}) catch return null;
-                pos_in_buf = header.len;
-
-                const param_names = try self.gpa.alloc([]const u8, f.parameters.items.len);
-                for (f.parameters.items, 0..) |param, pi| {
-                    if (pi > 0) {
-                        const sep = std.fmt.bufPrint(buf[pos_in_buf..], ", ", .{}) catch return null;
-                        pos_in_buf += sep.len;
-                    }
-                    const p_sym = module.symbols.items[param.name.index()];
-                    const p_type = param.typ;
-                    const p_str = switch (p_type) {
-                        .ident => |t| t.name,
-                        .vec => |t| t.shorthand,
-                        .mat => |t| t.shorthand,
-                        else => "?",
-                    };
-                    param_names[pi] = p_sym.original_name;
-                    const fld = std.fmt.bufPrint(buf[pos_in_buf..], "{s}: {s}", .{ p_sym.original_name, p_str }) catch return null;
-                    pos_in_buf += fld.len;
-                }
-
-                const tail_str = if (f.return_type) |rt| blk: {
-                    const rt_str = switch (rt) {
-                        .ident => |t| t.name,
-                        .vec => |t| t.shorthand,
-                        .mat => |t| t.shorthand,
-                        else => "?",
-                    };
-                    break :blk std.fmt.bufPrint(buf[pos_in_buf..], ") -> {s}", .{rt_str}) catch return null;
-                } else std.fmt.bufPrint(buf[pos_in_buf..], ")", .{}) catch return null;
-                pos_in_buf += tail_str.len;
-
-                return .{
-                    .label = try self.gpa.dupe(u8, buf[0..pos_in_buf]),
-                    .parameters = param_names,
-                    .active_parameter = comma_count,
-                };
-            },
-            else => {},
-        }
-    }
-
-    return null;
-}
+pub const SignatureHelp = @import("handler/signature_help.zig");
+pub const SignatureInfo = SignatureHelp.SignatureInfo;
+pub const computeSignatureHelp = SignatureHelp.computeSignatureHelp;
 
 // =========================================================================
-// LSP Feature: Document Symbols
+// LSP Feature: Document Symbols — see lsp/handler/document_symbols.zig
 // =========================================================================
 
-pub const DocumentSymbolInfo = struct {
-    name: []const u8,
-    kind: SymbolKind,
-    range: Range,
-    selection_range: Range,
-    children: []const DocumentSymbolInfo,
-};
-
-pub const SymbolKind = enum(u8) {
-    function,
-    struct_type,
-    variable,
-    constant,
-    field,
-    type_alias,
-    override,
-};
-
-pub fn computeDocumentSymbols(self: *Handler, uri: []const u8) ![]DocumentSymbolInfo {
-    const analysis = self.analyzeDocument(uri) catch return &.{};
-    const module = analysis.module orelse return &.{};
-    const source = module.source;
-
-    var symbols: std.ArrayListUnmanaged(DocumentSymbolInfo) = .empty;
-    defer symbols.deinit(self.gpa);
-
-    for (module.declarations.items, 0..) |decl, di| {
-        const name_ref = decl.nameRef();
-        if (!name_ref.isValid()) continue;
-        const sym = module.symbols.items[name_ref.index()];
-
-        const kind: SymbolKind = switch (decl) {
-            .function => .function,
-            .@"struct" => .struct_type,
-            .@"var" => .variable,
-            .@"const" => .constant,
-            .let => .constant,
-            .override => .override,
-            .alias => .type_alias,
-            .const_assert => continue,
-        };
-
-        // Selection range = the name identifier
-        const sel_range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
-
-        // Enclosing range: from this decl's name to next decl's name (or EOF)
-        const range_end: u32 = if (di + 1 < module.declarations.items.len) blk: {
-            const next_ref = module.declarations.items[di + 1].nameRef();
-            if (next_ref.isValid()) break :blk module.symbols.items[next_ref.index()].loc;
-            break :blk @as(u32, @intCast(source.len));
-        } else @as(u32, @intCast(source.len));
-        const range = offsetRangeToLspRange(source, sym.loc, range_end) orelse continue;
-
-        // Children for structs
-        var children: []const DocumentSymbolInfo = &.{};
-        if (decl == .@"struct") {
-            const st = decl.@"struct";
-            var ch: std.ArrayListUnmanaged(DocumentSymbolInfo) = .empty;
-            for (st.members.items) |member| {
-                if (!member.name.isValid()) continue;
-                const m_sym = module.symbols.items[member.name.index()];
-                const m_sel = offsetRangeToLspRange(source, m_sym.loc, m_sym.loc + @as(u32, @intCast(m_sym.original_name.len))) orelse continue;
-                ch.append(self.gpa, .{
-                    .name = m_sym.original_name,
-                    .kind = .field,
-                    .range = m_sel,
-                    .selection_range = m_sel,
-                    .children = &.{},
-                }) catch continue;
-            }
-            children = ch.toOwnedSlice(self.gpa) catch &.{};
-        }
-
-        try symbols.append(self.gpa, .{
-            .name = sym.original_name,
-            .kind = kind,
-            .range = range,
-            .selection_range = sel_range,
-            .children = children,
-        });
-    }
-
-    return try self.gpa.dupe(DocumentSymbolInfo, symbols.items);
-}
+pub const DocumentSymbols = @import("handler/document_symbols.zig");
+pub const DocumentSymbolInfo = DocumentSymbols.DocumentSymbolInfo;
+pub const SymbolKind = DocumentSymbols.SymbolKind;
+pub const computeDocumentSymbols = DocumentSymbols.computeDocumentSymbols;
 
 // =========================================================================
-// LSP Feature: Folding Ranges
+// LSP Feature: Folding Ranges — see lsp/handler/folding_ranges.zig
 // =========================================================================
 
-pub const FoldingRangeInfo = struct {
-    start_line: u32,
-    end_line: u32,
-    kind: enum { region, comment },
-};
+pub const FoldingRanges = @import("handler/folding_ranges.zig");
+pub const FoldingRangeInfo = FoldingRanges.FoldingRangeInfo;
+pub const computeFoldingRanges = FoldingRanges.computeFoldingRanges;
 
-pub fn computeFoldingRanges(self: *Handler, uri: []const u8) ![]FoldingRangeInfo {
-    const analysis = self.analyzeDocument(uri) catch return &.{};
-    const module = analysis.module orelse return &.{};
-    const source = module.source;
+// =========================================================================
+// LSP Feature: Selection Range — see lsp/handler/selection_range.zig
+// =========================================================================
 
-    var ranges: std.ArrayListUnmanaged(FoldingRangeInfo) = .empty;
-    defer ranges.deinit(self.gpa);
-
-    for (module.declarations.items) |decl| {
-        switch (decl) {
-            .function => |f| {
-                if (f.body == null) continue;
-                if (!f.name.isValid()) continue;
-                const sym = module.symbols.items[f.name.index()];
-                const start_pos = offsetToLspPosition(source, sym.loc) orelse continue;
-                // Find closing brace by scanning source
-                if (findClosingBrace(source, sym.loc)) |end_offset| {
-                    const end_pos = offsetToLspPosition(source, end_offset) orelse continue;
-                    if (end_pos.line > start_pos.line) {
-                        try ranges.append(self.gpa, .{ .start_line = start_pos.line, .end_line = end_pos.line, .kind = .region });
-                    }
-                }
-            },
-            .@"struct" => |s| {
-                if (!s.name.isValid()) continue;
-                const sym = module.symbols.items[s.name.index()];
-                const start_pos = offsetToLspPosition(source, sym.loc) orelse continue;
-                if (findClosingBrace(source, sym.loc)) |end_offset| {
-                    const end_pos = offsetToLspPosition(source, end_offset) orelse continue;
-                    if (end_pos.line > start_pos.line) {
-                        try ranges.append(self.gpa, .{ .start_line = start_pos.line, .end_line = end_pos.line, .kind = .region });
-                    }
-                }
-            },
-            else => {},
-        }
-    }
-
-    return try self.gpa.dupe(FoldingRangeInfo, ranges.items);
-}
-
-fn findClosingBrace(source: []const u8, start: u32) ?u32 {
-    var depth: i32 = 0;
-    var i: u32 = start;
-    while (i < source.len) : (i += 1) {
-        if (source[i] == '{') {
-            depth += 1;
-        } else if (source[i] == '}') {
-            depth -= 1;
-            if (depth == 0) return i;
-        }
-    }
-    return null;
-}
+pub const SelectionRange = @import("handler/selection_range.zig");
+pub const SelectionRangeInfo = SelectionRange.SelectionRangeInfo;
+pub const computeSelectionRange = SelectionRange.computeSelectionRange;
 
 // =========================================================================
 // LSP Feature: Inlay Hints
@@ -2787,81 +2551,6 @@ fn isBuiltinTypeName(name: []const u8) bool {
     return false;
 }
 
-// =========================================================================
-// LSP Feature: Selection Range
-// =========================================================================
-
-pub const SelectionRangeInfo = struct {
-    range: Range,
-    parent: ?*const SelectionRangeInfo,
-};
-
-pub fn computeSelectionRange(self: *Handler, uri: []const u8, position: Position) !?*SelectionRangeInfo {
-    const doc = self.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
-    const analysis = try self.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-
-    // Build chain from innermost to outermost:
-    // 1. Whole file (always the outermost)
-    const file_range = offsetRangeToLspRange(source, 0, @intCast(source.len)) orelse return null;
-    const file_node = try self.gpa.create(SelectionRangeInfo);
-    file_node.* = .{ .range = file_range, .parent = null };
-
-    // 2. Find which declaration contains the offset
-    for (module.declarations.items) |decl| {
-        switch (decl) {
-            .function => |f| {
-                if (!f.name.isValid()) continue;
-                const sym = module.symbols.items[f.name.index()];
-                if (f.body == null) continue;
-                // Check if offset is within this function's range
-                const end_offset = findClosingBrace(source, sym.loc) orelse continue;
-                if (offset < sym.loc or offset > end_offset) continue;
-
-                // Function declaration range
-                const fn_range = offsetRangeToLspRange(source, sym.loc, end_offset + 1) orelse continue;
-                const fn_node = try self.gpa.create(SelectionRangeInfo);
-                fn_node.* = .{ .range = fn_range, .parent = file_node };
-
-                // Name range
-                const name_range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
-                if (offset >= sym.loc and offset < sym.loc + @as(u32, @intCast(sym.original_name.len))) {
-                    const name_node = try self.gpa.create(SelectionRangeInfo);
-                    name_node.* = .{ .range = name_range, .parent = fn_node };
-                    return name_node;
-                }
-
-                return fn_node;
-            },
-            .@"struct" => |s| {
-                if (!s.name.isValid()) continue;
-                const sym = module.symbols.items[s.name.index()];
-                const end_offset = findClosingBrace(source, sym.loc) orelse continue;
-                if (offset < sym.loc or offset > end_offset) continue;
-
-                const struct_range = offsetRangeToLspRange(source, sym.loc, end_offset + 1) orelse continue;
-                const struct_node = try self.gpa.create(SelectionRangeInfo);
-                struct_node.* = .{ .range = struct_range, .parent = file_node };
-                return struct_node;
-            },
-            else => {
-                const name_ref = decl.nameRef();
-                if (!name_ref.isValid()) continue;
-                const sym = module.symbols.items[name_ref.index()];
-                if (offset >= sym.loc and offset < sym.loc + @as(u32, @intCast(sym.original_name.len))) {
-                    const range = offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
-                    const node = try self.gpa.create(SelectionRangeInfo);
-                    node.* = .{ .range = range, .parent = file_node };
-                    return node;
-                }
-            },
-        }
-    }
-
-    return file_node;
-}
 
 // =========================================================================
 // LSP Feature: Call Hierarchy
