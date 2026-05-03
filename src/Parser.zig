@@ -38,14 +38,6 @@ scopes_in_order: std.ArrayListUnmanaged(*Ast.Scope),
 errors: std.ArrayListUnmanaged(ParseError),
 expr_context: []const u8 = "",
 
-/// Sticky OOM flag. Set by the `markOom` helper when an arena allocation
-/// inside a void-returning helper (CST builder close, error-list append,
-/// duplicate-declaration message) hits `error.OutOfMemory`. Checked at
-/// `parse()` return and translated to `error.OutOfMemory`, so the caller
-/// sees OOM exactly once. After OOM, the AST, error list, and CST state
-/// are all potentially incomplete — callers must not inspect them.
-oom: bool = false,
-
 /// Recursive descent depth counters. Each `parseExpression` /
 /// `parseStatement` / `parseType` entry bumps the matching counter and
 /// emits a `nesting_too_deep` diagnostic if it would exceed the limit
@@ -293,16 +285,7 @@ pub fn parse(self: *Parser) !*Ast.Module {
     std.debug.assert(self.stmt_depth == 0);
     std.debug.assert(self.type_depth == 0);
 
-    // Surface any OOM seen by void-returning helpers (see `self.oom`).
-    if (self.oom) return error.OutOfMemory;
-
     return module;
-}
-
-/// Called by helpers that can't propagate `error.OutOfMemory` through
-/// their signature. Sets the sticky flag consumed at `parse()` return.
-fn markOom(self: *Parser) void {
-    self.oom = true;
 }
 
 // =========================================================================
@@ -362,9 +345,9 @@ fn cstOpen(self: *Parser) ?Cst.Marker {
     return builder.open() catch null;
 }
 
-fn cstClose(self: *Parser, maybe_marker: ?Cst.Marker, kind: Cst.Kind) void {
+fn cstClose(self: *Parser, maybe_marker: ?Cst.Marker, kind: Cst.Kind) Allocator.Error!void {
     if (self.cst) |builder| {
-        if (maybe_marker) |m| builder.close(m, kind) catch self.markOom();
+        if (maybe_marker) |m| try builder.close(m, kind);
     }
 }
 
@@ -400,10 +383,10 @@ fn eat(self: *Parser, tag: Tag) bool {
     return false;
 }
 
-fn expect(self: *Parser, tag: Tag) bool {
+fn expect(self: *Parser, tag: Tag) Allocator.Error!bool {
     if (self.currentTag() != tag) {
         const msg = std.fmt.allocPrint(self.arena, "expected '{s}'", .{tag.symbol()}) catch "expected token";
-        self.addError(msg);
+        try self.addError(msg);
         return false;
     }
     self.advance();
@@ -418,7 +401,7 @@ fn expect(self: *Parser, tag: Tag) bool {
 /// Rewrites the current non-trivia token entry (parser-owned storage) by
 /// retagging and bumping the start byte by 1. The CST's all-stream tokens
 /// are untouched, so the raw token trivia/byte tree remains faithful.
-fn expectTemplateClose(self: *Parser) bool {
+fn expectTemplateClose(self: *Parser) Allocator.Error!bool {
     switch (self.currentTag()) {
         .gt => {
             self.advance();
@@ -445,7 +428,7 @@ fn expectTemplateClose(self: *Parser) bool {
         },
         else => {
             const msg = std.fmt.allocPrint(self.arena, "expected '>'", .{}) catch "expected '>'";
-            self.addError(msg);
+            try self.addError(msg);
             return false;
         },
     }
@@ -577,21 +560,21 @@ fn prevTokenEnd(self: *const Parser) u32 {
     return start + @as(u32, @intCast(text.len));
 }
 
-fn addError(self: *Parser, message: []const u8) void {
+fn addError(self: *Parser, message: []const u8) Allocator.Error!void {
     const start = self.currentStart();
     const text = self.currentText();
-    self.errors.append(self.arena, .{ .message = message, .pos = start, .end = start +| @as(u32, @intCast(text.len)) }) catch self.markOom();
+    try self.errors.append(self.arena, .{ .message = message, .pos = start, .end = start +| @as(u32, @intCast(text.len)) });
 }
 
-fn addErrorWithCode(self: *Parser, message: []const u8, code: []const u8) void {
+fn addErrorWithCode(self: *Parser, message: []const u8, code: []const u8) Allocator.Error!void {
     const start = self.currentStart();
     const text = self.currentText();
-    self.errors.append(self.arena, .{
+    try self.errors.append(self.arena, .{
         .message = message,
         .pos = start,
         .end = start +| @as(u32, @intCast(text.len)),
         .code = code,
-    }) catch self.markOom();
+    });
 }
 
 fn isIdentLike(self: *const Parser) bool {
@@ -606,14 +589,14 @@ fn peekIdentLike(self: *const Parser, offset: u32) bool {
 
 /// Check if current token is an identifier (or reserved word used as identifier).
 /// Emits a diagnostic for reserved words but returns the text for error recovery.
-fn eatIdent(self: *Parser) ?[]const u8 {
+fn eatIdent(self: *Parser) Allocator.Error!?[]const u8 {
     if (self.currentTag() == .reserved_ident) {
         const text = self.currentText();
         const msg = if (text.len >= 2 and text[0] == '_' and text[1] == '_')
             std.fmt.allocPrint(self.arena, "identifier '{s}' must not start with '__'", .{text}) catch "identifier must not start with '__'"
         else
             std.fmt.allocPrint(self.arena, "'{s}' is a reserved word and cannot be used as an identifier", .{text}) catch "use of reserved word";
-        self.errors.append(self.arena, .{ .message = msg, .pos = self.currentStart(), .code = "E0004" }) catch self.markOom();
+        try self.errors.append(self.arena, .{ .message = msg, .pos = self.currentStart(), .code = "E0004" });
         return text;
     }
     if (self.currentTag() == .ident) {
@@ -630,7 +613,7 @@ fn declareSymbol(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, flags: 
     // Check for duplicate declaration in the same scope
     if (self.scope.members.get(name) != null) {
         const msg = std.fmt.allocPrint(self.arena, "redeclaration of '{s}'", .{name}) catch "redeclaration of identifier";
-        self.errors.append(self.arena, .{ .message = msg, .pos = loc, .code = "E0101" }) catch self.markOom();
+        try self.errors.append(self.arena, .{ .message = msg, .pos = loc, .code = "E0101" });
     }
     std.debug.assert(self.symbols.items.len < std.math.maxInt(u32));
     const idx: u32 = @intCast(self.symbols.items.len);
@@ -696,19 +679,19 @@ fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
                 const dir_marker = self.cstOpen();
                 const dir = try self.parseEnableDirective();
                 try module.directives.append(self.arena, dir);
-                self.cstClose(dir_marker, .directive);
+                try self.cstClose(dir_marker, .directive);
             },
             .keyword_requires => {
                 const dir_marker = self.cstOpen();
                 const dir = try self.parseRequiresDirective();
                 try module.directives.append(self.arena, dir);
-                self.cstClose(dir_marker, .directive);
+                try self.cstClose(dir_marker, .directive);
             },
             .keyword_diagnostic => {
                 const dir_marker = self.cstOpen();
                 const dir = try self.parseDiagnosticDirective();
                 try module.directives.append(self.arena, dir);
-                self.cstClose(dir_marker, .directive);
+                try self.cstClose(dir_marker, .directive);
             },
             else => break,
         }
@@ -727,12 +710,12 @@ fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
 
     // Attach the eof token + any trailing trivia to the module node.
     self.cstEmitEof();
-    self.cstClose(mod_marker, .module);
+    try self.cstClose(mod_marker, .module);
 }
 
 fn parseEnableDirective(self: *Parser) !Ast.Directive {
     const dir_start = self.currentStart();
-    _ = self.expect(.keyword_enable);
+    _ = try self.expect(.keyword_enable);
     var features: std.ArrayListUnmanaged([]const u8) = .empty;
     for (0..self.token_tags.len) |_| {
         if (self.currentTag() == .ident) {
@@ -741,7 +724,7 @@ fn parseEnableDirective(self: *Parser) !Ast.Directive {
         }
         if (!self.eat(.comma)) break;
     } else unreachable;
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     return .{ .enable = .{
         .features = features,
         .span = .{ .start = dir_start, .end = self.prevTokenEnd() },
@@ -750,7 +733,7 @@ fn parseEnableDirective(self: *Parser) !Ast.Directive {
 
 fn parseRequiresDirective(self: *Parser) !Ast.Directive {
     const dir_start = self.currentStart();
-    _ = self.expect(.keyword_requires);
+    _ = try self.expect(.keyword_requires);
     var features: std.ArrayListUnmanaged([]const u8) = .empty;
     for (0..self.token_tags.len) |_| {
         if (self.currentTag() == .ident) {
@@ -759,7 +742,7 @@ fn parseRequiresDirective(self: *Parser) !Ast.Directive {
         }
         if (!self.eat(.comma)) break;
     } else unreachable;
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     return .{ .requires = .{
         .features = features,
         .span = .{ .start = dir_start, .end = self.prevTokenEnd() },
@@ -768,21 +751,21 @@ fn parseRequiresDirective(self: *Parser) !Ast.Directive {
 
 fn parseDiagnosticDirective(self: *Parser) !Ast.Directive {
     const dir_start = self.currentStart();
-    _ = self.expect(.keyword_diagnostic);
-    _ = self.expect(.l_paren);
+    _ = try self.expect(.keyword_diagnostic);
+    _ = try self.expect(.l_paren);
     const severity = if (self.currentTag() == .ident) blk: {
         const text = self.currentText();
         self.advance();
         break :blk text;
     } else "";
-    _ = self.expect(.comma);
+    _ = try self.expect(.comma);
     const rule = if (self.currentTag() == .ident) blk: {
         const text = self.currentText();
         self.advance();
         break :blk text;
     } else "";
-    _ = self.expect(.r_paren);
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.r_paren);
+    _ = try self.expect(.semicolon);
     return .{ .diagnostic = .{
         .severity = severity,
         .rule = rule,
@@ -803,54 +786,54 @@ fn parseDeclaration(self: *Parser) !?Ast.Decl {
         .keyword_const => {
             if (self.peekIdentLike(1)) {
                 const decl: Ast.Decl = .{ .@"const" = try self.parseConstDecl(decl_start) };
-                self.cstClose(marker, .const_decl);
+                try self.cstClose(marker, .const_decl);
                 return decl;
             }
             const decl: Ast.Decl = .{ .const_assert = try self.parseConstAssert() };
-            self.cstClose(marker, .const_assert_decl);
+            try self.cstClose(marker, .const_assert_decl);
             return decl;
         },
         .keyword_const_assert => {
             const decl: Ast.Decl = .{ .const_assert = try self.parseConstAssert() };
-            self.cstClose(marker, .const_assert_decl);
+            try self.cstClose(marker, .const_assert_decl);
             return decl;
         },
         .keyword_override => {
             const decl: Ast.Decl = .{ .override = try self.parseOverrideDecl(&attrs, decl_start) };
-            self.cstClose(marker, .override_decl);
+            try self.cstClose(marker, .override_decl);
             return decl;
         },
         .keyword_var => {
             const decl: Ast.Decl = .{ .@"var" = try self.parseVarDecl(&attrs, decl_start) };
-            self.cstClose(marker, .var_decl);
+            try self.cstClose(marker, .var_decl);
             return decl;
         },
         .keyword_let => {
             const decl: Ast.Decl = .{ .let = try self.parseLetDecl(decl_start) };
-            self.cstClose(marker, .let_decl);
+            try self.cstClose(marker, .let_decl);
             return decl;
         },
         .keyword_fn => {
             const decl: Ast.Decl = .{ .function = try self.parseFunctionDecl(&attrs, decl_start) };
-            self.cstClose(marker, .fn_decl);
+            try self.cstClose(marker, .fn_decl);
             return decl;
         },
         .keyword_struct => {
             const decl: Ast.Decl = .{ .@"struct" = try self.parseStructDecl(decl_start) };
-            self.cstClose(marker, .struct_decl);
+            try self.cstClose(marker, .struct_decl);
             return decl;
         },
         .keyword_alias => {
             const decl: Ast.Decl = .{ .alias = try self.parseAliasDecl(decl_start) };
-            self.cstClose(marker, .alias_decl);
+            try self.cstClose(marker, .alias_decl);
             return decl;
         },
         else => {
-            if (attrs.items.len > 0) self.addError("unexpected attributes");
+            if (attrs.items.len > 0) try self.addError("unexpected attributes");
             // No decl was parsed; close as error_tree so stray tokens are
             // grouped under an obvious recovery node rather than under
             // `module` directly.
-            self.cstClose(marker, .error_tree);
+            try self.cstClose(marker, .error_tree);
             return null;
         },
     }
@@ -865,7 +848,7 @@ fn parseAttributes(self: *Parser) !std.ArrayListUnmanaged(Ast.Attribute) {
         const attr_loc = self.currentStart();
         self.advance();
         var attr = Ast.Attribute{ .name = "", .args = .empty, .loc = attr_loc };
-        if (self.eatIdent()) |text| {
+        if (try self.eatIdent()) |text| {
             attr.name = text;
             self.advance();
         }
@@ -873,52 +856,52 @@ fn parseAttributes(self: *Parser) !std.ArrayListUnmanaged(Ast.Attribute) {
             const args_marker = self.cstOpen();
             self.advance(); // consume '(' — lives inside the attribute_args node
             attr.args = try self.parseExpressionList();
-            _ = self.expect(.r_paren);
-            self.cstClose(args_marker, .attribute_args);
+            _ = try self.expect(.r_paren);
+            try self.cstClose(args_marker, .attribute_args);
         }
         // Check for duplicate attribute
         if (attr.name.len > 0) {
             for (attrs.items) |existing| {
                 if (std.mem.eql(u8, existing.name, attr.name)) {
                     const msg = std.fmt.allocPrint(self.arena, "duplicate attribute '@{s}'", .{attr.name}) catch "duplicate attribute";
-                    self.errors.append(self.arena, .{ .message = msg, .pos = attr_loc, .code = "E0401" }) catch self.markOom();
+                    try self.errors.append(self.arena, .{ .message = msg, .pos = attr_loc, .code = "E0401" });
                     break;
                 }
             }
         }
         try attrs.append(self.arena, attr);
-        self.cstClose(attr_marker, .attribute);
+        try self.cstClose(attr_marker, .attribute);
     }
-    self.cstClose(list_marker, .attribute_list);
+    try self.cstClose(list_marker, .attribute_list);
     return attrs;
 }
 
 fn parseConstDecl(self: *Parser, decl_start: u32) !*Ast.ConstDecl {
-    _ = self.expect(.keyword_const);
+    _ = try self.expect(.keyword_const);
     const decl = try self.arena.create(Ast.ConstDecl);
     decl.* = .{ .name = .none };
 
-    if (self.eatIdent()) |text| {
+    if (try self.eatIdent()) |text| {
         const loc = self.currentStart();
         self.advance();
         decl.name = try self.declareSymbol(text, .@"const", .{}, loc);
     }
 
     if (self.eat(.colon)) decl.typ = try self.parseType("after ':' in const declaration");
-    _ = self.expect(.eq);
+    _ = try self.expect(.eq);
     self.expr_context = "after '=' in const declaration";
     decl.initializer = try self.parseExpression();
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
 fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), decl_start: u32) !*Ast.OverrideDecl {
-    _ = self.expect(.keyword_override);
+    _ = try self.expect(.keyword_override);
     const decl = try self.arena.create(Ast.OverrideDecl);
     decl.* = .{ .attributes = attrs.*, .name = .none };
 
-    if (self.eatIdent()) |text| {
+    if (try self.eatIdent()) |text| {
         const loc = self.currentStart();
         self.advance();
         decl.name = try self.declareSymbol(text, .override, .{}, loc);
@@ -929,21 +912,21 @@ fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
         self.expr_context = "after '=' in override declaration";
         decl.initializer = try self.parseExpression();
     }
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
 fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), decl_start: u32) !*Ast.VarDecl {
-    _ = self.expect(.keyword_var);
+    _ = try self.expect(.keyword_var);
     const decl = try self.arena.create(Ast.VarDecl);
     decl.* = .{ .attributes = attrs.*, .name = .none };
 
     // Optional <address_space, access_mode>
     if (self.eat(.lt)) {
-        decl.address_space = self.parseAddressSpace();
-        if (self.eat(.comma)) decl.access_mode = self.parseAccessMode();
-        _ = self.expect(.gt);
+        decl.address_space = try self.parseAddressSpace();
+        if (self.eat(.comma)) decl.access_mode = try self.parseAccessMode();
+        _ = try self.expect(.gt);
     }
 
     var flags = Ast.Symbol.Flags{};
@@ -951,7 +934,7 @@ fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), de
         flags.is_external_binding = true;
     }
 
-    if (self.eatIdent()) |text| {
+    if (try self.eatIdent()) |text| {
         const loc = self.currentStart();
         self.advance();
         decl.name = try self.declareSymbol(text, .@"var", flags, loc);
@@ -962,33 +945,33 @@ fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), de
         self.expr_context = "after '=' in var declaration";
         decl.initializer = try self.parseExpression();
     }
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
 fn parseLetDecl(self: *Parser, decl_start: u32) !*Ast.LetDecl {
-    _ = self.expect(.keyword_let);
+    _ = try self.expect(.keyword_let);
     const decl = try self.arena.create(Ast.LetDecl);
     decl.* = .{ .name = .none };
 
-    if (self.eatIdent()) |text| {
+    if (try self.eatIdent()) |text| {
         const loc = self.currentStart();
         self.advance();
         decl.name = try self.declareSymbol(text, .let, .{}, loc);
     }
 
     if (self.eat(.colon)) decl.typ = try self.parseType("after ':' in let declaration");
-    _ = self.expect(.eq);
+    _ = try self.expect(.eq);
     self.expr_context = "after '=' in let declaration";
     decl.initializer = try self.parseExpression();
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
 fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), decl_start: u32) !*Ast.FunctionDecl {
-    _ = self.expect(.keyword_fn);
+    _ = try self.expect(.keyword_fn);
     const decl = try self.arena.create(Ast.FunctionDecl);
     decl.* = .{
         .attributes = attrs.*,
@@ -1017,7 +1000,7 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
         flags.must_not_be_renamed = true;
     }
 
-    if (self.eatIdent()) |text| {
+    if (try self.eatIdent()) |text| {
         const loc = self.currentStart();
         self.advance();
         decl.name = try self.declareSymbol(text, .function, flags, loc);
@@ -1025,11 +1008,11 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
 
     try self.pushScope(.function);
 
-    _ = self.expect(.l_paren);
+    _ = try self.expect(.l_paren);
     if (self.currentTag() != .r_paren) {
         decl.parameters = try self.parseParameters();
     }
-    _ = self.expect(.r_paren);
+    _ = try self.expect(.r_paren);
 
     if (self.eat(.arrow)) {
         decl.return_attr = try self.parseAttributes();
@@ -1047,11 +1030,11 @@ fn parseParameters(self: *Parser) !std.ArrayListUnmanaged(Ast.Parameter) {
     for (0..self.token_tags.len) |_| {
         const param_attrs = try self.parseAttributes();
         if (!self.isIdentLike()) break;
-        const text = self.eatIdent().?;
+        const text = (try self.eatIdent()).?;
         const loc = self.currentStart();
         self.advance();
         const name = try self.declareSymbol(text, .parameter, .{}, loc);
-        _ = self.expect(.colon);
+        _ = try self.expect(.colon);
         const typ = try self.parseType("after ':' in function parameter");
         try params.append(self.arena, .{ .attributes = param_attrs, .name = name, .typ = typ });
         if (!self.eat(.comma)) break;
@@ -1061,57 +1044,57 @@ fn parseParameters(self: *Parser) !std.ArrayListUnmanaged(Ast.Parameter) {
 }
 
 fn parseStructDecl(self: *Parser, decl_start: u32) !*Ast.StructDecl {
-    _ = self.expect(.keyword_struct);
+    _ = try self.expect(.keyword_struct);
     const decl = try self.arena.create(Ast.StructDecl);
     decl.* = .{ .name = .none, .members = .empty };
 
-    if (self.eatIdent()) |text| {
+    if (try self.eatIdent()) |text| {
         const loc = self.currentStart();
         self.advance();
         decl.name = try self.declareSymbol(text, .@"struct", .{}, loc);
     }
 
-    _ = self.expect(.l_brace);
+    _ = try self.expect(.l_brace);
     while (self.currentTag() != .r_brace and self.currentTag() != .eof) {
         const member_attrs = try self.parseAttributes();
         if (!self.isIdentLike()) break;
         const member_loc = self.currentStart();
-        const text = self.eatIdent().?;
+        const text = (try self.eatIdent()).?;
         self.advance();
         const name = try self.declareSymbolNoScope(text, .member, .{}, member_loc);
-        _ = self.expect(.colon);
+        _ = try self.expect(.colon);
         const typ = try self.parseType("after ':' in struct member");
         try decl.members.append(self.arena, .{ .attributes = member_attrs, .name = name, .typ = typ });
         _ = self.eat(.comma);
     }
-    _ = self.expect(.r_brace);
+    _ = try self.expect(.r_brace);
     decl.decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() };
     return decl;
 }
 
 fn parseAliasDecl(self: *Parser, decl_start: u32) !*Ast.AliasDecl {
-    _ = self.expect(.keyword_alias);
+    _ = try self.expect(.keyword_alias);
     const decl = try self.arena.create(Ast.AliasDecl);
     var name: Ast.SymbolIndex = .none;
-    if (self.eatIdent()) |text| {
+    if (try self.eatIdent()) |text| {
         const loc = self.currentStart();
         self.advance();
         name = try self.declareSymbol(text, .alias, .{}, loc);
     }
-    _ = self.expect(.eq);
+    _ = try self.expect(.eq);
     const typ = try self.parseType("after '=' in alias declaration");
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     decl.* = .{ .name = name, .typ = typ, .decl_span = .{ .start = decl_start, .end = self.prevTokenEnd() } };
     return decl;
 }
 
 fn parseConstAssert(self: *Parser) !*Ast.ConstAssertDecl {
     if (self.currentTag() == .keyword_const) self.advance();
-    _ = self.expect(.keyword_const_assert);
+    _ = try self.expect(.keyword_const_assert);
     const decl = try self.arena.create(Ast.ConstAssertDecl);
     self.expr_context = "in const_assert";
     decl.* = .{ .expr = (try self.parseExpression()) orelse return error.ParseFailed };
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     return decl;
 }
 
@@ -1121,19 +1104,19 @@ fn parseConstAssert(self: *Parser) !*Ast.ConstAssertDecl {
 
 fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed }!Ast.Type {
     if (self.type_depth >= constants.max_parser_type_depth) {
-        self.addErrorWithCode("type nesting too deep", Diagnostic.Code.nesting_too_deep);
+        try self.addErrorWithCode("type nesting too deep", Diagnostic.Code.nesting_too_deep);
         return error.ParseFailed;
     }
     self.type_depth += 1;
     defer self.type_depth -= 1;
     const marker = self.cstOpen();
 
-    if (self.eatIdent()) |name| {
+    if (try self.eatIdent()) |name| {
         const name_loc = self.currentStart();
         self.advance();
         if (self.currentTag() == .lt) {
             const result = try self.parseTemplatedType(name, name_loc);
-            self.cstClose(marker, typeCstKind(result));
+            try self.cstClose(marker, typeCstKind(result));
             return result;
         }
         const typ = try self.arena.create(Ast.IdentType);
@@ -1143,7 +1126,7 @@ fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed
             .loc = name_loc,
             .span = .{ .start = name_loc, .end = self.prevTokenEnd() },
         };
-        self.cstClose(marker, .type_ident);
+        try self.cstClose(marker, .type_ident);
         return .{ .ident = typ };
     }
 
@@ -1151,7 +1134,7 @@ fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed
         std.fmt.allocPrint(self.arena, "expected type {s}", .{context}) catch "expected type"
     else
         @as([]const u8, "expected type");
-    self.addError(msg);
+    try self.addError(msg);
     const err_loc = self.currentStart();
     self.advance();
     const typ = try self.arena.create(Ast.IdentType);
@@ -1161,7 +1144,7 @@ fn parseType(self: *Parser, context: []const u8) error{ OutOfMemory, ParseFailed
         .loc = err_loc,
         .span = .{ .start = err_loc, .end = self.prevTokenEnd() },
     };
-    self.cstClose(marker, .error_tree);
+    try self.cstClose(marker, .error_tree);
     return .{ .ident = typ };
 }
 
@@ -1169,9 +1152,9 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
     // The `<...>` region becomes a `template_args` CST node so reparse
     // anchors inside it land on a tight subtree. Both brackets live inside.
     const args_marker = self.cstOpen();
-    _ = self.expect(.lt);
+    _ = try self.expect(.lt);
     const result = try self.parseTemplatedTypeInner(name, name_loc);
-    self.cstClose(args_marker, .template_args);
+    try self.cstClose(args_marker, .template_args);
     return result;
 }
 
@@ -1188,7 +1171,7 @@ fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.
 fn parseTemplatedVec(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
     const size = name[3] - '0';
     const elem = try self.parseType("in vector type");
-    _ = self.expectTemplateClose();
+    _ = try self.expectTemplateClose();
     const typ = try self.arena.create(Ast.VecType);
     typ.* = .{
         .size = size,
@@ -1203,7 +1186,7 @@ fn parseTemplatedMat(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
     const cols = name[3] - '0';
     const rows = name[5] - '0';
     const elem = try self.parseType("in matrix type");
-    _ = self.expectTemplateClose();
+    _ = try self.expectTemplateClose();
     const typ = try self.arena.create(Ast.MatType);
     typ.* = .{
         .cols = cols,
@@ -1222,7 +1205,7 @@ fn parseTemplatedArray(self: *Parser, name_loc: u32) !Ast.Type {
         self.expr_context = "in array size";
         size = try self.parseTemplateArgExpr();
     }
-    _ = self.expectTemplateClose();
+    _ = try self.expectTemplateClose();
     const typ = try self.arena.create(Ast.ArrayType);
     typ.* = .{
         .elem_type = elem,
@@ -1233,12 +1216,12 @@ fn parseTemplatedArray(self: *Parser, name_loc: u32) !Ast.Type {
 }
 
 fn parseTemplatedPtr(self: *Parser, name_loc: u32) !Ast.Type {
-    const addr = self.parseAddressSpace();
-    _ = self.expect(.comma);
+    const addr = try self.parseAddressSpace();
+    _ = try self.expect(.comma);
     const elem = try self.parseType("in pointer type");
     var access: Ast.AccessMode = .none;
-    if (self.eat(.comma)) access = self.parseAccessMode();
-    _ = self.expectTemplateClose();
+    if (self.eat(.comma)) access = try self.parseAccessMode();
+    _ = try self.expectTemplateClose();
     const typ = try self.arena.create(Ast.PtrType);
     typ.* = .{
         .address_space = addr,
@@ -1251,7 +1234,7 @@ fn parseTemplatedPtr(self: *Parser, name_loc: u32) !Ast.Type {
 
 fn parseTemplatedAtomic(self: *Parser, name_loc: u32) !Ast.Type {
     const elem = try self.parseType("in atomic type");
-    _ = self.expectTemplateClose();
+    _ = try self.expectTemplateClose();
     const typ = try self.arena.create(Ast.AtomicType);
     typ.* = .{
         .elem_type = elem,
@@ -1265,15 +1248,15 @@ fn parseTemplatedTexture(self: *Parser, info: TextureInfo, name_loc: u32) !Ast.T
     const typ = try self.arena.create(Ast.TextureType);
     typ.* = .{ .kind = info.kind, .dimension = info.dim };
     if (info.kind == .storage) {
-        if (self.eatIdent()) |texel_name| {
+        if (try self.eatIdent()) |texel_name| {
             typ.texel_format = texel_name;
             self.advance();
         }
-        if (self.eat(.comma)) typ.access_mode = self.parseAccessMode();
+        if (self.eat(.comma)) typ.access_mode = try self.parseAccessMode();
     } else if (info.kind != .depth and info.kind != .depth_multisampled) {
         typ.sampled_type = try self.parseType("in texture type");
     }
-    _ = self.expectTemplateClose();
+    _ = try self.expectTemplateClose();
     typ.span = .{ .start = name_loc, .end = self.prevTokenEnd() };
     return .{ .texture = typ };
 }
@@ -1281,7 +1264,7 @@ fn parseTemplatedTexture(self: *Parser, info: TextureInfo, name_loc: u32) !Ast.T
 fn parseTemplatedGeneric(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
     _ = try self.parseType("in template arguments");
     while (self.eat(.comma)) _ = try self.parseType("in template arguments");
-    _ = self.expectTemplateClose();
+    _ = try self.expectTemplateClose();
     const typ = try self.arena.create(Ast.IdentType);
     typ.* = .{
         .name = name,
@@ -1316,7 +1299,7 @@ fn parseTextureTypeInfo(name: []const u8) ?TextureInfo {
     return map.get(name);
 }
 
-fn parseAddressSpace(self: *Parser) Ast.AddressSpace {
+fn parseAddressSpace(self: *Parser) Allocator.Error!Ast.AddressSpace {
     const map = std.StaticStringMap(Ast.AddressSpace).initComptime(.{
         .{ "function", .function },
         .{ "private", .private },
@@ -1336,14 +1319,14 @@ fn parseAddressSpace(self: *Parser) Ast.AddressSpace {
         if (Suggest.suggestName(text, &Suggest.address_spaces, 3)) |s| {
             const end = pos +| @as(u32, @intCast(text.len));
             const msg = std.fmt.allocPrint(self.arena, "unknown address space '{s}'; did you mean '{s}'?", .{ text, s }) catch "unknown address space";
-            self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0304" }) catch self.markOom();
+            try self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0304" });
         }
         return .none;
     }
     return .none;
 }
 
-fn parseAccessMode(self: *Parser) Ast.AccessMode {
+fn parseAccessMode(self: *Parser) Allocator.Error!Ast.AccessMode {
     const map = std.StaticStringMap(Ast.AccessMode).initComptime(.{
         .{ "read", .read },
         .{ "write", .write },
@@ -1357,7 +1340,7 @@ fn parseAccessMode(self: *Parser) Ast.AccessMode {
         if (Suggest.suggestName(text, &Suggest.access_modes, 3)) |s| {
             const end = pos +| @as(u32, @intCast(text.len));
             const msg = std.fmt.allocPrint(self.arena, "unknown access mode '{s}'; did you mean '{s}'?", .{ text, s }) catch "unknown access mode";
-            self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0305" }) catch self.markOom();
+            try self.errors.append(self.arena, .{ .message = msg, .pos = pos, .end = end, .code = "E0305" });
         }
         return .none;
     }
@@ -1370,7 +1353,7 @@ fn parseAccessMode(self: *Parser) Ast.AccessMode {
 
 fn parseExpression(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Expr {
     if (self.expr_depth >= constants.max_parser_expr_depth) {
-        self.addErrorWithCode("expression nesting too deep", Diagnostic.Code.nesting_too_deep);
+        try self.addErrorWithCode("expression nesting too deep", Diagnostic.Code.nesting_too_deep);
         return error.ParseFailed;
     }
     self.expr_depth += 1;
@@ -1389,7 +1372,7 @@ fn parseLogicalOrExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = .logical_or, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1408,7 +1391,7 @@ fn parseLogicalAndExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = .logical_and, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1427,7 +1410,7 @@ fn parseBitwiseOrExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = .@"or", .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1446,7 +1429,7 @@ fn parseBitwiseXorExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = .xor, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1465,7 +1448,7 @@ fn parseBitwiseAndExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = .@"and", .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1489,7 +1472,7 @@ fn parseEqualityExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1514,7 +1497,7 @@ fn parseRelationalExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1537,7 +1520,7 @@ fn parseShiftExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1560,7 +1543,7 @@ fn parseAdditiveExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1584,7 +1567,7 @@ fn parseMultiplicativeExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1634,7 +1617,7 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
         const node = try self.arena.create(Ast.UnaryExpr);
         node.* = .{ .loc = entry.loc, .op = entry.op, .operand = operand };
         operand = .{ .unary = node };
-        self.cstClose(cst_markers_buf[i], .unary_expr);
+        try self.cstClose(cst_markers_buf[i], .unary_expr);
         self.cst_last_closed_expr = cst_markers_buf[i];
     }
 
@@ -1672,11 +1655,11 @@ fn applyPostfixSuffixes(self: *Parser, left_in: Ast.Expr, left_marker_in: ?Cst.M
                     node.* = .{ .loc = dot_loc, .base = left, .member_name = member };
                     left = .{ .member = node };
                     const wrap = self.cstOpenBefore(saved);
-                    self.cstClose(wrap, .member_expr);
+                    try self.cstClose(wrap, .member_expr);
                     self.cst_last_closed_expr = wrap;
                     left_marker = wrap;
                 } else {
-                    self.addError("expected member name");
+                    try self.addError("expected member name");
                 }
             },
             .l_bracket => {
@@ -1686,12 +1669,12 @@ fn applyPostfixSuffixes(self: *Parser, left_in: Ast.Expr, left_marker_in: ?Cst.M
                 self.expr_context = "in array index";
                 const idx = (try self.parseExpression()) orelse return null;
                 const end_loc = self.currentStart() +| 1; // past the closing ']'
-                _ = self.expect(.r_bracket);
+                _ = try self.expect(.r_bracket);
                 const node = try self.arena.create(Ast.IndexExpr);
                 node.* = .{ .loc = bracket_loc, .end_loc = end_loc, .base = left, .idx = idx };
                 left = .{ .index = node };
                 const wrap = self.cstOpenBefore(saved);
-                self.cstClose(wrap, .index_expr);
+                try self.cstClose(wrap, .index_expr);
                 self.cst_last_closed_expr = wrap;
                 left_marker = wrap;
             },
@@ -1701,12 +1684,12 @@ fn applyPostfixSuffixes(self: *Parser, left_in: Ast.Expr, left_marker_in: ?Cst.M
                 self.advance();
                 const args = try self.parseExpressionList();
                 const end_loc = self.currentStart() +| 1;
-                _ = self.expect(.r_paren);
+                _ = try self.expect(.r_paren);
                 const node = try self.arena.create(Ast.CallExpr);
                 node.* = .{ .loc = paren_loc, .end_loc = end_loc, .func = left, .args = args };
                 left = .{ .call = node };
                 const wrap = self.cstOpenBefore(saved);
-                self.cstClose(wrap, .call_expr);
+                try self.cstClose(wrap, .call_expr);
                 self.cst_last_closed_expr = wrap;
                 left_marker = wrap;
             },
@@ -1719,7 +1702,7 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
     const marker = self.cstOpen();
     const result = try self.parsePrimaryExprInner();
     if (result) |expr| {
-        self.cstClose(marker, exprCstKind(expr));
+        try self.cstClose(marker, exprCstKind(expr));
         self.cst_last_closed_expr = marker;
     } else {
         // Null result covers two shapes: (a) the `else` branch ran, emitted a
@@ -1729,7 +1712,7 @@ fn parsePrimaryExpr(self: *Parser) !?Ast.Expr {
         // the marker as `.error_tree` keeps whatever tokens and subtrees were
         // emitted grouped under a recovery node rather than leaking them to
         // the enclosing statement.
-        self.cstClose(marker, .error_tree);
+        try self.cstClose(marker, .error_tree);
     }
     return result;
 }
@@ -1756,7 +1739,7 @@ fn parsePrimaryExprInner(self: *Parser) !?Ast.Expr {
         },
         .ident, .reserved_ident => {
             if (self.currentTag() == .reserved_ident) {
-                _ = self.eatIdent(); // emits E0004 error
+                _ = try self.eatIdent(); // emits E0004 error
             }
             const text = self.currentText();
             const loc = self.currentStart();
@@ -1780,7 +1763,7 @@ fn parsePrimaryExprInner(self: *Parser) !?Ast.Expr {
             self.advance();
             self.expr_context = "after '('";
             const expr = (try self.parseExpression()) orelse return null;
-            _ = self.expect(.r_paren);
+            _ = try self.expect(.r_paren);
             const node = try self.arena.create(Ast.ParenExpr);
             node.* = .{ .expr = expr };
             return .{ .paren = node };
@@ -1790,7 +1773,7 @@ fn parsePrimaryExprInner(self: *Parser) !?Ast.Expr {
                 std.fmt.allocPrint(self.arena, "expected expression {s}", .{self.expr_context}) catch "expected expression"
             else
                 @as([]const u8, "expected expression");
-            self.addError(msg);
+            try self.addError(msg);
             self.advance();
             return null;
         },
@@ -1813,7 +1796,7 @@ fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?A
     self.advance();
     const args = try self.parseExpressionList();
     const end_loc = self.currentStart() +| 1;
-    _ = self.expect(.r_paren);
+    _ = try self.expect(.r_paren);
     const node = try self.arena.create(Ast.CallExpr);
     node.* = .{ .loc = paren_loc, .end_loc = end_loc, .template_type = template_type, .args = args };
     return .{ .call = node };
@@ -1822,19 +1805,19 @@ fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?A
 fn parseBitcastExpr(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
     // Wrap `<T>` in template_args to match how parseTemplatedType emits it.
     const args_marker = self.cstOpen();
-    _ = self.expect(.lt);
+    _ = try self.expect(.lt);
     const dest_type = try self.parseType("in bitcast type");
-    _ = self.expectTemplateClose();
-    self.cstClose(args_marker, .template_args);
+    _ = try self.expectTemplateClose();
+    try self.cstClose(args_marker, .template_args);
     if (self.currentTag() != .l_paren) {
-        self.addError("expected '(' after bitcast<T>");
+        try self.addError("expected '(' after bitcast<T>");
         return null;
     }
     const paren_loc = self.currentStart();
     self.advance();
     const args = try self.parseExpressionList();
     const end_loc = self.currentStart() +| 1;
-    _ = self.expect(.r_paren);
+    _ = try self.expect(.r_paren);
     // Create a CallExpr with func=ident("bitcast") and template_type=dest_type
     const func_node = try self.arena.create(Ast.IdentExpr);
     func_node.* = .{ .name = name, .ref = .none, .loc = name_loc };
@@ -1880,7 +1863,7 @@ fn parseTemplateAdditiveExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1904,7 +1887,7 @@ fn parseTemplateMultiplicativeExpr(self: *Parser) !?Ast.Expr {
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
-            self.cstClose(wrap, .binary_expr);
+            try self.cstClose(wrap, .binary_expr);
             self.cst_last_closed_expr = wrap;
             left_marker = wrap;
         }
@@ -1928,7 +1911,7 @@ fn parseTemplateUnaryExpr(self: *Parser) !?Ast.Expr {
         };
         const node = try self.arena.create(Ast.UnaryExpr);
         node.* = .{ .loc = loc, .op = unary_op, .operand = operand };
-        self.cstClose(outer_marker, .unary_expr);
+        try self.cstClose(outer_marker, .unary_expr);
         self.cst_last_closed_expr = outer_marker;
         return .{ .unary = node };
     }
@@ -1944,10 +1927,10 @@ fn parseTemplatePrimaryExpr(self: *Parser) !?Ast.Expr {
     const marker = self.cstOpen();
     const result = try self.parseTemplatePrimaryExprInner();
     if (result) |expr| {
-        self.cstClose(marker, exprCstKind(expr));
+        try self.cstClose(marker, exprCstKind(expr));
         self.cst_last_closed_expr = marker;
     } else {
-        self.cstClose(marker, .error_tree);
+        try self.cstClose(marker, .error_tree);
     }
     return result;
 }
@@ -1965,7 +1948,7 @@ fn parseTemplatePrimaryExprInner(self: *Parser) !?Ast.Expr {
         },
         .ident, .reserved_ident => {
             if (self.currentTag() == .reserved_ident) {
-                _ = self.eatIdent(); // emits E0004 error
+                _ = try self.eatIdent(); // emits E0004 error
             }
             const text = self.currentText();
             const loc = self.currentStart();
@@ -1978,7 +1961,7 @@ fn parseTemplatePrimaryExprInner(self: *Parser) !?Ast.Expr {
             self.advance();
             self.expr_context = "after '('";
             const expr = (try self.parseTemplateArgExpr()) orelse return null;
-            _ = self.expect(.r_paren);
+            _ = try self.expect(.r_paren);
             const node = try self.arena.create(Ast.ParenExpr);
             node.* = .{ .expr = expr };
             return .{ .paren = node };
@@ -1988,7 +1971,7 @@ fn parseTemplatePrimaryExprInner(self: *Parser) !?Ast.Expr {
                 std.fmt.allocPrint(self.arena, "expected expression {s}", .{self.expr_context}) catch "expected expression"
             else
                 @as([]const u8, "expected expression");
-            self.addError(msg);
+            try self.addError(msg);
             self.advance();
             return null;
         },
@@ -2047,7 +2030,7 @@ fn typeCstKind(t: Ast.Type) Cst.Kind {
 
 fn parseStatement(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
     if (self.stmt_depth >= constants.max_parser_stmt_depth) {
-        self.addErrorWithCode("statement nesting too deep", Diagnostic.Code.nesting_too_deep);
+        try self.addErrorWithCode("statement nesting too deep", Diagnostic.Code.nesting_too_deep);
         return error.ParseFailed;
     }
     self.stmt_depth += 1;
@@ -2061,10 +2044,10 @@ fn parseStatement(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stmt {
     const marker = self.cstOpen();
     const parsed = try self.parseStatementInner();
     if (parsed) |s| {
-        self.cstClose(marker, stmtCstKind(s));
+        try self.cstClose(marker, stmtCstKind(s));
         setStmtSpan(s, .{ .start = stmt_start, .end = self.prevTokenEnd() });
     } else {
-        self.cstClose(marker, .error_tree);
+        try self.cstClose(marker, .error_tree);
     }
     return parsed;
 }
@@ -2107,12 +2090,12 @@ fn parseStatementInner(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stm
             if (self.eat(.keyword_if)) {
                 self.expr_context = "after 'if' in break";
                 const cond = (try self.parseExpression()) orelse return null;
-                _ = self.expect(.semicolon);
+                _ = try self.expect(.semicolon);
                 const node = try self.arena.create(Ast.BreakIfStmt);
                 node.* = .{ .condition = cond };
                 return .{ .break_if = node };
             }
-            _ = self.expect(.semicolon);
+            _ = try self.expect(.semicolon);
             const node = try self.arena.create(Ast.BreakStmt);
             node.* = .{ .loc = loc };
             return .{ .@"break" = node };
@@ -2120,7 +2103,7 @@ fn parseStatementInner(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stm
         .keyword_continue => {
             const loc = self.currentStart();
             self.advance();
-            _ = self.expect(.semicolon);
+            _ = try self.expect(.semicolon);
             const node = try self.arena.create(Ast.ContinueStmt);
             node.* = .{ .loc = loc };
             return .{ .@"continue" = node };
@@ -2128,7 +2111,7 @@ fn parseStatementInner(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stm
         .keyword_discard => {
             const loc = self.currentStart();
             self.advance();
-            _ = self.expect(.semicolon);
+            _ = try self.expect(.semicolon);
             const node = try self.arena.create(Ast.DiscardStmt);
             node.* = .{ .loc = loc };
             return .{ .discard = node };
@@ -2148,7 +2131,7 @@ fn parseStatementInner(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Stm
 fn parseCompoundStmt(self: *Parser) !*Ast.CompoundStmt {
     const span_start = self.currentStart();
     const marker = self.cstOpen();
-    _ = self.expect(.l_brace);
+    _ = try self.expect(.l_brace);
     try self.pushScope(.block);
     const stmt = try self.arena.create(Ast.CompoundStmt);
     stmt.* = .{ .stmts = .empty };
@@ -2158,22 +2141,22 @@ fn parseCompoundStmt(self: *Parser) !*Ast.CompoundStmt {
         }
     }
     self.popScope();
-    _ = self.expect(.r_brace);
-    self.cstClose(marker, .compound_stmt);
+    _ = try self.expect(.r_brace);
+    try self.cstClose(marker, .compound_stmt);
     stmt.span = .{ .start = span_start, .end = self.prevTokenEnd() };
     return stmt;
 }
 
 fn parseReturnStmt(self: *Parser) !*Ast.ReturnStmt {
     const loc = self.currentStart();
-    _ = self.expect(.keyword_return);
+    _ = try self.expect(.keyword_return);
     const node = try self.arena.create(Ast.ReturnStmt);
     node.* = .{ .loc = loc };
     if (self.currentTag() != .semicolon) {
         self.expr_context = "after 'return'";
         node.value = try self.parseExpression();
     }
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     return node;
 }
 
@@ -2187,7 +2170,7 @@ fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
     defer starts.deinit(self.arena);
 
     const root_start = self.currentStart();
-    _ = self.expect(.keyword_if);
+    _ = try self.expect(.keyword_if);
     self.expr_context = "in if condition";
     const root = try self.arena.create(Ast.IfStmt);
     root.* = .{
@@ -2200,7 +2183,7 @@ fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
     while (self.eat(.keyword_else)) {
         if (self.currentTag() == .keyword_if) {
             const inner_start = self.currentStart();
-            _ = self.expect(.keyword_if);
+            _ = try self.expect(.keyword_if);
             self.expr_context = "in if condition";
             const next = try self.arena.create(Ast.IfStmt);
             next.* = .{
@@ -2224,37 +2207,37 @@ fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
 }
 
 fn parseSwitchStmt(self: *Parser) !*Ast.SwitchStmt {
-    _ = self.expect(.keyword_switch);
+    _ = try self.expect(.keyword_switch);
     self.expr_context = "in switch expression";
     const node = try self.arena.create(Ast.SwitchStmt);
     node.* = .{
         .expr = (try self.parseExpression()) orelse return error.ParseFailed,
         .cases = .empty,
     };
-    _ = self.expect(.l_brace);
+    _ = try self.expect(.l_brace);
     while (self.currentTag() != .r_brace and self.currentTag() != .eof) {
         var c = Ast.SwitchCase{ .selectors = .empty, .body = undefined };
         if (self.eat(.keyword_default)) {
             // default case
         } else {
-            _ = self.expect(.keyword_case);
+            _ = try self.expect(.keyword_case);
             self.expr_context = "in case selector";
             if (try self.parseExpression()) |sel| try c.selectors.append(self.arena, sel);
             while (self.eat(.comma)) {
                 if (try self.parseExpression()) |sel| try c.selectors.append(self.arena, sel);
             }
         }
-        _ = self.expect(.colon);
+        _ = try self.expect(.colon);
         c.body = try self.parseCompoundStmt();
         try node.cases.append(self.arena, c);
     }
-    _ = self.expect(.r_brace);
+    _ = try self.expect(.r_brace);
     return node;
 }
 
 fn parseForStmt(self: *Parser) !*Ast.ForStmt {
-    _ = self.expect(.keyword_for);
-    _ = self.expect(.l_paren);
+    _ = try self.expect(.keyword_for);
+    _ = try self.expect(.l_paren);
     try self.pushScope(.block);
     const node = try self.arena.create(Ast.ForStmt);
     node.* = .{ .body = undefined };
@@ -2280,14 +2263,14 @@ fn parseForStmt(self: *Parser) !*Ast.ForStmt {
         self.expr_context = "in for condition";
         node.condition = try self.parseExpression();
     }
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
 
     // Update
     if (self.currentTag() != .r_paren) {
         node.update = try self.parseForUpdateStmt();
     }
 
-    _ = self.expect(.r_paren);
+    _ = try self.expect(.r_paren);
     node.body = try self.parseCompoundStmt();
     self.popScope();
     return node;
@@ -2357,12 +2340,12 @@ fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
         return .{ .call = node };
     }
 
-    self.addError("expected for update statement");
+    try self.addError("expected for update statement");
     return null;
 }
 
 fn parseWhileStmt(self: *Parser) !*Ast.WhileStmt {
-    _ = self.expect(.keyword_while);
+    _ = try self.expect(.keyword_while);
     self.expr_context = "in while condition";
     const node = try self.arena.create(Ast.WhileStmt);
     node.* = .{
@@ -2373,7 +2356,7 @@ fn parseWhileStmt(self: *Parser) !*Ast.WhileStmt {
 }
 
 fn parseLoopStmt(self: *Parser) !*Ast.LoopStmt {
-    _ = self.expect(.keyword_loop);
+    _ = try self.expect(.keyword_loop);
     const node = try self.arena.create(Ast.LoopStmt);
     // Uninitialized-field trap: assigning `node.* = .{ .body = parseLoopBody(&node.continuing) }`
     // looks fine but zeroes `continuing` *after* the callee wrote to it.
@@ -2386,7 +2369,7 @@ fn parseLoopStmt(self: *Parser) !*Ast.LoopStmt {
         const cont_marker = self.cstOpen();
         self.advance();
         node.continuing = try self.parseCompoundStmt();
-        self.cstClose(cont_marker, .continuing_stmt);
+        try self.cstClose(cont_marker, .continuing_stmt);
     }
     return node;
 }
@@ -2402,7 +2385,7 @@ fn parseLoopStmt(self: *Parser) !*Ast.LoopStmt {
 fn parseLoopBody(self: *Parser, out_continuing: *?*Ast.CompoundStmt) !*Ast.CompoundStmt {
     const span_start = self.currentStart();
     const marker = self.cstOpen();
-    _ = self.expect(.l_brace);
+    _ = try self.expect(.l_brace);
     try self.pushScope(.block);
     const stmt = try self.arena.create(Ast.CompoundStmt);
     stmt.* = .{ .stmts = .empty };
@@ -2411,7 +2394,7 @@ fn parseLoopBody(self: *Parser, out_continuing: *?*Ast.CompoundStmt) !*Ast.Compo
             const cont_marker = self.cstOpen();
             self.advance();
             out_continuing.* = try self.parseCompoundStmt();
-            self.cstClose(cont_marker, .continuing_stmt);
+            try self.cstClose(cont_marker, .continuing_stmt);
             break;
         }
         if (try self.parseStatement()) |s| {
@@ -2419,8 +2402,8 @@ fn parseLoopBody(self: *Parser, out_continuing: *?*Ast.CompoundStmt) !*Ast.Compo
         }
     }
     self.popScope();
-    _ = self.expect(.r_brace);
-    self.cstClose(marker, .compound_stmt);
+    _ = try self.expect(.r_brace);
+    try self.cstClose(marker, .compound_stmt);
     stmt.span = .{ .start = span_start, .end = self.prevTokenEnd() };
     return stmt;
 }
@@ -2433,7 +2416,7 @@ fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
         .plus_plus => {
             const loc = self.currentStart();
             self.advance();
-            _ = self.expect(.semicolon);
+            _ = try self.expect(.semicolon);
             const node = try self.arena.create(Ast.IncrDecrStmt);
             node.* = .{ .loc = loc, .expr = left, .increment = true };
             return .{ .incr_decr = node };
@@ -2441,7 +2424,7 @@ fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
         .minus_minus => {
             const loc = self.currentStart();
             self.advance();
-            _ = self.expect(.semicolon);
+            _ = try self.expect(.semicolon);
             const node = try self.arena.create(Ast.IncrDecrStmt);
             node.* = .{ .loc = loc, .expr = left, .increment = false };
             return .{ .incr_decr = node };
@@ -2454,20 +2437,20 @@ fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
         self.advance();
         self.expr_context = "in assignment";
         const right = (try self.parseExpression()) orelse return null;
-        _ = self.expect(.semicolon);
+        _ = try self.expect(.semicolon);
         const node = try self.arena.create(Ast.AssignStmt);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         return .{ .assign = node };
     }
 
-    _ = self.expect(.semicolon);
+    _ = try self.expect(.semicolon);
     if (left == .call) {
         const node = try self.arena.create(Ast.CallStmt);
         node.* = .{ .call = left.call };
         return .{ .call = node };
     }
 
-    self.addError("expected assignment, increment, or function call");
+    try self.addError("expected assignment, increment, or function call");
     return null;
 }
 
