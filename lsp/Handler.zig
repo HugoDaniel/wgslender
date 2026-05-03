@@ -205,12 +205,12 @@ fn clearMinifySeverities(self: *Handler) void {
     self.workspace_minify_severities.clearRetainingCapacity();
 }
 
-fn invalidateAnalysis(self: *Handler, uri: []const u8) void {
+pub fn invalidateAnalysis(self: *Handler, uri: []const u8) void {
     const doc = self.documents.getPtr(uri) orelse return;
     self.invalidateAnalysisAt(doc);
 }
 
-fn invalidateAnalysisAt(self: *Handler, doc: *Document) void {
+pub fn invalidateAnalysisAt(self: *Handler, doc: *Document) void {
     if (doc.analysis) |a| {
         a.deinit(self.gpa);
         self.gpa.destroy(a);
@@ -245,7 +245,7 @@ fn invalidateAllMinifyCaches(self: *Handler) void {
 /// (Re)build the persistent `doc.parse` from `doc.source`. Best-effort:
 /// on failure (e.g. OOM) leaves `doc.parse = null` and returns. The LSP
 /// continues to work via the full-reparse path in `analyzeDocument`.
-fn rebuildParse(self: *Handler, doc: *Document) void {
+pub fn rebuildParse(self: *Handler, doc: *Document) void {
     if (doc.parse) |*p| {
         p.deinit();
         doc.parse = null;
@@ -258,7 +258,7 @@ fn rebuildParse(self: *Handler, doc: *Document) void {
 /// resulting `Partial`. The scan runs on a transient arena so the M0000
 /// diagnostics it emits are discarded; later phases surface them through
 /// the publish/pull diagnostic paths via a dedicated scan at query time.
-fn rebuildMagic(self: *Handler, doc: *Document) void {
+pub fn rebuildMagic(self: *Handler, doc: *Document) void {
     // Magic comments contribute to `effectiveMinifyFor`, so any change to
     // the magic layer can shift the resolved `MinifyEstimator.Options`
     // and must drop the cached estimate.
@@ -1143,177 +1143,18 @@ pub const freeCodeLens = CodeLens.freeCodeLens;
 pub const resolveConstExpr = CodeLens.resolveConstExpr;
 
 // =========================================================================
-// LSP Feature: Incremental Text Sync
+// LSP Feature: Incremental Text Sync — see lsp/handler/incremental_sync.zig
 // =========================================================================
 
-/// Apply an incremental text change to an open document.
-/// The range specifies which portion of the source to replace.
-///
-/// Fast path: if the edit only affects trivia (whitespace / comments),
-/// the cached `AnalysisResult` is left in place — the source bytes are
-/// updated but no validator work is scheduled. Semantic edits fall back
-/// to the classic invalidate-and-reanalyze behavior.
-pub fn changeDocumentIncremental(self: *Handler, uri: []const u8, range: Range, text: []const u8) !void {
-    const doc = self.documents.getPtr(uri) orelse return;
-    const old_source = doc.source;
-
-    const start = lspPositionToOffset(old_source, range.start) orelse {
-        self.invalidateAnalysis(uri);
-        return;
-    };
-    const end = lspPositionToOffset(old_source, range.end) orelse {
-        self.invalidateAnalysis(uri);
-        return;
-    };
-    if (end < start) {
-        self.invalidateAnalysis(uri);
-        return;
-    }
-
-    // Build new source: source[0..start] ++ text ++ source[end..]
-    const new_len = start + text.len + (old_source.len - end);
-    const new_source = try self.gpa.alloc(u8, new_len);
-    errdefer self.gpa.free(new_source);
-    @memcpy(new_source[0..start], old_source[0..start]);
-    @memcpy(new_source[start..][0..text.len], text);
-    @memcpy(new_source[start + text.len ..], old_source[end..]);
-
-    // Classify before swapping: if non-trivia tokens didn't change, the
-    // cached analysis is still correct against the new source (analysis
-    // holds its own sentinel-terminated source copy and AST byte offsets
-    // remain valid because they index into `doc.analysis_source`, not
-    // `doc.source`). Just swap buffers.
-    const old_z = self.gpa.dupeZ(u8, old_source) catch null;
-    defer if (old_z) |z| self.gpa.free(z);
-    const new_z = self.gpa.dupeZ(u8, new_source) catch null;
-    defer if (new_z) |z| self.gpa.free(z);
-
-    const classification: wgslender.Incremental.EditKind = blk: {
-        if (old_z == null or new_z == null) break :blk .semantic;
-        break :blk wgslender.Incremental.classifyEdit(self.gpa, old_z.?, new_z.?) catch .semantic;
-    };
-
-    switch (classification) {
-        .no_op => {
-            // Textually identical — discard the (byte-identical) new buffer
-            // and skip the reparse pipeline entirely. `doc.parse` stays
-            // pointing at the unchanged tree; cache stays hot.
-            self.gpa.free(new_source);
-            return;
-        },
-        .trivia_only => {
-            // Keep the cached analysis — module_version preservation in
-            // `updateParseAfterEdit` will honor this when the trivia
-            // shortcut fires. If the reparse takes a non-shortcut path,
-            // the version bump will invalidate the cache.
-            self.gpa.free(doc.source);
-            doc.source = new_source;
-        },
-        .semantic => {
-            // Analysis invalidation is handled by `updateParseAfterEdit`
-            // (it runs before `prev.deinit` so cached pointers into
-            // `prev.arena` get freed at the right time). Just swap the
-            // source bytes here.
-            self.gpa.free(doc.source);
-            doc.source = new_source;
-        },
-    }
-
-    // Keep `doc.parse` (CST + AST) in sync with `doc.source`. The
-    // `module_version` on the returned result tells us whether the
-    // cached analysis can survive (trivia shortcut → preserved; any
-    // other path → invalidated before `prev` is torn down).
-    self.updateParseAfterEdit(doc, .{
-        .start = @intCast(start),
-        .end = @intCast(end),
-        .new_text = text,
-    });
-    // Magic-comment scan reads `doc.source` directly; re-run after any
-    // source mutation so the cached layer tracks the current document.
-    self.rebuildMagic(doc);
-}
-
-fn updateParseAfterEdit(self: *Handler, doc: *Document, edit: wgslender.Incremental.Edit) void {
-    if (doc.parse) |*prev| {
-        const prev_version = prev.module_version;
-        const updated = wgslender.Incremental.reparse(self.gpa, prev, edit) catch {
-            // Reparse failed — the analysis (if any) held pointers into
-            // `prev.arena`, which is about to be deinit'd. Invalidate
-            // first so we don't leave a dangling cache.
-            self.invalidateAnalysisAt(doc);
-            prev.deinit();
-            doc.parse = null;
-            return;
-        };
-
-        if (updated.module_version != prev_version) {
-            // Any non-trivia-shortcut path bumps module_version. The
-            // cached symbol/struct/expr types all index off the module
-            // whose layout has changed; drop the cache before `prev`
-            // (and therefore prev.arena) is torn down.
-            self.invalidateAnalysisAt(doc);
-        } else if (doc.analysis) |a| {
-            // Trivia shortcut fired. `module.source` got repointed at
-            // the new arena-owned bytes (see `tryTriviaOnlyShortcut`),
-            // but the cached diagnostics still reference the pre-edit
-            // bytes for line/column rendering. Rebuild the line index
-            // against the new source so future diagnostic formatting
-            // produces correct coordinates.
-            if (a._arena) |*ana_arena| {
-                const ana_alloc = ana_arena.allocator();
-                a.diagnostics.source = updated.module.source;
-                a.diagnostics.line_index.deinit(ana_alloc);
-                if (wgslender.Diagnostic.LineIndex.init(ana_alloc, updated.module.source)) |idx| {
-                    a.diagnostics.line_index = idx;
-                } else |_| {
-                    // Line-index rebuild failed — safest to drop the
-                    // cache rather than leave a half-updated one.
-                    self.invalidateAnalysisAt(doc);
-                }
-            }
-        }
-
-        prev.deinit();
-        doc.parse = updated;
-        return;
-    }
-    self.rebuildParse(doc);
-}
+pub const IncrementalSync = @import("handler/incremental_sync.zig");
+pub const changeDocumentIncremental = IncrementalSync.changeDocumentIncremental;
 
 // =========================================================================
-// LSP Feature: Formatting
+// LSP Feature: Formatting — see lsp/handler/formatting.zig
 // =========================================================================
 
-const Printer = wgslender.Printer;
-
-pub fn computeFormatting(self: *Handler, uri: []const u8) !?LspTextEdit {
-    const doc = self.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-
-    // Parse and print with non-minified settings
-    const source_z = try self.gpa.dupeZ(u8, source);
-    defer self.gpa.free(source_z);
-
-    var options = wgslender.Minifier.defaultOptions();
-    options.minify_whitespace = false;
-    options.minify_identifiers = false;
-
-    var result = try wgslender.minifyWithOptions(self.gpa, source_z, options);
-    defer result.deinit(self.gpa);
-
-    if (result.errors.len > 0) return null; // Can't format with parse errors
-
-    // Compute the end position of the document
-    const end_pos = offsetToLspPosition(source, @intCast(source.len)) orelse return null;
-
-    return .{
-        .range = .{
-            .start = .{ .line = 0, .character = 0 },
-            .end = end_pos,
-        },
-        .new_text = try self.gpa.dupe(u8, result.code),
-    };
-}
+pub const Formatting = @import("handler/formatting.zig");
+pub const computeFormatting = Formatting.computeFormatting;
 
 // =========================================================================
 // LSP Feature: Semantic Tokens — see lsp/handler/semantic_tokens.zig
