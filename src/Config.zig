@@ -17,8 +17,16 @@ const Minifier = @import("Minifier.zig");
 const MinifySettings = @import("MinifySettings.zig");
 const Linter = @import("lint/Linter.zig");
 const Diagnostic = @import("Diagnostic.zig");
+const options = @import("options.zig");
 
 const Config = @This();
+
+comptime {
+    // Drift guard: every spec entry must name a real Config field.
+    // Renaming or removing a field without updating the spec table
+    // surfaces here as a build error.
+    options.assertSpecFieldsExist(Config, &options.config_specs);
+}
 
 minify_whitespace: ?bool = null,
 minify_identifiers: ?bool = null,
@@ -74,59 +82,12 @@ pub fn parseJson(allocator: Allocator, content: []const u8) !Config {
 
     if (root != .object) return config;
 
-    if (root.object.get("minifyWhitespace")) |v| {
-        if (v == .bool) config.minify_whitespace = v.bool;
-    }
-    if (root.object.get("minifyIdentifiers")) |v| {
-        if (v == .bool) config.minify_identifiers = v.bool;
-    }
-    if (root.object.get("minifySyntax")) |v| {
-        if (v == .bool) config.minify_syntax = v.bool;
-    }
-    if (root.object.get("mangleExternalBindings")) |v| {
-        if (v == .bool) config.mangle_external_bindings = v.bool;
-    }
-    if (root.object.get("treeShaking")) |v| {
-        if (v == .bool) config.tree_shaking = v.bool;
-    }
-    if (root.object.get("preserveUniformStructTypes")) |v| {
-        if (v == .bool) config.preserve_uniform_struct_types = v.bool;
-    }
-    if (root.object.get("keepNames")) |v| {
-        if (v == .array) {
-            var names: std.ArrayListUnmanaged([]const u8) = .empty;
-            for (v.array.items) |item| {
-                if (item == .string) {
-                    try names.append(allocator, try allocator.dupe(u8, item.string));
-                }
-            }
-            config.keep_names = names.items;
-        }
-    }
-    if (root.object.get("sortDeclarations")) |v| {
-        if (v == .bool) config.sort_declarations = v.bool;
-    }
-    if (root.object.get("scopeLocalRename")) |v| {
-        if (v == .bool) config.scope_local_rename = v.bool;
-    }
-    if (root.object.get("sourceMap")) |v| {
-        if (v == .bool) config.source_map = v.bool;
-    }
-    if (root.object.get("sourceMapSources")) |v| {
-        if (v == .bool) config.source_map_sources = v.bool;
-    }
+    // Spec-driven parse for every bool / string-list option declared in
+    // `options.config_specs`. Custom-shape fields below this call —
+    // `rules` (severity sub-parser) and `lsp` (nested object) — stay
+    // hand-parsed because they don't fit the simple kinds.
+    try options.applyJson(allocator, &options.config_specs, root, &config);
 
-    if (root.object.get("extends")) |v| {
-        if (v == .array) {
-            var list: std.ArrayListUnmanaged([]const u8) = .empty;
-            for (v.array.items) |item| {
-                if (item == .string) {
-                    try list.append(allocator, try allocator.dupe(u8, item.string));
-                }
-            }
-            config.lint_extends = list.items;
-        }
-    }
     if (root.object.get("rules")) |v| {
         if (v == .object) {
             var list: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
@@ -138,9 +99,6 @@ pub fn parseJson(allocator: Allocator, content: []const u8) !Config {
             }
             config.lint_rules = list.items;
         }
-    }
-    if (root.object.get("reportUnusedDisableDirectives")) |v| {
-        if (v == .bool) config.report_unused_disable_directives = v.bool;
     }
 
     if (root.object.get("lsp")) |lsp| {

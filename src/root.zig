@@ -39,12 +39,14 @@ pub const MagicComment = @import("MagicComment.zig");
 pub const MinifyEstimator = @import("MinifyEstimator.zig");
 pub const api_json = @import("api_json.zig");
 pub const ffi = @import("ffi.zig");
+pub const OptionsSpec = @import("options.zig");
 
 test {
     // Force test discovery for modules that have no call-site references
     // inside the library surface yet. Once stage 7 wires `Incremental` into
     // the LSP handler, this hook stays correct but becomes redundant.
     _ = Incremental;
+    _ = OptionsSpec;
 }
 
 // =========================================================================
