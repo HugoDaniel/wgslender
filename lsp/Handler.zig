@@ -15,6 +15,7 @@ const MinifyEstimator = wgslender.MinifyEstimator;
 const Ast = wgslender.Ast;
 const Edits = wgslender.Edits;
 const Lexer = wgslender.Lexer;
+const Builtins = wgslender.Builtins;
 
 const Handler = @This();
 
@@ -1071,28 +1072,17 @@ pub const computeRename = ReferencesRename.computeRename;
 pub const isValidWgslIdentifier = ReferencesRename.isValidWgslIdentifier;
 
 // =========================================================================
-// LSP Feature: Completion
+// LSP Feature: Completion — see lsp/handler/completion.zig
 // =========================================================================
 
-const Builtins = wgslender.Builtins;
+pub const Completion = @import("handler/completion.zig");
+pub const CompletionItem = Completion.CompletionItem;
+pub const CompletionKind = Completion.CompletionKind;
+pub const computeCompletion = Completion.computeCompletion;
 
-pub const CompletionItem = struct {
-    label: []const u8,
-    kind: CompletionKind,
-    detail: []const u8 = "",
-};
-
-pub const CompletionKind = enum(u8) {
-    variable,
-    function,
-    struct_type,
-    field,
-    keyword,
-    builtin,
-    type_name,
-    attribute,
-};
-
+// Static type-name list shared with the Completion module. Kept in
+// Handler.zig for now because the still-in-handler semantic-tokens
+// fallback `isBuiltinTypeName` references it. Moves out with commit 11.
 const wgsl_type_names = [_][]const u8{
     "bool",               "i32",                      "u32",                           "f32",                     "f16",
     "vec2",               "vec3",                     "vec4",                          "vec2i",                   "vec3i",
@@ -1109,124 +1099,6 @@ const wgsl_type_names = [_][]const u8{
     "texture_storage_2d", "texture_storage_2d_array", "texture_storage_3d",            "texture_depth_2d",        "texture_depth_2d_array",
     "texture_depth_cube", "texture_depth_cube_array", "texture_depth_multisampled_2d",
 };
-
-const wgsl_attributes = [_][]const u8{
-    "align",    "binding",     "builtin",   "compute",
-    "const",    "diagnostic",  "fragment",  "group",
-    "id",       "interpolate", "invariant", "location",
-    "must_use", "size",        "vertex",    "workgroup_size",
-};
-
-pub fn computeCompletion(self: *Handler, uri: []const u8, position: Position) ![]CompletionItem {
-    const doc = self.documents.getPtr(uri) orelse return &.{};
-    const source = doc.source;
-    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return &.{});
-
-    // Check trigger context
-    if (offset > 0 and source[offset - 1] == '@') {
-        return self.attributeCompletion();
-    }
-
-    if (offset > 0 and source[offset - 1] == '.') {
-        return self.memberCompletion(uri, source, offset);
-    }
-
-    return self.generalCompletion(uri);
-}
-
-fn attributeCompletion(self: *Handler) ![]CompletionItem {
-    const items = try self.gpa.alloc(CompletionItem, wgsl_attributes.len);
-    for (wgsl_attributes, 0..) |attr, i| {
-        items[i] = .{ .label = attr, .kind = .attribute };
-    }
-    return items;
-}
-
-fn memberCompletion(self: *Handler, uri: []const u8, source: []const u8, dot_offset: u32) ![]CompletionItem {
-    // Find the identifier before the dot
-    var start = dot_offset - 1;
-    if (start > 0 and source[start] == '.') start -= 1; // skip the dot
-    while (start > 0 and (std.ascii.isAlphanumeric(source[start - 1]) or source[start - 1] == '_')) start -= 1;
-    const base_name = source[start .. dot_offset - 1];
-    if (base_name.len == 0) return &.{};
-
-    // Try to resolve the base type via analysis
-    const analysis = self.analyzeDocument(uri) catch return &.{};
-    const module = analysis.module orelse return &.{};
-
-    // Find the symbol for base_name and its type
-    var base_type: ?wgslender.Types.Type = null;
-    for (module.symbols.items, 0..) |sym, idx| {
-        if (std.mem.eql(u8, sym.original_name, base_name)) {
-            base_type = analysis.symbol_types.get(@intCast(idx));
-            break;
-        }
-    }
-
-    if (base_type) |bt| {
-        switch (bt) {
-            .@"struct" => |st| {
-                const items = try self.gpa.alloc(CompletionItem, st.fields.len);
-                for (st.fields, 0..) |field, i| {
-                    items[i] = .{ .label = field.name, .kind = .field, .detail = field.typ.string() };
-                }
-                return items;
-            },
-            .vector => {
-                // Vector swizzle components
-                const swizzles = [_][]const u8{ "x", "y", "z", "w", "r", "g", "b", "a" };
-                const items = try self.gpa.alloc(CompletionItem, swizzles.len);
-                for (swizzles, 0..) |s, i| {
-                    items[i] = .{ .label = s, .kind = .field };
-                }
-                return items;
-            },
-            else => {},
-        }
-    }
-
-    return &.{};
-}
-
-fn generalCompletion(self: *Handler, uri: []const u8) ![]CompletionItem {
-    var items: std.ArrayListUnmanaged(CompletionItem) = .empty;
-    defer items.deinit(self.gpa);
-
-    // Module-level symbols from analysis
-    if (self.analyzeDocument(uri)) |analysis| {
-        if (analysis.module) |module| {
-            for (module.symbols.items, 0..) |sym, idx| {
-                if (sym.original_name.len == 0) continue;
-                const kind: CompletionKind = switch (sym.kind) {
-                    .function => .function,
-                    .@"struct" => .struct_type,
-                    .parameter, .let, .@"var" => .variable,
-                    .@"const", .override => .variable,
-                    else => continue,
-                };
-                const detail = if (analysis.symbol_types.get(@intCast(idx))) |t| t.string() else "";
-                try items.append(self.gpa, .{ .label = sym.original_name, .kind = kind, .detail = detail });
-            }
-        }
-    } else |_| {}
-
-    // Builtin functions
-    for (Builtins.names()) |name| {
-        try items.append(self.gpa, .{ .label = name, .kind = .builtin });
-    }
-
-    // Keywords
-    for (Lexer.keywords_map.keys()) |kw| {
-        try items.append(self.gpa, .{ .label = kw, .kind = .keyword });
-    }
-
-    // Built-in type names
-    for (&wgsl_type_names) |tn| {
-        try items.append(self.gpa, .{ .label = tn, .kind = .type_name });
-    }
-
-    return try self.gpa.dupe(CompletionItem, items.items);
-}
 
 // =========================================================================
 // LSP Feature: Signature Help
