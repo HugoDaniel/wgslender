@@ -191,6 +191,12 @@ pub fn initialize(
     if (params.capabilities.workspace) |ws| {
         if (ws.configuration orelse false) self.client_supports_configuration = true;
     }
+    // Walk parents from cwd for `wgslender.json` and seed the project
+    // minify layer. cwd is the editor-spawned working directory, which is
+    // the workspace root for VS Code / nvim / Helix in the common case;
+    // honoring `params.rootUri` / `workspaceFolders` is a clean follow-up
+    // (needs a `file://` percent-decoder).
+    self.handler.discoverProjectConfig(self.io, null);
     if (params.initializationOptions) |opts| {
         self.handler.applyClientSettings(opts);
     }

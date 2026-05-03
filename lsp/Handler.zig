@@ -360,6 +360,25 @@ pub fn handleDidSave(self: *Handler, uri: []const u8) void {
     _ = uri;
 }
 
+/// Walk parents from `start_dir` (or cwd when `null`) for a `wgslender.json`
+/// and seed `self.project_minify` from its `lsp` section. Best-effort: any
+/// IO / parse failure leaves `self.project_minify` untouched. Native-only
+/// — the WASM entry has no filesystem and skips this call entirely.
+///
+/// `MinifySettings.Partial` is POD (no heap tail), so the value survives
+/// after the transient parse arena is freed.
+pub fn discoverProjectConfig(self: *Handler, io: std.Io, start_dir: ?[]const u8) void {
+    var arena = std.heap.ArenaAllocator.init(self.gpa);
+    defer arena.deinit();
+    const cfg = wgslender.Config.discover(arena.allocator(), io, start_dir) orelse return;
+    self.project_minify = cfg.lsp_minify;
+    // The resolved minify state may have shifted now that the project
+    // layer is non-empty; drop any caches keyed against the old empty
+    // partial. Cheap because `discoverProjectConfig` runs once at startup
+    // before any documents are open.
+    self.invalidateAllMinifyCaches();
+}
+
 /// Merge a client-provided settings object into `self.settings`. Fields that
 /// are missing or of the wrong type are silently ignored — matching the
 /// permissive behavior of `Config.parseJson` for project config files.

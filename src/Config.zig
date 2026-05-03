@@ -472,3 +472,31 @@ test "config: parseJson lint keys absent → defaults" {
     try std.testing.expectEqual(@as(usize, 0), cfg.lint_rules.len);
     try std.testing.expectEqual(@as(?bool, null), cfg.report_unused_disable_directives);
 }
+
+test "config: parseJson lsp section populates lsp_minify partial" {
+    const content =
+        \\{
+        \\  "lsp": {
+        \\    "minifyMode": "strict",
+        \\    "minifyInsights": { "format": "bytes", "functionSize": false, "declSize": true, "totalSize": true },
+        \\    "minifyLints": { "enabled": true, "budgetBytes": 4096 },
+        \\    "mangleExternalBindings": true
+        \\  }
+        \\}
+    ;
+    const cfg = try parseJson(std.testing.allocator, content);
+    try std.testing.expectEqual(MinifySettings.Mode.strict, cfg.lsp_minify.mode.?);
+    try std.testing.expectEqual(MinifySettings.InsightsFormat.bytes, cfg.lsp_minify.format.?);
+    try std.testing.expectEqual(false, cfg.lsp_minify.function_size.?);
+    try std.testing.expectEqual(true, cfg.lsp_minify.decl_size.?);
+    try std.testing.expectEqual(true, cfg.lsp_minify.total_size.?);
+    try std.testing.expectEqual(true, cfg.lsp_minify.lints_enabled.?);
+    try std.testing.expectEqual(@as(?u32, 4096), cfg.lsp_minify.budget_bytes);
+    try std.testing.expectEqual(true, cfg.lsp_minify.mangle_external_bindings.?);
+}
+
+test "config: parseJson lsp section absent → empty partial" {
+    const cfg = try parseJson(std.testing.allocator, "{}");
+    try std.testing.expectEqual(@as(?MinifySettings.Mode, null), cfg.lsp_minify.mode);
+    try std.testing.expectEqual(@as(?bool, null), cfg.lsp_minify.lints_enabled);
+}
