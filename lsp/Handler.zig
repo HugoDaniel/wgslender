@@ -1050,35 +1050,12 @@ pub const HighlightKind = Hover.HighlightKind;
 pub const computeHover = Hover.computeHover;
 
 // =========================================================================
-// LSP Feature: Go-to-Definition
+// LSP Feature: Go-to-Definition + Go-to-Type-Definition — see lsp/handler/definition.zig
 // =========================================================================
 
-pub fn computeDefinition(self: *Handler, uri: []const u8, position: Position) !?Range {
-    const doc = self.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
-    const analysis = try self.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-
-    const node = findNodeAtOffset(module, offset);
-    return symbolToRange(module, source, nodeSymbolIndex(node));
-}
-
-fn nodeSymbolIndex(node: NodeAtPosition) Ast.SymbolIndex {
-    return switch (node) {
-        .ident => |id| id.ref,
-        .type_ref => |tr| tr.ref,
-        .decl_name => |dn| dn.sym_idx,
-        .member_access => |ma| ma.ref,
-        .binary_expr, .none => .none,
-    };
-}
-
-fn symbolToRange(module: *const Ast.Module, source: []const u8, ref: Ast.SymbolIndex) ?Range {
-    if (!ref.isValid()) return null;
-    const sym = module.symbols.items[ref.index()];
-    return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
-}
+pub const Definition = @import("handler/definition.zig");
+pub const computeDefinition = Definition.computeDefinition;
+pub const computeTypeDefinition = Definition.computeTypeDefinition;
 
 // =========================================================================
 // LSP Feature: Find All References
@@ -1633,48 +1610,6 @@ fn findClosingBrace(source: []const u8, start: u32) ?u32 {
             depth -= 1;
             if (depth == 0) return i;
         }
-    }
-    return null;
-}
-
-// =========================================================================
-// LSP Feature: Go-to-Type-Definition
-// =========================================================================
-
-pub fn computeTypeDefinition(self: *Handler, uri: []const u8, position: Position) !?Range {
-    const doc = self.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
-    const analysis = try self.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-
-    const node = findNodeAtOffset(module, offset);
-    const sym_idx: Ast.SymbolIndex = switch (node) {
-        .ident => |id| id.ref,
-        .decl_name => |dn| dn.sym_idx,
-        else => return null,
-    };
-    if (!sym_idx.isValid()) return null;
-
-    // Get the resolved type of this symbol
-    const typ = analysis.symbol_types.get(sym_idx.index()) orelse return null;
-    switch (typ) {
-        .@"struct" => |st| {
-            // Find the struct declaration in module
-            for (module.declarations.items) |decl| {
-                switch (decl) {
-                    .@"struct" => |sd| {
-                        if (!sd.name.isValid()) continue;
-                        const sym = module.symbols.items[sd.name.index()];
-                        if (std.mem.eql(u8, sym.original_name, st.name)) {
-                            return offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
-                        }
-                    },
-                    else => {},
-                }
-            }
-        },
-        else => {},
     }
     return null;
 }
