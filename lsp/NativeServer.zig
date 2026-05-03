@@ -36,6 +36,7 @@ const wgslender = @import("wgslender");
 const Handler = @import("Handler");
 const bridge = @import("bridge");
 const Debouncer = @import("Debouncer.zig");
+const uri_module = @import("uri.zig");
 
 const NativeServer = @This();
 
@@ -183,7 +184,7 @@ pub fn rearmAllOpenDocsForTest(self: *NativeServer) void {
 /// Handles the LSP initialize request; returns server capabilities.
 pub fn initialize(
     self: *NativeServer,
-    _: std.mem.Allocator,
+    arena: std.mem.Allocator,
     params: lsp.types.InitializeParams,
 ) lsp.types.InitializeResult {
     self.lock();
@@ -191,12 +192,17 @@ pub fn initialize(
     if (params.capabilities.workspace) |ws| {
         if (ws.configuration orelse false) self.client_supports_configuration = true;
     }
-    // Walk parents from cwd for `wgslender.json` and seed the project
-    // minify layer. cwd is the editor-spawned working directory, which is
-    // the workspace root for VS Code / nvim / Helix in the common case;
-    // honoring `params.rootUri` / `workspaceFolders` is a clean follow-up
-    // (needs a `file://` percent-decoder).
-    self.handler.discoverProjectConfig(self.io, null);
+    // Pick a workspace root for `wgslender.json` discovery in this
+    // precedence order (matches the LSP spec's deprecation chain):
+    //   1. params.workspaceFolders[0].uri  (preferred — modern clients)
+    //   2. params.rootUri                  (deprecated single-root form)
+    //   3. params.rootPath                 (most-deprecated; already a path)
+    //   4. cwd                             (the LSP's own working dir)
+    // Non-`file://` URIs and Windows-style `file:///C:/...` paths fall
+    // through to the next option, eventually landing on cwd. The path
+    // string lives on the per-call arena and dies with the function.
+    const start_dir: ?[]const u8 = pickWorkspaceRoot(arena, params);
+    self.handler.discoverProjectConfig(self.io, start_dir);
     if (params.initializationOptions) |opts| {
         self.handler.applyClientConfig(opts);
     }
@@ -359,6 +365,26 @@ pub fn @"workspace/executeCommand"(
     // Re-publish diagnostics so any minify-mode change takes effect
     // immediately across all open documents.
     self.republishAllDocumentsLocked();
+    return null;
+}
+
+fn pickWorkspaceRoot(
+    arena: std.mem.Allocator,
+    params: lsp.types.InitializeParams,
+) ?[]const u8 {
+    if (params.workspaceFolders) |folders| {
+        if (folders.len > 0) {
+            if (uri_module.fileUriToPath(arena, folders[0].uri) catch null) |p| {
+                return p;
+            }
+        }
+    }
+    if (params.rootUri) |uri| {
+        if (uri_module.fileUriToPath(arena, uri) catch null) |p| {
+            return p;
+        }
+    }
+    if (params.rootPath) |p| return p;
     return null;
 }
 

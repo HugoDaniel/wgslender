@@ -304,6 +304,8 @@ pub fn build(b: *std.Build) void {
     tint_step.dependOn(run_tint_tests);
     // LSP Handler tests
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
+    // LSP URI helper tests (no imports needed beyond stdlib)
+    _ = addTestStep(b, test_step, "lsp/uri.zig", target, optimize, &.{});
     // Code action integration tests
     _ = addTestStep(b, test_step, "tests/code_action_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // Node-at-position tests
