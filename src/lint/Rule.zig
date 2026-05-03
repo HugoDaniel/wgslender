@@ -26,11 +26,28 @@
 
 const Diagnostic = @import("../Diagnostic.zig");
 const Context = @import("Context.zig");
+const MultiVisitor = @import("MultiVisitor.zig");
 
 const Rule = @This();
 
 meta: Meta,
-run: *const fn (ctx: *Context) error{OutOfMemory}!void,
+/// Per-rule entry point. Called once with the rule's `Context`. Use for
+/// symbol-table walks and post-walk reporting. Optional: rules that
+/// only need per-AST-node visits can set `listener` and leave `run` null.
+/// At least one of `run` or `listener` must be set, asserted at Linter
+/// startup.
+run: ?*const fn (ctx: *Context) error{OutOfMemory}!void = null,
+/// Optional listener factory. When set, the Linter folds this rule's
+/// listener into a single shared `MultiVisitor.walk` over the module so
+/// the AST is traversed once for all subscribed rules instead of N
+/// times. The factory is called with the rule's `Context`; the returned
+/// listener typically uses `ctx` as its `*anyopaque` ctx so callbacks
+/// can `@ptrCast(@alignCast(...))` back to `*Context`.
+///
+/// Both `run` and `listener` may be set. The shared walk fires first;
+/// `run` then runs after the walk has completed (useful for rules that
+/// collect state in the listener and report based on the tally).
+listener: ?*const fn (ctx: *Context) MultiVisitor.Listener = null,
 
 pub const Category = enum {
     /// Likely-incorrect code (unused declarations, unreachable functions).

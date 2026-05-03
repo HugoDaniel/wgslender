@@ -43,6 +43,7 @@ pub const Context = @import("Context.zig");
 pub const Configs = @import("configs.zig");
 pub const Disable = @import("Disable.zig");
 pub const Fixer = @import("Fixer.zig");
+pub const MultiVisitor = @import("MultiVisitor.zig");
 pub const registry = @import("registry.zig");
 
 const Severity = Diagnostic.Severity;
@@ -153,6 +154,17 @@ pub fn run(
     // zero-length array (e.g. a comptime gate excluded every rule).
     std.debug.assert(registry.all.len > 0);
 
+    // Pre: every rule must define at least one of `run` or `listener`,
+    // otherwise it's a no-op that quietly passes config gates without
+    // ever firing.
+    comptime {
+        for (registry.all) |r| {
+            if (r.run == null and r.listener == null) {
+                @compileError("Rule '" ++ r.meta.id ++ "' has neither run nor listener");
+            }
+        }
+    }
+
     var arena = std.heap.ArenaAllocator.init(gpa);
     errdefer arena.deinit();
     const alloc = arena.allocator();
@@ -187,8 +199,16 @@ pub fn run(
     var dce_done = false;
     const analysis_arena_opt: ?Allocator = if (analysis._arena) |*a| a.allocator() else null;
 
-    var fixable: u32 = 0;
-    for (&registry.all) |*r| {
+    // Phase 1: build per-enabled-rule contexts and collect listeners. Rules
+    // with a non-null `listener` are folded into one shared `MultiVisitor.walk`
+    // so the AST is traversed once for all of them instead of N times.
+    var contexts: std.ArrayListUnmanaged(*Context) = .empty;
+    var rule_indices: std.ArrayListUnmanaged(usize) = .empty;
+    var listeners: std.ArrayListUnmanaged(MultiVisitor.Listener) = .empty;
+    try contexts.ensureTotalCapacity(alloc, registry.all.len);
+    try rule_indices.ensureTotalCapacity(alloc, registry.all.len);
+
+    for (&registry.all, 0..) |*r, idx| {
         const setting = settings.get(r.meta.id) orelse continue;
         if (setting.severity == .disabled) continue;
 
@@ -199,9 +219,8 @@ pub fn run(
             dce_done = true;
         }
 
-        const before = diags.diagnostics.items.len;
-
-        var ctx = Context{
+        const ctx = try alloc.create(Context);
+        ctx.* = .{
             .arena = alloc,
             .analysis = analysis,
             .module = module,
@@ -213,13 +232,34 @@ pub fn run(
             .line_offset = options.line_offset,
             .cached_minify_estimate = options.cached_minify_estimate,
         };
-        try r.run(&ctx);
+        contexts.appendAssumeCapacity(ctx);
+        rule_indices.appendAssumeCapacity(idx);
 
-        if (r.meta.fixable) {
-            for (diags.diagnostics.items[before..]) |d| {
-                if (d.fix != null) fixable += 1;
-            }
-        }
+        if (r.listener) |make| try listeners.append(alloc, make(ctx));
+    }
+
+    // Phase 2: one combined walk for every subscribed rule. Listeners fire
+    // in subscription order at each node, so per-rule diagnostic ordering
+    // mirrors registry order within each visited node.
+    if (listeners.items.len > 0) {
+        try MultiVisitor.walk(alloc, module, listeners.items);
+    }
+
+    // Phase 3: per-rule `run` callbacks for rules that opted in. Runs after
+    // the shared walk so a hybrid rule (both `listener` and `run`) sees
+    // state collected by its listener before reporting.
+    for (contexts.items, rule_indices.items) |ctx, idx| {
+        const r = &registry.all[idx];
+        if (r.run) |run_fn| try run_fn(ctx);
+    }
+
+    // Count fixes once at the end. `meta.fixable` is documentation; the
+    // truth is whether an entry actually carries a `fix`. Listener-driven
+    // rules interleave during the shared walk, so per-rule index ranges
+    // wouldn't isolate them anyway.
+    var fixable: u32 = 0;
+    for (diags.diagnostics.items) |d| {
+        if (d.fix != null) fixable += 1;
     }
 
     // Parse wgslender-disable directives and filter the diagnostics list.
@@ -385,4 +425,51 @@ test "Linter: Diagnostic.source stamped on every entry" {
         try std.testing.expectEqualStrings("wgslender-lint", d.source);
         try std.testing.expectEqualStrings("W0001", d.code);
     }
+}
+
+test "Linter: listener-driven rule fires via shared MultiVisitor walk" {
+    const root = @import("../root.zig");
+    // Two redundant casts on the same line — both must be reported by
+    // the listener-driven `no-redundant-casts` rule.
+    const src: [:0]const u8 = "fn f(x: f32, y: f32) -> f32 { return f32(x) + f32(y); }";
+    var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
+    defer analysis.deinit(std.testing.allocator);
+
+    var result = try run(std.testing.allocator, &analysis, .{
+        .rules = &.{.{ .id = "no-redundant-casts", .severity = .warning }},
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 2), result.warning_count);
+    try std.testing.expectEqual(@as(u32, 2), result.fixable_count);
+    for (result.diagnostics.items()) |d| {
+        try std.testing.expectEqualStrings("W0201", d.code);
+    }
+}
+
+test "Linter: two listener-driven rules share one walk and both fire" {
+    const root = @import("../root.zig");
+    // A single source that triggers BOTH no-redundant-casts (W0201) and
+    // prefer-mix (W0203). The Linter must collect both listeners,
+    // dispatch them in the same walk, and report both diagnostics.
+    const src: [:0]const u8 =
+        "fn f(a: f32, b: f32, t: f32) -> f32 { return f32(a + (b - a) * t); }";
+    var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
+    defer analysis.deinit(std.testing.allocator);
+
+    var result = try run(std.testing.allocator, &analysis, .{
+        .rules = &.{
+            .{ .id = "no-redundant-casts", .severity = .warning },
+            .{ .id = "prefer-mix", .severity = .warning },
+        },
+    });
+    defer result.deinit(std.testing.allocator);
+
+    var saw_redundant = false;
+    var saw_mix = false;
+    for (result.diagnostics.items()) |d| {
+        if (std.mem.eql(u8, d.code, "W0201")) saw_redundant = true;
+        if (std.mem.eql(u8, d.code, "W0203")) saw_mix = true;
+    }
+    try std.testing.expect(saw_redundant);
+    try std.testing.expect(saw_mix);
 }

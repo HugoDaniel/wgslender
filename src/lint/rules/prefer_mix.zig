@@ -33,13 +33,11 @@ pub const rule = Rule{
         .category = .performance,
         .fixable = true,
     },
-    .run = run,
+    .listener = makeListener,
 };
 
-fn run(ctx: *Context) error{OutOfMemory}!void {
-    try MultiVisitor.walk(ctx.arena, ctx.module, &.{
-        .{ .ctx = ctx, .on_expr = onExpr },
-    });
+fn makeListener(ctx: *Context) MultiVisitor.Listener {
+    return .{ .ctx = ctx, .on_expr = onExpr };
 }
 
 fn onExpr(opaque_ctx: *anyopaque, e: Ast.Expr) error{OutOfMemory}!void {
