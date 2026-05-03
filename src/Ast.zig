@@ -132,6 +132,24 @@ pub const Symbol = struct {
         is_live: bool = false,
         _padding: u10 = 0,
     };
+
+    /// True when this symbol qualifies for the "declared but never used"
+    /// warning (W0001). Single source of truth shared by the LSP
+    /// `appendUnusedWarnings` pass and the `no-unused-vars` lint rule, so
+    /// the two surfaces can never disagree on what counts as unused.
+    /// Skips parameters because function signatures are often part of an
+    /// external contract the author can't change.
+    pub fn isUnusedReportable(self: Symbol) bool {
+        if (self.use_count > 0) return false;
+        if (self.original_name.len == 0) return false;
+        if (self.flags.is_entry_point) return false;
+        if (self.flags.is_api_facing) return false;
+        if (self.flags.is_external_binding) return false;
+        return switch (self.kind) {
+            .function, .@"const", .let, .@"var", .override => true,
+            else => false,
+        };
+    }
 };
 
 // =========================================================================

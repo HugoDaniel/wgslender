@@ -36,16 +36,7 @@ pub const rule = Rule{
 
 fn run(ctx: *Context) error{OutOfMemory}!void {
     for (ctx.module.symbols.items) |sym| {
-        if (sym.use_count > 0) continue;
-        if (sym.original_name.len == 0) continue;
-        if (sym.flags.is_entry_point) continue;
-        if (sym.flags.is_api_facing) continue;
-        if (sym.flags.is_external_binding) continue;
-        switch (sym.kind) {
-            .function, .@"const", .let, .@"var", .override => {},
-            else => continue,
-        }
-
+        if (!sym.isUnusedReportable()) continue;
         const name_len: u32 = @intCast(sym.original_name.len);
         const end = sym.loc + name_len;
         const msg = try ctx.fmt("'{s}' is declared but never used", .{sym.original_name});
