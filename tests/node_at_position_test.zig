@@ -23,7 +23,7 @@ test "findNodeAtOffset: cursor on variable usage returns ident" {
     // 'x' usage inside function body at "let y = x"
     // Find the second 'x' in source (the usage)
     const x_usage_offset: u32 = @intCast(std.mem.lastIndexOf(u8, source, "x").?);
-    const node = Handler.findNodeAtOffset(module, x_usage_offset);
+    const node = Handler.NodeAtOffset.find(module, x_usage_offset);
     switch (node) {
         .ident => |id| {
             try std.testing.expectEqualStrings("x", id.name);
@@ -39,7 +39,7 @@ test "findNodeAtOffset: cursor on function name in declaration" {
     const result = try analyzeSource(source);
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
-    const node = Handler.findNodeAtOffset(module, 3);
+    const node = Handler.NodeAtOffset.find(module, 3);
     switch (node) {
         .decl_name => |dn| {
             try std.testing.expect(dn.sym_idx.isValid());
@@ -61,7 +61,7 @@ test "findNodeAtOffset: cursor on struct member access" {
     const member_offset: u32 = @intCast(dot_pos + 1); // skip the dot, pointing at 'v' in "val"
     try std.testing.expectEqual(@as(u8, 'v'), source[member_offset]);
 
-    const node = Handler.findNodeAtOffset(module, member_offset);
+    const node = Handler.NodeAtOffset.find(module, member_offset);
     switch (node) {
         .member_access => |ma| {
             try std.testing.expectEqualStrings("val", ma.member);
@@ -77,7 +77,7 @@ test "findNodeAtOffset: cursor on type annotation" {
     const module = result.module orelse return error.TestUnexpectedResult;
     // "MyStruct" in "var v: MyStruct" — find the second occurrence
     const type_offset: u32 = @intCast(std.mem.lastIndexOf(u8, source, "MyStruct").?);
-    const node = Handler.findNodeAtOffset(module, type_offset);
+    const node = Handler.NodeAtOffset.find(module, type_offset);
     switch (node) {
         .type_ref => |tr| {
             try std.testing.expectEqualStrings("MyStruct", tr.name);
@@ -93,7 +93,7 @@ test "findNodeAtOffset: cursor on whitespace returns none" {
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
     // Offset 2 is a space between "fn" and "f"
-    const node = Handler.findNodeAtOffset(module, 2);
+    const node = Handler.NodeAtOffset.find(module, 2);
     try std.testing.expect(node == .none);
 }
 
@@ -103,7 +103,7 @@ test "findNodeAtOffset: cursor on struct declaration name" {
     const result = try analyzeSource(source);
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
-    const node = Handler.findNodeAtOffset(module, 7);
+    const node = Handler.NodeAtOffset.find(module, 7);
     switch (node) {
         .decl_name => |dn| {
             const sym = module.symbols.items[dn.sym_idx.index()];
@@ -119,7 +119,7 @@ test "findNodeAtOffset: cursor on parameter name in function" {
     const result = try analyzeSource(source);
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
-    const node = Handler.findNodeAtOffset(module, 7);
+    const node = Handler.NodeAtOffset.find(module, 7);
     switch (node) {
         .decl_name => |dn| {
             const sym = module.symbols.items[dn.sym_idx.index()];
@@ -136,7 +136,7 @@ test "findNodeAtOffset: cursor at identifier boundary (last char)" {
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
     // "abc" starts at offset 3, length 3, so valid range is [3,6)
-    const node = Handler.findNodeAtOffset(module, 5);
+    const node = Handler.NodeAtOffset.find(module, 5);
     switch (node) {
         .decl_name => |dn| {
             const sym = module.symbols.items[dn.sym_idx.index()];
@@ -152,7 +152,7 @@ test "findNodeAtOffset: cursor just past identifier returns none" {
     const result = try analyzeSource(source);
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
-    const node = Handler.findNodeAtOffset(module, 6);
+    const node = Handler.NodeAtOffset.find(module, 6);
     try std.testing.expect(node == .none);
 }
 
@@ -165,7 +165,7 @@ test "findNodeAtOffset: const declaration name" {
     const result = try analyzeSource(source);
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
-    const node = Handler.findNodeAtOffset(module, 6); // 'P' in PI
+    const node = Handler.NodeAtOffset.find(module, 6); // 'P' in PI
     switch (node) {
         .decl_name => |dn| {
             const sym = module.symbols.items[dn.sym_idx.index()];
@@ -182,7 +182,7 @@ test "findNodeAtOffset: variable usage in binary expression" {
     const module = result.module orelse return error.TestUnexpectedResult;
     // Find 'b' in "a + b"
     const b_offset = std.mem.lastIndexOf(u8, source, "b") orelse return error.TestUnexpectedResult;
-    const node = Handler.findNodeAtOffset(module, @intCast(b_offset));
+    const node = Handler.NodeAtOffset.find(module, @intCast(b_offset));
     switch (node) {
         .ident => |id| {
             try std.testing.expectEqualStrings("b", id.name);
@@ -205,7 +205,7 @@ test "findNodeAtOffset: multi-line function" {
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
     // 'compute' starts at offset 3
-    const node = Handler.findNodeAtOffset(module, 3);
+    const node = Handler.NodeAtOffset.find(module, 3);
     switch (node) {
         .decl_name => |dn| {
             const sym = module.symbols.items[dn.sym_idx.index()];
@@ -221,7 +221,7 @@ test "findNodeAtOffset: let inside if body" {
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
     const inner_pos = std.mem.indexOf(u8, source, "inner") orelse return error.TestUnexpectedResult;
-    const node = Handler.findNodeAtOffset(module, @intCast(inner_pos));
+    const node = Handler.NodeAtOffset.find(module, @intCast(inner_pos));
     switch (node) {
         .decl_name => |dn| {
             const sym = module.symbols.items[dn.sym_idx.index()];
@@ -237,7 +237,7 @@ test "findNodeAtOffset: offset 0 on fn keyword returns none" {
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
     // Offset 0 is 'f' of 'fn' keyword — not an identifier node
-    const node = Handler.findNodeAtOffset(module, 0);
+    const node = Handler.NodeAtOffset.find(module, 0);
     try std.testing.expect(node == .none);
 }
 
@@ -247,7 +247,7 @@ test "findNodeAtOffset: struct member declaration name" {
     defer cleanup(result);
     const module = result.module orelse return error.TestUnexpectedResult;
     const pos = std.mem.indexOf(u8, source, "field_b") orelse return error.TestUnexpectedResult;
-    const node = Handler.findNodeAtOffset(module, @intCast(pos));
+    const node = Handler.NodeAtOffset.find(module, @intCast(pos));
     switch (node) {
         .decl_name => |dn| {
             const sym = module.symbols.items[dn.sym_idx.index()];
@@ -264,7 +264,7 @@ test "findNodeAtOffset: type in function return position" {
     const module = result.module orelse return error.TestUnexpectedResult;
     // Find 'R' in "-> R" (the return type reference)
     const arrow_pos = std.mem.indexOf(u8, source, "-> R") orelse return error.TestUnexpectedResult;
-    const node = Handler.findNodeAtOffset(module, @intCast(arrow_pos + 3));
+    const node = Handler.NodeAtOffset.find(module, @intCast(arrow_pos + 3));
     switch (node) {
         .type_ref => |tr| {
             try std.testing.expectEqualStrings("R", tr.name);
