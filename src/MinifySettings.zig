@@ -53,11 +53,6 @@ pub const Partial = struct {
     total_size: ?bool = null,
     format: ?InsightsFormat = null,
     lints_enabled: ?bool = null,
-    /// Build-pipeline flag mirroring `Minifier.Options.mangle_external_bindings`.
-    /// Lets the LSP know the user has opted into renaming `@group/@binding`
-    /// vars so it can silence the `M0100 minify/external-binding-blocks-rename`
-    /// hint.
-    mangle_external_bindings: ?bool = null,
     /// LSP-side budget for `M0500 minify/shader-exceeds-size-budget`.
     /// When the resolved value is non-null, the LSP forwards it as
     /// `{"maxBytes": N}` to the rule's `RuleOverride.options`. `null`
@@ -78,9 +73,6 @@ pub const Effective = struct {
     mode: Mode = .off,
     insights: InsightsSwitches = .{},
     lints: LintsSwitches = .{},
-    /// Resolved view of `Partial.mangle_external_bindings`. Rules and code
-    /// lenses read this to decide whether external-binding rename is on.
-    mangle_external_bindings: bool = false,
     /// Resolved view of `Partial.budget_bytes`. The Handler forwards this
     /// to M0500's `RuleOverride.options` when non-null; the total-size
     /// code lens compares against it to render the over-budget badge.
@@ -119,7 +111,6 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
         .insights, .strict => .{},
     };
     var lints: LintsSwitches = .{ .enabled = mode == .strict };
-    var mangle_external_bindings: bool = false;
     var budget_bytes: ?u32 = null;
     var use_full_minify: bool = false;
 
@@ -129,7 +120,6 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
         if (layer.total_size) |v| insights.total_size = v;
         if (layer.format) |v| insights.format = v;
         if (layer.lints_enabled) |v| lints.enabled = v;
-        if (layer.mangle_external_bindings) |v| mangle_external_bindings = v;
         if (layer.budget_bytes) |v| budget_bytes = v;
         if (layer.use_full_minify) |v| use_full_minify = v;
     }
@@ -138,7 +128,6 @@ pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
         .mode = mode,
         .insights = insights,
         .lints = lints,
-        .mangle_external_bindings = mangle_external_bindings,
         .budget_bytes = budget_bytes,
         .use_full_minify = use_full_minify,
     };

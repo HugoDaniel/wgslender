@@ -50,7 +50,6 @@ export interface LspSettings {
      * defaults to false (the cheap length-only estimator).
      */
     minifyEstimator?: { useFullMinify?: boolean };
-    mangleExternalBindings?: boolean;
   };
   /**
    * Per-rule severity overrides keyed by rule id (e.g.
@@ -79,9 +78,10 @@ export interface LspSettings {
   treeShaking?: boolean;
   preserveUniformStructTypes?: boolean;
   /**
-   * Rename `@group/@binding` vars directly. Distinct from
-   * `lsp.mangleExternalBindings`, which only suppresses the M0100
-   * inlay hint without changing minifier behavior.
+   * Rename `@group/@binding` vars directly. Same field drives both the
+   * minifier output and the LSP M0100 hint gate — to silence the hint
+   * without changing minifier behavior, set the rule to `off` via
+   * `rules: { "minify/external-binding-blocks-rename": "off" }`.
    */
   mangleExternalBindings?: boolean;
   keepNames?: string[];

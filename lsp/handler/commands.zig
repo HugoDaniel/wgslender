@@ -112,13 +112,13 @@ pub fn runShowMinifiedOutput(
     uri: []const u8,
 ) CommandError!MinifyCommandResult {
     const doc = handler.documents.getPtr(uri) orelse return error.DocumentNotFound;
-    const eff = handler.effectiveMinifyFor(uri);
+    const mangle = handler.mangleExternalBindings();
 
     // Minifier.minify wants sentinel-terminated source.
     const source = try arena.dupeZ(u8, doc.source);
 
     const result = wgslender.Minifier.minify(arena, source, .{
-        .mangle_external_bindings = eff.mangle_external_bindings,
+        .mangle_external_bindings = mangle,
     }) catch return error.MinifyFailed;
 
     // Estimator runs against the analysis module so byte_count matches
@@ -133,7 +133,7 @@ pub fn runShowMinifiedOutput(
     const est = wgslender.MinifyEstimator.estimate(
         est_arena.allocator(),
         @constCast(module),
-        .{ .mangle_external_bindings = eff.mangle_external_bindings },
+        .{ .mangle_external_bindings = mangle },
     ) catch return error.MinifyFailed;
 
     return .{

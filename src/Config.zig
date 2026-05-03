@@ -197,9 +197,6 @@ fn parseLspSection(target: *Config, lsp: std.json.ObjectMap) void {
             };
         }
     }
-    if (lsp.get("mangleExternalBindings")) |v| {
-        if (v == .bool) out.mangle_external_bindings = v.bool;
-    }
     if (lsp.get("minifyEstimator")) |v| {
         if (v == .object) {
             if (v.object.get("useFullMinify")) |b| {
@@ -542,7 +539,6 @@ test "config: parseJson lsp section populates lsp_minify partial" {
         \\    "minifyMode": "strict",
         \\    "minifyInsights": { "format": "bytes", "functionSize": false, "declSize": true, "totalSize": true },
         \\    "minifyLints": { "enabled": true, "budgetBytes": 4096 },
-        \\    "mangleExternalBindings": true,
         \\    "minifyEstimator": { "useFullMinify": true },
         \\    "inlayHints": { "enabled": false },
         \\    "diagnostics": { "enabled": false }
@@ -557,10 +553,14 @@ test "config: parseJson lsp section populates lsp_minify partial" {
     try std.testing.expectEqual(true, cfg.lsp_minify.total_size.?);
     try std.testing.expectEqual(true, cfg.lsp_minify.lints_enabled.?);
     try std.testing.expectEqual(@as(?u32, 4096), cfg.lsp_minify.budget_bytes);
-    try std.testing.expectEqual(true, cfg.lsp_minify.mangle_external_bindings.?);
     try std.testing.expectEqual(true, cfg.lsp_minify.use_full_minify.?);
     try std.testing.expectEqual(false, cfg.lsp_inlay_hints_enabled.?);
     try std.testing.expectEqual(false, cfg.lsp_diagnostics_enabled.?);
+}
+
+test "config: top-level mangleExternalBindings parses (no lsp.* equivalent)" {
+    const cfg = try parseJson(std.testing.allocator, "{\"mangleExternalBindings\": true}");
+    try std.testing.expectEqual(@as(?bool, true), cfg.mangle_external_bindings);
 }
 
 test "config: parseJson lsp section absent → empty partial" {

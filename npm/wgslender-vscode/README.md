@@ -42,12 +42,11 @@ in your editor too, with the same key names. Key knobs:
 - `wgslender.lsp.minifyLints.enabled` — run M01xx hygiene checks (auto-on with `strict`).
 - `wgslender.lsp.minifyLints.budgetBytes` — per-shader byte budget; M0500 fires above it. `null` = no budget.
 - `wgslender.lsp.minifyEstimator.useFullMinify` — opt-in: production minifier + gzip for ground-truth bytes (slower).
-- `wgslender.lsp.mangleExternalBindings` — silence M0100 when the consuming pipeline mangles bindings.
 
 **Minifier knobs** (reused by **Minify Preview**, **Save Minified As…**, and **Compile**, and by the LSP estimator)
 - `wgslender.minifyWhitespace` / `minifyIdentifiers` / `minifySyntax` / `treeShaking` — pipeline toggles (default on).
 - `wgslender.preserveUniformStructTypes` — keep struct types referenced by uniform/storage vars.
-- `wgslender.mangleExternalBindings` — rename `@group/@binding` vars directly (default keeps `let` aliases).
+- `wgslender.mangleExternalBindings` — rename `@group/@binding` vars directly (default keeps `let` aliases). Same knob also gates the LSP M0100 hint; to silence M0100 without changing minifier behavior, set `wgslender.rules` to include `"minify/external-binding-blocks-rename": "off"`.
 - `wgslender.sortDeclarations` / `scopeLocalRename` — improve DEFLATE compression of minified output.
 - `wgslender.keepNames` — names that must never be renamed.
 

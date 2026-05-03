@@ -275,17 +275,18 @@ test "lsp minify rules: validator errors still flow through alongside M-diagnost
 }
 
 // =========================================================================
-// Phase 5b — mangleExternalBindings gate on M0100
+// mangleExternalBindings gate on M0100
 // =========================================================================
 //
 // The hint exists to nudge the user to enable `--mangle-external-bindings`.
 // Once they have, surfacing the hint is just noise — gate it out via the
-// resolved `MinifySettings.Effective.mangle_external_bindings` field.
+// top-level `mangleExternalBindings` knob (single source of truth shared
+// with the CLI minifier; consumed by `Handler.mangleExternalBindings()`).
 
 test "lsp minify rules: mangleExternalBindings=true silences M0100 in strict" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\",\"mangleExternalBindings\":true}}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"},\"mangleExternalBindings\":true}");
 
     const src: [:0]const u8 =
         \\@group(0) @binding(0) var<uniform> uniforms: f32;
@@ -417,7 +418,7 @@ test "lsp minify rules: severities + mangleExternalBindings compose (gate beats 
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"lsp":{"minifyMode":"strict","mangleExternalBindings":true},"rules":{"minify/external-binding-blocks-rename":"error"}}
+        \\{"lsp":{"minifyMode":"strict"},"mangleExternalBindings":true,"rules":{"minify/external-binding-blocks-rename":"error"}}
     );
 
     const src: [:0]const u8 =
@@ -438,7 +439,7 @@ test "lsp minify rules: mangleExternalBindings=true does not silence other M-cod
     // The gate is M0100-only — flipping it should leave M0201 / M0202 alone.
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\",\"mangleExternalBindings\":true}}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"},\"mangleExternalBindings\":true}");
 
     const src: [:0]const u8 =
         \\const UNUSED_K: f32 = 3.14;

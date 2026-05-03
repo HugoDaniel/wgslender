@@ -405,6 +405,21 @@ pub fn diagnosticsEnabled(self: *const Handler) bool {
         true;
 }
 
+/// Resolve the single `mangleExternalBindings` knob, layered workspace →
+/// project → false. The same value drives the LSP M0100 hint gate, the
+/// estimator cache key, and `runShowMinifiedOutput` — and the local CLI
+/// minifier reads `Minifier.Options.mangle_external_bindings` straight off
+/// the same `Config` field, so editor and CLI behavior never diverge.
+///
+/// Magic comments don't contribute today (`MagicComment.zig` only emits
+/// `mode`); if a future directive needs to override per-document, add it
+/// to the Partial and merge here.
+pub fn mangleExternalBindings(self: *const Handler) bool {
+    return self.workspace_config.mangle_external_bindings orelse
+        self.project_config.mangle_external_bindings orelse
+        false;
+}
+
 /// Append the merged `rules` overrides from project + workspace into
 /// `into`. Workspace entries win over project entries on duplicate id.
 /// The caller (today: `lsp/handler/diagnostics.zig`) layers M0100 /

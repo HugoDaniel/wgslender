@@ -120,63 +120,13 @@ test "resolve: explicit lints_enabled=true in insights mode enables lints" {
 }
 
 // =========================================================================
-// mangle_external_bindings — Phase 5b
-// =========================================================================
-//
-// The field is a build-pipeline opt-in: when the user runs the CLI with
-// `--mangle-external-bindings`, the LSP needs to know so M0100 (the hint
-// that flags external bindings as un-renameable) can be silenced.
-
-test "resolve: mangle_external_bindings defaults to false" {
-    const eff = MinifySettings.resolve(.{}, .{}, .{});
-    try std.testing.expect(!eff.mangle_external_bindings);
-}
-
-test "resolve: project mangle_external_bindings=true propagates" {
-    const eff = MinifySettings.resolve(
-        .{ .mangle_external_bindings = true },
-        .{},
-        .{},
-    );
-    try std.testing.expect(eff.mangle_external_bindings);
-}
-
-test "resolve: workspace mangle_external_bindings overrides project" {
-    const eff = MinifySettings.resolve(
-        .{ .mangle_external_bindings = false },
-        .{ .mangle_external_bindings = true },
-        .{},
-    );
-    try std.testing.expect(eff.mangle_external_bindings);
-}
-
-test "resolve: magic mangle_external_bindings beats workspace + project" {
-    const eff = MinifySettings.resolve(
-        .{ .mangle_external_bindings = false },
-        .{ .mangle_external_bindings = false },
-        .{ .mangle_external_bindings = true },
-    );
-    try std.testing.expect(eff.mangle_external_bindings);
-}
-
-test "resolve: workspace null leaves project mangle_external_bindings intact" {
-    const eff = MinifySettings.resolve(
-        .{ .mangle_external_bindings = true },
-        .{},
-        .{},
-    );
-    try std.testing.expect(eff.mangle_external_bindings);
-}
-
-// =========================================================================
 // budget_bytes — Phase 6
 // =========================================================================
 //
-// Mirror the `mangle_external_bindings` block: confirm the field
-// threads through `Partial` → `Effective` and respects the standard
-// magic > workspace > project precedence. Tri-state (`?u32`) means a
-// zero budget is meaningful (M0500 fires on anything), distinct from
-// "unset" (rule no-ops).
+// Confirm that the field threads through `Partial` → `Effective` and
+// respects the standard magic > workspace > project precedence. Tri-state
+// (`?u32`) means a zero budget is meaningful (M0500 fires on anything),
+// distinct from "unset" (rule no-ops).
 
 test "resolve: budget_bytes defaults to null" {
     const eff = MinifySettings.resolve(.{}, .{}, .{});
@@ -324,20 +274,24 @@ test "Config: lsp.minifyLints.budgetBytes absent leaves Partial null" {
     try std.testing.expectEqual(@as(?u32, null), cfg.lsp_minify.budget_bytes);
 }
 
-test "Config: lsp.mangleExternalBindings parses into Partial" {
+test "Config: top-level mangleExternalBindings parses (single source of truth)" {
+    const cfg = try wgslender.Config.parseJson(
+        std.testing.allocator,
+        "{\"mangleExternalBindings\":true}",
+    );
+    try std.testing.expectEqual(@as(?bool, true), cfg.mangle_external_bindings);
+}
+
+test "Config: legacy lsp.mangleExternalBindings is silently ignored" {
+    // Schema break: the nested `lsp.mangleExternalBindings` key is no
+    // longer parsed. Permissive JSON parsing means the LSP just drops
+    // the unknown key — clients that pushed the old shape will see
+    // their value treated as absent.
     const cfg = try wgslender.Config.parseJson(
         std.testing.allocator,
         "{\"lsp\":{\"mangleExternalBindings\":true}}",
     );
-    try std.testing.expectEqual(@as(?bool, true), cfg.lsp_minify.mangle_external_bindings);
-}
-
-test "Config: lsp.mangleExternalBindings absent leaves Partial null" {
-    const cfg = try wgslender.Config.parseJson(
-        std.testing.allocator,
-        "{\"lsp\":{\"minifyMode\":\"strict\"}}",
-    );
-    try std.testing.expectEqual(@as(?bool, null), cfg.lsp_minify.mangle_external_bindings);
+    try std.testing.expectEqual(@as(?bool, null), cfg.mangle_external_bindings);
 }
 
 test "Config: lsp section with wrong types silently ignored" {

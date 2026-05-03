@@ -162,7 +162,9 @@ test "perf: cache invalidated by minify settings change" {
     // both keys because each push replaces the workspace overlay
     // wholesale — omitting `minifyMode` would drop it back to `off`
     // and the early-out path wouldn't even reach the estimator.
-    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\",\"mangleExternalBindings\":true}}");
+    // `mangleExternalBindings` lives at the top level (single source of
+    // truth shared with the CLI minifier); `minifyMode` is LSP-only.
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"},\"mangleExternalBindings\":true}");
     h.refreshMinifyInsights("file:///a.wgsl");
     try std.testing.expectEqual(@as(u64, 2), MinifyEstimator.estimate_count - before);
 }

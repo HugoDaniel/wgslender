@@ -155,11 +155,6 @@
           "default": false,
           "description": "Run the production minifier + gzip-of-output for ground-truth byte counts. Slower to recompute on every edit; default uses the cheap length-only heuristic."
         },
-        "wgslender.lsp.mangleExternalBindings": {
-          "type": "boolean",
-          "default": false,
-          "description": "Tell the LSP that the consuming pipeline mangles @group/@binding names, so the M0100 'binding-blocks-rename' hint no-ops. Independent of the top-level `wgslender.mangleExternalBindings` (which controls the actual minifier)."
-        },
         "wgslender.minifyWhitespace": {
           "type": "boolean",
           "default": true,
@@ -188,7 +183,7 @@
         "wgslender.mangleExternalBindings": {
           "type": "boolean",
           "default": false,
-          "description": "Rename @group/@binding vars directly when minifying. By default wgslender keeps these names and creates `let` aliases so the host pipeline can keep using the original names. Distinct from `wgslender.lsp.mangleExternalBindings` (LSP M0100 hint only)."
+          "description": "Rename @group/@binding vars directly when minifying. By default wgslender keeps these names and emits `let` aliases so the host pipeline can keep using the original names. The LSP also reads this knob to gate the M0100 hint — to silence M0100 without changing minifier behavior, use `\"rules\": { \"minify/external-binding-blocks-rename\": \"off\" }`."
         },
         "wgslender.sortDeclarations": {
           "type": "boolean",

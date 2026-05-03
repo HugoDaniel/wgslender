@@ -89,7 +89,12 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
     if (options.include_minify_lints and eff_minify.lintsActive()) {
         var minify_arena = std.heap.ArenaAllocator.init(handler.gpa);
         defer minify_arena.deinit();
-        const overrides = try buildMinifyRuleOverrides(handler, minify_arena.allocator(), eff_minify);
+        const overrides = try buildMinifyRuleOverrides(
+            handler,
+            minify_arena.allocator(),
+            eff_minify,
+            handler.mangleExternalBindings(),
+        );
 
         // Phase 7 cache hand-off: warm the per-document estimator cache
         // once and let M-rules read the same pointer. `getMinifyEstimate`
@@ -112,9 +117,10 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
     return try diags.toOwnedSlice(handler.gpa);
 }
 
-/// Build per-rule overrides synthesizing fields from the resolved
-/// `MinifySettings.Effective` and the merged `rules` overrides from
-/// every Config layer into the Linter's `Options.rules` slice.
+/// Build per-rule overrides synthesising fields from the resolved
+/// `MinifySettings.Effective`, the standalone `mangleExternalBindings`
+/// knob, and the merged `rules` overrides from every Config layer into
+/// the Linter's `Options.rules` slice.
 ///
 /// Two contributions, merged per rule id:
 ///   1. `rules` (id → severity) — escalates or silences any registered
@@ -122,9 +128,10 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
 ///      (LSP `workspace/configuration`) layers contribute; workspace
 ///      wins on duplicate id (see `Handler.appendLintRuleOverrides`).
 ///   2. The M0100 mangle gate — when the user has opted into
-///      `--mangle-external-bindings`, attach
+///      `mangleExternalBindings = true`, attach
 ///      `{"mangleExternalBindings": true}` to that rule's options so
-///      the rule no-ops.
+///      the rule no-ops. Same value the local minifier reads, so editor
+///      hint and CLI output never disagree.
 ///
 /// When both apply to M0100, severity is taken from (1) and options are
 /// taken from (2). The Linter consumes a flat list, so we accumulate
@@ -133,6 +140,7 @@ fn buildMinifyRuleOverrides(
     handler: *const Handler,
     arena: std.mem.Allocator,
     eff: MinifySettings.Effective,
+    mangle_external_bindings: bool,
 ) ![]wgslender.Linter.Options.RuleOverride {
     const Acc = struct {
         id: []const u8,
@@ -152,7 +160,7 @@ fn buildMinifyRuleOverrides(
     }
 
     // M0100 mangleExternalBindings gate.
-    if (eff.mangle_external_bindings) {
+    if (mangle_external_bindings) {
         const m0100_id: []const u8 = "minify/external-binding-blocks-rename";
         var obj: std.json.ObjectMap = .empty;
         try obj.put(arena, "mangleExternalBindings", .{ .bool = true });

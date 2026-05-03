@@ -374,7 +374,7 @@ A full-featured WGSL language server built from the same analyzer as the CLI.
 | Selection range | Smart expand/shrink up the AST |
 | Call hierarchy | Incoming and outgoing calls |
 | Incremental sync | `TextDocumentSyncKind.Incremental` — only changed ranges are reparsed |
-| `workspace/configuration` | Pulls `wgslender` section. Schema mirrors `wgslender.json`: LSP-only knobs under `lsp.*` (`lsp.inlayHints.enabled`, `lsp.diagnostics.enabled`, `lsp.minifyMode`, `lsp.minifyLints.{enabled,budgetBytes}`, `lsp.mangleExternalBindings`); per-rule severities at top-level `rules` (id-keyed, ESLint-shape) |
+| `workspace/configuration` | Pulls `wgslender` section. Schema mirrors `wgslender.json`: LSP-only knobs under `lsp.*` (`lsp.inlayHints.enabled`, `lsp.diagnostics.enabled`, `lsp.minifyMode`, `lsp.minifyLints.{enabled,budgetBytes}`); CLI knobs at top-level (`mangleExternalBindings`, `minifyWhitespace`, …); per-rule severities at top-level `rules` (id-keyed, ESLint-shape) |
 | `workspace/executeCommand` | `wgslender.setMinifyMode`, `wgslender.toggleMinifyMode`, `wgslender.showMinifiedOutput` |
 
 Both transports (native stdio and browser WASM) expose the same capability set.

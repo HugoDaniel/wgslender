@@ -143,7 +143,6 @@ const lspSettingsSchema = Object.freeze({
             useFullMinify: { type: 'boolean', default: false },
           },
         },
-        mangleExternalBindings: { type: 'boolean' },
       },
     },
     // Per-rule severity overrides, id-keyed (ESLint-shape).
