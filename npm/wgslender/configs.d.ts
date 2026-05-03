@@ -63,6 +63,11 @@ export interface LspSettings {
   /** Lint pack inheritance, e.g. `["@wgslender/recommended"]`. */
   extends?: string[];
   /**
+   * Treat unused `wgslender-disable` comments as warnings. Flows through
+   * to the linter via `Linter.Options.report_unused_disable_directives`.
+   */
+  reportUnusedDisableDirectives?: boolean;
+  /**
    * CLI-minifier knobs (also live in `wgslender.json`). The LSP
    * forwards these to the `wgslender.showMinifiedOutput` command and
    * uses them to key the per-document estimator cache, so flipping
@@ -73,6 +78,12 @@ export interface LspSettings {
   minifySyntax?: boolean;
   treeShaking?: boolean;
   preserveUniformStructTypes?: boolean;
+  /**
+   * Rename `@group/@binding` vars directly. Distinct from
+   * `lsp.mangleExternalBindings`, which only suppresses the M0100
+   * inlay hint without changing minifier behavior.
+   */
+  mangleExternalBindings?: boolean;
   keepNames?: string[];
   sortDeclarations?: boolean;
   scopeLocalRename?: boolean;

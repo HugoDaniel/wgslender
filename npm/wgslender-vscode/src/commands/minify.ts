@@ -160,11 +160,12 @@ function previewUriFor(sourceUri: Uri): Uri {
 function optionsFromConfig(): Record<string, unknown> {
   const cfg = workspace.getConfiguration('wgslender');
   return {
-    minifyWhitespace: true,
-    minifyIdentifiers: true,
-    minifySyntax: true,
-    treeShaking: true,
-    mangleExternalBindings: cfg.get<boolean>('lsp.mangleExternalBindings', false),
+    minifyWhitespace: cfg.get<boolean>('minifyWhitespace', true),
+    minifyIdentifiers: cfg.get<boolean>('minifyIdentifiers', true),
+    minifySyntax: cfg.get<boolean>('minifySyntax', true),
+    treeShaking: cfg.get<boolean>('treeShaking', true),
+    preserveUniformStructTypes: cfg.get<boolean>('preserveUniformStructTypes', false),
+    mangleExternalBindings: cfg.get<boolean>('mangleExternalBindings', false),
     sortDeclarations: cfg.get<boolean>('sortDeclarations', false),
     scopeLocalRename: cfg.get<boolean>('scopeLocalRename', false),
     keepNames: cfg.get<string[]>('keepNames', []),

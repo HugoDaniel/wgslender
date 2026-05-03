@@ -102,16 +102,93 @@
           "default": false,
           "description": "Report wgslender-disable comments that don't suppress any diagnostic."
         },
+        "wgslender.lsp.inlayHints.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Publish wgslender inlay hints (minify size insights, parameter names)."
+        },
+        "wgslender.lsp.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Publish wgslender diagnostics (validation errors, lint warnings, minify hints)."
+        },
         "wgslender.lsp.minifyMode": {
           "type": "string",
           "enum": ["off", "insights", "strict"],
           "default": "off",
           "description": "Minifier inlay-hint mode (off / insights show estimated bytes / strict escalates minify rules to errors)."
         },
+        "wgslender.lsp.minifyInsights.format": {
+          "type": "string",
+          "enum": ["delta", "bytes", "both"],
+          "default": "delta",
+          "description": "Format for minify-size inlay hints: delta (saved bytes), bytes (absolute minified size), or both."
+        },
+        "wgslender.lsp.minifyInsights.functionSize": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show estimated minified size at each function declaration."
+        },
+        "wgslender.lsp.minifyInsights.declSize": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show estimated minified size at each top-level declaration (struct, const, var, alias, override)."
+        },
+        "wgslender.lsp.minifyInsights.totalSize": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show total estimated minified size as a code lens at the top of the document."
+        },
+        "wgslender.lsp.minifyLints.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run minify-pack lint rules (M01xx hygiene checks). Auto-enabled when `lsp.minifyMode` is `strict`."
+        },
+        "wgslender.lsp.minifyLints.budgetBytes": {
+          "type": ["integer", "null"],
+          "default": null,
+          "minimum": 0,
+          "description": "Per-shader minified size budget in bytes. When set, M0500 (`minify/shader-exceeds-size-budget`) fires above this threshold; the total-size code lens renders an over-budget badge. null = no budget (M0500 stays a no-op)."
+        },
+        "wgslender.lsp.minifyEstimator.useFullMinify": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the production minifier + gzip-of-output for ground-truth byte counts. Slower to recompute on every edit; default uses the cheap length-only heuristic."
+        },
         "wgslender.lsp.mangleExternalBindings": {
           "type": "boolean",
           "default": false,
-          "description": "Tell the LSP that the consuming pipeline mangles @group/@binding names, so the M0100 'binding-blocks-rename' rule no-ops."
+          "description": "Tell the LSP that the consuming pipeline mangles @group/@binding names, so the M0100 'binding-blocks-rename' hint no-ops. Independent of the top-level `wgslender.mangleExternalBindings` (which controls the actual minifier)."
+        },
+        "wgslender.minifyWhitespace": {
+          "type": "boolean",
+          "default": true,
+          "description": "Strip insignificant whitespace when minifying. Used by Minify Preview / Save Minified As / Compile and by the LSP estimator."
+        },
+        "wgslender.minifyIdentifiers": {
+          "type": "boolean",
+          "default": true,
+          "description": "Rename identifiers (frequency-based mangling) when minifying."
+        },
+        "wgslender.minifySyntax": {
+          "type": "boolean",
+          "default": true,
+          "description": "Apply WGSL syntax-level optimizations when minifying."
+        },
+        "wgslender.treeShaking": {
+          "type": "boolean",
+          "default": true,
+          "description": "Eliminate code unreachable from any entry point when minifying."
+        },
+        "wgslender.preserveUniformStructTypes": {
+          "type": "boolean",
+          "default": false,
+          "description": "Keep struct types referenced by uniform/storage vars when minifying."
+        },
+        "wgslender.mangleExternalBindings": {
+          "type": "boolean",
+          "default": false,
+          "description": "Rename @group/@binding vars directly when minifying. By default wgslender keeps these names and creates `let` aliases so the host pipeline can keep using the original names. Distinct from `wgslender.lsp.mangleExternalBindings` (LSP M0100 hint only)."
         },
         "wgslender.sortDeclarations": {
           "type": "boolean",

@@ -69,13 +69,16 @@ async function defaultOutputUri(sourceUri: Uri): Promise<Uri> {
 function optionsFromConfig(): Record<string, unknown> {
   const cfg = workspace.getConfiguration('wgslender');
   return {
-    minifyWhitespace: true,
-    minifyIdentifiers: true,
-    minifySyntax: true,
-    treeShaking: true,
+    minifyWhitespace: cfg.get<boolean>('minifyWhitespace', true),
+    minifyIdentifiers: cfg.get<boolean>('minifyIdentifiers', true),
+    minifySyntax: cfg.get<boolean>('minifySyntax', true),
+    treeShaking: cfg.get<boolean>('treeShaking', true),
+    preserveUniformStructTypes: cfg.get<boolean>('preserveUniformStructTypes', false),
+    // Compile defaults sortDeclarations + scopeLocalRename to true because
+    // the BPE pass that follows benefits significantly from both.
     sortDeclarations: cfg.get<boolean>('sortDeclarations', true),
     scopeLocalRename: cfg.get<boolean>('scopeLocalRename', true),
-    mangleExternalBindings: cfg.get<boolean>('lsp.mangleExternalBindings', false),
+    mangleExternalBindings: cfg.get<boolean>('mangleExternalBindings', false),
     keepNames: cfg.get<string[]>('keepNames', []),
   };
 }

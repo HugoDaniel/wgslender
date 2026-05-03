@@ -21,14 +21,37 @@ Works on both **VS Code Desktop** and **vscode.dev / github.dev** (web).
 
 ## Settings
 
-See `wgslender.*` in the settings UI. Key knobs:
+See `wgslender.*` in the settings UI. The settings schema is identical to
+`wgslender.json` — anything you can set in the workspace file you can set
+in your editor too, with the same key names. Key knobs:
 
+**Lint**
 - `wgslender.extends` — config packs (default `["@wgslender/recommended"]`).
-- `wgslender.rules` — per-rule severity overrides.
+- `wgslender.rules` — per-rule severity overrides keyed by rule id.
+- `wgslender.reportUnusedDisableDirectives` — flag `wgslender-disable` comments that don't suppress anything.
 - `wgslender.lint.fixOnSave` — apply autofixes on save.
+
+**LSP feature toggles**
+- `wgslender.lsp.inlayHints.enabled` — show inlay hints (sizes, parameter names).
+- `wgslender.lsp.diagnostics.enabled` — publish diagnostics.
+
+**Minify insights** (drive the LSP-side estimator + inlay hints / code lens)
 - `wgslender.lsp.minifyMode` — `off` | `insights` | `strict`.
+- `wgslender.lsp.minifyInsights.format` — `delta` | `bytes` | `both`.
+- `wgslender.lsp.minifyInsights.functionSize` / `declSize` / `totalSize` — granularity toggles.
+- `wgslender.lsp.minifyLints.enabled` — run M01xx hygiene checks (auto-on with `strict`).
+- `wgslender.lsp.minifyLints.budgetBytes` — per-shader byte budget; M0500 fires above it. `null` = no budget.
+- `wgslender.lsp.minifyEstimator.useFullMinify` — opt-in: production minifier + gzip for ground-truth bytes (slower).
 - `wgslender.lsp.mangleExternalBindings` — silence M0100 when the consuming pipeline mangles bindings.
-- `wgslender.sortDeclarations` / `scopeLocalRename` / `keepNames` — minifier knobs reused by **Minify Preview** and **Save Minified As…**.
+
+**Minifier knobs** (reused by **Minify Preview**, **Save Minified As…**, and **Compile**, and by the LSP estimator)
+- `wgslender.minifyWhitespace` / `minifyIdentifiers` / `minifySyntax` / `treeShaking` — pipeline toggles (default on).
+- `wgslender.preserveUniformStructTypes` — keep struct types referenced by uniform/storage vars.
+- `wgslender.mangleExternalBindings` — rename `@group/@binding` vars directly (default keeps `let` aliases).
+- `wgslender.sortDeclarations` / `scopeLocalRename` — improve DEFLATE compression of minified output.
+- `wgslender.keepNames` — names that must never be renamed.
+
+**Other**
 - `wgslender.compile.outputDirectory` — default save location for **Compile to Binary Shader** (relative to the workspace folder; empty = alongside the source).
 - `wgslender.reflect.version` — `v1` | `v2` schema for the reflection panel and JSON command.
 - `wgslender.format.enable` — toggle formatter.
