@@ -374,25 +374,29 @@ A full-featured WGSL language server built from the same analyzer as the CLI.
 | Selection range | Smart expand/shrink up the AST |
 | Call hierarchy | Incoming and outgoing calls |
 | Incremental sync | `TextDocumentSyncKind.Incremental` — only changed ranges are reparsed |
-| `workspace/configuration` | Pulls `wgslender` section (`inlayHints.enabled`, `diagnostics.enabled`, `minifyMode`, `minifyLints.{enabled,severities,budgetBytes}`, `mangleExternalBindings`) |
+| `workspace/configuration` | Pulls `wgslender` section. Schema mirrors `wgslender.json`: LSP-only knobs under `lsp.*` (`lsp.inlayHints.enabled`, `lsp.diagnostics.enabled`, `lsp.minifyMode`, `lsp.minifyLints.{enabled,budgetBytes}`, `lsp.mangleExternalBindings`); per-rule severities at top-level `rules` (id-keyed, ESLint-shape) |
 | `workspace/executeCommand` | `wgslender.setMinifyMode`, `wgslender.toggleMinifyMode`, `wgslender.showMinifiedOutput` |
 
 Both transports (native stdio and browser WASM) expose the same capability set.
 
 #### Minifier-mode size budget
 
-When `minifyMode = "strict"` is on, the LSP runs the minifier-mode lint
-pack (`@wgslender/minify`). The `M0500 minify/shader-exceeds-size-budget`
+When `lsp.minifyMode = "strict"` is on, the LSP runs the minifier-mode
+lint pack (`@wgslender/minify`). The `M0500 minify/shader-exceeds-size-budget`
 rule fires when the estimated minified size exceeds a configured byte
 budget. Set the budget through workspace config:
 
 ```json
 {
-    "minifyMode": "strict",
-    "minifyLints": {
-        "enabled": true,
-        "budgetBytes": 8192,
-        "severities": { "M0500": "warning" }
+    "lsp": {
+        "minifyMode": "strict",
+        "minifyLints": {
+            "enabled": true,
+            "budgetBytes": 8192
+        }
+    },
+    "rules": {
+        "minify/shader-exceeds-size-budget": "warning"
     }
 }
 ```

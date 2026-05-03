@@ -94,52 +94,76 @@ const strict = {
 };
 
 /**
- * Shape of the `wgslender.*` settings object the LSP reads. Mirrors
- * the parser in `lsp/Handler.zig::applyClientSettings`; documented
- * here so editor configurations (VS Code `contributes.configuration`,
- * CodeMirror lsp-client wrappers) can synthesise UI without
- * reaching into the Zig source.
+ * Shape of the `wgslender.*` settings object the LSP reads. Identical
+ * to `wgslender.json`'s schema (one parser serves both, see
+ * `src/Config.zig::applyJsonValue`). Documented here so editor
+ * configurations (VS Code `contributes.configuration`, CodeMirror
+ * lsp-client wrappers) can synthesise UI without reaching into the
+ * Zig source.
+ *
+ * Severity overrides live at the top level under `rules` (id-keyed,
+ * ESLint-shape). LSP-only knobs are namespaced under `lsp.*`. Each
+ * `workspace/configuration` push replaces the workspace overlay
+ * wholesale.
  */
 const lspSettingsSchema = Object.freeze({
   type: 'object',
   properties: {
-    inlayHints: { type: 'object', properties: { enabled: { type: 'boolean' } } },
-    diagnostics: { type: 'object', properties: { enabled: { type: 'boolean' } } },
-    minifyMode: { type: 'string', enum: ['off', 'insights', 'strict'] },
-    minifyInsights: {
+    // LSP-only knobs.
+    lsp: {
       type: 'object',
       properties: {
-        format: { type: 'string', enum: ['delta', 'bytes', 'both'] },
-        functionSize: { type: 'boolean' },
-        declSize: { type: 'boolean' },
-        totalSize: { type: 'boolean' },
-      },
-    },
-    minifyLints: {
-      type: 'object',
-      properties: {
-        enabled: { type: 'boolean' },
-        budgetBytes: { type: ['integer', 'null'] },
-        severities: {
+        inlayHints: { type: 'object', properties: { enabled: { type: 'boolean' } } },
+        diagnostics: { type: 'object', properties: { enabled: { type: 'boolean' } } },
+        minifyMode: { type: 'string', enum: ['off', 'insights', 'strict'] },
+        minifyInsights: {
           type: 'object',
-          additionalProperties: {
-            type: 'string',
-            enum: ['off', 'hint', 'info', 'warn', 'warning', 'error'],
+          properties: {
+            format: { type: 'string', enum: ['delta', 'bytes', 'both'] },
+            functionSize: { type: 'boolean' },
+            declSize: { type: 'boolean' },
+            totalSize: { type: 'boolean' },
           },
         },
+        minifyLints: {
+          type: 'object',
+          properties: {
+            enabled: { type: 'boolean' },
+            budgetBytes: { type: ['integer', 'null'] },
+          },
+        },
+        minifyEstimator: {
+          type: 'object',
+          properties: {
+            // Phase 8 — opt-in ground-truth estimator. Slower to
+            // recompute on every edit (runs the production
+            // MinifyRenamer + gzip-of-output), but produces exact
+            // byte and gzip counts instead of the cheap length-only
+            // heuristic.
+            useFullMinify: { type: 'boolean', default: false },
+          },
+        },
+        mangleExternalBindings: { type: 'boolean' },
       },
     },
-    minifyEstimator: {
+    // Per-rule severity overrides, id-keyed (ESLint-shape).
+    rules: {
       type: 'object',
-      properties: {
-        // Phase 8 — opt-in ground-truth estimator. Slower to
-        // recompute on every edit (runs the production MinifyRenamer
-        // + gzip-of-output), but produces exact byte and gzip
-        // counts instead of the cheap length-only heuristic.
-        useFullMinify: { type: 'boolean', default: false },
+      additionalProperties: {
+        type: 'string',
+        enum: ['off', 'warn', 'warning', 'error'],
       },
     },
-    mangleExternalBindings: { type: 'boolean' },
+    extends: { type: 'array', items: { type: 'string' } },
+    // CLI-minifier knobs (also accepted in wgslender.json).
+    minifyWhitespace: { type: 'boolean' },
+    minifyIdentifiers: { type: 'boolean' },
+    minifySyntax: { type: 'boolean' },
+    treeShaking: { type: 'boolean' },
+    preserveUniformStructTypes: { type: 'boolean' },
+    keepNames: { type: 'array', items: { type: 'string' } },
+    sortDeclarations: { type: 'boolean' },
+    scopeLocalRename: { type: 'boolean' },
   },
 });
 
