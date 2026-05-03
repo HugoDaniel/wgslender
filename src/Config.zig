@@ -205,17 +205,12 @@ pub fn discover(allocator: Allocator, io: std.Io, start_dir: ?[]const u8) ?Confi
 }
 
 /// Convert config to minifier options, using defaults for unset fields.
+/// Spec-driven: every field on `minifier_options_specs` flows here. The
+/// source-map specs and lint specs intentionally don't — they target
+/// `CliArgs` / `Linter.Options` rather than `Minifier.Options`.
 pub fn toOptions(self: Config) Minifier.Options {
     var opts = Minifier.defaultOptions();
-    if (self.minify_whitespace) |v| opts.minify_whitespace = v;
-    if (self.minify_identifiers) |v| opts.minify_identifiers = v;
-    if (self.minify_syntax) |v| opts.minify_syntax = v;
-    if (self.mangle_external_bindings) |v| opts.mangle_external_bindings = v;
-    if (self.tree_shaking) |v| opts.tree_shaking = v;
-    if (self.preserve_uniform_struct_types) |v| opts.preserve_uniform_struct_types = v;
-    if (self.keep_names.len > 0) opts.keep_names = self.keep_names;
-    if (self.sort_declarations) |v| opts.sort_declarations = v;
-    if (self.scope_local_rename) |v| opts.scope_local_rename = v;
+    options.applyDefaults(&options.minifier_options_specs, self, &opts);
     return opts;
 }
 

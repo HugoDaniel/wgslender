@@ -41,8 +41,15 @@ pub const OptionSpec = struct {
     /// CamelCase JSON key override. Default: `snakeToCamel(field)`.
     json_override: ?[]const u8 = null,
     /// Kebab-case CLI flag override (without leading `--`). Default:
-    /// `snakeToKebab(field)`. Reserved for Cut B; unused today.
+    /// `snakeToKebab(field)`.
     cli_override: ?[]const u8 = null,
+    /// True (default) iff `matchBoolFlag` should treat `--<cliFlag>` as
+    /// "set field to true". Set false for options whose CLI form is
+    /// custom — the `--minify-*` cluster sets a tri-state for
+    /// `applyMinifyOverrides`, `--no-tree-shaking` is the inverse form,
+    /// `--keep-names` consumes a value, and the source-map switches set
+    /// `CliArgs` fields rather than the underlying `Minifier.Options`.
+    cli_simple: bool = true,
 };
 
 /// Comptime: convert `snake_case` → `camelCase`. Underscores delimit
@@ -154,6 +161,31 @@ pub fn applyJson(
     }
 }
 
+/// Match a CLI argument against the simple `--<flag>` form derived from
+/// each `cli_simple = true` spec in `specs`. On match: write `true` to
+/// the corresponding field on `target` and return true so the caller can
+/// run any per-flag bookkeeping (e.g. set `passed.minify_flag`). Returns
+/// false if no spec matched.
+///
+/// Specs with `cli_simple = false` or non-`bool_opt` kind are skipped —
+/// those need custom dispatch in the caller.
+pub fn matchBoolFlag(
+    arg: []const u8,
+    comptime specs: []const OptionSpec,
+    target: anytype,
+) bool {
+    inline for (specs) |spec| {
+        if (comptime !spec.cli_simple) continue;
+        if (comptime spec.kind != .bool_opt) continue;
+        const flag = comptime "--" ++ cliFlag(spec);
+        if (std.mem.eql(u8, arg, flag)) {
+            @field(target, spec.field) = true;
+            return true;
+        }
+    }
+    return false;
+}
+
 /// Apply spec entries to a `Minifier.Options`-shaped struct, treating
 /// each `?bool` source field as "non-null wins, null means inherit
 /// default". String-list entries are copied wholesale when non-empty.
@@ -185,39 +217,45 @@ pub fn applyDefaults(
 // Spec tables
 // =========================================================================
 
-/// Minifier-shaped options. These flow from `wgslender.json` →
-/// `Config` → `Minifier.Options` via `Config.toOptions`.
-///
-/// `source_map` and `source_map_sources` are Config-only — they don't go
-/// through `toOptions` because the CLI plumbs them via
-/// `CliArgs.source_map(_inline)` + `args.options.source_map_options.*`.
-/// They are still in the JSON spec so configs can set them.
-pub const minifier_specs = [_]OptionSpec{
-    .{ .field = "minify_whitespace", .kind = .bool_opt, .summary = "Strip insignificant whitespace from output" },
-    .{ .field = "minify_identifiers", .kind = .bool_opt, .summary = "Rename identifiers (frequency-based mangling)" },
-    .{ .field = "minify_syntax", .kind = .bool_opt, .summary = "Apply WGSL syntax-level optimizations" },
+/// Specs that flow `Config` → `Minifier.Options` via `Config.toOptions`.
+/// Every entry must name a field on both `Config` and
+/// `Minifier.Options`. The `cli_simple = false` entries need custom CLI
+/// dispatch (see the `OptionSpec.cli_simple` doc comment).
+pub const minifier_options_specs = [_]OptionSpec{
+    .{ .field = "minify_whitespace", .kind = .bool_opt, .cli_simple = false, .summary = "Strip insignificant whitespace from output" },
+    .{ .field = "minify_identifiers", .kind = .bool_opt, .cli_simple = false, .summary = "Rename identifiers (frequency-based mangling)" },
+    .{ .field = "minify_syntax", .kind = .bool_opt, .cli_simple = false, .summary = "Apply WGSL syntax-level optimizations" },
     .{ .field = "mangle_external_bindings", .kind = .bool_opt, .summary = "Rename @group/@binding vars (otherwise aliased)" },
-    .{ .field = "tree_shaking", .kind = .bool_opt, .summary = "Eliminate code unreachable from any entry point" },
+    .{ .field = "tree_shaking", .kind = .bool_opt, .cli_simple = false, .summary = "Eliminate code unreachable from any entry point" },
     .{ .field = "preserve_uniform_struct_types", .kind = .bool_opt, .summary = "Keep struct types referenced by uniform/storage vars" },
-    .{ .field = "keep_names", .kind = .string_list, .summary = "Identifiers that must never be renamed" },
+    .{ .field = "keep_names", .kind = .string_list, .cli_simple = false, .summary = "Identifiers that must never be renamed" },
     .{ .field = "sort_declarations", .kind = .bool_opt, .summary = "Sort module-level declarations for better DEFLATE compression" },
     .{ .field = "scope_local_rename", .kind = .bool_opt, .summary = "Rename locals canonically per function for better DEFLATE compression" },
-    .{ .field = "source_map", .kind = .bool_opt, .summary = "Generate a source map alongside the minified output" },
-    .{ .field = "source_map_sources", .kind = .bool_opt, .summary = "Embed the original source content in the source map" },
+};
+
+/// Source-map switches. Live on `Config` and feed `CliArgs.source_map` /
+/// `CliArgs.source_map_options.*` — they don't flow through `toOptions`
+/// because the CLI orchestrates source-map plumbing separately. JSON
+/// parsing uses these specs; CLI dispatch is hand-rolled for the
+/// `--source-map` / `--source-map-inline` / `--source-map-sources`
+/// trio because they target `CliArgs` instead of `Minifier.Options`.
+pub const source_map_specs = [_]OptionSpec{
+    .{ .field = "source_map", .kind = .bool_opt, .cli_simple = false, .summary = "Generate a source map alongside the minified output" },
+    .{ .field = "source_map_sources", .kind = .bool_opt, .cli_simple = false, .summary = "Embed the original source content in the source map" },
 };
 
 /// Lint configuration knobs. `lint_rules` is intentionally hand-parsed
 /// (severity / per-rule options shape doesn't fit `string_list`) and the
 /// LSP-only `lsp` nested object stays hand-parsed too.
 pub const lint_specs = [_]OptionSpec{
-    .{ .field = "lint_extends", .kind = .string_list, .json_override = "extends", .summary = "Shareable lint config packs to inherit" },
-    .{ .field = "report_unused_disable_directives", .kind = .bool_opt, .summary = "Treat unused wgslender-disable comments as warnings" },
+    .{ .field = "lint_extends", .kind = .string_list, .cli_simple = false, .json_override = "extends", .summary = "Shareable lint config packs to inherit" },
+    .{ .field = "report_unused_disable_directives", .kind = .bool_opt, .cli_simple = false, .summary = "Treat unused wgslender-disable comments as warnings" },
 };
 
 /// All spec entries that drive the JSON parser today. Any new bool /
 /// string-list option should land here so the JSON parser picks it up
 /// automatically.
-pub const config_specs = minifier_specs ++ lint_specs;
+pub const config_specs = minifier_options_specs ++ source_map_specs ++ lint_specs;
 
 // =========================================================================
 // Tests
@@ -367,10 +405,9 @@ test "assertSpecFieldsExist accepts matching fields" {
     });
 }
 
-test "config_specs covers every supported Config field" {
-    // Whitespace: every entry in config_specs must have a unique field
-    // name. Drift between minifier_specs and lint_specs would produce
-    // double-application during applyJson.
+test "config_specs has no duplicate fields" {
+    // Drift between minifier_options_specs / source_map_specs / lint_specs
+    // would silently double-apply during `applyJson`.
     inline for (config_specs, 0..) |a, i| {
         inline for (config_specs, 0..) |b, j| {
             if (i != j and std.mem.eql(u8, a.field, b.field)) {
@@ -378,4 +415,35 @@ test "config_specs covers every supported Config field" {
             }
         }
     }
+}
+
+test "matchBoolFlag dispatches simple bool specs" {
+    const Target = struct {
+        sort_declarations: bool = false,
+        scope_local_rename: bool = false,
+        keep_names: []const []const u8 = &.{},
+    };
+    const specs = [_]OptionSpec{
+        .{ .field = "sort_declarations", .kind = .bool_opt },
+        .{ .field = "scope_local_rename", .kind = .bool_opt },
+        // `cli_simple = false` → matchBoolFlag must skip.
+        .{ .field = "keep_names", .kind = .string_list, .cli_simple = false },
+    };
+
+    var target: Target = .{};
+
+    try std.testing.expect(matchBoolFlag("--sort-declarations", &specs, &target));
+    try std.testing.expectEqual(true, target.sort_declarations);
+    try std.testing.expectEqual(false, target.scope_local_rename);
+
+    try std.testing.expect(matchBoolFlag("--scope-local-rename", &specs, &target));
+    try std.testing.expectEqual(true, target.scope_local_rename);
+
+    // Unknown flag → no match.
+    try std.testing.expect(!matchBoolFlag("--unknown", &specs, &target));
+
+    // `cli_simple = false` spec must not be auto-dispatched even though
+    // its derived flag (`--keep-names`) would syntactically match.
+    try std.testing.expect(!matchBoolFlag("--keep-names", &specs, &target));
+    try std.testing.expectEqual(@as(usize, 0), target.keep_names.len);
 }

@@ -186,21 +186,19 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         } else if (std.mem.eql(u8, arg, "--minify-syntax")) {
             passed.minify_flag = true;
             cli_minify_syntax = true;
-        } else if (std.mem.eql(u8, arg, "--mangle-external-bindings")) {
-            passed.minify_flag = true;
-            args.options.mangle_external_bindings = true;
         } else if (std.mem.eql(u8, arg, "--no-tree-shaking")) {
             passed.minify_flag = true;
             cli_no_tree_shaking = true;
-        } else if (std.mem.eql(u8, arg, "--preserve-uniform-struct-types")) {
+        } else if (wgslender.OptionsSpec.matchBoolFlag(
+            arg,
+            &wgslender.OptionsSpec.minifier_options_specs,
+            &args.options,
+        )) {
+            // Spec-driven dispatch for the simple `--<flag>` shape:
+            // mangle-external-bindings, preserve-uniform-struct-types,
+            // sort-declarations, scope-local-rename. Adding a new bool
+            // spec with `cli_simple = true` lights up here automatically.
             passed.minify_flag = true;
-            args.options.preserve_uniform_struct_types = true;
-        } else if (std.mem.eql(u8, arg, "--sort-declarations")) {
-            passed.minify_flag = true;
-            args.options.sort_declarations = true;
-        } else if (std.mem.eql(u8, arg, "--scope-local-rename")) {
-            passed.minify_flag = true;
-            args.options.scope_local_rename = true;
         } else if (std.mem.eql(u8, arg, "--source-map")) {
             passed.source_map_flag = true;
             args.source_map = true;
