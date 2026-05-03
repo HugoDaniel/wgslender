@@ -19,6 +19,7 @@ const Context = @import("../Context.zig");
 const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
 const walk = @import("../walk.zig");
+const MultiVisitor = @import("../MultiVisitor.zig");
 const exprStart = walk.exprStart;
 const exprEnd = walk.exprEnd;
 
@@ -36,12 +37,15 @@ pub const rule = Rule{
 };
 
 fn run(ctx: *Context) error{OutOfMemory}!void {
-    try walk.walkExprs(ctx.arena, ctx.module, ctx, onExpr);
+    try MultiVisitor.walk(ctx.arena, ctx.module, &.{
+        .{ .ctx = ctx, .on_expr = onExpr },
+    });
 }
 
-fn onExpr(ctx: *Context, e: Ast.Expr) void {
+fn onExpr(opaque_ctx: *anyopaque, e: Ast.Expr) error{OutOfMemory}!void {
+    const ctx: *Context = @ptrCast(@alignCast(opaque_ctx));
     const matched = matchLerp(e) orelse return;
-    reportMatch(ctx, e, matched) catch return;
+    try reportMatch(ctx, e, matched);
 }
 
 const Match = struct {

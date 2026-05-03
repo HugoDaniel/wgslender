@@ -20,6 +20,7 @@ const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
 const Types = @import("../../Types.zig");
 const walk = @import("../walk.zig");
+const MultiVisitor = @import("../MultiVisitor.zig");
 const exprStart = walk.exprStart;
 const exprEnd = walk.exprEnd;
 
@@ -37,10 +38,13 @@ pub const rule = Rule{
 };
 
 fn run(ctx: *Context) error{OutOfMemory}!void {
-    try walk.walkExprs(ctx.arena, ctx.module, ctx, onExpr);
+    try MultiVisitor.walk(ctx.arena, ctx.module, &.{
+        .{ .ctx = ctx, .on_expr = onExpr },
+    });
 }
 
-fn onExpr(ctx: *Context, e: Ast.Expr) void {
+fn onExpr(opaque_ctx: *anyopaque, e: Ast.Expr) error{OutOfMemory}!void {
+    const ctx: *Context = @ptrCast(@alignCast(opaque_ctx));
     const call = switch (e) {
         .call => |c| c,
         else => return,
@@ -52,7 +56,7 @@ fn onExpr(ctx: *Context, e: Ast.Expr) void {
     const arg_kind = scalarKindOf(ctx, arg) orelse return;
     if (arg_kind != target) return;
 
-    reportMatch(ctx, call, arg, target) catch return;
+    try reportMatch(ctx, call, arg, target);
 }
 
 /// For a call expression, return the scalar kind the constructor

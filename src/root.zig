@@ -34,6 +34,7 @@ pub const Cst = @import("Cst.zig");
 pub const CstLower = @import("CstLower.zig");
 pub const Incremental = @import("Incremental.zig");
 pub const Linter = @import("lint/Linter.zig");
+pub const MultiVisitor = @import("lint/MultiVisitor.zig");
 pub const MinifySettings = @import("MinifySettings.zig");
 pub const MagicComment = @import("MagicComment.zig");
 pub const MinifyEstimator = @import("MinifyEstimator.zig");
@@ -492,6 +493,7 @@ comptime {
     _ = Edits;
     _ = StableId;
     _ = Linter;
+    _ = MultiVisitor;
     _ = MagicComment;
     _ = MinifyEstimator;
     _ = @import("unicode_xid.zig");

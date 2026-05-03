@@ -22,7 +22,6 @@ const Rule = @import("../Rule.zig");
 const Context = @import("../Context.zig");
 const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
-const walk = @import("../walk.zig");
 
 pub const rule = Rule{
     .meta = .{
