@@ -12,6 +12,7 @@ pub const version = "1.0.0";
 
 pub const Ast = @import("Ast.zig");
 pub const AstVisit = @import("AstVisit.zig");
+pub const UseCounts = @import("UseCounts.zig");
 pub const Lexer = @import("Lexer.zig");
 pub const Parser = @import("Parser.zig");
 pub const Printer = @import("Printer.zig");
@@ -476,6 +477,7 @@ test "analyze: const_values populated" {
 comptime {
     _ = Ast;
     _ = AstVisit;
+    _ = UseCounts;
     _ = CstLower;
     _ = Lexer;
     _ = Parser;

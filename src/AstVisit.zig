@@ -12,6 +12,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Parser = @import("Parser.zig");
+const UseCounts = @import("UseCounts.zig");
 const constants = @import("constants.zig");
 
 /// Direction of a subtree walk.
@@ -58,6 +59,15 @@ pub const Context = struct {
     /// Direction of the walk (see `Mode` doc comment). Default `.add`
     /// preserves every pre-existing caller's behavior byte-for-byte.
     mode: Mode = .add,
+    /// Optional side-table mirror of `symbols[idx].use_count`. When
+    /// non-null, every increment/decrement on the field is mirrored on
+    /// the matching slot here. B.M1 of the Symbol-immutability arc:
+    /// production paths leave this null, so observable behavior is
+    /// unchanged; tests opt in to verify the side-table tracks the
+    /// field exactly. Bounds and validity guards inside `UseCounts`
+    /// match the field-side guards, so a mirrored call is a strict
+    /// no-op whenever the field-side write is.
+    use_counts: ?*UseCounts = null,
 };
 
 pub fn visit(ctx: *Context, module: *Ast.Module) error{OutOfMemory}!void {
@@ -271,6 +281,7 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
                                     const idx = ref.index();
                                     if (idx < ctx.symbols.len) {
                                         ctx.symbols[idx].use_count += 1;
+                                        if (ctx.use_counts) |uc| uc.increment(ref);
                                         // Pair the bump with the flag so
                                         // `.sub` can tell this ident from
                                         // an E0102 ref that was set but
@@ -298,6 +309,7 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
                                 const idx = expr.ref.index();
                                 if (idx < ctx.symbols.len and ctx.symbols[idx].use_count > 0) {
                                     ctx.symbols[idx].use_count -= 1;
+                                    if (ctx.use_counts) |uc| uc.decrement(expr.ref);
                                 }
                                 expr.flags.use_count_incremented = false;
                             }
@@ -353,6 +365,7 @@ pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
                             const idx = ref.index();
                             if (idx < ctx.symbols.len) {
                                 ctx.symbols[idx].use_count += 1;
+                                if (ctx.use_counts) |uc| uc.increment(ref);
                             }
                         }
                     }
@@ -363,6 +376,7 @@ pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
                         const idx = typ.ref.index();
                         if (idx < ctx.symbols.len and ctx.symbols[idx].use_count > 0) {
                             ctx.symbols[idx].use_count -= 1;
+                            if (ctx.use_counts) |uc| uc.decrement(typ.ref);
                         }
                     }
                     break;

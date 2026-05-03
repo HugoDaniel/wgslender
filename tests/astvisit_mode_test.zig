@@ -12,6 +12,7 @@ const Ast = wgslender.Ast;
 const AstVisit = wgslender.AstVisit;
 const Incremental = wgslender.Incremental;
 const Parser = wgslender.Parser;
+const UseCounts = wgslender.UseCounts;
 
 // =========================================================================
 // Harness — pick subtrees out of a parsed module.
@@ -806,6 +807,294 @@ test "U-ATTR-DENY-2: @builtin(vertex_index) does NOT bind a same-named user cons
     );
     defer base.deinit();
     try std.testing.expectEqual(@as(u32, 0), useCountOf(base.module, "vertex_index"));
+}
+
+// =========================================================================
+// B.M1 — UseCounts side-table parity.
+//
+// `UseCounts` is the optional mirror added to `AstVisit.Context` in B.M1
+// of the Symbol-immutability arc. Production paths leave it null;
+// tests opt in to verify the side-table tracks `Symbol.use_count`
+// exactly. These tests drive both walker modes through the same
+// scenarios as the U* suite above, but with a `UseCounts` attached and
+// pre-seeded to mirror the field's pre-state — every increment and
+// decrement on the field must show up identically on the side-table.
+// =========================================================================
+
+/// Build an add-mode Context with both `arena` and `use_counts` overrides.
+/// Used by the B.M1 parity tests; everything else still goes through
+/// `addContext` / `addContextWithArena`.
+fn addContextWithCounts(
+    arena: std.mem.Allocator,
+    base: *Incremental.ReparseResult,
+    scope: *Ast.Scope,
+    errors: *std.ArrayListUnmanaged(Parser.ParseError),
+    use_counts: *UseCounts,
+) AstVisit.Context {
+    return .{
+        .arena = arena,
+        .symbols = base.module.symbols.items,
+        .scopes_in_order = &.{},
+        .scope = scope,
+        .errors = errors,
+        .safety_budget = @max(64, base.cst.tokens.len * 2),
+        .mode = .add,
+        .use_counts = use_counts,
+    };
+}
+
+fn subContextWithCounts(
+    gpa: std.mem.Allocator,
+    base: *Incremental.ReparseResult,
+    errors: *std.ArrayListUnmanaged(Parser.ParseError),
+    use_counts: *UseCounts,
+) AstVisit.Context {
+    return .{
+        .arena = gpa,
+        .symbols = base.module.symbols.items,
+        .scopes_in_order = &.{},
+        .scope = base.module.scope,
+        .errors = errors,
+        .safety_budget = @max(64, base.cst.tokens.len * 2),
+        .mode = .sub,
+        .use_counts = use_counts,
+    };
+}
+
+/// Pre-seed `use_counts` from the existing field values. Models the
+/// state where some prior pass populated `Symbol.use_count` (e.g. via
+/// `parseFull`) and we now want to drive an incremental walk with the
+/// side-table starting in lockstep.
+fn seedFromField(use_counts: *UseCounts, module: *const Ast.Module) void {
+    for (module.symbols.items, 0..) |sym, i| {
+        if (i < use_counts.counts.len) use_counts.counts[i] = sym.use_count;
+    }
+}
+
+test "B.M1.T1: sub-walk with attached UseCounts decrements both field and side-table in lockstep" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "const x = 1; const y = x + x + x;");
+    defer base.deinit();
+
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    var uc = try UseCounts.init(arena_inst.allocator(), base.module.symbols.items.len);
+    seedFromField(&uc, base.module);
+
+    const x_idx = findSymbol(base.module, "x");
+    try std.testing.expectEqual(@as(u32, 3), uc.get(x_idx));
+    try std.testing.expectEqual(useCountOf(base.module, "x"), uc.get(x_idx));
+
+    var y_init: ?Ast.Expr = null;
+    for (base.module.declarations.items) |d| {
+        if (d == .@"const" and symbolNameIs(base.module, d.@"const".name, "y")) {
+            y_init = d.@"const".initializer;
+        }
+    }
+    const expr = y_init orelse return error.TestUnexpectedNull;
+
+    var errs: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer errs.deinit(gpa);
+    var ctx = subContextWithCounts(gpa, &base, &errs, &uc);
+    _ = try AstVisit.visitSubtreeExpr(&ctx, expr);
+
+    try std.testing.expectEqual(@as(u32, 0), useCountOf(base.module, "x"));
+    try std.testing.expectEqual(@as(u32, 0), uc.get(x_idx));
+    uc.assertParity(base.module);
+}
+
+test "B.M1.T2: add-walk with attached UseCounts increments both field and side-table" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "const x = 1; const y = x + x;");
+    defer base.deinit();
+
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    var uc = try UseCounts.init(arena_inst.allocator(), base.module.symbols.items.len);
+    seedFromField(&uc, base.module);
+
+    const x_idx = findSymbol(base.module, "x");
+    try std.testing.expectEqual(@as(u32, 2), uc.get(x_idx));
+
+    var errs: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer errs.deinit(gpa);
+    var sub_ctx = subContextWithCounts(gpa, &base, &errs, &uc);
+    for (base.module.declarations.items) |d| {
+        if (d == .@"const" and symbolNameIs(base.module, d.@"const".name, "y")) {
+            _ = try AstVisit.visitSubtreeExpr(&sub_ctx, d.@"const".initializer.?);
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 0), useCountOf(base.module, "x"));
+    try std.testing.expectEqual(@as(u32, 0), uc.get(x_idx));
+
+    for (base.module.declarations.items) |d| {
+        if (d == .@"const" and symbolNameIs(base.module, d.@"const".name, "y")) {
+            zeroRefs(d.@"const".initializer.?);
+        }
+    }
+
+    var add_ctx = addContextWithCounts(gpa, &base, base.module.scope, &errs, &uc);
+    for (base.module.declarations.items) |d| {
+        if (d == .@"const" and symbolNameIs(base.module, d.@"const".name, "y")) {
+            d.@"const".initializer = try AstVisit.visitSubtreeExpr(&add_ctx, d.@"const".initializer.?);
+        }
+    }
+
+    try std.testing.expectEqual(@as(u32, 2), useCountOf(base.module, "x"));
+    try std.testing.expectEqual(@as(u32, 2), uc.get(x_idx));
+    uc.assertParity(base.module);
+}
+
+test "B.M1.T3: E0102 add-walk does not bump side-table (mirrors the field-side gate)" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 = "fn f() -> i32 { let z: i32 = 2; return z; }";
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+    var uc = try UseCounts.init(arena, base.module.symbols.items.len);
+    seedFromField(&uc, base.module);
+
+    const z_idx = findSymbol(base.module, "z");
+    try std.testing.expectEqual(@as(u32, 1), uc.get(z_idx));
+    try std.testing.expectEqual(useCountOf(base.module, "z"), uc.get(z_idx));
+
+    // Fabricate a use-before-decl ident: lookupSymbol misses,
+    // lookupSymbolAnyLoc hits → E0102 branch, sets ref but skips bump.
+    var dummy = Ast.IdentExpr{ .loc = 1, .name = "z", .ref = .none };
+    const expr: Ast.Expr = .{ .ident = &dummy };
+
+    var errs: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    const block_scope = fnBodyBlockScope(base.module) orelse return error.TestUnexpectedNull;
+    var ctx = addContextWithCounts(arena, &base, block_scope, &errs, &uc);
+    _ = try AstVisit.visitSubtreeExpr(&ctx, expr);
+
+    // E0102 emitted; ref set; field NOT bumped; side-table NOT bumped.
+    try std.testing.expectEqual(@as(usize, 1), errs.items.len);
+    try std.testing.expectEqualStrings("E0102", errs.items[0].code);
+    try std.testing.expectEqual(z_idx, dummy.ref);
+    try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "z"));
+    try std.testing.expectEqual(@as(u32, 1), uc.get(z_idx));
+    uc.assertParity(base.module);
+}
+
+test "B.M1.T4: type.ident.add bumps both field and side-table for a struct ref" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 = "struct S { x: f32 } fn f(p: S) -> f32 { return p.x; }";
+    var base = try Incremental.parseFull(gpa, src);
+    defer base.deinit();
+
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    var uc = try UseCounts.init(arena_inst.allocator(), base.module.symbols.items.len);
+    seedFromField(&uc, base.module);
+
+    const s_idx = findSymbol(base.module, "S");
+    try std.testing.expect(s_idx.isValid());
+    // After parseFull, S has been referenced once (the parameter type).
+    try std.testing.expectEqual(useCountOf(base.module, "S"), uc.get(s_idx));
+    const before = uc.get(s_idx);
+
+    // Drive a fresh add-walk on the parameter's type. Sub first to drop
+    // the count, then zero the ref to mimic CstLower output, then add.
+    var fn_decl: ?*Ast.FunctionDecl = null;
+    for (base.module.declarations.items) |d| {
+        if (d == .function and symbolNameIs(base.module, d.function.name, "f")) {
+            fn_decl = d.function;
+        }
+    }
+    const fdecl = fn_decl orelse return error.TestUnexpectedNull;
+    try std.testing.expectEqual(@as(usize, 1), fdecl.parameters.items.len);
+    const param = &fdecl.parameters.items[0];
+
+    var errs: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer errs.deinit(gpa);
+
+    var sub_ctx = subContextWithCounts(gpa, &base, &errs, &uc);
+    try AstVisit.visitType(&sub_ctx, param.typ);
+    try std.testing.expectEqual(before - 1, useCountOf(base.module, "S"));
+    try std.testing.expectEqual(before - 1, uc.get(s_idx));
+
+    // Mimic a freshly lowered type — strip the ref so add re-resolves.
+    switch (param.typ) {
+        .ident => |t| t.ref = .none,
+        else => return error.TestUnexpectedResult,
+    }
+
+    var add_ctx = addContextWithCounts(gpa, &base, base.module.scope, &errs, &uc);
+    try AstVisit.visitType(&add_ctx, param.typ);
+
+    try std.testing.expectEqual(before, useCountOf(base.module, "S"));
+    try std.testing.expectEqual(before, uc.get(s_idx));
+    uc.assertParity(base.module);
+}
+
+test "B.M1.T5: round-trip on a multi-ident expression keeps field and side-table in lockstep" {
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "const a = 1; const b = a + a + a + a + a;");
+    defer base.deinit();
+
+    var arena_inst = std.heap.ArenaAllocator.init(gpa);
+    defer arena_inst.deinit();
+    var uc = try UseCounts.init(arena_inst.allocator(), base.module.symbols.items.len);
+    seedFromField(&uc, base.module);
+
+    const a_idx = findSymbol(base.module, "a");
+    try std.testing.expectEqual(@as(u32, 5), uc.get(a_idx));
+
+    var b_init: ?Ast.Expr = null;
+    for (base.module.declarations.items) |d| {
+        if (d == .@"const" and symbolNameIs(base.module, d.@"const".name, "b")) {
+            b_init = d.@"const".initializer;
+        }
+    }
+    const expr = b_init orelse return error.TestUnexpectedNull;
+
+    var errs: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer errs.deinit(gpa);
+
+    var sub_ctx = subContextWithCounts(gpa, &base, &errs, &uc);
+    _ = try AstVisit.visitSubtreeExpr(&sub_ctx, expr);
+    try std.testing.expectEqual(@as(u32, 0), useCountOf(base.module, "a"));
+    try std.testing.expectEqual(@as(u32, 0), uc.get(a_idx));
+
+    zeroRefs(expr);
+
+    var add_ctx = addContextWithCounts(gpa, &base, base.module.scope, &errs, &uc);
+    _ = try AstVisit.visitSubtreeExpr(&add_ctx, expr);
+    try std.testing.expectEqual(@as(u32, 5), useCountOf(base.module, "a"));
+    try std.testing.expectEqual(@as(u32, 5), uc.get(a_idx));
+    uc.assertParity(base.module);
+}
+
+test "B.M1.T6: null use_counts leaves observable behavior byte-identical (production-path shape)" {
+    // Drives the same scenarios as T1/T5 but with `use_counts == null`,
+    // i.e. how every production AstVisit.Context site (Parser, CstLower,
+    // Splice) constructs the walker today. The field-side state must
+    // match what the U* suite established before this milestone — this
+    // test pins the "additive layer is invisible by default" property.
+    const gpa = std.testing.allocator;
+    var base = try Incremental.parseFull(gpa, "const x = 1; const y = x + x + x;");
+    defer base.deinit();
+
+    try std.testing.expectEqual(@as(u32, 3), useCountOf(base.module, "x"));
+
+    var y_init: ?Ast.Expr = null;
+    for (base.module.declarations.items) |d| {
+        if (d == .@"const" and symbolNameIs(base.module, d.@"const".name, "y")) {
+            y_init = d.@"const".initializer;
+        }
+    }
+    const expr = y_init orelse return error.TestUnexpectedNull;
+
+    var errs: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    defer errs.deinit(gpa);
+    var ctx = subContext(gpa, &base, &errs); // no use_counts — production shape
+    _ = try AstVisit.visitSubtreeExpr(&ctx, expr);
+
+    try std.testing.expectEqual(@as(u32, 0), useCountOf(base.module, "x"));
 }
 
 test "U-ATTR-PARITY: add-walk over an attr-arg subtree, then sub-walk, leaves use_count balanced" {
