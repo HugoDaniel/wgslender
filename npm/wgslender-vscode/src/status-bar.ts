@@ -1,5 +1,5 @@
 // Right-side status-bar item showing the minified byte size of the
-// active .wgsl document. Click cycles wgslender.minify.mode through
+// active .wgsl document. Click cycles wgslender.lsp.minifyMode through
 // off → insights → strict via the existing toggle command (Phase 2).
 
 import {
@@ -28,7 +28,7 @@ export function registerMinifyStatusBar(context: ExtensionContext): Disposable[]
   let lastRunToken = 0;
 
   const update = (editor: TextEditor | undefined): void => {
-    const mode = workspace.getConfiguration('wgslender').get<MinifyMode>('minify.mode', 'off');
+    const mode = workspace.getConfiguration('wgslender').get<MinifyMode>('lsp.minifyMode', 'off');
     if (!editor || editor.document.languageId !== 'wgsl' || mode === 'off') {
       item.hide();
       return;

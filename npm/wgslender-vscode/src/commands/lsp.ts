@@ -68,7 +68,7 @@ async function runReflect(client: BaseLanguageClient): Promise<void> {
 
 async function toggleMinifyMode(client: BaseLanguageClient): Promise<void> {
   const config = workspace.getConfiguration('wgslender');
-  const current = config.get<MinifyMode>('minify.mode', 'off');
+  const current = config.get<MinifyMode>('lsp.minifyMode', 'off');
   const next = MODE_CYCLE[current];
 
   // Server cycles its own copy via executeCommand. We update the user-
@@ -83,7 +83,7 @@ async function toggleMinifyMode(client: BaseLanguageClient): Promise<void> {
     return;
   }
 
-  await config.update('minify.mode', next, true);
+  await config.update('lsp.minifyMode', next, true);
   window.setStatusBarMessage(`wgslender: minify mode → ${next}`, 2000);
 }
 

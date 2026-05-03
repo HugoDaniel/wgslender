@@ -23,11 +23,12 @@ Works on both **VS Code Desktop** and **vscode.dev / github.dev** (web).
 
 See `wgslender.*` in the settings UI. Key knobs:
 
-- `wgslender.lint.extends` — config packs (default `["@wgslender/recommended"]`).
-- `wgslender.lint.rules` — per-rule severity overrides.
+- `wgslender.extends` — config packs (default `["@wgslender/recommended"]`).
+- `wgslender.rules` — per-rule severity overrides.
 - `wgslender.lint.fixOnSave` — apply autofixes on save.
-- `wgslender.minify.mode` — `off` | `insights` | `strict`.
-- `wgslender.minify.mangleExternalBindings` / `sortDeclarations` / `scopeLocalRename` / `keepNames` — minifier knobs reused by **Minify Preview** and **Save Minified As…**.
+- `wgslender.lsp.minifyMode` — `off` | `insights` | `strict`.
+- `wgslender.lsp.mangleExternalBindings` — silence M0100 when the consuming pipeline mangles bindings.
+- `wgslender.sortDeclarations` / `scopeLocalRename` / `keepNames` — minifier knobs reused by **Minify Preview** and **Save Minified As…**.
 - `wgslender.compile.outputDirectory` — default save location for **Compile to Binary Shader** (relative to the workspace folder; empty = alongside the source).
 - `wgslender.reflect.version` — `v1` | `v2` schema for the reflection panel and JSON command.
 - `wgslender.format.enable` — toggle formatter.

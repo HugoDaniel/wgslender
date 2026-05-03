@@ -158,13 +158,13 @@ function previewUriFor(sourceUri: Uri): Uri {
 }
 
 function optionsFromConfig(): Record<string, unknown> {
-  const cfg = workspace.getConfiguration('wgslender.minify');
+  const cfg = workspace.getConfiguration('wgslender');
   return {
     minifyWhitespace: true,
     minifyIdentifiers: true,
     minifySyntax: true,
     treeShaking: true,
-    mangleExternalBindings: cfg.get<boolean>('mangleExternalBindings', false),
+    mangleExternalBindings: cfg.get<boolean>('lsp.mangleExternalBindings', false),
     sortDeclarations: cfg.get<boolean>('sortDeclarations', false),
     scopeLocalRename: cfg.get<boolean>('scopeLocalRename', false),
     keepNames: cfg.get<string[]>('keepNames', []),

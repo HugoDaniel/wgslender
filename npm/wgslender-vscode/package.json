@@ -80,13 +80,13 @@
     "configuration": {
       "title": "wgslender",
       "properties": {
-        "wgslender.lint.extends": {
+        "wgslender.extends": {
           "type": "array",
           "items": { "type": "string" },
           "default": ["@wgslender/recommended"],
           "description": "Lint config packs to extend (e.g. @wgslender/recommended, @wgslender/style, @wgslender/strict)."
         },
-        "wgslender.lint.rules": {
+        "wgslender.rules": {
           "type": "object",
           "default": {},
           "description": "Per-rule severity overrides. Keys are rule ids; values are 'off' | 'warn' | 'error'.",
@@ -97,33 +97,33 @@
           "default": false,
           "description": "Apply lint autofixes on save."
         },
-        "wgslender.lint.reportUnusedDisableDirectives": {
+        "wgslender.reportUnusedDisableDirectives": {
           "type": "boolean",
           "default": false,
           "description": "Report wgslender-disable comments that don't suppress any diagnostic."
         },
-        "wgslender.minify.mode": {
+        "wgslender.lsp.minifyMode": {
           "type": "string",
           "enum": ["off", "insights", "strict"],
           "default": "off",
           "description": "Minifier inlay-hint mode (off / insights show estimated bytes / strict escalates minify rules to errors)."
         },
-        "wgslender.minify.mangleExternalBindings": {
+        "wgslender.lsp.mangleExternalBindings": {
           "type": "boolean",
           "default": false,
-          "description": "Rename @group/@binding declarations directly instead of preserving them via aliases."
+          "description": "Tell the LSP that the consuming pipeline mangles @group/@binding names, so the M0100 'binding-blocks-rename' rule no-ops."
         },
-        "wgslender.minify.sortDeclarations": {
+        "wgslender.sortDeclarations": {
           "type": "boolean",
           "default": false,
           "description": "Sort top-level declarations to improve DEFLATE compression."
         },
-        "wgslender.minify.scopeLocalRename": {
+        "wgslender.scopeLocalRename": {
           "type": "boolean",
           "default": false,
           "description": "Rename function-local symbols using a per-scope counter to improve DEFLATE compression."
         },
-        "wgslender.minify.keepNames": {
+        "wgslender.keepNames": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],

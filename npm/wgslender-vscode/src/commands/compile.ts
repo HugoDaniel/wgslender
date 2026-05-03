@@ -67,7 +67,7 @@ async function defaultOutputUri(sourceUri: Uri): Promise<Uri> {
 }
 
 function optionsFromConfig(): Record<string, unknown> {
-  const cfg = workspace.getConfiguration('wgslender.minify');
+  const cfg = workspace.getConfiguration('wgslender');
   return {
     minifyWhitespace: true,
     minifyIdentifiers: true,
@@ -75,7 +75,7 @@ function optionsFromConfig(): Record<string, unknown> {
     treeShaking: true,
     sortDeclarations: cfg.get<boolean>('sortDeclarations', true),
     scopeLocalRename: cfg.get<boolean>('scopeLocalRename', true),
-    mangleExternalBindings: cfg.get<boolean>('mangleExternalBindings', false),
+    mangleExternalBindings: cfg.get<boolean>('lsp.mangleExternalBindings', false),
     keepNames: cfg.get<string[]>('keepNames', []),
   };
 }
