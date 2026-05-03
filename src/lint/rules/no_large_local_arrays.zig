@@ -19,6 +19,7 @@ const Rule = @import("../Rule.zig");
 const Context = @import("../Context.zig");
 const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
+const MultiVisitor = @import("../MultiVisitor.zig");
 
 pub const rule = Rule{
     .meta = .{
@@ -29,17 +30,29 @@ pub const rule = Rule{
         .docs_url = "https://github.com/hugoam/wgslender/blob/main/docs/rules/no-large-local-arrays.md",
         .category = .performance,
     },
-    .run = run,
+    .listener = makeListener,
 };
 
 const DEFAULT_MAX_SIZE: u64 = 1024;
 
-fn run(ctx: *Context) error{OutOfMemory}!void {
-    const threshold = readThreshold(ctx);
-    for (ctx.module.declarations.items) |decl| switch (decl) {
-        .function => |fd| if (fd.body) |body| try walkCompound(ctx, body, threshold),
-        else => {},
+const State = struct {
+    ctx: *Context,
+    threshold: u64,
+};
+
+fn makeListener(ctx: *Context) error{OutOfMemory}!MultiVisitor.Listener {
+    const state = try ctx.arena.create(State);
+    state.* = .{ .ctx = ctx, .threshold = readThreshold(ctx) };
+    return .{ .ctx = state, .on_stmt = onStmt };
+}
+
+fn onStmt(opaque_ctx: *anyopaque, stmt: Ast.Stmt) error{OutOfMemory}!void {
+    const state: *State = @ptrCast(@alignCast(opaque_ctx));
+    const decl_stmt = switch (stmt) {
+        .decl => |s| s,
+        else => return,
     };
+    try checkDecl(state.ctx, decl_stmt.decl, state.threshold);
 }
 
 fn readThreshold(ctx: *const Context) u64 {
@@ -50,32 +63,6 @@ fn readThreshold(ctx: *const Context) u64 {
         .integer => |i| if (i > 0) @intCast(i) else DEFAULT_MAX_SIZE,
         else => DEFAULT_MAX_SIZE,
     };
-}
-
-fn walkCompound(ctx: *Context, c: *Ast.CompoundStmt, threshold: u64) error{OutOfMemory}!void {
-    for (c.stmts.items) |stmt| try walkStmt(ctx, stmt, threshold);
-}
-
-fn walkStmt(ctx: *Context, stmt: Ast.Stmt, threshold: u64) error{OutOfMemory}!void {
-    switch (stmt) {
-        .compound => |s| try walkCompound(ctx, s, threshold),
-        .@"if" => |s| {
-            try walkCompound(ctx, s.body, threshold);
-            if (s.else_branch) |eb| try walkStmt(ctx, eb, threshold);
-        },
-        .@"switch" => |s| for (s.cases.items) |c| try walkCompound(ctx, c.body, threshold),
-        .@"for" => |s| {
-            if (s.init_stmt) |is| try walkStmt(ctx, is, threshold);
-            try walkCompound(ctx, s.body, threshold);
-        },
-        .@"while" => |s| try walkCompound(ctx, s.body, threshold),
-        .loop => |s| {
-            try walkCompound(ctx, s.body, threshold);
-            if (s.continuing) |cc| try walkCompound(ctx, cc, threshold);
-        },
-        .decl => |s| try checkDecl(ctx, s.decl, threshold),
-        else => {},
-    }
 }
 
 fn checkDecl(ctx: *Context, decl: Ast.Decl, threshold: u64) error{OutOfMemory}!void {

@@ -37,7 +37,7 @@ pub const rule = Rule{
     .listener = makeListener,
 };
 
-fn makeListener(ctx: *Context) MultiVisitor.Listener {
+fn makeListener(ctx: *Context) error{OutOfMemory}!MultiVisitor.Listener {
     return .{ .ctx = ctx, .on_expr = onExpr };
 }
 

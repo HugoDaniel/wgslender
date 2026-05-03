@@ -13,6 +13,7 @@ const Rule = @import("../Rule.zig");
 const Context = @import("../Context.zig");
 const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
+const MultiVisitor = @import("../MultiVisitor.zig");
 
 pub const rule = Rule{
     .meta = .{
@@ -23,58 +24,46 @@ pub const rule = Rule{
         .docs_url = "https://github.com/hugoam/wgslender/blob/main/docs/rules/no-empty.md",
         .category = .suspicious,
     },
-    .run = run,
+    .listener = makeListener,
 };
 
-fn run(ctx: *Context) error{OutOfMemory}!void {
-    for (ctx.module.declarations.items) |decl| switch (decl) {
-        .function => |fd| if (fd.body) |body| try walkCompound(ctx, body),
-        else => {},
-    };
+/// Per-listener scratch state. `handled` records compounds we've already
+/// flagged via a parent control-flow stmt (`if`/`switch`/`for`/…), so the
+/// later on_stmt(.compound) event for the same compound — which fires for
+/// `else { … }` branches that travel through MultiVisitor's stmt arm —
+/// doesn't double-flag with the generic "block" label.
+const State = struct {
+    ctx: *Context,
+    handled: std.AutoHashMapUnmanaged(*Ast.CompoundStmt, void) = .empty,
+};
+
+fn makeListener(ctx: *Context) error{OutOfMemory}!MultiVisitor.Listener {
+    const state = try ctx.arena.create(State);
+    state.* = .{ .ctx = ctx };
+    return .{ .ctx = state, .on_stmt = onStmt };
 }
 
-fn walkCompound(ctx: *Context, c: *Ast.CompoundStmt) error{OutOfMemory}!void {
-    for (c.stmts.items) |stmt| try walkStmt(ctx, stmt);
-}
-
-fn walkStmt(ctx: *Context, stmt: Ast.Stmt) error{OutOfMemory}!void {
+fn onStmt(opaque_ctx: *anyopaque, stmt: Ast.Stmt) error{OutOfMemory}!void {
+    const state: *State = @ptrCast(@alignCast(opaque_ctx));
     switch (stmt) {
         .compound => |s| {
-            try flagEmpty(ctx, s, "block");
-            try walkCompound(ctx, s);
+            if (state.handled.contains(s)) return;
+            try flagEmpty(state.ctx, s, "block");
         },
         .@"if" => |s| {
-            try flagEmpty(ctx, s.body, "if");
-            try walkCompound(ctx, s.body);
-            if (s.else_branch) |eb| {
-                switch (eb) {
-                    .compound => |ec| {
-                        try flagEmpty(ctx, ec, "else");
-                        try walkCompound(ctx, ec);
-                    },
-                    else => try walkStmt(ctx, eb),
-                }
-            }
+            try flagEmpty(state.ctx, s.body, "if");
+            if (s.else_branch) |eb| switch (eb) {
+                .compound => |ec| {
+                    try flagEmpty(state.ctx, ec, "else");
+                    try state.handled.put(state.ctx.arena, ec, {});
+                },
+                else => {},
+            };
         },
-        .@"switch" => |s| {
-            for (s.cases.items) |case| {
-                try flagEmpty(ctx, case.body, "case");
-                try walkCompound(ctx, case.body);
-            }
-        },
-        .@"for" => |s| {
-            try flagEmpty(ctx, s.body, "for");
-            try walkCompound(ctx, s.body);
-        },
-        .@"while" => |s| {
-            try flagEmpty(ctx, s.body, "while");
-            try walkCompound(ctx, s.body);
-        },
-        .loop => |s| {
-            try flagEmpty(ctx, s.body, "loop");
-            try walkCompound(ctx, s.body);
-            if (s.continuing) |cc| try walkCompound(ctx, cc);
-        },
+        .@"switch" => |s| for (s.cases.items) |case| try flagEmpty(state.ctx, case.body, "case"),
+        .@"for" => |s| try flagEmpty(state.ctx, s.body, "for"),
+        .@"while" => |s| try flagEmpty(state.ctx, s.body, "while"),
+        .loop => |s| try flagEmpty(state.ctx, s.body, "loop"),
         else => {},
     }
 }

@@ -42,12 +42,14 @@ run: ?*const fn (ctx: *Context) error{OutOfMemory}!void = null,
 /// the AST is traversed once for all subscribed rules instead of N
 /// times. The factory is called with the rule's `Context`; the returned
 /// listener typically uses `ctx` as its `*anyopaque` ctx so callbacks
-/// can `@ptrCast(@alignCast(...))` back to `*Context`.
+/// can `@ptrCast(@alignCast(...))` back to `*Context`. Rules that need
+/// per-instance scratch state (e.g. a hashmap to dedupe events) allocate
+/// it on `ctx.arena` here and propagate `error.OutOfMemory`.
 ///
 /// Both `run` and `listener` may be set. The shared walk fires first;
 /// `run` then runs after the walk has completed (useful for rules that
 /// collect state in the listener and report based on the tally).
-listener: ?*const fn (ctx: *Context) MultiVisitor.Listener = null,
+listener: ?*const fn (ctx: *Context) error{OutOfMemory}!MultiVisitor.Listener = null,
 
 pub const Category = enum {
     /// Likely-incorrect code (unused declarations, unreachable functions).

@@ -21,6 +21,7 @@ const Rule = @import("../Rule.zig");
 const Context = @import("../Context.zig");
 const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
+const MultiVisitor = @import("../MultiVisitor.zig");
 
 pub const rule = Rule{
     .meta = .{
@@ -31,39 +32,20 @@ pub const rule = Rule{
         .docs_url = "https://github.com/hugoam/wgslender/blob/main/docs/rules/for-direction.md",
         .category = .correctness,
     },
-    .run = run,
+    .listener = makeListener,
 };
 
-fn run(ctx: *Context) error{OutOfMemory}!void {
-    for (ctx.module.declarations.items) |decl| switch (decl) {
-        .function => |fd| if (fd.body) |body| try walkCompound(ctx, body),
-        else => {},
+fn makeListener(ctx: *Context) error{OutOfMemory}!MultiVisitor.Listener {
+    return .{ .ctx = ctx, .on_stmt = onStmt };
+}
+
+fn onStmt(opaque_ctx: *anyopaque, stmt: Ast.Stmt) error{OutOfMemory}!void {
+    const ctx: *Context = @ptrCast(@alignCast(opaque_ctx));
+    const s = switch (stmt) {
+        .@"for" => |f| f,
+        else => return,
     };
-}
-
-fn walkCompound(ctx: *Context, c: *Ast.CompoundStmt) error{OutOfMemory}!void {
-    for (c.stmts.items) |stmt| try walkStmt(ctx, stmt);
-}
-
-fn walkStmt(ctx: *Context, stmt: Ast.Stmt) error{OutOfMemory}!void {
-    switch (stmt) {
-        .compound => |s| try walkCompound(ctx, s),
-        .@"if" => |s| {
-            try walkCompound(ctx, s.body);
-            if (s.else_branch) |eb| try walkStmt(ctx, eb);
-        },
-        .@"switch" => |s| for (s.cases.items) |case| try walkCompound(ctx, case.body),
-        .@"for" => |s| {
-            try checkFor(ctx, s);
-            try walkCompound(ctx, s.body);
-        },
-        .@"while" => |s| try walkCompound(ctx, s.body),
-        .loop => |s| {
-            try walkCompound(ctx, s.body);
-            if (s.continuing) |cc| try walkCompound(ctx, cc);
-        },
-        else => {},
-    }
+    try checkFor(ctx, s);
 }
 
 const Direction = enum { up, down };

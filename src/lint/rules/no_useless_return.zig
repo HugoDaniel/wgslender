@@ -13,6 +13,7 @@ const Rule = @import("../Rule.zig");
 const Context = @import("../Context.zig");
 const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
+const MultiVisitor = @import("../MultiVisitor.zig");
 
 pub const rule = Rule{
     .meta = .{
@@ -24,18 +25,22 @@ pub const rule = Rule{
         .category = .style,
         .fixable = true,
     },
-    .run = run,
+    .listener = makeListener,
 };
 
-fn run(ctx: *Context) error{OutOfMemory}!void {
-    for (ctx.module.declarations.items) |decl| switch (decl) {
-        .function => |fd| {
-            if (fd.return_type != null) continue;
-            const body = fd.body orelse continue;
-            try checkCompoundTrailing(ctx, body);
-        },
-        else => {},
+fn makeListener(ctx: *Context) error{OutOfMemory}!MultiVisitor.Listener {
+    return .{ .ctx = ctx, .on_decl = onDecl };
+}
+
+fn onDecl(opaque_ctx: *anyopaque, decl: Ast.Decl) error{OutOfMemory}!void {
+    const ctx: *Context = @ptrCast(@alignCast(opaque_ctx));
+    const fd = switch (decl) {
+        .function => |f| f,
+        else => return,
     };
+    if (fd.return_type != null) return;
+    const body = fd.body orelse return;
+    try checkCompoundTrailing(ctx, body);
 }
 
 fn checkCompoundTrailing(ctx: *Context, c: *Ast.CompoundStmt) error{OutOfMemory}!void {

@@ -5,16 +5,20 @@
 //! rules the user disabled, and collects diagnostics into a standard
 //! `Diagnostic` list.
 //!
-//! Architecture: each rule implements its own traversal via `AstVisit` or
-//! a symbol-table walk (see `Rule.zig`). The Linter simply iterates over
-//! the rule registry and calls `.run(ctx)` on each enabled rule. This
-//! keeps the rule API trivial and the Linter a thin coordinator. WGSL
-//! shaders are small (<50KB typical); the n-rules × one-traversal-each
-//! cost is negligible.
+//! Architecture: rules expose either a `listener` (a per-AST-node visitor
+//! folded into one shared `MultiVisitor.walk`) or a `run` callback (a
+//! free-form post-walk pass for symbol-table scans and tally-based
+//! reporting), or both. Run order per call:
+//!   1. Build a `Context` per enabled rule and collect every rule's
+//!      listener into a single slice.
+//!   2. `MultiVisitor.walk` drives one document-order traversal that
+//!      dispatches each node to every subscribed listener — so N
+//!      listener-bearing rules pay one traversal cost, not N.
+//!   3. Per-rule `run` callbacks fire afterwards (hybrid rules see state
+//!      collected during the shared walk before reporting).
 //!
-//! The `Context` shape is designed so a future single-traversal
-//! multiplexed-visitor implementation can slot in without changing rule
-//! code — only the Linter internals change.
+//! See `Rule.zig` for the per-rule contract; see `MultiVisitor.zig` for
+//! the visitor signature and traversal shape.
 //!
 //! Invariants:
 //!   - The rule registry (`registry.all`) is non-empty. Asserted at the
@@ -235,7 +239,7 @@ pub fn run(
         contexts.appendAssumeCapacity(ctx);
         rule_indices.appendAssumeCapacity(idx);
 
-        if (r.listener) |make| try listeners.append(alloc, make(ctx));
+        if (r.listener) |make| try listeners.append(alloc, try make(ctx));
     }
 
     // Phase 2: one combined walk for every subscribed rule. Listeners fire

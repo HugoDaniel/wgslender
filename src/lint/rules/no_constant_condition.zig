@@ -14,6 +14,7 @@ const Rule = @import("../Rule.zig");
 const Context = @import("../Context.zig");
 const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
+const MultiVisitor = @import("../MultiVisitor.zig");
 
 pub const rule = Rule{
     .meta = .{
@@ -24,41 +25,19 @@ pub const rule = Rule{
         .docs_url = "https://github.com/hugoam/wgslender/blob/main/docs/rules/no-constant-condition.md",
         .category = .correctness,
     },
-    .run = run,
+    .listener = makeListener,
 };
 
-fn run(ctx: *Context) error{OutOfMemory}!void {
-    for (ctx.module.declarations.items) |decl| switch (decl) {
-        .function => |fd| if (fd.body) |body| try walkCompound(ctx, body),
-        else => {},
-    };
+fn makeListener(ctx: *Context) error{OutOfMemory}!MultiVisitor.Listener {
+    return .{ .ctx = ctx, .on_stmt = onStmt };
 }
 
-fn walkCompound(ctx: *Context, c: *Ast.CompoundStmt) error{OutOfMemory}!void {
-    for (c.stmts.items) |stmt| try walkStmt(ctx, stmt);
-}
-
-fn walkStmt(ctx: *Context, stmt: Ast.Stmt) error{OutOfMemory}!void {
+fn onStmt(opaque_ctx: *anyopaque, stmt: Ast.Stmt) error{OutOfMemory}!void {
+    const ctx: *Context = @ptrCast(@alignCast(opaque_ctx));
     switch (stmt) {
-        .compound => |s| try walkCompound(ctx, s),
-        .@"if" => |s| {
-            try checkCondition(ctx, s.condition, "if");
-            try walkCompound(ctx, s.body);
-            if (s.else_branch) |eb| try walkStmt(ctx, eb);
-        },
-        .@"while" => |s| {
-            try checkCondition(ctx, s.condition, "while");
-            try walkCompound(ctx, s.body);
-        },
-        .@"for" => |s| {
-            if (s.condition) |cond| try checkCondition(ctx, cond, "for");
-            try walkCompound(ctx, s.body);
-        },
-        .loop => |s| {
-            try walkCompound(ctx, s.body);
-            if (s.continuing) |cc| try walkCompound(ctx, cc);
-        },
-        .@"switch" => |s| for (s.cases.items) |case| try walkCompound(ctx, case.body),
+        .@"if" => |s| try checkCondition(ctx, s.condition, "if"),
+        .@"while" => |s| try checkCondition(ctx, s.condition, "while"),
+        .@"for" => |s| if (s.condition) |cond| try checkCondition(ctx, cond, "for"),
         .break_if => |s| try checkCondition(ctx, s.condition, "break if"),
         else => {},
     }
