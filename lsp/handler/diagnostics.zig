@@ -113,14 +113,14 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
 }
 
 /// Build per-rule overrides synthesizing fields from the resolved
-/// `MinifySettings.Effective` and the workspace severities map into the
-/// Linter's `Options.rules` slice.
+/// `MinifySettings.Effective` and the merged `rules` overrides from
+/// every Config layer into the Linter's `Options.rules` slice.
 ///
 /// Two contributions, merged per rule id:
-///   1. `minifyLints.severities` (code → severity string) — escalates
-///      or silences any registered minify rule by code. Codes are
-///      resolved via `Linter.registry.byCode`; unknown codes are
-///      ignored silently.
+///   1. `rules` (id → severity) — escalates or silences any registered
+///      rule by id. Both project (`wgslender.json`) and workspace
+///      (LSP `workspace/configuration`) layers contribute; workspace
+///      wins on duplicate id (see `Handler.appendLintRuleOverrides`).
 ///   2. The M0100 mangle gate — when the user has opted into
 ///      `--mangle-external-bindings`, attach
 ///      `{"mangleExternalBindings": true}` to that rule's options so
@@ -141,12 +141,13 @@ fn buildMinifyRuleOverrides(
     };
     var by_id: std.StringHashMapUnmanaged(Acc) = .empty;
 
-    // Severities map (code → rule id via registry lookup).
-    var sev_it = handler.workspace_minify_severities.iterator();
+    // Severities (project + workspace, workspace wins on duplicate id).
+    var sev_map: std.StringHashMapUnmanaged(WgslDiagnostic.Severity) = .empty;
+    try handler.appendLintRuleOverrides(arena, &sev_map);
+    var sev_it = sev_map.iterator();
     while (sev_it.next()) |kv| {
-        const r = wgslender.Linter.registry.byCode(kv.key_ptr.*) orelse continue;
-        const gop = try by_id.getOrPut(arena, r.meta.id);
-        if (!gop.found_existing) gop.value_ptr.* = .{ .id = r.meta.id };
+        const gop = try by_id.getOrPut(arena, kv.key_ptr.*);
+        if (!gop.found_existing) gop.value_ptr.* = .{ .id = kv.key_ptr.* };
         gop.value_ptr.severity = kv.value_ptr.*;
     }
 

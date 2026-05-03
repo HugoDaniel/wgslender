@@ -120,7 +120,7 @@ pub fn buildPullReport(
             .relatedDocuments = null,
         },
     };
-    if (!h.settings.diagnostics_enabled) return empty;
+    if (!h.diagnosticsEnabled()) return empty;
     if (h.getDocumentSource(uri) == null) return empty;
 
     const current_id: ?[]const u8 = if (h.currentResultId(uri)) |v|

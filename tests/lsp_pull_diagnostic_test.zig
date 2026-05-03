@@ -250,7 +250,7 @@ test "pull: diagnostics disabled yields empty Full, not silence" {
     var handler = Handler.init(std.testing.allocator);
     defer handler.deinit();
     try handler.openDocument(test_uri, "const x: i32 = 1.5;", 1);
-    handler.settings.diagnostics_enabled = false;
+    handler.workspace_config.lsp_diagnostics_enabled = false;
 
     var cap = try capturePull(&handler, test_uri, null);
     defer cap.deinit();

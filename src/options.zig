@@ -148,12 +148,20 @@ pub fn applyJson(
                 .string_list => {
                     if (value == .array) {
                         var names: std.ArrayListUnmanaged([]const u8) = .empty;
+                        errdefer {
+                            for (names.items) |s| allocator.free(s);
+                            names.deinit(allocator);
+                        }
                         for (value.array.items) |item| {
                             if (item == .string) {
                                 try names.append(allocator, try allocator.dupe(u8, item.string));
                             }
                         }
-                        @field(target, spec.field) = names.items;
+                        // toOwnedSlice shrinks to len so callers that
+                        // own the result (e.g. `Config.deinit`) can
+                        // `free` the slice without tripping the
+                        // allocator's size check.
+                        @field(target, spec.field) = try names.toOwnedSlice(allocator);
                     }
                 },
             }

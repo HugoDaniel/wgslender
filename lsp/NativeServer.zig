@@ -198,7 +198,7 @@ pub fn initialize(
     // (needs a `file://` percent-decoder).
     self.handler.discoverProjectConfig(self.io, null);
     if (params.initializationOptions) |opts| {
-        self.handler.applyClientSettings(opts);
+        self.handler.applyClientConfig(opts);
     }
     return .{
         .serverInfo = .{ .name = "wgslender-lsp", .version = "1.0.0" },
@@ -399,7 +399,7 @@ pub fn onResponse(
         else => return,
     };
     if (arr.items.len == 0) return;
-    self.handler.applyClientSettings(arr.items[0]);
+    self.handler.applyClientConfig(arr.items[0]);
     // Settings change — re-publish (full) and re-arm every open doc so
     // any in-flight debounce window is reset to `now + debounce_ms`
     // (master plan §10.1 "settings change resets debounce timer").
@@ -1294,7 +1294,7 @@ pub fn @"textDocument/formatting"(
 /// Used by every push-on-edit path so a 100-keystroke burst never
 /// enters the estimator-heavy minify lint pipeline.
 fn publishCheapDiagnosticsLocked(self: *NativeServer, uri: []const u8) void {
-    if (!self.handler.settings.diagnostics_enabled) return;
+    if (!self.handler.diagnosticsEnabled()) return;
     const diags = self.handler.validateDocumentCheap(uri) catch return;
     defer Handler.freeDiagnostics(self.handler.gpa, diags);
     self.writePublishLocked(uri, diags);
@@ -1305,7 +1305,7 @@ fn publishCheapDiagnosticsLocked(self: *NativeServer, uri: []const u8) void {
 /// `didOpen` / `didSave` / `republishAllDocumentsLocked` where the user
 /// expects up-to-date M-rule output immediately.
 fn publishFullDiagnosticsLocked(self: *NativeServer, uri: []const u8) void {
-    if (!self.handler.settings.diagnostics_enabled) return;
+    if (!self.handler.diagnosticsEnabled()) return;
     const diags = self.handler.validateDocumentFull(uri) catch return;
     defer Handler.freeDiagnostics(self.handler.gpa, diags);
     self.writePublishLocked(uri, diags);
@@ -1349,7 +1349,7 @@ fn sendConfigurationRequestLocked(self: *NativeServer) void {
 fn republishAllDocumentsLocked(self: *NativeServer) void {
     var it = self.handler.documents.iterator();
     while (it.next()) |entry| {
-        if (self.handler.settings.diagnostics_enabled) {
+        if (self.handler.diagnosticsEnabled()) {
             self.publishFullDiagnosticsLocked(entry.key_ptr.*);
         } else {
             self.transport.writeNotification(

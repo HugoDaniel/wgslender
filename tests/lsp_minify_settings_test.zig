@@ -1,9 +1,14 @@
-//! LSP-layer tests for the minifier-mode settings plumbing:
-//!   - `applyClientSettings` parses the minify.* fields into a Partial.
-//!   - The Handler exposes an `effectiveMinify()` accessor that merges
-//!     project + workspace + magic-comment layers via `MinifySettings.resolve`.
-//!   - `workspace/executeCommand` dispatches `wgslender.setMinifyMode` and
-//!     `wgslender.toggleMinifyMode`.
+//! Handler-level tests for the minifier-mode settings plumbing:
+//!   - `effectiveMinify()` / `effectiveMinifyFor(uri)` resolve the
+//!     project + workspace + magic-comment layers correctly.
+//!   - `workspace/executeCommand` dispatches `wgslender.setMinifyMode`
+//!     and `wgslender.toggleMinifyMode` against `workspace_config`.
+//!
+//! Per-key parser coverage lives in `src/Config.zig` tests now that the
+//! LSP wire schema and `wgslender.json` share one parser
+//! (`Config.applyJsonValue`). This file only exercises behaviour unique
+//! to the Handler — the cross-layer resolve, the magic-comment
+//! interaction, and the command dispatch.
 
 const std = @import("std");
 const Handler = @import("Handler");
@@ -30,6 +35,16 @@ fn parseJson(json: []const u8) !std.json.Parsed(std.json.Value) {
     );
 }
 
+fn applySettings(h: *Handler, json: []const u8) !void {
+    var parsed = try parseJson(json);
+    defer parsed.deinit();
+    h.applyClientConfig(parsed.value);
+}
+
+// =========================================================================
+// effectiveMinify — workspace layer only
+// =========================================================================
+
 test "minify settings: default effective mode is off" {
     const h = try setup();
     defer teardown(h);
@@ -39,27 +54,11 @@ test "minify settings: default effective mode is off" {
     try std.testing.expect(!eff.lintsActive());
 }
 
-test "applyClientSettings: minifyMode=insights enables insights" {
+test "applyClientConfig: lsp.minifyMode=strict enables insights + lints" {
     const h = try setup();
     defer teardown(h);
 
-    var parsed = try parseJson("{\"minifyMode\":\"insights\"}");
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    const eff = h.effectiveMinify();
-    try std.testing.expectEqual(MinifySettings.Mode.insights, eff.mode);
-    try std.testing.expect(eff.insightsActive());
-    try std.testing.expect(!eff.lintsActive());
-}
-
-test "applyClientSettings: minifyMode=strict enables insights + lints" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson("{\"minifyMode\":\"strict\"}");
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
 
     const eff = h.effectiveMinify();
     try std.testing.expectEqual(MinifySettings.Mode.strict, eff.mode);
@@ -67,293 +66,21 @@ test "applyClientSettings: minifyMode=strict enables insights + lints" {
     try std.testing.expect(eff.lintsActive());
 }
 
-test "applyClientSettings: minifyMode=off turns everything off" {
+test "applyClientConfig: each push replaces the workspace overlay" {
     const h = try setup();
     defer teardown(h);
 
-    var on = try parseJson("{\"minifyMode\":\"strict\"}");
-    defer on.deinit();
-    h.applyClientSettings(on.value);
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
+    try std.testing.expectEqual(MinifySettings.Mode.strict, h.effectiveMinify().mode);
 
-    var off = try parseJson("{\"minifyMode\":\"off\"}");
-    defer off.deinit();
-    h.applyClientSettings(off.value);
-
-    const eff = h.effectiveMinify();
-    try std.testing.expectEqual(MinifySettings.Mode.off, eff.mode);
-    try std.testing.expect(!eff.insightsActive());
-}
-
-test "applyClientSettings: unknown minifyMode value silently ignored" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson("{\"minifyMode\":\"loud\"}");
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
+    // Second push doesn't carry minifyMode → workspace layer drops back
+    // to empty for that field, falling through to the (default) `off`.
+    try applySettings(h, "{\"lsp\":{\"inlayHints\":{\"enabled\":false}}}");
     try std.testing.expectEqual(MinifySettings.Mode.off, h.effectiveMinify().mode);
 }
 
-test "applyClientSettings: minifyInsights.format parses" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyMode":"insights","minifyInsights":{"format":"both"}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    const eff = h.effectiveMinify();
-    try std.testing.expectEqual(MinifySettings.InsightsFormat.both, eff.insights.format);
-}
-
-test "applyClientSettings: minifyInsights sub-switches parse" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyMode":"insights","minifyInsights":{"functionSize":false,"declSize":false,"totalSize":true}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    const eff = h.effectiveMinify();
-    try std.testing.expect(!eff.insights.function_size);
-    try std.testing.expect(!eff.insights.decl_size);
-    try std.testing.expect(eff.insights.total_size);
-}
-
-test "applyClientSettings: mangleExternalBindings=true sets workspace flag" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson("{\"mangleExternalBindings\":true}");
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    const eff = h.effectiveMinify();
-    try std.testing.expect(eff.mangle_external_bindings);
-}
-
-test "applyClientSettings: mangleExternalBindings absent leaves field false" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson("{\"minifyMode\":\"strict\"}");
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    const eff = h.effectiveMinify();
-    try std.testing.expect(!eff.mangle_external_bindings);
-}
-
-test "applyClientSettings: mangleExternalBindings wrong type silently ignored" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson("{\"mangleExternalBindings\":\"yes\"}");
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    try std.testing.expect(!h.effectiveMinify().mangle_external_bindings);
-}
-
-test "applyClientSettings: minifyLints.severities populates per-code map" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyLints":{"severities":{"M0100":"warning","M0201":"off"}}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    try std.testing.expectEqual(@as(u32, 2), h.workspace_minify_severities.count());
-
-    const m0100 = h.workspace_minify_severities.get("M0100") orelse {
-        std.debug.print("no M0100 entry in severities map\n", .{});
-        return error.TestUnexpectedResult;
-    };
-    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, m0100);
-
-    const m0201 = h.workspace_minify_severities.get("M0201") orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(wgslender.Diagnostic.Severity.disabled, m0201);
-}
-
-test "applyClientSettings: severities accepts hint / info / warn / warning / error / off" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyLints":{"severities":{"M0100":"hint","M0101":"info","M0200":"warn","M0201":"warning","M0202":"error"}}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    try std.testing.expectEqual(wgslender.Diagnostic.Severity.hint, h.workspace_minify_severities.get("M0100").?);
-    try std.testing.expectEqual(wgslender.Diagnostic.Severity.info, h.workspace_minify_severities.get("M0101").?);
-    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, h.workspace_minify_severities.get("M0200").?);
-    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, h.workspace_minify_severities.get("M0201").?);
-    try std.testing.expectEqual(wgslender.Diagnostic.Severity.@"error", h.workspace_minify_severities.get("M0202").?);
-}
-
-test "applyClientSettings: severities empty object clears prior entries" {
-    const h = try setup();
-    defer teardown(h);
-
-    var first = try parseJson(
-        \\{"minifyLints":{"severities":{"M0100":"warning"}}}
-    );
-    defer first.deinit();
-    h.applyClientSettings(first.value);
-    try std.testing.expectEqual(@as(u32, 1), h.workspace_minify_severities.count());
-
-    var second = try parseJson(
-        \\{"minifyLints":{"severities":{}}}
-    );
-    defer second.deinit();
-    h.applyClientSettings(second.value);
-    try std.testing.expectEqual(@as(u32, 0), h.workspace_minify_severities.count());
-}
-
-test "applyClientSettings: severities absent leaves prior map intact" {
-    const h = try setup();
-    defer teardown(h);
-
-    var first = try parseJson(
-        \\{"minifyLints":{"severities":{"M0100":"warning"}}}
-    );
-    defer first.deinit();
-    h.applyClientSettings(first.value);
-
-    var second = try parseJson("{\"minifyMode\":\"strict\"}");
-    defer second.deinit();
-    h.applyClientSettings(second.value);
-
-    try std.testing.expectEqual(@as(u32, 1), h.workspace_minify_severities.count());
-    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, h.workspace_minify_severities.get("M0100").?);
-}
-
-test "applyClientSettings: invalid severity strings silently skipped" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyLints":{"severities":{"M0100":"loud","M0201":"warning"}}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    try std.testing.expectEqual(@as(u32, 1), h.workspace_minify_severities.count());
-    try std.testing.expect(h.workspace_minify_severities.get("M0100") == null);
-    try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, h.workspace_minify_severities.get("M0201").?);
-}
-
-test "applyClientSettings: severities non-object silently ignored" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyLints":{"severities":"warn-everything"}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    try std.testing.expectEqual(@as(u32, 0), h.workspace_minify_severities.count());
-}
-
-test "applyClientSettings: minifyLints.enabled=false in strict keeps lints off" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyMode":"strict","minifyLints":{"enabled":false}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    const eff = h.effectiveMinify();
-    try std.testing.expectEqual(MinifySettings.Mode.strict, eff.mode);
-    try std.testing.expect(!eff.lints.enabled);
-    try std.testing.expect(!eff.lintsActive());
-}
-
-test "applyClientSettings: minifyLints.budgetBytes integer sets workspace field" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyLints":{"budgetBytes":4096}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    try std.testing.expectEqual(@as(?u32, 4096), h.effectiveMinify().budget_bytes);
-}
-
-test "applyClientSettings: minifyLints.budgetBytes negative integer treated as unset" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyLints":{"budgetBytes":-1}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    try std.testing.expectEqual(@as(?u32, null), h.effectiveMinify().budget_bytes);
-}
-
-test "applyClientSettings: minifyLints.budgetBytes wrong type silently ignored" {
-    const h = try setup();
-    defer teardown(h);
-
-    var parsed = try parseJson(
-        \\{"minifyLints":{"budgetBytes":"1024"}}
-    );
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
-
-    try std.testing.expectEqual(@as(?u32, null), h.effectiveMinify().budget_bytes);
-}
-
-test "applyClientSettings: minifyLints.budgetBytes=null clears prior value" {
-    const h = try setup();
-    defer teardown(h);
-
-    var on = try parseJson(
-        \\{"minifyLints":{"budgetBytes":2048}}
-    );
-    defer on.deinit();
-    h.applyClientSettings(on.value);
-    try std.testing.expectEqual(@as(?u32, 2048), h.effectiveMinify().budget_bytes);
-
-    var off = try parseJson(
-        \\{"minifyLints":{"budgetBytes":null}}
-    );
-    defer off.deinit();
-    h.applyClientSettings(off.value);
-    try std.testing.expectEqual(@as(?u32, null), h.effectiveMinify().budget_bytes);
-}
-
-test "applyClientSettings: preserves existing non-minify fields" {
-    const h = try setup();
-    defer teardown(h);
-
-    var p = try parseJson(
-        \\{"inlayHints":{"enabled":false},"minifyMode":"insights"}
-    );
-    defer p.deinit();
-    h.applyClientSettings(p.value);
-
-    try std.testing.expect(!h.settings.inlay_hints_enabled);
-    try std.testing.expectEqual(MinifySettings.Mode.insights, h.effectiveMinify().mode);
-}
-
 // =========================================================================
-// workspace/executeCommand dispatch
+// executeCommand — wgslender.setMinifyMode + toggleMinifyMode
 // =========================================================================
 
 test "executeCommand: wgslender.setMinifyMode \"insights\" sets mode" {
@@ -437,16 +164,14 @@ test "executeCommand: wgslender.toggleMinifyMode cycles off → insights → str
 }
 
 // =========================================================================
-// Phase 2 — magic-comment layer via effectiveMinifyFor(uri)
+// effectiveMinifyFor — magic-comment layer composes with project+workspace
 // =========================================================================
 
 test "effectiveMinifyFor: magic comment overrides workspace minify.mode" {
     const h = try setup();
     defer teardown(h);
 
-    var parsed = try parseJson("{\"minifyMode\":\"insights\"}");
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     try h.openDocument("file:///a.wgsl", "// wgslender-minify-strict\nfn main() {}\n", 1);
 
@@ -476,9 +201,7 @@ test "effectiveMinifyFor: removing magic comment falls back to workspace" {
     const h = try setup();
     defer teardown(h);
 
-    var parsed = try parseJson("{\"minifyMode\":\"insights\"}");
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     try h.openDocument("file:///a.wgsl", "// wgslender-minify-strict\nfn main() {}\n", 1);
     try std.testing.expectEqual(
@@ -497,9 +220,7 @@ test "effectiveMinifyFor: unknown URI falls back to workspace + project" {
     const h = try setup();
     defer teardown(h);
 
-    var parsed = try parseJson("{\"minifyMode\":\"insights\"}");
-    defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     const eff = h.effectiveMinifyFor("file:///nonexistent.wgsl");
     try std.testing.expectEqual(MinifySettings.Mode.insights, eff.mode);

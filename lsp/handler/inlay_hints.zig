@@ -23,7 +23,7 @@ pub const InlayHintInfo = struct {
 };
 
 pub fn computeInlayHints(handler: *Handler, uri: []const u8, range: Range) ![]InlayHintInfo {
-    if (!handler.settings.inlay_hints_enabled) return &.{};
+    if (!handler.inlayHintsEnabled()) return &.{};
     const analysis = handler.analyzeDocument(uri) catch return &.{};
     const module = analysis.module orelse return &.{};
     const source = module.source;

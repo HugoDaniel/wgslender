@@ -46,7 +46,7 @@ fn parseJson(json: []const u8) !std.json.Parsed(std.json.Value) {
 fn applySettings(h: *Handler, json: []const u8) !void {
     var parsed = try parseJson(json);
     defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
+    h.applyClientConfig(parsed.value);
 }
 
 const sample_shader: [:0]const u8 =
@@ -96,7 +96,7 @@ test "perf: estimator result cached across inlay hint + code lens + rules" {
     defer teardown(h);
     // Strict mode flips both `insightsActive()` (inlay/lens) and
     // `lintsActive()` (M-rules) on for this document.
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const before = MinifyEstimator.estimate_count;
@@ -127,7 +127,7 @@ test "perf: estimator result cached across inlay hint + code lens + rules" {
 test "perf: cache invalidated by didChange version bump" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const before = MinifyEstimator.estimate_count;
@@ -149,7 +149,7 @@ test "perf: cache invalidated by didChange version bump" {
 test "perf: cache invalidated by minify settings change" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const before = MinifyEstimator.estimate_count;
@@ -157,9 +157,12 @@ test "perf: cache invalidated by minify settings change" {
     h.refreshMinifyInsights("file:///a.wgsl");
     try std.testing.expectEqual(@as(u64, 1), MinifyEstimator.estimate_count - before);
 
-    // Toggling the mangle flag could shift the resolved estimator
-    // options, so `applyClientSettings` blows away every cache.
-    try applySettings(h, "{\"mangleExternalBindings\":true}");
+    // Toggling the mangle flag shifts the resolved estimator options,
+    // so `applyClientConfig` blows away every cache. The push carries
+    // both keys because each push replaces the workspace overlay
+    // wholesale — omitting `minifyMode` would drop it back to `off`
+    // and the early-out path wouldn't even reach the estimator.
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\",\"mangleExternalBindings\":true}}");
     h.refreshMinifyInsights("file:///a.wgsl");
     try std.testing.expectEqual(@as(u64, 2), MinifyEstimator.estimate_count - before);
 }
@@ -176,7 +179,7 @@ test "perf: rapid didChange coalesces to single estimator run" {
     // Drive that contract here without a transport stub.
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
     try h.openDocument("file:///burst.wgsl", sample_shader, 1);
 
     const before = MinifyEstimator.estimate_count;
@@ -275,7 +278,7 @@ test "perf: native LSP timer debounces 300ms idle" {
     const server = try setupServer(300);
     defer teardownServer(server);
 
-    try applySettings(&server.handler, "{\"minifyMode\":\"strict\"}");
+    try applySettings(&server.handler, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
     try server.handler.openDocument("file:///burst.wgsl", sample_shader, 1);
     const before = MinifyEstimator.estimate_count;
 
@@ -310,7 +313,7 @@ test "perf: native settings change resets debounce timer" {
     const server = try setupServer(300);
     defer teardownServer(server);
 
-    try applySettings(&server.handler, "{\"minifyMode\":\"strict\"}");
+    try applySettings(&server.handler, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
     try server.handler.openDocument("file:///settings.wgsl", sample_shader, 1);
 
     // Arm via a didChange — deadline = now + 300.
@@ -329,7 +332,7 @@ test "perf: native settings change resets debounce timer" {
     // that `onResponse` uses: re-apply settings + re-arm every open
     // doc. This is what the timer thread observes when the client
     // pushes a `workspace/configuration` response.
-    try applySettings(&server.handler, "{\"minifyMode\":\"strict\"}");
+    try applySettings(&server.handler, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
     server.rearmAllOpenDocsForTest();
 
     const dl2 = server.debouncer.nextDeadline() orelse return error.TestUnexpectedResult;
@@ -353,7 +356,7 @@ test "perf: native settings change resets debounce timer" {
 // =========================================================================
 
 const full_minify_settings: []const u8 =
-    \\{"minifyMode":"strict","minifyEstimator":{"useFullMinify":true}}
+    \\{"lsp":{"minifyMode":"strict","minifyEstimator":{"useFullMinify":true}}}
 ;
 
 test "perf: full-minify result cached by module version" {
@@ -449,7 +452,7 @@ test "perf: refreshMinifyInsights hand-off (recomputeMinifyInsights path)" {
     // standing up a transport stub.
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const before = MinifyEstimator.estimate_count;

@@ -57,6 +57,12 @@ report_unused_disable_directives: ?bool = null,
 /// so they don't collide with the flat `minifyWhitespace` / etc. fields
 /// that drive the CLI minifier.
 lsp_minify: MinifySettings.Partial = .{},
+/// LSP-only feature toggles. `null` = unset → caller falls back to its
+/// own default (today: both default to `true`). Both flow from the
+/// `lsp.inlayHints.enabled` / `lsp.diagnostics.enabled` JSON keys, in
+/// either `wgslender.json` or the LSP `workspace/configuration` payload.
+lsp_inlay_hints_enabled: ?bool = null,
+lsp_diagnostics_enabled: ?bool = null,
 
 pub const config_file_names = [_][]const u8{
     "wgslender.json",
@@ -75,37 +81,71 @@ pub fn loadFile(allocator: Allocator, path: []const u8) !Config {
 
 pub fn parseJson(allocator: Allocator, content: []const u8) !Config {
     var config = Config{};
-
     var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
     defer parsed.deinit();
-    const root = parsed.value;
+    try applyJsonValue(allocator, parsed.value, &config);
+    return config;
+}
 
-    if (root != .object) return config;
+/// Apply a pre-parsed JSON `Value` onto an existing `Config`. Shared by
+/// `parseJson` (file path) and the LSP `workspace/configuration` handler
+/// (wire path) so the on-disk schema and the LSP wire schema are
+/// literally the same shape — set a key in `wgslender.json` and you can
+/// also set the same key in your editor's LSP settings, with identical
+/// semantics.
+///
+/// Existing string-slice fields on `target` are NOT freed before being
+/// overwritten — callers that hand in a non-empty Config (e.g. the LSP
+/// replacing its workspace overlay) must call `target.deinit` first to
+/// avoid leaking the previous values.
+pub fn applyJsonValue(allocator: Allocator, root: std.json.Value, target: *Config) !void {
+    if (root != .object) return;
 
     // Spec-driven parse for every bool / string-list option declared in
     // `options.config_specs`. Custom-shape fields below this call —
     // `rules` (severity sub-parser) and `lsp` (nested object) — stay
     // hand-parsed because they don't fit the simple kinds.
-    try options.applyJson(allocator, &options.config_specs, root, &config);
+    try options.applyJson(allocator, &options.config_specs, root, target);
 
     if (root.object.get("rules")) |v| {
         if (v == .object) {
             var list: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
+            errdefer {
+                for (list.items) |r| allocator.free(r.id);
+                list.deinit(allocator);
+            }
             var it = v.object.iterator();
             while (it.next()) |kv| {
                 const sev = parseSeverity(kv.value_ptr.*) orelse continue;
                 const id = try allocator.dupe(u8, kv.key_ptr.*);
                 try list.append(allocator, .{ .id = id, .severity = sev });
             }
-            config.lint_rules = list.items;
+            // toOwnedSlice shrinks the buffer to len so a later
+            // `Config.deinit` can `free` the slice safely. `list.items`
+            // would point into a wider allocation when capacity > len,
+            // tripping the allocator's size check on free.
+            target.lint_rules = try list.toOwnedSlice(allocator);
         }
     }
 
     if (root.object.get("lsp")) |lsp| {
-        if (lsp == .object) parseLspSection(&config.lsp_minify, lsp.object);
+        if (lsp == .object) parseLspSection(target, lsp.object);
     }
+}
 
-    return config;
+/// Free everything `parseJson` / `applyJsonValue` dup'd into `allocator`.
+/// Tests / CLI use an arena per call, so they don't need this; the LSP
+/// keeps `Config` values around for the session and replaces them on
+/// every `workspace/configuration` push, so it must free the previous
+/// strings before overwriting them.
+pub fn deinit(self: *Config, allocator: Allocator) void {
+    for (self.keep_names) |s| allocator.free(s);
+    if (self.keep_names.len > 0) allocator.free(self.keep_names);
+    for (self.lint_extends) |s| allocator.free(s);
+    if (self.lint_extends.len > 0) allocator.free(self.lint_extends);
+    for (self.lint_rules) |r| allocator.free(r.id);
+    if (self.lint_rules.len > 0) allocator.free(self.lint_rules);
+    self.* = .{};
 }
 
 /// Parse an ESLint-style severity value: `"off"`, `"warn"` / `"warning"`,
@@ -123,7 +163,8 @@ fn parseSeverity(value: std.json.Value) ?Diagnostic.Severity {
     return null;
 }
 
-fn parseLspSection(out: *MinifySettings.Partial, lsp: std.json.ObjectMap) void {
+fn parseLspSection(target: *Config, lsp: std.json.ObjectMap) void {
+    const out = &target.lsp_minify;
     if (lsp.get("minifyMode")) |v| {
         if (v == .string) out.mode = MinifySettings.Mode.fromString(v.string);
     }
@@ -149,15 +190,36 @@ fn parseLspSection(out: *MinifySettings.Partial, lsp: std.json.ObjectMap) void {
             if (v.object.get("enabled")) |b| {
                 if (b == .bool) out.lints_enabled = b.bool;
             }
-            if (v.object.get("budgetBytes")) |b| {
-                if (b == .integer and b.integer >= 0) {
-                    out.budget_bytes = @intCast(b.integer);
-                }
-            }
+            if (v.object.get("budgetBytes")) |b| switch (b) {
+                .integer => |i| out.budget_bytes = if (i >= 0) @intCast(i) else null,
+                .null => out.budget_bytes = null,
+                else => {},
+            };
         }
     }
     if (lsp.get("mangleExternalBindings")) |v| {
         if (v == .bool) out.mangle_external_bindings = v.bool;
+    }
+    if (lsp.get("minifyEstimator")) |v| {
+        if (v == .object) {
+            if (v.object.get("useFullMinify")) |b| {
+                if (b == .bool) out.use_full_minify = b.bool;
+            }
+        }
+    }
+    if (lsp.get("inlayHints")) |v| {
+        if (v == .object) {
+            if (v.object.get("enabled")) |b| {
+                if (b == .bool) target.lsp_inlay_hints_enabled = b.bool;
+            }
+        }
+    }
+    if (lsp.get("diagnostics")) |v| {
+        if (v == .object) {
+            if (v.object.get("enabled")) |b| {
+                if (b == .bool) target.lsp_diagnostics_enabled = b.bool;
+            }
+        }
     }
 }
 
@@ -480,7 +542,10 @@ test "config: parseJson lsp section populates lsp_minify partial" {
         \\    "minifyMode": "strict",
         \\    "minifyInsights": { "format": "bytes", "functionSize": false, "declSize": true, "totalSize": true },
         \\    "minifyLints": { "enabled": true, "budgetBytes": 4096 },
-        \\    "mangleExternalBindings": true
+        \\    "mangleExternalBindings": true,
+        \\    "minifyEstimator": { "useFullMinify": true },
+        \\    "inlayHints": { "enabled": false },
+        \\    "diagnostics": { "enabled": false }
         \\  }
         \\}
     ;
@@ -493,10 +558,58 @@ test "config: parseJson lsp section populates lsp_minify partial" {
     try std.testing.expectEqual(true, cfg.lsp_minify.lints_enabled.?);
     try std.testing.expectEqual(@as(?u32, 4096), cfg.lsp_minify.budget_bytes);
     try std.testing.expectEqual(true, cfg.lsp_minify.mangle_external_bindings.?);
+    try std.testing.expectEqual(true, cfg.lsp_minify.use_full_minify.?);
+    try std.testing.expectEqual(false, cfg.lsp_inlay_hints_enabled.?);
+    try std.testing.expectEqual(false, cfg.lsp_diagnostics_enabled.?);
 }
 
 test "config: parseJson lsp section absent → empty partial" {
     const cfg = try parseJson(std.testing.allocator, "{}");
     try std.testing.expectEqual(@as(?MinifySettings.Mode, null), cfg.lsp_minify.mode);
     try std.testing.expectEqual(@as(?bool, null), cfg.lsp_minify.lints_enabled);
+    try std.testing.expectEqual(@as(?bool, null), cfg.lsp_minify.use_full_minify);
+    try std.testing.expectEqual(@as(?bool, null), cfg.lsp_inlay_hints_enabled);
+    try std.testing.expectEqual(@as(?bool, null), cfg.lsp_diagnostics_enabled);
+}
+
+test "config: applyJsonValue is idempotent merge over existing config" {
+    const alloc = std.testing.allocator;
+
+    var cfg: Config = .{};
+    defer cfg.deinit(alloc);
+
+    // First push: project layer.
+    var first = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{ "lsp": { "minifyMode": "insights" }, "minifyWhitespace": false }
+    , .{});
+    defer first.deinit();
+    try applyJsonValue(alloc, first.value, &cfg);
+    try std.testing.expectEqual(MinifySettings.Mode.insights, cfg.lsp_minify.mode.?);
+    try std.testing.expectEqual(@as(?bool, false), cfg.minify_whitespace);
+
+    // Second push: only changes minify mode; minifyWhitespace stays.
+    var second = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{ "lsp": { "minifyMode": "strict" } }
+    , .{});
+    defer second.deinit();
+    try applyJsonValue(alloc, second.value, &cfg);
+    try std.testing.expectEqual(MinifySettings.Mode.strict, cfg.lsp_minify.mode.?);
+    try std.testing.expectEqual(@as(?bool, false), cfg.minify_whitespace);
+}
+
+test "config: deinit frees dup'd strings without leaking" {
+    const alloc = std.testing.allocator;
+
+    var cfg = try parseJson(alloc,
+        \\{
+        \\  "keepNames": ["a", "b"],
+        \\  "extends": ["@wgslender/recommended"],
+        \\  "rules": { "no-unused-vars": "error" }
+        \\}
+    );
+    cfg.deinit(alloc);
+    // No leak assertion needed — std.testing.allocator panics on leak.
+    try std.testing.expectEqual(@as(usize, 0), cfg.keep_names.len);
+    try std.testing.expectEqual(@as(usize, 0), cfg.lint_extends.len);
+    try std.testing.expectEqual(@as(usize, 0), cfg.lint_rules.len);
 }

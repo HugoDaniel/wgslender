@@ -57,7 +57,7 @@ pub fn executeCommand(handler: *Handler, name: []const u8, args: ?[]const std.js
             else => return error.InvalidParams,
         };
         const m = MinifySettings.Mode.fromString(s) orelse return error.InvalidParams;
-        handler.workspace_minify.mode = m;
+        handler.workspace_config.lsp_minify.mode = m;
         return;
     }
     if (std.mem.eql(u8, name, "wgslender.toggleMinifyMode")) {
@@ -67,7 +67,7 @@ pub fn executeCommand(handler: *Handler, name: []const u8, args: ?[]const std.js
             .insights => .strict,
             .strict => .off,
         };
-        handler.workspace_minify.mode = next;
+        handler.workspace_config.lsp_minify.mode = next;
         return;
     }
     if (std.mem.eql(u8, name, "wgslender.recomputeMinifyInsights")) {

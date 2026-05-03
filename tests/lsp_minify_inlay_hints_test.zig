@@ -38,7 +38,7 @@ fn parseJson(json: []const u8) !std.json.Parsed(std.json.Value) {
 fn applySettings(h: *Handler, json: []const u8) !void {
     var parsed = try parseJson(json);
     defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
+    h.applyClientConfig(parsed.value);
 }
 
 fn fullRange(source: []const u8) Handler.Range {
@@ -107,7 +107,7 @@ test "minify inlay: emits minify hints when mode=insights" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     const source: [:0]const u8 =
         \\fn longish_function_name() {
@@ -129,7 +129,7 @@ test "minify inlay: emits minify hints when mode=strict" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
 
     const source: [:0]const u8 = "fn main() { let value = 1.0; }";
     try h.openDocument("file:///a.wgsl", source, 1);
@@ -151,7 +151,7 @@ test "minify inlay: module-level total hint sits at line 0 column 0" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     const source: [:0]const u8 = "fn main() { let value = 1.0; }";
     try h.openDocument("file:///a.wgsl", source, 1);
@@ -168,7 +168,7 @@ test "minify inlay: function hint emitted at decl span end" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     const source: [:0]const u8 = "fn solo() { let v = 1.0; }";
     try h.openDocument("file:///a.wgsl", source, 1);
@@ -193,7 +193,7 @@ test "minify inlay: per-decl hint emitted for non-function named decls" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     // A struct that is referenced from a uniform var so DCE keeps it alive.
     const source: [:0]const u8 =
@@ -226,7 +226,7 @@ test "minify inlay: format=delta labels start with '-' and end in 'B'" {
     defer teardown(h);
 
     try applySettings(h,
-        \\{"minifyMode":"insights","minifyInsights":{"format":"delta"}}
+        \\{"lsp":{"minifyMode":"insights","minifyInsights":{"format":"delta"}}}
     );
 
     const source: [:0]const u8 = "fn main_with_long_name() { let some_long_value = 1.0; }";
@@ -251,7 +251,7 @@ test "minify inlay: format=bytes labels start with a digit and end in 'B'" {
     defer teardown(h);
 
     try applySettings(h,
-        \\{"minifyMode":"insights","minifyInsights":{"format":"bytes"}}
+        \\{"lsp":{"minifyMode":"insights","minifyInsights":{"format":"bytes"}}}
     );
 
     const source: [:0]const u8 = "fn main_with_long_name() { let some_long_value = 1.0; }";
@@ -278,7 +278,7 @@ test "minify inlay: format=both labels include '(-' and end with 'B)'" {
     defer teardown(h);
 
     try applySettings(h,
-        \\{"minifyMode":"insights","minifyInsights":{"format":"both"}}
+        \\{"lsp":{"minifyMode":"insights","minifyInsights":{"format":"both"}}}
     );
 
     const source: [:0]const u8 = "fn main_with_long_name() { let some_long_value = 1.0; }";
@@ -306,7 +306,7 @@ test "minify inlay: insights.functionSize=false hides function hints" {
     defer teardown(h);
 
     try applySettings(h,
-        \\{"minifyMode":"insights","minifyInsights":{"functionSize":false}}
+        \\{"lsp":{"minifyMode":"insights","minifyInsights":{"functionSize":false}}}
     );
 
     const source: [:0]const u8 =
@@ -330,7 +330,7 @@ test "minify inlay: insights.declSize=false hides non-function decl hints" {
     defer teardown(h);
 
     try applySettings(h,
-        \\{"minifyMode":"insights","minifyInsights":{"declSize":false}}
+        \\{"lsp":{"minifyMode":"insights","minifyInsights":{"declSize":false}}}
     );
 
     const source: [:0]const u8 =
@@ -358,7 +358,7 @@ test "minify inlay: insights.totalSize=false hides total hint" {
     defer teardown(h);
 
     try applySettings(h,
-        \\{"minifyMode":"insights","minifyInsights":{"totalSize":false}}
+        \\{"lsp":{"minifyMode":"insights","minifyInsights":{"totalSize":false}}}
     );
 
     const source: [:0]const u8 = "fn main() { let v = 1.0; }";
@@ -378,7 +378,7 @@ test "minify inlay: coexists with type-inference inlay hints" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     const source: [:0]const u8 = "fn f() { let x = 1.0; }";
     try h.openDocument("file:///a.wgsl", source, 1);
@@ -398,7 +398,7 @@ test "minify inlay: hints update after didChange" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     const before: [:0]const u8 = "fn main() { let v = 1.0; }";
     try h.openDocument("file:///a.wgsl", before, 1);
@@ -429,7 +429,7 @@ test "minify inlay: syntactically invalid document yields no minify hints" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     // Truncated body — parser bails before producing a full module.
     const source: [:0]const u8 = "fn broken( ";
@@ -452,7 +452,7 @@ test "minify inlay: KB rollover for >=1024 B values" {
     defer teardown(h);
 
     try applySettings(h,
-        \\{"minifyMode":"insights","minifyInsights":{"format":"bytes"}}
+        \\{"lsp":{"minifyMode":"insights","minifyInsights":{"format":"bytes"}}}
     );
 
     // Build a long chain of `let` decls so the minified output exceeds
@@ -486,7 +486,7 @@ test "minify inlay: tooltip mentions 'approximate'" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     const source: [:0]const u8 = "fn main() { let v = 1.0; }";
     try h.openDocument("file:///a.wgsl", source, 1);

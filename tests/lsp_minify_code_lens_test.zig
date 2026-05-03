@@ -38,7 +38,7 @@ fn parseJson(json: []const u8) !std.json.Parsed(std.json.Value) {
 fn applySettings(h: *Handler, json: []const u8) !void {
     var parsed = try parseJson(json);
     defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
+    h.applyClientConfig(parsed.value);
 }
 
 fn freeLenses(lenses: []const Handler.CodeLensInfo) void {
@@ -84,7 +84,7 @@ test "code lens: no total-size lens when mode=off (default)" {
 test "code lens: total-size lens at line 0 when mode=insights" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const lenses = try h.computeCodeLens("file:///a.wgsl");
@@ -103,7 +103,7 @@ test "code lens: total-size lens at line 0 when mode=insights" {
 test "code lens: total-size lens at line 0 when mode=strict" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const lenses = try h.computeCodeLens("file:///a.wgsl");
@@ -116,7 +116,7 @@ test "code lens: insights.totalSize=false suppresses total-size lens" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"insights","minifyInsights":{"totalSize":false}}
+        \\{"lsp":{"minifyMode":"insights","minifyInsights":{"totalSize":false}}}
     );
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
@@ -133,7 +133,7 @@ test "code lens: insights.totalSize=false suppresses total-size lens" {
 test "code lens: title shows 'NN B → NN B min → NN B gz'" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const lenses = try h.computeCodeLens("file:///a.wgsl");
@@ -155,7 +155,7 @@ test "code lens: title shows 'NN B → NN B min → NN B gz'" {
 test "code lens: click target is wgslender.showMinifiedOutput" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const lenses = try h.computeCodeLens("file:///a.wgsl");
@@ -169,7 +169,7 @@ test "code lens: click target is wgslender.showMinifiedOutput" {
 test "code lens: command argument is the document URI" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const lenses = try h.computeCodeLens("file:///a.wgsl");
@@ -227,7 +227,7 @@ test "runShowMinifiedOutput: byte_count matches lens title number" {
     // numbers client-side would be redundant — both must agree.
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const lenses = try h.computeCodeLens("file:///a.wgsl");
@@ -250,7 +250,7 @@ test "runShowMinifiedOutput: byte_count matches lens title number" {
 test "code lens: total-size lens updates after didChange" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", "fn a() {}\n", 1);
 
     const before = try h.computeCodeLens("file:///a.wgsl");
@@ -281,7 +281,7 @@ test "code lens: total-size path does not panic on syntactically invalid source"
     // emitted, allocator clean".
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///bad.wgsl", "fn broken(", 1);
 
     const lenses = try h.computeCodeLens("file:///bad.wgsl");
@@ -303,7 +303,7 @@ test "code lens: over-budget badge appears when total_min > budgetBytes" {
     defer teardown(h);
     // Tiny budget guarantees the multi-decl shader exceeds it.
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"enabled":true,"budgetBytes":1}}
+        \\{"lsp":{"minifyMode":"strict","minifyLints":{"enabled":true,"budgetBytes":1}}}
     );
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
@@ -319,7 +319,7 @@ test "code lens: no badge when total_min <= budgetBytes" {
     defer teardown(h);
     // 1 MiB ceiling — no realistic test fixture brushes against it.
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"enabled":true,"budgetBytes":1048576}}
+        \\{"lsp":{"minifyMode":"strict","minifyLints":{"enabled":true,"budgetBytes":1048576}}}
     );
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
@@ -336,7 +336,7 @@ test "code lens: no badge when budgetBytes unset (tri-state preserved)" {
     // Strict mode + lints on, no budget — over-budget logic must not
     // engage. This pins the ?u32 tri-state contract: missing != 0.
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"enabled":true}}
+        \\{"lsp":{"minifyMode":"strict","minifyLints":{"enabled":true}}}
     );
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
@@ -353,7 +353,7 @@ test "code lens: existing reference / workgroup lenses still emit alongside tota
     // expected positions while the new total-size lens sits at line 0.
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
     try h.openDocument("file:///a.wgsl", sample_shader, 1);
 
     const lenses = try h.computeCodeLens("file:///a.wgsl");

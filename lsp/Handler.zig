@@ -49,31 +49,15 @@ pub const MinifyCache = struct {
 
 gpa: std.mem.Allocator,
 documents: std.StringHashMapUnmanaged(Document),
-settings: Settings = .{},
-/// Client-provided minifier-mode layer (from `workspace/configuration` or
-/// `workspace/didChangeConfiguration`). Merged with the project-config
-/// layer and the per-document magic-comment layer in `effectiveMinify()`.
-workspace_minify: MinifySettings.Partial = .{},
 /// Project-config layer — seeded from `wgslender.json` via `Config.discover`
-/// before the first settings pull. Empty until the LSP entry point wires it.
-project_minify: MinifySettings.Partial = .{},
-/// Per-rule severity overrides keyed by diagnostic **code** (e.g. `"M0100"`)
-/// — the JSON shape from `minifyLints.severities` in the client's
-/// configuration payload. Translated into `Linter.Options.RuleOverride[]`
-/// at validate-time via `Linter.registry.byCode`. Lifetime is workspace-
-/// scoped: re-populated whenever `applyClientSettings` sees a fresh
-/// `severities` object, freed on `Handler.deinit`. Keys are dup'd into
-/// `gpa` because the parsed JSON they came from is freed by the caller
-/// after `applyClientSettings` returns.
-workspace_minify_severities: std.StringHashMapUnmanaged(WgslDiagnostic.Severity) = .empty,
-
-/// Client-provided LSP settings. Pulled from the client via
-/// `workspace/configuration` (section `"wgslender"`) or seeded from
-/// `InitializeParams.initializationOptions`. Defaults leave every feature on.
-pub const Settings = struct {
-    inlay_hints_enabled: bool = true,
-    diagnostics_enabled: bool = true,
-};
+/// in `discoverProjectConfig`. Empty until the LSP entry point calls it
+/// (native does; WASM has no fs).
+project_config: wgslender.Config = .{},
+/// Workspace-overrides layer — replaced wholesale on every
+/// `workspace/configuration` push via `applyClientConfig`. Schema is
+/// identical to `wgslender.json`'s, so the same key set works in both
+/// places (e.g. `lsp.minifyMode`, `rules.no-unused-vars`).
+workspace_config: wgslender.Config = .{},
 
 pub const Document = struct {
     source: []u8,
@@ -192,17 +176,8 @@ pub fn deinit(self: *Handler) void {
     }
     self.documents.deinit(self.gpa);
 
-    self.clearMinifySeverities();
-    self.workspace_minify_severities.deinit(self.gpa);
-}
-
-/// Free every key in `workspace_minify_severities` and clear the map.
-/// Used both by the workspace settings refresh path (when the user
-/// supplies a new severities object) and by `deinit`.
-fn clearMinifySeverities(self: *Handler) void {
-    var sit = self.workspace_minify_severities.iterator();
-    while (sit.next()) |kv| self.gpa.free(kv.key_ptr.*);
-    self.workspace_minify_severities.clearRetainingCapacity();
+    self.project_config.deinit(self.gpa);
+    self.workspace_config.deinit(self.gpa);
 }
 
 pub fn invalidateAnalysis(self: *Handler, uri: []const u8) void {
@@ -361,174 +336,37 @@ pub fn handleDidSave(self: *Handler, uri: []const u8) void {
 }
 
 /// Walk parents from `start_dir` (or cwd when `null`) for a `wgslender.json`
-/// and seed `self.project_minify` from its `lsp` section. Best-effort: any
-/// IO / parse failure leaves `self.project_minify` untouched. Native-only
-/// — the WASM entry has no filesystem and skips this call entirely.
-///
-/// `MinifySettings.Partial` is POD (no heap tail), so the value survives
-/// after the transient parse arena is freed.
+/// and load it into `self.project_config`. Best-effort: any IO / parse
+/// failure leaves `self.project_config` empty. Native-only — the WASM
+/// entry has no filesystem and skips this call entirely.
 pub fn discoverProjectConfig(self: *Handler, io: std.Io, start_dir: ?[]const u8) void {
-    var arena = std.heap.ArenaAllocator.init(self.gpa);
-    defer arena.deinit();
-    const cfg = wgslender.Config.discover(arena.allocator(), io, start_dir) orelse return;
-    self.project_minify = cfg.lsp_minify;
+    self.project_config.deinit(self.gpa);
+    self.project_config = wgslender.Config.discover(self.gpa, io, start_dir) orelse .{};
     // The resolved minify state may have shifted now that the project
     // layer is non-empty; drop any caches keyed against the old empty
-    // partial. Cheap because `discoverProjectConfig` runs once at startup
+    // config. Cheap because `discoverProjectConfig` runs once at startup
     // before any documents are open.
     self.invalidateAllMinifyCaches();
 }
 
-/// Merge a client-provided settings object into `self.settings`. Fields that
-/// are missing or of the wrong type are silently ignored — matching the
-/// permissive behavior of `Config.parseJson` for project config files.
-///
-/// Schema:
-///   {
-///     "inlayHints":             { "enabled": bool },
-///     "diagnostics":            { "enabled": bool },
-///     "minifyMode":             "off" | "insights" | "strict",
-///     "minifyInsights":         { "format": "delta"|"bytes"|"both",
-///                                 "functionSize": bool, "declSize": bool, "totalSize": bool },
-///     "minifyLints":            { "enabled": bool, "budgetBytes": int?, "severities": { code: severity } },
-///     "minifyEstimator":        { "useFullMinify": bool },
-///     "mangleExternalBindings": bool
-///   }
-pub fn applyClientSettings(self: *Handler, value: std.json.Value) void {
-    const obj = switch (value) {
-        .object => |o| o,
-        else => return,
-    };
-    // Any settings refresh can shift `effectiveMinifyFor` (mode toggle,
-    // mangle flag, severities map) — over-invalidating once per
-    // configuration pull is far cheaper than a per-field dirty check
-    // and matches the once-per-user-action cadence of this entry point.
+/// Replace `self.workspace_config` with the contents of a fresh client
+/// settings push. Schema is `wgslender.json`'s schema verbatim — set a
+/// key in the file and the same key works under
+/// `workspace/configuration` with identical semantics. Parse failures
+/// (malformed JSON tree, OOM mid-parse) leave the workspace config
+/// empty rather than half-applied — same permissive shape as
+/// `Config.parseJson` and the rest of the LSP settings paths.
+pub fn applyClientConfig(self: *Handler, value: std.json.Value) void {
+    // Any settings refresh can shift `effectiveMinifyFor` — invalidate
+    // once per configuration pull, far cheaper than a per-field dirty
+    // check.
     self.invalidateAllMinifyCaches();
-    if (obj.get("inlayHints")) |ih| switch (ih) {
-        .object => |o| if (o.get("enabled")) |b| switch (b) {
-            .bool => |v| self.settings.inlay_hints_enabled = v,
-            else => {},
-        },
-        else => {},
+    self.workspace_config.deinit(self.gpa);
+    self.workspace_config = .{};
+    wgslender.Config.applyJsonValue(self.gpa, value, &self.workspace_config) catch {
+        self.workspace_config.deinit(self.gpa);
+        self.workspace_config = .{};
     };
-    if (obj.get("diagnostics")) |d| switch (d) {
-        .object => |o| if (o.get("enabled")) |b| switch (b) {
-            .bool => |v| self.settings.diagnostics_enabled = v,
-            else => {},
-        },
-        else => {},
-    };
-    if (obj.get("minifyMode")) |v| switch (v) {
-        .string => |s| if (MinifySettings.Mode.fromString(s)) |m| {
-            self.workspace_minify.mode = m;
-        },
-        else => {},
-    };
-    if (obj.get("minifyInsights")) |v| switch (v) {
-        .object => |o| {
-            if (o.get("format")) |f| switch (f) {
-                .string => |s| if (MinifySettings.InsightsFormat.fromString(s)) |fmt| {
-                    self.workspace_minify.format = fmt;
-                },
-                else => {},
-            };
-            if (o.get("functionSize")) |b| switch (b) {
-                .bool => |x| self.workspace_minify.function_size = x,
-                else => {},
-            };
-            if (o.get("declSize")) |b| switch (b) {
-                .bool => |x| self.workspace_minify.decl_size = x,
-                else => {},
-            };
-            if (o.get("totalSize")) |b| switch (b) {
-                .bool => |x| self.workspace_minify.total_size = x,
-                else => {},
-            };
-        },
-        else => {},
-    };
-    if (obj.get("minifyLints")) |v| switch (v) {
-        .object => |o| {
-            if (o.get("enabled")) |b| switch (b) {
-                .bool => |x| self.workspace_minify.lints_enabled = x,
-                else => {},
-            };
-            if (o.get("severities")) |sv| switch (sv) {
-                .object => |sm| self.applyMinifySeverities(sm) catch |err| switch (err) {
-                    // OOM during settings parse: leave previous map intact
-                    // rather than half-applying a partial set. Mirrors the
-                    // permissive behaviour for malformed individual entries.
-                    error.OutOfMemory => {},
-                },
-                else => {},
-            };
-            // `budgetBytes` (M0500 size budget). Negative values and
-            // non-integers are silently ignored — same permissive shape
-            // as the rest of this parser. `null`/missing leaves the
-            // previous value in place; clients reset by sending an
-            // explicit `null` or by re-issuing the whole settings block
-            // without the key (workspace replays clear all fields).
-            if (o.get("budgetBytes")) |bv| switch (bv) {
-                .integer => |i| {
-                    self.workspace_minify.budget_bytes = if (i >= 0) @intCast(i) else null;
-                },
-                .null => self.workspace_minify.budget_bytes = null,
-                else => {},
-            };
-        },
-        else => {},
-    };
-    if (obj.get("mangleExternalBindings")) |v| switch (v) {
-        .bool => |x| self.workspace_minify.mangle_external_bindings = x,
-        else => {},
-    };
-    // `wgslender.minifyEstimator.useFullMinify` (Phase 8): flips the
-    // estimator from the cheap length-only pass to the production
-    // MinifyRenamer + gzip-of-output pass for ground-truth byte/gz
-    // counts. Wrong type is silently ignored, matching the rest of
-    // this parser.
-    if (obj.get("minifyEstimator")) |v| switch (v) {
-        .object => |o| {
-            if (o.get("useFullMinify")) |b| switch (b) {
-                .bool => |x| self.workspace_minify.use_full_minify = x,
-                else => {},
-            };
-        },
-        else => {},
-    };
-}
-
-/// Replace the workspace-scoped severity map with the contents of a
-/// fresh `severities` object from `minifyLints`. Keys are dup'd because
-/// the source JSON is freed by the caller. Invalid severity strings and
-/// non-string values are silently skipped, matching the permissive
-/// behaviour of the other settings parsers.
-fn applyMinifySeverities(self: *Handler, sm: std.json.ObjectMap) !void {
-    self.clearMinifySeverities();
-    var it = sm.iterator();
-    while (it.next()) |kv| {
-        const sev_str = switch (kv.value_ptr.*) {
-            .string => |s| s,
-            else => continue,
-        };
-        const sev = parseMinifySeverity(sev_str) orelse continue;
-        const key_dup = try self.gpa.dupe(u8, kv.key_ptr.*);
-        errdefer self.gpa.free(key_dup);
-        try self.workspace_minify_severities.put(self.gpa, key_dup, sev);
-    }
-}
-
-/// String → Diagnostic.Severity mapping for the `severities` JSON map.
-/// Accepts `off` (= disabled), `hint`, `info`, `warn` / `warning`, and
-/// `error`. Returns null for anything else so the caller can drop the
-/// entry.
-fn parseMinifySeverity(s: []const u8) ?WgslDiagnostic.Severity {
-    if (std.mem.eql(u8, s, "off")) return .disabled;
-    if (std.mem.eql(u8, s, "hint")) return .hint;
-    if (std.mem.eql(u8, s, "info")) return .info;
-    if (std.mem.eql(u8, s, "warn") or std.mem.eql(u8, s, "warning")) return .warning;
-    if (std.mem.eql(u8, s, "error")) return .@"error";
-    return null;
 }
 
 /// Resolve the effective minifier-mode state for callers without a
@@ -536,7 +374,7 @@ fn parseMinifySeverity(s: []const u8) ?WgslDiagnostic.Severity {
 /// The magic-comment layer is empty here — feature paths that operate on
 /// a specific document must use `effectiveMinifyFor(uri)` instead.
 pub fn effectiveMinify(self: *const Handler) MinifySettings.Effective {
-    return MinifySettings.resolve(self.project_minify, self.workspace_minify, .{});
+    return MinifySettings.resolve(self.project_config.lsp_minify, self.workspace_config.lsp_minify, .{});
 }
 
 /// Resolve the effective minifier-mode state for a specific document.
@@ -548,7 +386,37 @@ pub fn effectiveMinifyFor(self: *const Handler, uri: []const u8) MinifySettings.
         doc.magic_minify
     else
         .{};
-    return MinifySettings.resolve(self.project_minify, self.workspace_minify, magic);
+    return MinifySettings.resolve(self.project_config.lsp_minify, self.workspace_config.lsp_minify, magic);
+}
+
+/// Resolve `lsp.inlayHints.enabled`. Defaults to `true` when neither
+/// layer set it.
+pub fn inlayHintsEnabled(self: *const Handler) bool {
+    return self.workspace_config.lsp_inlay_hints_enabled orelse
+        self.project_config.lsp_inlay_hints_enabled orelse
+        true;
+}
+
+/// Resolve `lsp.diagnostics.enabled`. Defaults to `true` when neither
+/// layer set it.
+pub fn diagnosticsEnabled(self: *const Handler) bool {
+    return self.workspace_config.lsp_diagnostics_enabled orelse
+        self.project_config.lsp_diagnostics_enabled orelse
+        true;
+}
+
+/// Append the merged `rules` overrides from project + workspace into
+/// `into`. Workspace entries win over project entries on duplicate id.
+/// The caller (today: `lsp/handler/diagnostics.zig`) layers M0100 /
+/// M0500 option gates on top before passing to the Linter.
+pub fn appendLintRuleOverrides(
+    self: *const Handler,
+    arena: std.mem.Allocator,
+    into: *std.StringHashMapUnmanaged(WgslDiagnostic.Severity),
+) error{OutOfMemory}!void {
+    inline for (.{ &self.project_config, &self.workspace_config }) |cfg| {
+        for (cfg.lint_rules) |r| try into.put(arena, r.id, r.severity);
+    }
 }
 
 // =========================================================================

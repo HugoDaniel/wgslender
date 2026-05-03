@@ -412,7 +412,7 @@ fn handleInitialize(root: std.json.ObjectMap) void {
                 else => {},
             };
     if (objGet(params, "initializationOptions")) |opts|
-        handler.applyClientSettings(opts.*);
+        handler.applyClientConfig(opts.*);
 }
 
 fn handleResponse(root: std.json.ObjectMap) void {
@@ -430,7 +430,7 @@ fn handleResponse(root: std.json.ObjectMap) void {
         else => return,
     };
     if (arr.items.len == 0) return;
-    handler.applyClientSettings(arr.items[0]);
+    handler.applyClientConfig(arr.items[0]);
     republishAllDocuments();
 }
 
@@ -451,7 +451,7 @@ fn republishAllDocuments() void {
     var it = handler.documents.iterator();
     while (it.next()) |entry| {
         const uri = entry.key_ptr.*;
-        if (handler.settings.diagnostics_enabled) {
+        if (handler.diagnosticsEnabled()) {
             emitDiagnostics(uri);
         } else {
             var buf: std.ArrayListUnmanaged(u8) = .empty;
@@ -1176,7 +1176,7 @@ fn emitDiagnosticsCheap(uri: []const u8) void {
 }
 
 fn emitDiagnosticsImpl(uri: []const u8, include_minify_lints: bool) void {
-    if (!handler.settings.diagnostics_enabled) return;
+    if (!handler.diagnosticsEnabled()) return;
     const diags = if (include_minify_lints)
         handler.validateDocumentFull(uri) catch return
     else
@@ -1203,7 +1203,7 @@ fn handlePullDiagnostic(root: std.json.ObjectMap, id: ?std.json.Value) void {
     const td = objGet(params, "textDocument") orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
     const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
 
-    if (!handler.settings.diagnostics_enabled) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
+    if (!handler.diagnosticsEnabled()) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
     if (handler.getDocumentSource(uri) == null) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
 
     var id_buf: [10]u8 = undefined;

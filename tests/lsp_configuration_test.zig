@@ -1,9 +1,11 @@
-//! Tests for `Handler.applyClientSettings` + the settings plumbing used by
+//! Tests for `Handler.applyClientConfig` + the settings plumbing used by
 //! `workspace/configuration` and `workspace/didChangeConfiguration`.
 //!
-//! Parsing uses the same permissive, merge-semantic approach as
-//! `src/Config.zig`: wrong types are silently ignored, unset fields stay
-//! at their prior value. This mirrors behaviour editors expect.
+//! The wire schema is identical to `wgslender.json`: the LSP-only feature
+//! toggles live under the `lsp.*` namespace. Parsing is permissive —
+//! wrong types are silently ignored, unset fields stay at their prior
+//! value (workspace_config is replaced wholesale on every push, so the
+//! "prior value" comes from the project layer, not the previous push).
 
 const std = @import("std");
 const Handler = @import("Handler");
@@ -31,87 +33,89 @@ fn parseJson(json: []const u8) !std.json.Parsed(std.json.Value) {
 test "settings: defaults enable every feature" {
     const handler = try setup();
     defer teardown(handler);
-    try std.testing.expect(handler.settings.inlay_hints_enabled);
-    try std.testing.expect(handler.settings.diagnostics_enabled);
+    try std.testing.expect(handler.inlayHintsEnabled());
+    try std.testing.expect(handler.diagnosticsEnabled());
 }
 
-test "applyClientSettings: disables inlay hints only" {
+test "applyClientConfig: disables inlay hints only" {
     const handler = try setup();
     defer teardown(handler);
 
-    var parsed = try parseJson("{\"inlayHints\":{\"enabled\":false}}");
+    var parsed = try parseJson("{\"lsp\":{\"inlayHints\":{\"enabled\":false}}}");
     defer parsed.deinit();
-    handler.applyClientSettings(parsed.value);
+    handler.applyClientConfig(parsed.value);
 
-    try std.testing.expect(!handler.settings.inlay_hints_enabled);
-    try std.testing.expect(handler.settings.diagnostics_enabled);
+    try std.testing.expect(!handler.inlayHintsEnabled());
+    try std.testing.expect(handler.diagnosticsEnabled());
 }
 
-test "applyClientSettings: disables diagnostics only" {
+test "applyClientConfig: disables diagnostics only" {
     const handler = try setup();
     defer teardown(handler);
 
-    var parsed = try parseJson("{\"diagnostics\":{\"enabled\":false}}");
+    var parsed = try parseJson("{\"lsp\":{\"diagnostics\":{\"enabled\":false}}}");
     defer parsed.deinit();
-    handler.applyClientSettings(parsed.value);
+    handler.applyClientConfig(parsed.value);
 
-    try std.testing.expect(handler.settings.inlay_hints_enabled);
-    try std.testing.expect(!handler.settings.diagnostics_enabled);
+    try std.testing.expect(handler.inlayHintsEnabled());
+    try std.testing.expect(!handler.diagnosticsEnabled());
 }
 
-test "applyClientSettings: successive calls merge" {
+test "applyClientConfig: each push replaces the workspace overlay" {
     const handler = try setup();
     defer teardown(handler);
 
-    var first = try parseJson("{\"inlayHints\":{\"enabled\":false}}");
+    var first = try parseJson("{\"lsp\":{\"inlayHints\":{\"enabled\":false}}}");
     defer first.deinit();
-    handler.applyClientSettings(first.value);
+    handler.applyClientConfig(first.value);
 
-    var second = try parseJson("{\"diagnostics\":{\"enabled\":false}}");
+    var second = try parseJson("{\"lsp\":{\"diagnostics\":{\"enabled\":false}}}");
     defer second.deinit();
-    handler.applyClientSettings(second.value);
+    handler.applyClientConfig(second.value);
 
-    try std.testing.expect(!handler.settings.inlay_hints_enabled);
-    try std.testing.expect(!handler.settings.diagnostics_enabled);
+    // The second push replaced the workspace layer wholesale — `inlayHints`
+    // is no longer set there, so it falls back to the (default) `true`.
+    try std.testing.expect(handler.inlayHintsEnabled());
+    try std.testing.expect(!handler.diagnosticsEnabled());
 }
 
-test "applyClientSettings: ill-typed fields leave settings unchanged" {
+test "applyClientConfig: ill-typed fields leave settings unchanged" {
     const handler = try setup();
     defer teardown(handler);
 
-    // enabled is a string — should be ignored.
-    var parsed = try parseJson("{\"inlayHints\":{\"enabled\":\"no\"},\"diagnostics\":{\"enabled\":42}}");
+    // enabled is a string / int — should be ignored.
+    var parsed = try parseJson("{\"lsp\":{\"inlayHints\":{\"enabled\":\"no\"},\"diagnostics\":{\"enabled\":42}}}");
     defer parsed.deinit();
-    handler.applyClientSettings(parsed.value);
+    handler.applyClientConfig(parsed.value);
 
-    try std.testing.expect(handler.settings.inlay_hints_enabled);
-    try std.testing.expect(handler.settings.diagnostics_enabled);
+    try std.testing.expect(handler.inlayHintsEnabled());
+    try std.testing.expect(handler.diagnosticsEnabled());
 }
 
-test "applyClientSettings: non-object root ignored" {
+test "applyClientConfig: non-object root ignored" {
     const handler = try setup();
     defer teardown(handler);
 
     // JSON array — not an object.
-    var parsed = try parseJson("[{\"inlayHints\":{\"enabled\":false}}]");
+    var parsed = try parseJson("[{\"lsp\":{\"inlayHints\":{\"enabled\":false}}}]");
     defer parsed.deinit();
-    handler.applyClientSettings(parsed.value);
+    handler.applyClientConfig(parsed.value);
 
-    try std.testing.expect(handler.settings.inlay_hints_enabled);
-    try std.testing.expect(handler.settings.diagnostics_enabled);
+    try std.testing.expect(handler.inlayHintsEnabled());
+    try std.testing.expect(handler.diagnosticsEnabled());
 }
 
-test "applyClientSettings: nested non-object containers ignored" {
+test "applyClientConfig: nested non-object containers ignored" {
     const handler = try setup();
     defer teardown(handler);
 
-    // inlayHints is a string rather than an object.
-    var parsed = try parseJson("{\"inlayHints\":\"off\",\"diagnostics\":null}");
+    // lsp.inlayHints is a string rather than an object.
+    var parsed = try parseJson("{\"lsp\":{\"inlayHints\":\"off\",\"diagnostics\":null}}");
     defer parsed.deinit();
-    handler.applyClientSettings(parsed.value);
+    handler.applyClientConfig(parsed.value);
 
-    try std.testing.expect(handler.settings.inlay_hints_enabled);
-    try std.testing.expect(handler.settings.diagnostics_enabled);
+    try std.testing.expect(handler.inlayHintsEnabled());
+    try std.testing.expect(handler.diagnosticsEnabled());
 }
 
 test "settings wiring: disabled inlay hints short-circuits computeInlayHints" {
@@ -129,7 +133,7 @@ test "settings wiring: disabled inlay hints short-circuits computeInlayHints" {
     try std.testing.expect(with_hints.len > 0);
 
     // Now disable and re-query — must return an empty slice.
-    handler.settings.inlay_hints_enabled = false;
+    handler.workspace_config.lsp_inlay_hints_enabled = false;
     const without_hints = try handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
         .end = .{ .line = 0, .character = @intCast(source.len) },

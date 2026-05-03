@@ -37,7 +37,7 @@ fn parseJson(json: []const u8) !std.json.Parsed(std.json.Value) {
 fn applySettings(h: *Handler, json: []const u8) !void {
     var parsed = try parseJson(json);
     defer parsed.deinit();
-    h.applyClientSettings(parsed.value);
+    h.applyClientConfig(parsed.value);
 }
 
 fn freeDiags(diags: []Handler.LspDiagnostic) void {
@@ -89,7 +89,7 @@ test "lsp minify rules: no M-diagnostics when mode=off (default)" {
 test "lsp minify rules: no M-diagnostics when mode=insights" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     try h.openDocument("file:///a.wgsl", sample_with_minify_issues, 1);
     const diags = try h.validateDocumentFull("file:///a.wgsl");
@@ -104,7 +104,7 @@ test "lsp minify rules: no M-diagnostics when mode=insights" {
 test "lsp minify rules: M-diagnostics surface when mode=strict" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
 
     try h.openDocument("file:///a.wgsl", sample_with_minify_issues, 1);
     const diags = try h.validateDocumentFull("file:///a.wgsl");
@@ -127,7 +127,7 @@ test "lsp minify rules: M-diagnostics surface when mode=strict" {
 test "lsp minify rules: M-diagnostic severity converts to LSP hint" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
 
     try h.openDocument("file:///a.wgsl", "const UNUSED_K: f32 = 3.14;\n", 1);
     const diags = try h.validateDocumentFull("file:///a.wgsl");
@@ -188,7 +188,7 @@ test "lsp minify rules: magic comment minify-insights still suppresses M-diagnos
 test "lsp minify rules: magic-strict beats workspace=insights" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     const src: [:0]const u8 =
         \\// wgslender-minify-strict
@@ -211,7 +211,7 @@ test "lsp minify rules: magic-strict beats workspace=insights" {
 test "lsp minify rules: wgslender-disable-next-line silences M0201" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
 
     const src: [:0]const u8 =
         \\// wgslender-disable-next-line minify/unused-const
@@ -230,7 +230,7 @@ test "lsp minify rules: wgslender-disable-next-line silences M0201" {
 test "lsp minify rules: wgslender-disable file-scope silences M0100" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
 
     const src: [:0]const u8 =
         \\// wgslender-disable minify/external-binding-blocks-rename
@@ -253,7 +253,7 @@ test "lsp minify rules: wgslender-disable file-scope silences M0100" {
 test "lsp minify rules: validator errors still flow through alongside M-diagnostics" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
 
     // Real validator error (undefined identifier) plus an unused const.
     const src: [:0]const u8 =
@@ -285,7 +285,7 @@ test "lsp minify rules: validator errors still flow through alongside M-diagnost
 test "lsp minify rules: mangleExternalBindings=true silences M0100 in strict" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\",\"mangleExternalBindings\":true}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\",\"mangleExternalBindings\":true}}");
 
     const src: [:0]const u8 =
         \\@group(0) @binding(0) var<uniform> uniforms: f32;
@@ -304,7 +304,7 @@ test "lsp minify rules: mangleExternalBindings=true silences M0100 in strict" {
 test "lsp minify rules: mangleExternalBindings=false (default) keeps M0100 firing" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
 
     const src: [:0]const u8 =
         \\@group(0) @binding(0) var<uniform> uniforms: f32;
@@ -328,7 +328,7 @@ test "lsp minify rules: severities map flips M0201 to warning" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0201":"warning"}}}
+        \\{"lsp":{"minifyMode":"strict"},"rules":{"minify/unused-const":"warning"}}
     );
 
     try h.openDocument("file:///a.wgsl", "const UNUSED_K: f32 = 3.14;\n", 1);
@@ -351,7 +351,7 @@ test "lsp minify rules: severities map M0100=error escalates" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0100":"error"}}}
+        \\{"lsp":{"minifyMode":"strict"},"rules":{"minify/external-binding-blocks-rename":"error"}}
     );
 
     const src: [:0]const u8 =
@@ -378,7 +378,7 @@ test "lsp minify rules: severities map M0201=off silences" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0201":"off"}}}
+        \\{"lsp":{"minifyMode":"strict"},"rules":{"minify/unused-const":"off"}}
     );
 
     try h.openDocument("file:///a.wgsl", "const UNUSED_K: f32 = 3.14;\n", 1);
@@ -395,7 +395,7 @@ test "lsp minify rules: unknown severities key silently ignored" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"severities":{"M9999":"warning","M0201":"warning"}}}
+        \\{"lsp":{"minifyMode":"strict"},"rules":{"minify/does-not-exist":"warning","minify/unused-const":"warning"}}
     );
 
     try h.openDocument("file:///a.wgsl", "const UNUSED_K: f32 = 3.14;\n", 1);
@@ -417,7 +417,7 @@ test "lsp minify rules: severities + mangleExternalBindings compose (gate beats 
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","mangleExternalBindings":true,"minifyLints":{"severities":{"M0100":"error"}}}
+        \\{"lsp":{"minifyMode":"strict","mangleExternalBindings":true},"rules":{"minify/external-binding-blocks-rename":"error"}}
     );
 
     const src: [:0]const u8 =
@@ -438,7 +438,7 @@ test "lsp minify rules: mangleExternalBindings=true does not silence other M-cod
     // The gate is M0100-only — flipping it should leave M0201 / M0202 alone.
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\",\"mangleExternalBindings\":true}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\",\"mangleExternalBindings\":true}}");
 
     const src: [:0]const u8 =
         \\const UNUSED_K: f32 = 3.14;
@@ -488,7 +488,7 @@ const sample_with_many_decls: [:0]const u8 =
 test "lsp minify rules: mode=insights does not fire M0500" {
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"insights\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
     const diags = try h.validateDocumentFull("file:///a.wgsl");
@@ -507,7 +507,7 @@ test "lsp minify rules: mode=strict alone does not fire M0500 (deferred budgetBy
     // diagnostic the user has no UI to configure.
     const h = try setup();
     defer teardown(h);
-    try applySettings(h, "{\"minifyMode\":\"strict\"}");
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"strict\"}}");
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
     const diags = try h.validateDocumentFull("file:///a.wgsl");
@@ -527,7 +527,7 @@ test "lsp minify rules: severities map can address M0500 without crashing" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0500":"warning"}}}
+        \\{"lsp":{"minifyMode":"strict"},"rules":{"minify/shader-exceeds-size-budget":"warning"}}
     );
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
@@ -544,7 +544,7 @@ test "lsp minify rules: severities M0500=off is a no-op (already silent)" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"severities":{"M0500":"off"}}}
+        \\{"lsp":{"minifyMode":"strict"},"rules":{"minify/shader-exceeds-size-budget":"off"}}
     );
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
@@ -575,7 +575,7 @@ test "lsp minify rules: minifyLints.budgetBytes fires M0500 when shader exceeds 
     // implementation-detail; comparing against `1` keeps the test
     // robust to estimator tweaks while still pinning "fires when over".
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":1}}
+        \\{"lsp":{"minifyMode":"strict","minifyLints":{"budgetBytes":1}}}
     );
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
@@ -593,7 +593,7 @@ test "lsp minify rules: minifyLints.budgetBytes silent when under budget" {
     defer teardown(h);
     // 1 MiB ceiling — no realistic test fixture will brush against it.
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":1048576}}
+        \\{"lsp":{"minifyMode":"strict","minifyLints":{"budgetBytes":1048576}}}
     );
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
@@ -613,7 +613,7 @@ test "lsp minify rules: minifyLints.budgetBytes still silent at mode=insights" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"insights","minifyLints":{"budgetBytes":1}}
+        \\{"lsp":{"minifyMode":"insights","minifyLints":{"budgetBytes":1}}}
     );
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
@@ -630,7 +630,7 @@ test "lsp minify rules: minifyLints.budgetBytes negative value silently ignored"
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":-1}}
+        \\{"lsp":{"minifyMode":"strict","minifyLints":{"budgetBytes":-1}}}
     );
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
@@ -647,7 +647,7 @@ test "lsp minify rules: minifyLints.budgetBytes wrong type silently ignored" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":"1024"}}
+        \\{"lsp":{"minifyMode":"strict","minifyLints":{"budgetBytes":"1024"}}}
     );
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
@@ -668,7 +668,7 @@ test "lsp minify rules: minifyLints.budgetBytes composes with severities map" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h,
-        \\{"minifyMode":"strict","minifyLints":{"budgetBytes":1,"severities":{"M0500":"warning"}}}
+        \\{"lsp":{"minifyMode":"strict","minifyLints":{"budgetBytes":1}},"rules":{"minify/shader-exceeds-size-budget":"warning"}}
     );
 
     try h.openDocument("file:///a.wgsl", sample_with_many_decls, 1);
