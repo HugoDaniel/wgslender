@@ -13,6 +13,8 @@ const WgslDiagnostic = wgslender.Diagnostic;
 const MinifySettings = wgslender.MinifySettings;
 const MinifyEstimator = wgslender.MinifyEstimator;
 const Ast = wgslender.Ast;
+const Edits = wgslender.Edits;
+const Lexer = wgslender.Lexer;
 
 const Handler = @This();
 
@@ -1058,134 +1060,15 @@ pub const computeDefinition = Definition.computeDefinition;
 pub const computeTypeDefinition = Definition.computeTypeDefinition;
 
 // =========================================================================
-// LSP Feature: Find All References
+// LSP Feature: References, Document Highlight, Rename — see lsp/handler/references_rename.zig
 // =========================================================================
 
-const Edits = wgslender.Edits;
-
-pub fn computeReferences(self: *Handler, uri: []const u8, position: Position, include_declaration: bool) !?[]Range {
-    const doc = self.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
-    const analysis = try self.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-
-    const node = findNodeAtOffset(module, offset);
-    const target: Ast.SymbolIndex = switch (node) {
-        .ident => |id| id.ref,
-        .decl_name => |dn| dn.sym_idx,
-        .type_ref => |tr| tr.ref,
-        else => return null,
-    };
-    if (!target.isValid()) return null;
-
-    const refs = try Edits.findReferences(self.gpa, module, target, include_declaration);
-    defer self.gpa.free(refs);
-
-    var ranges: std.ArrayListUnmanaged(Range) = .empty;
-    defer ranges.deinit(self.gpa);
-    try ranges.ensureTotalCapacity(self.gpa, refs.len);
-    for (refs) |r| {
-        if (offsetRangeToLspRange(source, r.start, r.end)) |range| {
-            ranges.appendAssumeCapacity(range);
-        }
-    }
-    return try self.gpa.dupe(Range, ranges.items);
-}
-
-// =========================================================================
-// LSP Feature: Document Highlight
-// =========================================================================
-
-pub fn computeDocumentHighlight(self: *Handler, uri: []const u8, position: Position) !?[]DocumentHighlight {
-    const doc = self.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
-    const analysis = try self.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-
-    const node = findNodeAtOffset(module, offset);
-    const target: Ast.SymbolIndex = switch (node) {
-        .ident => |id| id.ref,
-        .decl_name => |dn| dn.sym_idx,
-        .type_ref => |tr| tr.ref,
-        else => return null,
-    };
-    if (!target.isValid()) return null;
-
-    const refs = try Edits.findReferences(self.gpa, module, target, true);
-    defer self.gpa.free(refs);
-
-    var highlights: std.ArrayListUnmanaged(DocumentHighlight) = .empty;
-    defer highlights.deinit(self.gpa);
-    try highlights.ensureTotalCapacity(self.gpa, refs.len);
-    for (refs) |r| {
-        if (offsetRangeToLspRange(source, r.start, r.end)) |range| {
-            highlights.appendAssumeCapacity(.{
-                .range = range,
-                .kind = if (r.is_write) .write else .read,
-            });
-        }
-    }
-    return try self.gpa.dupe(DocumentHighlight, highlights.items);
-}
-
-// =========================================================================
-// LSP Feature: Rename Symbol
-// =========================================================================
-
-const Lexer = wgslender.Lexer;
-
-pub fn prepareRename(self: *Handler, uri: []const u8, position: Position) !?Range {
-    const doc = self.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(lspPositionToOffset(source, position) orelse return null);
-    const analysis = try self.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-
-    const node = findNodeAtOffset(module, offset);
-    switch (node) {
-        .ident => |id| {
-            if (!id.ref.isValid()) return null;
-            const sym = module.symbols.items[id.ref.index()];
-            if (sym.flags.is_builtin) return null;
-            return offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len)));
-        },
-        .decl_name => |dn| {
-            if (!dn.sym_idx.isValid()) return null;
-            const sym = module.symbols.items[dn.sym_idx.index()];
-            if (sym.flags.is_builtin) return null;
-            return offsetRangeToLspRange(source, dn.loc, dn.loc + @as(u32, @intCast(sym.original_name.len)));
-        },
-        .type_ref => |tr| {
-            if (!tr.ref.isValid()) return null;
-            const sym = module.symbols.items[tr.ref.index()];
-            if (sym.flags.is_builtin) return null;
-            return offsetRangeToLspRange(source, tr.loc, tr.loc + @as(u32, @intCast(tr.name.len)));
-        },
-        else => return null,
-    }
-}
-
-pub const isValidWgslIdentifier = Edits.isValidWgslIdentifier;
-
-pub fn computeRename(self: *Handler, uri: []const u8, position: Position, new_name: []const u8) !?[]LspTextEdit {
-    if (!isValidWgslIdentifier(new_name)) return null;
-
-    const refs = (try self.computeReferences(uri, position, true)) orelse return null;
-    defer self.gpa.free(refs);
-
-    if (refs.len == 0) return null;
-
-    const edits = try self.gpa.alloc(LspTextEdit, refs.len);
-    for (refs, 0..) |ref_range, i| {
-        edits[i] = .{
-            .range = ref_range,
-            .new_text = new_name,
-        };
-    }
-    return edits;
-}
+pub const ReferencesRename = @import("handler/references_rename.zig");
+pub const computeReferences = ReferencesRename.computeReferences;
+pub const computeDocumentHighlight = ReferencesRename.computeDocumentHighlight;
+pub const prepareRename = ReferencesRename.prepareRename;
+pub const computeRename = ReferencesRename.computeRename;
+pub const isValidWgslIdentifier = ReferencesRename.isValidWgslIdentifier;
 
 // =========================================================================
 // LSP Feature: Completion
