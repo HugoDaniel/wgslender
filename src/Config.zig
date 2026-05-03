@@ -15,6 +15,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Minifier = @import("Minifier.zig");
 const MinifySettings = @import("MinifySettings.zig");
+const Linter = @import("lint/Linter.zig");
+const Diagnostic = @import("Diagnostic.zig");
 
 const Config = @This();
 
@@ -29,6 +31,19 @@ sort_declarations: ?bool = null,
 scope_local_rename: ?bool = null,
 source_map: ?bool = null,
 source_map_sources: ?bool = null,
+/// Lint shareable-config inheritance list (`extends` JSON key). Empty
+/// means "no inherited packs". Parsed only as id strings; unknown packs
+/// are silently ignored by the Linter at run time.
+lint_extends: []const []const u8 = &.{},
+/// Per-rule severity overrides (`rules` JSON key). Each entry maps a
+/// public rule id to a severity. Per-rule options objects (e.g.
+/// `{"max":4}` for max-params) are not yet plumbed through this path —
+/// only severity is captured, matching the existing FFI surface in
+/// `api_json.parseLintConfig`.
+lint_rules: []const Linter.Options.RuleOverride = &.{},
+/// `reportUnusedDisableDirectives` JSON key. `null` means unset →
+/// caller falls back to its own default (CLI: false; LSP/FFI: false).
+report_unused_disable_directives: ?bool = null,
 /// LSP-only minifier-mode settings. Project-config layer of the resolver
 /// in `MinifySettings.resolve`. Keys live under a nested `"lsp"` object
 /// so they don't collide with the flat `minifyWhitespace` / etc. fields
@@ -101,11 +116,53 @@ pub fn parseJson(allocator: Allocator, content: []const u8) !Config {
         if (v == .bool) config.source_map_sources = v.bool;
     }
 
+    if (root.object.get("extends")) |v| {
+        if (v == .array) {
+            var list: std.ArrayListUnmanaged([]const u8) = .empty;
+            for (v.array.items) |item| {
+                if (item == .string) {
+                    try list.append(allocator, try allocator.dupe(u8, item.string));
+                }
+            }
+            config.lint_extends = list.items;
+        }
+    }
+    if (root.object.get("rules")) |v| {
+        if (v == .object) {
+            var list: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
+            var it = v.object.iterator();
+            while (it.next()) |kv| {
+                const sev = parseSeverity(kv.value_ptr.*) orelse continue;
+                const id = try allocator.dupe(u8, kv.key_ptr.*);
+                try list.append(allocator, .{ .id = id, .severity = sev });
+            }
+            config.lint_rules = list.items;
+        }
+    }
+    if (root.object.get("reportUnusedDisableDirectives")) |v| {
+        if (v == .bool) config.report_unused_disable_directives = v.bool;
+    }
+
     if (root.object.get("lsp")) |lsp| {
         if (lsp == .object) parseLspSection(&config.lsp_minify, lsp.object);
     }
 
     return config;
+}
+
+/// Parse an ESLint-style severity value: `"off"`, `"warn"` / `"warning"`,
+/// `"error"`, or a `[severity, options]` array (only the first element is
+/// inspected — options are dropped, matching `api_json.parseLintConfig`).
+fn parseSeverity(value: std.json.Value) ?Diagnostic.Severity {
+    const s: []const u8 = switch (value) {
+        .string => |str| str,
+        .array => |arr| if (arr.items.len > 0 and arr.items[0] == .string) arr.items[0].string else return null,
+        else => return null,
+    };
+    if (std.mem.eql(u8, s, "off")) return .disabled;
+    if (std.mem.eql(u8, s, "warn") or std.mem.eql(u8, s, "warning")) return .warning;
+    if (std.mem.eql(u8, s, "error")) return .@"error";
+    return null;
 }
 
 fn parseLspSection(out: *MinifySettings.Partial, lsp: std.json.ObjectMap) void {
@@ -408,4 +465,57 @@ test "config: parseJson source map fields" {
     const cfg = try parseJson(std.testing.allocator, content);
     try std.testing.expectEqual(@as(?bool, true), cfg.source_map);
     try std.testing.expectEqual(@as(?bool, false), cfg.source_map_sources);
+}
+
+test "config: parseJson lint extends + rules + reportUnusedDisableDirectives" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const content =
+        \\{
+        \\  "extends": ["@wgslender/recommended", "@wgslender/strict"],
+        \\  "rules": {
+        \\    "no-unused-vars": "error",
+        \\    "no-magic-numbers": "off",
+        \\    "max-params": ["warn", { "max": 4 }],
+        \\    "bogus-not-a-severity": "loud"
+        \\  },
+        \\  "reportUnusedDisableDirectives": true
+        \\}
+    ;
+    const cfg = try parseJson(alloc, content);
+
+    try std.testing.expectEqual(@as(usize, 2), cfg.lint_extends.len);
+    try std.testing.expectEqualStrings("@wgslender/recommended", cfg.lint_extends[0]);
+    try std.testing.expectEqualStrings("@wgslender/strict", cfg.lint_extends[1]);
+
+    // Three valid entries; the bogus severity drops out.
+    try std.testing.expectEqual(@as(usize, 3), cfg.lint_rules.len);
+
+    // Severities must round-trip correctly.
+    var saw_unused = false;
+    var saw_magic = false;
+    var saw_params = false;
+    for (cfg.lint_rules) |r| {
+        if (std.mem.eql(u8, r.id, "no-unused-vars")) {
+            try std.testing.expectEqual(Diagnostic.Severity.@"error", r.severity);
+            saw_unused = true;
+        } else if (std.mem.eql(u8, r.id, "no-magic-numbers")) {
+            try std.testing.expectEqual(Diagnostic.Severity.disabled, r.severity);
+            saw_magic = true;
+        } else if (std.mem.eql(u8, r.id, "max-params")) {
+            try std.testing.expectEqual(Diagnostic.Severity.warning, r.severity);
+            saw_params = true;
+        }
+    }
+    try std.testing.expect(saw_unused and saw_magic and saw_params);
+    try std.testing.expectEqual(@as(?bool, true), cfg.report_unused_disable_directives);
+}
+
+test "config: parseJson lint keys absent → defaults" {
+    const cfg = try parseJson(std.testing.allocator, "{}");
+    try std.testing.expectEqual(@as(usize, 0), cfg.lint_extends.len);
+    try std.testing.expectEqual(@as(usize, 0), cfg.lint_rules.len);
+    try std.testing.expectEqual(@as(?bool, null), cfg.report_unused_disable_directives);
 }

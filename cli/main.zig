@@ -261,7 +261,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         }
     }
 
-    if (!loadConfig(&args, arena, io, config_path, no_config)) return null;
+    const loaded_config: ?wgslender.Config = loadConfig(&args, arena, io, config_path, no_config) catch return null;
     applyMinifyOverrides(
         &args.options,
         cli_minify_all,
@@ -276,11 +276,38 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     if (keep_names_raw) |raw| args.options.keep_names = parseKeepNames(arena, raw) catch return null;
     configureSourceMap(&args, source_map_sources);
     if (args.subcommand == .lint) {
-        if (lint_use_recommended and lint_extends.items.len == 0) {
-            lint_extends.append(arena, "@wgslender/recommended") catch return null;
+        // Merge config-derived lint settings under CLI overrides:
+        //   extends: config.lint_extends ++ CLI extends. If neither is
+        //     populated and --no-recommended wasn't passed, default to
+        //     @wgslender/recommended.
+        //   rules: config.lint_rules ++ CLI overrides. The Linter applies
+        //     overrides in slice order; CLI rules come last so they win.
+        //   report_unused_disable_directives: CLI flag (true) wins; else
+        //     config value if set; else false.
+        var merged_extends: std.ArrayListUnmanaged([]const u8) = .empty;
+        if (loaded_config) |cfg| {
+            merged_extends.appendSlice(arena, cfg.lint_extends) catch return null;
         }
-        args.lint_options.extends = lint_extends.items;
-        args.lint_options.rule_overrides = lint_rule_overrides.items;
+        merged_extends.appendSlice(arena, lint_extends.items) catch return null;
+        if (lint_use_recommended and merged_extends.items.len == 0) {
+            merged_extends.append(arena, "@wgslender/recommended") catch return null;
+        }
+        args.lint_options.extends = merged_extends.items;
+
+        var merged_rules: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
+        if (loaded_config) |cfg| {
+            merged_rules.appendSlice(arena, cfg.lint_rules) catch return null;
+        }
+        merged_rules.appendSlice(arena, lint_rule_overrides.items) catch return null;
+        args.lint_options.rule_overrides = merged_rules.items;
+
+        if (loaded_config) |cfg| {
+            if (cfg.report_unused_disable_directives) |v| {
+                if (!args.lint_options.report_unused_disable_directives) {
+                    args.lint_options.report_unused_disable_directives = v;
+                }
+            }
+        }
     }
 
     warnIgnoredFlags(io, args.subcommand, passed);
@@ -372,33 +399,37 @@ fn parseRuleOverride(spec: []const u8) ?wgslender.Linter.Options.RuleOverride {
 }
 
 /// Load config from explicit path or auto-discover from parent directories.
+/// On hard error (bad path / invalid JSON), prints to stderr and returns
+/// `error.ConfigError`. On no config / `--no-config`, returns `null`.
 fn loadConfig(
     args: *CliArgs,
     arena: std.mem.Allocator,
     io: std.Io,
     config_path: ?[]const u8,
     no_config: bool,
-) bool {
+) !?wgslender.Config {
     const File = std.Io.File;
     const Dir = std.Io.Dir;
 
     if (config_path) |path| {
         const content = Dir.cwd().readFileAlloc(io, path, arena, .unlimited) catch {
             File.stderr().writeStreamingAll(io, "error: could not read config file\n") catch {};
-            return false;
+            return error.ConfigError;
         };
         const config = wgslender.Config.parseJson(arena, content) catch {
             File.stderr().writeStreamingAll(io, "error: invalid config JSON\n") catch {};
-            return false;
+            return error.ConfigError;
         };
         args.options = config.toOptions();
+        return config;
     } else if (!no_config) {
         const start = if (args.input_path) |p| std.fs.path.dirname(p) else null;
         if (wgslender.Config.discover(arena, io, start)) |config| {
             args.options = config.toOptions();
+            return config;
         }
     }
-    return true;
+    return null;
 }
 
 /// Apply CLI minification flag overrides with correct precedence.

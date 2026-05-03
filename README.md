@@ -311,10 +311,12 @@ Create `wgslender.json` in your project:
 
 Config files are auto-discovered by walking parent directories. Supported names: `wgslender.json`, `.wgslenderrc`, `.wgslenderrc.json`.
 
-> **Note**: the `extends` and `rules` keys are honored by the LSP and the JS/C
-> APIs (`lint()`, `wgslender_lint_c`). The CLI `lint` subcommand currently
-> reads lint config only from `--extends` / `--rule` / `--no-recommended`
-> flags — it does not yet pick up these keys from `wgslender.json`.
+All four surfaces (CLI `lint`, LSP, JS `lint()`, C `wgslender_lint_c`) read
+the `extends`, `rules`, and `reportUnusedDisableDirectives` keys from the
+same config. CLI flags (`--extends`, `--rule`, `--no-recommended`,
+`--report-unused-disable-directives`) layer on top: extends and rules
+append to the config-derived list (CLI rules win on per-id conflict);
+`--no-recommended` suppresses the `@wgslender/recommended` auto-add.
 
 Pre-built configs available in `configs/`:
 
