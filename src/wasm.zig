@@ -13,6 +13,7 @@ const Allocator = std.mem.Allocator;
 const wgslender = @import("root.zig");
 const Minifier = @import("Minifier.zig");
 const api_json = @import("api_json.zig");
+const ffi = @import("ffi.zig");
 
 const wasm_allocator = std.heap.wasm_allocator;
 
@@ -46,25 +47,21 @@ fn optionsFromFlags(flags: u32) Minifier.Options {
 
 /// Allocate a buffer for JS to write into.
 export fn wgslender_alloc(len: u32) callconv(.c) ?[*]u8 {
-    const slice = wasm_allocator.alloc(u8, len) catch return null;
-    return slice.ptr;
+    return ffi.allocBuf(len);
 }
 
 /// Free a buffer previously returned by wgslender_alloc or any export.
 export fn wgslender_dealloc(ptr: [*]u8, len: u32) callconv(.c) void {
-    wasm_allocator.free(ptr[0..len]);
+    ffi.freeBuf(ptr, len);
 }
 
 // =========================================================================
-// Pack helpers — envelopes allocated directly from wasm_allocator
+// Pack helpers — envelopes allocated directly from wasm_allocator. The
+// length-only envelope lives in `ffi.packLenPrefixed`; per-op shapes
+// (validate/lint/lint-fix/compile) stay here.
 // =========================================================================
 
-fn packLenPrefixed(bytes: []const u8) ?[*]u8 {
-    const buf = wasm_allocator.alloc(u8, 4 + bytes.len) catch return null;
-    std.mem.writeInt(u32, buf[0..4], @intCast(bytes.len), .little);
-    @memcpy(buf[4..][0..bytes.len], bytes);
-    return buf.ptr;
-}
+const packLenPrefixed = ffi.packLenPrefixed;
 
 fn packValidate(valid: bool, error_count: u32, warning_count: u32, json: []const u8) ?[*]u8 {
     const buf = wasm_allocator.alloc(u8, 16 + json.len) catch return null;

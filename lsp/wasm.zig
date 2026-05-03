@@ -27,6 +27,7 @@ const Handler = @import("Handler.zig");
 const diagnostic_json = @import("diagnostic_json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
+const ffi = wgslender.ffi;
 const wasm_allocator = std.heap.wasm_allocator;
 
 // =========================================================================
@@ -46,12 +47,11 @@ var pending_config_id: ?i64 = null;
 // =========================================================================
 
 export fn wgslender_lsp_alloc(len: u32) callconv(.c) ?[*]u8 {
-    const slice = wasm_allocator.alloc(u8, len) catch return null;
-    return slice.ptr;
+    return ffi.allocBuf(len);
 }
 
 export fn wgslender_lsp_dealloc(ptr: [*]u8, len: u32) callconv(.c) void {
-    wasm_allocator.free(ptr[0..len]);
+    ffi.freeBuf(ptr, len);
 }
 
 /// Send a JSON-RPC message to the server. Responses/notifications
