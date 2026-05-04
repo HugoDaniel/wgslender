@@ -1320,6 +1320,35 @@ test "max-params: configurable max via options" {
     try std.testing.expect(hasCode(r, "W0220"));
 }
 
+test "max-params: per-rule options thread end-to-end through Config.parseJson" {
+    // Verifies the JSON config → Config.parseJson → Linter.Options
+    // pipeline carries `["warn", { "max": N }]` into the rule. Without
+    // the deep-clone in `applyJsonValue`, the options would dangle when
+    // parseJson deinits its internal parse tree.
+    const alloc = std.testing.allocator;
+    var cfg = try wgslender.Config.parseJson(alloc,
+        \\{ "rules": { "max-params": ["warn", { "max": 2 }] } }
+    );
+    defer cfg.deinit(alloc);
+
+    try std.testing.expectEqual(@as(usize, 1), cfg.lint_rules.len);
+    try std.testing.expectEqualStrings("max-params", cfg.lint_rules[0].id);
+    try std.testing.expectEqual(Severity.warning, cfg.lint_rules[0].severity);
+    // Options must round-trip end-to-end.
+    const opts = cfg.lint_rules[0].options orelse return error.TestUnexpectedResult;
+    try std.testing.expect(opts == .object);
+    const max = opts.object.get("max") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(i64, 2), max.integer);
+
+    // And the rule observes the lower ceiling at run time.
+    var r = try runLint(
+        "fn f(a: i32, b: i32, c: i32) -> i32 { return a + b + c; }",
+        .{ .rules = cfg.lint_rules },
+    );
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0220"));
+}
+
 // =========================================================================
 // max-depth (W0221)
 // =========================================================================

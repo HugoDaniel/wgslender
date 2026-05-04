@@ -114,14 +114,35 @@ pub fn applyJsonValue(allocator: Allocator, root: std.json.Value, target: *Confi
         if (v == .object) {
             var list: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
             errdefer {
-                for (list.items) |r| allocator.free(r.id);
+                for (list.items) |r| {
+                    allocator.free(r.id);
+                    if (r.options) |opts| {
+                        var o = opts;
+                        freeJsonValue(allocator, &o);
+                    }
+                }
                 list.deinit(allocator);
             }
             var it = v.object.iterator();
             while (it.next()) |kv| {
                 const sev = parseSeverity(kv.value_ptr.*) orelse continue;
+                // Array form `["warn", { ... }]` carries per-rule options
+                // in the second element. Deep-clone into the supplied
+                // allocator so the options outlive `parseJson`'s internal
+                // parse-tree deinit (which would otherwise dangle).
+                var opts: ?std.json.Value = null;
+                if (kv.value_ptr.* == .array) {
+                    const arr = kv.value_ptr.array;
+                    if (arr.items.len > 1) {
+                        opts = try dupeJsonValue(allocator, arr.items[1]);
+                    }
+                }
+                errdefer if (opts) |o| {
+                    var oo = o;
+                    freeJsonValue(allocator, &oo);
+                };
                 const id = try allocator.dupe(u8, kv.key_ptr.*);
-                try list.append(allocator, .{ .id = id, .severity = sev });
+                try list.append(allocator, .{ .id = id, .severity = sev, .options = opts });
             }
             // toOwnedSlice shrinks the buffer to len so a later
             // `Config.deinit` can `free` the slice safely. `list.items`
@@ -154,9 +175,84 @@ pub fn deinit(self: *Config, allocator: Allocator) void {
     if (self.keep_names.len > 0) allocator.free(self.keep_names);
     for (self.lint_extends) |s| allocator.free(s);
     if (self.lint_extends.len > 0) allocator.free(self.lint_extends);
-    for (self.lint_rules) |r| allocator.free(r.id);
+    for (self.lint_rules) |r| {
+        allocator.free(r.id);
+        if (r.options) |opts| {
+            var o = opts;
+            freeJsonValue(allocator, &o);
+        }
+    }
     if (self.lint_rules.len > 0) allocator.free(self.lint_rules);
     self.* = .{};
+}
+
+/// Recursively deep-clone a `std.json.Value` into `allocator`. Used by
+/// `applyJsonValue` to lift per-rule `options` out of the temporary parse
+/// tree (which `parseJson` deinits before returning) into the long-lived
+/// allocator that owns the rest of `Config`. The cloned value must be
+/// freed with `freeJsonValue` from the same allocator.
+fn dupeJsonValue(allocator: Allocator, v: std.json.Value) Allocator.Error!std.json.Value {
+    return switch (v) {
+        .null => .null,
+        .bool => |b| .{ .bool = b },
+        .integer => |i| .{ .integer = i },
+        .float => |f| .{ .float = f },
+        .number_string => |s| .{ .number_string = try allocator.dupe(u8, s) },
+        .string => |s| .{ .string = try allocator.dupe(u8, s) },
+        .array => |arr| blk: {
+            var new_arr = std.json.Array.init(allocator);
+            errdefer {
+                for (new_arr.items) |*item| freeJsonValue(allocator, item);
+                new_arr.deinit();
+            }
+            try new_arr.ensureTotalCapacity(arr.items.len);
+            for (arr.items) |item| {
+                new_arr.appendAssumeCapacity(try dupeJsonValue(allocator, item));
+            }
+            break :blk .{ .array = new_arr };
+        },
+        .object => |obj| blk: {
+            var new_obj: std.json.ObjectMap = .empty;
+            errdefer {
+                var it = new_obj.iterator();
+                while (it.next()) |kv| {
+                    allocator.free(kv.key_ptr.*);
+                    freeJsonValue(allocator, kv.value_ptr);
+                }
+                new_obj.deinit(allocator);
+            }
+            try new_obj.ensureTotalCapacity(allocator, obj.count());
+            var it = obj.iterator();
+            while (it.next()) |kv| {
+                const k = try allocator.dupe(u8, kv.key_ptr.*);
+                try new_obj.put(allocator, k, try dupeJsonValue(allocator, kv.value_ptr.*));
+            }
+            break :blk .{ .object = new_obj };
+        },
+    };
+}
+
+/// Recursive counterpart to `dupeJsonValue` — frees every allocation
+/// that `dupeJsonValue` made on `allocator`. Idempotent isn't supported
+/// (caller must not double-free); designed to be called once from
+/// `Config.deinit`.
+fn freeJsonValue(allocator: Allocator, v: *std.json.Value) void {
+    switch (v.*) {
+        .null, .bool, .integer, .float => {},
+        .number_string, .string => |s| allocator.free(s),
+        .array => |*arr| {
+            for (arr.items) |*item| freeJsonValue(allocator, item);
+            arr.deinit();
+        },
+        .object => |*obj| {
+            var it = obj.iterator();
+            while (it.next()) |kv| {
+                allocator.free(kv.key_ptr.*);
+                freeJsonValue(allocator, kv.value_ptr);
+            }
+            obj.deinit(allocator);
+        },
+    }
 }
 
 /// Parse an ESLint-style severity value: `"off"`, `"warn"` / `"warning"`,
