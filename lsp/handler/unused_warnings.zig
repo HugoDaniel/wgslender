@@ -10,6 +10,8 @@ const LspDiagnostic = Handler.LspDiagnostic;
 
 /// Append warnings for unused symbols to a diagnostics list.
 /// Called after analysis to supplement validation diagnostics.
+/// The unused predicate lives on `AnalysisResult.isUnusedReportable` so
+/// the `no-unused-vars` lint rule consults the exact same filter.
 pub fn appendUnusedWarnings(
     gpa: std.mem.Allocator,
     analysis: *const wgslender.Validator.AnalysisResult,
@@ -19,7 +21,7 @@ pub fn appendUnusedWarnings(
     const source = module.source;
 
     for (module.symbols.items, 0..) |sym, i| {
-        if (!isUnusedReportable(analysis, @intCast(i))) continue;
+        if (!analysis.isUnusedReportable(@intCast(i))) continue;
         const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "'{s}' is declared but never used", .{sym.original_name}) catch continue;
@@ -31,29 +33,6 @@ pub fn appendUnusedWarnings(
             .tags = &.{.unnecessary},
         }) catch continue;
     }
-}
-
-/// Predicate shared with the `no-unused-vars` lint rule. Both surfaces
-/// route through `analysis.use_counts` so they can never disagree on
-/// what counts as unused. Skips parameters because function signatures
-/// are often part of an external contract the author can't change.
-fn isUnusedReportable(
-    analysis: *const wgslender.Validator.AnalysisResult,
-    sym_idx: u32,
-) bool {
-    const symbols = analysis.module.?.symbols.items;
-    if (sym_idx >= symbols.len) return false;
-    const sym = symbols[sym_idx];
-    const uc = if (sym_idx < analysis.use_counts.counts.len) analysis.use_counts.counts[sym_idx] else 0;
-    if (uc > 0) return false;
-    if (sym.original_name.len == 0) return false;
-    if (sym.flags.is_entry_point) return false;
-    if (sym.flags.is_api_facing) return false;
-    if (sym.flags.is_external_binding) return false;
-    return switch (sym.kind) {
-        .function, .@"const", .let, .@"var", .override => true,
-        else => false,
-    };
 }
 
 /// Append hint-level diagnostics for symbols that are used internally
@@ -107,7 +86,9 @@ pub fn appendDeadCodeWarnings(
 }
 
 /// Append warnings for binding variables (@group/@binding) that are declared but never used.
-/// These consume bind group layout slots even when unused.
+/// These consume bind group layout slots even when unused. The predicate
+/// lives on `AnalysisResult.isUnusedBindingReportable` so the
+/// `no-unused-binding` lint rule consults the exact same filter.
 pub fn appendUnusedBindingWarnings(
     gpa: std.mem.Allocator,
     analysis: *const wgslender.Validator.AnalysisResult,
@@ -117,10 +98,7 @@ pub fn appendUnusedBindingWarnings(
     const source = module.source;
 
     for (module.symbols.items, 0..) |sym, i| {
-        if (!sym.flags.is_external_binding) continue;
-        const uc = if (i < analysis.use_counts.counts.len) analysis.use_counts.counts[i] else 0;
-        if (uc > 0) continue;
-        if (sym.original_name.len == 0) continue;
+        if (!analysis.isUnusedBindingReportable(@intCast(i))) continue;
 
         const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
         var buf: [256]u8 = undefined;

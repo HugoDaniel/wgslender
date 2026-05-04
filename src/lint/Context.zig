@@ -90,12 +90,10 @@ pub fn fmt(self: *Context, comptime f: []const u8, args: anytype) Allocator.Erro
     return std.fmt.allocPrint(self.arena, f, args);
 }
 
-/// Return the symbol's reference count as recorded on
-/// `analysis.use_counts`. Out-of-range indices return zero — matches
-/// the side-table's silent-no-op semantics on never-counted symbols.
+/// Return the symbol's reference count. Thin wrapper over
+/// `AnalysisResult.useCount` for ergonomic rule code.
 pub fn useCount(self: *const Context, sym_idx: u32) u32 {
-    if (sym_idx >= self.analysis.use_counts.counts.len) return 0;
-    return self.analysis.use_counts.counts[sym_idx];
+    return self.analysis.useCount(sym_idx);
 }
 
 /// Return the symbol's liveness as recorded on `analysis.liveness`.
@@ -107,22 +105,15 @@ pub fn isLive(self: *const Context, sym_idx: u32) bool {
     return liv.isLive(sym_idx);
 }
 
-/// Predicate shared with the LSP `appendUnusedWarnings` pass. Both
-/// surfaces route through `useCount` so they can never disagree on
-/// what counts as unused. Skips parameters because function
-/// signatures are often part of an external contract the author
-/// can't change.
+/// Thin wrapper over `AnalysisResult.isUnusedReportable` so rules read
+/// the same predicate the LSP's `appendUnusedWarnings` consults.
 pub fn isUnusedReportable(self: *const Context, sym_idx: u32) bool {
-    const symbols = self.module.symbols.items;
-    if (sym_idx >= symbols.len) return false;
-    const sym = symbols[sym_idx];
-    if (self.useCount(sym_idx) > 0) return false;
-    if (sym.original_name.len == 0) return false;
-    if (sym.flags.is_entry_point) return false;
-    if (sym.flags.is_api_facing) return false;
-    if (sym.flags.is_external_binding) return false;
-    return switch (sym.kind) {
-        .function, .@"const", .let, .@"var", .override => true,
-        else => false,
-    };
+    return self.analysis.isUnusedReportable(sym_idx);
+}
+
+/// Thin wrapper over `AnalysisResult.isUnusedBindingReportable` so
+/// rules read the same predicate the LSP's
+/// `appendUnusedBindingWarnings` consults.
+pub fn isUnusedBindingReportable(self: *const Context, sym_idx: u32) bool {
+    return self.analysis.isUnusedBindingReportable(sym_idx);
 }

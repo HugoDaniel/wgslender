@@ -216,6 +216,48 @@ pub const AnalysisResult = struct {
         arena.deinit();
         self._arena = null;
     }
+
+    /// Reference count for `Symbol[sym_idx]`. Out-of-range indices return
+    /// zero — matches the side-table's silent-no-op semantics on
+    /// never-counted symbols.
+    pub fn useCount(self: *const AnalysisResult, sym_idx: u32) u32 {
+        if (sym_idx >= self.use_counts.counts.len) return 0;
+        return self.use_counts.counts[sym_idx];
+    }
+
+    /// True iff `Symbol[sym_idx]` should fire `W0001` (declared but never
+    /// used). Single source of truth shared by the LSP
+    /// `appendUnusedWarnings` pass and the `no-unused-vars` lint rule so
+    /// the two surfaces can never disagree on what counts as unused.
+    /// Skips parameters because function signatures are typically part of
+    /// an external contract the author can't change.
+    pub fn isUnusedReportable(self: *const AnalysisResult, sym_idx: u32) bool {
+        const module = self.module orelse return false;
+        if (sym_idx >= module.symbols.items.len) return false;
+        const sym = module.symbols.items[sym_idx];
+        if (self.useCount(sym_idx) > 0) return false;
+        if (sym.original_name.len == 0) return false;
+        if (sym.flags.is_entry_point) return false;
+        if (sym.flags.is_api_facing) return false;
+        if (sym.flags.is_external_binding) return false;
+        return switch (sym.kind) {
+            .function, .@"const", .let, .@"var", .override => true,
+            else => false,
+        };
+    }
+
+    /// True iff `Symbol[sym_idx]` should fire `W0003` (unused
+    /// `@group/@binding`). Shared by the LSP `appendUnusedBindingWarnings`
+    /// pass and the `no-unused-binding` lint rule.
+    pub fn isUnusedBindingReportable(self: *const AnalysisResult, sym_idx: u32) bool {
+        const module = self.module orelse return false;
+        if (sym_idx >= module.symbols.items.len) return false;
+        const sym = module.symbols.items[sym_idx];
+        if (!sym.flags.is_external_binding) return false;
+        if (self.useCount(sym_idx) > 0) return false;
+        if (sym.original_name.len == 0) return false;
+        return true;
+    }
 };
 
 // =========================================================================
