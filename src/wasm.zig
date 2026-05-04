@@ -11,35 +11,15 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const wgslender = @import("root.zig");
-const Minifier = @import("Minifier.zig");
 const api_json = @import("api_json.zig");
 const ffi = @import("ffi.zig");
 
 const wasm_allocator = std.heap.wasm_allocator;
 
-// =========================================================================
-// Option flags (flags-based minify, kept for backward compatibility)
-// =========================================================================
-
-const OPT_MINIFY_WHITESPACE: u32 = 1 << 0;
-const OPT_MINIFY_IDENTIFIERS: u32 = 1 << 1;
-const OPT_MINIFY_SYNTAX: u32 = 1 << 2;
-const OPT_TREE_SHAKING: u32 = 1 << 3;
-const OPT_MANGLE_EXTERNAL: u32 = 1 << 4;
-const OPT_PRESERVE_UNIFORM_STRUCTS: u32 = 1 << 5;
-
+// `wgslender_validate` accepts a single-bit `flags` arg — `OPT_STRICT`
+// flips warnings into errors. The minify exports take JSON options
+// instead (see `wgslender_minify_json` / `wgslender_minify_and_reflect`).
 const OPT_STRICT: u32 = 1 << 0;
-
-fn optionsFromFlags(flags: u32) Minifier.Options {
-    return .{
-        .minify_whitespace = flags & OPT_MINIFY_WHITESPACE != 0,
-        .minify_identifiers = flags & OPT_MINIFY_IDENTIFIERS != 0,
-        .minify_syntax = flags & OPT_MINIFY_SYNTAX != 0,
-        .tree_shaking = flags & OPT_TREE_SHAKING != 0,
-        .mangle_external_bindings = flags & OPT_MANGLE_EXTERNAL != 0,
-        .preserve_uniform_struct_types = flags & OPT_PRESERVE_UNIFORM_STRUCTS != 0,
-    };
-}
 
 // =========================================================================
 // Memory transfer (JS-owned writes; wgslender-owned reads)
@@ -108,17 +88,6 @@ fn packLintFix(fixed: []const u8, error_count: u32, warning_count: u32, json: []
 // =========================================================================
 // Minify
 // =========================================================================
-
-/// Flags-based minify. Output: `[u32 code_len][u8... code]`.
-export fn wgslender_minify(source_ptr: [*]const u8, source_len: u32, flags: u32) callconv(.c) ?[*]u8 {
-    var arena = std.heap.ArenaAllocator.init(wasm_allocator);
-    defer arena.deinit();
-    const alloc = arena.allocator();
-
-    const source = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch return null;
-    const code = api_json.minifyFlagsToBytes(alloc, source, optionsFromFlags(flags)) catch return null;
-    return packLenPrefixed(code);
-}
 
 /// JSON-options minify. Output: `[u32 json_len][u8... json]`.
 export fn wgslender_minify_json(

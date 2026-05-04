@@ -7,7 +7,7 @@ const {
     memory,
     wgslender_alloc,
     wgslender_dealloc,
-    wgslender_minify,
+    wgslender_minify_json,
     wgslender_version,
     wgslender_version_len,
     wgslender_find_references,
@@ -78,18 +78,17 @@ fn vertexMain(@location(0) position: vec4f) -> @builtin(position) vec4f {
 }
 `;
     const src = writeString(source);
-    const resultPtr = wgslender_minify(src.ptr, src.len, 0xF);
+    const opts = writeString('{}'); // defaults match the legacy 0xF bit set.
+    const resultPtr = wgslender_minify_json(src.ptr, src.len, opts.ptr, opts.len);
     wgslender_dealloc(src.ptr, src.allocLen);
+    wgslender_dealloc(opts.ptr, opts.allocLen);
     assert(resultPtr, 'minify returned null');
 
-    const view = new DataView(memory.buffer);
-    const resultLen = view.getUint32(resultPtr, true);
-    const result = decoder.decode(new Uint8Array(memory.buffer, resultPtr + 4, resultLen));
-    wgslender_dealloc(resultPtr, resultLen + 4);
-
-    console.log(`minify: ${src.len} -> ${resultLen} bytes (${((1 - resultLen / src.len) * 100).toFixed(1)}% reduction)`);
-    assert(result.includes('vertexMain') && result.includes('@vertex'), 'entry point not preserved');
-    assert(!result.includes('helper') && !result.includes('Uniforms'), 'names should have been minified');
+    const env = readPackedJson(resultPtr);
+    const code = env.code;
+    console.log(`minify: ${src.len} -> ${code.length} bytes (${((1 - code.length / src.len) * 100).toFixed(1)}% reduction)`);
+    assert(code.includes('vertexMain') && code.includes('@vertex'), 'entry point not preserved');
+    assert(!code.includes('helper') && !code.includes('Uniforms'), 'names should have been minified');
     console.log('  minify PASS');
 }
 
@@ -176,13 +175,13 @@ fn second(x: f32) -> f32 { return x * 2.0; }
 
     // Rewritten source must still minify.
     const src2 = writeString(res.source);
-    const mptr = wgslender_minify(src2.ptr, src2.len, 0xF);
+    const opts2 = writeString('{}');
+    const mptr = wgslender_minify_json(src2.ptr, src2.len, opts2.ptr, opts2.len);
     wgslender_dealloc(src2.ptr, src2.allocLen);
+    wgslender_dealloc(opts2.ptr, opts2.allocLen);
     assert(mptr, 'minify of renamed source returned null');
-    const view = new DataView(memory.buffer);
-    const mlen = view.getUint32(mptr, true);
-    wgslender_dealloc(mptr, mlen + 4);
-    assert(mlen > 0, 'minify produced empty output');
+    const menv = readPackedJson(mptr);
+    assert(menv.code.length > 0, 'minify produced empty output');
     console.log('  renameApply (parameter) PASS');
 }
 
