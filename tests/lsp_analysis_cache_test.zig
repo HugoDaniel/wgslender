@@ -527,7 +527,11 @@ test "LA14: is_live flags match oracle after symbol-free hot edit" {
     defer oracle.deinit(std.testing.allocator);
     if (oracle.module) |om| {
         if (oracle._arena) |*oa| {
-            _ = wgslender.Dce.mark(oa.allocator(), om) catch {};
+            const aa = oa.allocator();
+            if (wgslender.Liveness.init(aa, om.symbols.items.len)) |liveness_init| {
+                var liveness = liveness_init;
+                _ = wgslender.Dce.mark(aa, om, &liveness) catch {};
+            } else |_| {}
         }
         const analyzed_module = handler.documents.getPtr(uri).?.parse.?.module;
         // Symbol count must match (both analyses see the same code).

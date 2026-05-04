@@ -40,6 +40,7 @@ const Ast = @import("../Ast.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const Validator = @import("../Validator.zig");
 const Dce = @import("../Dce.zig");
+const Liveness = @import("../Liveness.zig");
 const MinifyEstimator = @import("../MinifyEstimator.zig");
 
 pub const Rule = @import("Rule.zig");
@@ -218,7 +219,17 @@ pub fn run(
 
         if (r.meta.requires_dce and !dce_done) {
             if (analysis_arena_opt) |aa| {
-                _ = Dce.mark(aa, module) catch {};
+                // B.M3: side-table allocated alongside the field write.
+                // It's discarded today; B.M4 will stash it on
+                // `AnalysisResult.liveness` so DCE-aware rules can read
+                // it instead of `Symbol.flags.is_live`. OOM here is
+                // swallowed to match the original `Dce.mark catch {}`
+                // semantics — rules tolerate stale liveness rather
+                // than abort the whole lint.
+                if (Liveness.init(aa, module.symbols.items.len)) |liveness_init| {
+                    var liveness = liveness_init;
+                    _ = Dce.mark(aa, module, &liveness) catch {};
+                } else |_| {}
             }
             dce_done = true;
         }

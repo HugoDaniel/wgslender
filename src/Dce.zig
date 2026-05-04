@@ -6,9 +6,17 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
+const Liveness = @import("Liveness.zig");
 
 /// Perform dead code elimination. Returns the number of dead symbols.
-pub fn mark(arena: Allocator, module: *Ast.Module) Allocator.Error!u32 {
+///
+/// `out` receives the side-table mirror of the per-symbol liveness bits
+/// (B.M3 of the Symbol-immutability arc). Caller allocates `out` with
+/// `Liveness.init(arena, module.symbols.items.len)` before the call;
+/// `mark` writes both `out` and the legacy `Symbol.flags.is_live` field
+/// at every "set live" site so the two views agree exactly. The field
+/// writes go away in B.M5 once readers migrate.
+pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Error!u32 {
     // Pre: symbol indices are encoded as u32, so the table can never grow
     // past that ceiling. A breach here would silently truncate downstream
     // SymbolIndex values when buildDependencyGraph stamps them.
@@ -39,6 +47,7 @@ pub fn mark(arena: Allocator, module: *Ast.Module) Allocator.Error!u32 {
         for (module.symbols.items) |*sym| {
             sym.flags.is_live = true;
         }
+        out.markAllLive();
         return 0;
     }
 
@@ -62,6 +71,7 @@ pub fn mark(arena: Allocator, module: *Ast.Module) Allocator.Error!u32 {
         std.debug.assert(idx < module.symbols.items.len);
         if (idx < module.symbols.items.len) {
             module.symbols.items[idx].flags.is_live = true;
+            out.markLive(idx);
         }
 
         if (deps.get(idx)) |dep_list| {
@@ -358,10 +368,19 @@ fn parseModule(arena: Allocator, source: [:0]const u8) ?*Ast.Module {
     return parser.parse() catch null;
 }
 
+/// Test helper: allocates a fresh `Liveness` side-table per call and
+/// discards it. Production callers allocate `Liveness` explicitly so the
+/// side-table can be threaded to consumers (B.M4); internal tests just
+/// want the field-side `is_live` writes for assertions.
+fn markForTest(arena: Allocator, module: *Ast.Module) Allocator.Error!u32 {
+    var liveness = try Liveness.init(arena, module.symbols.items.len);
+    return try mark(arena, module, &liveness);
+}
+
 test "mark: empty module" {
     var scope = Ast.Scope.init(null, .module);
     var module = Ast.Module.init(&scope, "");
-    const dead = try mark(std.testing.allocator, &module);
+    const dead = try markForTest(std.testing.allocator, &module);
     try std.testing.expectEqual(@as(u32, 0), dead);
 }
 
@@ -375,7 +394,7 @@ test "mark: no entry points keeps all live" {
         \\fn b() -> f32 { return 2.0; }
     ) orelse return error.TestParseFailed;
 
-    const dead = try mark(alloc, module);
+    const dead = try markForTest(alloc, module);
     try std.testing.expectEqual(@as(u32, 0), dead);
 
     // All symbols should be live
@@ -398,7 +417,7 @@ test "mark: with entry point removes unused" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    const dead = try mark(alloc, module);
+    const dead = try markForTest(alloc, module);
     try std.testing.expect(dead > 0);
 }
 
@@ -416,7 +435,7 @@ test "mark: transitive dependencies are kept" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    const dead = try mark(alloc, module);
+    const dead = try markForTest(alloc, module);
     try std.testing.expectEqual(@as(u32, 0), dead);
 }
 
@@ -434,7 +453,7 @@ test "mark: complex with unused functions" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    const dead = try mark(alloc, module);
+    const dead = try markForTest(alloc, module);
     // unused1 and unused2 should be dead
     try std.testing.expect(dead >= 2);
 }
@@ -451,7 +470,7 @@ test "isDeclarationLive: function decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = try mark(alloc, module);
+    _ = try markForTest(alloc, module);
 
     // Check that main is live and unused is not
     for (module.declarations.items) |decl| {
@@ -484,7 +503,7 @@ test "isDeclarationLive: const decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = try mark(alloc, module);
+    _ = try markForTest(alloc, module);
 
     var found_used = false;
     var found_unused = false;
@@ -521,7 +540,7 @@ test "isDeclarationLive: struct decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = try mark(alloc, module);
+    _ = try markForTest(alloc, module);
 
     for (module.declarations.items) |decl| {
         const ref = decl.nameRef();
@@ -551,7 +570,7 @@ test "isDeclarationLive: alias decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = try mark(alloc, module);
+    _ = try markForTest(alloc, module);
 
     for (module.declarations.items) |decl| {
         const ref = decl.nameRef();
@@ -580,7 +599,7 @@ test "isDeclarationLive: override decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = try mark(alloc, module);
+    _ = try markForTest(alloc, module);
 
     for (module.declarations.items) |decl| {
         const ref = decl.nameRef();
@@ -609,7 +628,7 @@ test "isDeclarationLive: var decl" {
         \\}
     ) orelse return error.TestParseFailed;
 
-    _ = try mark(alloc, module);
+    _ = try markForTest(alloc, module);
 
     for (module.declarations.items) |decl| {
         const ref = decl.nameRef();
@@ -1305,7 +1324,7 @@ test "mark: entry point and dependencies are live, unused are dead" {
         \\@compute @workgroup_size(1) fn main() { let x = used; }
     ) orelse return error.TestParseFailed;
 
-    _ = try mark(alloc, module);
+    _ = try markForTest(alloc, module);
 
     var found_dead = false;
     var found_used = false;
@@ -1340,7 +1359,7 @@ test "mark: transitive chain a -> b -> c" {
         \\@compute @workgroup_size(1) fn main() { let x = c; }
     ) orelse return error.TestParseFailed;
 
-    _ = try mark(alloc, module);
+    _ = try markForTest(alloc, module);
 
     for (module.symbols.items) |sym| {
         if (std.mem.eql(u8, sym.original_name, "a") or
@@ -1370,7 +1389,7 @@ test "mark: complex dependencies" {
         \\@compute @workgroup_size(1) fn main() { var w: Wrapper; let r = helper(w); }
     ) orelse return error.TestParseFailed;
 
-    const dead = try mark(alloc, module);
+    const dead = try markForTest(alloc, module);
 
     for (module.symbols.items) |sym| {
         if (std.mem.eql(u8, sym.original_name, "Data") or
@@ -1418,9 +1437,12 @@ test "mark: propagates OOM" {
         \\fn helper() {}
     ) orelse return error.TestParseFailed;
 
-    // Then try mark with failing allocator
+    // Then try mark with failing allocator. After B.M3 the very first
+    // allocation is Liveness.init (inside markForTest); pre-B.M3 it was
+    // the dependency graph inside mark. Either way, fail_index=0 forces
+    // the first allocation to fail and OOM must propagate.
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    const result = mark(failing.allocator(), module);
+    const result = markForTest(failing.allocator(), module);
     try std.testing.expect(result == error.OutOfMemory);
 }
 
@@ -1466,7 +1488,7 @@ test "attribute-arg reachability: @workgroup_size(WG_X) keeps WG_X live" {
         \\const WG_X: u32 = 16;
         \\@compute @workgroup_size(WG_X) fn main() {}
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "WG_X");
     try assertNamedSymLive(module, "main");
 }
@@ -1479,7 +1501,7 @@ test "attribute-arg reachability: @group(BG) on a referenced var keeps BG live" 
         \\@group(BG) @binding(0) var<uniform> u: vec4f;
         \\@compute @workgroup_size(1) fn main() { let _v = u; }
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "BG");
     try assertNamedSymLive(module, "u");
 }
@@ -1492,7 +1514,7 @@ test "attribute-arg reachability: @binding(IDX) on a referenced var keeps IDX li
         \\@group(0) @binding(IDX) var<uniform> u: vec4f;
         \\@compute @workgroup_size(1) fn main() { let _v = u; }
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "IDX");
 }
 
@@ -1507,7 +1529,7 @@ test "attribute-arg reachability: @id(MY_ID) on a referenced override keeps MY_I
         \\@id(MY_ID) override x: f32;
         \\@compute @workgroup_size(1) fn main() { let _v = x; }
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "MY_ID");
 }
 
@@ -1520,7 +1542,7 @@ test "attribute-arg reachability: struct member @align(A) keeps A live" {
         \\@group(0) @binding(0) var<storage> s: S;
         \\@compute @workgroup_size(1) fn main() { let _v = s; }
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "A");
     try assertNamedSymLive(module, "S");
 }
@@ -1534,7 +1556,7 @@ test "attribute-arg reachability: struct member @size(SZ) keeps SZ live" {
         \\@group(0) @binding(0) var<storage> s: S;
         \\@compute @workgroup_size(1) fn main() { let _v = s; }
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "SZ");
 }
 
@@ -1545,7 +1567,7 @@ test "attribute-arg reachability: param @location(L) keeps L live" {
         \\const L: u32 = 3;
         \\@vertex fn main(@location(L) p: vec4f) -> @builtin(position) vec4f { return p; }
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "L");
 }
 
@@ -1556,7 +1578,7 @@ test "attribute-arg reachability: return @location(RL) keeps RL live" {
         \\const RL: u32 = 1;
         \\@fragment fn main() -> @location(RL) vec4f { return vec4f(0.0); }
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "RL");
 }
 
@@ -1568,7 +1590,7 @@ test "attribute-arg reachability: cascading consts traced through @workgroup_siz
         \\const B: u32 = A + 1;
         \\@compute @workgroup_size(B) fn main() {}
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "A");
     try assertNamedSymLive(module, "B");
 }
@@ -1581,7 +1603,7 @@ test "attribute-arg reachability: same const referenced multiple times keeps it 
         \\const UNUSED: u32 = 99;
         \\@compute @workgroup_size(N, N, N) fn main() {}
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "N");
     try assertNamedSymDead(module, "UNUSED");
 }
@@ -1593,7 +1615,7 @@ test "attribute-arg reachability: nested expression in attr keeps inner const li
         \\const N: u32 = 4;
         \\@compute @workgroup_size(N * 2) fn main() {}
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymLive(module, "N");
 }
 
@@ -1610,7 +1632,7 @@ test "attribute-arg reachability: deny-list — same-named const is NOT kept by 
         \\@group(0) @binding(0) var<storage> v: V;
         \\@compute @workgroup_size(1) fn main() { let _v = v; }
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymDead(module, "linear");
 }
 
@@ -1625,7 +1647,7 @@ test "attribute-arg reachability: @group(BG) on unreferenced var leaves BG dead"
         \\@group(BG) @binding(0) var<uniform> unused_u: vec4f;
         \\@compute @workgroup_size(1) fn main() {}
     ) orelse return error.TestParseFailed;
-    _ = try mark(arena.allocator(), module);
+    _ = try markForTest(arena.allocator(), module);
     try assertNamedSymDead(module, "BG");
     try assertNamedSymDead(module, "unused_u");
 }

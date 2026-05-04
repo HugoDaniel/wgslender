@@ -14,6 +14,7 @@ pub const Ast = @import("Ast.zig");
 pub const AstVisit = @import("AstVisit.zig");
 pub const UseCounts = @import("UseCounts.zig");
 pub const RenamePolicy = @import("RenamePolicy.zig");
+pub const Liveness = @import("Liveness.zig");
 pub const Lexer = @import("Lexer.zig");
 pub const Parser = @import("Parser.zig");
 pub const Printer = @import("Printer.zig");
@@ -480,6 +481,7 @@ comptime {
     _ = AstVisit;
     _ = UseCounts;
     _ = RenamePolicy;
+    _ = Liveness;
     _ = CstLower;
     _ = Lexer;
     _ = Parser;

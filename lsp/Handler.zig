@@ -513,10 +513,18 @@ fn analyzeFromParse(
     // repeated analyze calls on the same module don't accumulate
     // incorrect liveness (e.g., a symbol that became unreachable after
     // an edit must see its prior `is_live = true` cleared).
+    // B.M3: also allocate a fresh Liveness side-table per analyze;
+    // a fresh allocation is implicitly zero so no separate reset
+    // path is needed for the side-table — only the legacy field needs
+    // explicit clearing. Side-table is discarded today (B.M4 wires it
+    // onto AnalysisResult).
     for (parse.module.symbols.items) |*sym| {
         sym.flags.is_live = false;
     }
-    _ = wgslender.Dce.mark(parse.arena.allocator(), parse.module) catch {};
+    if (wgslender.Liveness.init(parse.arena.allocator(), parse.module.symbols.items.len)) |liveness_init| {
+        var liveness = liveness_init;
+        _ = wgslender.Dce.mark(parse.arena.allocator(), parse.module, &liveness) catch {};
+    } else |_| {}
 
     analyzed._arena = arena;
 
@@ -546,7 +554,12 @@ fn analyzeFromScratch(
     result.* = try wgslender.analyzeWithOptions(self.gpa, source_z, .{});
     if (result.module) |module| {
         if (result._arena) |*arena| {
-            _ = wgslender.Dce.mark(arena.allocator(), module) catch {};
+            // B.M3: allocate side-table mirror; discarded today.
+            const aa = arena.allocator();
+            if (wgslender.Liveness.init(aa, module.symbols.items.len)) |liveness_init| {
+                var liveness = liveness_init;
+                _ = wgslender.Dce.mark(aa, module, &liveness) catch {};
+            } else |_| {}
         }
     }
     doc.analysis = result;

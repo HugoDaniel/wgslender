@@ -42,6 +42,7 @@ const Printer = @import("Printer.zig");
 const Minifier = @import("Minifier.zig");
 const RenamerMod = @import("Renamer.zig");
 const RenamePolicy = @import("RenamePolicy.zig");
+const Liveness = @import("Liveness.zig");
 const Dce = @import("Dce.zig");
 const WasmBinary = @import("WasmBinary.zig");
 const ScopeLocalRenamer = Minifier.ScopeLocalRenamer;
@@ -242,10 +243,14 @@ fn prepareRenamer(arena: Allocator, module: *Ast.Module, options: CompileOptions
         const policy = builder.build();
         policy.mirrorToFlags(module);
 
+        // B.M3: side-table mirror of `is_live`. Both branches write both
+        // the field and the bit-set; readers migrate off the field in B.M4.
+        var liveness = try Liveness.init(arena, module.symbols.items.len);
         if (mopts.tree_shaking) {
-            _ = try Dce.mark(arena, module);
+            _ = try Dce.mark(arena, module, &liveness);
         } else {
             for (module.symbols.items) |*sym| sym.flags.is_live = true;
+            liveness.markAllLive();
         }
 
         var uses = try Minifier.computeSymbolUsage(arena, module);

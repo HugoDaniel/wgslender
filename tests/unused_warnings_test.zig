@@ -163,7 +163,11 @@ fn getDeadCodeWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
     // Run DCE to compute is_live flags
     if (result.module) |module| {
         if (result._arena) |*arena| {
-            _ = wgslender.Dce.mark(arena.allocator(), module) catch {};
+            const aa = arena.allocator();
+            if (wgslender.Liveness.init(aa, module.symbols.items.len)) |liveness_init| {
+                var liveness = liveness_init;
+                _ = wgslender.Dce.mark(aa, module, &liveness) catch {};
+            } else |_| {}
         }
     }
 
@@ -215,7 +219,11 @@ fn getUnusedBindingWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
     // Run DCE to compute is_live flags
     if (result.module) |module| {
         if (result._arena) |*arena| {
-            _ = wgslender.Dce.mark(arena.allocator(), module) catch {};
+            const aa = arena.allocator();
+            if (wgslender.Liveness.init(aa, module.symbols.items.len)) |liveness_init| {
+                var liveness = liveness_init;
+                _ = wgslender.Dce.mark(aa, module, &liveness) catch {};
+            } else |_| {}
         }
     }
 

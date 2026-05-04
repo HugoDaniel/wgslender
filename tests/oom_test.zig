@@ -17,6 +17,7 @@ const Lexer = wgslender.Lexer;
 const Parser = wgslender.Parser;
 const Ast = wgslender.Ast;
 const Dce = wgslender.Dce;
+const Liveness = wgslender.Liveness;
 const Renamer = wgslender.Renamer;
 const Validator = wgslender.Validator;
 const Reflect = wgslender.Reflect;
@@ -253,7 +254,13 @@ test "Parser.parse: multi-function — exhaustive OOM" {
 // --- Dce (uses allocator directly with proper defer/errdefer) ---
 
 fn testDceMark(allocator: std.mem.Allocator, module: *Ast.Module) !void {
-    _ = Dce.mark(allocator, module) catch |e| switch (e) {
+    var liveness = Liveness.init(allocator, module.symbols.items.len) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    // Liveness uses the test allocator (not an arena), so it must be
+    // freed explicitly on every exit path — including the DCE OOM path.
+    defer liveness.bits.deinit(allocator);
+    _ = Dce.mark(allocator, module, &liveness) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
     };
 }

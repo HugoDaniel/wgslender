@@ -32,6 +32,7 @@ const Allocator = std.mem.Allocator;
 
 const Ast = @import("Ast.zig");
 const Dce = @import("Dce.zig");
+const Liveness = @import("Liveness.zig");
 const Minifier = @import("Minifier.zig");
 const Printer = @import("Printer.zig");
 const Renamer = @import("Renamer.zig");
@@ -96,11 +97,15 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
 
     // Step 1: populate `is_live` so both Printer.tree_shaking and
     // sortDeclarations see accurate liveness. Mirrors Minifier.minify
-    // lines 136-143.
+    // lines 136-143. B.M3: also populate side-table mirror; the
+    // estimator discards it after this run since downstream consumers
+    // (Printer, sortDeclarations) still read the field.
+    var liveness = try Liveness.init(arena, module.symbols.items.len);
     if (options.tree_shaking) {
-        _ = try Dce.mark(arena, module);
+        _ = try Dce.mark(arena, module, &liveness);
     } else {
         for (module.symbols.items) |*sym| sym.flags.is_live = true;
+        liveness.markAllLive();
     }
 
     // Step 2: usage counts. Shared helper with the real minifier so rank

@@ -27,6 +27,7 @@ const Parser = @import("Parser.zig");
 const Printer = @import("Printer.zig");
 const RenamerMod = @import("Renamer.zig");
 const Dce = @import("Dce.zig");
+const Liveness = @import("Liveness.zig");
 const RenamePolicy = @import("RenamePolicy.zig");
 const SourceMap = @import("SourceMap.zig");
 
@@ -182,14 +183,19 @@ fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyC
     // so existing readers (Renamer, Printer) keep working.
     _ = try markAPIFacingSymbols(arena, module, options);
 
-    // 4. DCE
+    // 4. DCE — allocate a side-table mirror per pipeline run (B.M3).
+    // The legacy `Symbol.flags.is_live` field is still written by both
+    // branches; readers migrate off it in B.M4 and the field disappears
+    // in B.M5.
+    var liveness = try Liveness.init(arena, module.symbols.items.len);
     if (options.tree_shaking) {
-        result.symbols_dead = try Dce.mark(arena, module);
+        result.symbols_dead = try Dce.mark(arena, module, &liveness);
         std.debug.assert(result.symbols_dead <= module.symbols.items.len);
     } else {
         for (module.symbols.items) |*sym| {
             sym.flags.is_live = true;
         }
+        liveness.markAllLive();
     }
 
     checkModuleInvariants(module);

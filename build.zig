@@ -252,6 +252,9 @@ pub fn build(b: *std.Build) void {
     // RenamePolicy.Builder integration — verifies the parser_wants_no_rename
     // bit and the mirror-to-flags semantics over the compute.toys corpus.
     _ = addTestStep(b, test_step, "tests/rename_policy_test.zig", target, optimize, &.{w});
+    // Liveness side-table integration — Dce.mark dual-write parity and
+    // minify-path agreement with a fresh DCE on the compute.toys corpus.
+    _ = addTestStep(b, test_step, "tests/liveness_test.zig", target, optimize, &.{w});
     // Incremental.reparse — end-to-end add/sub delta scenarios covering
     // per-symbol use_count invariants across a range of symbol-free
     // anchor kinds and round-trip edit sequences.
