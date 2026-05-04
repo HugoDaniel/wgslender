@@ -9,7 +9,8 @@
 //!
 //! Standard pass order (see `Pipeline` for per-pass contracts):
 //!   tokenize → parse → mark_api_facing → dce → compute_usage →
-//!   build_reserved_names → init_source_map → print → finalize_source_map.
+//!   build_reserved_names → init_source_map → build_renamer → print →
+//!   finalize_source_map.
 //!
 //! Invariants:
 //!   - Entry points and `@group/@binding` vars are marked API-facing
@@ -151,6 +152,7 @@ const default_passes: []const Pipeline.Pass = &.{
     .compute_usage,
     .build_reserved_names,
     .init_source_map,
+    .build_renamer,
     .print,
     .finalize_source_map,
 };

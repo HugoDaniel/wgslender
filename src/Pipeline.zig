@@ -12,7 +12,8 @@
 //!
 //! Standard order (built by `Minifier.minifyCore`):
 //!   tokenize → parse → mark_api_facing → dce → compute_usage →
-//!   build_reserved_names → init_source_map → print → finalize_source_map
+//!   build_reserved_names → init_source_map → build_renamer → print →
+//!   finalize_source_map
 //!
 //! Stability: `Pass` enum variants and bundled-pass field contracts are
 //! stable. `State` field additions are non-breaking (new fields default
@@ -56,9 +57,15 @@ pub const Pass = union(enum) {
     /// is set; otherwise no-op.
     init_source_map,
     /// Consumes `state.module`, `state.rename_policy`, `state.reserved`,
-    /// optionally `state.usage` (frequency renamer) and
-    /// `state.source_map_gen`. Produces `state.renamer` and
-    /// `state.output`.
+    /// optionally `state.usage` (when `options.minify_identifiers`).
+    /// Produces `state.renamer` set to the BASE renamer (MinifyRenamer
+    /// when minifying identifiers; NoOpRenamer otherwise). The `print`
+    /// pass may later wrap this with scope-local renaming.
+    build_renamer,
+    /// Consumes `state.module`, `state.renamer`, `state.rename_policy`
+    /// (for scope-local wrapping), and optionally `state.source_map_gen`.
+    /// Produces `state.output`. May overwrite `state.renamer` with the
+    /// scope-local-wrapped renamer.
     print,
     /// Consumes `state.source_map_gen`. Produces `state.source_map`.
     finalize_source_map,
@@ -140,6 +147,7 @@ pub fn run(state: *State, passes: []const Pass, options: Minifier.Options) Alloc
             .compute_usage => try runComputeUsage(state),
             .build_reserved_names => try runBuildReservedNames(state, options),
             .init_source_map => try runInitSourceMap(state, options),
+            .build_renamer => try runBuildRenamer(state, options),
             .print => try runPrint(state, options),
             .finalize_source_map => try runFinalizeSourceMap(state),
             .custom => |f| try f(state, &options),
@@ -215,36 +223,42 @@ fn runInitSourceMap(state: *State, options: Minifier.Options) Allocator.Error!vo
     state.source_map_gen = gen;
 }
 
-fn runPrint(state: *State, options: Minifier.Options) Allocator.Error!void {
+fn runBuildRenamer(state: *State, options: Minifier.Options) Allocator.Error!void {
     const module = state.module orelse return;
     const policy = state.rename_policy orelse return;
     const reserved = state.reserved orelse return;
 
-    const renamer_base = if (options.minify_identifiers) blk: {
+    if (options.minify_identifiers) {
         // Frequency-based renamer requires the usage table.
-        if (state.usage == null) return;
+        const usage_ptr = if (state.usage) |*u| u else return;
         const r = try state.arena.create(RenamerMod.MinifyRenamer);
         r.* = RenamerMod.MinifyRenamer.init(state.arena, module.symbols.items, reserved);
         r.setSideTables(&module.use_counts, policy);
-        r.accumulateSymbolUseCounts(&state.usage.?);
+        r.accumulateSymbolUseCounts(usage_ptr);
         try r.allocateSlots();
         try r.reserveUnrenamedSymbolNames();
         try r.assignNames();
         r.renamer.ptr = @ptrCast(r);
-        break :blk &r.renamer;
-    } else blk: {
+        state.renamer = &r.renamer;
+    } else {
         const r = try state.arena.create(RenamerMod.NoOpRenamer);
         r.* = RenamerMod.NoOpRenamer.init(module.symbols.items);
         r.renamer.ptr = @ptrCast(r);
-        break :blk &r.renamer;
-    };
+        state.renamer = &r.renamer;
+    }
+}
+
+fn runPrint(state: *State, options: Minifier.Options) Allocator.Error!void {
+    const module = state.module orelse return;
+    const renamer_base = state.renamer orelse return;
+    const policy = state.rename_policy orelse return;
 
     var renamer: *const Printer.Renamer = renamer_base;
     if (options.scope_local_rename and options.minify_identifiers) {
         const scope = try Minifier.ScopeLocalRenamer.init(state.arena, module, renamer, policy);
         renamer = &scope.ren;
+        state.renamer = renamer;
     }
-    state.renamer = renamer;
 
     var printer = Printer.init(state.arena, .{
         .minify_whitespace = options.minify_whitespace,
@@ -286,7 +300,8 @@ test "pipeline: smoke test runs the default pass list" {
     var state = State.init(a, source);
     try Pipeline.run(&state, &.{
         .tokenize, .parse, .mark_api_facing, .dce, .compute_usage,
-        .build_reserved_names, .init_source_map, .print, .finalize_source_map,
+        .build_reserved_names, .init_source_map, .build_renamer, .print,
+        .finalize_source_map,
     }, .{});
 
     try std.testing.expect(state.module != null);
@@ -304,10 +319,30 @@ test "pipeline: parse error short-circuits subsequent passes" {
     var state = State.init(a, source);
     try Pipeline.run(&state, &.{
         .tokenize, .parse, .mark_api_facing, .dce, .compute_usage,
-        .build_reserved_names, .print,
+        .build_reserved_names, .build_renamer, .print,
     }, .{});
 
     try std.testing.expect(state.errors.len > 0);
     try std.testing.expect(state.module == null);
     try std.testing.expect(state.output == null);
+}
+
+test "pipeline: analysis-only run (no print) for downstream tooling" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source: [:0]const u8 = "fn main() { let x = 1; }";
+
+    var state = State.init(a, source);
+    try Pipeline.run(&state, &.{
+        .tokenize, .parse, .mark_api_facing, .dce, .compute_usage,
+        .build_reserved_names, .build_renamer,
+    }, .{});
+
+    try std.testing.expect(state.module != null);
+    try std.testing.expect(state.rename_policy != null);
+    try std.testing.expect(state.usage != null);
+    try std.testing.expect(state.reserved != null);
+    try std.testing.expect(state.renamer != null);
+    try std.testing.expect(state.output == null); // print not run
 }
