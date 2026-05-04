@@ -82,6 +82,15 @@ pub const OptionSpec = struct {
     /// subcommands. The dispatcher uses this to filter `--help` output
     /// and decide whether to emit an "ignored flag" warning.
     subcommands: []const Subcommand = &.{},
+    /// Whether `MagicComment.scan` accepts this spec as a per-document
+    /// override (`// wgslender-minify-<key>=<value>`). Set false for
+    /// fields that should remain JSON-only — typically because embedding
+    /// them in source would let any contributor change a project-wide
+    /// knob (`budget_bytes` mirrors the precedent for `severities`).
+    /// The magic-comment scanner only considers specs whose
+    /// `json_override` starts with `"minify"`; specs outside that
+    /// namespace are out of scope regardless of this flag.
+    magic_comment: bool = true,
 };
 
 /// Comptime: convert `snake_case` → `camelCase`. Underscores delimit
@@ -307,7 +316,10 @@ pub fn matchFlag(
                         return .wrong_subcommand;
                     }
                     const value = args_iter.next() orelse return .matched;
-                    try applyValue(spec, value, arena, target);
+                    // CLI matchers historically drop parse failures
+                    // silently — discard the success bool to preserve
+                    // that behavior.
+                    _ = try applyValue(spec, value, arena, target);
                     return .matched;
                 }
             } else {
@@ -334,12 +346,28 @@ pub fn matchFlag(
     return .no_match;
 }
 
-fn applyValue(
+/// Apply `value` (as a string) to `target`'s `spec.field`, parsed
+/// according to `spec.kind`. Used by both the CLI value-form dispatcher
+/// and the magic-comment scanner — anywhere a single text value needs
+/// to be parsed into the spec's typed field.
+///
+/// Returns `true` if the value parsed and the field was written. Returns
+/// `false` on parse failure (unknown enum tag, non-integer for `u32_opt`,
+/// non-`"true"`/`"false"` for `bool_opt`); callers can use the bool to
+/// decide whether to emit a diagnostic. CLI matchers historically
+/// dropped parse failures silently — they continue to do so by
+/// discarding the result.
+///
+/// `string_list` is comma-split; result slices alias `value` directly
+/// (no dupe). `bool_opt` accepts the literals `"true"` and `"false"` —
+/// the CLI doesn't use this form (bools use `cli_simple` / `cli_inverse`
+/// spellings), but magic-comment grammar does.
+pub fn applyValue(
     comptime spec: OptionSpec,
     value: []const u8,
     arena: std.mem.Allocator,
     target: anytype,
-) std.mem.Allocator.Error!void {
+) std.mem.Allocator.Error!bool {
     switch (comptime spec.kind) {
         .string_list => {
             // Trimmed comma-split. Slices alias `value` (which lives on
@@ -353,23 +381,28 @@ fn applyValue(
                 if (trimmed.len > 0) try names.append(arena, trimmed);
             }
             @field(target, spec.field) = names.items;
+            return true;
         },
         .u32_opt => {
-            if (std.fmt.parseInt(u32, value, 10)) |n| {
-                @field(target, spec.field) = n;
-            } else |_| {}
+            const n = std.fmt.parseInt(u32, value, 10) catch return false;
+            @field(target, spec.field) = n;
+            return true;
         },
         .enum_opt => |E| {
-            if (std.meta.stringToEnum(E, value)) |e| {
-                @field(target, spec.field) = e;
-            }
+            const e = std.meta.stringToEnum(E, value) orelse return false;
+            @field(target, spec.field) = e;
+            return true;
         },
         .bool_opt => {
-            // Unsupported in CLI value form by design — bools use the
-            // affirmative / `cli_inverse` spellings. Caller spec is
-            // declaring an inconsistent shape; ignore at runtime so a
-            // misconfigured spec doesn't crash the CLI. Build-time
-            // detection would belong on a future `assertCliShape`.
+            if (std.mem.eql(u8, value, "true")) {
+                @field(target, spec.field) = true;
+                return true;
+            }
+            if (std.mem.eql(u8, value, "false")) {
+                @field(target, spec.field) = false;
+                return true;
+            }
+            return false;
         },
     }
 }

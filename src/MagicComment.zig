@@ -1,36 +1,53 @@
-//! `wgslender-minify-*` magic comments — per-document override of the
-//! minifier-mode setting.
+//! `wgslender-minify-*` magic comments — per-document override layer
+//! for `MinifySettings.Partial`. The accepted long-form keys are derived
+//! at comptime from `MinifySettings.partial_specs`: every spec whose
+//! `json_override` starts with `"minify"` and whose `magic_comment` flag
+//! is true contributes a directive.
 //!
-//! Grammar (locked in §2.6 of the minifier-mode design note):
+//! Grammar:
 //!
 //! ```wgsl
-//! // wgslender-minify-mode=insights
+//! // Long form — <key> = <value>:
 //! // wgslender-minify-mode=strict
-//! // wgslender-minify-mode=off
+//! // wgslender-minify-insights-format=bytes
+//! // wgslender-minify-insights-function-size=true
+//! // wgslender-minify-lints-enabled=true
+//! // wgslender-minify-estimator-use-full-minify=true
 //! /* wgslender-minify-mode=strict */
 //!
-//! // Shorthands:
-//! // wgslender-minify-insights
-//! // wgslender-minify-strict
+//! // Shorthands (locked — bare mode tag, no `=`):
+//! // wgslender-minify-insights      // ⇔ mode=insights
+//! // wgslender-minify-strict        // ⇔ mode=strict
 //! ```
+//!
+//! Long-form keys are derived from each spec's camel-dotted JSON path
+//! by stripping the leading `"minify"` and lowercasing camel boundaries
+//! into kebab-case (so `minifyInsights.functionSize` ↔
+//! `insights-function-size`). Adding a new field to
+//! `MinifySettings.Partial` automatically extends the directive surface.
+//!
+//! Specs that opt out via `magic_comment = false` (today: `budget_bytes`,
+//! to mirror the JSON-only precedent for `severities`) stay JSON-only.
 //!
 //! Rule-level disables (`wgslender-disable[-next-line|-line|-file]`) are
 //! handled by `src/lint/Disable.zig`; this scanner is only responsible
-//! for the mode directive.
+//! for `MinifySettings.Partial` overrides.
 //!
 //! Contract:
 //! * Single linear pass — comments are re-discovered the same way
 //!   `src/lint/Disable.zig` finds them, so WGSL nested block comments
 //!   work out of the box.
 //! * Later directives override earlier ones (last-wins).
-//! * Unknown directives emit an `M0000` diagnostic and leave the partial
-//!   untouched — the resolver falls back to workspace / project / default.
+//! * Unknown directives — unknown key, unparseable value, or a key that
+//!   opted out via `magic_comment = false` — emit an `M0000` diagnostic
+//!   and leave the partial untouched.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
 const Diagnostic = @import("Diagnostic.zig");
 const MinifySettings = @import("MinifySettings.zig");
+const options = @import("options.zig");
 
 pub const ScanResult = struct {
     /// Accumulated per-document layer. Fields left `null` defer to lower-
@@ -147,7 +164,31 @@ fn applyDirective(
     // Caller guarantees `text` starts with `directive_prefix`.
     const tail = std.mem.trim(u8, text[directive_prefix.len..], " \t");
 
-    // Shorthand forms: `wgslender-minify-insights` / `wgslender-minify-strict`.
+    // Long form: `<key> = <value>` — match `<key>` against any spec
+    // whose JSON path sits under the "minify" namespace (and is not
+    // opted out via `magic_comment = false`). Whitespace around `=`
+    // permitted (§2.6).
+    if (std.mem.indexOfScalar(u8, tail, '=')) |eq_pos| {
+        const raw_key = std.mem.trim(u8, tail[0..eq_pos], " \t");
+        const value = std.mem.trim(u8, tail[eq_pos + 1 ..], " \t");
+        inline for (MinifySettings.partial_specs) |spec| {
+            const magic_key = comptime magicCommentKey(spec);
+            if (magic_key.len > 0 and std.mem.eql(u8, raw_key, magic_key)) {
+                if (try options.applyValue(spec, value, arena, partial)) return;
+                // Key matched but value didn't parse (unknown enum tag,
+                // non-integer, non-bool literal). Fall through to the
+                // M0000 emitter so the user sees the typo.
+                break;
+            }
+        }
+        try emitUnknown(arena, diags, loc, line, text);
+        return;
+    }
+
+    // Bare directive (no `=`): shorthand for the mode field only. These
+    // are locked — auto-deriving from `Mode.fromString` would silently
+    // grow `wgslender-minify-off` as a third shorthand, which the
+    // current grammar deliberately omits.
     if (std.mem.eql(u8, tail, "insights")) {
         partial.mode = .insights;
         return;
@@ -157,23 +198,75 @@ fn applyDirective(
         return;
     }
 
-    // Long form: `wgslender-minify-mode = <value>` (whitespace around `=`
-    // permitted, per §2.6).
-    if (std.mem.startsWith(u8, tail, "mode")) {
-        const after_key = tail[4..];
-        // Must be followed by `=` (optionally preceded by whitespace) —
-        // otherwise this is an unrelated identifier like `mode_extra`.
-        const after_ws = std.mem.trimStart(u8, after_key, " \t");
-        if (after_ws.len > 0 and after_ws[0] == '=') {
-            const value = std.mem.trim(u8, after_ws[1..], " \t");
-            if (MinifySettings.Mode.fromString(value)) |m| {
-                partial.mode = m;
-                return;
+    try emitUnknown(arena, diags, loc, line, text);
+}
+
+/// Comptime-derive the magic-comment key for `spec`. Returns an empty
+/// slice when the spec is not directive-eligible — its `json_override`
+/// is unset / outside the "minify" namespace, or `magic_comment = false`.
+/// Otherwise returns the camel-dotted suffix lowercased into kebab-case
+/// (e.g. `"minifyInsights.functionSize"` → `"insights-function-size"`).
+fn magicCommentKey(comptime spec: options.OptionSpec) []const u8 {
+    if (!spec.magic_comment) return "";
+    const json = spec.json_override orelse return "";
+    const prefix = "minify";
+    if (!std.mem.startsWith(u8, json, prefix)) return "";
+    return camelDottedToKebab(json[prefix.len..]);
+}
+
+/// Comptime: `"Mode"` → `"mode"`, `"Insights.format"` → `"insights-format"`,
+/// `"Insights.functionSize"` → `"insights-function-size"`. Each `.` and
+/// each interior uppercase letter introduces a `-` separator; consecutive
+/// separators collapse (a leading `-` is suppressed).
+fn camelDottedToKebab(comptime s: []const u8) []const u8 {
+    return &CamelDottedToKebab(s).value;
+}
+
+fn CamelDottedToKebab(comptime s: []const u8) type {
+    comptime var out_len: usize = 0;
+    {
+        var prev_was_sep = true;
+        for (s) |c| {
+            if (c == '.') {
+                out_len += 1;
+                prev_was_sep = true;
+            } else if (c >= 'A' and c <= 'Z') {
+                if (!prev_was_sep) out_len += 1;
+                out_len += 1;
+                prev_was_sep = false;
+            } else {
+                out_len += 1;
+                prev_was_sep = false;
             }
         }
     }
-
-    try emitUnknown(arena, diags, loc, line, text);
+    return struct {
+        pub const value: [out_len]u8 = blk: {
+            var buf: [out_len]u8 = undefined;
+            var i: usize = 0;
+            var prev_was_sep = true;
+            for (s) |c| {
+                if (c == '.') {
+                    buf[i] = '-';
+                    i += 1;
+                    prev_was_sep = true;
+                } else if (c >= 'A' and c <= 'Z') {
+                    if (!prev_was_sep) {
+                        buf[i] = '-';
+                        i += 1;
+                    }
+                    buf[i] = c + 32;
+                    i += 1;
+                    prev_was_sep = false;
+                } else {
+                    buf[i] = c;
+                    i += 1;
+                    prev_was_sep = false;
+                }
+            }
+            break :blk buf;
+        };
+    };
 }
 
 fn emitUnknown(

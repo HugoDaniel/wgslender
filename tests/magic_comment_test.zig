@@ -200,3 +200,104 @@ test "specRefFor: M-prefix maps to minify slug" {
 test "Code.unknown_minify_directive has value M0000" {
     try std.testing.expectEqualStrings("M0000", Diagnostic.Code.unknown_minify_directive);
 }
+
+// =========================================================================
+// Generalised long-form directives — derived from MinifySettings.partial_specs.
+// =========================================================================
+
+test "scan: long form sets InsightsFormat enum (insights-format=bytes)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = try scan(arena_state.allocator(), "// wgslender-minify-insights-format=bytes\n");
+    try std.testing.expectEqual(MinifySettings.InsightsFormat.bytes, result.partial.format.?);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "scan: long form sets bool field (lints-enabled=true)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = try scan(arena_state.allocator(), "// wgslender-minify-lints-enabled=true\n");
+    try std.testing.expectEqual(@as(?bool, true), result.partial.lints_enabled);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "scan: long form bool accepts false literal" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = try scan(arena_state.allocator(), "// wgslender-minify-insights-function-size=false\n");
+    try std.testing.expectEqual(@as(?bool, false), result.partial.function_size);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "scan: long form sets nested camel-cased field (estimator-use-full-minify=true)" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = try scan(arena_state.allocator(), "// wgslender-minify-estimator-use-full-minify=true\n");
+    try std.testing.expectEqual(@as(?bool, true), result.partial.use_full_minify);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "scan: long form bool with garbage value emits M0000" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = try scan(arena_state.allocator(), "// wgslender-minify-lints-enabled=maybe\n");
+    try std.testing.expectEqual(@as(?bool, null), result.partial.lints_enabled);
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostics.len);
+    try std.testing.expectEqualStrings("M0000", result.diagnostics[0].code);
+}
+
+test "scan: long form enum with unknown tag emits M0000" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = try scan(arena_state.allocator(), "// wgslender-minify-insights-format=binary\n");
+    try std.testing.expectEqual(@as(?MinifySettings.InsightsFormat, null), result.partial.format);
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostics.len);
+    try std.testing.expectEqualStrings("M0000", result.diagnostics[0].code);
+}
+
+test "scan: budget_bytes is JSON-only — magic comment opt-out emits M0000" {
+    // Mirrors the precedent for `severities`. The spec carries
+    // `magic_comment = false`; the directive must be rejected even
+    // though the underlying parser handles `u32_opt`.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = try scan(arena_state.allocator(), "// wgslender-minify-lints-budget-bytes=4096\n");
+    try std.testing.expectEqual(@as(?u32, null), result.partial.budget_bytes);
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostics.len);
+    try std.testing.expectEqualStrings("M0000", result.diagnostics[0].code);
+}
+
+test "scan: unknown long-form key emits M0000" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = try scan(arena_state.allocator(), "// wgslender-minify-frobnicate=42\n");
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostics.len);
+    try std.testing.expectEqualStrings("M0000", result.diagnostics[0].code);
+}
+
+test "scan: long-form directives compose across one document" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const src =
+        \\// wgslender-minify-mode=strict
+        \\// wgslender-minify-insights-format=bytes
+        \\// wgslender-minify-lints-enabled=true
+        \\fn main() {}
+    ;
+    const result = try scan(arena_state.allocator(), src);
+    try std.testing.expectEqual(MinifySettings.Mode.strict, result.partial.mode.?);
+    try std.testing.expectEqual(MinifySettings.InsightsFormat.bytes, result.partial.format.?);
+    try std.testing.expectEqual(@as(?bool, true), result.partial.lints_enabled);
+    try std.testing.expectEqual(@as(usize, 0), result.diagnostics.len);
+}
+
+test "scan: bare key without `=` (no shorthand) emits M0000" {
+    // `insights-format` looks like a long-form key but the user forgot
+    // the value — should diagnose, not silently treat as shorthand.
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const result = try scan(arena_state.allocator(), "// wgslender-minify-insights-format\n");
+    try std.testing.expectEqual(@as(?MinifySettings.InsightsFormat, null), result.partial.format);
+    try std.testing.expectEqual(@as(usize, 1), result.diagnostics.len);
+    try std.testing.expectEqualStrings("M0000", result.diagnostics[0].code);
+}

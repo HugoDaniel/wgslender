@@ -82,7 +82,11 @@ pub const partial_specs = [_]options.OptionSpec{
     .{ .field = "decl_size", .kind = .bool_opt, .json_override = "minifyInsights.declSize" },
     .{ .field = "total_size", .kind = .bool_opt, .json_override = "minifyInsights.totalSize" },
     .{ .field = "lints_enabled", .kind = .bool_opt, .json_override = "minifyLints.enabled" },
-    .{ .field = "budget_bytes", .kind = .u32_opt, .json_override = "minifyLints.budgetBytes" },
+    // budget_bytes is intentionally JSON-only (mirrors `severities`):
+    // embedding a project-wide byte budget in source would let any
+    // contributor change it. The field's doc comment captures the
+    // rationale; `magic_comment = false` enforces it at the parser.
+    .{ .field = "budget_bytes", .kind = .u32_opt, .json_override = "minifyLints.budgetBytes", .magic_comment = false },
     .{ .field = "use_full_minify", .kind = .bool_opt, .json_override = "minifyEstimator.useFullMinify" },
 };
 
