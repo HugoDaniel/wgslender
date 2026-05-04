@@ -26,6 +26,14 @@ pub const Diagnostic = @import("Diagnostic.zig");
 pub const Types = @import("Types.zig");
 pub const Validator = @import("Validator.zig");
 pub const Minifier = @import("Minifier.zig");
+/// Composable pipeline. `Pipeline.Pass` is the public sequence-of-steps
+/// API used internally by `Minifier` and `Compiler`; downstream tooling
+/// can build custom pass lists or inject `Pass.custom` callbacks that
+/// read/write `Pipeline.State`. The side-table types `UseCounts`,
+/// `RenamePolicy`, and `Liveness` (above) are the data contracts
+/// exchanged between bundled passes and user code. See the
+/// `Pipeline.zig` module doc for the stability guarantees and standard
+/// pass order.
 pub const Pipeline = @import("Pipeline.zig");
 pub const Config = @import("Config.zig");
 pub const Reflect = @import("Reflect.zig");

@@ -69,10 +69,25 @@ pub const Pass = union(enum) {
     print,
     /// Consumes `state.source_map_gen`. Produces `state.source_map`.
     finalize_source_map,
-    /// Escape hatch. Receives mutable `*State` for read/write access and
-    /// `*const Options` for read-only configuration. Allocations should
-    /// use `state.arena`.
-    custom: *const fn (state: *State, options: *const Minifier.Options) Allocator.Error!void,
+    /// Escape hatch for downstream tooling. The `run` callback receives:
+    ///   * `ctx`     — the user-supplied opaque pointer (cast back to a
+    ///                 concrete type inside `run`).
+    ///   * `state`   — mutable Pipeline state. Read fields produced by
+    ///                 prior passes; write fields consumed by later
+    ///                 passes. Allocate via `state.arena`.
+    ///   * `options` — read-only `Minifier.Options` for the run.
+    ///
+    /// Custom passes are invoked in the order they appear in the pass
+    /// list, with the same non-strict semantics as bundled passes (skip
+    /// silently if a required input is missing rather than erroring).
+    custom: Custom,
+};
+
+/// User-supplied callback paired with its opaque context, matching the
+/// `Listener` convention used elsewhere in the codebase.
+pub const Custom = struct {
+    ctx: *anyopaque,
+    run: *const fn (ctx: *anyopaque, state: *State, options: *const Minifier.Options) Allocator.Error!void,
 };
 
 /// Pipeline state. Each `?T` field is populated by the pass that
@@ -150,7 +165,7 @@ pub fn run(state: *State, passes: []const Pass, options: Minifier.Options) Alloc
             .build_renamer => try runBuildRenamer(state, options),
             .print => try runPrint(state, options),
             .finalize_source_map => try runFinalizeSourceMap(state),
-            .custom => |f| try f(state, &options),
+            .custom => |c| try c.run(c.ctx, state, &options),
         }
     }
 }

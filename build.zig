@@ -255,6 +255,10 @@ pub fn build(b: *std.Build) void {
     // Liveness side-table integration — Dce.mark dual-write parity and
     // minify-path agreement with a fresh DCE on the compute.toys corpus.
     _ = addTestStep(b, test_step, "tests/liveness_test.zig", target, optimize, &.{w});
+    // Pipeline `Pass.custom` integration — verifies the public extension
+    // point: state observation, mid-pipeline mutation honored downstream,
+    // ordering, and the non-strict (skip on missing input) contract.
+    _ = addTestStep(b, test_step, "tests/pipeline_custom_pass_test.zig", target, optimize, &.{w});
     // Incremental.reparse — end-to-end add/sub delta scenarios covering
     // per-symbol use_count invariants across a range of symbol-free
     // anchor kinds and round-trip edit sequences.
