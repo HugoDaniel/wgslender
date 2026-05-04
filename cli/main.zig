@@ -23,9 +23,15 @@ const CliArgs = struct {
 
     const ValidateFormat = enum { text, json, stylish };
 
+    /// Field names mirror `Config.lint_extends` / `Config.lint_rules` so
+    /// the spec dispatcher (`OptionsSpec.matchFlag` against
+    /// `OptionsSpec.lint_specs`) can target this struct directly via
+    /// `@field(target, spec.field)`. The downstream `runLint` translator
+    /// peels them back into the `extends` / `rules` keys on
+    /// `Linter.Options`.
     const LintOptions = struct {
-        extends: []const []const u8 = &.{},
-        rule_overrides: []const wgslender.Linter.Options.RuleOverride = &.{},
+        lint_extends: []const []const u8 = &.{},
+        lint_rules: []const wgslender.Linter.Options.RuleOverride = &.{},
         max_warnings: i32 = -1,
         quiet: bool = false,
         fix: bool = false,
@@ -110,8 +116,13 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     var source_map_sources = false;
     var passed: Passed = .{};
 
-    var lint_extends: std.ArrayListUnmanaged([]const u8) = .empty;
-    var lint_rule_overrides: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
+    // CLI-side accumulators for `--extends` / `--rule` live on
+    // `args.lint_options` directly — the spec dispatcher writes there via
+    // `OptionsSpec.matchFlag`. `lint_use_recommended` stays a local: it
+    // tracks the negative `--no-recommended` flag (no JSON / spec
+    // equivalent — auto-recommended is a CLI-only convenience), used by
+    // the merge step below to decide whether to seed the empty extends
+    // list with `@wgslender/recommended`.
     var lint_use_recommended = true;
 
     var args_iter = std.process.Args.Iterator.init(raw_args);
@@ -125,24 +136,12 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             args.subcommand = .reflect;
         } else if (std.mem.eql(u8, arg, "lint")) {
             args.subcommand = .lint;
-        } else if (std.mem.eql(u8, arg, "--extends")) {
-            passed.lint_flag = true;
-            if (args_iter.next()) |name| {
-                lint_extends.append(arena, name) catch return null;
-                lint_use_recommended = false;
-            }
         } else if (std.mem.eql(u8, arg, "--no-recommended")) {
+            // CLI-only meta-flag: suppresses the "if no extends supplied,
+            // auto-add @wgslender/recommended" default. Stays hand-rolled
+            // because it has no JSON shape and no spec entry.
             passed.lint_flag = true;
             lint_use_recommended = false;
-        } else if (std.mem.eql(u8, arg, "--rule")) {
-            passed.lint_flag = true;
-            if (args_iter.next()) |spec| {
-                const override = parseRuleOverride(spec) orelse {
-                    File.stderr().writeStreamingAll(io, "error: invalid --rule syntax (expected id=severity)\n") catch {};
-                    return null;
-                };
-                lint_rule_overrides.append(arena, override) catch return null;
-            }
         } else if (std.mem.eql(u8, arg, "--max-warnings")) {
             passed.lint_flag = true;
             if (args_iter.next()) |v| args.lint_options.max_warnings = std.fmt.parseInt(i32, v, 10) catch -1;
@@ -198,6 +197,8 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             arena,
             args.subcommand,
             &args.options,
+            &args.lint_options,
+            &passed,
             io,
         ) catch return null)) {
             // Spec-driven dispatch consumed the flag (matched + applied,
@@ -280,22 +281,27 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         //     overrides in slice order; CLI rules come last so they win.
         //   report_unused_disable_directives: CLI flag (true) wins; else
         //     config value if set; else false.
+        // The CLI accumulators arrive on `args.lint_options.lint_extends`
+        // / `.lint_rules` from the spec dispatcher; the merged result is
+        // written back to the same fields for `runLint` to read.
+        const cli_extends = args.lint_options.lint_extends;
         var merged_extends: std.ArrayListUnmanaged([]const u8) = .empty;
         if (loaded_config) |cfg| {
             merged_extends.appendSlice(arena, cfg.lint_extends) catch return null;
         }
-        merged_extends.appendSlice(arena, lint_extends.items) catch return null;
+        merged_extends.appendSlice(arena, cli_extends) catch return null;
         if (lint_use_recommended and merged_extends.items.len == 0) {
             merged_extends.append(arena, "@wgslender/recommended") catch return null;
         }
-        args.lint_options.extends = merged_extends.items;
+        args.lint_options.lint_extends = merged_extends.items;
 
+        const cli_rules = args.lint_options.lint_rules;
         var merged_rules: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
         if (loaded_config) |cfg| {
             merged_rules.appendSlice(arena, cfg.lint_rules) catch return null;
         }
-        merged_rules.appendSlice(arena, lint_rule_overrides.items) catch return null;
-        args.lint_options.rule_overrides = merged_rules.items;
+        merged_rules.appendSlice(arena, cli_rules) catch return null;
+        args.lint_options.lint_rules = merged_rules.items;
 
         if (loaded_config) |cfg| {
             if (cfg.report_unused_disable_directives) |v| {
@@ -311,34 +317,91 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     return args;
 }
 
-/// Try to match `arg` against the spec table. Returns true if matched
-/// (consumed by spec dispatch — caller should not try other arms).
+/// Try to match `arg` against the spec tables, in order:
+///   1. `minifier_options_specs` → writes to `Minifier.Options`
+///   2. `lint_specs` → writes to `CliArgs.LintOptions` (lint_extends /
+///      lint_rules accumulators)
+/// Returns true if matched (consumed — caller should not try other arms).
 /// Emits a per-flag stderr warning when the flag is recognized but the
-/// current subcommand excludes it.
+/// current subcommand excludes it. When a lint spec matches successfully,
+/// stamps `passed.lint_flag` so the categorical "lint flags ignored on …"
+/// warning still fires for non-lint subcommands. Returns
+/// `error.InvalidCliValue` when a strict-value spec rejects its
+/// argument (today: only `--rule id=severity` opts in via
+/// `cli_strict_value`); the caller catches and aborts. The stderr
+/// message is emitted here so the error propagation is purely a
+/// control-flow signal.
+const DispatchError = std.mem.Allocator.Error || error{InvalidCliValue};
+
 fn dispatchSpecFlag(
     arg: []const u8,
     args_iter: anytype,
     arena: std.mem.Allocator,
     subcommand: wgslender.OptionsSpec.Subcommand,
-    target: *wgslender.Minifier.Options,
+    minify_target: *wgslender.Minifier.Options,
+    lint_target: *CliArgs.LintOptions,
+    passed: *Passed,
     io: std.Io,
-) std.mem.Allocator.Error!bool {
-    const result = try wgslender.OptionsSpec.matchFlag(
+) DispatchError!bool {
+    const minify_result = try wgslender.OptionsSpec.matchFlag(
         arg,
         args_iter,
         arena,
         subcommand,
         &wgslender.OptionsSpec.minifier_options_specs,
-        target,
+        minify_target,
     );
-    return switch (result) {
-        .matched => true,
-        .wrong_subcommand => blk: {
+    switch (minify_result) {
+        .matched => return true,
+        .wrong_subcommand => {
             warnFlagIgnored(io, arg, subcommand);
-            break :blk true;
+            return true;
         },
-        .no_match => false,
-    };
+        .invalid_value => {
+            warnInvalidValue(io, arg);
+            return error.InvalidCliValue;
+        },
+        .no_match => {},
+    }
+
+    const lint_result = try wgslender.OptionsSpec.matchFlag(
+        arg,
+        args_iter,
+        arena,
+        subcommand,
+        &wgslender.OptionsSpec.lint_specs,
+        lint_target,
+    );
+    switch (lint_result) {
+        .matched => {
+            passed.lint_flag = true;
+            return true;
+        },
+        .wrong_subcommand => {
+            passed.lint_flag = true;
+            warnFlagIgnored(io, arg, subcommand);
+            return true;
+        },
+        .invalid_value => {
+            passed.lint_flag = true;
+            warnInvalidValue(io, arg);
+            return error.InvalidCliValue;
+        },
+        .no_match => return false,
+    }
+}
+
+fn warnInvalidValue(io: std.Io, arg: []const u8) void {
+    const f = std.Io.File.stderr();
+    f.writeStreamingAll(io, "error: invalid value for ") catch {};
+    f.writeStreamingAll(io, arg) catch {};
+    // Per-flag format hint. Today only `--rule` opts into strict
+    // validation, so the lookup table has one entry. If more strict
+    // specs land, plumb the hint through `MatchResult` instead.
+    if (std.mem.eql(u8, arg, "--rule")) {
+        f.writeStreamingAll(io, " (expected id=severity, severity ∈ off|warn|error)") catch {};
+    }
+    f.writeStreamingAll(io, "\n") catch {};
 }
 
 fn warnFlagIgnored(
@@ -418,23 +481,6 @@ fn warnIgnoredFlags(
             if (passed.reflect_format_flag) W.warn(io, "--reflect-format has no effect on lint (reflect-only)");
         },
     }
-}
-
-/// Parse a `--rule id=severity` spec. Accepts `off` / `warn` / `error`.
-fn parseRuleOverride(spec: []const u8) ?wgslender.Linter.Options.RuleOverride {
-    const eq = std.mem.indexOfScalar(u8, spec, '=') orelse return null;
-    if (eq == 0 or eq == spec.len - 1) return null;
-    const id = spec[0..eq];
-    const sev_s = spec[eq + 1 ..];
-    const sev: wgslender.Diagnostic.Severity = if (std.mem.eql(u8, sev_s, "off"))
-        .disabled
-    else if (std.mem.eql(u8, sev_s, "warn") or std.mem.eql(u8, sev_s, "warning"))
-        .warning
-    else if (std.mem.eql(u8, sev_s, "error"))
-        .@"error"
-    else
-        return null;
-    return .{ .id = id, .severity = sev };
 }
 
 /// Load config from explicit path or auto-discover from parent directories.
@@ -779,8 +825,8 @@ fn runLint(
 ) !void {
     const Diagnostic = wgslender.Diagnostic;
     var result = try wgslender.lint(arena, source, .{
-        .extends = lint_opts.extends,
-        .rules = lint_opts.rule_overrides,
+        .extends = lint_opts.lint_extends,
+        .rules = lint_opts.lint_rules,
         .line_offset = line_offset,
         .report_unused_disable_directives = lint_opts.report_unused_disable_directives,
     });
@@ -1031,7 +1077,6 @@ const usage_subcommand_specifics =
 
 const usage_lint_outliers =
     \\  --no-recommended                  Do not auto-apply @wgslender/recommended
-    \\  --rule <id>=<severity>            Override a rule (severity: off|warn|error)
     \\  --max-warnings <n>                Exit non-zero if lint warnings exceed n
     \\  --quiet                           Show errors only; hide warnings
     \\  --fix                             Apply autofixes in place (requires a file input)

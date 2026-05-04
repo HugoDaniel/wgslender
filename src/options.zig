@@ -21,6 +21,8 @@
 //!     specs to collapse what was a hand-rolled walker.
 
 const std = @import("std");
+const Diagnostic = @import("Diagnostic.zig");
+const Linter = @import("lint/Linter.zig");
 
 pub const OptionKind = union(enum) {
     /// `?bool` (or `bool`) field. JSON value must be a boolean; non-bool
@@ -30,6 +32,8 @@ pub const OptionKind = union(enum) {
     /// `[]const []const u8` field. JSON value must be an array; string
     /// elements are duped into the supplied allocator and assigned to the
     /// target field. Non-array / empty array leaves the target unchanged.
+    /// CLI value form (`cli_takes_value = true`) is comma-split (single
+    /// invocation, multiple entries — matches `--keep-names a,b,c`).
     string_list,
     /// `?u32` (or `u32`) field. JSON value must be a non-negative integer
     /// in `[0, maxInt(u32)]`. Out-of-range / wrong-type silently ignored.
@@ -39,6 +43,23 @@ pub const OptionKind = union(enum) {
     /// sensitive, exact match — uses `std.meta.stringToEnum`). Unknown
     /// tags / wrong types silently ignored.
     enum_opt: type,
+    /// `[]const []const u8` field with **accumulating** CLI semantics:
+    /// each `--flag <value>` invocation appends *one* element (no comma
+    /// split). JSON shape matches `string_list` (array of strings).
+    /// Used by `--extends` so repeated invocations stack: `--extends @a
+    /// --extends @b` ⇒ `[@a, @b]`. Distinct from `string_list` so the
+    /// CLI dispatcher knows not to treat the value as CSV.
+    string_accum,
+    /// `[]const Linter.Options.RuleOverride` field with accumulating CLI
+    /// semantics: each `--flag <value>` invocation parses `value` as
+    /// `id=severity` (severity ∈ `off|warn|warning|error`) and appends
+    /// one `RuleOverride`. JSON shape: `{ "rule-id": "severity" }` or
+    /// `{ "rule-id": ["severity", { ...options }] }` — the array form
+    /// carries per-rule options (deep-cloned into the supplied allocator
+    /// so they outlive the parse tree). Used by `--rule` / the `rules`
+    /// JSON key. Targets must own their `id` slices and the per-rule
+    /// `options` JSON value; `freeJsonValue` here mirrors the alloc.
+    rule_override_accum,
 };
 
 /// Subcommands recognized by the wgslender CLI. Used by `subcommands`
@@ -78,6 +99,14 @@ pub const OptionSpec = struct {
     /// `bool_opt` value-form is unsupported (use `cli_simple` /
     /// `cli_inverse` instead).
     cli_takes_value: bool = false,
+    /// When true, a parse failure on the value form aborts the CLI with
+    /// an error. Default is permissive — most flags silently coerce
+    /// (e.g. `--max-warnings garbage` stays at its default), matching
+    /// the dispatcher's historical behavior. Set true on flags where a
+    /// typo'd value silently invalidates user intent (today: `--rule`,
+    /// because a typo'd severity tag would otherwise look like the rule
+    /// took effect when it didn't).
+    cli_strict_value: bool = false,
     /// Subcommands that honor this flag. Empty (default) = all
     /// subcommands. The dispatcher uses this to filter `--help` output
     /// and decide whether to emit an "ignored flag" warning.
@@ -166,6 +195,8 @@ pub fn cliFlag(comptime spec: OptionSpec) []const u8 {
 ///   * `.string_list` ⇒ `[]const []const u8`
 ///   * `.u32_opt` ⇒ `?u32` or `u32`
 ///   * `.enum_opt = E` ⇒ `?E` or `E`
+///   * `.string_accum` ⇒ `[]const []const u8`
+///   * `.rule_override_accum` ⇒ `[]const Linter.Options.RuleOverride`
 pub fn assertSpecFieldsExist(comptime Target: type, comptime specs: []const OptionSpec) void {
     inline for (specs) |spec| {
         if (!@hasField(Target, spec.field)) {
@@ -177,6 +208,8 @@ pub fn assertSpecFieldsExist(comptime Target: type, comptime specs: []const Opti
             .string_list => if (FT != []const []const u8) @compileError("OptionSpec '" ++ spec.field ++ "' kind=string_list requires []const []const u8 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .u32_opt => if (FT != ?u32 and FT != u32) @compileError("OptionSpec '" ++ spec.field ++ "' kind=u32_opt requires ?u32 or u32 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .enum_opt => |E| if (FT != ?E and FT != E) @compileError("OptionSpec '" ++ spec.field ++ "' kind=enum_opt requires ?" ++ @typeName(E) ++ " or " ++ @typeName(E) ++ " field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
+            .string_accum => if (FT != []const []const u8) @compileError("OptionSpec '" ++ spec.field ++ "' kind=string_accum requires []const []const u8 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
+            .rule_override_accum => if (FT != []const Linter.Options.RuleOverride) @compileError("OptionSpec '" ++ spec.field ++ "' kind=rule_override_accum requires []const Linter.Options.RuleOverride field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
         }
     }
 }
@@ -246,8 +279,172 @@ pub fn applyJson(
                         }
                     }
                 },
+                .string_accum => {
+                    // JSON shape mirrors `string_list`: an array of strings,
+                    // each element duped into `allocator`. The "accumulating"
+                    // semantic is CLI-only — repeated `--flag <v>` is what
+                    // accumulates; the JSON form ships every element in one
+                    // array, so a single `applyJson` write is correct.
+                    if (value == .array) {
+                        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+                        errdefer {
+                            for (names.items) |s| allocator.free(s);
+                            names.deinit(allocator);
+                        }
+                        for (value.array.items) |item| {
+                            if (item == .string) {
+                                try names.append(allocator, try allocator.dupe(u8, item.string));
+                            }
+                        }
+                        @field(target, spec.field) = try names.toOwnedSlice(allocator);
+                    }
+                },
+                .rule_override_accum => {
+                    // ESLint-style `{ "rule-id": "warn" | ["warn", { ... }] }`.
+                    // Each id is duped; per-rule options (array form) are
+                    // deep-cloned so they outlive `parseJson`'s temporary
+                    // parse tree. Caller must `freeJsonValue` each
+                    // `RuleOverride.options` and `allocator.free` each `id`
+                    // (see `Config.deinit` for the canonical wind-down).
+                    if (value == .object) {
+                        var list: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
+                        errdefer {
+                            for (list.items) |r| {
+                                allocator.free(r.id);
+                                if (r.options) |opts| {
+                                    var o = opts;
+                                    freeJsonValue(allocator, &o);
+                                }
+                            }
+                            list.deinit(allocator);
+                        }
+                        var it = value.object.iterator();
+                        while (it.next()) |kv| {
+                            const sev = parseSeverityValue(kv.value_ptr.*) orelse continue;
+                            var opts: ?std.json.Value = null;
+                            if (kv.value_ptr.* == .array) {
+                                const arr = kv.value_ptr.array;
+                                if (arr.items.len > 1) {
+                                    opts = try dupeJsonValue(allocator, arr.items[1]);
+                                }
+                            }
+                            errdefer if (opts) |o| {
+                                var oo = o;
+                                freeJsonValue(allocator, &oo);
+                            };
+                            const id = try allocator.dupe(u8, kv.key_ptr.*);
+                            try list.append(allocator, .{ .id = id, .severity = sev, .options = opts });
+                        }
+                        @field(target, spec.field) = try list.toOwnedSlice(allocator);
+                    }
+                },
             }
         }
+    }
+}
+
+/// Parse an ESLint-style severity value: `"off"`, `"warn"` / `"warning"`,
+/// `"error"`, or a `[severity, options]` array (only the first element is
+/// inspected here — `applyJson`'s `rule_override_accum` arm handles the
+/// optional second element separately). Returns null for unknown strings
+/// or non-string / non-array shapes; the caller drops the entry.
+pub fn parseSeverityValue(value: std.json.Value) ?Diagnostic.Severity {
+    const s: []const u8 = switch (value) {
+        .string => |str| str,
+        .array => |arr| if (arr.items.len > 0 and arr.items[0] == .string) arr.items[0].string else return null,
+        else => return null,
+    };
+    return parseSeverityString(s);
+}
+
+/// Parse a severity string token (`off|warn|warning|error`). Used by both
+/// the JSON-side parser and the CLI `--rule id=severity` parser.
+pub fn parseSeverityString(s: []const u8) ?Diagnostic.Severity {
+    if (std.mem.eql(u8, s, "off")) return .disabled;
+    if (std.mem.eql(u8, s, "warn") or std.mem.eql(u8, s, "warning")) return .warning;
+    if (std.mem.eql(u8, s, "error")) return .@"error";
+    return null;
+}
+
+/// Parse a CLI `--rule id=severity` token into a `RuleOverride`. Returns
+/// null on syntax error (missing `=`, empty id, empty severity, unknown
+/// severity tag). The `id` slice aliases `spec` directly — the caller owns
+/// `spec`'s storage and must keep it alive for the override's lifetime
+/// (the CLI passes argv-arena slices, which live for the whole process).
+pub fn parseRuleOverrideToken(spec: []const u8) ?Linter.Options.RuleOverride {
+    const eq = std.mem.indexOfScalar(u8, spec, '=') orelse return null;
+    if (eq == 0 or eq == spec.len - 1) return null;
+    const id = spec[0..eq];
+    const sev = parseSeverityString(spec[eq + 1 ..]) orelse return null;
+    return .{ .id = id, .severity = sev };
+}
+
+/// Recursively deep-clone a `std.json.Value` into `allocator`. Used by
+/// the `rule_override_accum` JSON arm to lift per-rule `options` out of
+/// the temporary parse tree (which `parseJson` deinits before returning)
+/// into the long-lived allocator that owns `Config`. Mirror of
+/// `freeJsonValue` — allocations from this function must be freed with it.
+pub fn dupeJsonValue(allocator: std.mem.Allocator, v: std.json.Value) std.mem.Allocator.Error!std.json.Value {
+    return switch (v) {
+        .null => .null,
+        .bool => |b| .{ .bool = b },
+        .integer => |i| .{ .integer = i },
+        .float => |f| .{ .float = f },
+        .number_string => |s| .{ .number_string = try allocator.dupe(u8, s) },
+        .string => |s| .{ .string = try allocator.dupe(u8, s) },
+        .array => |arr| blk: {
+            var new_arr = std.json.Array.init(allocator);
+            errdefer {
+                for (new_arr.items) |*item| freeJsonValue(allocator, item);
+                new_arr.deinit();
+            }
+            try new_arr.ensureTotalCapacity(arr.items.len);
+            for (arr.items) |item| {
+                new_arr.appendAssumeCapacity(try dupeJsonValue(allocator, item));
+            }
+            break :blk .{ .array = new_arr };
+        },
+        .object => |obj| blk: {
+            var new_obj: std.json.ObjectMap = .empty;
+            errdefer {
+                var it = new_obj.iterator();
+                while (it.next()) |kv| {
+                    allocator.free(kv.key_ptr.*);
+                    freeJsonValue(allocator, kv.value_ptr);
+                }
+                new_obj.deinit(allocator);
+            }
+            try new_obj.ensureTotalCapacity(allocator, obj.count());
+            var it = obj.iterator();
+            while (it.next()) |kv| {
+                const k = try allocator.dupe(u8, kv.key_ptr.*);
+                try new_obj.put(allocator, k, try dupeJsonValue(allocator, kv.value_ptr.*));
+            }
+            break :blk .{ .object = new_obj };
+        },
+    };
+}
+
+/// Recursive counterpart to `dupeJsonValue` — frees every allocation
+/// `dupeJsonValue` made on `allocator`. Idempotency is not supported
+/// (caller must not double-free); designed to be called once from
+/// `Config.deinit` per per-rule `options` entry.
+pub fn freeJsonValue(allocator: std.mem.Allocator, v: *std.json.Value) void {
+    switch (v.*) {
+        .null, .bool, .integer, .float => {},
+        .number_string, .string => |s| allocator.free(s),
+        .array => |*arr| {
+            for (arr.items) |*item| freeJsonValue(allocator, item);
+            arr.deinit();
+        },
+        .object => |*obj| {
+            var it = obj.iterator();
+            while (it.next()) |kv| {
+                allocator.free(kv.key_ptr.*);
+                freeJsonValue(allocator, kv.value_ptr);
+            }
+            obj.deinit(allocator);
+        },
     }
 }
 
@@ -264,6 +461,11 @@ pub const MatchResult = enum {
     /// the parser in sync; the target was *not* written. The caller
     /// should emit a "--<flag> has no effect on <subcommand>" warning.
     wrong_subcommand,
+    /// Flag matched and consumed its value, but the value didn't parse.
+    /// Only emitted when the spec opts into `cli_strict_value` (most
+    /// specs are permissive). Caller is expected to abort the CLI with
+    /// a "invalid --<flag> value" error.
+    invalid_value,
 };
 
 /// True iff `sub` appears in the comptime list `list`. `list` may be
@@ -316,10 +518,12 @@ pub fn matchFlag(
                         return .wrong_subcommand;
                     }
                     const value = args_iter.next() orelse return .matched;
-                    // CLI matchers historically drop parse failures
-                    // silently — discard the success bool to preserve
-                    // that behavior.
-                    _ = try applyValue(spec, value, arena, target);
+                    const ok = try applyValue(spec, value, arena, target);
+                    // Permissive by default (matches every other CLI
+                    // flag); strict mode lets specs opt into a hard
+                    // failure when a typo'd value would silently make
+                    // the flag a no-op.
+                    if (!ok and comptime spec.cli_strict_value) return .invalid_value;
                     return .matched;
                 }
             } else {
@@ -404,6 +608,30 @@ pub fn applyValue(
             }
             return false;
         },
+        .string_accum => {
+            // Each `--flag <v>` invocation appends one element. Reading
+            // the existing slice + writing a fresh `toOwnedSlice` is O(n)
+            // per append, but n is the count of `--flag` invocations on
+            // one CLI line — single digits, not a hot path. The arena
+            // reclaims the discarded intermediate slices on process exit.
+            // The element aliases `value` directly (caller's argv arena
+            // owns the storage) — same lifetime contract as `string_list`.
+            const current = @field(target, spec.field);
+            var list: std.ArrayListUnmanaged([]const u8) = .empty;
+            try list.appendSlice(arena, current);
+            try list.append(arena, value);
+            @field(target, spec.field) = try list.toOwnedSlice(arena);
+            return true;
+        },
+        .rule_override_accum => {
+            const override = parseRuleOverrideToken(value) orelse return false;
+            const current = @field(target, spec.field);
+            var list: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
+            try list.appendSlice(arena, current);
+            try list.append(arena, override);
+            @field(target, spec.field) = try list.toOwnedSlice(arena);
+            return true;
+        },
     }
 }
 
@@ -482,6 +710,14 @@ pub fn applyDefaults(
             .enum_opt => {
                 if (@field(source, spec.field)) |v| @field(target, spec.field) = v;
             },
+            .string_accum, .rule_override_accum => {
+                // Lint accumulators (extends, rule overrides) flow into
+                // `Linter.Options` via a dedicated CLI merge step in
+                // `cli/main.zig`, not through `Minifier.Options`. None of
+                // the spec tables passed to `applyDefaults` today carry
+                // these kinds — the arms exist only to keep the switch
+                // exhaustive.
+            },
         }
     }
 }
@@ -527,16 +763,23 @@ pub const source_map_specs = [_]OptionSpec{
     .{ .field = "source_map_sources", .kind = .bool_opt, .cli_simple = false, .subcommands = &minify_only, .summary = "Embed the original source content in the source map" },
 };
 
-/// Lint configuration knobs. `lint_rules` is intentionally hand-parsed
-/// (severity / per-rule options shape doesn't fit `string_list`).
+/// Lint configuration knobs. Both `lint_extends` (kebab `--extends`) and
+/// `lint_rules` (kebab `--rule`) accumulate across repeated CLI
+/// invocations — the dispatcher routes through `string_accum` /
+/// `rule_override_accum` arms in `applyValue`. JSON keys (`extends`,
+/// `rules`) sit at the root of `wgslender.json`, not under a `lint`
+/// namespace, hence the explicit `json_override`s.
+///
+/// `--report-unused-disable-directives` stays `cli_simple = false` for
+/// now: the CLI target is `bool` (not `?bool`) and the JSON target is
+/// `?bool`; the dispatcher's affirmative-form arm writes `true` to
+/// either, but the merge step in `cli/main.zig` already handles the
+/// `Config.report_unused_disable_directives orelse cli_value` precedence
+/// hand-rolled, so promoting it to `cli_simple = true` would duplicate
+/// that logic. Future cleanup, not in scope here.
 pub const lint_specs = [_]OptionSpec{
-    // CLI dispatch for `--extends` is hand-rolled (accumulating list of
-    // ids, not a single value) — `cli_simple = false` keeps the
-    // spec-driven matchFlag from claiming it. `cli_override` keeps the
-    // CLI flag name as `--extends` rather than the derived
-    // `--lint-extends`. `--report-unused-disable-directives` matches
-    // its derived snake-to-kebab form so no override is needed.
-    .{ .field = "lint_extends", .kind = .string_list, .cli_simple = false, .subcommands = &lint_only, .json_override = "extends", .cli_override = "extends", .summary = "Inherit rules from a shareable lint config pack (repeatable)" },
+    .{ .field = "lint_extends", .kind = .string_accum, .cli_takes_value = true, .subcommands = &lint_only, .json_override = "extends", .cli_override = "extends", .summary = "Inherit rules from a shareable lint config pack (repeatable)" },
+    .{ .field = "lint_rules", .kind = .rule_override_accum, .cli_takes_value = true, .cli_strict_value = true, .subcommands = &lint_only, .json_override = "rules", .cli_override = "rule", .summary = "Override a rule severity (id=off|warn|error, repeatable)" },
     .{ .field = "report_unused_disable_directives", .kind = .bool_opt, .cli_simple = false, .subcommands = &lint_only, .summary = "Warn on wgslender-disable comments that never match" },
 };
 
@@ -904,4 +1147,184 @@ test "matchFlag rejects flags whose subcommands list excludes the current subcom
     target.sort_declarations = false;
     try std.testing.expectEqual(MatchResult.wrong_subcommand, try matchFlag("--sort-declarations", &it, arena.allocator(), .lint, &specs, &target));
     try std.testing.expectEqual(false, target.sort_declarations);
+}
+
+// Two-element iterator stub for value-form matchFlag tests.
+fn ValueIter(comptime n: usize) type {
+    return struct {
+        values: [n][]const u8,
+        idx: usize = 0,
+        pub fn next(self: *@This()) ?[]const u8 {
+            if (self.idx >= self.values.len) return null;
+            defer self.idx += 1;
+            return self.values[self.idx];
+        }
+    };
+}
+
+test "matchFlag string_accum: repeated invocations append" {
+    const Target = struct { lint_extends: []const []const u8 = &.{} };
+    const specs = [_]OptionSpec{
+        .{ .field = "lint_extends", .kind = .string_accum, .cli_takes_value = true, .cli_override = "extends" },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var target: Target = .{};
+
+    // First invocation appends one element.
+    var it1 = ValueIter(1){ .values = .{"@wgslender/recommended"} };
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--extends", &it1, arena.allocator(), .lint, &specs, &target));
+    try std.testing.expectEqual(@as(usize, 1), target.lint_extends.len);
+    try std.testing.expectEqualStrings("@wgslender/recommended", target.lint_extends[0]);
+
+    // Second invocation appends a second element (does not overwrite).
+    var it2 = ValueIter(1){ .values = .{"@wgslender/strict"} };
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--extends", &it2, arena.allocator(), .lint, &specs, &target));
+    try std.testing.expectEqual(@as(usize, 2), target.lint_extends.len);
+    try std.testing.expectEqualStrings("@wgslender/recommended", target.lint_extends[0]);
+    try std.testing.expectEqualStrings("@wgslender/strict", target.lint_extends[1]);
+
+    // Third invocation extends to three.
+    var it3 = ValueIter(1){ .values = .{"@wgslender/style"} };
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--extends", &it3, arena.allocator(), .lint, &specs, &target));
+    try std.testing.expectEqual(@as(usize, 3), target.lint_extends.len);
+}
+
+test "matchFlag rule_override_accum: parses id=severity and accumulates" {
+    const Target = struct { lint_rules: []const Linter.Options.RuleOverride = &.{} };
+    const specs = [_]OptionSpec{
+        .{ .field = "lint_rules", .kind = .rule_override_accum, .cli_takes_value = true, .cli_strict_value = true, .cli_override = "rule" },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var target: Target = .{};
+
+    // Each invocation appends one RuleOverride; severity vocabulary is
+    // off|warn|warning|error.
+    var it1 = ValueIter(1){ .values = .{"no-unused-vars=warn"} };
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--rule", &it1, arena.allocator(), .lint, &specs, &target));
+    var it2 = ValueIter(1){ .values = .{"no-magic-numbers=off"} };
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--rule", &it2, arena.allocator(), .lint, &specs, &target));
+    var it3 = ValueIter(1){ .values = .{"max-params=error"} };
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--rule", &it3, arena.allocator(), .lint, &specs, &target));
+
+    try std.testing.expectEqual(@as(usize, 3), target.lint_rules.len);
+    try std.testing.expectEqualStrings("no-unused-vars", target.lint_rules[0].id);
+    try std.testing.expectEqual(Diagnostic.Severity.warning, target.lint_rules[0].severity);
+    try std.testing.expectEqualStrings("no-magic-numbers", target.lint_rules[1].id);
+    try std.testing.expectEqual(Diagnostic.Severity.disabled, target.lint_rules[1].severity);
+    try std.testing.expectEqualStrings("max-params", target.lint_rules[2].id);
+    try std.testing.expectEqual(Diagnostic.Severity.@"error", target.lint_rules[2].severity);
+}
+
+test "matchFlag rule_override_accum: strict mode rejects bad value" {
+    const Target = struct { lint_rules: []const Linter.Options.RuleOverride = &.{} };
+    const specs = [_]OptionSpec{
+        .{ .field = "lint_rules", .kind = .rule_override_accum, .cli_takes_value = true, .cli_strict_value = true, .cli_override = "rule" },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var target: Target = .{};
+
+    // Missing `=` → invalid_value (strict opt-in).
+    var it1 = ValueIter(1){ .values = .{"garbage"} };
+    try std.testing.expectEqual(MatchResult.invalid_value, try matchFlag("--rule", &it1, arena.allocator(), .lint, &specs, &target));
+    try std.testing.expectEqual(@as(usize, 0), target.lint_rules.len);
+
+    // Unknown severity tag → invalid_value.
+    var it2 = ValueIter(1){ .values = .{"no-foo=bogus"} };
+    try std.testing.expectEqual(MatchResult.invalid_value, try matchFlag("--rule", &it2, arena.allocator(), .lint, &specs, &target));
+    try std.testing.expectEqual(@as(usize, 0), target.lint_rules.len);
+
+    // Empty id → invalid_value.
+    var it3 = ValueIter(1){ .values = .{"=warn"} };
+    try std.testing.expectEqual(MatchResult.invalid_value, try matchFlag("--rule", &it3, arena.allocator(), .lint, &specs, &target));
+    try std.testing.expectEqual(@as(usize, 0), target.lint_rules.len);
+}
+
+test "matchFlag rule_override_accum: permissive mode silently drops bad value" {
+    // Same kind, but `cli_strict_value` left at its default (false). A
+    // bad value still consumes the argv token but reports `.matched` and
+    // leaves the field untouched — matches the dispatcher's permissive
+    // historical behavior for value-form flags.
+    const Target = struct { lint_rules: []const Linter.Options.RuleOverride = &.{} };
+    const specs = [_]OptionSpec{
+        .{ .field = "lint_rules", .kind = .rule_override_accum, .cli_takes_value = true, .cli_override = "rule" },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var target: Target = .{};
+
+    var it1 = ValueIter(1){ .values = .{"garbage"} };
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--rule", &it1, arena.allocator(), .lint, &specs, &target));
+    try std.testing.expectEqual(@as(usize, 0), target.lint_rules.len);
+}
+
+test "applyJson rule_override_accum: object form with severities + per-rule options" {
+    const Target = struct { lint_rules: []const Linter.Options.RuleOverride = &.{} };
+    const specs = [_]OptionSpec{
+        .{ .field = "lint_rules", .kind = .rule_override_accum, .json_override = "rules" },
+    };
+
+    const alloc = std.testing.allocator;
+    const content =
+        \\{
+        \\  "rules": {
+        \\    "no-unused-vars": "error",
+        \\    "no-magic-numbers": "off",
+        \\    "max-params": ["warn", { "max": 4 }],
+        \\    "bogus-not-a-severity": "loud"
+        \\  }
+        \\}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, content, .{});
+    defer parsed.deinit();
+
+    var target: Target = .{};
+    try applyJson(alloc, &specs, parsed.value, &target);
+    defer {
+        for (target.lint_rules) |r| {
+            alloc.free(r.id);
+            if (r.options) |opts| {
+                var o = opts;
+                freeJsonValue(alloc, &o);
+            }
+        }
+        if (target.lint_rules.len > 0) alloc.free(target.lint_rules);
+    }
+
+    // Three valid entries; bogus severity drops out.
+    try std.testing.expectEqual(@as(usize, 3), target.lint_rules.len);
+
+    // Severities must round-trip; `max-params` carries a deep-cloned options object.
+    var saw_max_params_opts = false;
+    for (target.lint_rules) |r| {
+        if (std.mem.eql(u8, r.id, "max-params")) {
+            try std.testing.expectEqual(Diagnostic.Severity.warning, r.severity);
+            try std.testing.expect(r.options != null);
+            try std.testing.expectEqual(@as(i64, 4), r.options.?.object.get("max").?.integer);
+            saw_max_params_opts = true;
+        }
+    }
+    try std.testing.expect(saw_max_params_opts);
+}
+
+test "parseRuleOverrideToken: accepts off|warn|warning|error and rejects malformed input" {
+    try std.testing.expectEqual(@as(?Linter.Options.RuleOverride, null), parseRuleOverrideToken("garbage"));
+    try std.testing.expectEqual(@as(?Linter.Options.RuleOverride, null), parseRuleOverrideToken("=warn"));
+    try std.testing.expectEqual(@as(?Linter.Options.RuleOverride, null), parseRuleOverrideToken("foo="));
+    try std.testing.expectEqual(@as(?Linter.Options.RuleOverride, null), parseRuleOverrideToken("foo=bogus"));
+
+    const off = parseRuleOverrideToken("foo=off").?;
+    try std.testing.expectEqual(Diagnostic.Severity.disabled, off.severity);
+    const warn = parseRuleOverrideToken("foo=warn").?;
+    try std.testing.expectEqual(Diagnostic.Severity.warning, warn.severity);
+    const warning = parseRuleOverrideToken("foo=warning").?;
+    try std.testing.expectEqual(Diagnostic.Severity.warning, warning.severity);
+    const err = parseRuleOverrideToken("foo=error").?;
+    try std.testing.expectEqual(Diagnostic.Severity.@"error", err.severity);
 }

@@ -103,53 +103,12 @@ pub fn parseJson(allocator: Allocator, content: []const u8) !Config {
 pub fn applyJsonValue(allocator: Allocator, root: std.json.Value, target: *Config) !void {
     if (root != .object) return;
 
-    // Spec-driven parse for every bool / string-list option declared in
-    // `options.config_specs`. Custom-shape fields below this call —
-    // `rules` (severity sub-parser) and `lsp` (nested object) — stay
-    // hand-parsed because they don't fit the simple kinds.
+    // Spec-driven parse for every option declared in `options.config_specs`,
+    // including the lint accumulators (`extends`, `rules`) which used to be
+    // hand-parsed below this call. The `lsp` nested object stays separate
+    // because it walks two distinct spec tables (MinifySettings.partial_specs
+    // and lsp_toggle_specs) against the inner object as root.
     try options.applyJson(allocator, &options.config_specs, root, target);
-
-    if (root.object.get("rules")) |v| {
-        if (v == .object) {
-            var list: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
-            errdefer {
-                for (list.items) |r| {
-                    allocator.free(r.id);
-                    if (r.options) |opts| {
-                        var o = opts;
-                        freeJsonValue(allocator, &o);
-                    }
-                }
-                list.deinit(allocator);
-            }
-            var it = v.object.iterator();
-            while (it.next()) |kv| {
-                const sev = parseSeverity(kv.value_ptr.*) orelse continue;
-                // Array form `["warn", { ... }]` carries per-rule options
-                // in the second element. Deep-clone into the supplied
-                // allocator so the options outlive `parseJson`'s internal
-                // parse-tree deinit (which would otherwise dangle).
-                var opts: ?std.json.Value = null;
-                if (kv.value_ptr.* == .array) {
-                    const arr = kv.value_ptr.array;
-                    if (arr.items.len > 1) {
-                        opts = try dupeJsonValue(allocator, arr.items[1]);
-                    }
-                }
-                errdefer if (opts) |o| {
-                    var oo = o;
-                    freeJsonValue(allocator, &oo);
-                };
-                const id = try allocator.dupe(u8, kv.key_ptr.*);
-                try list.append(allocator, .{ .id = id, .severity = sev, .options = opts });
-            }
-            // toOwnedSlice shrinks the buffer to len so a later
-            // `Config.deinit` can `free` the slice safely. `list.items`
-            // would point into a wider allocation when capacity > len,
-            // tripping the allocator's size check on free.
-            target.lint_rules = try list.toOwnedSlice(allocator);
-        }
-    }
 
     if (root.object.get("lsp")) |lsp| {
         if (lsp == .object) {
@@ -178,96 +137,11 @@ pub fn deinit(self: *Config, allocator: Allocator) void {
         allocator.free(r.id);
         if (r.options) |opts| {
             var o = opts;
-            freeJsonValue(allocator, &o);
+            options.freeJsonValue(allocator, &o);
         }
     }
     if (self.lint_rules.len > 0) allocator.free(self.lint_rules);
     self.* = .{};
-}
-
-/// Recursively deep-clone a `std.json.Value` into `allocator`. Used by
-/// `applyJsonValue` to lift per-rule `options` out of the temporary parse
-/// tree (which `parseJson` deinits before returning) into the long-lived
-/// allocator that owns the rest of `Config`. The cloned value must be
-/// freed with `freeJsonValue` from the same allocator.
-fn dupeJsonValue(allocator: Allocator, v: std.json.Value) Allocator.Error!std.json.Value {
-    return switch (v) {
-        .null => .null,
-        .bool => |b| .{ .bool = b },
-        .integer => |i| .{ .integer = i },
-        .float => |f| .{ .float = f },
-        .number_string => |s| .{ .number_string = try allocator.dupe(u8, s) },
-        .string => |s| .{ .string = try allocator.dupe(u8, s) },
-        .array => |arr| blk: {
-            var new_arr = std.json.Array.init(allocator);
-            errdefer {
-                for (new_arr.items) |*item| freeJsonValue(allocator, item);
-                new_arr.deinit();
-            }
-            try new_arr.ensureTotalCapacity(arr.items.len);
-            for (arr.items) |item| {
-                new_arr.appendAssumeCapacity(try dupeJsonValue(allocator, item));
-            }
-            break :blk .{ .array = new_arr };
-        },
-        .object => |obj| blk: {
-            var new_obj: std.json.ObjectMap = .empty;
-            errdefer {
-                var it = new_obj.iterator();
-                while (it.next()) |kv| {
-                    allocator.free(kv.key_ptr.*);
-                    freeJsonValue(allocator, kv.value_ptr);
-                }
-                new_obj.deinit(allocator);
-            }
-            try new_obj.ensureTotalCapacity(allocator, obj.count());
-            var it = obj.iterator();
-            while (it.next()) |kv| {
-                const k = try allocator.dupe(u8, kv.key_ptr.*);
-                try new_obj.put(allocator, k, try dupeJsonValue(allocator, kv.value_ptr.*));
-            }
-            break :blk .{ .object = new_obj };
-        },
-    };
-}
-
-/// Recursive counterpart to `dupeJsonValue` — frees every allocation
-/// that `dupeJsonValue` made on `allocator`. Idempotent isn't supported
-/// (caller must not double-free); designed to be called once from
-/// `Config.deinit`.
-fn freeJsonValue(allocator: Allocator, v: *std.json.Value) void {
-    switch (v.*) {
-        .null, .bool, .integer, .float => {},
-        .number_string, .string => |s| allocator.free(s),
-        .array => |*arr| {
-            for (arr.items) |*item| freeJsonValue(allocator, item);
-            arr.deinit();
-        },
-        .object => |*obj| {
-            var it = obj.iterator();
-            while (it.next()) |kv| {
-                allocator.free(kv.key_ptr.*);
-                freeJsonValue(allocator, kv.value_ptr);
-            }
-            obj.deinit(allocator);
-        },
-    }
-}
-
-/// Parse an ESLint-style severity value: `"off"`, `"warn"` / `"warning"`,
-/// `"error"`, or a `[severity, options]` array. Only the first element
-/// is inspected here — the rules-loop above handles deep-cloning the
-/// optional second element into `RuleOverride.options`.
-fn parseSeverity(value: std.json.Value) ?Diagnostic.Severity {
-    const s: []const u8 = switch (value) {
-        .string => |str| str,
-        .array => |arr| if (arr.items.len > 0 and arr.items[0] == .string) arr.items[0].string else return null,
-        else => return null,
-    };
-    if (std.mem.eql(u8, s, "off")) return .disabled;
-    if (std.mem.eql(u8, s, "warn") or std.mem.eql(u8, s, "warning")) return .warning;
-    if (std.mem.eql(u8, s, "error")) return .@"error";
-    return null;
 }
 
 /// Search for a config file starting from `start_dir`, walking up to parent directories.
