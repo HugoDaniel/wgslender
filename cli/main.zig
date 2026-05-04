@@ -12,7 +12,7 @@ const CliArgs = struct {
     options: wgslender.Minifier.Options = wgslender.Minifier.defaultOptions(),
     source_map: bool = false,
     source_map_inline: bool = false,
-    subcommand: enum { minify, validate, reflect, compile, lint } = .minify,
+    subcommand: wgslender.OptionsSpec.Subcommand = .minify,
     validate_format: ValidateFormat = .text,
     strict: bool = false,
     line_offset: i32 = 0,
@@ -77,9 +77,13 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Tracks which flag *categories* the user passed, so we can warn when a
-/// flag is ignored by the chosen subcommand.
+/// flag is ignored by the chosen subcommand. Most spec-driven minifier
+/// flags emit per-flag warnings via `OptionsSpec.matchFlag`'s
+/// `wrong_subcommand` result; `minify_cluster` here covers the
+/// hand-rolled tri-state outliers (`--minify`, `--minify-*`,
+/// `--no-mangle`, `--no-whitespace`, `--no-syntax`).
 const Passed = struct {
-    minify_flag: bool = false,
+    minify_cluster: bool = false,
     source_map_flag: bool = false,
     output_path: bool = false,
     config_flag: bool = false,
@@ -164,40 +168,40 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             passed.config_flag = true;
             no_config = true;
         } else if (std.mem.eql(u8, arg, "--no-mangle")) {
-            passed.minify_flag = true;
+            passed.minify_cluster = true;
             cli_no_mangle = true;
         } else if (std.mem.eql(u8, arg, "--no-whitespace")) {
-            passed.minify_flag = true;
+            passed.minify_cluster = true;
             cli_no_whitespace = true;
         } else if (std.mem.eql(u8, arg, "--no-syntax")) {
-            passed.minify_flag = true;
+            passed.minify_cluster = true;
             cli_no_syntax = true;
         } else if (std.mem.eql(u8, arg, "--minify")) {
-            passed.minify_flag = true;
+            passed.minify_cluster = true;
             cli_minify_all = true;
         } else if (std.mem.eql(u8, arg, "--minify-whitespace")) {
-            passed.minify_flag = true;
+            passed.minify_cluster = true;
             cli_minify_whitespace = true;
         } else if (std.mem.eql(u8, arg, "--minify-identifiers")) {
-            passed.minify_flag = true;
+            passed.minify_cluster = true;
             cli_minify_identifiers = true;
         } else if (std.mem.eql(u8, arg, "--minify-syntax")) {
-            passed.minify_flag = true;
+            // The tri-state cluster (--minify, --minify-*, --no-mangle,
+            // --no-whitespace, --no-syntax) is intentionally hand-rolled
+            // and accepted on every subcommand: warnIgnoredFlags below
+            // emits the categorical warning when it doesn't apply.
+            passed.minify_cluster = true;
             cli_minify_syntax = true;
-        } else if ((wgslender.OptionsSpec.matchFlag(
+        } else if ((dispatchSpecFlag(
             arg,
             &args_iter,
             arena,
-            &wgslender.OptionsSpec.minifier_options_specs,
+            args.subcommand,
             &args.options,
+            io,
         ) catch return null)) {
-            // Spec-driven dispatch for every `cli_simple = true` minifier
-            // flag — affirmative form (`--mangle-external-bindings`,
-            // `--sort-declarations`, ...), inverse form
-            // (`--no-tree-shaking` via `cli_inverse`), and value form
-            // (`--keep-names a,b,c` via `cli_takes_value`). Adding a new
-            // spec entry lights up here automatically.
-            passed.minify_flag = true;
+            // Spec-driven dispatch consumed the flag (matched + applied,
+            // or matched + warned for wrong subcommand).
         } else if (std.mem.eql(u8, arg, "--source-map")) {
             passed.source_map_flag = true;
             args.source_map = true;
@@ -248,7 +252,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             File.stdout().writeStreamingAll(io, "wgslender v" ++ wgslender.version ++ "\n") catch {};
             return null;
         } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            File.stdout().writeStreamingAll(io, usage_text) catch {};
+            printUsage(arena, io) catch {};
             return null;
         } else if (arg.len > 0 and arg[0] != '-') {
             args.input_path = arg;
@@ -307,6 +311,49 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     return args;
 }
 
+/// Try to match `arg` against the spec table. Returns true if matched
+/// (consumed by spec dispatch — caller should not try other arms).
+/// Emits a per-flag stderr warning when the flag is recognized but the
+/// current subcommand excludes it.
+fn dispatchSpecFlag(
+    arg: []const u8,
+    args_iter: anytype,
+    arena: std.mem.Allocator,
+    subcommand: wgslender.OptionsSpec.Subcommand,
+    target: *wgslender.Minifier.Options,
+    io: std.Io,
+) std.mem.Allocator.Error!bool {
+    const result = try wgslender.OptionsSpec.matchFlag(
+        arg,
+        args_iter,
+        arena,
+        subcommand,
+        &wgslender.OptionsSpec.minifier_options_specs,
+        target,
+    );
+    return switch (result) {
+        .matched => true,
+        .wrong_subcommand => blk: {
+            warnFlagIgnored(io, arg, subcommand);
+            break :blk true;
+        },
+        .no_match => false,
+    };
+}
+
+fn warnFlagIgnored(
+    io: std.Io,
+    arg: []const u8,
+    subcommand: wgslender.OptionsSpec.Subcommand,
+) void {
+    const f = std.Io.File.stderr();
+    f.writeStreamingAll(io, "warning: ") catch {};
+    f.writeStreamingAll(io, arg) catch {};
+    f.writeStreamingAll(io, " has no effect on ") catch {};
+    f.writeStreamingAll(io, @tagName(subcommand)) catch {};
+    f.writeStreamingAll(io, "\n") catch {};
+}
+
 /// Emit a stderr warning for each flag passed by the user that the chosen
 /// subcommand ignores. Best-effort UX hint, never aborts.
 fn warnIgnoredFlags(
@@ -345,7 +392,7 @@ fn warnIgnoredFlags(
         },
         .validate => {
             // Accepts: format, strict, line_offset, config (auto-discovery only — no minify config keys apply).
-            if (passed.minify_flag) W.warn(io, "minify flags (--minify-*/--no-*/--keep-names/...) have no effect on validate");
+            if (passed.minify_cluster) W.warn(io, "minify flags (--minify-*/--no-*/--keep-names/...) have no effect on validate");
             if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on validate");
             if (passed.output_path) W.warn(io, "-o/--output has no effect on validate (diagnostics go to stderr/stdout)");
             if (passed.compact_flag) W.warn(io, "--compact has no effect on validate (reflect-only)");
@@ -354,7 +401,7 @@ fn warnIgnoredFlags(
         },
         .reflect => {
             // Accepts: compact, reflect_format, output_path.
-            if (passed.minify_flag) W.warn(io, "minify flags have no effect on reflect");
+            if (passed.minify_cluster) W.warn(io, "minify flags have no effect on reflect");
             if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on reflect");
             if (passed.format_flag) W.warn(io, "--format / --json has no effect on reflect (use --compact / --reflect-format)");
             if (passed.strict_flag) W.warn(io, "--strict has no effect on reflect");
@@ -363,7 +410,7 @@ fn warnIgnoredFlags(
         },
         .lint => {
             // Accepts: format, line_offset, lint_flag.
-            if (passed.minify_flag) W.warn(io, "minify flags have no effect on lint");
+            if (passed.minify_cluster) W.warn(io, "minify flags have no effect on lint");
             if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on lint");
             if (passed.output_path) W.warn(io, "-o/--output has no effect on lint (--fix rewrites the input file in place)");
             if (passed.strict_flag) W.warn(io, "--strict has no effect on lint; use --max-warnings 0 to fail on warnings");
@@ -909,55 +956,93 @@ fn emitJson(
     try File.stdout().writeStreamingAll(io, buf.items);
 }
 
-const usage_text =
+/// Write `wgslender --help` to stdout. Spec-driven flags come from
+/// `OptionsSpec.printHelp`; the static prologue, command list, and
+/// outlier flags (tri-state minify cluster, source-map, validate /
+/// reflect / lint specifics) live in the constants below — they don't
+/// have OptionSpec entries today.
+fn printUsage(arena: std.mem.Allocator, io: std.Io) !void {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+
+    try buf.appendSlice(arena, usage_prologue);
+
+    try buf.appendSlice(arena, "\nMinification (minify, compile):\n");
+    try wgslender.OptionsSpec.printHelp(&buf, arena, &wgslender.OptionsSpec.minifier_options_specs, null);
+    try buf.appendSlice(arena, usage_minify_outliers);
+
+    try buf.appendSlice(arena, "\nSource maps (minify):\n");
+    try wgslender.OptionsSpec.printHelp(&buf, arena, &wgslender.OptionsSpec.source_map_specs, null);
+    try buf.appendSlice(arena, usage_source_map_outlier);
+
+    try buf.appendSlice(arena, usage_subcommand_specifics);
+
+    try buf.appendSlice(arena, "\nLint:\n");
+    try wgslender.OptionsSpec.printHelp(&buf, arena, &wgslender.OptionsSpec.lint_specs, null);
+    try buf.appendSlice(arena, usage_lint_outliers);
+
+    try buf.appendSlice(arena, usage_epilogue);
+
+    try std.Io.File.stdout().writeStreamingAll(io, buf.items);
+}
+
+const usage_prologue =
     \\Usage: wgslender [command] [options] [file.wgsl]
     \\
     \\Commands:
-    \\  (default)                        Minify WGSL source
-    \\  validate                         Validate WGSL source
-    \\  reflect                          Extract bindings, layouts, and entry points as JSON
-    \\  compile                          Compile WGSL to a .wasm binary shader
-    \\  lint                             Run lint rules and emit diagnostics
+    \\  (default)                         Minify WGSL source
+    \\  validate                          Validate WGSL source
+    \\  reflect                           Extract bindings, layouts, and entry points as JSON
+    \\  compile                           Compile WGSL to a .wasm binary shader
+    \\  lint                              Run lint rules and emit diagnostics
     \\
-    \\Options:
-    \\  -o, --output <path>              Output file
-    \\  --config <path>                  Config file (JSON)
-    \\  --no-config                      Ignore config files
-    \\  --minify                         Enable all minification (default)
-    \\  --minify-whitespace              Only minify whitespace
-    \\  --minify-identifiers             Only minify identifiers
-    \\  --minify-syntax                  Only minify syntax
-    \\  --no-mangle                      Don't rename identifiers
-    \\  --no-whitespace                  Don't minify whitespace
-    \\  --no-syntax                      Don't apply syntax-level optimizations
-    \\  --mangle-external-bindings       Rename uniform/storage variables
-    \\  --no-tree-shaking                Keep all declarations
-    \\  --preserve-uniform-struct-types   Keep struct names used in uniforms
-    \\  --sort-declarations              Sort declarations by kind for compression
-    \\  --scope-local-rename             Per-function canonical naming for compression
-    \\  --keep-names <names>             Comma-separated names to preserve
-    \\  --source-map                     Generate source map file (.map)
-    \\  --source-map-inline              Embed source map as inline data URI
-    \\  --source-map-sources             Include original source in source map
-    \\  --compact                        Compact JSON output (reflect)
+    \\Common:
+    \\  -o, --output <path>               Output file
+    \\  --config <path>                   Config file (JSON)
+    \\  --no-config                       Ignore config files
+;
+
+const usage_minify_outliers =
+    \\  --minify                          Enable all minification (default)
+    \\  --minify-whitespace               Only minify whitespace
+    \\  --minify-identifiers              Only minify identifiers
+    \\  --minify-syntax                   Only minify syntax
+    \\  --no-mangle                       Don't rename identifiers
+    \\  --no-whitespace                   Don't minify whitespace
+    \\  --no-syntax                       Don't apply syntax-level optimizations
+;
+
+const usage_source_map_outlier =
+    \\  --source-map-inline               Embed source map as inline data URI
+;
+
+const usage_subcommand_specifics =
+    \\
+    \\Reflect:
+    \\  --compact                         Compact JSON output
     \\  --reflect-format <v1|v2>          Reflect JSON schema (default: v2)
-    \\  --format <text|json|stylish>      Output format for validate/lint (default: text)
-    \\  --json                           Shorthand for --format json (validate/lint)
-    \\  --strict                         Treat warnings as errors (validate only;
-    \\                                     for lint use --max-warnings 0)
-    \\  --line-offset <n>                Add n to reported line numbers (validate/lint)
-    \\  --extends <config>               (lint) Inherit rules from a shareable config
-    \\                                     (@wgslender/recommended, @wgslender/performance,
-    \\                                      @wgslender/portability). Repeatable.
-    \\  --no-recommended                 (lint) Do not auto-apply @wgslender/recommended
-    \\  --rule <id>=<severity>           (lint) Override a rule (severity: off|warn|error)
-    \\  --max-warnings <n>               (lint) Exit non-zero if lint warnings exceed n
-    \\  --quiet                          (lint) Show errors only; hide warnings
-    \\  --fix                            (lint) Apply autofixes in place (requires a file input)
-    \\  --fix-dry-run                    (lint) Print fixed source to stdout without writing
-    \\  --report-unused-disable-directives  (lint) Warn on wgslender-disable comments that never match
-    \\  -v, --version                    Show version
-    \\  -h, --help                       Show this help
+    \\
+    \\Validate / lint:
+    \\  --format <text|json|stylish>      Output format (default: text)
+    \\  --json                            Shorthand for --format json
+    \\  --strict                          (validate) Treat warnings as errors
+    \\                                      (for lint use --max-warnings 0)
+    \\  --line-offset <n>                 Add n to reported line numbers
+;
+
+const usage_lint_outliers =
+    \\  --no-recommended                  Do not auto-apply @wgslender/recommended
+    \\  --rule <id>=<severity>            Override a rule (severity: off|warn|error)
+    \\  --max-warnings <n>                Exit non-zero if lint warnings exceed n
+    \\  --quiet                           Show errors only; hide warnings
+    \\  --fix                             Apply autofixes in place (requires a file input)
+    \\  --fix-dry-run                     Print fixed source to stdout without writing
+;
+
+const usage_epilogue =
+    \\
+    \\Misc:
+    \\  -v, --version                     Show version
+    \\  -h, --help                        Show this help
     \\
     \\If no input file is given, reads from stdin.
     \\

@@ -242,6 +242,31 @@ pub fn applyJson(
     }
 }
 
+/// Outcome of `matchFlag` — distinguishes "didn't recognize" from
+/// "recognized but the current subcommand ignores it" so the CLI can
+/// emit a UX warning instead of silently dropping the user's flag.
+pub const MatchResult = enum {
+    /// Flag matched and the field was written.
+    matched,
+    /// No spec matched the argv token.
+    no_match,
+    /// Flag matched but the spec's `subcommands` list excludes the
+    /// current subcommand. The argv value (if any) was consumed to keep
+    /// the parser in sync; the target was *not* written. The caller
+    /// should emit a "--<flag> has no effect on <subcommand>" warning.
+    wrong_subcommand,
+};
+
+/// True iff `sub` appears in the comptime list `list`. `list` may be
+/// empty, in which case this returns true (empty = all subcommands).
+fn subcommandIncluded(comptime list: []const Subcommand, sub: Subcommand) bool {
+    if (list.len == 0) return true;
+    inline for (list) |s| {
+        if (s == sub) return true;
+    }
+    return false;
+}
+
 /// Match a CLI argument against every `cli_simple = true` spec in
 /// `specs`. Handles three argv shapes:
 ///
@@ -253,8 +278,9 @@ pub fn applyJson(
 ///     `enum_opt`. `bool_opt` rejects the value form (use the affirmative
 ///     / inverse spellings instead).
 ///
-/// Returns true on match (regardless of whether parsing succeeded — a
-/// match consumes the arg). Returns false if no spec matches.
+/// Subcommand filtering: when a spec's `subcommands` list is non-empty
+/// and excludes `subcommand`, the match is reported as
+/// `wrong_subcommand` and the field is not written.
 ///
 /// `args_iter` may be any value with a `.next() ?[]const u8` method.
 /// `arena` is used to dupe `string_list` slices.
@@ -262,9 +288,10 @@ pub fn matchFlag(
     arg: []const u8,
     args_iter: anytype,
     arena: std.mem.Allocator,
+    subcommand: Subcommand,
     comptime specs: []const OptionSpec,
     target: anytype,
-) std.mem.Allocator.Error!bool {
+) std.mem.Allocator.Error!MatchResult {
     inline for (specs) |spec| {
         if (comptime spec.cli_simple) {
             const flag = comptime "--" ++ cliFlag(spec);
@@ -275,9 +302,13 @@ pub fn matchFlag(
             // the next argv element supplies the value.
             if (comptime spec.cli_takes_value) {
                 if (is_match) {
-                    const value = args_iter.next() orelse return true;
+                    if (!subcommandIncluded(spec.subcommands, subcommand)) {
+                        _ = args_iter.next(); // keep parser in sync
+                        return .wrong_subcommand;
+                    }
+                    const value = args_iter.next() orelse return .matched;
                     try applyValue(spec, value, arena, target);
-                    return true;
+                    return .matched;
                 }
             } else {
                 comptime switch (spec.kind) {
@@ -285,20 +316,22 @@ pub fn matchFlag(
                     else => continue,
                 };
                 if (is_match) {
+                    if (!subcommandIncluded(spec.subcommands, subcommand)) return .wrong_subcommand;
                     @field(target, spec.field) = true;
-                    return true;
+                    return .matched;
                 }
                 if (comptime spec.cli_inverse) |inv| {
                     const inv_flag = "--" ++ inv;
                     if (std.mem.eql(u8, arg, inv_flag)) {
+                        if (!subcommandIncluded(spec.subcommands, subcommand)) return .wrong_subcommand;
                         @field(target, spec.field) = false;
-                        return true;
+                        return .matched;
                     }
                 }
             }
         }
     }
-    return false;
+    return .no_match;
 }
 
 fn applyValue(
@@ -341,23 +374,50 @@ fn applyValue(
     }
 }
 
-/// Backwards-compat alias for `matchFlag` restricted to the legacy
-/// "no args_iter, no arena, bool only" surface — used by tests that
-/// pre-date the value/inverse forms. New CLI code should call
-/// `matchFlag` directly.
-pub fn matchBoolFlag(
-    arg: []const u8,
+/// Append `--help`-style lines for every spec in `specs` whose
+/// `subcommands` list is empty (universal) OR includes `subcommand`.
+/// `subcommand = null` shows every spec — used by the global usage.
+/// Each line is `"  --<flag>  <summary>\n"`, padded to column 36 so
+/// multiple spec tables stack consistently. Specs with an empty summary
+/// (JSON-only knobs) are skipped. `cli_inverse` adds a second line
+/// describing the disable form.
+pub fn printHelp(
+    buf: *std.ArrayListUnmanaged(u8),
+    allocator: std.mem.Allocator,
     comptime specs: []const OptionSpec,
-    target: anytype,
-) bool {
-    var dummy = struct {
-        pub fn next(_: *@This()) ?[]const u8 {
-            return null;
+    subcommand: ?Subcommand,
+) std.mem.Allocator.Error!void {
+    const target_col: usize = 36;
+    inline for (specs) |spec| {
+        // Empty `summary` is the opt-out for --help — used by entries
+        // whose CLI form is hand-rolled with a different summary (e.g.
+        // the `--minify-*` tri-state cluster, where the CLI behavior
+        // differs from the JSON-side bool).
+        if (comptime spec.summary.len == 0) continue;
+        const include_runtime = if (subcommand) |s|
+            subcommandIncluded(spec.subcommands, s)
+        else
+            true;
+        if (include_runtime) {
+            const flag = comptime cliFlag(spec);
+            const value_hint = comptime if (spec.cli_takes_value) " <value>" else "";
+            const line = comptime "  --" ++ flag ++ value_hint;
+            try buf.appendSlice(allocator, line);
+            const pad: usize = if (line.len < target_col) target_col - line.len else 2;
+            try buf.appendNTimes(allocator, ' ', pad);
+            try buf.appendSlice(allocator, spec.summary);
+            try buf.append(allocator, '\n');
+            if (comptime spec.cli_inverse) |inv| {
+                const inv_line = comptime "  --" ++ inv;
+                try buf.appendSlice(allocator, inv_line);
+                const inv_pad: usize = if (inv_line.len < target_col) target_col - inv_line.len else 2;
+                try buf.appendNTimes(allocator, ' ', inv_pad);
+                try buf.appendSlice(allocator, "Disable: ");
+                try buf.appendSlice(allocator, spec.summary);
+                try buf.append(allocator, '\n');
+            }
         }
-    }{};
-    var fba_buf: [16]u8 = undefined;
-    var fba = std.heap.FixedBufferAllocator.init(&fba_buf);
-    return matchFlag(arg, &dummy, fba.allocator(), specs, target) catch false;
+    }
 }
 
 /// Apply spec entries to a `Minifier.Options`-shaped struct, treating
@@ -397,20 +457,30 @@ pub fn applyDefaults(
 // Spec tables
 // =========================================================================
 
+/// Subcommand sets reused across spec tables.
+const minify_subcommands = [_]Subcommand{ .minify, .compile };
+const minify_only = [_]Subcommand{.minify};
+const lint_only = [_]Subcommand{.lint};
+
 /// Specs that flow `Config` → `Minifier.Options` via `Config.toOptions`.
 /// Every entry must name a field on both `Config` and
 /// `Minifier.Options`. The `cli_simple = false` entries need custom CLI
 /// dispatch (see the `OptionSpec.cli_simple` doc comment).
 pub const minifier_options_specs = [_]OptionSpec{
-    .{ .field = "minify_whitespace", .kind = .bool_opt, .cli_simple = false, .summary = "Strip insignificant whitespace from output" },
-    .{ .field = "minify_identifiers", .kind = .bool_opt, .cli_simple = false, .summary = "Rename identifiers (frequency-based mangling)" },
-    .{ .field = "minify_syntax", .kind = .bool_opt, .cli_simple = false, .summary = "Apply WGSL syntax-level optimizations" },
-    .{ .field = "mangle_external_bindings", .kind = .bool_opt, .summary = "Rename @group/@binding vars (otherwise aliased)" },
-    .{ .field = "tree_shaking", .kind = .bool_opt, .cli_inverse = "no-tree-shaking", .summary = "Eliminate code unreachable from any entry point" },
-    .{ .field = "preserve_uniform_struct_types", .kind = .bool_opt, .summary = "Keep struct types referenced by uniform/storage vars" },
-    .{ .field = "keep_names", .kind = .string_list, .cli_takes_value = true, .summary = "Comma-separated identifiers that must never be renamed" },
-    .{ .field = "sort_declarations", .kind = .bool_opt, .summary = "Sort module-level declarations for better DEFLATE compression" },
-    .{ .field = "scope_local_rename", .kind = .bool_opt, .summary = "Rename locals canonically per function for better DEFLATE compression" },
+    // The three minify-* sub-pass toggles drive JSON parsing here but
+    // their CLI form is the hand-rolled tri-state cluster (--minify,
+    // --minify-*, --no-mangle, --no-whitespace, --no-syntax). Empty
+    // `summary` opts them out of `printHelp`; the cluster's own help
+    // lines live in `usage_minify_outliers` in cli/main.zig.
+    .{ .field = "minify_whitespace", .kind = .bool_opt, .cli_simple = false, .subcommands = &minify_subcommands },
+    .{ .field = "minify_identifiers", .kind = .bool_opt, .cli_simple = false, .subcommands = &minify_subcommands },
+    .{ .field = "minify_syntax", .kind = .bool_opt, .cli_simple = false, .subcommands = &minify_subcommands },
+    .{ .field = "mangle_external_bindings", .kind = .bool_opt, .subcommands = &minify_subcommands, .summary = "Rename @group/@binding vars (otherwise aliased)" },
+    .{ .field = "tree_shaking", .kind = .bool_opt, .cli_inverse = "no-tree-shaking", .subcommands = &minify_subcommands, .summary = "Eliminate code unreachable from any entry point" },
+    .{ .field = "preserve_uniform_struct_types", .kind = .bool_opt, .subcommands = &minify_subcommands, .summary = "Keep struct types referenced by uniform/storage vars" },
+    .{ .field = "keep_names", .kind = .string_list, .cli_takes_value = true, .subcommands = &minify_subcommands, .summary = "Comma-separated identifiers that must never be renamed" },
+    .{ .field = "sort_declarations", .kind = .bool_opt, .subcommands = &minify_subcommands, .summary = "Sort module-level declarations for better DEFLATE compression" },
+    .{ .field = "scope_local_rename", .kind = .bool_opt, .subcommands = &minify_subcommands, .summary = "Rename locals canonically per function for better DEFLATE compression" },
 };
 
 /// Source-map switches. Live on `Config` and feed `CliArgs.source_map` /
@@ -420,15 +490,21 @@ pub const minifier_options_specs = [_]OptionSpec{
 /// `--source-map` / `--source-map-inline` / `--source-map-sources`
 /// trio because they target `CliArgs` instead of `Minifier.Options`.
 pub const source_map_specs = [_]OptionSpec{
-    .{ .field = "source_map", .kind = .bool_opt, .cli_simple = false, .summary = "Generate a source map alongside the minified output" },
-    .{ .field = "source_map_sources", .kind = .bool_opt, .cli_simple = false, .summary = "Embed the original source content in the source map" },
+    .{ .field = "source_map", .kind = .bool_opt, .cli_simple = false, .subcommands = &minify_only, .summary = "Generate a source map alongside the minified output" },
+    .{ .field = "source_map_sources", .kind = .bool_opt, .cli_simple = false, .subcommands = &minify_only, .summary = "Embed the original source content in the source map" },
 };
 
 /// Lint configuration knobs. `lint_rules` is intentionally hand-parsed
 /// (severity / per-rule options shape doesn't fit `string_list`).
 pub const lint_specs = [_]OptionSpec{
-    .{ .field = "lint_extends", .kind = .string_list, .cli_simple = false, .json_override = "extends", .summary = "Shareable lint config packs to inherit" },
-    .{ .field = "report_unused_disable_directives", .kind = .bool_opt, .cli_simple = false, .summary = "Treat unused wgslender-disable comments as warnings" },
+    // CLI dispatch for `--extends` is hand-rolled (accumulating list of
+    // ids, not a single value) — `cli_simple = false` keeps the
+    // spec-driven matchFlag from claiming it. `cli_override` keeps the
+    // CLI flag name as `--extends` rather than the derived
+    // `--lint-extends`. `--report-unused-disable-directives` matches
+    // its derived snake-to-kebab form so no override is needed.
+    .{ .field = "lint_extends", .kind = .string_list, .cli_simple = false, .subcommands = &lint_only, .json_override = "extends", .cli_override = "extends", .summary = "Inherit rules from a shareable lint config pack (repeatable)" },
+    .{ .field = "report_unused_disable_directives", .kind = .bool_opt, .cli_simple = false, .subcommands = &lint_only, .summary = "Warn on wgslender-disable comments that never match" },
 };
 
 /// LSP-only feature toggles that live on `Config` directly. Applied to
@@ -733,7 +809,16 @@ test "applyDefaults forwards new kinds" {
     try std.testing.expectEqual(Mode.strict, t2.mode);
 }
 
-test "matchBoolFlag dispatches simple bool specs" {
+// Tiny iterator stub — matchFlag's value-form arms call .next() on the
+// supplied iterator. None of the bool-only tests below exercise the
+// value form, so a no-op iterator suffices.
+const NoopIter = struct {
+    pub fn next(_: *@This()) ?[]const u8 {
+        return null;
+    }
+};
+
+test "matchFlag dispatches simple bool specs" {
     const Target = struct {
         sort_declarations: bool = false,
         scope_local_rename: bool = false,
@@ -742,24 +827,48 @@ test "matchBoolFlag dispatches simple bool specs" {
     const specs = [_]OptionSpec{
         .{ .field = "sort_declarations", .kind = .bool_opt },
         .{ .field = "scope_local_rename", .kind = .bool_opt },
-        // `cli_simple = false` → matchBoolFlag must skip.
+        // `cli_simple = false` → matchFlag must skip.
         .{ .field = "keep_names", .kind = .string_list, .cli_simple = false },
     };
 
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     var target: Target = .{};
+    var it = NoopIter{};
 
-    try std.testing.expect(matchBoolFlag("--sort-declarations", &specs, &target));
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--sort-declarations", &it, arena.allocator(), .minify, &specs, &target));
     try std.testing.expectEqual(true, target.sort_declarations);
     try std.testing.expectEqual(false, target.scope_local_rename);
 
-    try std.testing.expect(matchBoolFlag("--scope-local-rename", &specs, &target));
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--scope-local-rename", &it, arena.allocator(), .minify, &specs, &target));
     try std.testing.expectEqual(true, target.scope_local_rename);
 
     // Unknown flag → no match.
-    try std.testing.expect(!matchBoolFlag("--unknown", &specs, &target));
+    try std.testing.expectEqual(MatchResult.no_match, try matchFlag("--unknown", &it, arena.allocator(), .minify, &specs, &target));
 
     // `cli_simple = false` spec must not be auto-dispatched even though
     // its derived flag (`--keep-names`) would syntactically match.
-    try std.testing.expect(!matchBoolFlag("--keep-names", &specs, &target));
+    try std.testing.expectEqual(MatchResult.no_match, try matchFlag("--keep-names", &it, arena.allocator(), .minify, &specs, &target));
     try std.testing.expectEqual(@as(usize, 0), target.keep_names.len);
+}
+
+test "matchFlag rejects flags whose subcommands list excludes the current subcommand" {
+    const Target = struct { sort_declarations: bool = false };
+    const specs = [_]OptionSpec{
+        .{ .field = "sort_declarations", .kind = .bool_opt, .subcommands = &.{ .minify, .compile } },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var target: Target = .{};
+    var it = NoopIter{};
+
+    // Allowed subcommand: target written, .matched returned.
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--sort-declarations", &it, arena.allocator(), .minify, &specs, &target));
+    try std.testing.expectEqual(true, target.sort_declarations);
+
+    // Disallowed subcommand: returns wrong_subcommand, target unchanged.
+    target.sort_declarations = false;
+    try std.testing.expectEqual(MatchResult.wrong_subcommand, try matchFlag("--sort-declarations", &it, arena.allocator(), .lint, &specs, &target));
+    try std.testing.expectEqual(false, target.sort_declarations);
 }
