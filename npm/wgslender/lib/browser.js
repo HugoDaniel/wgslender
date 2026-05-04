@@ -231,6 +231,7 @@
    * Validate WGSL source code.
    * @param {string} source - WGSL source code
    * @param {Object} [options] - Validation options
+   * @param {boolean} [options.strict=false] - Enable strict-mode validation
    * @returns {Object} Validation result with valid, diagnostics, errorCount, warningCount
    */
   function validate(source, options) {
@@ -242,8 +243,9 @@
       throw new TypeError('source must be a string');
     }
 
+    var flags = options && options.strict ? 1 : 0;
     var src = _writeString(source);
-    var resultPtr = _wasm.wgslender_validate(src.ptr, src.len);
+    var resultPtr = _wasm.wgslender_validate(src.ptr, src.len, flags);
     _wasm.wgslender_dealloc(src.ptr, src.allocLen);
 
     if (!resultPtr) {
@@ -253,18 +255,14 @@
     var view = new DataView(_wasm.memory.buffer);
     var valid = view.getUint32(resultPtr, true) === 1;
     var errorCount = view.getUint32(resultPtr + 4, true);
-    var jsonLen = view.getUint32(resultPtr + 8, true);
-    var diagnostics = JSON.parse(
-      _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 12, jsonLen))
+    var warningCount = view.getUint32(resultPtr + 8, true);
+    var jsonLen = view.getUint32(resultPtr + 12, true);
+    var wrapped = JSON.parse(
+      _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 16, jsonLen))
     );
-    _wasm.wgslender_dealloc(resultPtr, 12 + jsonLen);
+    _wasm.wgslender_dealloc(resultPtr, 16 + jsonLen);
 
-    var warningCount = 0;
-    for (var i = 0; i < diagnostics.length; i++) {
-      if (diagnostics[i].severity === 'warning') warningCount++;
-    }
-
-    return { valid: valid, diagnostics: diagnostics, errorCount: errorCount, warningCount: warningCount };
+    return { valid: valid, diagnostics: wrapped.diagnostics, errorCount: errorCount, warningCount: warningCount };
   }
 
   /**
