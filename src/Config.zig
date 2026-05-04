@@ -47,10 +47,9 @@ source_map_sources: ?bool = null,
 /// are silently ignored by the Linter at run time.
 lint_extends: []const []const u8 = &.{},
 /// Per-rule severity overrides (`rules` JSON key). Each entry maps a
-/// public rule id to a severity. Per-rule options objects (e.g.
-/// `{"max":4}` for max-params) are not yet plumbed through this path —
-/// only severity is captured, matching the existing FFI surface in
-/// `api_json.parseLintConfig`.
+/// public rule id to a severity, optionally with a per-rule options
+/// object (`["warn", { "max": 4 }]`). Options are deep-cloned into the
+/// supplied allocator and freed by `Config.deinit`.
 lint_rules: []const Linter.Options.RuleOverride = &.{},
 /// `reportUnusedDisableDirectives` JSON key. `null` means unset →
 /// caller falls back to its own default (CLI: false; LSP/FFI: false).
@@ -256,8 +255,9 @@ fn freeJsonValue(allocator: Allocator, v: *std.json.Value) void {
 }
 
 /// Parse an ESLint-style severity value: `"off"`, `"warn"` / `"warning"`,
-/// `"error"`, or a `[severity, options]` array (only the first element is
-/// inspected — options are dropped, matching `api_json.parseLintConfig`).
+/// `"error"`, or a `[severity, options]` array. Only the first element
+/// is inspected here — the rules-loop above handles deep-cloning the
+/// optional second element into `RuleOverride.options`.
 fn parseSeverity(value: std.json.Value) ?Diagnostic.Severity {
     const s: []const u8 = switch (value) {
         .string => |str| str,

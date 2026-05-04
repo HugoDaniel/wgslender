@@ -577,67 +577,27 @@ pub fn changeTypeApplyByIdToJson(
 // Lint
 // =========================================================================
 
-/// Parse the JSON config payload into `Linter.Options`. Empty or malformed
-/// payload degrades to defaults (zero rules enabled) rather than failing.
+/// Parse the JSON config payload into `Linter.Options`. Empty or
+/// malformed payload degrades to defaults (zero rules enabled) rather
+/// than failing.
+///
+/// Thin shim over `Config.parseJson` — the single source of truth for
+/// the JSON shape. The returned `Options.extends` and `Options.rules`
+/// alias slices owned by `alloc`; Linter consumers must keep `alloc`
+/// alive for the duration of the lint run. Per-rule options
+/// (`["warn", { ... }]`) thread through automatically because the same
+/// parser path is used.
 pub fn parseLintConfig(
     alloc: Allocator,
     config_bytes: []const u8,
 ) Allocator.Error!Linter.Options {
     if (config_bytes.len == 0) return .{};
-    var parsed = std.json.parseFromSlice(std.json.Value, alloc, config_bytes, .{}) catch return .{};
-    defer parsed.deinit();
-    const root = parsed.value;
-    if (root != .object) return .{};
-
-    var extends_list: std.ArrayListUnmanaged([]const u8) = .empty;
-    if (root.object.get("extends")) |v| {
-        if (v == .array) {
-            for (v.array.items) |item| {
-                if (item == .string) {
-                    const duped = try alloc.dupe(u8, item.string);
-                    try extends_list.append(alloc, duped);
-                }
-            }
-        }
-    }
-
-    var rule_overrides: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
-    if (root.object.get("rules")) |v| {
-        if (v == .object) {
-            var it = v.object.iterator();
-            while (it.next()) |kv| {
-                const id = try alloc.dupe(u8, kv.key_ptr.*);
-                const sev = parseSeverity(kv.value_ptr.*) orelse continue;
-                try rule_overrides.append(alloc, .{
-                    .id = id,
-                    .severity = sev,
-                });
-            }
-        }
-    }
-
-    var report_unused = false;
-    if (root.object.get("reportUnusedDisableDirectives")) |v| {
-        if (v == .bool) report_unused = v.bool;
-    }
-
+    const config = Config.parseJson(alloc, config_bytes) catch return .{};
     return .{
-        .extends = try extends_list.toOwnedSlice(alloc),
-        .rules = try rule_overrides.toOwnedSlice(alloc),
-        .report_unused_disable_directives = report_unused,
+        .extends = config.lint_extends,
+        .rules = config.lint_rules,
+        .report_unused_disable_directives = config.report_unused_disable_directives orelse false,
     };
-}
-
-pub fn parseSeverity(value: std.json.Value) ?Diagnostic.Severity {
-    const s: []const u8 = switch (value) {
-        .string => |str| str,
-        .array => |arr| if (arr.items.len > 0 and arr.items[0] == .string) arr.items[0].string else return null,
-        else => return null,
-    };
-    if (std.mem.eql(u8, s, "off")) return .disabled;
-    if (std.mem.eql(u8, s, "warn") or std.mem.eql(u8, s, "warning")) return .warning;
-    if (std.mem.eql(u8, s, "error")) return .@"error";
-    return null;
 }
 
 fn writeLintDiagnostics(
