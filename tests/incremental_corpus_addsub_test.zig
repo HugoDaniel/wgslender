@@ -37,10 +37,15 @@ fn makeSentinel(a: std.mem.Allocator, bytes: []const u8) ![:0]const u8 {
     return buf[0..bytes.len :0];
 }
 
+fn useCountAt(module: *const Ast.Module, idx: usize) u32 {
+    if (idx >= module.use_counts.counts.len) return 0;
+    return module.use_counts.counts[idx];
+}
+
 fn sumUseCountByName(module: *const Ast.Module, name: []const u8) u32 {
     var sum: u32 = 0;
-    for (module.symbols.items) |s| {
-        if (std.mem.eql(u8, s.original_name, name)) sum += s.use_count;
+    for (module.symbols.items, 0..) |s, i| {
+        if (std.mem.eql(u8, s.original_name, name)) sum += useCountAt(module, i);
     }
     return sum;
 }
@@ -65,12 +70,13 @@ fn expectUseCountsMatchAppendOnly(
             return error.UseCountMismatch;
         }
     }
-    for (got.symbols.items) |g| {
+    for (got.symbols.items, 0..) |g, gi| {
         const oc = sumUseCountByName(oracle, g.original_name);
-        if (oc == 0 and g.use_count != 0) {
+        const gc = useCountAt(got, gi);
+        if (oc == 0 and gc != 0) {
             std.debug.print(
                 "{s}: updated-only live symbol '{s}' has non-zero use_count {d}\n",
-                .{ label, g.original_name, g.use_count },
+                .{ label, g.original_name, gc },
             );
             return error.DeadSymbolHasUseCount;
         }
@@ -105,14 +111,14 @@ fn expectPerSymbolUseCountsExact(
 ) !void {
     var got_live: std.ArrayListUnmanaged(usize) = .empty;
     defer got_live.deinit(gpa);
-    for (got.symbols.items, 0..) |s, i| {
-        if (s.use_count > 0) try got_live.append(gpa, i);
+    for (got.symbols.items, 0..) |_, i| {
+        if (useCountAt(got, i) > 0) try got_live.append(gpa, i);
     }
 
     var oracle_live: std.ArrayListUnmanaged(usize) = .empty;
     defer oracle_live.deinit(gpa);
-    for (oracle.symbols.items, 0..) |s, i| {
-        if (s.use_count > 0) try oracle_live.append(gpa, i);
+    for (oracle.symbols.items, 0..) |_, i| {
+        if (useCountAt(oracle, i) > 0) try oracle_live.append(gpa, i);
     }
 
     if (got_live.items.len != oracle_live.items.len) {
@@ -140,16 +146,17 @@ fn expectPerSymbolUseCountsExact(
         const gi = matched orelse {
             std.debug.print(
                 "{s}: oracle live symbol ('{s}',{s},loc={d},uc={d}) has no matching live symbol in got\n",
-                .{ label, o.original_name, @tagName(o.kind), o.loc, o.use_count },
+                .{ label, o.original_name, @tagName(o.kind), o.loc, useCountAt(oracle, oi) },
             );
             dumpLiveSideBySide(label, got, got_live.items, oracle, oracle_live.items);
             return error.LiveSymbolNotFound;
         };
-        const g = got.symbols.items[gi];
-        if (g.use_count != o.use_count) {
+        const g_count = useCountAt(got, gi);
+        const o_count = useCountAt(oracle, oi);
+        if (g_count != o_count) {
             std.debug.print(
                 "{s}: use_count mismatch for ('{s}',{s},loc={d}): got={d} oracle={d}\n",
-                .{ label, o.original_name, @tagName(o.kind), o.loc, g.use_count, o.use_count },
+                .{ label, o.original_name, @tagName(o.kind), o.loc, g_count, o_count },
             );
             dumpLiveSideBySide(label, got, got_live.items, oracle, oracle_live.items);
             return error.PerSymbolUseCountMismatch;
@@ -172,7 +179,7 @@ fn dumpLiveSideBySide(
             const g = got.symbols.items[got_live[i]];
             std.debug.print(
                 "  got[{d:>3}] raw={d:>3} name={s:<24} kind={s:<10} loc={d:>4} uc={d}",
-                .{ i, got_live[i], g.original_name, @tagName(g.kind), g.loc, g.use_count },
+                .{ i, got_live[i], g.original_name, @tagName(g.kind), g.loc, useCountAt(got, got_live[i]) },
             );
         } else {
             std.debug.print("  got[{d:>3}] --", .{i});
@@ -181,7 +188,7 @@ fn dumpLiveSideBySide(
             const o = oracle.symbols.items[oracle_live[i]];
             std.debug.print(
                 "  |  oracle[{d:>3}] raw={d:>3} name={s:<24} kind={s:<10} loc={d:>4} uc={d}\n",
-                .{ i, oracle_live[i], o.original_name, @tagName(o.kind), o.loc, o.use_count },
+                .{ i, oracle_live[i], o.original_name, @tagName(o.kind), o.loc, useCountAt(oracle, oracle_live[i]) },
             );
         } else {
             std.debug.print("  |  oracle[{d:>3}] --\n", .{i});

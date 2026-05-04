@@ -122,8 +122,10 @@ pub fn runShowMinifiedOutput(
     }) catch return error.MinifyFailed;
 
     // Estimator runs against the analysis module so byte_count matches
-    // what the code lens displayed. It mutates `is_live`, so a scratch
-    // arena keeps the side-effects scoped to this call.
+    // what the code lens displayed. After B.M5 the estimator is purely
+    // functional — it allocates per-call UseCounts/Liveness/RenamePolicy
+    // and never mutates the cached module — so the scratch arena is
+    // strictly for the result allocations.
     var est_arena = std.heap.ArenaAllocator.init(handler.gpa);
     defer est_arena.deinit();
 

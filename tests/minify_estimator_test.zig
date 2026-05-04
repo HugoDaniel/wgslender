@@ -377,7 +377,7 @@ test "per_decl populated for every named declaration" {
         const name_ref = decl.nameRef();
         if (!name_ref.isValid()) continue;
         // Unused aliases may be DCE'd out — skip checking dead decls.
-        if (!wgslender.Dce.isDeclarationLive(decl, module.symbols.items)) continue;
+        if (!wgslender.Dce.isDeclarationLive(decl, module.liveness)) continue;
         try testing.expect(ctx.estimate.per_decl.contains(name_ref));
     }
 }

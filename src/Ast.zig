@@ -37,6 +37,8 @@
 
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
+const UseCounts = @import("UseCounts.zig");
+const Liveness = @import("Liveness.zig");
 
 // =========================================================================
 // Source spans
@@ -92,15 +94,17 @@ pub const Symbol = struct {
     /// Declaration category (var / const / fn / struct / …). Determines
     /// which kinds of references can bind and how Dce treats the symbol.
     kind: Kind,
-    /// Packed flag bits (renamability, liveness, external binding …).
+    /// Packed flag bits (entry point, api facing, builtin, external binding).
+    /// B.M5 removed mutable analysis flags (`use_count`, `is_live`,
+    /// `must_not_be_renamed`, `parser_wants_no_rename`) — they live on
+    /// per-pipeline side-tables (`Module.use_counts`, `Module.liveness`,
+    /// per-call `RenamePolicy`) so the symbol record stays immutable past
+    /// Pass 1.
     flags: Flags,
     /// For function and struct symbols: index of the scope they introduce
     /// in the parent scope's `children`. Null for symbols that open no
     /// nested scope. Used by `StableId` to stabilize paths across reparses.
     nested_scope_slot: ?u32 = null,
-    /// Number of references found during the visit pass. Only symbols with
-    /// `use_count > 0` are candidates for renaming.
-    use_count: u32 = 0,
     /// Byte offset in source where this symbol is declared.
     loc: u32 = 0,
 
@@ -118,47 +122,17 @@ pub const Symbol = struct {
         member,
     };
 
-    /// Bit-packed symbol flags (7 bools + padding = 2 bytes).
+    /// Bit-packed symbol flags (4 bools + padding = 2 bytes).
     /// Layout is fixed — see comptime assertion at end of file.
     pub const Flags = packed struct(u16) {
-        must_not_be_renamed: bool = false,
         is_entry_point: bool = false,
         /// Set for @group/@binding vars and config-preserved names.
         is_api_facing: bool = false,
         is_builtin: bool = false,
         /// Set for @group/@binding vars; enables alias generation in Printer.
         is_external_binding: bool = false,
-        /// Set by DCE; false means this symbol is dead and can be omitted.
-        is_live: bool = false,
-        /// Transient (B.M2 → B.M5). Set by Parser/CstLower at parse time
-        /// to signal that the orchestrator's `RenamePolicy.Builder`
-        /// should mark this symbol via `markFromParser`. Today only set
-        /// on entry-point function declarations (alongside
-        /// `is_entry_point`); reserved as a channel for parser-side
-        /// reasons that aren't visible from a single semantic flag.
-        /// Deleted in B.M5 alongside `must_not_be_renamed` once readers
-        /// migrate to the policy.
-        parser_wants_no_rename: bool = false,
-        _padding: u9 = 0,
+        _padding: u12 = 0,
     };
-
-    /// True when this symbol qualifies for the "declared but never used"
-    /// warning (W0001). Single source of truth shared by the LSP
-    /// `appendUnusedWarnings` pass and the `no-unused-vars` lint rule, so
-    /// the two surfaces can never disagree on what counts as unused.
-    /// Skips parameters because function signatures are often part of an
-    /// external contract the author can't change.
-    pub fn isUnusedReportable(self: Symbol) bool {
-        if (self.use_count > 0) return false;
-        if (self.original_name.len == 0) return false;
-        if (self.flags.is_entry_point) return false;
-        if (self.flags.is_api_facing) return false;
-        if (self.flags.is_external_binding) return false;
-        return switch (self.kind) {
-            .function, .@"const", .let, .@"var", .override => true,
-            else => false,
-        };
-    }
 };
 
 // =========================================================================
@@ -228,6 +202,14 @@ pub const Module = struct {
     symbols: std.ArrayListUnmanaged(Symbol),
     /// Root scope. All nested scopes are reachable via `scope.children`.
     scope: *Scope,
+    /// Per-symbol use counts produced by AstVisit Pass 2. Length matches
+    /// `symbols.items.len` after Pass 2; empty before. Replaces the
+    /// per-symbol `use_count` field deleted in B.M5.
+    use_counts: UseCounts = .{ .counts = &.{} },
+    /// Per-symbol liveness bits. Empty until DCE has run; downstream
+    /// readers (Printer tree-shaking, lint, LSP unused warnings) consult
+    /// this instead of the per-symbol `is_live` field deleted in B.M5.
+    liveness: Liveness = .{ .bits = .{} },
 
     /// Creates an empty module bound to the given root scope and source text.
     pub fn init(scope: *Scope, source: [:0]const u8) Module {
@@ -237,7 +219,23 @@ pub const Module = struct {
             .declarations = .empty,
             .symbols = .empty,
             .scope = scope,
+            .use_counts = .{ .counts = &.{} },
+            .liveness = .{ .bits = .{} },
         };
+    }
+
+    /// Grow `use_counts.counts` to match `n_symbols`, preserving existing
+    /// counts and zero-filling new slots. Idempotent if the side-table is
+    /// already at least `n_symbols` long. Used by the incremental Splice
+    /// after `lowerSubtreeInScope` appends fresh symbols for which the
+    /// add-walk needs slots to bump.
+    pub fn resizeUseCounts(self: *Module, arena: std.mem.Allocator, n_symbols: usize) !void {
+        if (self.use_counts.counts.len >= n_symbols) return;
+        const old = self.use_counts.counts;
+        const new = try arena.alloc(u32, n_symbols);
+        @memcpy(new[0..old.len], old);
+        @memset(new[old.len..], 0);
+        self.use_counts.counts = new;
     }
 
     /// Absorb every top-level decl's `interior_pending` bias into its inner
@@ -883,6 +881,14 @@ pub const IdentExpr = struct {
     ref: SymbolIndex = .none,
     flags: ExprFlags = .{},
     span: Span = .empty,
+    /// Set by AstVisit `.add` Pass 2 at the moment the ident's symbol use
+    /// count is bumped. The `.sub` pass gates its decrement on this bit
+    /// (not on `ref.isValid()`) so an ident resolved by the E0102
+    /// "use-before-decl" branch — where `ref` is set for IDE goto-def but
+    /// the count is intentionally *not* bumped — is correctly skipped on
+    /// subtree removal. Lives directly on `IdentExpr` (rather than
+    /// `ExprFlags`) because no other expression variant needs it.
+    was_counted: bool = false,
 };
 
 pub const LiteralExpr = struct {
@@ -1016,15 +1022,7 @@ pub const ExprFlags = packed struct(u8) {
     call_can_be_unwrapped_if_unused: bool = false,
     is_constant: bool = false,
     from_pure_function: bool = false,
-    // Set on an `IdentExpr` at the exact moment the `.add` pass bumps
-    // `symbols[ref.index()].use_count`. The `.sub` pass gates its
-    // decrement on this bit, not on `ref.isValid()`, so an ident
-    // resolved by the E0102 "use-before-decl" branch — where `ref` is
-    // set for IDE goto-def but `use_count` is intentionally not
-    // bumped — is correctly skipped on subtree removal. Meaningful
-    // only on `IdentExpr`; other variants leave it at `false`.
-    use_count_incremented: bool = false,
-    _padding: u3 = 0,
+    _padding: u4 = 0,
 };
 
 // =========================================================================
@@ -1731,13 +1729,13 @@ test "Symbol.Flags: packed size is 2 bytes" {
 
 test "Symbol.Flags: bitwise operations" {
     var flags = Symbol.Flags{};
-    try std.testing.expect(!flags.must_not_be_renamed);
+    try std.testing.expect(!flags.is_api_facing);
     try std.testing.expect(!flags.is_entry_point);
     try std.testing.expect(!flags.is_external_binding);
 
-    flags.must_not_be_renamed = true;
+    flags.is_api_facing = true;
     flags.is_entry_point = true;
-    try std.testing.expect(flags.must_not_be_renamed);
+    try std.testing.expect(flags.is_api_facing);
     try std.testing.expect(flags.is_entry_point);
     try std.testing.expect(!flags.is_external_binding);
 }

@@ -22,6 +22,7 @@ pub const Err = error{
     SymbolFlagsMismatch,
     SymbolSlotMismatch,
     SymbolUseCountMismatch,
+    UseCountsLenMismatch,
     SymbolLocMismatch,
     ScopeKindMismatch,
     ScopeSiblingMismatch,
@@ -131,6 +132,25 @@ pub fn expectModulesEqual(expected: *const Ast.Module, actual: *const Ast.Module
         try expectSymbolEqual(e, a, i);
     }
 
+    // Per-symbol use counts (replaces the old `Symbol.use_count` field
+    // check inside `expectSymbolEqual` after B.M5).
+    if (expected.use_counts.counts.len != actual.use_counts.counts.len) {
+        std.debug.print(
+            "use_counts.len mismatch: expected {d}, actual {d}\n",
+            .{ expected.use_counts.counts.len, actual.use_counts.counts.len },
+        );
+        return error.UseCountsLenMismatch;
+    }
+    for (expected.use_counts.counts, actual.use_counts.counts, 0..) |ec, ac, i| {
+        if (ec != ac) {
+            std.debug.print(
+                "use_counts[{d}] mismatch: expected {d}, actual {d}\n",
+                .{ i, ec, ac },
+            );
+            return error.SymbolUseCountMismatch;
+        }
+    }
+
     // Directives.
     if (expected.directives.items.len != actual.directives.items.len) return error.DirectivesLenMismatch;
     for (expected.directives.items, actual.directives.items) |e, a| {
@@ -167,10 +187,6 @@ fn expectSymbolEqual(e: Ast.Symbol, a: Ast.Symbol, i: usize) Err!void {
         return error.SymbolFlagsMismatch;
     }
     if (e.nested_scope_slot != a.nested_scope_slot) return error.SymbolSlotMismatch;
-    if (e.use_count != a.use_count) {
-        std.debug.print("symbol[{d}] '{s}' .use_count mismatch: {d} vs {d}\n", .{ i, e.original_name, e.use_count, a.use_count });
-        return error.SymbolUseCountMismatch;
-    }
     if (e.loc != a.loc) {
         std.debug.print("symbol[{d}] '{s}' .loc mismatch: {d} vs {d}\n", .{ i, e.original_name, e.loc, a.loc });
         return error.SymbolLocMismatch;

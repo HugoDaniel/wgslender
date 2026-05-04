@@ -1,22 +1,15 @@
-//! Side-table mirror of `Symbol.use_count`.
+//! Per-symbol use counts produced by AstVisit Pass 2.
 //!
-//! B.M1 of the Symbol-immutability arc (audit plan §11). The end goal is
-//! to delete `Symbol.use_count` and have AstVisit Pass 2 produce a
-//! side-table instead of mutating the symbol record. This module is the
-//! first half of that change: AstVisit gains an *optional* mirror, so
-//! callers can drive the walker with a side-table attached and verify it
-//! tracks the existing field exactly. Production paths leave the
-//! side-table null today, so observable behavior is unchanged.
+//! Replaces the `Symbol.use_count` field deleted in B.M5 of the Symbol-
+//! immutability arc. Owned by `Module.use_counts`; sized to
+//! `module.symbols.items.len` at parse time. The incremental hot path
+//! (`Splice.zig`) calls `Module.resizeUseCounts` to grow the table when a
+//! splice introduces new symbols.
 //!
-//! Mirrors AstVisit's increment/decrement protocol exactly:
-//!   - `.add` mode at AstVisit.zig:273 (ident) / :355 (type.ident) →
-//!     `increment(ref)`
-//!   - `.sub` mode at AstVisit.zig:300 (ident, gated by
-//!     `flags.use_count_incremented`) / :365 (type.ident, gated by
-//!     `ref.isValid()`) → `decrement(ref)`
-//!
-//! Bounds and validity checks match the existing field-side guards so a
-//! mirrored call is a strict no-op whenever the field-side write is.
+//! AstVisit's increment/decrement protocol:
+//!   - `.add` mode at AstVisit.zig (ident, type.ident) → `increment(ref)`
+//!   - `.sub` mode (ident, gated by `IdentExpr.was_counted`; type.ident,
+//!     gated by `ref.isValid()`) → `decrement(ref)`
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -25,12 +18,14 @@ const Ast = @import("Ast.zig");
 const UseCounts = @This();
 
 /// Dense per-symbol counts, indexed by `SymbolIndex.index()`. Length
-/// equals the symbol-table size at `init`-time. Subsequent symbol
-/// appends are caller-coordinated; this side-table does not auto-grow.
+/// equals the symbol-table size at `init`-time. Grown by
+/// `Module.resizeUseCounts` when an incremental splice appends new
+/// symbols.
 counts: []u32,
 
-/// Bumped by `reset()`. Reserved for the B.M5 "decrement crosses a
-/// reset boundary" check once readers migrate off the field.
+/// Bumped by `reset()`. Reserved for the "decrement crosses a reset
+/// boundary" debug check once the visitor incremental story
+/// stabilizes.
 epoch: u64 = 0,
 
 pub fn init(arena: Allocator, n_symbols: usize) !UseCounts {
@@ -39,9 +34,10 @@ pub fn init(arena: Allocator, n_symbols: usize) !UseCounts {
     return .{ .counts = counts };
 }
 
-/// Mirror of the field-side `symbols[idx].use_count += 1`. Silent on
-/// `.none` and out-of-range indices — same shape as the field-side
-/// `if (idx < ctx.symbols.len)` guard.
+/// Bump the count for `sym` by 1. Silent no-op on `.none` and out-of-
+/// range indices — the latter so the AstVisit add-walk can run before
+/// `Module.resizeUseCounts` has caught up to a freshly appended symbol
+/// without crashing.
 pub fn increment(self: *UseCounts, sym: Ast.SymbolIndex) void {
     if (!sym.isValid()) return;
     const idx = sym.index();
@@ -49,10 +45,9 @@ pub fn increment(self: *UseCounts, sym: Ast.SymbolIndex) void {
     self.counts[idx] += 1;
 }
 
-/// Mirror of the field-side saturating decrement at AstVisit.zig:299.
-/// Caller is responsible for matching the field-side gate
-/// (`flags.use_count_incremented` for idents, `ref.isValid()` for
-/// type-idents) before calling this — the side-table itself only
+/// Saturating decrement of the count for `sym`. Caller is responsible
+/// for matching the per-ident gate (`IdentExpr.was_counted` for idents,
+/// `ref.isValid()` for type-idents) before calling — this method only
 /// guards against indexing OOB and underflow.
 pub fn decrement(self: *UseCounts, sym: Ast.SymbolIndex) void {
     if (!sym.isValid()) return;
@@ -68,24 +63,11 @@ pub fn get(self: UseCounts, sym: Ast.SymbolIndex) u32 {
     return self.counts[idx];
 }
 
-/// Zero every count and bump `epoch`. The epoch bump is the hook that
-/// B.M5+ will use to assert decrements pair with same-epoch increments.
+/// Zero every count and bump `epoch`. Reserved for future incremental
+/// scenarios that need to detect decrements crossing a reset boundary.
 pub fn reset(self: *UseCounts) void {
     @memset(self.counts, 0);
     self.epoch +%= 1;
-}
-
-/// Debug-only invariant: every symbol's `use_count` equals its mirrored
-/// side-table count. Intended for the end of a test scenario that drove
-/// both paths in lockstep — `assertParity` is what flushes the "I think
-/// I'm in sync" assumption into a hard check. Out-of-range symbols
-/// (added after `init`) are compared against zero.
-pub fn assertParity(self: UseCounts, module: *const Ast.Module) void {
-    if (!std.debug.runtime_safety) return;
-    for (module.symbols.items, 0..) |sym, i| {
-        const side = if (i < self.counts.len) self.counts[i] else 0;
-        std.debug.assert(sym.use_count == side);
-    }
 }
 
 test "init: zero-fills the slice" {

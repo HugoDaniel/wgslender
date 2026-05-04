@@ -1,32 +1,20 @@
-//! Side-table mirror of `Symbol.flags.must_not_be_renamed`.
+//! Per-pipeline rename-protection policy.
 //!
-//! B.M2 of the Symbol-immutability arc (audit plan §11). The end goal
-//! is to delete `Symbol.flags.must_not_be_renamed` and have the renamer
-//! consult a per-pipeline `RenamePolicy` that names *why* each symbol
-//! is rename-protected. This module is the first half of that change:
-//! orchestrators (Minifier, Compiler, MinifyEstimator) build a
-//! `RenamePolicy` and then mirror it back to the field for backward
-//! compat. Once readers (Renamer, Printer, lint rules) switch to the
-//! policy in B.M4, the mirror loop and the field disappear in B.M5.
-//!
-//! The 6 writer sites the audit catalogues (Parser.zig:1000,
-//! CstLower.zig:664, Minifier.zig:316-325+343, Compiler.zig:231-239,
-//! MinifyEstimator.zig:387-390, plus the SavedSymbolState restore at
-//! :369) collapse to one `Builder` API with named `Reason` values.
-//! Parser/CstLower keep their direct field writes during the additive
-//! period and *also* set the transient `parser_wants_no_rename` bit
-//! (Ast.zig). The Builder's `markFromParser` reads that bit so the
-//! parser-side reason survives the move into side-table land.
+//! Replaces the `Symbol.flags.must_not_be_renamed` and
+//! `Symbol.flags.parser_wants_no_rename` fields deleted in B.M5 of the
+//! Symbol-immutability arc. Orchestrators (Minifier, Compiler,
+//! MinifyEstimator) build a `RenamePolicy` via `Builder` and hand it to
+//! the `MinifyRenamer` for the duration of one pipeline run.
 //!
 //! ## Reason precedence
 //!
 //! `markIdx` is "first reason wins" — a subsequent mark on a symbol
 //! that already has a reason is a no-op. Orchestrators control
 //! precedence by ordering Builder calls. The default order
-//! (`parser_marked` first, then `entry_point`, then the kind-based
-//! reasons, then `keep_name`, then `uniform_struct_type`) was chosen
-//! so that the most informative reason wins for diagnostics — but the
-//! boolean answer (`mustNotRename`) is order-independent.
+//! (`entry_point` first, then the kind-based reasons, then
+//! `keep_names`, then `uniform_struct_type`) was chosen so that the
+//! most informative reason wins for diagnostics — but the boolean
+//! answer (`mustNotRename`) is order-independent.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -40,8 +28,6 @@ const RenamePolicy = @This();
 /// set"). Today's readers only consult `mustNotRename`.
 pub const Reason = enum(u8) {
     none = 0,
-    /// Set by Parser or CstLower for entry-point function declarations.
-    parser_marked,
     /// Function carries a `@vertex` / `@fragment` / `@compute` attribute.
     entry_point,
     /// `kind == .builtin`.
@@ -84,28 +70,6 @@ pub fn reasonFor(self: RenamePolicy, sym: Ast.SymbolIndex) Reason {
     return self.reasons[idx];
 }
 
-/// Mirror the policy onto `Symbol.flags.must_not_be_renamed`. Used by
-/// orchestrators during the additive period so existing readers
-/// (Renamer, Printer) keep working without knowing about the policy.
-/// Deleted in B.M5 once readers migrate.
-pub fn mirrorToFlags(self: RenamePolicy, module: *Ast.Module) void {
-    const n = @min(self.reasons.len, module.symbols.items.len);
-    for (module.symbols.items[0..n], 0..) |*sym, i| {
-        if (self.reasons[i] != .none) sym.flags.must_not_be_renamed = true;
-    }
-}
-
-/// Debug-only invariant: every symbol's `must_not_be_renamed` is set
-/// exactly when the policy says so. Intended for the end of a test
-/// that drove both paths in lockstep.
-pub fn assertParity(self: RenamePolicy, module: *const Ast.Module) void {
-    if (!std.debug.runtime_safety) return;
-    for (module.symbols.items, 0..) |sym, i| {
-        const policy_says = if (i < self.reasons.len) self.reasons[i] != .none else false;
-        std.debug.assert(sym.flags.must_not_be_renamed == policy_says);
-    }
-}
-
 pub const Builder = struct {
     policy: RenamePolicy,
 
@@ -116,18 +80,6 @@ pub const Builder = struct {
     fn markIdx(self: *Builder, idx: u32, reason: Reason) void {
         if (idx >= self.policy.reasons.len) return;
         if (self.policy.reasons[idx] == .none) self.policy.reasons[idx] = reason;
-    }
-
-    /// Reads the transient `Symbol.flags.parser_wants_no_rename` bit
-    /// set by Parser and CstLower at parse time. Both fronts share the
-    /// same bit — the bit answers "should the orchestrator's policy
-    /// rename-protect this symbol for a parser-side reason?", and both
-    /// Parser and CstLower set it on entry-point function declarations.
-    /// The bit is transient; deleted in B.M5.
-    pub fn markFromParser(self: *Builder, module: *const Ast.Module) void {
-        for (module.symbols.items, 0..) |sym, i| {
-            if (sym.flags.parser_wants_no_rename) self.markIdx(@intCast(i), .parser_marked);
-        }
     }
 
     pub fn markEntryPoints(self: *Builder, module: *const Ast.Module) void {
@@ -273,37 +225,22 @@ test "Builder: markExternalBindings + markKeepNames" {
     try testing.expectEqual(Reason.none, policy.reasonFor(@enumFromInt(2)));
 }
 
-test "Builder: markFromParser reads parser_wants_no_rename" {
-    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_inst.deinit();
-    const arena = arena_inst.allocator();
-
-    var module = try newTestModule(arena);
-    try module.symbols.append(arena, makeSym("main", .function, .{ .parser_wants_no_rename = true }));
-    try module.symbols.append(arena, makeSym("helper", .function, .{}));
-
-    var builder = try Builder.init(arena, module.symbols.items.len);
-    builder.markFromParser(&module);
-    const policy = builder.build();
-
-    try testing.expectEqual(Reason.parser_marked, policy.reasonFor(@enumFromInt(0)));
-    try testing.expectEqual(Reason.none, policy.reasonFor(@enumFromInt(1)));
-}
-
 test "Builder: first reason wins" {
     var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena_inst.deinit();
     const arena = arena_inst.allocator();
 
     var module = try newTestModule(arena);
-    try module.symbols.append(arena, makeSym("main", .function, .{ .is_entry_point = true, .parser_wants_no_rename = true }));
+    try module.symbols.append(arena, makeSym("main", .function, .{ .is_entry_point = true }));
 
     var builder = try Builder.init(arena, module.symbols.items.len);
-    builder.markFromParser(&module); // parser_marked
-    builder.markEntryPoints(&module); // would-be entry_point — but parser_marked wins
+    builder.markEntryPoints(&module); // entry_point
+    builder.markBuiltinsAndOverrides(&module); // would not match (kind=function), no-op
+    const keep = [_][]const u8{"main"};
+    builder.markKeepNames(&module, &keep); // would-be keep_names — but entry_point wins
     const policy = builder.build();
 
-    try testing.expectEqual(Reason.parser_marked, policy.reasonFor(@enumFromInt(0)));
+    try testing.expectEqual(Reason.entry_point, policy.reasonFor(@enumFromInt(0)));
     try testing.expect(policy.mustNotRename(@enumFromInt(0)));
 }
 
@@ -313,24 +250,4 @@ test "mustNotRename: .none and out-of-range are silent false" {
     const policy = try RenamePolicy.init(arena_inst.allocator(), 2);
     try testing.expect(!policy.mustNotRename(.none));
     try testing.expect(!policy.mustNotRename(@enumFromInt(99)));
-}
-
-test "mirrorToFlags: copies policy onto must_not_be_renamed" {
-    var arena_inst = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena_inst.deinit();
-    const arena = arena_inst.allocator();
-
-    var module = try newTestModule(arena);
-    try module.symbols.append(arena, makeSym("main", .function, .{ .is_entry_point = true }));
-    try module.symbols.append(arena, makeSym("helper", .function, .{}));
-
-    var builder = try Builder.init(arena, module.symbols.items.len);
-    builder.markEntryPoints(&module);
-    const policy = builder.build();
-
-    try testing.expect(!module.symbols.items[0].flags.must_not_be_renamed);
-    policy.mirrorToFlags(&module);
-    try testing.expect(module.symbols.items[0].flags.must_not_be_renamed);
-    try testing.expect(!module.symbols.items[1].flags.must_not_be_renamed);
-    policy.assertParity(&module);
 }

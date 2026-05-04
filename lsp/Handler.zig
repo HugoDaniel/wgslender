@@ -509,16 +509,10 @@ fn analyzeFromParse(
         analyzed.valid = false;
     }
 
-    // DCE writes `is_live` flags on module.symbols. Reset first so
-    // repeated analyze calls on the same module don't accumulate
-    // incorrect liveness (e.g., a symbol that became unreachable after
-    // an edit must see its prior `is_live = true` cleared).
-    // B.M4: stash the Liveness side-table on `analyzed.liveness` so
-    // downstream lint rules and the LSP's unused/dead-code passes can
-    // read it via the side-table API instead of `Symbol.flags.is_live`.
-    for (parse.module.symbols.items) |*sym| {
-        sym.flags.is_live = false;
-    }
+    // Allocate a fresh Liveness side-table per analyze call (B.M5: the
+    // `Symbol.flags.is_live` field was deleted, so this is the only
+    // place liveness lives). Lint rules and the LSP's unused/dead-code
+    // passes consume it via `analysis.liveness`.
     if (wgslender.Liveness.init(parse.arena.allocator(), parse.module.symbols.items.len)) |liveness_init| {
         var liveness = liveness_init;
         _ = wgslender.Dce.mark(parse.arena.allocator(), parse.module, &liveness) catch {};

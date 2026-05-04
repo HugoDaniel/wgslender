@@ -178,43 +178,29 @@ fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyC
         return .{ .result = result, .extras = null };
     }
 
-    // 3. Mark API-facing symbols. The returned policy is the
-    // forward-looking source of truth (B.M2); during the additive
-    // period it is also mirrored to `Symbol.flags.must_not_be_renamed`
-    // so existing readers (Renamer, Printer) keep working. B.M4 also
-    // hands the policy to MinifyRenamer below so the renamer reads
-    // through the side-table.
+    // 3. Mark API-facing symbols. The returned policy is the per-pipeline
+    //    source of truth that the renamer / scope-local wrapper consult.
     const policy = try markAPIFacingSymbols(arena, module, options);
     const policy_box = try arena.create(RenamePolicy);
     policy_box.* = policy;
 
-    // 4. DCE — allocate a side-table mirror per pipeline run (B.M3).
-    // The legacy `Symbol.flags.is_live` field is still written by both
-    // branches; readers migrate off it in B.M4 and the field disappears
-    // in B.M5.
-    var liveness = try Liveness.init(arena, module.symbols.items.len);
+    // 4. DCE — populate `module.liveness` so the Printer's
+    //    tree-shaking gate and `sortDeclarations` see accurate liveness.
+    module.liveness = try Liveness.init(arena, module.symbols.items.len);
     if (options.tree_shaking) {
-        result.symbols_dead = try Dce.mark(arena, module, &liveness);
+        result.symbols_dead = try Dce.mark(arena, module, &module.liveness);
         std.debug.assert(result.symbols_dead <= module.symbols.items.len);
     } else {
-        for (module.symbols.items) |*sym| {
-            sym.flags.is_live = true;
-        }
-        liveness.markAllLive();
+        module.liveness.markAllLive();
     }
 
     checkModuleInvariants(module);
 
-    // 5. Compute usage. B.M4: snapshot Pass-2 use counts into the
-    // side-table so MinifyRenamer reads through `UseCounts` instead of
-    // `Symbol.use_count`. `accumulateSymbolUseCounts` mirrors any
-    // additional bumps it applies into the side-table to keep both in
-    // lockstep.
+    // 5. Compute post-Pass-2 usage (function-name call sites etc.).
+    //    `module.use_counts` already holds Pass-2 ident bumps;
+    //    `accumulateSymbolUseCounts` adds these to it.
     var uses = try computeSymbolUsage(arena, module);
     defer uses.deinit(arena);
-    const use_counts_box = try arena.create(UseCounts);
-    use_counts_box.* = try UseCounts.init(arena, module.symbols.items.len);
-    for (module.symbols.items, 0..) |sym, i| use_counts_box.counts[i] = sym.use_count;
 
     // 6. Build reserved names
     var reserved = try RenamerMod.computeReservedNames(arena);
@@ -226,7 +212,7 @@ fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyC
     const source_map_gen = try initSourceMapGen(arena, source, options);
 
     // 8. Create renamer and print
-    const print_result = try printWithRenamer(arena, module, options, &uses, reserved, source_map_gen, use_counts_box, policy_box);
+    const print_result = try printWithRenamer(arena, module, options, &uses, reserved, source_map_gen, &module.use_counts, policy_box);
     result.code = print_result.code;
 
     // 9. Finalize source map
@@ -312,7 +298,7 @@ fn printWithRenamer(
 
     // Optionally wrap with scope-local renaming
     if (options.scope_local_rename and options.minify_identifiers) {
-        const scope = try ScopeLocalRenamer.init(arena, module, renamer);
+        const scope = try ScopeLocalRenamer.init(arena, module, renamer, rename_policy);
         renamer = &scope.ren;
     }
 
@@ -340,15 +326,12 @@ fn printWithRenamer(
 
 fn markAPIFacingSymbols(arena: Allocator, module: *Ast.Module, options: Options) !RenamePolicy {
     var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
-    builder.markFromParser(module);
     builder.markEntryPoints(module);
     builder.markBuiltinsAndOverrides(module);
     if (!options.mangle_external_bindings) builder.markExternalBindings(module);
     builder.markKeepNames(module, options.keep_names);
     if (options.preserve_uniform_struct_types) builder.markUniformStructTypes(module);
-    const policy = builder.build();
-    policy.mirrorToFlags(module);
-    return policy;
+    return builder.build();
 }
 
 /// Debug-only: verify module invariants after DCE and API marking.
@@ -361,8 +344,8 @@ fn checkModuleInvariants(module: *const Ast.Module) void {
         }
     }
     // Every live symbol must have a non-empty original name.
-    for (module.symbols.items) |sym| {
-        if (sym.flags.is_live) {
+    for (module.symbols.items, 0..) |sym, i| {
+        if (module.liveness.isLive(@intCast(i))) {
             std.debug.assert(sym.original_name.len > 0);
         }
     }
@@ -537,7 +520,12 @@ pub const ScopeLocalRenamer = struct {
     base: *const Printer.Renamer,
     ren: Printer.Renamer,
 
-    pub fn init(arena: Allocator, module: *const Ast.Module, base: *const Printer.Renamer) !*ScopeLocalRenamer {
+    pub fn init(
+        arena: Allocator,
+        module: *const Ast.Module,
+        base: *const Printer.Renamer,
+        policy: *const RenamePolicy,
+    ) !*ScopeLocalRenamer {
         const self = try arena.create(ScopeLocalRenamer);
         self.* = .{ .overrides = .{}, .base = base, .ren = undefined };
 
@@ -569,13 +557,13 @@ pub const ScopeLocalRenamer = struct {
                 if (!param.name.isValid()) continue;
                 const sym_idx = param.name.index();
                 if (globals.contains(sym_idx)) continue;
-                if (module.symbols.items[sym_idx].flags.must_not_be_renamed) continue;
+                if (policy.mustNotRename(param.name)) continue;
                 const name = try allocCanonicalName(arena, &name_buf, &name_idx, &reserved_names);
                 try self.overrides.put(arena, sym_idx, name);
             }
 
             if (func.body) |body| {
-                try collectBodyLocals(arena, body, module, &globals, &self.overrides, &name_buf, &name_idx, &reserved_names);
+                try collectBodyLocals(arena, body, &globals, &self.overrides, &name_buf, &name_idx, &reserved_names, policy);
             }
         }
 
@@ -598,12 +586,12 @@ pub const ScopeLocalRenamer = struct {
     fn collectBodyLocals(
         arena: Allocator,
         body: *const Ast.CompoundStmt,
-        module: *const Ast.Module,
         globals: *const std.AutoHashMapUnmanaged(u32, void),
         overrides: *std.AutoHashMapUnmanaged(u32, []const u8),
         name_buf: *[16]u8,
         name_idx: *u32,
         reserved: *const std.StringHashMapUnmanaged(void),
+        policy: *const RenamePolicy,
     ) Allocator.Error!void {
         var bodies: std.ArrayListUnmanaged(*const Ast.CompoundStmt) = .empty;
         defer bodies.deinit(arena);
@@ -617,7 +605,7 @@ pub const ScopeLocalRenamer = struct {
                         const ref = ds.decl.nameRef();
                         if (ref.isValid()) {
                             const sym_idx = ref.index();
-                            if (!globals.contains(sym_idx) and !module.symbols.items[sym_idx].flags.must_not_be_renamed) {
+                            if (!globals.contains(sym_idx) and !policy.mustNotRename(ref)) {
                                 const name = try allocCanonicalName(arena, name_buf, name_idx, reserved);
                                 try overrides.put(arena, sym_idx, name);
                             }
@@ -674,7 +662,7 @@ pub const ScopeLocalRenamer = struct {
 pub fn sortDeclarations(arena: Allocator, module: *const Ast.Module) ![]Ast.Decl {
     var live: std.ArrayListUnmanaged(Ast.Decl) = .empty;
     for (module.declarations.items) |decl| {
-        if (Dce.isDeclarationLive(decl, module.symbols.items)) {
+        if (Dce.isDeclarationLive(decl, module.liveness)) {
             try live.append(arena, decl);
         }
     }

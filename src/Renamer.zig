@@ -97,13 +97,10 @@ pub const MinifyRenamer = struct {
         return self;
     }
 
-    /// Attach side-table mirrors that this renamer consults instead of
-    /// the legacy `Symbol` fields. B.M4: callers in the production
-    /// minify pipelines (`Minifier`, `Compiler`, `MinifyEstimator`)
-    /// invoke this between `init` and `accumulateSymbolUseCounts` so
-    /// the dual-write/dual-read paths are active. Leaving these null
-    /// preserves the pre-B.M4 behavior — useful for unit tests that
-    /// construct a synthetic symbol table with no side-tables.
+    /// Attach per-pipeline side-tables. Production callers (`Minifier`,
+    /// `Compiler`, `MinifyEstimator`) invoke this between `init` and
+    /// `accumulateSymbolUseCounts`. Leaving these null is only sensible
+    /// for tests that don't care about ranking or pinning.
     pub fn setSideTables(
         self: *MinifyRenamer,
         use_counts: ?*UseCounts,
@@ -113,24 +110,20 @@ pub const MinifyRenamer = struct {
         self.rename_policy = rename_policy;
     }
 
-    /// Merges per-scope use counts into each symbol's total use_count.
-    /// When a `UseCounts` side-table is attached it receives the same
-    /// increments — keeping the field and the side-table in lockstep
-    /// across the additive period.
+    /// Merges per-scope use counts into the per-pipeline `UseCounts`
+    /// side-table. The renamer's `useCountFor` then reads the canonical
+    /// total — Pass 2 ident bumps plus these post-pass call/decl bumps.
     pub fn accumulateSymbolUseCounts(self: *MinifyRenamer, uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) void {
+        const uc = self.use_counts orelse return;
         var it = uses.iterator();
         while (it.next()) |entry| {
             const ref = entry.key_ptr.*;
             if (!ref.isValid()) continue;
             const idx = ref.index();
             if (idx >= self.symbols.len) continue;
-            const sym = &self.symbols[idx];
-            if (mustNotBeRenamed(self, idx, sym)) continue;
+            if (mustNotBeRenamed(self, idx, &self.symbols[idx])) continue;
             const delta = entry.value_ptr.*;
-            sym.use_count += delta;
-            if (self.use_counts) |uc| {
-                if (idx < uc.counts.len) uc.counts[idx] += delta;
-            }
+            if (idx < uc.counts.len) uc.counts[idx] += delta;
         }
     }
 
@@ -227,36 +220,23 @@ pub const MinifyRenamer = struct {
     }
 };
 
-/// Side-table-aware read of `Symbol.flags.must_not_be_renamed`. When a
-/// `RenamePolicy` is attached, the policy's `mustNotRename(idx)` is
-/// authoritative; debug builds assert it agrees with the field. With no
-/// policy attached, falls back to the field directly.
+/// Reads the per-pipeline `RenamePolicy` for this symbol. Tests that
+/// build a renamer without a policy see "always renameable".
 fn mustNotBeRenamed(self: *const MinifyRenamer, idx: u32, sym: *const Ast.Symbol) bool {
-    if (self.rename_policy) |pol| {
-        const side = pol.mustNotRename(@enumFromInt(idx));
-        if (std.debug.runtime_safety) {
-            std.debug.assert(side == sym.flags.must_not_be_renamed);
-        }
-        return side;
-    }
-    return sym.flags.must_not_be_renamed;
+    _ = sym;
+    if (self.rename_policy) |pol| return pol.mustNotRename(@enumFromInt(idx));
+    return false;
 }
 
-/// Side-table-aware read of `Symbol.use_count`. When a `UseCounts` is
-/// attached, the side-table is authoritative; debug builds assert it
-/// agrees with the field. With no side-table attached, falls back to
-/// the field directly.
+/// Reads the per-pipeline `UseCounts` for this symbol. Tests that
+/// build a renamer without a side-table see zero — they pump uses
+/// through `accumulateSymbolUseCounts` only when they also attach one.
 fn useCountFor(self: *const MinifyRenamer, idx: u32, sym: *const Ast.Symbol) u32 {
+    _ = sym;
     if (self.use_counts) |uc| {
-        if (idx < uc.counts.len) {
-            const side = uc.counts[idx];
-            if (std.debug.runtime_safety) {
-                std.debug.assert(side == sym.use_count);
-            }
-            return side;
-        }
+        if (idx < uc.counts.len) return uc.counts[idx];
     }
-    return sym.use_count;
+    return 0;
 }
 
 // =========================================================================
@@ -693,17 +673,34 @@ test "renamer: NoOpRenamer handles out-of-bounds ref" {
 }
 
 test "renamer: MinifyRenamer full workflow" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
     var symbols = [_]Ast.Symbol{
-        .{ .original_name = "entryMain", .kind = .function, .flags = .{ .must_not_be_renamed = true } },
-        .{ .original_name = "helperFunc", .kind = .function, .flags = .{}, .use_count = 0 },
-        .{ .original_name = "otherFunc", .kind = .function, .flags = .{}, .use_count = 0 },
+        .{ .original_name = "entryMain", .kind = .function, .flags = .{ .is_entry_point = true } },
+        .{ .original_name = "helperFunc", .kind = .function, .flags = .{} },
+        .{ .original_name = "otherFunc", .kind = .function, .flags = .{} },
     };
 
     var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
+    // Use a synthetic Module so markEntryPoints can iterate its symbols.
+    var fake_scope = Ast.Scope.init(null, .module);
+    var fake_module = Ast.Module.init(&fake_scope, "");
+    fake_module.symbols.items = &symbols;
+    fake_module.symbols.capacity = symbols.len;
+
+    var policy_builder = try RenamePolicy.Builder.init(arena, symbols.len);
+    policy_builder.markEntryPoints(&fake_module);
+    var policy = policy_builder.build();
+
+    var use_counts = try UseCounts.init(arena, symbols.len);
+
     var renamer = MinifyRenamer.init(std.testing.allocator, &symbols, reserved);
     renamer.renamer.ptr = @ptrCast(&renamer); // Fix self-pointer after move
+    renamer.setSideTables(&use_counts, &policy);
     defer {
         renamer.slots.deinit(std.testing.allocator);
         renamer.top_level_slots.deinit(std.testing.allocator);
@@ -746,7 +743,7 @@ test "renamer: MinifyRenamer invalid ref returns empty" {
 
 test "renamer: MinifyRenamer zero use count not renamed" {
     var symbols = [_]Ast.Symbol{
-        .{ .original_name = "unused", .kind = .function, .flags = .{}, .use_count = 0 },
+        .{ .original_name = "unused", .kind = .function, .flags = .{} },
     };
     const reserved = std.StringHashMapUnmanaged(void){};
     var renamer = MinifyRenamer.init(std.testing.allocator, &symbols, reserved);
@@ -765,13 +762,30 @@ test "renamer: MinifyRenamer zero use count not renamed" {
     try std.testing.expectEqualStrings("unused", renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
 }
 
-test "renamer: MinifyRenamer must_not_be_renamed flag" {
+test "renamer: MinifyRenamer rename policy pin" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
     var symbols = [_]Ast.Symbol{
-        .{ .original_name = "keepMe", .kind = .function, .flags = .{ .must_not_be_renamed = true }, .use_count = 10 },
+        .{ .original_name = "keepMe", .kind = .function, .flags = .{ .is_entry_point = true } },
     };
+
+    var fake_scope = Ast.Scope.init(null, .module);
+    var fake_module = Ast.Module.init(&fake_scope, "");
+    fake_module.symbols.items = &symbols;
+    fake_module.symbols.capacity = symbols.len;
+
+    var policy_builder = try RenamePolicy.Builder.init(arena, symbols.len);
+    policy_builder.markEntryPoints(&fake_module);
+    var policy = policy_builder.build();
+
+    var use_counts = try UseCounts.init(arena, symbols.len);
+
     const reserved = std.StringHashMapUnmanaged(void){};
     var renamer = MinifyRenamer.init(std.testing.allocator, &symbols, reserved);
     renamer.renamer.ptr = @ptrCast(&renamer);
+    renamer.setSideTables(&use_counts, &policy);
     defer {
         renamer.slots.deinit(std.testing.allocator);
         renamer.top_level_slots.deinit(std.testing.allocator);
@@ -787,7 +801,7 @@ test "renamer: MinifyRenamer must_not_be_renamed flag" {
     try renamer.allocateSlots();
     try renamer.assignNames();
 
-    // must_not_be_renamed should keep original name
+    // Policy-pinned symbol should keep its original name.
     try std.testing.expectEqualStrings("keepMe", renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
 }
 
@@ -863,15 +877,23 @@ test "renamer: NameMinifier default matches numberToMinifiedName" {
 }
 
 test "renamer: MinifyRenamer skips reserved names" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
     var symbols = [_]Ast.Symbol{
-        .{ .original_name = "myFunc", .kind = .function, .flags = .{}, .use_count = 5 },
+        .{ .original_name = "myFunc", .kind = .function, .flags = .{} },
     };
 
     var reserved = try computeReservedNames(std.testing.allocator);
     defer reserved.deinit(std.testing.allocator);
 
+    var policy = try RenamePolicy.init(arena, symbols.len);
+    var use_counts = try UseCounts.init(arena, symbols.len);
+
     var renamer = MinifyRenamer.init(std.testing.allocator, &symbols, reserved);
     renamer.renamer.ptr = @ptrCast(&renamer);
+    renamer.setSideTables(&use_counts, &policy);
     defer {
         renamer.slots.deinit(std.testing.allocator);
         renamer.top_level_slots.deinit(std.testing.allocator);

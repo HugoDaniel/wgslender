@@ -53,12 +53,14 @@ fn expectSymbolsMatch(a: *const Ast.Module, b: *const Ast.Module) !void {
     defer std.testing.allocator.free(matched);
     for (matched) |*m| m.* = false;
 
-    for (b.symbols.items) |sb| {
+    for (b.symbols.items, 0..) |sb, bi| {
+        const sb_uc: u32 = if (bi < b.use_counts.counts.len) b.use_counts.counts[bi] else 0;
         var found = false;
         for (a.symbols.items, 0..) |sa, i| {
             if (matched[i]) continue;
             if (sa.kind != sb.kind) continue;
-            if (sa.use_count != sb.use_count) continue;
+            const sa_uc: u32 = if (i < a.use_counts.counts.len) a.use_counts.counts[i] else 0;
+            if (sa_uc != sb_uc) continue;
             if (!std.mem.eql(u8, sa.original_name, sb.original_name)) continue;
             matched[i] = true;
             found = true;
@@ -67,17 +69,18 @@ fn expectSymbolsMatch(a: *const Ast.Module, b: *const Ast.Module) !void {
         if (!found) {
             std.debug.print(
                 "oracle symbol '{s}' (kind={s}, use={d}) has no match in updated\n",
-                .{ sb.original_name, @tagName(sb.kind), sb.use_count },
+                .{ sb.original_name, @tagName(sb.kind), sb_uc },
             );
             return error.SymbolMismatch;
         }
     }
-    for (a.symbols.items, matched) |sa, m| {
+    for (a.symbols.items, matched, 0..) |sa, m, ai| {
         if (m) continue;
-        if (sa.use_count != 0) {
+        const sa_uc: u32 = if (ai < a.use_counts.counts.len) a.use_counts.counts[ai] else 0;
+        if (sa_uc != 0) {
             std.debug.print(
                 "unmatched updated symbol '{s}' (kind={s}, use={d}) has non-zero use_count\n",
-                .{ sa.original_name, @tagName(sa.kind), sa.use_count },
+                .{ sa.original_name, @tagName(sa.kind), sa_uc },
             );
             return error.DeadSymbolHasUseCount;
         }
@@ -470,9 +473,11 @@ test "A14: append decl referencing outer symbol bumps use_count" {
 
     // Spot-check: find symbol `a` in updated and assert use_count > 0.
     var found_a_use: u32 = 0;
-    for (updated.module.symbols.items) |s| {
+    for (updated.module.symbols.items, 0..) |s, i| {
         if (std.mem.eql(u8, s.original_name, "a")) {
-            found_a_use = s.use_count;
+            if (i < updated.module.use_counts.counts.len) {
+                found_a_use = updated.module.use_counts.counts[i];
+            }
         }
     }
     try std.testing.expect(found_a_use >= 1);

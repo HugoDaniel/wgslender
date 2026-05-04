@@ -18,7 +18,7 @@ pub const Options = struct {
     /// Apply syntactic simplifications (e.g. drop redundant parens).
     minify_syntax: bool = false,
     /// Emit only declarations reachable from entry points. Upstream Dce must
-    /// have marked `Symbol.is_live` before this flag takes effect.
+    /// have populated `Module.liveness` before this flag takes effect.
     tree_shaking: bool = false,
     /// Custom renaming policy. When null, identifiers print their source name
     /// regardless of `minify_identifiers`.
@@ -185,7 +185,7 @@ fn printModule(self: *Printer, m: *const Ast.Module) !void {
 
     // Filter live declarations
     for (m.declarations.items) |decl| {
-        if (!self.options.tree_shaking or Dce.isDeclarationLive(decl, self.symbols)) {
+        if (!self.options.tree_shaking or Dce.isDeclarationLive(decl, m.liveness)) {
             try self.printDecl(decl);
         }
     }

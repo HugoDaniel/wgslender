@@ -2,8 +2,8 @@
 //!
 //! Shared by `Parser` (after its Pass-1 parse) and `CstLower` (after its
 //! Pass-1 CST→AST lowering). Walks a fully-built `Ast.Module`, binding
-//! identifier references to symbols, incrementing `use_count`, and marking
-//! expression purity in post-order.
+//! identifier references to symbols, incrementing the `UseCounts`
+//! side-table, and marking expression purity in post-order.
 //!
 //! All behavior here was moved verbatim from `Parser.zig` — any drift would
 //! break the equivalence gate between the two front-ends.
@@ -18,12 +18,12 @@ const constants = @import("constants.zig");
 /// Direction of a subtree walk.
 ///
 /// `.add` — today's behavior: resolve idents against scopes, set `ref`,
-/// increment `symbols[ref].use_count`, emit `E0102` on misresolution,
+/// increment `use_counts.counts[ref]`, emit `E0102` on misresolution,
 /// mark expression purity in post-order.
 ///
 /// `.sub` — read-only on scopes/errors. Walks a subtree whose idents are
 /// ALREADY bound (`ref` set by a previous Pass 2) and DECREMENTS
-/// `symbols[ref].use_count` by one per resolved reference. No lookup, no
+/// `use_counts.counts[ref]` by one per resolved reference. No lookup, no
 /// error emission, no purity marking — the subtree is about to be
 /// discarded from the module.
 ///
@@ -34,10 +34,13 @@ pub const Mode = enum { add, sub };
 
 /// Everything Pass 2 needs to read or mutate. The caller owns all slices
 /// and lists; `visit` never allocates into them (it only mutates in place:
-/// `use_count`, ident `ref`, expression purity flags).
+/// `use_counts.counts[ref]`, ident `ref`, expression purity flags,
+/// `IdentExpr.was_counted`).
 pub const Context = struct {
     arena: Allocator,
-    /// Symbol table slice. `visit` increments `use_count` in place.
+    /// Symbol table slice. `visit` no longer mutates symbols — it only
+    /// reads `original_name` for scope lookup and indexes into the
+    /// per-pipeline `use_counts` side-table.
     symbols: []Ast.Symbol,
     /// DFS append-order list of non-root scopes, produced by Pass 1.
     scopes_in_order: []*Ast.Scope,
@@ -59,15 +62,10 @@ pub const Context = struct {
     /// Direction of the walk (see `Mode` doc comment). Default `.add`
     /// preserves every pre-existing caller's behavior byte-for-byte.
     mode: Mode = .add,
-    /// Optional side-table mirror of `symbols[idx].use_count`. When
-    /// non-null, every increment/decrement on the field is mirrored on
-    /// the matching slot here. B.M1 of the Symbol-immutability arc:
-    /// production paths leave this null, so observable behavior is
-    /// unchanged; tests opt in to verify the side-table tracks the
-    /// field exactly. Bounds and validity guards inside `UseCounts`
-    /// match the field-side guards, so a mirrored call is a strict
-    /// no-op whenever the field-side write is.
-    use_counts: ?*UseCounts = null,
+    /// Per-symbol use-count side-table. Length must match
+    /// `symbols.len` at the moment of construction. `.add` increments,
+    /// `.sub` decrements (gated on `IdentExpr.was_counted`).
+    use_counts: *UseCounts,
 };
 
 pub fn visit(ctx: *Context, module: *Ast.Module) error{OutOfMemory}!void {
@@ -128,9 +126,9 @@ fn visitFunctionDecl(ctx: *Context, decl: *Ast.FunctionDecl) error{OutOfMemory}!
 /// whose args are user-symbol references (per `Ast.attributeArgsResolveSymbols`).
 /// Enum-keyword attrs (`@builtin`, `@interpolate`, `@diagnostic`) are skipped so
 /// a user-declared `let linear = ...` doesn't accidentally bind to the keyword
-/// in `@interpolate(linear)` and get its `use_count` bumped — that would let the
+/// in `@interpolate(linear)` and get its use count bumped — that would let the
 /// renamer mangle it into invalid WGSL. Sub-mode is symmetric: same predicate,
-/// so `flags.use_count_incremented` parity is preserved without an extra check.
+/// so `IdentExpr.was_counted` parity is preserved without an extra check.
 fn visitAttributes(ctx: *Context, attrs: []Ast.Attribute) error{OutOfMemory}!void {
     for (attrs) |*attr| {
         if (!Ast.attributeArgsResolveSymbols(attr.name)) continue;
@@ -280,22 +278,21 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
                                 if (ref.isValid()) {
                                     const idx = ref.index();
                                     if (idx < ctx.symbols.len) {
-                                        ctx.symbols[idx].use_count += 1;
-                                        if (ctx.use_counts) |uc| uc.increment(ref);
+                                        ctx.use_counts.increment(ref);
                                         // Pair the bump with the flag so
                                         // `.sub` can tell this ident from
                                         // an E0102 ref that was set but
                                         // never counted.
-                                        expr.flags.use_count_incremented = true;
+                                        expr.was_counted = true;
                                     }
                                 }
                             } else if (lookupSymbolAnyLoc(ctx, expr.name)) |ref| {
                                 const msg = try std.fmt.allocPrint(ctx.arena, "'{s}' is used before its declaration", .{expr.name});
                                 try ctx.errors.append(ctx.arena, .{ .message = msg, .pos = expr.loc, .code = "E0102" });
                                 expr.ref = ref;
-                                // use_count_incremented stays false — the
-                                // E0102 branch sets `ref` for IDE goto-def
-                                // but intentionally skips the bump.
+                                // was_counted stays false — the E0102
+                                // branch sets `ref` for IDE goto-def but
+                                // intentionally skips the bump.
                             }
                         },
                         .sub => {
@@ -305,13 +302,9 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
                             // `ref.isValid()` without the paired
                             // increment. No lookup, no scope access, no
                             // error emission — the subtree is going away.
-                            if (expr.flags.use_count_incremented) {
-                                const idx = expr.ref.index();
-                                if (idx < ctx.symbols.len and ctx.symbols[idx].use_count > 0) {
-                                    ctx.symbols[idx].use_count -= 1;
-                                    if (ctx.use_counts) |uc| uc.decrement(expr.ref);
-                                }
-                                expr.flags.use_count_incremented = false;
+                            if (expr.was_counted) {
+                                ctx.use_counts.decrement(expr.ref);
+                                expr.was_counted = false;
                             }
                         },
                     },
@@ -361,24 +354,12 @@ pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
                     ctx.current_loc = 0; // Types don't have text-order restrictions at module scope
                     if (lookupSymbol(ctx, typ.name)) |ref| {
                         typ.ref = ref;
-                        if (ref.isValid()) {
-                            const idx = ref.index();
-                            if (idx < ctx.symbols.len) {
-                                ctx.symbols[idx].use_count += 1;
-                                if (ctx.use_counts) |uc| uc.increment(ref);
-                            }
-                        }
+                        if (ref.isValid()) ctx.use_counts.increment(ref);
                     }
                     break;
                 },
                 .sub => {
-                    if (typ.ref.isValid()) {
-                        const idx = typ.ref.index();
-                        if (idx < ctx.symbols.len and ctx.symbols[idx].use_count > 0) {
-                            ctx.symbols[idx].use_count -= 1;
-                            if (ctx.use_counts) |uc| uc.decrement(typ.ref);
-                        }
-                    }
+                    if (typ.ref.isValid()) ctx.use_counts.decrement(typ.ref);
                     break;
                 },
             },

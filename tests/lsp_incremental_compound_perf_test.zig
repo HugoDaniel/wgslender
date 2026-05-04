@@ -54,9 +54,9 @@ test "perf-smoke: 25 compound_stmt appends on bridge.wgsl all take the hot path"
     var oracle = try Incremental.parseFull(gpa, cur.source);
     defer oracle.deinit();
     var oracle_live: u64 = 0;
-    for (oracle.module.symbols.items) |s| oracle_live += s.use_count;
+    for (oracle.module.use_counts.counts) |c| oracle_live += c;
     var cur_live: u64 = 0;
-    for (cur.module.symbols.items) |s| cur_live += s.use_count;
+    for (cur.module.use_counts.counts) |c| cur_live += c;
     try std.testing.expectEqual(oracle_live, cur_live);
 
     std.debug.print(

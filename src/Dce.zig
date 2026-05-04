@@ -10,12 +10,10 @@ const Liveness = @import("Liveness.zig");
 
 /// Perform dead code elimination. Returns the number of dead symbols.
 ///
-/// `out` receives the side-table mirror of the per-symbol liveness bits
-/// (B.M3 of the Symbol-immutability arc). Caller allocates `out` with
-/// `Liveness.init(arena, module.symbols.items.len)` before the call;
-/// `mark` writes both `out` and the legacy `Symbol.flags.is_live` field
-/// at every "set live" site so the two views agree exactly. The field
-/// writes go away in B.M5 once readers migrate.
+/// `out` receives the per-symbol liveness bits (replacement for the
+/// `Symbol.flags.is_live` field deleted in B.M5). Caller allocates
+/// `out` with `Liveness.init(arena, module.symbols.items.len)` before
+/// the call.
 pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Error!u32 {
     // Pre: symbol indices are encoded as u32, so the table can never grow
     // past that ceiling. A breach here would silently truncate downstream
@@ -44,9 +42,6 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
     // No entry points means this is a shader library — we can't know what's
     // used externally, so conservatively keep everything.
     if (entry_points.items.len == 0) {
-        for (module.symbols.items) |*sym| {
-            sym.flags.is_live = true;
-        }
         out.markAllLive();
         return 0;
     }
@@ -69,10 +64,7 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
         try visited.put(arena, idx, {});
 
         std.debug.assert(idx < module.symbols.items.len);
-        if (idx < module.symbols.items.len) {
-            module.symbols.items[idx].flags.is_live = true;
-            out.markLive(idx);
-        }
+        if (idx < module.symbols.items.len) out.markLive(idx);
 
         if (deps.get(idx)) |dep_list| {
             for (dep_list.items) |dep_idx| {
@@ -86,21 +78,12 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
     // BFS completeness: visited count must equal live count.
     std.debug.assert(visited.count() <= module.symbols.items.len);
 
-    // Count dead
-    var dead: u32 = 0;
-    var live: u32 = 0;
-    for (module.symbols.items) |sym| {
-        if (!sym.flags.is_live) {
-            dead += 1;
-        } else {
-            live += 1;
-        }
-    }
+    const live = out.countLive();
+    const dead: u32 = @intCast(module.symbols.items.len - live);
 
-    // Post-conditions: live + dead == total, all entry points are live
-    std.debug.assert(live + dead == module.symbols.items.len);
-    for (module.symbols.items) |sym| {
-        if (sym.flags.is_entry_point) std.debug.assert(sym.flags.is_live);
+    // Post-conditions: live + dead == total, all entry points are live.
+    for (module.symbols.items, 0..) |sym, i| {
+        if (sym.flags.is_entry_point) std.debug.assert(out.isLive(@intCast(i)));
     }
 
     return dead;
@@ -341,8 +324,12 @@ pub fn collectStmtRefs(
     } else unreachable;
 }
 
-/// Check if a declaration is live (for use by printer).
-pub fn isDeclarationLive(decl: Ast.Decl, symbols: []const Ast.Symbol) bool {
+/// Check if a declaration is live (for use by printer). When `liveness`
+/// has not been populated (length zero, e.g., DCE skipped) every
+/// declaration is conservatively kept — matches the pre-B.M5 behavior
+/// where `Symbol.flags.is_live` defaulted to `false` only after
+/// `Dce.mark` ran.
+pub fn isDeclarationLive(decl: Ast.Decl, liveness: Liveness) bool {
     const ref = decl.nameRef();
     if (ref == .none) {
         // const_assert is always kept
@@ -350,8 +337,8 @@ pub fn isDeclarationLive(decl: Ast.Decl, symbols: []const Ast.Symbol) bool {
     }
     if (!ref.isValid()) return true;
     const idx = ref.index();
-    if (idx >= symbols.len) return true;
-    return symbols[idx].flags.is_live;
+    if (idx >= liveness.bits.bit_length) return true;
+    return liveness.bits.isSet(idx);
 }
 
 // =========================================================================
@@ -368,13 +355,12 @@ fn parseModule(arena: Allocator, source: [:0]const u8) ?*Ast.Module {
     return parser.parse() catch null;
 }
 
-/// Test helper: allocates a fresh `Liveness` side-table per call and
-/// discards it. Production callers allocate `Liveness` explicitly so the
-/// side-table can be threaded to consumers (B.M4); internal tests just
-/// want the field-side `is_live` writes for assertions.
+/// Test helper: allocates a fresh `Liveness` side-table on the module
+/// and runs `mark`. Returns the dead-symbol count; the populated
+/// liveness is left on `module.liveness` for downstream assertions.
 fn markForTest(arena: Allocator, module: *Ast.Module) Allocator.Error!u32 {
-    var liveness = try Liveness.init(arena, module.symbols.items.len);
-    return try mark(arena, module, &liveness);
+    module.liveness = try Liveness.init(arena, module.symbols.items.len);
+    return try mark(arena, module, &module.liveness);
 }
 
 test "mark: empty module" {
@@ -398,9 +384,9 @@ test "mark: no entry points keeps all live" {
     try std.testing.expectEqual(@as(u32, 0), dead);
 
     // All symbols should be live
-    for (module.symbols.items) |sym| {
+    for (module.symbols.items, 0..) |sym, i| {
         if (sym.kind == .function) {
-            try std.testing.expect(sym.flags.is_live);
+            try std.testing.expect(module.liveness.isLive(@intCast(i)));
         }
     }
 }
@@ -474,7 +460,7 @@ test "isDeclarationLive: function decl" {
 
     // Check that main is live and unused is not
     for (module.declarations.items) |decl| {
-        const live = isDeclarationLive(decl, module.symbols.items);
+        const live = isDeclarationLive(decl, module.liveness);
         const ref = decl.nameRef();
         if (ref.isValid()) {
             const idx = ref.index();
@@ -511,7 +497,7 @@ test "isDeclarationLive: const decl" {
         const ref = decl.nameRef();
         if (ref.isValid() and ref.index() < module.symbols.items.len) {
             const name = module.symbols.items[ref.index()].original_name;
-            const live = isDeclarationLive(decl, module.symbols.items);
+            const live = isDeclarationLive(decl, module.liveness);
             if (std.mem.eql(u8, name, "USED")) {
                 found_used = true;
                 try std.testing.expect(live);
@@ -546,7 +532,7 @@ test "isDeclarationLive: struct decl" {
         const ref = decl.nameRef();
         if (ref.isValid() and ref.index() < module.symbols.items.len) {
             const name = module.symbols.items[ref.index()].original_name;
-            const live = isDeclarationLive(decl, module.symbols.items);
+            const live = isDeclarationLive(decl, module.liveness);
             if (std.mem.eql(u8, name, "Used")) {
                 try std.testing.expect(live);
             } else if (std.mem.eql(u8, name, "Unused")) {
@@ -576,7 +562,7 @@ test "isDeclarationLive: alias decl" {
         const ref = decl.nameRef();
         if (ref.isValid() and ref.index() < module.symbols.items.len) {
             const name = module.symbols.items[ref.index()].original_name;
-            const live = isDeclarationLive(decl, module.symbols.items);
+            const live = isDeclarationLive(decl, module.liveness);
             if (std.mem.eql(u8, name, "UsedFloat")) {
                 try std.testing.expect(live);
             } else if (std.mem.eql(u8, name, "UnusedInt")) {
@@ -605,7 +591,7 @@ test "isDeclarationLive: override decl" {
         const ref = decl.nameRef();
         if (ref.isValid() and ref.index() < module.symbols.items.len) {
             const name = module.symbols.items[ref.index()].original_name;
-            const live = isDeclarationLive(decl, module.symbols.items);
+            const live = isDeclarationLive(decl, module.liveness);
             if (std.mem.eql(u8, name, "USED")) {
                 try std.testing.expect(live);
             } else if (std.mem.eql(u8, name, "UNUSED")) {
@@ -634,7 +620,7 @@ test "isDeclarationLive: var decl" {
         const ref = decl.nameRef();
         if (ref.isValid() and ref.index() < module.symbols.items.len) {
             const name = module.symbols.items[ref.index()].original_name;
-            const live = isDeclarationLive(decl, module.symbols.items);
+            const live = isDeclarationLive(decl, module.liveness);
             if (std.mem.eql(u8, name, "used")) {
                 try std.testing.expect(live);
             } else if (std.mem.eql(u8, name, "unused_binding")) {
@@ -1291,22 +1277,25 @@ test "collectDeclDeps: alias depends on struct" {
 // -------------------------------------------------------------------------
 
 test "isDeclarationLive: const_assert always kept" {
+    const empty_liveness: Liveness = .{ .bits = .{} };
     var lit = Ast.LiteralExpr{ .kind = .true_literal, .value = "true" };
     var decl = Ast.ConstAssertDecl{ .expr = .{ .literal = &lit } };
-    try std.testing.expect(isDeclarationLive(.{ .const_assert = &decl }, &.{}));
+    try std.testing.expect(isDeclarationLive(.{ .const_assert = &decl }, empty_liveness));
 }
 
 test "isDeclarationLive: let decl" {
-    var symbols = [_]Ast.Symbol{
-        .{ .original_name = "x", .kind = .let, .flags = .{ .is_live = true } },
-    };
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    var liveness = try Liveness.init(arena_inst.allocator(), 1);
+    liveness.markLive(0);
     var let_decl = Ast.LetDecl{ .name = @enumFromInt(0) };
-    try std.testing.expect(isDeclarationLive(.{ .let = &let_decl }, &symbols));
+    try std.testing.expect(isDeclarationLive(.{ .let = &let_decl }, liveness));
 }
 
 test "isDeclarationLive: out of bounds ref kept" {
+    const empty_liveness: Liveness = .{ .bits = .{} };
     var const_decl = Ast.ConstDecl{ .name = @enumFromInt(999) };
-    try std.testing.expect(isDeclarationLive(.{ .@"const" = &const_decl }, &.{}));
+    try std.testing.expect(isDeclarationLive(.{ .@"const" = &const_decl }, empty_liveness));
 }
 
 // -------------------------------------------------------------------------
@@ -1329,16 +1318,17 @@ test "mark: entry point and dependencies are live, unused are dead" {
     var found_dead = false;
     var found_used = false;
     var found_main = false;
-    for (module.symbols.items) |sym| {
+    for (module.symbols.items, 0..) |sym, i| {
+        const live = module.liveness.isLive(@intCast(i));
         if (std.mem.eql(u8, sym.original_name, "dead")) {
             found_dead = true;
-            try std.testing.expect(!sym.flags.is_live);
+            try std.testing.expect(!live);
         } else if (std.mem.eql(u8, sym.original_name, "used")) {
             found_used = true;
-            try std.testing.expect(sym.flags.is_live);
+            try std.testing.expect(live);
         } else if (std.mem.eql(u8, sym.original_name, "main")) {
             found_main = true;
-            try std.testing.expect(sym.flags.is_live);
+            try std.testing.expect(live);
         }
     }
     try std.testing.expect(found_dead);
@@ -1361,15 +1351,16 @@ test "mark: transitive chain a -> b -> c" {
 
     _ = try markForTest(alloc, module);
 
-    for (module.symbols.items) |sym| {
+    for (module.symbols.items, 0..) |sym, i| {
+        const live = module.liveness.isLive(@intCast(i));
         if (std.mem.eql(u8, sym.original_name, "a") or
             std.mem.eql(u8, sym.original_name, "b") or
             std.mem.eql(u8, sym.original_name, "c") or
             std.mem.eql(u8, sym.original_name, "main"))
         {
-            try std.testing.expect(sym.flags.is_live);
+            try std.testing.expect(live);
         } else if (std.mem.eql(u8, sym.original_name, "unused")) {
-            try std.testing.expect(!sym.flags.is_live);
+            try std.testing.expect(!live);
         }
     }
 }
@@ -1391,17 +1382,18 @@ test "mark: complex dependencies" {
 
     const dead = try markForTest(alloc, module);
 
-    for (module.symbols.items) |sym| {
+    for (module.symbols.items, 0..) |sym, i| {
+        const live = module.liveness.isLive(@intCast(i));
         if (std.mem.eql(u8, sym.original_name, "Data") or
             std.mem.eql(u8, sym.original_name, "Wrapper") or
             std.mem.eql(u8, sym.original_name, "helper") or
             std.mem.eql(u8, sym.original_name, "main"))
         {
-            try std.testing.expect(sym.flags.is_live);
+            try std.testing.expect(live);
         } else if (std.mem.eql(u8, sym.original_name, "unused_const") or
             std.mem.eql(u8, sym.original_name, "unused_helper"))
         {
-            try std.testing.expect(!sym.flags.is_live);
+            try std.testing.expect(!live);
         }
     }
 
@@ -1456,9 +1448,9 @@ test "mark: propagates OOM" {
 // =========================================================================
 
 fn assertNamedSymLive(module: *const Ast.Module, name: []const u8) !void {
-    for (module.symbols.items) |sym| {
+    for (module.symbols.items, 0..) |sym, i| {
         if (std.mem.eql(u8, sym.original_name, name)) {
-            if (!sym.flags.is_live) {
+            if (!module.liveness.isLive(@intCast(i))) {
                 std.debug.print("expected '{s}' to be live, but it was DCE'd\n", .{name});
                 return error.SymbolWasDeadButShouldBeLive;
             }
@@ -1469,9 +1461,9 @@ fn assertNamedSymLive(module: *const Ast.Module, name: []const u8) !void {
 }
 
 fn assertNamedSymDead(module: *const Ast.Module, name: []const u8) !void {
-    for (module.symbols.items) |sym| {
+    for (module.symbols.items, 0..) |sym, i| {
         if (std.mem.eql(u8, sym.original_name, name)) {
-            if (sym.flags.is_live) {
+            if (module.liveness.isLive(@intCast(i))) {
                 std.debug.print("expected '{s}' to be dead, but it was kept\n", .{name});
                 return error.SymbolWasLiveButShouldBeDead;
             }

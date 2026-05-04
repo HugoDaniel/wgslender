@@ -107,8 +107,8 @@ pub fn tryAddSubSpliceInPlace(
     //    old subtree. Skipped only for slots inside an attribute whose
     //    args are NOT user-symbol references — `@builtin`, `@interpolate`,
     //    `@diagnostic` (per `Ast.attributeArgsResolveSymbols`). For those,
-    //    full-parse Pass 2 never bumps `use_count` and never sets
-    //    `flags.use_count_incremented`, so a sub-walk would correctly do
+    //    full-parse Pass 2 never bumps the use count and never sets
+    //    `IdentExpr.was_counted`, so a sub-walk would correctly do
     //    nothing — but skipping keeps the hot path symmetric with the
     //    add-walk's own predicate gate. For const-expression attrs
     //    (`@group`, `@workgroup_size`, `@id`, ...), full-parse DOES bump,
@@ -123,6 +123,7 @@ pub fn tryAddSubSpliceInPlace(
         .errors = &discard_errors,
         .safety_budget = @max(64, prev.cst.tokens.len * 2),
         .mode = .sub,
+        .use_counts = &prev.module.use_counts,
     };
     const should_walk = !info.in_attribute or info.attr_resolves_symbols;
     if (should_walk) switch (slot) {
@@ -181,6 +182,7 @@ pub fn tryAddSubSpliceInPlace(
         .errors = &add_errors,
         .safety_budget = @max(64, new_tree.tokens.len * 2),
         .mode = .add,
+        .use_counts = &prev.module.use_counts,
     };
     if (should_walk) switch (slot) {
         .stmt => |p| try AstVisit.visitSubtreeStmt(&add_ctx, p.*),
@@ -288,6 +290,7 @@ pub fn tryCompoundSpliceInPlace(
         .errors = &discard_errors,
         .safety_budget = @max(64, prev.cst.tokens.len * 2),
         .mode = .sub,
+        .use_counts = &prev.module.use_counts,
     };
     try AstVisit.visitSubtreeStmt(&sub_ctx, .{ .compound = old_compound });
 
@@ -365,6 +368,10 @@ pub fn tryCompoundSpliceInPlace(
     defer add_scopes.deinit(prev_arena);
     try add_scopes.appendSlice(prev_arena, lowered.new_scopes.items);
 
+    // The lower may have appended new symbols to `prev.module.symbols`;
+    // grow `use_counts` to match before the add-walk indexes into it.
+    try prev.module.resizeUseCounts(prev_arena, prev.module.symbols.items.len);
+
     var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
     defer add_errors.deinit(prev_arena);
     var add_ctx = AstVisit.Context{
@@ -375,6 +382,7 @@ pub fn tryCompoundSpliceInPlace(
         .errors = &add_errors,
         .safety_budget = @max(64, new_tree.tokens.len * 2),
         .mode = .add,
+        .use_counts = &prev.module.use_counts,
     };
     try AstVisit.visitSubtreeStmt(&add_ctx, .{ .compound = old_compound });
 
@@ -517,6 +525,7 @@ pub fn tryDeclStmtSpliceInPlace(
         .errors = &discard_errors,
         .safety_budget = @max(64, prev.cst.tokens.len * 2),
         .mode = .sub,
+        .use_counts = &prev.module.use_counts,
     };
     try AstVisit.visitSubtreeStmt(&sub_ctx, .{ .compound = parent_compound });
 
@@ -560,6 +569,10 @@ pub fn tryDeclStmtSpliceInPlace(
     try add_scopes.append(prev_arena, parent_scope);
     try collectScopeSubtreeDfs(prev_arena, parent_scope, &add_scopes);
 
+    // The lower may have appended new symbols to `prev.module.symbols`;
+    // grow `use_counts` to match before the add-walk indexes into it.
+    try prev.module.resizeUseCounts(prev_arena, prev.module.symbols.items.len);
+
     var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
     defer add_errors.deinit(prev_arena);
     var add_ctx = AstVisit.Context{
@@ -570,6 +583,7 @@ pub fn tryDeclStmtSpliceInPlace(
         .errors = &add_errors,
         .safety_budget = @max(64, new_tree.tokens.len * 2),
         .mode = .add,
+        .use_counts = &prev.module.use_counts,
     };
     try AstVisit.visitSubtreeStmt(&add_ctx, .{ .compound = parent_compound });
 

@@ -475,11 +475,11 @@ test "L-append-demo: 20 appends into a real compute.toys entry point" {
     );
     try std.testing.expect(cur.module.symbols.items.len >= oracle.module.symbols.items.len);
     var oracle_live: usize = 0;
-    for (oracle.module.symbols.items) |s| if (s.use_count > 0) {
+    for (oracle.module.use_counts.counts) |c| if (c > 0) {
         oracle_live += 1;
     };
     var cur_live: usize = 0;
-    for (cur.module.symbols.items) |s| if (s.use_count > 0) {
+    for (cur.module.use_counts.counts) |c| if (c > 0) {
         cur_live += 1;
     };
     try std.testing.expectEqual(oracle_live, cur_live);

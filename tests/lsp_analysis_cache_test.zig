@@ -517,9 +517,9 @@ test "LA14: is_live flags match oracle after symbol-free hot edit" {
     );
 
     const analyzed = try handler.analyzeDocument(uri);
-    _ = analyzed;
 
-    // Cross-check `is_live` flags against a fresh analyze.
+    // Cross-check liveness against a fresh analyze. Both the LSP path and
+    // the oracle stash the post-DCE Liveness on `analysis.liveness`.
     const doc_source = handler.getDocumentSource(uri).?;
     const source_z = try std.testing.allocator.dupeZ(u8, doc_source);
     defer std.testing.allocator.free(source_z);
@@ -531,22 +531,25 @@ test "LA14: is_live flags match oracle after symbol-free hot edit" {
             if (wgslender.Liveness.init(aa, om.symbols.items.len)) |liveness_init| {
                 var liveness = liveness_init;
                 _ = wgslender.Dce.mark(aa, om, &liveness) catch {};
+                oracle.liveness = liveness;
             } else |_| {}
         }
         const analyzed_module = handler.documents.getPtr(uri).?.parse.?.module;
         // Symbol count must match (both analyses see the same code).
         try std.testing.expectEqual(om.symbols.items.len, analyzed_module.symbols.items.len);
-        // For every symbol by name, is_live must agree.
-        for (analyzed_module.symbols.items) |sym| {
-            var found: ?bool = null;
-            for (om.symbols.items) |osym| {
+        // For every symbol by name, liveness must agree.
+        const oracle_liv = oracle.liveness orelse return;
+        const got_liv = analyzed.liveness orelse return;
+        for (analyzed_module.symbols.items, 0..) |sym, ai| {
+            var oracle_live: ?bool = null;
+            for (om.symbols.items, 0..) |osym, oi| {
                 if (std.mem.eql(u8, sym.original_name, osym.original_name)) {
-                    found = osym.flags.is_live;
+                    oracle_live = oracle_liv.isLive(@intCast(oi));
                     break;
                 }
             }
-            if (found) |o_live| {
-                try std.testing.expectEqual(o_live, sym.flags.is_live);
+            if (oracle_live) |o_live| {
+                try std.testing.expectEqual(o_live, got_liv.isLive(@intCast(ai)));
             }
         }
     }

@@ -424,9 +424,9 @@ test "I-01: per-shader body append on compute.toys uses the hot path" {
 
         // Live-sum equivalence per name (append-only contract).
         var oracle_live_sum: u64 = 0;
-        for (oracle.module.symbols.items) |s| oracle_live_sum += s.use_count;
+        for (oracle.module.use_counts.counts) |c| oracle_live_sum += c;
         var updated_live_sum: u64 = 0;
-        for (updated.module.symbols.items) |s| updated_live_sum += s.use_count;
+        for (updated.module.use_counts.counts) |c| updated_live_sum += c;
         try std.testing.expectEqual(oracle_live_sum, updated_live_sum);
 
         n_shaders += 1;

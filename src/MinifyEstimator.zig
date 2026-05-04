@@ -16,16 +16,11 @@
 //!     cache key as the cheap path.
 //!
 //! Mutation policy: the estimator does NOT permanently mutate the
-//! module's symbol table. The cheap path encodes `markAPIFacingSymbols`
-//! locally via `isRenameable` and never writes back. The full-minify
-//! path uses the production renamer (which mutates `use_count` +
-//! `must_not_be_renamed`) but saves and restores those fields around the
-//! pass — the LSP cache keeps modules alive across many estimator calls,
-//! so leaking a single mutation would skew every subsequent run.
-//!
-//! Both paths invoke `Dce.mark` when `options.tree_shaking` is set
-//! (idempotent, matches the real pipeline, necessary so
-//! `Printer.tree_shaking` + `sortDeclarations` see correct `is_live`).
+//! module's symbol table OR its `use_counts` / `liveness` side-tables.
+//! Every estimator call allocates its own per-call `UseCounts`,
+//! `Liveness`, and `RenamePolicy`, runs the analysis there, and
+//! discards them. The cached LSP module survives untouched so
+//! subsequent estimator calls see the same starting state.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -96,65 +91,69 @@ pub var estimate_count: u64 = 0;
 pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !EstimateResult {
     estimate_count += 1;
 
-    // Step 1: populate `is_live` so both Printer.tree_shaking and
-    // sortDeclarations see accurate liveness. Mirrors Minifier.minify
-    // lines 136-143. B.M3: also populate side-table mirror; the
-    // estimator discards it after this run since downstream consumers
-    // (Printer, sortDeclarations) still read the field.
+    // Step 1: per-call Liveness — never mutates the cached
+    // `module.liveness` so estimator runs are idempotent.
     var liveness = try Liveness.init(arena, module.symbols.items.len);
     if (options.tree_shaking) {
         _ = try Dce.mark(arena, module, &liveness);
     } else {
-        for (module.symbols.items) |*sym| sym.flags.is_live = true;
         liveness.markAllLive();
     }
 
-    // Step 2: usage counts. Shared helper with the real minifier so rank
+    // Step 2: per-call UseCounts seeded from the module's canonical
+    // counts. Pass-2 ident bumps live in `module.use_counts`;
+    // `accumulateSymbolUseCounts` adds the post-pass call/decl bumps
+    // into our local copy below — the cached module stays untouched.
+    const use_counts_box = try arena.create(UseCounts);
+    use_counts_box.* = try UseCounts.init(arena, module.symbols.items.len);
+    const seed_n = @min(use_counts_box.counts.len, module.use_counts.counts.len);
+    @memcpy(use_counts_box.counts[0..seed_n], module.use_counts.counts[0..seed_n]);
+
+    // Step 3: per-call RenamePolicy. The estimator's hypothetical
+    // analysis doesn't honor `keep_names` or
+    // `preserve_uniform_struct_types` (preserved behavior — those are
+    // LSP-driven minify-mode estimations that don't see those options
+    // today); only the kind / external-binding marks apply.
+    var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
+    builder.markEntryPoints(module);
+    builder.markBuiltinsAndOverrides(module);
+    if (!options.mangle_external_bindings) builder.markExternalBindings(module);
+    const policy_box = try arena.create(RenamePolicy);
+    policy_box.* = builder.build();
+
+    // Step 4: usage counts. Shared helper with the real minifier so rank
     // ordering is byte-identical.
     var uses = try Minifier.computeSymbolUsage(arena, module);
     defer uses.deinit(arena);
 
-    // Step 3: reserved name set. Language keywords + every non-renameable
+    // Step 5: reserved name set. Language keywords + every non-renameable
     // symbol's original name — the latter mirrors MinifyRenamer's
     // `reserveUnrenamedSymbolNames`, so the estimator doesn't pick a
     // short name that would collide with an un-renamed symbol.
     var reserved = try Renamer.computeReservedNames(arena);
-    for (module.symbols.items) |*sym| {
-        if (!isRenameable(sym, options)) {
+    for (module.symbols.items, 0..) |*sym, i| {
+        if (!isRenameable(@intCast(i), sym, policy_box, options)) {
             try reserved.put(arena, sym.original_name, {});
         }
     }
 
-    // Step 4: build the renamer the Printer will route every identifier
+    // Step 6: build the renamer the Printer will route every identifier
     // through. The cheap path uses a `LengthRenamer` that emits
     // 'x'-filled slices of the right length; the full-minify path uses
     // the production `MinifyRenamer` directly so the buffered output
     // can be gzipped for an exact `total_gz`.
-    const saved_state: ?SavedSymbolState = if (options.use_full_minify)
-        try saveAndMarkAPIFacing(arena, module, options)
+    const base_renamer: *const Printer.Renamer = if (options.use_full_minify)
+        try buildMinifyRenamer(arena, module, &uses, reserved, use_counts_box, policy_box)
     else
-        null;
-    defer if (saved_state) |s| s.restore(module);
+        try buildLengthRenamer(arena, module, &uses, reserved, use_counts_box, policy_box, options);
 
-    // B.M4: thread per-run side-tables into the full-minify renamer.
-    // `saved_state` already mirrors the policy onto `must_not_be_renamed`
-    // for the duration of this call, so the snapshot is consistent.
-    const base_renamer: *const Printer.Renamer = if (options.use_full_minify) blk: {
-        const use_counts_box = try arena.create(UseCounts);
-        use_counts_box.* = try UseCounts.init(arena, module.symbols.items.len);
-        for (module.symbols.items, 0..) |sym, i| use_counts_box.counts[i] = sym.use_count;
-        const policy_box = try arena.create(RenamePolicy);
-        policy_box.* = saved_state.?.policy;
-        break :blk try buildMinifyRenamer(arena, module, &uses, reserved, use_counts_box, policy_box);
-    } else try buildLengthRenamer(arena, module, &uses, reserved, options);
-
-    // Optional scope-local wrapping. Mirrors Minifier.printWithRenamer
-    // lines 336-339. ScopeLocalRenamer produces real canonical names for
-    // locals/params; their lengths match what a real minify run produces,
-    // so byte counts stay accurate on either path.
+    // Optional scope-local wrapping. Mirrors Minifier.printWithRenamer.
+    // ScopeLocalRenamer produces real canonical names for locals/params;
+    // their lengths match what a real minify run produces, so byte
+    // counts stay accurate on either path.
     var active_renamer: *const Printer.Renamer = base_renamer;
     if (options.scope_local_rename) {
-        const scope = try Minifier.ScopeLocalRenamer.init(arena, module, base_renamer);
+        const scope = try Minifier.ScopeLocalRenamer.init(arena, module, base_renamer, policy_box);
         active_renamer = &scope.ren;
     }
 
@@ -207,7 +206,7 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
 
     for (decl_list) |decl| {
         if (!options.sort_declarations and options.tree_shaking) {
-            if (!Dce.isDeclarationLive(decl, module.symbols.items)) continue;
+            if (!Dce.isDeclarationLive(decl, liveness)) continue;
         }
 
         const before: u32 = @intCast(printer.buf.items.len);
@@ -244,8 +243,9 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
 // Internals
 // =========================================================================
 
-fn isRenameable(sym: *const Ast.Symbol, options: Options) bool {
-    if (sym.flags.must_not_be_renamed or sym.flags.is_entry_point) return false;
+fn isRenameable(idx: u32, sym: *const Ast.Symbol, policy: *const RenamePolicy, options: Options) bool {
+    if (policy.mustNotRename(@enumFromInt(idx))) return false;
+    if (sym.flags.is_entry_point) return false;
     if (sym.kind == .builtin or sym.kind == .override) return false;
     if (sym.flags.is_external_binding and !options.mangle_external_bindings) return false;
     return true;
@@ -279,22 +279,25 @@ fn buildLengthRenamer(
     module: *Ast.Module,
     uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
     reserved: std.StringHashMapUnmanaged(void),
+    use_counts: *const UseCounts,
+    policy: *const RenamePolicy,
     options: Options,
 ) !*const Printer.Renamer {
     // Rank renameable symbols by use_count DESC, breaking ties on
     // symbol index ASC. Same rule as MinifyRenamer.allocateSlots, with
-    // the accumulate-use-counts step inlined: parser Pass 2 already
-    // populated `sym.use_count` for identifier/type bindings, and
+    // the accumulate-use-counts step inlined: parser Pass 2 populated
+    // the per-symbol entries in `use_counts.counts`, and
     // `computeSymbolUsage` adds references the parser didn't walk
     // (e.g., function-name call sites). Their sum is the quantity the
     // real renamer ranks against.
     const RankedSym = struct { idx: u32, count: u32 };
     var ranked: std.ArrayListUnmanaged(RankedSym) = .empty;
     for (module.symbols.items, 0..) |*sym, i| {
-        if (!isRenameable(sym, options)) continue;
+        if (!isRenameable(@intCast(i), sym, policy, options)) continue;
         const ref: Ast.SymbolIndex = @enumFromInt(@as(u32, @intCast(i)));
         const uses_delta = uses.get(ref) orelse 0;
-        const total_count = sym.use_count + uses_delta;
+        const pass2_count: u32 = if (i < use_counts.counts.len) use_counts.counts[i] else 0;
+        const total_count = pass2_count + uses_delta;
         if (total_count == 0) continue;
         try ranked.append(arena, .{ .idx = @intCast(i), .count = total_count });
     }
@@ -345,16 +348,10 @@ fn buildLengthRenamer(
 }
 
 /// Build the full-minify path's renamer — the production
-/// `MinifyRenamer`, configured exactly like `Minifier.minify` does. The
-/// caller is responsible for saving/restoring `use_count` and
-/// `must_not_be_renamed` around this call (see `saveAndMarkAPIFacing`):
-/// `MinifyRenamer.accumulateSymbolUseCounts` and `markAPIFacingSymbols`-
-/// equivalent flag setup both mutate the symbol table in place.
-///
-/// B.M4: also threads `UseCounts` and `RenamePolicy` side-tables so
-/// the renamer reads through them. Both are scoped to this estimator
-/// run — the production `is_live` path discards the side-table after
-/// the renamer finishes naming.
+/// `MinifyRenamer`, configured exactly like `Minifier.minify` does.
+/// `use_counts` is the per-call seeded copy from `estimate`;
+/// `rename_policy` is the per-call policy. Neither outlives the
+/// estimator run, so the cached module stays pristine.
 fn buildMinifyRenamer(
     arena: Allocator,
     module: *Ast.Module,
@@ -372,52 +369,6 @@ fn buildMinifyRenamer(
     try r.assignNames();
     r.renamer.ptr = @ptrCast(r);
     return &r.renamer;
-}
-
-/// Snapshot of the symbol-table fields the full-minify path mutates.
-/// The cheap path encodes the same logic locally and never writes back
-/// to the module — but the production renamer (used by the heavy path)
-/// updates `use_count` in `accumulateSymbolUseCounts`, and the
-/// API-facing markup we apply pre-rename touches `must_not_be_renamed`.
-/// Both fields are restored on scope exit so the LSP's cached module
-/// stays pristine across estimator calls.
-const SavedSymbolState = struct {
-    counts: []u32,
-    unrenameable: []bool,
-    /// Per-run rename policy built alongside the saved state. Captured
-    /// here so the renamer below (B.M4) can read through the side-table
-    /// — not part of the restore step.
-    policy: RenamePolicy,
-
-    fn restore(self: SavedSymbolState, module: *Ast.Module) void {
-        for (module.symbols.items, 0..) |*sym, i| {
-            sym.use_count = self.counts[i];
-            sym.flags.must_not_be_renamed = self.unrenameable[i];
-        }
-    }
-};
-
-fn saveAndMarkAPIFacing(arena: Allocator, module: *Ast.Module, options: Options) !SavedSymbolState {
-    const counts = try arena.alloc(u32, module.symbols.items.len);
-    const unrenameable = try arena.alloc(bool, module.symbols.items.len);
-    for (module.symbols.items, 0..) |*sym, i| {
-        counts[i] = sym.use_count;
-        unrenameable[i] = sym.flags.must_not_be_renamed;
-    }
-    // Mirror `Minifier.markAPIFacingSymbols` via the shared Builder.
-    // The estimator's hypothetical analysis doesn't honor
-    // `keep_names` or `preserve_uniform_struct_types` (preserved
-    // behavior — those are LSP-driven minify-mode estimations that
-    // don't see those options today); only the parser-side / kind /
-    // external-binding marks apply.
-    var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
-    builder.markFromParser(module);
-    builder.markEntryPoints(module);
-    builder.markBuiltinsAndOverrides(module);
-    if (!options.mangle_external_bindings) builder.markExternalBindings(module);
-    const policy = builder.build();
-    policy.mirrorToFlags(module);
-    return .{ .counts = counts, .unrenameable = unrenameable, .policy = policy };
 }
 
 /// gzip-encode `data` and return the compressed byte count. Used by the

@@ -9,6 +9,7 @@ const Ast = @import("Ast.zig");
 const Lexer = @import("Lexer.zig");
 const Cst = @import("Cst.zig");
 const AstVisit = @import("AstVisit.zig");
+const UseCounts = @import("UseCounts.zig");
 const Suggest = @import("Suggest.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const constants = @import("constants.zig");
@@ -260,6 +261,12 @@ pub fn parse(self: *Parser) !*Ast.Module {
     // Pass 1: Parse
     try self.parseTranslationUnit(module);
 
+    // Pass 1.5: Allocate the per-symbol UseCounts side-table now that the
+    // symbol table size is known. Stash on the module so downstream
+    // consumers (Validator, Renamer, lint) read the same canonical table
+    // AstVisit Pass 2 wrote into.
+    module.use_counts = try UseCounts.init(self.arena, self.symbols.items.len);
+
     // Pass 2: Visit
     var ctx = AstVisit.Context{
         .arena = self.arena,
@@ -268,6 +275,7 @@ pub fn parse(self: *Parser) !*Ast.Module {
         .scope = module.scope,
         .errors = &self.errors,
         .safety_budget = self.token_tags.len * 2,
+        .use_counts = &module.use_counts,
     };
     try AstVisit.visit(&ctx, module);
 
@@ -621,7 +629,6 @@ fn declareSymbol(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, flags: 
         .original_name = name,
         .kind = kind,
         .flags = flags,
-        .use_count = 0,
         .loc = loc,
     });
     try self.scope.members.put(self.arena, name, .{
@@ -640,7 +647,6 @@ fn declareSymbolNoScope(self: *Parser, name: []const u8, kind: Ast.Symbol.Kind, 
         .original_name = name,
         .kind = kind,
         .flags = flags,
-        .use_count = 0,
         .loc = loc,
     });
     return @enumFromInt(idx);
@@ -997,10 +1003,9 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
     var flags = Ast.Symbol.Flags{};
     if (is_entry_point) {
         flags.is_entry_point = true;
-        flags.must_not_be_renamed = true;
-        // B.M2: source-side bit collected by RenamePolicy.Builder.
-        // Coexists with must_not_be_renamed during the additive period.
-        flags.parser_wants_no_rename = true;
+        // B.M5: `must_not_be_renamed` and `parser_wants_no_rename` were
+        // deleted; `RenamePolicy.Builder.markEntryPoints` keys off
+        // `is_entry_point` directly.
     }
 
     if (try self.eatIdent()) |text| {

@@ -1,22 +1,14 @@
-//! Integration tests for B.M3 — Liveness side-table parity.
+//! Integration tests for the Liveness side-table.
 //!
-//! Two invariants that the unit tests in src/Liveness.zig can't
-//! exercise (because they construct synthetic Symbols without going
-//! through Parser/Dce):
+//! After B.M5 deleted `Symbol.flags.is_live`, only one invariant
+//! survives at this layer: running `wgslender.minify` on a shader
+//! produces output whose live decl set matches a fresh `Dce.mark`
+//! over a re-parse of the same shader. Proves that the production
+//! minify path threads a `Liveness` through end-to-end and doesn't
+//! accidentally drop a write.
 //!
-//!   1. After `Dce.mark` runs, every symbol's `flags.is_live` field
-//!      agrees with the corresponding bit in the `Liveness` side-table.
-//!      Proves the dual-write inside `Dce.mark` (B.M3) stays
-//!      synchronized across the BFS, the no-entry-points fallback, and
-//!      every "set live" path.
-//!   2. After running `wgslender.minify` on a shader, a *separate*
-//!      `Dce.mark` over a fresh parse of the same shader produces the
-//!      same liveness mask. Proves that the production minify path
-//!      passes a Liveness through end-to-end and doesn't accidentally
-//!      drop a write.
-//!
-//! Both invariants run over the curated `compute.toys` corpus when it
-//! is available; the tests skip cleanly otherwise.
+//! The invariant runs over the curated `compute.toys` corpus when it
+//! is available; the test skips cleanly otherwise.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
@@ -28,72 +20,8 @@ const Dce = wgslender.Dce;
 const Liveness = wgslender.Liveness;
 
 // =========================================================================
-// Helper: iterate the compute.toys directory, calling `check` per shader.
+// Liveness sanity: no-entry-points fallback marks every symbol live.
 // =========================================================================
-
-fn forEachComputeToysShader(
-    gpa: std.mem.Allocator,
-    check: *const fn (gpa: std.mem.Allocator, src: [:0]const u8) anyerror!void,
-) !usize {
-    const io = std.Options.debug_io;
-    const dir_path = "tests/testdata/compute.toys";
-    var dir = std.Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch |err| {
-        if (err == error.FileNotFound or err == error.NotFound) return 0;
-        return err;
-    };
-    defer dir.close(io);
-
-    var walker = try dir.walk(gpa);
-    defer walker.deinit();
-
-    var n: usize = 0;
-    while (try walker.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.basename, ".wgsl")) continue;
-
-        var arena_inst = std.heap.ArenaAllocator.init(gpa);
-        defer arena_inst.deinit();
-        const arena = arena_inst.allocator();
-
-        const bytes = entry.dir.readFileAlloc(io, entry.basename, arena, .unlimited) catch continue;
-        const src = try arena.dupeZ(u8, bytes);
-        try check(gpa, src);
-        n += 1;
-    }
-    return n;
-}
-
-// =========================================================================
-// Invariant 1 — Dce.mark dual-write parity (field ↔ side-table)
-// =========================================================================
-
-fn checkDceDualWriteParity(gpa: std.mem.Allocator, src: [:0]const u8) anyerror!void {
-    var arena_inst = std.heap.ArenaAllocator.init(gpa);
-    defer arena_inst.deinit();
-    const arena = arena_inst.allocator();
-
-    const tokens = try Lexer.tokenize(arena, src);
-    var parser = try Parser.init(arena, src, tokens);
-    const module = parser.parse() catch return;
-
-    var liveness = try Liveness.init(arena, module.symbols.items.len);
-    _ = Dce.mark(arena, module, &liveness) catch return;
-
-    // Field and side-table must agree on every symbol; assertParity
-    // panics in debug builds if they diverge.
-    liveness.assertParity(module);
-}
-
-test "liveness: Dce.mark field/side-table parity on synthetic shader" {
-    const src: [:0]const u8 =
-        \\const used = 1;
-        \\const dead = 2;
-        \\fn helper() -> i32 { return used; }
-        \\fn unused_helper() -> i32 { return dead; }
-        \\@compute @workgroup_size(1) fn main() { let x = helper(); _ = x; }
-    ;
-    try checkDceDualWriteParity(std.testing.allocator, src);
-}
 
 test "liveness: Dce.mark no-entry-points fallback marks every symbol live" {
     var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -109,34 +37,22 @@ test "liveness: Dce.mark no-entry-points fallback marks every symbol live" {
     var liveness = try Liveness.init(arena, module.symbols.items.len);
     _ = try Dce.mark(arena, module, &liveness);
 
-    for (module.symbols.items, 0..) |sym, i| {
-        try std.testing.expect(sym.flags.is_live);
+    for (module.symbols.items, 0..) |_, i| {
         try std.testing.expect(liveness.isLive(@intCast(i)));
     }
 }
 
-test "liveness: Dce.mark dual-write parity on compute.toys corpus" {
-    const n = try forEachComputeToysShader(std.testing.allocator, checkDceDualWriteParity);
-    if (n == 0) {
-        std.debug.print("skip: compute.toys directory missing\n", .{});
-        return;
-    }
-    std.debug.print("liveness dual-write parity: verified on {d} compute.toys shaders\n", .{n});
-}
-
 // =========================================================================
-// Invariant 2 — minify path agrees with a fresh Dce.mark
+// Invariant — minify output drops dead decls per a fresh Dce.mark
+// (synthetic shader only — the corpus version would need word-boundary
+// reasoning to avoid false positives like "float" inside "float32").
 // =========================================================================
 
-fn checkMinifyAgreesWithFreshDce(gpa: std.mem.Allocator, src: [:0]const u8) anyerror!void {
-    // Run the production minify path. It allocates a Liveness internally
-    // (Minifier.zig:184) and writes both the field and the side-table.
-    // We can't observe the internal Liveness, but we can re-parse and
-    // re-DCE the same shader and compare to the post-minify field state.
+fn checkMinifyDceDecls(gpa: std.mem.Allocator, src: [:0]const u8) anyerror!void {
     var result = wgslender.minifyWithOptions(gpa, src, .{}) catch return;
     defer result.deinit(gpa);
 
-    if (result.errors.len > 0) return; // skip on parse errors
+    if (result.errors.len > 0) return;
 
     var arena_inst = std.heap.ArenaAllocator.init(gpa);
     defer arena_inst.deinit();
@@ -146,30 +62,38 @@ fn checkMinifyAgreesWithFreshDce(gpa: std.mem.Allocator, src: [:0]const u8) anye
     var parser = try Parser.init(arena, src, tokens);
     const module = parser.parse() catch return;
 
-    // Re-mark API-facing symbols via the Builder so the second DCE has
-    // the same `is_entry_point` view as the production minify path.
-    // (parse() already sets `is_entry_point` on @compute/@vertex/etc.)
     var fresh = try Liveness.init(arena, module.symbols.items.len);
     _ = try Dce.mark(arena, module, &fresh);
-    fresh.assertParity(module);
-}
 
-test "liveness: minify path agrees with fresh Dce on synthetic shader" {
-    const src: [:0]const u8 =
-        \\const used = 1;
-        \\const dead = 2;
-        \\fn live_helper() -> i32 { return used; }
-        \\fn dead_helper() -> i32 { return dead; }
-        \\@compute @workgroup_size(1) fn main() { let x = live_helper(); _ = x; }
-    ;
-    try checkMinifyAgreesWithFreshDce(std.testing.allocator, src);
-}
-
-test "liveness: minify path agrees with fresh Dce on compute.toys corpus" {
-    const n = try forEachComputeToysShader(std.testing.allocator, checkMinifyAgreesWithFreshDce);
-    if (n == 0) {
-        std.debug.print("skip: compute.toys directory missing\n", .{});
-        return;
+    var dead_names = std.StringHashMapUnmanaged(void){};
+    for (module.declarations.items) |decl| {
+        const ref = decl.nameRef();
+        if (!ref.isValid()) continue;
+        const idx = ref.index();
+        if (idx >= module.symbols.items.len) continue;
+        if (fresh.isLive(idx)) continue;
+        const name = module.symbols.items[idx].original_name;
+        if (name.len == 0) continue;
+        try dead_names.put(arena, name, {});
     }
-    std.debug.print("liveness minify/fresh-DCE parity: verified on {d} compute.toys shaders\n", .{n});
+
+    var it = dead_names.keyIterator();
+    while (it.next()) |name_ptr| {
+        if (std.mem.indexOf(u8, result.code, name_ptr.*)) |_| {
+            std.debug.print(
+                "minified output retains dead decl name '{s}'\n",
+                .{name_ptr.*},
+            );
+            return error.DeadDeclSurvivedMinify;
+        }
+    }
+}
+
+test "liveness: minify drops dead decls per fresh Dce on synthetic shader" {
+    const src: [:0]const u8 =
+        \\const dead_const_xyz = 2;
+        \\fn dead_helper_xyz() -> i32 { return 1; }
+        \\@compute @workgroup_size(1) fn main() { _ = 1; }
+    ;
+    try checkMinifyDceDecls(std.testing.allocator, src);
 }

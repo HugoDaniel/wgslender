@@ -33,9 +33,10 @@ pub fn appendUnusedWarnings(
     }
 }
 
-/// Side-table-aware mirror of `Ast.Symbol.isUnusedReportable`. Reads
-/// `use_count` from `analysis.use_counts` when available so the LSP and
-/// the lint rule share the same predicate after B.M5 deletes the field.
+/// Predicate shared with the `no-unused-vars` lint rule. Both surfaces
+/// route through `analysis.use_counts` so they can never disagree on
+/// what counts as unused. Skips parameters because function signatures
+/// are often part of an external contract the author can't change.
 fn isUnusedReportable(
     analysis: *const wgslender.Validator.AnalysisResult,
     sym_idx: u32,
@@ -43,7 +44,7 @@ fn isUnusedReportable(
     const symbols = analysis.module.?.symbols.items;
     if (sym_idx >= symbols.len) return false;
     const sym = symbols[sym_idx];
-    const uc = if (analysis.use_counts) |t| t.counts[sym_idx] else sym.use_count;
+    const uc = if (sym_idx < analysis.use_counts.counts.len) analysis.use_counts.counts[sym_idx] else 0;
     if (uc > 0) return false;
     if (sym.original_name.len == 0) return false;
     if (sym.flags.is_entry_point) return false;
@@ -80,8 +81,8 @@ pub fn appendDeadCodeWarnings(
         // Only flag symbols that are used (use_count > 0) but not live
         if (analysis.liveness) |liv| {
             if (liv.isLive(@intCast(i))) continue;
-        } else if (sym.flags.is_live) continue;
-        const uc = if (analysis.use_counts) |t| t.counts[i] else sym.use_count;
+        } else continue; // No liveness info available — can't make a safe call.
+        const uc = if (i < analysis.use_counts.counts.len) analysis.use_counts.counts[i] else 0;
         if (uc == 0) continue; // Already caught by appendUnusedWarnings
         if (sym.original_name.len == 0) continue;
         if (sym.flags.is_entry_point) continue;
@@ -117,7 +118,7 @@ pub fn appendUnusedBindingWarnings(
 
     for (module.symbols.items, 0..) |sym, i| {
         if (!sym.flags.is_external_binding) continue;
-        const uc = if (analysis.use_counts) |t| t.counts[i] else sym.use_count;
+        const uc = if (i < analysis.use_counts.counts.len) analysis.use_counts.counts[i] else 0;
         if (uc > 0) continue;
         if (sym.original_name.len == 0) continue;
 

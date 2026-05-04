@@ -43,7 +43,6 @@ const Minifier = @import("Minifier.zig");
 const RenamerMod = @import("Renamer.zig");
 const RenamePolicy = @import("RenamePolicy.zig");
 const Liveness = @import("Liveness.zig");
-const UseCounts = @import("UseCounts.zig");
 const Dce = @import("Dce.zig");
 const WasmBinary = @import("WasmBinary.zig");
 const ScopeLocalRenamer = Minifier.ScopeLocalRenamer;
@@ -129,13 +128,14 @@ fn compileInner(arena: Allocator, source: [:0]const u8, options: CompileOptions)
     const module = parser.parse() catch return error.OutOfMemory;
     if (parser.errors.items.len > 0) return error.OutOfMemory;
 
-    // 2. Prepare renamer (global frequency-based)
-    const base_renamer = try prepareRenamer(arena, module, options);
+    // 2. Prepare renamer (global frequency-based) and the rename policy
+    //    that the scope-local wrapper consults to skip pinned symbols.
+    const prep = try prepareRenamer(arena, module, options);
 
     // 3. Apply scope-local renaming for better compression
     //    Within each function, reassign params/locals to a,b,c,... per function.
     //    This makes similar functions produce identical text patterns.
-    const scope_renamer = try ScopeLocalRenamer.init(arena, module, base_renamer);
+    const scope_renamer = try ScopeLocalRenamer.init(arena, module, prep.renamer, prep.policy);
     const renamer = &scope_renamer.ren;
 
     // 4. Sort declarations by kind + size for better compression
@@ -223,10 +223,18 @@ fn alignUp(value: u32, alignment: u32) u32 {
     return (value + alignment - 1) & ~(alignment - 1);
 }
 
+const RenamerPrep = struct {
+    renamer: *const Printer.Renamer,
+    /// Per-pipeline rename-protection table. The scope-local wrapper
+    /// consults it to skip pinned symbols (entry points, builtins,
+    /// external bindings, keep-names) when assigning canonical names.
+    policy: *const RenamePolicy,
+};
+
 /// Set up the global frequency-based renamer. Marks API-facing symbols
 /// as must-not-rename, runs DCE if configured, then assigns short names
 /// to the most-used symbols.
-fn prepareRenamer(arena: Allocator, module: *Ast.Module, options: CompileOptions) !*const Printer.Renamer {
+fn prepareRenamer(arena: Allocator, module: *Ast.Module, options: CompileOptions) !RenamerPrep {
     if (options.minify) {
         const mopts = options.minify_options;
 
@@ -236,22 +244,20 @@ fn prepareRenamer(arena: Allocator, module: *Ast.Module, options: CompileOptions
         // (CompileOptions doesn't expose it today), so that mark is
         // omitted; everything else matches Minifier.
         var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
-        builder.markFromParser(module);
         builder.markEntryPoints(module);
         builder.markBuiltinsAndOverrides(module);
         if (!mopts.mangle_external_bindings) builder.markExternalBindings(module);
         builder.markKeepNames(module, mopts.keep_names);
-        const policy = builder.build();
-        policy.mirrorToFlags(module);
+        const policy_box = try arena.create(RenamePolicy);
+        policy_box.* = builder.build();
 
-        // B.M3: side-table mirror of `is_live`. Both branches write both
-        // the field and the bit-set; readers migrate off the field in B.M4.
-        var liveness = try Liveness.init(arena, module.symbols.items.len);
+        // Allocate the per-pipeline Liveness side-table. With
+        // tree-shaking on, run DCE; otherwise mark everything live.
+        module.liveness = try Liveness.init(arena, module.symbols.items.len);
         if (mopts.tree_shaking) {
-            _ = try Dce.mark(arena, module, &liveness);
+            _ = try Dce.mark(arena, module, &module.liveness);
         } else {
-            for (module.symbols.items) |*sym| sym.flags.is_live = true;
-            liveness.markAllLive();
+            module.liveness.markAllLive();
         }
 
         var uses = try Minifier.computeSymbolUsage(arena, module);
@@ -260,33 +266,35 @@ fn prepareRenamer(arena: Allocator, module: *Ast.Module, options: CompileOptions
         for (mopts.keep_names) |name| try reserved.put(arena, name, {});
 
         if (mopts.minify_identifiers) {
-            // B.M4: snapshot Pass-2 use counts so the renamer reads
-            // through the side-table; box the policy so it lives long
-            // enough for the renamer to consult on every name lookup.
-            const use_counts_box = try arena.create(UseCounts);
-            use_counts_box.* = try UseCounts.init(arena, module.symbols.items.len);
-            for (module.symbols.items, 0..) |sym, i| use_counts_box.counts[i] = sym.use_count;
-            const policy_box = try arena.create(RenamePolicy);
-            policy_box.* = policy;
-
             const r = try arena.create(RenamerMod.MinifyRenamer);
             r.* = RenamerMod.MinifyRenamer.init(arena, module.symbols.items, reserved);
-            r.setSideTables(use_counts_box, policy_box);
+            r.setSideTables(&module.use_counts, policy_box);
             r.accumulateSymbolUseCounts(&uses);
             try r.allocateSlots();
             try r.reserveUnrenamedSymbolNames();
             try r.assignNames();
             r.renamer.ptr = @ptrCast(r);
-            return &r.renamer;
+            return .{ .renamer = &r.renamer, .policy = policy_box };
         }
-    } else {
-        for (module.symbols.items) |*sym| sym.flags.is_live = true;
+        // minify=true but identifiers off → noop renamer with the built policy.
+        const noop = try arena.create(RenamerMod.NoOpRenamer);
+        noop.* = RenamerMod.NoOpRenamer.init(module.symbols.items);
+        noop.renamer.ptr = @ptrCast(noop);
+        return .{ .renamer = &noop.renamer, .policy = policy_box };
     }
+
+    // Non-minify path: keep every declaration regardless of liveness; the
+    // empty policy pins nothing, so the scope-local wrapper acts on every
+    // local it sees.
+    module.liveness = try Liveness.init(arena, module.symbols.items.len);
+    module.liveness.markAllLive();
+    const empty_policy = try arena.create(RenamePolicy);
+    empty_policy.* = try RenamePolicy.init(arena, module.symbols.items.len);
 
     const noop = try arena.create(RenamerMod.NoOpRenamer);
     noop.* = RenamerMod.NoOpRenamer.init(module.symbols.items);
     noop.renamer.ptr = @ptrCast(noop);
-    return &noop.renamer;
+    return .{ .renamer = &noop.renamer, .policy = empty_policy };
 }
 
 // =========================================================================
@@ -425,7 +433,7 @@ const OpEmitter = struct {
             try self.emitDirective(dir);
         }
         for (self.module.declarations.items) |decl| {
-            if (Dce.isDeclarationLive(decl, self.module.symbols.items)) {
+            if (Dce.isDeclarationLive(decl, self.module.liveness)) {
                 try self.emitDecl(decl);
             }
         }
@@ -1670,20 +1678,20 @@ fn compileAndVerifyRoundTrip(source: [:0]const u8) !void {
     if (parser.errors.items.len > 0) return error.OutOfMemory;
 
     // Prepare renamer (same as compile path)
-    const renamer = try prepareRenamer(alloc, module, .{});
+    const prep = try prepareRenamer(alloc, module, .{});
 
     // Text printer (minified)
     var printer = Printer.init(alloc, .{
         .minify_whitespace = true,
         .minify_identifiers = true,
         .tree_shaking = true,
-        .renamer = renamer,
+        .renamer = prep.renamer,
     }, module.symbols.items);
     defer printer.deinit();
     const expected = try printer.print(module);
 
     // Op emitter
-    var emitter = OpEmitter.init(alloc, module, renamer);
+    var emitter = OpEmitter.init(alloc, module, prep.renamer);
     try emitter.emitModule();
     try emitter.ops.append(alloc, OP_END);
 

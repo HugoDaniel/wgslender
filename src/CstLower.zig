@@ -24,6 +24,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const AstVisit = @import("AstVisit.zig");
+const UseCounts = @import("UseCounts.zig");
 const Cst = @import("Cst.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
@@ -104,6 +105,12 @@ pub fn lowerTreeWithErrors(
 
     module.symbols = ctx.symbols;
 
+    // Allocate the per-symbol UseCounts side-table now that the symbol
+    // table size is known. Stash on the module so downstream consumers
+    // (Validator, Renamer, lint) read the same canonical table AstVisit
+    // Pass 2 wrote into.
+    module.use_counts = try UseCounts.init(arena, module.symbols.items.len);
+
     var visit_ctx = AstVisit.Context{
         .arena = arena,
         .symbols = module.symbols.items,
@@ -111,6 +118,7 @@ pub fn lowerTreeWithErrors(
         .scope = module_scope,
         .errors = &ctx.errors,
         .safety_budget = @as(usize, @max(64, cst.tokens.len * 2)),
+        .use_counts = &module.use_counts,
     };
     try AstVisit.visit(&visit_ctx, module);
 
@@ -287,7 +295,6 @@ const LowerCtx = struct {
             .original_name = name,
             .kind = kind,
             .flags = flags,
-            .use_count = 0,
             .loc = loc,
         });
         try self.scope.members.put(self.arena, name, .{
@@ -310,7 +317,6 @@ const LowerCtx = struct {
             .original_name = name,
             .kind = kind,
             .flags = flags,
-            .use_count = 0,
             .loc = loc,
         });
         return @enumFromInt(idx);
@@ -661,10 +667,9 @@ const LowerCtx = struct {
         var flags: Ast.Symbol.Flags = .{};
         if (is_entry_point) {
             flags.is_entry_point = true;
-            flags.must_not_be_renamed = true;
-            // B.M2: source-side bit collected by RenamePolicy.Builder.
-            // Coexists with must_not_be_renamed during the additive period.
-            flags.parser_wants_no_rename = true;
+            // B.M5: `must_not_be_renamed` and `parser_wants_no_rename`
+            // were deleted; `RenamePolicy.Builder.markEntryPoints` keys
+            // off `is_entry_point` directly.
         }
 
         _ = w.eatToken(.keyword_fn);

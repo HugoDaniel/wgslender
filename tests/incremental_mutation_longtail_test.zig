@@ -17,21 +17,27 @@ const Incremental = wgslender.Incremental;
 // freely between the two files.
 // =========================================================================
 
+fn useCountAt(module: *const Ast.Module, idx: usize) u32 {
+    if (idx >= module.use_counts.counts.len) return 0;
+    return module.use_counts.counts[idx];
+}
+
 fn useCountOf(module: *const Ast.Module, name: []const u8) u32 {
-    for (module.symbols.items) |s| {
-        if (std.mem.eql(u8, s.original_name, name)) return s.use_count;
+    for (module.symbols.items, 0..) |s, i| {
+        if (std.mem.eql(u8, s.original_name, name)) return useCountAt(module, i);
     }
     return 0;
 }
 
 fn expectUseCountsMatch(got: *const Ast.Module, oracle: *const Ast.Module) !void {
     try std.testing.expectEqual(oracle.symbols.items.len, got.symbols.items.len);
-    for (got.symbols.items) |g| {
+    for (got.symbols.items, 0..) |g, gi| {
         const o_uc = useCountOf(oracle, g.original_name);
-        if (o_uc != g.use_count) {
+        const g_uc = useCountAt(got, gi);
+        if (o_uc != g_uc) {
             std.debug.print(
                 "use_count mismatch: '{s}' got={d} oracle={d}\n",
-                .{ g.original_name, g.use_count, o_uc },
+                .{ g.original_name, g_uc, o_uc },
             );
             return error.UseCountMismatch;
         }
