@@ -98,14 +98,12 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     var cli_no_mangle = false;
     var cli_no_whitespace = false;
     var cli_no_syntax = false;
-    var cli_no_tree_shaking = false;
     var no_config = false;
     var cli_minify_all = false;
     var cli_minify_whitespace: ?bool = null;
     var cli_minify_identifiers: ?bool = null;
     var cli_minify_syntax: ?bool = null;
     var source_map_sources = false;
-    var keep_names_raw: ?[]const u8 = null;
     var passed: Passed = .{};
 
     var lint_extends: std.ArrayListUnmanaged([]const u8) = .empty;
@@ -186,18 +184,19 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         } else if (std.mem.eql(u8, arg, "--minify-syntax")) {
             passed.minify_flag = true;
             cli_minify_syntax = true;
-        } else if (std.mem.eql(u8, arg, "--no-tree-shaking")) {
-            passed.minify_flag = true;
-            cli_no_tree_shaking = true;
-        } else if (wgslender.OptionsSpec.matchBoolFlag(
+        } else if ((wgslender.OptionsSpec.matchFlag(
             arg,
+            &args_iter,
+            arena,
             &wgslender.OptionsSpec.minifier_options_specs,
             &args.options,
-        )) {
-            // Spec-driven dispatch for the simple `--<flag>` shape:
-            // mangle-external-bindings, preserve-uniform-struct-types,
-            // sort-declarations, scope-local-rename. Adding a new bool
-            // spec with `cli_simple = true` lights up here automatically.
+        ) catch return null)) {
+            // Spec-driven dispatch for every `cli_simple = true` minifier
+            // flag — affirmative form (`--mangle-external-bindings`,
+            // `--sort-declarations`, ...), inverse form
+            // (`--no-tree-shaking` via `cli_inverse`), and value form
+            // (`--keep-names a,b,c` via `cli_takes_value`). Adding a new
+            // spec entry lights up here automatically.
             passed.minify_flag = true;
         } else if (std.mem.eql(u8, arg, "--source-map")) {
             passed.source_map_flag = true;
@@ -208,9 +207,6 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         } else if (std.mem.eql(u8, arg, "--source-map-sources")) {
             passed.source_map_flag = true;
             source_map_sources = true;
-        } else if (std.mem.eql(u8, arg, "--keep-names")) {
-            passed.minify_flag = true;
-            keep_names_raw = args_iter.next();
         } else if (std.mem.eql(u8, arg, "--format")) {
             passed.format_flag = true;
             if (args_iter.next()) |fmt| {
@@ -269,9 +265,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         cli_no_mangle,
         cli_no_whitespace,
         cli_no_syntax,
-        cli_no_tree_shaking,
     );
-    if (keep_names_raw) |raw| args.options.keep_names = parseKeepNames(arena, raw) catch return null;
     configureSourceMap(&args, source_map_sources);
     if (args.subcommand == .lint) {
         // Merge config-derived lint settings under CLI overrides:
@@ -433,6 +427,8 @@ fn loadConfig(
 /// Apply CLI minification flag overrides with correct precedence.
 /// Granular flags (--minify-*) disable unspecified passes; --minify forces all on.
 /// `--no-*` post-overrides force a single pass off regardless of granular state.
+/// `--no-tree-shaking` is dispatched directly via the `tree_shaking` spec's
+/// `cli_inverse` and does not pass through here.
 fn applyMinifyOverrides(
     options: *wgslender.Minifier.Options,
     cli_minify_all: bool,
@@ -442,7 +438,6 @@ fn applyMinifyOverrides(
     cli_no_mangle: bool,
     cli_no_whitespace: bool,
     cli_no_syntax: bool,
-    cli_no_tree_shaking: bool,
 ) void {
     const has_granular = cli_minify_whitespace != null or
         cli_minify_identifiers != null or cli_minify_syntax != null;
@@ -459,19 +454,6 @@ fn applyMinifyOverrides(
     if (cli_no_mangle) options.minify_identifiers = false;
     if (cli_no_whitespace) options.minify_whitespace = false;
     if (cli_no_syntax) options.minify_syntax = false;
-    if (cli_no_tree_shaking) options.tree_shaking = false;
-}
-
-fn parseKeepNames(arena: std.mem.Allocator, raw: []const u8) std.mem.Allocator.Error![]const []const u8 {
-    var names: std.ArrayListUnmanaged([]const u8) = .empty;
-    var it = std.mem.splitScalar(u8, raw, ',');
-    while (it.next()) |name| {
-        const trimmed = std.mem.trim(u8, name, " ");
-        if (trimmed.len > 0) {
-            try names.append(arena, trimmed);
-        }
-    }
-    return names.items;
 }
 
 fn configureSourceMap(args: *CliArgs, source_map_sources: bool) void {

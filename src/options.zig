@@ -41,6 +41,11 @@ pub const OptionKind = union(enum) {
     enum_opt: type,
 };
 
+/// Subcommands recognized by the wgslender CLI. Used by `subcommands`
+/// on `OptionSpec` to gate which flags the dispatcher accepts per
+/// subcommand. Mirrors the `CliArgs.subcommand` enum in `cli/main.zig`.
+pub const Subcommand = enum { minify, validate, lint, reflect, compile };
+
 pub const OptionSpec = struct {
     /// Snake-case Zig field name. Drives the derived JSON / CLI names.
     field: []const u8,
@@ -52,13 +57,31 @@ pub const OptionSpec = struct {
     /// Kebab-case CLI flag override (without leading `--`). Default:
     /// `snakeToKebab(field)`.
     cli_override: ?[]const u8 = null,
-    /// True (default) iff `matchBoolFlag` should treat `--<cliFlag>` as
-    /// "set field to true". Set false for options whose CLI form is
-    /// custom — the `--minify-*` cluster sets a tri-state for
-    /// `applyMinifyOverrides`, `--no-tree-shaking` is the inverse form,
-    /// `--keep-names` consumes a value, and the source-map switches set
-    /// `CliArgs` fields rather than the underlying `Minifier.Options`.
+    /// True (default) iff `matchFlag` should treat `--<cliFlag>` as the
+    /// affirmative form. Set false for options whose CLI form is custom
+    /// — the `--minify-*` tri-state cluster, `--no-mangle` and friends,
+    /// or fields that target `CliArgs` rather than `Minifier.Options`.
     cli_simple: bool = true,
+    /// Inverted-flag spelling (without leading `--`). `"no-tree-shaking"`
+    /// on the `tree_shaking` spec means the dispatcher accepts both
+    /// `--tree-shaking` (true) and `--no-tree-shaking` (false). Only
+    /// honored for `bool_opt` kind.
+    cli_inverse: ?[]const u8 = null,
+    /// When true, the flag consumes the next argv token as its value.
+    /// Parsing is keyed off `kind`:
+    ///   * `string_list` — value is comma-separated; trimmed parts go
+    ///     into a slice on the supplied arena.
+    ///   * `u32_opt` — value is `parseInt(u32, …, 10)`; failures leave
+    ///     the field unchanged.
+    ///   * `enum_opt: E` — value is `stringToEnum(E, …)`; unknowns leave
+    ///     the field unchanged.
+    /// `bool_opt` value-form is unsupported (use `cli_simple` /
+    /// `cli_inverse` instead).
+    cli_takes_value: bool = false,
+    /// Subcommands that honor this flag. Empty (default) = all
+    /// subcommands. The dispatcher uses this to filter `--help` output
+    /// and decide whether to emit an "ignored flag" warning.
+    subcommands: []const Subcommand = &.{},
 };
 
 /// Comptime: convert `snake_case` → `camelCase`. Underscores delimit
@@ -219,32 +242,122 @@ pub fn applyJson(
     }
 }
 
-/// Match a CLI argument against the simple `--<flag>` form derived from
-/// each `cli_simple = true` spec in `specs`. On match: write `true` to
-/// the corresponding field on `target` and return true so the caller can
-/// run any per-flag bookkeeping (e.g. set `passed.minify_flag`). Returns
-/// false if no spec matched.
+/// Match a CLI argument against every `cli_simple = true` spec in
+/// `specs`. Handles three argv shapes:
 ///
-/// Specs with `cli_simple = false` or non-`bool_opt` kind are skipped —
-/// those need custom dispatch in the caller.
+///   * `--<flag>` (bool affirmative) — writes `true` to the field.
+///   * `--<cli_inverse>` (bool inverse) — writes `false` to the field.
+///   * `--<flag> <value>` (value-consuming) — pulls the next token from
+///     `args_iter`, parses by `kind`, writes the parsed value. CSV split
+///     for `string_list`; `parseInt` for `u32_opt`; `stringToEnum` for
+///     `enum_opt`. `bool_opt` rejects the value form (use the affirmative
+///     / inverse spellings instead).
+///
+/// Returns true on match (regardless of whether parsing succeeded — a
+/// match consumes the arg). Returns false if no spec matches.
+///
+/// `args_iter` may be any value with a `.next() ?[]const u8` method.
+/// `arena` is used to dupe `string_list` slices.
+pub fn matchFlag(
+    arg: []const u8,
+    args_iter: anytype,
+    arena: std.mem.Allocator,
+    comptime specs: []const OptionSpec,
+    target: anytype,
+) std.mem.Allocator.Error!bool {
+    inline for (specs) |spec| {
+        if (comptime spec.cli_simple) {
+            const flag = comptime "--" ++ cliFlag(spec);
+            const is_match = std.mem.eql(u8, arg, flag);
+
+            // Value-consuming form takes precedence over the bool forms
+            // when `cli_takes_value` is set — same `--flag` token, but
+            // the next argv element supplies the value.
+            if (comptime spec.cli_takes_value) {
+                if (is_match) {
+                    const value = args_iter.next() orelse return true;
+                    try applyValue(spec, value, arena, target);
+                    return true;
+                }
+            } else {
+                comptime switch (spec.kind) {
+                    .bool_opt => {},
+                    else => continue,
+                };
+                if (is_match) {
+                    @field(target, spec.field) = true;
+                    return true;
+                }
+                if (comptime spec.cli_inverse) |inv| {
+                    const inv_flag = "--" ++ inv;
+                    if (std.mem.eql(u8, arg, inv_flag)) {
+                        @field(target, spec.field) = false;
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+fn applyValue(
+    comptime spec: OptionSpec,
+    value: []const u8,
+    arena: std.mem.Allocator,
+    target: anytype,
+) std.mem.Allocator.Error!void {
+    switch (comptime spec.kind) {
+        .string_list => {
+            // Trimmed comma-split. Slices alias `value` (which lives on
+            // the caller's argv arena), so the result borrows for the
+            // process lifetime — same shape as the legacy `parseKeepNames`.
+            var names: std.ArrayListUnmanaged([]const u8) = .empty;
+            errdefer names.deinit(arena);
+            var it = std.mem.splitScalar(u8, value, ',');
+            while (it.next()) |raw| {
+                const trimmed = std.mem.trim(u8, raw, " ");
+                if (trimmed.len > 0) try names.append(arena, trimmed);
+            }
+            @field(target, spec.field) = names.items;
+        },
+        .u32_opt => {
+            if (std.fmt.parseInt(u32, value, 10)) |n| {
+                @field(target, spec.field) = n;
+            } else |_| {}
+        },
+        .enum_opt => |E| {
+            if (std.meta.stringToEnum(E, value)) |e| {
+                @field(target, spec.field) = e;
+            }
+        },
+        .bool_opt => {
+            // Unsupported in CLI value form by design — bools use the
+            // affirmative / `cli_inverse` spellings. Caller spec is
+            // declaring an inconsistent shape; ignore at runtime so a
+            // misconfigured spec doesn't crash the CLI. Build-time
+            // detection would belong on a future `assertCliShape`.
+        },
+    }
+}
+
+/// Backwards-compat alias for `matchFlag` restricted to the legacy
+/// "no args_iter, no arena, bool only" surface — used by tests that
+/// pre-date the value/inverse forms. New CLI code should call
+/// `matchFlag` directly.
 pub fn matchBoolFlag(
     arg: []const u8,
     comptime specs: []const OptionSpec,
     target: anytype,
 ) bool {
-    inline for (specs) |spec| {
-        if (comptime !spec.cli_simple) continue;
-        comptime switch (spec.kind) {
-            .bool_opt => {},
-            else => continue,
-        };
-        const flag = comptime "--" ++ cliFlag(spec);
-        if (std.mem.eql(u8, arg, flag)) {
-            @field(target, spec.field) = true;
-            return true;
+    var dummy = struct {
+        pub fn next(_: *@This()) ?[]const u8 {
+            return null;
         }
-    }
-    return false;
+    }{};
+    var fba_buf: [16]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&fba_buf);
+    return matchFlag(arg, &dummy, fba.allocator(), specs, target) catch false;
 }
 
 /// Apply spec entries to a `Minifier.Options`-shaped struct, treating
@@ -293,9 +406,9 @@ pub const minifier_options_specs = [_]OptionSpec{
     .{ .field = "minify_identifiers", .kind = .bool_opt, .cli_simple = false, .summary = "Rename identifiers (frequency-based mangling)" },
     .{ .field = "minify_syntax", .kind = .bool_opt, .cli_simple = false, .summary = "Apply WGSL syntax-level optimizations" },
     .{ .field = "mangle_external_bindings", .kind = .bool_opt, .summary = "Rename @group/@binding vars (otherwise aliased)" },
-    .{ .field = "tree_shaking", .kind = .bool_opt, .cli_simple = false, .summary = "Eliminate code unreachable from any entry point" },
+    .{ .field = "tree_shaking", .kind = .bool_opt, .cli_inverse = "no-tree-shaking", .summary = "Eliminate code unreachable from any entry point" },
     .{ .field = "preserve_uniform_struct_types", .kind = .bool_opt, .summary = "Keep struct types referenced by uniform/storage vars" },
-    .{ .field = "keep_names", .kind = .string_list, .cli_simple = false, .summary = "Identifiers that must never be renamed" },
+    .{ .field = "keep_names", .kind = .string_list, .cli_takes_value = true, .summary = "Comma-separated identifiers that must never be renamed" },
     .{ .field = "sort_declarations", .kind = .bool_opt, .summary = "Sort module-level declarations for better DEFLATE compression" },
     .{ .field = "scope_local_rename", .kind = .bool_opt, .summary = "Rename locals canonically per function for better DEFLATE compression" },
 };
