@@ -41,6 +41,7 @@ keep_names: []const []const u8 = &.{},
 sort_declarations: ?bool = null,
 scope_local_rename: ?bool = null,
 source_map: ?bool = null,
+source_map_inline: ?bool = null,
 source_map_sources: ?bool = null,
 /// Lint shareable-config inheritance list (`extends` JSON key). Empty
 /// means "no inherited packs". Parsed only as id strings; unknown packs
@@ -228,6 +229,7 @@ test "config: parseJson all fields" {
         \\  "preserveUniformStructTypes": true,
         \\  "keepNames": ["name1"],
         \\  "sourceMap": true,
+        \\  "sourceMapInline": true,
         \\  "sourceMapSources": false
         \\}
     ;
@@ -240,6 +242,7 @@ test "config: parseJson all fields" {
     try std.testing.expectEqual(@as(?bool, true), cfg.preserve_uniform_struct_types);
     try std.testing.expectEqual(@as(usize, 1), cfg.keep_names.len);
     try std.testing.expectEqual(@as(?bool, true), cfg.source_map);
+    try std.testing.expectEqual(@as(?bool, true), cfg.source_map_inline);
     try std.testing.expectEqual(@as(?bool, false), cfg.source_map_sources);
 }
 
@@ -395,11 +398,13 @@ test "config: parseJson source map fields" {
     const content =
         \\{
         \\  "sourceMap": true,
+        \\  "sourceMapInline": false,
         \\  "sourceMapSources": false
         \\}
     ;
     const cfg = try parseJson(std.testing.allocator, content);
     try std.testing.expectEqual(@as(?bool, true), cfg.source_map);
+    try std.testing.expectEqual(@as(?bool, false), cfg.source_map_inline);
     try std.testing.expectEqual(@as(?bool, false), cfg.source_map_sources);
 }
 

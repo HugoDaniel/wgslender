@@ -10,8 +10,7 @@ const CliArgs = struct {
     input_path: ?[]const u8 = null,
     output_path: ?[]const u8 = null,
     options: wgslender.Minifier.Options = wgslender.Minifier.defaultOptions(),
-    source_map: bool = false,
-    source_map_inline: bool = false,
+    source_map_flags: SourceMapFlags = .{},
     subcommand: wgslender.OptionsSpec.Subcommand = .minify,
     validate_format: ValidateFormat = .text,
     strict: bool = false,
@@ -22,6 +21,19 @@ const CliArgs = struct {
     lint_options: LintOptions = .{},
 
     const ValidateFormat = enum { text, json, stylish };
+
+    /// Field names mirror `Config.source_map*` so the spec dispatcher
+    /// (`OptionsSpec.matchFlag` against `OptionsSpec.source_map_specs`)
+    /// can target this struct directly. `configureSourceMap` reads from
+    /// here and folds it into `args.options.source_map_options.*` along
+    /// with the basename-derived `source_name` / `file` paths — that
+    /// post-step stays hand-rolled because it depends on `input_path` /
+    /// `output_path`, not on a single config field.
+    const SourceMapFlags = struct {
+        source_map: bool = false,
+        source_map_inline: bool = false,
+        source_map_sources: bool = false,
+    };
 
     /// Field names mirror `Config.lint_extends` / `Config.lint_rules` so
     /// the spec dispatcher (`OptionsSpec.matchFlag` against
@@ -39,6 +51,15 @@ const CliArgs = struct {
         report_unused_disable_directives: bool = false,
     };
 };
+
+comptime {
+    // Drift guard: the source-map dispatcher arm targets
+    // `CliArgs.SourceMapFlags`, so its fields must match every spec entry.
+    wgslender.OptionsSpec.assertSpecFieldsExist(
+        CliArgs.SourceMapFlags,
+        &wgslender.OptionsSpec.source_map_specs,
+    );
+}
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -76,8 +97,8 @@ pub fn main(init: std.process.Init) !void {
             source,
             args.options,
             args.output_path,
-            args.source_map,
-            args.source_map_inline,
+            args.source_map_flags.source_map,
+            args.source_map_flags.source_map_inline,
         ),
     }
 }
@@ -113,7 +134,6 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     var cli_minify_whitespace: ?bool = null;
     var cli_minify_identifiers: ?bool = null;
     var cli_minify_syntax: ?bool = null;
-    var source_map_sources = false;
     var passed: Passed = .{};
 
     // CLI-side accumulators for `--extends` / `--rule` live on
@@ -198,20 +218,12 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             args.subcommand,
             &args.options,
             &args.lint_options,
+            &args.source_map_flags,
             &passed,
             io,
         ) catch return null)) {
             // Spec-driven dispatch consumed the flag (matched + applied,
             // or matched + warned for wrong subcommand).
-        } else if (std.mem.eql(u8, arg, "--source-map")) {
-            passed.source_map_flag = true;
-            args.source_map = true;
-        } else if (std.mem.eql(u8, arg, "--source-map-inline")) {
-            passed.source_map_flag = true;
-            args.source_map_inline = true;
-        } else if (std.mem.eql(u8, arg, "--source-map-sources")) {
-            passed.source_map_flag = true;
-            source_map_sources = true;
         } else if (std.mem.eql(u8, arg, "--format")) {
             passed.format_flag = true;
             if (args_iter.next()) |fmt| {
@@ -271,7 +283,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         cli_no_whitespace,
         cli_no_syntax,
     );
-    configureSourceMap(&args, source_map_sources);
+    configureSourceMap(&args);
     if (args.subcommand == .lint) {
         // Merge config-derived lint settings under CLI overrides:
         //   extends: config.lint_extends ++ CLI extends. If neither is
@@ -319,16 +331,17 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
 
 /// Try to match `arg` against the spec tables, in order:
 ///   1. `minifier_options_specs` → writes to `Minifier.Options`
-///   2. `lint_specs` → writes to `CliArgs.LintOptions` (lint_extends /
+///   2. `source_map_specs` → writes to `CliArgs.SourceMapFlags`
+///   3. `lint_specs` → writes to `CliArgs.LintOptions` (lint_extends /
 ///      lint_rules accumulators)
 /// Returns true if matched (consumed — caller should not try other arms).
 /// Emits a per-flag stderr warning when the flag is recognized but the
-/// current subcommand excludes it. When a lint spec matches successfully,
-/// stamps `passed.lint_flag` so the categorical "lint flags ignored on …"
-/// warning still fires for non-lint subcommands. Returns
-/// `error.InvalidCliValue` when a strict-value spec rejects its
-/// argument (today: only `--rule id=severity` opts in via
-/// `cli_strict_value`); the caller catches and aborts. The stderr
+/// current subcommand excludes it. When a source-map / lint spec matches
+/// successfully, stamps `passed.source_map_flag` / `passed.lint_flag` so
+/// the categorical "* flags ignored on …" warning still fires for the
+/// other subcommands. Returns `error.InvalidCliValue` when a strict-value
+/// spec rejects its argument (today: only `--rule id=severity` opts in
+/// via `cli_strict_value`); the caller catches and aborts. The stderr
 /// message is emitted here so the error propagation is purely a
 /// control-flow signal.
 const DispatchError = std.mem.Allocator.Error || error{InvalidCliValue};
@@ -340,6 +353,7 @@ fn dispatchSpecFlag(
     subcommand: wgslender.OptionsSpec.Subcommand,
     minify_target: *wgslender.Minifier.Options,
     lint_target: *CliArgs.LintOptions,
+    source_map_target: *CliArgs.SourceMapFlags,
     passed: *Passed,
     io: std.Io,
 ) DispatchError!bool {
@@ -358,6 +372,32 @@ fn dispatchSpecFlag(
             return true;
         },
         .invalid_value => {
+            warnInvalidValue(io, arg);
+            return error.InvalidCliValue;
+        },
+        .no_match => {},
+    }
+
+    const sm_result = try wgslender.OptionsSpec.matchFlag(
+        arg,
+        args_iter,
+        arena,
+        subcommand,
+        &wgslender.OptionsSpec.source_map_specs,
+        source_map_target,
+    );
+    switch (sm_result) {
+        .matched => {
+            passed.source_map_flag = true;
+            return true;
+        },
+        .wrong_subcommand => {
+            passed.source_map_flag = true;
+            warnFlagIgnored(io, arg, subcommand);
+            return true;
+        },
+        .invalid_value => {
+            passed.source_map_flag = true;
             warnInvalidValue(io, arg);
             return error.InvalidCliValue;
         },
@@ -549,12 +589,18 @@ fn applyMinifyOverrides(
     if (cli_no_syntax) options.minify_syntax = false;
 }
 
-fn configureSourceMap(args: *CliArgs, source_map_sources: bool) void {
-    const generate = args.source_map or args.source_map_inline;
+/// Hand-rolled post-step: the spec dispatcher writes the three boolean
+/// toggles into `args.source_map_flags`, but the resulting
+/// `source_map_options.source_name` / `.file` are derived from the
+/// input/output basenames — that's CLI plumbing, not a single-field knob,
+/// so it stays here.
+fn configureSourceMap(args: *CliArgs) void {
+    const flags = args.source_map_flags;
+    const generate = flags.source_map or flags.source_map_inline;
     if (!generate) return;
 
     args.options.generate_source_map = true;
-    args.options.source_map_options.include_source = source_map_sources;
+    args.options.source_map_options.include_source = flags.source_map_sources;
     if (args.input_path) |path| {
         args.options.source_map_options.source_name = std.fs.path.basename(path);
     }
@@ -1004,9 +1050,9 @@ fn emitJson(
 
 /// Write `wgslender --help` to stdout. Spec-driven flags come from
 /// `OptionsSpec.printHelp`; the static prologue, command list, and
-/// outlier flags (tri-state minify cluster, source-map, validate /
-/// reflect / lint specifics) live in the constants below — they don't
-/// have OptionSpec entries today.
+/// outlier flags (tri-state minify cluster, validate / reflect / lint
+/// specifics) live in the constants below — they don't have OptionSpec
+/// entries today.
 fn printUsage(arena: std.mem.Allocator, io: std.Io) !void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
 
@@ -1018,7 +1064,6 @@ fn printUsage(arena: std.mem.Allocator, io: std.Io) !void {
 
     try buf.appendSlice(arena, "\nSource maps (minify):\n");
     try wgslender.OptionsSpec.printHelp(&buf, arena, &wgslender.OptionsSpec.source_map_specs, null);
-    try buf.appendSlice(arena, usage_source_map_outlier);
 
     try buf.appendSlice(arena, usage_subcommand_specifics);
 
@@ -1055,10 +1100,6 @@ const usage_minify_outliers =
     \\  --no-mangle                       Don't rename identifiers
     \\  --no-whitespace                   Don't minify whitespace
     \\  --no-syntax                       Don't apply syntax-level optimizations
-;
-
-const usage_source_map_outlier =
-    \\  --source-map-inline               Embed source map as inline data URI
 ;
 
 const usage_subcommand_specifics =

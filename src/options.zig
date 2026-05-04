@@ -752,15 +752,17 @@ pub const minifier_options_specs = [_]OptionSpec{
     .{ .field = "scope_local_rename", .kind = .bool_opt, .subcommands = &minify_subcommands, .summary = "Rename locals canonically per function for better DEFLATE compression" },
 };
 
-/// Source-map switches. Live on `Config` and feed `CliArgs.source_map` /
-/// `CliArgs.source_map_options.*` — they don't flow through `toOptions`
-/// because the CLI orchestrates source-map plumbing separately. JSON
-/// parsing uses these specs; CLI dispatch is hand-rolled for the
-/// `--source-map` / `--source-map-inline` / `--source-map-sources`
-/// trio because they target `CliArgs` instead of `Minifier.Options`.
+/// Source-map switches. JSON layer targets `Config.source_map*` (?bool);
+/// CLI layer dispatches to `CliArgs.source_map_flags.*` (bool) via the
+/// dispatcher's third arm in `cli/main.zig`. Both targets share the same
+/// snake_case field names so a single spec drives both surfaces. The
+/// basename-derivation post-step (`configureSourceMap`: `source_name` /
+/// `file` from input/output paths) stays hand-rolled — it's CLI plumbing,
+/// not a single-field knob.
 pub const source_map_specs = [_]OptionSpec{
-    .{ .field = "source_map", .kind = .bool_opt, .cli_simple = false, .subcommands = &minify_only, .summary = "Generate a source map alongside the minified output" },
-    .{ .field = "source_map_sources", .kind = .bool_opt, .cli_simple = false, .subcommands = &minify_only, .summary = "Embed the original source content in the source map" },
+    .{ .field = "source_map", .kind = .bool_opt, .subcommands = &minify_only, .summary = "Generate a source map alongside the minified output" },
+    .{ .field = "source_map_inline", .kind = .bool_opt, .subcommands = &minify_only, .summary = "Embed source map as inline data URI" },
+    .{ .field = "source_map_sources", .kind = .bool_opt, .subcommands = &minify_only, .summary = "Embed the original source content in the source map" },
 };
 
 /// Lint configuration knobs. Both `lint_extends` (kebab `--extends`) and
