@@ -283,6 +283,14 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         cli_no_whitespace,
         cli_no_syntax,
     );
+    // CLI flag (true) wins; else config value if set; else false. Mirrors
+    // the `report_unused_disable_directives` precedence below — kept inline
+    // because `configureSourceMap` reads from `args.source_map_flags` next.
+    if (loaded_config) |cfg| {
+        if (cfg.source_map) |v| args.source_map_flags.source_map = args.source_map_flags.source_map or v;
+        if (cfg.source_map_inline) |v| args.source_map_flags.source_map_inline = args.source_map_flags.source_map_inline or v;
+        if (cfg.source_map_sources) |v| args.source_map_flags.source_map_sources = args.source_map_flags.source_map_sources or v;
+    }
     configureSourceMap(&args);
     if (args.subcommand == .lint) {
         // Merge config-derived lint settings under CLI overrides:
