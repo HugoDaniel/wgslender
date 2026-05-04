@@ -312,11 +312,20 @@ pub const source_map_specs = [_]OptionSpec{
 };
 
 /// Lint configuration knobs. `lint_rules` is intentionally hand-parsed
-/// (severity / per-rule options shape doesn't fit `string_list`) and the
-/// LSP-only `lsp` nested object stays hand-parsed too.
+/// (severity / per-rule options shape doesn't fit `string_list`).
 pub const lint_specs = [_]OptionSpec{
     .{ .field = "lint_extends", .kind = .string_list, .cli_simple = false, .json_override = "extends", .summary = "Shareable lint config packs to inherit" },
     .{ .field = "report_unused_disable_directives", .kind = .bool_opt, .cli_simple = false, .summary = "Treat unused wgslender-disable comments as warnings" },
+};
+
+/// LSP-only feature toggles that live on `Config` directly. Applied to
+/// the inner `lsp` JSON object (caller supplies `lsp` as the root), so
+/// the dotted paths start at `inlayHints.enabled` etc. — not
+/// `lsp.inlayHints.enabled`. The MinifySettings.Partial knobs use a
+/// parallel spec table colocated with `Partial` itself.
+pub const lsp_toggle_specs = [_]OptionSpec{
+    .{ .field = "lsp_inlay_hints_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "inlayHints.enabled", .summary = "Enable LSP inlay hints (struct sizes, type echoes)" },
+    .{ .field = "lsp_diagnostics_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "diagnostics.enabled", .summary = "Publish diagnostics from the LSP server" },
 };
 
 /// All spec entries that drive the JSON parser today. Any new bool /

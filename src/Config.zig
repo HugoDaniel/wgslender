@@ -24,8 +24,11 @@ const Config = @This();
 comptime {
     // Drift guard: every spec entry must name a real Config field.
     // Renaming or removing a field without updating the spec table
-    // surfaces here as a build error.
+    // surfaces here as a build error. `lsp_toggle_specs` covers the LSP
+    // feature toggles that live on `Config` and are applied below the
+    // `lsp` namespace.
     options.assertSpecFieldsExist(Config, &options.config_specs);
+    options.assertSpecFieldsExist(Config, &options.lsp_toggle_specs);
 }
 
 minify_whitespace: ?bool = null,
@@ -129,7 +132,15 @@ pub fn applyJsonValue(allocator: Allocator, root: std.json.Value, target: *Confi
     }
 
     if (root.object.get("lsp")) |lsp| {
-        if (lsp == .object) parseLspSection(target, lsp.object);
+        if (lsp == .object) {
+            // Spec-driven nested-object parse. `partial_specs` lives next
+            // to `MinifySettings.Partial`; `lsp_toggle_specs` covers the
+            // Config-level feature toggles. Dotted `json_override` paths
+            // (`minifyInsights.format`, `inlayHints.enabled`, ...) walk
+            // into the object via `options.lookupDotted`.
+            try options.applyJson(allocator, &MinifySettings.partial_specs, lsp, &target.lsp_minify);
+            try options.applyJson(allocator, &options.lsp_toggle_specs, lsp, target);
+        }
     }
 }
 
@@ -161,63 +172,6 @@ fn parseSeverity(value: std.json.Value) ?Diagnostic.Severity {
     if (std.mem.eql(u8, s, "warn") or std.mem.eql(u8, s, "warning")) return .warning;
     if (std.mem.eql(u8, s, "error")) return .@"error";
     return null;
-}
-
-fn parseLspSection(target: *Config, lsp: std.json.ObjectMap) void {
-    const out = &target.lsp_minify;
-    if (lsp.get("minifyMode")) |v| {
-        if (v == .string) out.mode = MinifySettings.Mode.fromString(v.string);
-    }
-    if (lsp.get("minifyInsights")) |v| {
-        if (v == .object) {
-            const ins = v.object;
-            if (ins.get("format")) |f| {
-                if (f == .string) out.format = MinifySettings.InsightsFormat.fromString(f.string);
-            }
-            if (ins.get("functionSize")) |b| {
-                if (b == .bool) out.function_size = b.bool;
-            }
-            if (ins.get("declSize")) |b| {
-                if (b == .bool) out.decl_size = b.bool;
-            }
-            if (ins.get("totalSize")) |b| {
-                if (b == .bool) out.total_size = b.bool;
-            }
-        }
-    }
-    if (lsp.get("minifyLints")) |v| {
-        if (v == .object) {
-            if (v.object.get("enabled")) |b| {
-                if (b == .bool) out.lints_enabled = b.bool;
-            }
-            if (v.object.get("budgetBytes")) |b| switch (b) {
-                .integer => |i| out.budget_bytes = if (i >= 0) @intCast(i) else null,
-                .null => out.budget_bytes = null,
-                else => {},
-            };
-        }
-    }
-    if (lsp.get("minifyEstimator")) |v| {
-        if (v == .object) {
-            if (v.object.get("useFullMinify")) |b| {
-                if (b == .bool) out.use_full_minify = b.bool;
-            }
-        }
-    }
-    if (lsp.get("inlayHints")) |v| {
-        if (v == .object) {
-            if (v.object.get("enabled")) |b| {
-                if (b == .bool) target.lsp_inlay_hints_enabled = b.bool;
-            }
-        }
-    }
-    if (lsp.get("diagnostics")) |v| {
-        if (v == .object) {
-            if (v.object.get("enabled")) |b| {
-                if (b == .bool) target.lsp_diagnostics_enabled = b.bool;
-            }
-        }
-    }
 }
 
 /// Search for a config file starting from `start_dir`, walking up to parent directories.

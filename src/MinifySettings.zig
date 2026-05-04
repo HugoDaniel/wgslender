@@ -6,6 +6,7 @@
 //! an `Effective` value the rest of the server reads.
 
 const std = @import("std");
+const options = @import("options.zig");
 
 pub const Mode = enum {
     off,
@@ -68,6 +69,26 @@ pub const Partial = struct {
     /// shape: `wgslender.minifyEstimator.useFullMinify`.
     use_full_minify: ?bool = null,
 };
+
+/// JSON-parsing specs for `Partial`. Dotted `json_override` paths target
+/// the inner `lsp` object — callers (e.g. `Config.applyJsonValue`) pass
+/// `lsp` as the JSON root, not the whole `wgslender.json` root. The
+/// comptime guard below catches drift between the spec and the field
+/// shape (renamed field, wrong type → build error).
+pub const partial_specs = [_]options.OptionSpec{
+    .{ .field = "mode", .kind = .{ .enum_opt = Mode }, .json_override = "minifyMode" },
+    .{ .field = "format", .kind = .{ .enum_opt = InsightsFormat }, .json_override = "minifyInsights.format" },
+    .{ .field = "function_size", .kind = .bool_opt, .json_override = "minifyInsights.functionSize" },
+    .{ .field = "decl_size", .kind = .bool_opt, .json_override = "minifyInsights.declSize" },
+    .{ .field = "total_size", .kind = .bool_opt, .json_override = "minifyInsights.totalSize" },
+    .{ .field = "lints_enabled", .kind = .bool_opt, .json_override = "minifyLints.enabled" },
+    .{ .field = "budget_bytes", .kind = .u32_opt, .json_override = "minifyLints.budgetBytes" },
+    .{ .field = "use_full_minify", .kind = .bool_opt, .json_override = "minifyEstimator.useFullMinify" },
+};
+
+comptime {
+    options.assertSpecFieldsExist(Partial, &partial_specs);
+}
 
 pub const Effective = struct {
     mode: Mode = .off,
