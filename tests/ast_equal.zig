@@ -182,7 +182,7 @@ fn expectSymbolEqual(e: Ast.Symbol, a: Ast.Symbol, i: usize) Err!void {
         std.debug.print("symbol[{d}] '{s}' .kind mismatch: {s} vs {s}\n", .{ i, e.original_name, @tagName(e.kind), @tagName(a.kind) });
         return error.SymbolKindMismatch;
     }
-    if (@as(u16, @bitCast(e.flags)) != @as(u16, @bitCast(a.flags))) {
+    if (@as(u8, @bitCast(e.flags)) != @as(u8, @bitCast(a.flags))) {
         std.debug.print("symbol[{d}] '{s}' .flags mismatch\n", .{ i, e.original_name });
         return error.SymbolFlagsMismatch;
     }

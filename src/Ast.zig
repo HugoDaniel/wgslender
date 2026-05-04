@@ -12,9 +12,11 @@
 //!   ├── symbols      : []Symbol         // append-only; SymbolIndex is u32 offset
 //!   ├── scope        : *Scope           // module-root scope; child per fn / block
 //!   ├── directives   : []Directive      // enable / requires / diagnostic
-//!   └── declarations : []Decl
-//!         ├── Struct / Alias / Override / Const / Var / Let / Function
-//!         └── (function bodies own statements which own expressions)
+//!   ├── declarations : []Decl
+//!   │     ├── Struct / Alias / Override / Const / Var / Let / Function
+//!   │     └── (function bodies own statements which own expressions)
+//!   ├── use_counts   : UseCounts        // per-symbol, populated by AstVisit
+//!   └── liveness     : Liveness         // per-symbol bits, populated by Dce
 //!
 //!   Stmt = compound | if | switch | for | while | loop | return | break | …
 //!   Expr = literal | ident | unary | binary | call | index | member | paren
@@ -25,6 +27,12 @@
 //!     - Module.scope is a tree of binding maps (`scope.parent` walks
 //!       outward); each scope holds the symbol indices declared in it.
 //!
+//!   Side-tables (B.M5): the Symbol record is immutable after Pass 1.
+//!   Per-pipeline analysis state lives off-record:
+//!     - use counts on `Module.use_counts` (UseCounts)
+//!     - liveness on `Module.liveness` (Liveness)
+//!     - rename pinning on per-call `RenamePolicy`
+//!
 //! Invariants:
 //!   - Every Symbol has a non-empty `original_name` unless `kind == .unbound`.
 //!     Asserted at the end of `Parser.parse`.
@@ -34,6 +42,9 @@
 //!     a non-null parent forming an acyclic tree.
 //!   - `Module.source` is sentinel-terminated and the AST's `loc` and
 //!     `span` fields index into it directly.
+//!   - Symbol fields are write-once (set by Parser/CstLower at declaration
+//!     time, then read-only). Analysis state lives in `Module.use_counts`,
+//!     `Module.liveness`, and per-call `RenamePolicy`.
 
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
@@ -122,16 +133,18 @@ pub const Symbol = struct {
         member,
     };
 
-    /// Bit-packed symbol flags (4 bools + padding = 2 bytes).
+    /// Bit-packed symbol flags (4 bools + 4-bit padding = 1 byte).
     /// Layout is fixed — see comptime assertion at end of file.
-    pub const Flags = packed struct(u16) {
+    /// B.M6 shrunk the backing type from `u16` to `u8` after B.M5
+    /// removed the four mutable analysis bits.
+    pub const Flags = packed struct(u8) {
         is_entry_point: bool = false,
         /// Set for @group/@binding vars and config-preserved names.
         is_api_facing: bool = false,
         is_builtin: bool = false,
         /// Set for @group/@binding vars; enables alias generation in Printer.
         is_external_binding: bool = false,
-        _padding: u12 = 0,
+        _padding: u4 = 0,
     };
 };
 
@@ -1694,7 +1707,9 @@ fn shiftTypeSpans(typ: Type, splice_end_old: u32, delta: i64) void {
 // Adding fields may break the packed layout or sentinel checks.
 comptime {
     // Bit-packed types: adding fields may break the packed layout.
-    std.debug.assert(@sizeOf(Symbol.Flags) == 2);
+    // Symbol.Flags is `u8` after B.M6 (was `u16` while it carried the
+    // mutable bits removed in B.M5). ExprFlags has been `u8` throughout.
+    std.debug.assert(@sizeOf(Symbol.Flags) == 1);
     std.debug.assert(@sizeOf(ExprFlags) == 1);
 
     // SymbolIndex uses maxInt(u32) as sentinel — must be exactly 4 bytes.
@@ -1703,6 +1718,13 @@ comptime {
 
     // Symbol.Kind fits in a nibble (4 bits).
     std.debug.assert(@sizeOf(Symbol.Kind) == 1);
+
+    // Total Symbol size on 64-bit targets — locked to make growth visible.
+    // Layout: original_name (16) + kind (1) + flags (1) + 2 pad +
+    //         nested_scope_slot (8) + loc (4) = 32 bytes.
+    if (@sizeOf(usize) == 8) {
+        std.debug.assert(@sizeOf(Symbol) == 32);
+    }
 }
 
 // =========================================================================
@@ -1723,8 +1745,8 @@ test "SymbolIndex: none is not valid" {
     try std.testing.expect(!SymbolIndex.none.isValid());
 }
 
-test "Symbol.Flags: packed size is 2 bytes" {
-    try std.testing.expectEqual(@as(usize, 2), @sizeOf(Symbol.Flags));
+test "Symbol.Flags: packed size is 1 byte" {
+    try std.testing.expectEqual(@as(usize, 1), @sizeOf(Symbol.Flags));
 }
 
 test "Symbol.Flags: bitwise operations" {
