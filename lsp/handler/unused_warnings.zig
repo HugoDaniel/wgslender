@@ -18,8 +18,8 @@ pub fn appendUnusedWarnings(
     const module = analysis.module orelse return;
     const source = module.source;
 
-    for (module.symbols.items) |sym| {
-        if (!sym.isUnusedReportable()) continue;
+    for (module.symbols.items, 0..) |sym, i| {
+        if (!isUnusedReportable(analysis, @intCast(i))) continue;
         const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "'{s}' is declared but never used", .{sym.original_name}) catch continue;
@@ -31,6 +31,28 @@ pub fn appendUnusedWarnings(
             .tags = &.{.unnecessary},
         }) catch continue;
     }
+}
+
+/// Side-table-aware mirror of `Ast.Symbol.isUnusedReportable`. Reads
+/// `use_count` from `analysis.use_counts` when available so the LSP and
+/// the lint rule share the same predicate after B.M5 deletes the field.
+fn isUnusedReportable(
+    analysis: *const wgslender.Validator.AnalysisResult,
+    sym_idx: u32,
+) bool {
+    const symbols = analysis.module.?.symbols.items;
+    if (sym_idx >= symbols.len) return false;
+    const sym = symbols[sym_idx];
+    const uc = if (analysis.use_counts) |t| t.counts[sym_idx] else sym.use_count;
+    if (uc > 0) return false;
+    if (sym.original_name.len == 0) return false;
+    if (sym.flags.is_entry_point) return false;
+    if (sym.flags.is_api_facing) return false;
+    if (sym.flags.is_external_binding) return false;
+    return switch (sym.kind) {
+        .function, .@"const", .let, .@"var", .override => true,
+        else => false,
+    };
 }
 
 /// Append hint-level diagnostics for symbols that are used internally
@@ -54,10 +76,13 @@ pub fn appendDeadCodeWarnings(
     }
     if (!has_entry_points) return;
 
-    for (module.symbols.items) |sym| {
+    for (module.symbols.items, 0..) |sym, i| {
         // Only flag symbols that are used (use_count > 0) but not live
-        if (sym.flags.is_live) continue;
-        if (sym.use_count == 0) continue; // Already caught by appendUnusedWarnings
+        if (analysis.liveness) |liv| {
+            if (liv.isLive(@intCast(i))) continue;
+        } else if (sym.flags.is_live) continue;
+        const uc = if (analysis.use_counts) |t| t.counts[i] else sym.use_count;
+        if (uc == 0) continue; // Already caught by appendUnusedWarnings
         if (sym.original_name.len == 0) continue;
         if (sym.flags.is_entry_point) continue;
         if (sym.flags.is_external_binding) continue;
@@ -90,9 +115,10 @@ pub fn appendUnusedBindingWarnings(
     const module = analysis.module orelse return;
     const source = module.source;
 
-    for (module.symbols.items) |sym| {
+    for (module.symbols.items, 0..) |sym, i| {
         if (!sym.flags.is_external_binding) continue;
-        if (sym.use_count > 0) continue;
+        const uc = if (analysis.use_counts) |t| t.counts[i] else sym.use_count;
+        if (uc > 0) continue;
         if (sym.original_name.len == 0) continue;
 
         const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;

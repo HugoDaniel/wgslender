@@ -160,13 +160,16 @@ fn getDeadCodeWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
     var result = try wgslender.analyzeWithOptions(std.testing.allocator, source, .{});
     defer result.deinit(std.testing.allocator);
 
-    // Run DCE to compute is_live flags
+    // Run DCE to compute is_live flags. Stash the Liveness side-table
+    // on the analysis so the new `unused_warnings` reads exercise the
+    // side-table path alongside the field — matches what the LSP does.
     if (result.module) |module| {
         if (result._arena) |*arena| {
             const aa = arena.allocator();
             if (wgslender.Liveness.init(aa, module.symbols.items.len)) |liveness_init| {
                 var liveness = liveness_init;
                 _ = wgslender.Dce.mark(aa, module, &liveness) catch {};
+                result.liveness = liveness;
             } else |_| {}
         }
     }
@@ -216,13 +219,16 @@ fn getUnusedBindingWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
     var result = try wgslender.analyzeWithOptions(std.testing.allocator, source, .{});
     defer result.deinit(std.testing.allocator);
 
-    // Run DCE to compute is_live flags
+    // Run DCE to compute is_live flags. Stash the Liveness side-table
+    // on the analysis so the new `unused_warnings` reads exercise the
+    // side-table path alongside the field — matches what the LSP does.
     if (result.module) |module| {
         if (result._arena) |*arena| {
             const aa = arena.allocator();
             if (wgslender.Liveness.init(aa, module.symbols.items.len)) |liveness_init| {
                 var liveness = liveness_init;
                 _ = wgslender.Dce.mark(aa, module, &liveness) catch {};
+                result.liveness = liveness;
             } else |_| {}
         }
     }

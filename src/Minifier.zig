@@ -29,6 +29,7 @@ const RenamerMod = @import("Renamer.zig");
 const Dce = @import("Dce.zig");
 const Liveness = @import("Liveness.zig");
 const RenamePolicy = @import("RenamePolicy.zig");
+const UseCounts = @import("UseCounts.zig");
 const SourceMap = @import("SourceMap.zig");
 
 const Reflect = @import("Reflect.zig");
@@ -180,8 +181,12 @@ fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyC
     // 3. Mark API-facing symbols. The returned policy is the
     // forward-looking source of truth (B.M2); during the additive
     // period it is also mirrored to `Symbol.flags.must_not_be_renamed`
-    // so existing readers (Renamer, Printer) keep working.
-    _ = try markAPIFacingSymbols(arena, module, options);
+    // so existing readers (Renamer, Printer) keep working. B.M4 also
+    // hands the policy to MinifyRenamer below so the renamer reads
+    // through the side-table.
+    const policy = try markAPIFacingSymbols(arena, module, options);
+    const policy_box = try arena.create(RenamePolicy);
+    policy_box.* = policy;
 
     // 4. DCE — allocate a side-table mirror per pipeline run (B.M3).
     // The legacy `Symbol.flags.is_live` field is still written by both
@@ -200,9 +205,16 @@ fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyC
 
     checkModuleInvariants(module);
 
-    // 5. Compute usage
+    // 5. Compute usage. B.M4: snapshot Pass-2 use counts into the
+    // side-table so MinifyRenamer reads through `UseCounts` instead of
+    // `Symbol.use_count`. `accumulateSymbolUseCounts` mirrors any
+    // additional bumps it applies into the side-table to keep both in
+    // lockstep.
     var uses = try computeSymbolUsage(arena, module);
     defer uses.deinit(arena);
+    const use_counts_box = try arena.create(UseCounts);
+    use_counts_box.* = try UseCounts.init(arena, module.symbols.items.len);
+    for (module.symbols.items, 0..) |sym, i| use_counts_box.counts[i] = sym.use_count;
 
     // 6. Build reserved names
     var reserved = try RenamerMod.computeReservedNames(arena);
@@ -214,7 +226,7 @@ fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyC
     const source_map_gen = try initSourceMapGen(arena, source, options);
 
     // 8. Create renamer and print
-    const print_result = try printWithRenamer(arena, module, options, &uses, reserved, source_map_gen);
+    const print_result = try printWithRenamer(arena, module, options, &uses, reserved, source_map_gen, use_counts_box, policy_box);
     result.code = print_result.code;
 
     // 9. Finalize source map
@@ -259,9 +271,12 @@ fn createMinifyRenamer(
     module: *Ast.Module,
     uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
     reserved: std.StringHashMapUnmanaged(void),
+    use_counts: *UseCounts,
+    rename_policy: *const RenamePolicy,
 ) !*const Printer.Renamer {
     const r = try arena.create(RenamerMod.MinifyRenamer);
     r.* = RenamerMod.MinifyRenamer.init(arena, module.symbols.items, reserved);
+    r.setSideTables(use_counts, rename_policy);
     r.accumulateSymbolUseCounts(uses);
     try r.allocateSlots();
     try r.reserveUnrenamedSymbolNames();
@@ -284,10 +299,12 @@ fn printWithRenamer(
     uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
     reserved: std.StringHashMapUnmanaged(void),
     source_map_gen: ?*SourceMap.Generator,
+    use_counts: *UseCounts,
+    rename_policy: *const RenamePolicy,
 ) !PrintResult {
     // Build base renamer (frequency-based or no-op)
     const renamer_base = if (options.minify_identifiers)
-        try createMinifyRenamer(arena, module, uses, reserved)
+        try createMinifyRenamer(arena, module, uses, reserved, use_counts, rename_policy)
     else
         try createNoOpRenamer(arena, module);
 

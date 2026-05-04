@@ -31,6 +31,8 @@ const Overload = @import("Overload.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const Suggest = @import("Suggest.zig");
 const Dce = @import("Dce.zig");
+const Liveness = @import("Liveness.zig");
+const UseCounts = @import("UseCounts.zig");
 const Allocator = std.mem.Allocator;
 
 const Validator = @This();
@@ -197,6 +199,18 @@ pub const AnalysisResult = struct {
     /// Byte-offset of expression start → type + end-offset. Populated on the
     /// fly during the checkExpr walk; read by LSP hover and inlay hints.
     expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
+    /// Side-table snapshot of `Symbol.use_count` taken during `analyze`.
+    /// B.M4: readers prefer this over the field; the field stays alive
+    /// for one more milestone so the parity assertion in
+    /// `UseCounts.assertParity` keeps both honest. Null only when
+    /// analysis returns before the snapshot site (parse failure).
+    use_counts: ?UseCounts = null,
+    /// Side-table mirror of `Symbol.flags.is_live`. Null when DCE has
+    /// not yet run for this analysis. Populated lazily by the Linter
+    /// (when an enabled rule sets `requires_dce`) and by callers like
+    /// the LSP that explicitly drive DCE before reading. B.M3
+    /// produced the type; B.M4 starts threading it to readers.
+    liveness: ?Liveness = null,
     _arena: ?std.heap.ArenaAllocator = null,
 
     /// Free all memory owned by this result.
@@ -387,6 +401,18 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
     std.debug.assert(v.expr_depth == 0);
     std.debug.assert(v.stmt_depth == 0);
 
+    // B.M4: snapshot Pass-2 use counts into the side-table so lint rules
+    // (and any other downstream reader) consume the canonical view that
+    // will outlive `Symbol.use_count` after B.M5. The snapshot path is
+    // OOM-tolerant — a failure leaves `use_counts` null and downstream
+    // helpers fall back to the field, matching pre-B.M4 behavior.
+    var use_counts_opt: ?UseCounts = null;
+    if (UseCounts.init(arena, module.symbols.items.len)) |uc_init| {
+        var uc = uc_init;
+        for (module.symbols.items, 0..) |sym, i| uc.counts[i] = sym.use_count;
+        use_counts_opt = uc;
+    } else |_| {}
+
     return .{
         .valid = !diags.hasErrors(),
         .diagnostics = diags,
@@ -396,6 +422,7 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
         .alias_types = v.alias_types,
         .const_values = v.const_values,
         .expr_types = v.expr_types,
+        .use_counts = use_counts_opt,
     };
 }
 

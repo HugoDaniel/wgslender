@@ -45,12 +45,12 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
     }
     if (!has_entry_points) return;
 
-    for (module.symbols.items) |sym| {
-        if (sym.flags.is_live) continue;
+    for (module.symbols.items, 0..) |sym, i| {
+        if (ctx.isLive(@intCast(i))) continue;
         // Never-referenced symbols belong to `no-unused-vars` /
         // `minify/unused-const` — this rule only fires when something
         // *is* keeping the dead decl alive in source.
-        if (sym.use_count == 0) continue;
+        if (ctx.useCount(@intCast(i)) == 0) continue;
         if (sym.original_name.len == 0) continue;
         if (sym.flags.is_entry_point) continue;
         if (sym.flags.is_external_binding) continue;

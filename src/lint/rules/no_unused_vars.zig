@@ -35,8 +35,8 @@ pub const rule = Rule{
 };
 
 fn run(ctx: *Context) error{OutOfMemory}!void {
-    for (ctx.module.symbols.items) |sym| {
-        if (!sym.isUnusedReportable()) continue;
+    for (ctx.module.symbols.items, 0..) |sym, i| {
+        if (!ctx.isUnusedReportable(@intCast(i))) continue;
         const name_len: u32 = @intCast(sym.original_name.len);
         const end = sym.loc + name_len;
         const msg = try ctx.fmt("'{s}' is declared but never used", .{sym.original_name});

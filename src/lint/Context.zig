@@ -89,3 +89,59 @@ pub fn sourceSlice(self: *const Context, start: u32, end: u32) []const u8 {
 pub fn fmt(self: *Context, comptime f: []const u8, args: anytype) Allocator.Error![]const u8 {
     return std.fmt.allocPrint(self.arena, f, args);
 }
+
+/// Return the symbol's reference count as known by the side-table,
+/// falling back to the `Symbol.use_count` field when no side-table is
+/// attached. B.M4: lint rules call this instead of reading the field
+/// directly, so B.M5's field deletion is a one-side rewrite. In debug
+/// builds, side-table and field must agree.
+pub fn useCount(self: *const Context, sym_idx: u32) u32 {
+    const symbols = self.module.symbols.items;
+    if (sym_idx >= symbols.len) return 0;
+    if (self.analysis.use_counts) |uc| {
+        if (std.debug.runtime_safety) {
+            std.debug.assert(uc.counts[sym_idx] == symbols[sym_idx].use_count);
+        }
+        return uc.counts[sym_idx];
+    }
+    return symbols[sym_idx].use_count;
+}
+
+/// Return the symbol's liveness as known by the side-table, falling
+/// back to the `Symbol.flags.is_live` field when no side-table is
+/// attached (typically because the rule didn't declare `requires_dce`,
+/// so DCE never ran for this analysis). B.M4: lint rules call this
+/// instead of reading the field directly. In debug builds, side-table
+/// and field must agree when both are present.
+pub fn isLive(self: *const Context, sym_idx: u32) bool {
+    const symbols = self.module.symbols.items;
+    if (sym_idx >= symbols.len) return false;
+    if (self.analysis.liveness) |liv| {
+        const side = liv.isLive(sym_idx);
+        if (std.debug.runtime_safety) {
+            std.debug.assert(side == symbols[sym_idx].flags.is_live);
+        }
+        return side;
+    }
+    return symbols[sym_idx].flags.is_live;
+}
+
+/// Mirror of `Ast.Symbol.isUnusedReportable` that consults the
+/// side-table for `use_count` instead of the field. The remaining
+/// predicate fields are parser-set immutables. B.M4: callers go
+/// through this so the field-side method can be deleted in B.M5
+/// without a sweep.
+pub fn isUnusedReportable(self: *const Context, sym_idx: u32) bool {
+    const symbols = self.module.symbols.items;
+    if (sym_idx >= symbols.len) return false;
+    const sym = symbols[sym_idx];
+    if (self.useCount(sym_idx) > 0) return false;
+    if (sym.original_name.len == 0) return false;
+    if (sym.flags.is_entry_point) return false;
+    if (sym.flags.is_api_facing) return false;
+    if (sym.flags.is_external_binding) return false;
+    return switch (sym.kind) {
+        .function, .@"const", .let, .@"var", .override => true,
+        else => false,
+    };
+}

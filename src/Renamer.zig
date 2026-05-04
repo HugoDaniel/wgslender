@@ -7,6 +7,8 @@ const std = @import("std");
 const Ast = @import("Ast.zig");
 const Lexer = @import("Lexer.zig");
 const Printer = @import("Printer.zig");
+const UseCounts = @import("UseCounts.zig");
+const RenamePolicy = @import("RenamePolicy.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -56,6 +58,13 @@ pub const MinifyRenamer = struct {
     name_offsets: std.ArrayListUnmanaged(NameSlice), // offset+len into name_buf
     arena: Allocator,
     renamer: Printer.Renamer,
+    /// Optional side-tables. When set, reads consult them with parity
+    /// asserts in debug; writes (`accumulateSymbolUseCounts`) mirror to
+    /// the side-table alongside the field. Production minify paths
+    /// allocate per-pipeline-run and attach via `setSideTables`. Tests
+    /// and one-shot callers leave them null and behave as before.
+    use_counts: ?*UseCounts = null,
+    rename_policy: ?*const RenamePolicy = null,
 
     const SymbolSlot = struct {
         name: []const u8,
@@ -88,7 +97,26 @@ pub const MinifyRenamer = struct {
         return self;
     }
 
+    /// Attach side-table mirrors that this renamer consults instead of
+    /// the legacy `Symbol` fields. B.M4: callers in the production
+    /// minify pipelines (`Minifier`, `Compiler`, `MinifyEstimator`)
+    /// invoke this between `init` and `accumulateSymbolUseCounts` so
+    /// the dual-write/dual-read paths are active. Leaving these null
+    /// preserves the pre-B.M4 behavior — useful for unit tests that
+    /// construct a synthetic symbol table with no side-tables.
+    pub fn setSideTables(
+        self: *MinifyRenamer,
+        use_counts: ?*UseCounts,
+        rename_policy: ?*const RenamePolicy,
+    ) void {
+        self.use_counts = use_counts;
+        self.rename_policy = rename_policy;
+    }
+
     /// Merges per-scope use counts into each symbol's total use_count.
+    /// When a `UseCounts` side-table is attached it receives the same
+    /// increments — keeping the field and the side-table in lockstep
+    /// across the additive period.
     pub fn accumulateSymbolUseCounts(self: *MinifyRenamer, uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) void {
         var it = uses.iterator();
         while (it.next()) |entry| {
@@ -97,8 +125,12 @@ pub const MinifyRenamer = struct {
             const idx = ref.index();
             if (idx >= self.symbols.len) continue;
             const sym = &self.symbols[idx];
-            if (sym.flags.must_not_be_renamed) continue;
-            sym.use_count += entry.value_ptr.*;
+            if (mustNotBeRenamed(self, idx, sym)) continue;
+            const delta = entry.value_ptr.*;
+            sym.use_count += delta;
+            if (self.use_counts) |uc| {
+                if (idx < uc.counts.len) uc.counts[idx] += delta;
+            }
         }
     }
 
@@ -114,11 +146,12 @@ pub const MinifyRenamer = struct {
         defer renameable.deinit(self.arena);
 
         for (self.symbols, 0..) |*sym, i| {
-            if (sym.flags.must_not_be_renamed) continue;
-            if (sym.use_count > 0) {
+            if (mustNotBeRenamed(self, @intCast(i), sym)) continue;
+            const count = useCountFor(self, @intCast(i), sym);
+            if (count > 0) {
                 try renameable.append(self.arena, .{
                     .idx = @intCast(i),
-                    .count = sym.use_count,
+                    .count = count,
                 });
             }
         }
@@ -186,13 +219,45 @@ pub const MinifyRenamer = struct {
         const idx = ref.index();
         if (idx >= self.symbols.len) return "";
         const sym = &self.symbols[idx];
-        if (sym.flags.must_not_be_renamed) return sym.original_name;
+        if (mustNotBeRenamed(self, idx, sym)) return sym.original_name;
         if (self.top_level_slots.get(idx)) |slot_idx| {
             return self.slots.items[slot_idx].name;
         }
         return sym.original_name;
     }
 };
+
+/// Side-table-aware read of `Symbol.flags.must_not_be_renamed`. When a
+/// `RenamePolicy` is attached, the policy's `mustNotRename(idx)` is
+/// authoritative; debug builds assert it agrees with the field. With no
+/// policy attached, falls back to the field directly.
+fn mustNotBeRenamed(self: *const MinifyRenamer, idx: u32, sym: *const Ast.Symbol) bool {
+    if (self.rename_policy) |pol| {
+        const side = pol.mustNotRename(@enumFromInt(idx));
+        if (std.debug.runtime_safety) {
+            std.debug.assert(side == sym.flags.must_not_be_renamed);
+        }
+        return side;
+    }
+    return sym.flags.must_not_be_renamed;
+}
+
+/// Side-table-aware read of `Symbol.use_count`. When a `UseCounts` is
+/// attached, the side-table is authoritative; debug builds assert it
+/// agrees with the field. With no side-table attached, falls back to
+/// the field directly.
+fn useCountFor(self: *const MinifyRenamer, idx: u32, sym: *const Ast.Symbol) u32 {
+    if (self.use_counts) |uc| {
+        if (idx < uc.counts.len) {
+            const side = uc.counts[idx];
+            if (std.debug.runtime_safety) {
+                std.debug.assert(side == sym.use_count);
+            }
+            return side;
+        }
+    }
+    return sym.use_count;
+}
 
 // =========================================================================
 // Name generation

@@ -43,6 +43,7 @@ const Minifier = @import("Minifier.zig");
 const RenamerMod = @import("Renamer.zig");
 const RenamePolicy = @import("RenamePolicy.zig");
 const Liveness = @import("Liveness.zig");
+const UseCounts = @import("UseCounts.zig");
 const Dce = @import("Dce.zig");
 const WasmBinary = @import("WasmBinary.zig");
 const ScopeLocalRenamer = Minifier.ScopeLocalRenamer;
@@ -259,8 +260,18 @@ fn prepareRenamer(arena: Allocator, module: *Ast.Module, options: CompileOptions
         for (mopts.keep_names) |name| try reserved.put(arena, name, {});
 
         if (mopts.minify_identifiers) {
+            // B.M4: snapshot Pass-2 use counts so the renamer reads
+            // through the side-table; box the policy so it lives long
+            // enough for the renamer to consult on every name lookup.
+            const use_counts_box = try arena.create(UseCounts);
+            use_counts_box.* = try UseCounts.init(arena, module.symbols.items.len);
+            for (module.symbols.items, 0..) |sym, i| use_counts_box.counts[i] = sym.use_count;
+            const policy_box = try arena.create(RenamePolicy);
+            policy_box.* = policy;
+
             const r = try arena.create(RenamerMod.MinifyRenamer);
             r.* = RenamerMod.MinifyRenamer.init(arena, module.symbols.items, reserved);
+            r.setSideTables(use_counts_box, policy_box);
             r.accumulateSymbolUseCounts(&uses);
             try r.allocateSlots();
             try r.reserveUnrenamedSymbolNames();

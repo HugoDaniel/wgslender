@@ -145,9 +145,12 @@ fn resolveSettings(
 
 /// Run all enabled rules against an already-analyzed module.
 ///
-/// The caller owns `analysis`; the Linter only reads from it. DCE is run
-/// on demand if any enabled rule declares `requires_dce` and the
-/// analysis hasn't been DCE-marked yet.
+/// The caller owns `analysis`. The Linter mutates two cache fields on
+/// it on demand: `analysis.liveness` is populated when DCE runs (only
+/// if some enabled rule declared `requires_dce` and the field was
+/// null), and the existing `Symbol.flags.is_live` mirror is written
+/// alongside it. Both writes are idempotent — repeated `Linter.run`
+/// calls re-use the cached side-table instead of re-running DCE.
 pub fn run(
     gpa: Allocator,
     analysis: *Validator.AnalysisResult,
@@ -218,18 +221,23 @@ pub fn run(
         if (setting.severity == .disabled) continue;
 
         if (r.meta.requires_dce and !dce_done) {
-            if (analysis_arena_opt) |aa| {
-                // B.M3: side-table allocated alongside the field write.
-                // It's discarded today; B.M4 will stash it on
-                // `AnalysisResult.liveness` so DCE-aware rules can read
-                // it instead of `Symbol.flags.is_live`. OOM here is
-                // swallowed to match the original `Dce.mark catch {}`
-                // semantics — rules tolerate stale liveness rather
-                // than abort the whole lint.
-                if (Liveness.init(aa, module.symbols.items.len)) |liveness_init| {
-                    var liveness = liveness_init;
-                    _ = Dce.mark(aa, module, &liveness) catch {};
-                } else |_| {}
+            // Skip the DCE pass if the caller already populated it
+            // (e.g. the LSP's `analyzeDocument` runs DCE before
+            // delegating here). Otherwise allocate a side-table
+            // alongside the field write and stash it on
+            // `AnalysisResult.liveness` so DCE-aware rules read it via
+            // `Context.isLive` instead of `Symbol.flags.is_live`. OOM
+            // is swallowed to match the original `Dce.mark catch {}`
+            // semantics — rules tolerate stale liveness rather than
+            // abort the whole lint.
+            if (analysis.liveness == null) {
+                if (analysis_arena_opt) |aa| {
+                    if (Liveness.init(aa, module.symbols.items.len)) |liveness_init| {
+                        var liveness = liveness_init;
+                        _ = Dce.mark(aa, module, &liveness) catch {};
+                        analysis.liveness = liveness;
+                    } else |_| {}
+                }
             }
             dce_done = true;
         }

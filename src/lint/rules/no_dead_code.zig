@@ -53,9 +53,9 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
     try buildEnclosingFnMap(ctx.arena, module, &enclosing_fn);
 
     for (module.symbols.items, 0..) |sym, i| {
-        if (sym.flags.is_live) continue;
+        if (ctx.isLive(@intCast(i))) continue;
         // Unreferenced altogether is the other rule's territory.
-        if (sym.use_count == 0) continue;
+        if (ctx.useCount(@intCast(i)) == 0) continue;
         if (sym.original_name.len == 0) continue;
         if (sym.flags.is_entry_point) continue;
         if (sym.flags.is_external_binding) continue;
@@ -72,7 +72,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
         // worth cleaning up individually.
         if (enclosing_fn.get(@intCast(i))) |fn_idx| {
             const fn_sym = module.symbols.items[fn_idx];
-            if (fn_sym.use_count == 0 and
+            if (ctx.useCount(fn_idx) == 0 and
                 !fn_sym.flags.is_entry_point and
                 !fn_sym.flags.is_api_facing and
                 !fn_sym.flags.is_external_binding and
