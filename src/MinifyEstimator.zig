@@ -35,6 +35,7 @@ const Dce = @import("Dce.zig");
 const Minifier = @import("Minifier.zig");
 const Printer = @import("Printer.zig");
 const Renamer = @import("Renamer.zig");
+const RenamePolicy = @import("RenamePolicy.zig");
 
 // =========================================================================
 // Public API
@@ -378,18 +379,19 @@ fn saveAndMarkAPIFacing(arena: Allocator, module: *Ast.Module, options: Options)
         counts[i] = sym.use_count;
         unrenameable[i] = sym.flags.must_not_be_renamed;
     }
-    // Mirror `Minifier.markAPIFacingSymbols`: anything the real pipeline
-    // would prevent renaming gets `must_not_be_renamed = true` so
-    // `MinifyRenamer.allocateSlots` skips it. The cheap path encodes
-    // this via `isRenameable` without mutating; the heavy path needs
-    // the flag itself because `MinifyRenamer` reads it directly.
-    for (module.symbols.items) |*sym| {
-        if (sym.flags.is_entry_point) sym.flags.must_not_be_renamed = true;
-        if (sym.kind == .builtin or sym.kind == .override) sym.flags.must_not_be_renamed = true;
-        if (sym.flags.is_external_binding and !options.mangle_external_bindings) {
-            sym.flags.must_not_be_renamed = true;
-        }
-    }
+    // Mirror `Minifier.markAPIFacingSymbols` via the shared Builder.
+    // The estimator's hypothetical analysis doesn't honor
+    // `keep_names` or `preserve_uniform_struct_types` (preserved
+    // behavior — those are LSP-driven minify-mode estimations that
+    // don't see those options today); only the parser-side / kind /
+    // external-binding marks apply.
+    var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
+    builder.markFromParser(module);
+    builder.markEntryPoints(module);
+    builder.markBuiltinsAndOverrides(module);
+    if (!options.mangle_external_bindings) builder.markExternalBindings(module);
+    const policy = builder.build();
+    policy.mirrorToFlags(module);
     return .{ .counts = counts, .unrenameable = unrenameable };
 }
 

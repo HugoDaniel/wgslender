@@ -998,6 +998,9 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
     if (is_entry_point) {
         flags.is_entry_point = true;
         flags.must_not_be_renamed = true;
+        // B.M2: source-side bit collected by RenamePolicy.Builder.
+        // Coexists with must_not_be_renamed during the additive period.
+        flags.parser_wants_no_rename = true;
     }
 
     if (try self.eatIdent()) |text| {

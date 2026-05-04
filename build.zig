@@ -249,6 +249,9 @@ pub fn build(b: *std.Build) void {
     // AstVisit `.add` / `.sub` mode unit tests — exercises the subtree
     // entry points in isolation from the Incremental driver.
     _ = addTestStep(b, test_step, "tests/astvisit_mode_test.zig", target, optimize, &.{w});
+    // RenamePolicy.Builder integration — verifies the parser_wants_no_rename
+    // bit and the mirror-to-flags semantics over the compute.toys corpus.
+    _ = addTestStep(b, test_step, "tests/rename_policy_test.zig", target, optimize, &.{w});
     // Incremental.reparse — end-to-end add/sub delta scenarios covering
     // per-symbol use_count invariants across a range of symbol-free
     // anchor kinds and round-trip edit sequences.

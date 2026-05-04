@@ -27,6 +27,7 @@ const Parser = @import("Parser.zig");
 const Printer = @import("Printer.zig");
 const RenamerMod = @import("Renamer.zig");
 const Dce = @import("Dce.zig");
+const RenamePolicy = @import("RenamePolicy.zig");
 const SourceMap = @import("SourceMap.zig");
 
 const Reflect = @import("Reflect.zig");
@@ -175,8 +176,11 @@ fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyC
         return .{ .result = result, .extras = null };
     }
 
-    // 3. Mark API-facing symbols
-    markAPIFacingSymbols(module, options);
+    // 3. Mark API-facing symbols. The returned policy is the
+    // forward-looking source of truth (B.M2); during the additive
+    // period it is also mirrored to `Symbol.flags.must_not_be_renamed`
+    // so existing readers (Renamer, Printer) keep working.
+    _ = try markAPIFacingSymbols(arena, module, options);
 
     // 4. DCE
     if (options.tree_shaking) {
@@ -311,41 +315,17 @@ fn printWithRenamer(
     return .{ .code = try printer.print(module), .renamer = renamer };
 }
 
-fn markAPIFacingSymbols(module: *Ast.Module, options: Options) void {
-    for (module.symbols.items) |*sym| {
-        if (sym.flags.is_entry_point) sym.flags.must_not_be_renamed = true;
-        if (sym.kind == .builtin) sym.flags.must_not_be_renamed = true;
-        if (sym.kind == .override) sym.flags.must_not_be_renamed = true;
-        if (sym.flags.is_external_binding and !options.mangle_external_bindings) {
-            sym.flags.must_not_be_renamed = true;
-        }
-        // Check keep_names
-        for (options.keep_names) |name| {
-            if (std.mem.eql(u8, sym.original_name, name)) {
-                sym.flags.must_not_be_renamed = true;
-                break;
-            }
-        }
-    }
-
-    // Preserve uniform struct types
-    if (options.preserve_uniform_struct_types) {
-        for (module.declarations.items) |decl| {
-            if (decl != .@"var") continue;
-            const var_decl = decl.@"var";
-            if (!var_decl.name.isValid()) continue;
-            const sym = &module.symbols.items[var_decl.name.index()];
-            if (!sym.flags.is_external_binding) continue;
-            if (var_decl.typ) |typ| {
-                if (typ == .ident) {
-                    const ident_type = typ.ident;
-                    if (ident_type.ref.isValid() and ident_type.ref.index() < module.symbols.items.len) {
-                        module.symbols.items[ident_type.ref.index()].flags.must_not_be_renamed = true;
-                    }
-                }
-            }
-        }
-    }
+fn markAPIFacingSymbols(arena: Allocator, module: *Ast.Module, options: Options) !RenamePolicy {
+    var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
+    builder.markFromParser(module);
+    builder.markEntryPoints(module);
+    builder.markBuiltinsAndOverrides(module);
+    if (!options.mangle_external_bindings) builder.markExternalBindings(module);
+    builder.markKeepNames(module, options.keep_names);
+    if (options.preserve_uniform_struct_types) builder.markUniformStructTypes(module);
+    const policy = builder.build();
+    policy.mirrorToFlags(module);
+    return policy;
 }
 
 /// Debug-only: verify module invariants after DCE and API marking.

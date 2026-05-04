@@ -118,7 +118,7 @@ pub const Symbol = struct {
         member,
     };
 
-    /// Bit-packed symbol flags (6 bools + padding = 2 bytes).
+    /// Bit-packed symbol flags (7 bools + padding = 2 bytes).
     /// Layout is fixed — see comptime assertion at end of file.
     pub const Flags = packed struct(u16) {
         must_not_be_renamed: bool = false,
@@ -130,7 +130,16 @@ pub const Symbol = struct {
         is_external_binding: bool = false,
         /// Set by DCE; false means this symbol is dead and can be omitted.
         is_live: bool = false,
-        _padding: u10 = 0,
+        /// Transient (B.M2 → B.M5). Set by Parser/CstLower at parse time
+        /// to signal that the orchestrator's `RenamePolicy.Builder`
+        /// should mark this symbol via `markFromParser`. Today only set
+        /// on entry-point function declarations (alongside
+        /// `is_entry_point`); reserved as a channel for parser-side
+        /// reasons that aren't visible from a single semantic flag.
+        /// Deleted in B.M5 alongside `must_not_be_renamed` once readers
+        /// migrate to the policy.
+        parser_wants_no_rename: bool = false,
+        _padding: u9 = 0,
     };
 
     /// True when this symbol qualifies for the "declared but never used"

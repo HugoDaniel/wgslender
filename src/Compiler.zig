@@ -41,6 +41,7 @@ const Parser = @import("Parser.zig");
 const Printer = @import("Printer.zig");
 const Minifier = @import("Minifier.zig");
 const RenamerMod = @import("Renamer.zig");
+const RenamePolicy = @import("RenamePolicy.zig");
 const Dce = @import("Dce.zig");
 const WasmBinary = @import("WasmBinary.zig");
 const ScopeLocalRenamer = Minifier.ScopeLocalRenamer;
@@ -227,20 +228,19 @@ fn prepareRenamer(arena: Allocator, module: *Ast.Module, options: CompileOptions
     if (options.minify) {
         const mopts = options.minify_options;
 
-        for (module.symbols.items) |*sym| {
-            if (sym.flags.is_entry_point) sym.flags.must_not_be_renamed = true;
-            if (sym.kind == .builtin) sym.flags.must_not_be_renamed = true;
-            if (sym.kind == .override) sym.flags.must_not_be_renamed = true;
-            if (sym.flags.is_external_binding and !mopts.mangle_external_bindings) {
-                sym.flags.must_not_be_renamed = true;
-            }
-            for (mopts.keep_names) |name| {
-                if (std.mem.eql(u8, sym.original_name, name)) {
-                    sym.flags.must_not_be_renamed = true;
-                    break;
-                }
-            }
-        }
+        // Mirror Minifier.markAPIFacingSymbols via the shared Builder so
+        // both pipelines collapse into one rename-protection rule set.
+        // The Compiler path doesn't honor `preserve_uniform_struct_types`
+        // (CompileOptions doesn't expose it today), so that mark is
+        // omitted; everything else matches Minifier.
+        var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
+        builder.markFromParser(module);
+        builder.markEntryPoints(module);
+        builder.markBuiltinsAndOverrides(module);
+        if (!mopts.mangle_external_bindings) builder.markExternalBindings(module);
+        builder.markKeepNames(module, mopts.keep_names);
+        const policy = builder.build();
+        policy.mirrorToFlags(module);
 
         if (mopts.tree_shaking) {
             _ = try Dce.mark(arena, module);
