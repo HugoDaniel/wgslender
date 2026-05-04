@@ -38,6 +38,12 @@ pub const OptionKind = union(enum) {
     /// `?u32` (or `u32`) field. JSON value must be a non-negative integer
     /// in `[0, maxInt(u32)]`. Out-of-range / wrong-type silently ignored.
     u32_opt,
+    /// `?i32` (or `i32`) field. JSON value must be a signed integer in
+    /// `[minInt(i32), maxInt(i32)]`. Out-of-range / wrong-type silently
+    /// ignored. CLI value-form parses via `parseInt(i32, …, 10)` —
+    /// matches the legacy `--line-offset` behavior (negative offsets
+    /// supported, since `Diagnostic.zig` adds the offset in `i64` math).
+    i32_opt,
     /// `?E` (or `E`) field, where `E` is the carried type. JSON value
     /// must be a string matching one of the enum's tag names (case-
     /// sensitive, exact match — uses `std.meta.stringToEnum`). Unknown
@@ -93,6 +99,8 @@ pub const OptionSpec = struct {
     ///   * `string_list` — value is comma-separated; trimmed parts go
     ///     into a slice on the supplied arena.
     ///   * `u32_opt` — value is `parseInt(u32, …, 10)`; failures leave
+    ///     the field unchanged.
+    ///   * `i32_opt` — value is `parseInt(i32, …, 10)`; failures leave
     ///     the field unchanged.
     ///   * `enum_opt: E` — value is `stringToEnum(E, …)`; unknowns leave
     ///     the field unchanged.
@@ -194,6 +202,7 @@ pub fn cliFlag(comptime spec: OptionSpec) []const u8 {
 ///   * `.bool_opt` ⇒ `?bool` or `bool`
 ///   * `.string_list` ⇒ `[]const []const u8`
 ///   * `.u32_opt` ⇒ `?u32` or `u32`
+///   * `.i32_opt` ⇒ `?i32` or `i32`
 ///   * `.enum_opt = E` ⇒ `?E` or `E`
 ///   * `.string_accum` ⇒ `[]const []const u8`
 ///   * `.rule_override_accum` ⇒ `[]const Linter.Options.RuleOverride`
@@ -207,6 +216,7 @@ pub fn assertSpecFieldsExist(comptime Target: type, comptime specs: []const Opti
             .bool_opt => if (FT != ?bool and FT != bool) @compileError("OptionSpec '" ++ spec.field ++ "' kind=bool_opt requires ?bool or bool field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .string_list => if (FT != []const []const u8) @compileError("OptionSpec '" ++ spec.field ++ "' kind=string_list requires []const []const u8 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .u32_opt => if (FT != ?u32 and FT != u32) @compileError("OptionSpec '" ++ spec.field ++ "' kind=u32_opt requires ?u32 or u32 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
+            .i32_opt => if (FT != ?i32 and FT != i32) @compileError("OptionSpec '" ++ spec.field ++ "' kind=i32_opt requires ?i32 or i32 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .enum_opt => |E| if (FT != ?E and FT != E) @compileError("OptionSpec '" ++ spec.field ++ "' kind=enum_opt requires ?" ++ @typeName(E) ++ " or " ++ @typeName(E) ++ " field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .string_accum => if (FT != []const []const u8) @compileError("OptionSpec '" ++ spec.field ++ "' kind=string_accum requires []const []const u8 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .rule_override_accum => if (FT != []const Linter.Options.RuleOverride) @compileError("OptionSpec '" ++ spec.field ++ "' kind=rule_override_accum requires []const Linter.Options.RuleOverride field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
@@ -269,6 +279,11 @@ pub fn applyJson(
                 },
                 .u32_opt => {
                     if (value == .integer and value.integer >= 0 and value.integer <= std.math.maxInt(u32)) {
+                        @field(target, spec.field) = @intCast(value.integer);
+                    }
+                },
+                .i32_opt => {
+                    if (value == .integer and value.integer >= std.math.minInt(i32) and value.integer <= std.math.maxInt(i32)) {
                         @field(target, spec.field) = @intCast(value.integer);
                     }
                 },
@@ -592,6 +607,11 @@ pub fn applyValue(
             @field(target, spec.field) = n;
             return true;
         },
+        .i32_opt => {
+            const n = std.fmt.parseInt(i32, value, 10) catch return false;
+            @field(target, spec.field) = n;
+            return true;
+        },
         .enum_opt => |E| {
             const e = std.meta.stringToEnum(E, value) orelse return false;
             @field(target, spec.field) = e;
@@ -705,6 +725,9 @@ pub fn applyDefaults(
                 if (list.len > 0) @field(target, spec.field) = list;
             },
             .u32_opt => {
+                if (@field(source, spec.field)) |v| @field(target, spec.field) = v;
+            },
+            .i32_opt => {
                 if (@field(source, spec.field)) |v| @field(target, spec.field) = v;
             },
             .enum_opt => {
@@ -989,6 +1012,45 @@ test "applyJson u32_opt parses non-negative integers" {
     try std.testing.expectEqual(@as(?u32, 4096), target.budget_bytes);
     try std.testing.expectEqual(@as(?u32, null), target.clamped_high);
     try std.testing.expectEqual(@as(?u32, null), target.clamped_negative);
+}
+
+test "applyJson + applyValue i32_opt parse signed integers" {
+    const Target = struct {
+        line_offset: ?i32 = null,
+        clamped_high: ?i32 = null,
+        clamped_low: ?i32 = null,
+        from_value: i32 = 0,
+    };
+    const specs = [_]OptionSpec{
+        .{ .field = "line_offset", .kind = .i32_opt, .json_override = "lineOffset" },
+        .{ .field = "clamped_high", .kind = .i32_opt, .json_override = "clampedHigh" },
+        .{ .field = "clamped_low", .kind = .i32_opt, .json_override = "clampedLow" },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Positive, beyond maxInt(i32), and below minInt(i32) — last two ignored.
+    const content =
+        \\{ "lineOffset": -47, "clampedHigh": 3000000000, "clampedLow": -3000000000 }
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, content, .{});
+    defer parsed.deinit();
+
+    var target: Target = .{};
+    try applyJson(alloc, &specs, parsed.value, &target);
+
+    try std.testing.expectEqual(@as(?i32, -47), target.line_offset);
+    try std.testing.expectEqual(@as(?i32, null), target.clamped_high);
+    try std.testing.expectEqual(@as(?i32, null), target.clamped_low);
+
+    // CLI value-form path: parses negative literal into a non-optional i32 field.
+    const value_spec: OptionSpec = .{ .field = "from_value", .kind = .i32_opt };
+    try std.testing.expect(try applyValue(value_spec, "-12", alloc, &target));
+    try std.testing.expectEqual(@as(i32, -12), target.from_value);
+    try std.testing.expect(!try applyValue(value_spec, "garbage", alloc, &target));
+    try std.testing.expectEqual(@as(i32, -12), target.from_value); // unchanged on parse fail
 }
 
 test "applyJson enum_opt parses tag names by string match" {
