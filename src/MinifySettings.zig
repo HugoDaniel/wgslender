@@ -118,42 +118,56 @@ pub const Effective = struct {
     }
 };
 
-/// Merge layers in precedence order: `magic` (highest) > `workspace` >
-/// `project` > hard-coded defaults. Later-layer `null` fields defer to
-/// earlier layers; later-layer concrete fields win.
+/// Mode-derived defaults expressed as a synthetic `Partial`. The mode
+/// implies which sub-switches are on by default; explicit fields from
+/// any user layer overlay these.
 ///
-/// `mode` alone also seeds the insights / lints sub-switches:
-///   - `off`      → all sub-switches disabled
-///   - `insights` → sub-switches on, lints off
-///   - `strict`   → sub-switches on, lints on
-/// Explicit sub-switch fields from any layer override the mode-derived
-/// defaults.
+///   - `off`      → all sub-switches off
+///   - `insights` → insights on, lints off
+///   - `strict`   → insights on, lints on
+///
+/// `format`, `budget_bytes`, and `use_full_minify` are not mode-derived
+/// — they fall back to the `Effective` struct defaults instead.
+fn modeDefaults(mode: Mode) Partial {
+    return switch (mode) {
+        .off => .{
+            .function_size = false,
+            .decl_size = false,
+            .total_size = false,
+            .lints_enabled = false,
+        },
+        .insights => .{
+            .function_size = true,
+            .decl_size = true,
+            .total_size = true,
+            .lints_enabled = false,
+        },
+        .strict => .{
+            .function_size = true,
+            .decl_size = true,
+            .total_size = true,
+            .lints_enabled = true,
+        },
+    };
+}
+
+/// Merge layers in precedence order: `magic` (highest) > `workspace` >
+/// `project` > mode-derived defaults > hard-coded struct defaults.
+/// Later-layer `null` fields defer to earlier layers; later-layer
+/// concrete fields win. Mode-derived defaults — see `modeDefaults` —
+/// flow through the same overlay machinery as a synthetic bottom layer,
+/// so explicit fields from any user layer override them uniformly.
 pub fn resolve(project: Partial, workspace: Partial, magic: Partial) Effective {
     const mode: Mode = magic.mode orelse workspace.mode orelse project.mode orelse .off;
-
-    var insights: InsightsSwitches = switch (mode) {
-        .off => .{ .function_size = false, .decl_size = false, .total_size = false },
-        .insights, .strict => .{},
-    };
-    var lints: LintsSwitches = .{ .enabled = mode == .strict };
-    var budget_bytes: ?u32 = null;
-    var use_full_minify: bool = false;
-
-    inline for ([_]Partial{ project, workspace, magic }) |layer| {
-        if (layer.function_size) |v| insights.function_size = v;
-        if (layer.decl_size) |v| insights.decl_size = v;
-        if (layer.total_size) |v| insights.total_size = v;
-        if (layer.format) |v| insights.format = v;
-        if (layer.lints_enabled) |v| lints.enabled = v;
-        if (layer.budget_bytes) |v| budget_bytes = v;
-        if (layer.use_full_minify) |v| use_full_minify = v;
+    var eff: Effective = .{ .mode = mode };
+    inline for ([_]Partial{ modeDefaults(mode), project, workspace, magic }) |layer| {
+        if (layer.function_size) |v| eff.insights.function_size = v;
+        if (layer.decl_size) |v| eff.insights.decl_size = v;
+        if (layer.total_size) |v| eff.insights.total_size = v;
+        if (layer.format) |v| eff.insights.format = v;
+        if (layer.lints_enabled) |v| eff.lints.enabled = v;
+        if (layer.budget_bytes) |v| eff.budget_bytes = v;
+        if (layer.use_full_minify) |v| eff.use_full_minify = v;
     }
-
-    return .{
-        .mode = mode,
-        .insights = insights,
-        .lints = lints,
-        .budget_bytes = budget_bytes,
-        .use_full_minify = use_full_minify,
-    };
+    return eff;
 }

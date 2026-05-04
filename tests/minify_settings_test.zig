@@ -69,6 +69,18 @@ test "resolve: explicit function_size=false overrides mode-derived true" {
     try std.testing.expect(eff.insights.total_size);
 }
 
+test "resolve: explicit function_size=true overrides mode=off-derived false" {
+    const eff = MinifySettings.resolve(
+        .{ .mode = .off, .function_size = true },
+        .{},
+        .{},
+    );
+    try std.testing.expectEqual(MinifySettings.Mode.off, eff.mode);
+    try std.testing.expect(eff.insights.function_size);
+    try std.testing.expect(!eff.insights.decl_size);
+    try std.testing.expect(!eff.insights.total_size);
+}
+
 test "resolve: higher-precedence sub-switch beats lower-precedence" {
     const eff = MinifySettings.resolve(
         .{ .mode = .insights, .decl_size = false },
