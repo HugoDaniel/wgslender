@@ -16,20 +16,29 @@
 //!     the per-spec `json_override` / `cli_override` escape hatches are
 //!     set (e.g. `extends` is the JSON key for `lint_extends` because it
 //!     is not under a `lint*` namespace in `wgslender.json`).
-//!   * Only `bool_opt` (Zig type `?bool`) and `string_list` (Zig type
-//!     `[]const []const u8`) are supported today. Future kinds (u32,
-//!     enum) slot in by extending `OptionKind` and `applyJson`.
+//!   * `json_override` may name a dotted path (`"minifyInsights.format"`)
+//!     to traverse into nested JSON objects — used by the LSP-section
+//!     specs to collapse what was a hand-rolled walker.
 
 const std = @import("std");
 
-pub const OptionKind = enum {
-    /// `?bool` field. JSON value must be a boolean; non-bool is silently
-    /// ignored (matches the permissive shape of the legacy parser).
+pub const OptionKind = union(enum) {
+    /// `?bool` (or `bool`) field. JSON value must be a boolean; non-bool
+    /// is silently ignored (matches the permissive shape of the legacy
+    /// parser).
     bool_opt,
     /// `[]const []const u8` field. JSON value must be an array; string
     /// elements are duped into the supplied allocator and assigned to the
     /// target field. Non-array / empty array leaves the target unchanged.
     string_list,
+    /// `?u32` (or `u32`) field. JSON value must be a non-negative integer
+    /// in `[0, maxInt(u32)]`. Out-of-range / wrong-type silently ignored.
+    u32_opt,
+    /// `?E` (or `E`) field, where `E` is the carried type. JSON value
+    /// must be a string matching one of the enum's tag names (case-
+    /// sensitive, exact match — uses `std.meta.stringToEnum`). Unknown
+    /// tags / wrong types silently ignored.
+    enum_opt: type,
 };
 
 pub const OptionSpec = struct {
@@ -115,22 +124,51 @@ pub fn cliFlag(comptime spec: OptionSpec) []const u8 {
 }
 
 /// Compile-time guard: every spec in `specs` must name a field that
-/// exists on `Target`. Call this from a `comptime { ... }` block in any
-/// module that owns the target struct, so a renamed / removed field
-/// surfaces as a build error rather than a silently-dropped JSON key.
+/// exists on `Target` *and* whose Zig type matches the spec's kind. Call
+/// this from a `comptime { ... }` block in any module that owns the
+/// target struct, so a renamed / removed / mistyped field surfaces as a
+/// build error rather than a silently-dropped JSON key.
+///
+/// Type matching:
+///   * `.bool_opt` ⇒ `?bool` or `bool`
+///   * `.string_list` ⇒ `[]const []const u8`
+///   * `.u32_opt` ⇒ `?u32` or `u32`
+///   * `.enum_opt = E` ⇒ `?E` or `E`
 pub fn assertSpecFieldsExist(comptime Target: type, comptime specs: []const OptionSpec) void {
     inline for (specs) |spec| {
         if (!@hasField(Target, spec.field)) {
             @compileError("OptionSpec '" ++ spec.field ++ "' has no matching field on " ++ @typeName(Target));
         }
+        const FT = @FieldType(Target, spec.field);
+        switch (spec.kind) {
+            .bool_opt => if (FT != ?bool and FT != bool) @compileError("OptionSpec '" ++ spec.field ++ "' kind=bool_opt requires ?bool or bool field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
+            .string_list => if (FT != []const []const u8) @compileError("OptionSpec '" ++ spec.field ++ "' kind=string_list requires []const []const u8 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
+            .u32_opt => if (FT != ?u32 and FT != u32) @compileError("OptionSpec '" ++ spec.field ++ "' kind=u32_opt requires ?u32 or u32 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
+            .enum_opt => |E| if (FT != ?E and FT != E) @compileError("OptionSpec '" ++ spec.field ++ "' kind=enum_opt requires ?" ++ @typeName(E) ++ " or " ++ @typeName(E) ++ " field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
+        }
     }
+}
+
+/// Walk a dotted JSON key (`"a.b.c"`) into `root`, returning the leaf
+/// `Value` or null if any intermediate step is missing / not an object.
+/// A flat key (no dots) is just a single `object.get`.
+fn lookupDotted(root: std.json.Value, key: []const u8) ?std.json.Value {
+    var current = root;
+    var iter = std.mem.splitScalar(u8, key, '.');
+    while (iter.next()) |part| {
+        if (current != .object) return null;
+        current = current.object.get(part) orelse return null;
+    }
+    return current;
 }
 
 /// Apply each spec in `specs` to `target` using `root` as the JSON source.
 /// `target` must be a pointer to a struct that has each `spec.field`.
 /// Missing keys, wrong types, and non-object roots are silently ignored —
 /// matching the legacy parser. String-list elements are duped into
-/// `allocator`; the new slice replaces the existing field value.
+/// `allocator`; the new slice replaces the existing field value. JSON
+/// keys may use dotted paths (`"minifyInsights.format"`) to traverse
+/// nested objects; see `lookupDotted`.
 pub fn applyJson(
     allocator: std.mem.Allocator,
     comptime specs: []const OptionSpec,
@@ -140,7 +178,7 @@ pub fn applyJson(
     if (root != .object) return;
     inline for (specs) |spec| {
         const key = comptime jsonKey(spec);
-        if (root.object.get(key)) |value| {
+        if (lookupDotted(root, key)) |value| {
             switch (comptime spec.kind) {
                 .bool_opt => {
                     if (value == .bool) @field(target, spec.field) = value.bool;
@@ -164,6 +202,18 @@ pub fn applyJson(
                         @field(target, spec.field) = try names.toOwnedSlice(allocator);
                     }
                 },
+                .u32_opt => {
+                    if (value == .integer and value.integer >= 0 and value.integer <= std.math.maxInt(u32)) {
+                        @field(target, spec.field) = @intCast(value.integer);
+                    }
+                },
+                .enum_opt => |E| {
+                    if (value == .string) {
+                        if (std.meta.stringToEnum(E, value.string)) |e| {
+                            @field(target, spec.field) = e;
+                        }
+                    }
+                },
             }
         }
     }
@@ -184,7 +234,10 @@ pub fn matchBoolFlag(
 ) bool {
     inline for (specs) |spec| {
         if (comptime !spec.cli_simple) continue;
-        if (comptime spec.kind != .bool_opt) continue;
+        comptime switch (spec.kind) {
+            .bool_opt => {},
+            else => continue,
+        };
         const flag = comptime "--" ++ cliFlag(spec);
         if (std.mem.eql(u8, arg, flag)) {
             @field(target, spec.field) = true;
@@ -216,6 +269,12 @@ pub fn applyDefaults(
             .string_list => {
                 const list = @field(source, spec.field);
                 if (list.len > 0) @field(target, spec.field) = list;
+            },
+            .u32_opt => {
+                if (@field(source, spec.field)) |v| @field(target, spec.field) = v;
+            },
+            .enum_opt => {
+                if (@field(source, spec.field)) |v| @field(target, spec.field) = v;
             },
         }
     }
@@ -423,6 +482,133 @@ test "config_specs has no duplicate fields" {
             }
         }
     }
+}
+
+test "applyJson u32_opt parses non-negative integers" {
+    const Target = struct {
+        budget_bytes: ?u32 = null,
+        clamped_high: ?u32 = null,
+        clamped_negative: ?u32 = null,
+    };
+    const specs = [_]OptionSpec{
+        .{ .field = "budget_bytes", .kind = .u32_opt, .json_override = "budgetBytes" },
+        .{ .field = "clamped_high", .kind = .u32_opt, .json_override = "clampedHigh" },
+        .{ .field = "clamped_negative", .kind = .u32_opt, .json_override = "clampedNegative" },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 5_000_000_000 > maxInt(u32); -1 is negative — both ignored.
+    const content =
+        \\{ "budgetBytes": 4096, "clampedHigh": 5000000000, "clampedNegative": -1 }
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, content, .{});
+    defer parsed.deinit();
+
+    var target: Target = .{};
+    try applyJson(alloc, &specs, parsed.value, &target);
+
+    try std.testing.expectEqual(@as(?u32, 4096), target.budget_bytes);
+    try std.testing.expectEqual(@as(?u32, null), target.clamped_high);
+    try std.testing.expectEqual(@as(?u32, null), target.clamped_negative);
+}
+
+test "applyJson enum_opt parses tag names by string match" {
+    const Mode = enum { default, strict, insights };
+    const Format = enum { text, json };
+    const Target = struct {
+        mode: ?Mode = null,
+        format: ?Format = null,
+        bad_mode: ?Mode = null,
+    };
+    const specs = [_]OptionSpec{
+        .{ .field = "mode", .kind = .{ .enum_opt = Mode } },
+        .{ .field = "format", .kind = .{ .enum_opt = Format } },
+        .{ .field = "bad_mode", .kind = .{ .enum_opt = Mode }, .json_override = "badMode" },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const content =
+        \\{ "mode": "strict", "format": "json", "badMode": "not_a_mode" }
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, content, .{});
+    defer parsed.deinit();
+
+    var target: Target = .{};
+    try applyJson(alloc, &specs, parsed.value, &target);
+
+    try std.testing.expectEqual(@as(?Mode, .strict), target.mode);
+    try std.testing.expectEqual(@as(?Format, .json), target.format);
+    // Unknown tag silently ignored — keeps default.
+    try std.testing.expectEqual(@as(?Mode, null), target.bad_mode);
+}
+
+test "applyJson dotted json_override walks nested objects" {
+    const Format = enum { text, json };
+    const Target = struct {
+        format: ?Format = null,
+        function_size: ?bool = null,
+        budget_bytes: ?u32 = null,
+        missing_branch: ?bool = null,
+    };
+    const specs = [_]OptionSpec{
+        .{ .field = "format", .kind = .{ .enum_opt = Format }, .json_override = "minifyInsights.format" },
+        .{ .field = "function_size", .kind = .bool_opt, .json_override = "minifyInsights.functionSize" },
+        .{ .field = "budget_bytes", .kind = .u32_opt, .json_override = "minifyLints.budgetBytes" },
+        .{ .field = "missing_branch", .kind = .bool_opt, .json_override = "absent.deeply.nested" },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const content =
+        \\{
+        \\  "minifyInsights": { "format": "json", "functionSize": true },
+        \\  "minifyLints": { "budgetBytes": 8192 }
+        \\}
+    ;
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, content, .{});
+    defer parsed.deinit();
+
+    var target: Target = .{};
+    try applyJson(alloc, &specs, parsed.value, &target);
+
+    try std.testing.expectEqual(@as(?Format, .json), target.format);
+    try std.testing.expectEqual(@as(?bool, true), target.function_size);
+    try std.testing.expectEqual(@as(?u32, 8192), target.budget_bytes);
+    try std.testing.expectEqual(@as(?bool, null), target.missing_branch);
+}
+
+test "applyDefaults forwards new kinds" {
+    const Mode = enum { default, strict };
+    const Source = struct {
+        budget_bytes: ?u32 = null,
+        mode: ?Mode = null,
+    };
+    const Target = struct {
+        budget_bytes: u32 = 1024,
+        mode: Mode = .default,
+    };
+    const specs = [_]OptionSpec{
+        .{ .field = "budget_bytes", .kind = .u32_opt },
+        .{ .field = "mode", .kind = .{ .enum_opt = Mode } },
+    };
+
+    var t1: Target = .{};
+    applyDefaults(&specs, Source{}, &t1);
+    try std.testing.expectEqual(@as(u32, 1024), t1.budget_bytes);
+    try std.testing.expectEqual(Mode.default, t1.mode);
+
+    var t2: Target = .{};
+    applyDefaults(&specs, Source{ .budget_bytes = 9999, .mode = .strict }, &t2);
+    try std.testing.expectEqual(@as(u32, 9999), t2.budget_bytes);
+    try std.testing.expectEqual(Mode.strict, t2.mode);
 }
 
 test "matchBoolFlag dispatches simple bool specs" {
