@@ -1,11 +1,15 @@
 //! WGSL minification pipeline.
 //!
-//! Orchestrates: Parse → Mark API-facing → DCE → Compute usage → Rename
-//!             → [Scope-local rename] → [Sort declarations] → Print.
+//! Public surface: `minify(arena, source, options)` and
+//! `minifyAndReflect(...)`. Internally `minifyCore` builds the standard
+//! `Pipeline.Pass` list and feeds it to `Pipeline.run`. The pass list
+//! lives in `default_passes` below; downstream tooling that wants a
+//! different shape can build its own list and call `Pipeline.run`
+//! directly.
 //!
-//! The optional scope-local rename and declaration sort passes improve
-//! DEFLATE compression by making structurally similar functions produce
-//! near-identical text and grouping declarations by kind.
+//! Standard pass order (see `Pipeline` for per-pass contracts):
+//!   tokenize → parse → mark_api_facing → dce → compute_usage →
+//!   build_reserved_names → init_source_map → print → finalize_source_map.
 //!
 //! Invariants:
 //!   - Entry points and `@group/@binding` vars are marked API-facing
@@ -22,15 +26,13 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
-const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 const Printer = @import("Printer.zig");
 const RenamerMod = @import("Renamer.zig");
 const Dce = @import("Dce.zig");
-const Liveness = @import("Liveness.zig");
 const RenamePolicy = @import("RenamePolicy.zig");
-const UseCounts = @import("UseCounts.zig");
 const SourceMap = @import("SourceMap.zig");
+const Pipeline = @import("Pipeline.zig");
 
 const Reflect = @import("Reflect.zig");
 
@@ -137,6 +139,22 @@ const MinifyCore = struct {
     extras: ?MinifyExtras,
 };
 
+/// Default pass list for the minify pipeline. Conditional steps
+/// (`init_source_map`, `finalize_source_map`) read `options` themselves
+/// and become no-ops when not requested, so the list shape stays
+/// uniform regardless of options.
+const default_passes: []const Pipeline.Pass = &.{
+    .tokenize,
+    .parse,
+    .mark_api_facing,
+    .dce,
+    .compute_usage,
+    .build_reserved_names,
+    .init_source_map,
+    .print,
+    .finalize_source_map,
+};
+
 fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyCore {
     // Pre-conditions: source is sentinel-terminated (enforced by type),
     // keep_names entries must not be empty strings, and the source size
@@ -155,183 +173,38 @@ fn minifyCore(arena: Allocator, source: [:0]const u8, options: Options) !MinifyC
         .symbols_dead = 0,
     };
 
-    // 1. Tokenize
-    var tokens = try Lexer.tokenize(arena, source);
-    defer tokens.deinit(arena);
+    var state = Pipeline.State.init(arena, source);
+    try Pipeline.run(&state, default_passes, options);
 
-    // 2. Parse
-    var parser = try Parser.init(arena, source, tokens);
-    const module = parser.parse() catch |e| switch (e) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            result.code = source;
-            result.minified_size = source.len;
-            result.errors = parser.errors.items;
-            return .{ .result = result, .extras = null };
-        },
-    };
-
-    if (parser.errors.items.len > 0) {
+    // Parse-failure fallback: emit original source and surface errors.
+    if (state.errors.len > 0 or state.module == null) {
         result.code = source;
         result.minified_size = source.len;
-        result.errors = parser.errors.items;
+        result.errors = state.errors;
         return .{ .result = result, .extras = null };
     }
 
-    // 3. Mark API-facing symbols. The returned policy is the per-pipeline
-    //    source of truth that the renamer / scope-local wrapper consult.
-    const policy = try markAPIFacingSymbols(arena, module, options);
-    const policy_box = try arena.create(RenamePolicy);
-    policy_box.* = policy;
-
-    // 4. DCE — populate `module.liveness` so the Printer's
-    //    tree-shaking gate and `sortDeclarations` see accurate liveness.
-    module.liveness = try Liveness.init(arena, module.symbols.items.len);
-    if (options.tree_shaking) {
-        result.symbols_dead = try Dce.mark(arena, module, &module.liveness);
-        std.debug.assert(result.symbols_dead <= module.symbols.items.len);
-    } else {
-        module.liveness.markAllLive();
-    }
-
+    const module = state.module.?;
     checkModuleInvariants(module);
 
-    // 5. Compute post-Pass-2 usage (function-name call sites etc.).
-    //    `module.use_counts` already holds Pass-2 ident bumps;
-    //    `accumulateSymbolUseCounts` adds these to it.
-    var uses = try computeSymbolUsage(arena, module);
-    defer uses.deinit(arena);
-
-    // 6. Build reserved names
-    var reserved = try RenamerMod.computeReservedNames(arena);
-    for (options.keep_names) |name| {
-        try reserved.put(arena, name, {});
-    }
-
-    // 7. Set up source map generator if requested
-    const source_map_gen = try initSourceMapGen(arena, source, options);
-
-    // 8. Create renamer and print
-    const print_result = try printWithRenamer(arena, module, options, &uses, reserved, source_map_gen, &module.use_counts, policy_box);
-    result.code = print_result.code;
-
-    // 9. Finalize source map
-    if (source_map_gen) |gen| {
-        result.source_map = try gen.generate();
-    }
-
+    result.code = state.output orelse "";
+    result.source_map = state.source_map;
+    result.symbols_dead = state.symbols_dead;
     result.minified_size = result.code.len;
     result.symbols_total = module.symbols.items.len;
 
     // Post-conditions
     std.debug.assert(result.minified_size <= result.original_size or !options.minify_whitespace);
     std.debug.assert(result.symbols_dead <= module.symbols.items.len);
-    // Successful minify never returns parser errors — the early-return
-    // branches above replace `result.code` with `source` and bail before
+    // Successful minify never returns parser errors — the parse-failure
+    // branch above replaces `result.code` with `source` and bails before
     // reaching here, so on this path errors must be empty.
     std.debug.assert(result.errors.len == 0);
 
     return .{
         .result = result,
-        .extras = .{ .module = module, .renamer = print_result.renamer },
+        .extras = .{ .module = module, .renamer = state.renamer.? },
     };
-}
-
-fn initSourceMapGen(arena: Allocator, source: [:0]const u8, options: Options) !?*SourceMap.Generator {
-    if (!options.generate_source_map) return null;
-    const gen = try arena.create(SourceMap.Generator);
-    gen.* = try SourceMap.Generator.init(arena, source);
-    gen.setFile(options.source_map_options.file);
-    gen.setSourceName(options.source_map_options.source_name);
-    gen.setIncludeSource(options.source_map_options.include_source);
-    return gen;
-}
-
-const PrintResult = struct {
-    code: []const u8,
-    renamer: *const Printer.Renamer,
-};
-
-fn createMinifyRenamer(
-    arena: Allocator,
-    module: *Ast.Module,
-    uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
-    reserved: std.StringHashMapUnmanaged(void),
-    use_counts: *UseCounts,
-    rename_policy: *const RenamePolicy,
-) !*const Printer.Renamer {
-    const r = try arena.create(RenamerMod.MinifyRenamer);
-    r.* = RenamerMod.MinifyRenamer.init(arena, module.symbols.items, reserved);
-    r.setSideTables(use_counts, rename_policy);
-    r.accumulateSymbolUseCounts(uses);
-    try r.allocateSlots();
-    try r.reserveUnrenamedSymbolNames();
-    try r.assignNames();
-    r.renamer.ptr = @ptrCast(r);
-    return &r.renamer;
-}
-
-fn createNoOpRenamer(arena: Allocator, module: *Ast.Module) !*const Printer.Renamer {
-    const r = try arena.create(RenamerMod.NoOpRenamer);
-    r.* = RenamerMod.NoOpRenamer.init(module.symbols.items);
-    r.renamer.ptr = @ptrCast(r);
-    return &r.renamer;
-}
-
-fn printWithRenamer(
-    arena: Allocator,
-    module: *Ast.Module,
-    options: Options,
-    uses: *const std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32),
-    reserved: std.StringHashMapUnmanaged(void),
-    source_map_gen: ?*SourceMap.Generator,
-    use_counts: *UseCounts,
-    rename_policy: *const RenamePolicy,
-) !PrintResult {
-    // Build base renamer (frequency-based or no-op)
-    const renamer_base = if (options.minify_identifiers)
-        try createMinifyRenamer(arena, module, uses, reserved, use_counts, rename_policy)
-    else
-        try createNoOpRenamer(arena, module);
-
-    var renamer: *const Printer.Renamer = renamer_base;
-
-    // Optionally wrap with scope-local renaming
-    if (options.scope_local_rename and options.minify_identifiers) {
-        const scope = try ScopeLocalRenamer.init(arena, module, renamer, rename_policy);
-        renamer = &scope.ren;
-    }
-
-    // Print — either sorted or in original order
-    var printer = Printer.init(arena, .{
-        .minify_whitespace = options.minify_whitespace,
-        .minify_identifiers = options.minify_identifiers,
-        .minify_syntax = options.minify_syntax,
-        .tree_shaking = if (options.sort_declarations) false else options.tree_shaking,
-        .renamer = renamer,
-        .source_map_gen = source_map_gen,
-    }, module.symbols.items);
-
-    if (options.sort_declarations) {
-        const sorted = try sortDeclarations(arena, module);
-        printer.buf.clearRetainingCapacity();
-        for (sorted) |decl| {
-            try printer.printDecl(decl);
-        }
-        return .{ .code = printer.buf.items, .renamer = renamer };
-    }
-
-    return .{ .code = try printer.print(module), .renamer = renamer };
-}
-
-fn markAPIFacingSymbols(arena: Allocator, module: *Ast.Module, options: Options) !RenamePolicy {
-    var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
-    builder.markEntryPoints(module);
-    builder.markBuiltinsAndOverrides(module);
-    if (!options.mangle_external_bindings) builder.markExternalBindings(module);
-    builder.markKeepNames(module, options.keep_names);
-    if (options.preserve_uniform_struct_types) builder.markUniformStructTypes(module);
-    return builder.build();
 }
 
 /// Debug-only: verify module invariants after DCE and API marking.

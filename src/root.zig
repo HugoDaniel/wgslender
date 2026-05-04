@@ -26,6 +26,7 @@ pub const Diagnostic = @import("Diagnostic.zig");
 pub const Types = @import("Types.zig");
 pub const Validator = @import("Validator.zig");
 pub const Minifier = @import("Minifier.zig");
+pub const Pipeline = @import("Pipeline.zig");
 pub const Config = @import("Config.zig");
 pub const Reflect = @import("Reflect.zig");
 pub const SourceMap = @import("SourceMap.zig");
@@ -495,6 +496,7 @@ comptime {
     _ = SourceMap;
     _ = Dce;
     _ = Compiler;
+    _ = Pipeline;
     _ = WasmBinary;
     _ = Edits;
     _ = StableId;
