@@ -12,11 +12,8 @@ const CliArgs = struct {
     options: wgslender.Minifier.Options = wgslender.Minifier.defaultOptions(),
     source_map_flags: SourceMapFlags = .{},
     subcommand: wgslender.OptionsSpec.Subcommand = .minify,
-    validate_format: ValidateFormat = .text,
-    strict: bool = false,
-    line_offset: i32 = 0,
-    compact: bool = false,
-    reflect_format: wgslender.Reflect.JsonVersion = .v2,
+    validate_options: ValidateOptions = .{},
+    reflect_options: ReflectOptions = .{},
     show_help: bool = false,
     lint_options: LintOptions = .{},
 
@@ -35,16 +32,38 @@ const CliArgs = struct {
         source_map_sources: bool = false,
     };
 
+    /// Targets for the validate-subcommand spec dispatcher arm. `format`
+    /// and `line_offset` are also accepted on `lint` (the lint specs
+    /// share these two fields and the runLint reader pulls from the same
+    /// struct) — `strict` is validate-only, gated by `subcommands` on
+    /// the spec entry. Dispatcher writes via `@field(target, spec.field)`.
+    const ValidateOptions = struct {
+        format: ValidateFormat = .text,
+        strict: bool = false,
+        line_offset: i32 = 0,
+    };
+
+    /// Targets for the reflect-subcommand spec dispatcher arm. Both
+    /// fields are reflect-only (the spec entries pin `subcommands` to
+    /// `.reflect`), so other subcommands that mention `--compact` /
+    /// `--reflect-format` get a wrong-subcommand warning.
+    const ReflectOptions = struct {
+        compact: bool = false,
+        reflect_format: wgslender.Reflect.JsonVersion = .v2,
+    };
+
     /// Field names mirror `Config.lint_extends` / `Config.lint_rules` so
     /// the spec dispatcher (`OptionsSpec.matchFlag` against
     /// `OptionsSpec.lint_specs`) can target this struct directly via
     /// `@field(target, spec.field)`. The downstream `runLint` translator
     /// peels them back into the `extends` / `rules` keys on
-    /// `Linter.Options`.
+    /// `Linter.Options`. `max_warnings` is `?u32` (null = unlimited)
+    /// to fit the spec system's `u32_opt` kind cleanly — replaces the
+    /// historical `i32 = -1` sentinel.
     const LintOptions = struct {
         lint_extends: []const []const u8 = &.{},
         lint_rules: []const wgslender.Linter.Options.RuleOverride = &.{},
-        max_warnings: i32 = -1,
+        max_warnings: ?u32 = null,
         quiet: bool = false,
         fix: bool = false,
         fix_dry_run: bool = false,
@@ -52,13 +71,43 @@ const CliArgs = struct {
     };
 };
 
+/// CLI-only spec tables. Shape mirrors the JSON-side spec tables in
+/// `src/options.zig` (which drive `wgslender.json` parsing), but these
+/// flags don't appear in the JSON config — they're per-invocation CLI
+/// modifiers. Empty `summary` opts a spec out of `printHelp`; populated
+/// summaries flow into `--help` automatically.
+const cli_validate_specs = [_]wgslender.OptionsSpec.OptionSpec{
+    .{ .field = "format", .kind = .{ .enum_opt = CliArgs.ValidateFormat }, .cli_takes_value = true, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{ .validate, .lint }, .summary = "Output format: text|json|stylish (default: text)" },
+    .{ .field = "strict", .kind = .bool_opt, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{.validate}, .summary = "(validate) Treat warnings as errors" },
+    .{ .field = "line_offset", .kind = .i32_opt, .cli_takes_value = true, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{ .validate, .lint }, .summary = "Add n to reported line numbers" },
+};
+
+const cli_reflect_specs = [_]wgslender.OptionsSpec.OptionSpec{
+    .{ .field = "compact", .kind = .bool_opt, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{.reflect}, .summary = "Compact JSON output" },
+    .{ .field = "reflect_format", .kind = .{ .enum_opt = wgslender.Reflect.JsonVersion }, .cli_takes_value = true, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{.reflect}, .summary = "Reflect JSON schema: v1|v2 (default: v2)" },
+};
+
+/// CLI-only lint flags that don't have a JSON shape. The accumulators
+/// (`lint_extends`, `lint_rules`) and `report_unused_disable_directives`
+/// stay in `OptionsSpec.lint_specs` because they share their target
+/// shape with `Config`. Everything here writes to `LintOptions`.
+const cli_lint_extra_specs = [_]wgslender.OptionsSpec.OptionSpec{
+    .{ .field = "max_warnings", .kind = .u32_opt, .cli_takes_value = true, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{.lint}, .summary = "Exit non-zero if lint warnings exceed n" },
+    .{ .field = "quiet", .kind = .bool_opt, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{.lint}, .summary = "Show errors only; hide warnings" },
+    .{ .field = "fix", .kind = .bool_opt, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{.lint}, .summary = "Apply autofixes in place (requires a file input)" },
+    .{ .field = "fix_dry_run", .kind = .bool_opt, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{.lint}, .summary = "Print fixed source to stdout without writing" },
+};
+
 comptime {
-    // Drift guard: the source-map dispatcher arm targets
-    // `CliArgs.SourceMapFlags`, so its fields must match every spec entry.
+    // Drift guards: every dispatcher arm's target struct must declare each
+    // spec field. Catches renames / removals at build time.
     wgslender.OptionsSpec.assertSpecFieldsExist(
         CliArgs.SourceMapFlags,
         &wgslender.OptionsSpec.source_map_specs,
     );
+    wgslender.OptionsSpec.assertSpecFieldsExist(CliArgs.ValidateOptions, &cli_validate_specs);
+    wgslender.OptionsSpec.assertSpecFieldsExist(CliArgs.ReflectOptions, &cli_reflect_specs);
+    wgslender.OptionsSpec.assertSpecFieldsExist(CliArgs.LintOptions, &cli_lint_extra_specs);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -75,19 +124,19 @@ pub fn main(init: std.process.Init) !void {
             arena,
             io,
             source,
-            args.validate_format,
-            args.strict,
-            args.line_offset,
+            args.validate_options.format,
+            args.validate_options.strict,
+            args.validate_options.line_offset,
             args.input_path,
         ),
-        .reflect => try runReflect(arena, io, source, args.output_path, args.compact, args.reflect_format),
+        .reflect => try runReflect(arena, io, source, args.output_path, args.reflect_options.compact, args.reflect_options.reflect_format),
         .compile => try runCompile(arena, io, source, args.output_path, args.options),
         .lint => try runLint(
             arena,
             io,
             source,
-            args.validate_format,
-            args.line_offset,
+            args.validate_options.format,
+            args.validate_options.line_offset,
             args.input_path,
             args.lint_options,
         ),
@@ -104,21 +153,16 @@ pub fn main(init: std.process.Init) !void {
 }
 
 /// Tracks which flag *categories* the user passed, so we can warn when a
-/// flag is ignored by the chosen subcommand. Most spec-driven minifier
-/// flags emit per-flag warnings via `OptionsSpec.matchFlag`'s
-/// `wrong_subcommand` result; `minify_cluster` here covers the
-/// hand-rolled tri-state outliers (`--minify`, `--minify-*`,
-/// `--no-mangle`, `--no-whitespace`, `--no-syntax`).
+/// flag is ignored by the chosen subcommand. Spec-driven flags emit
+/// per-flag warnings via `OptionsSpec.matchFlag`'s `wrong_subcommand`
+/// result; the `*_cluster` / `*_flag` fields here cover the multi-flag
+/// categories where one consolidated message reads better than N
+/// individual ones (minify cluster, source-map suite, lint accumulators).
 const Passed = struct {
     minify_cluster: bool = false,
     source_map_flag: bool = false,
     output_path: bool = false,
     config_flag: bool = false,
-    format_flag: bool = false,
-    strict_flag: bool = false,
-    line_offset_flag: bool = false,
-    compact_flag: bool = false,
-    reflect_format_flag: bool = false,
     lint_flag: bool = false,
 };
 
@@ -162,21 +206,6 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             // because it has no JSON shape and no spec entry.
             passed.lint_flag = true;
             lint_use_recommended = false;
-        } else if (std.mem.eql(u8, arg, "--max-warnings")) {
-            passed.lint_flag = true;
-            if (args_iter.next()) |v| args.lint_options.max_warnings = std.fmt.parseInt(i32, v, 10) catch -1;
-        } else if (std.mem.eql(u8, arg, "--quiet")) {
-            passed.lint_flag = true;
-            args.lint_options.quiet = true;
-        } else if (std.mem.eql(u8, arg, "--fix")) {
-            passed.lint_flag = true;
-            args.lint_options.fix = true;
-        } else if (std.mem.eql(u8, arg, "--fix-dry-run")) {
-            passed.lint_flag = true;
-            args.lint_options.fix_dry_run = true;
-        } else if (std.mem.eql(u8, arg, "--report-unused-disable-directives")) {
-            passed.lint_flag = true;
-            args.lint_options.report_unused_disable_directives = true;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             passed.output_path = true;
             args.output_path = args_iter.next();
@@ -219,47 +248,20 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             &args.options,
             &args.lint_options,
             &args.source_map_flags,
+            &args.validate_options,
+            &args.reflect_options,
             &passed,
             io,
         ) catch return null)) {
             // Spec-driven dispatch consumed the flag (matched + applied,
             // or matched + warned for wrong subcommand).
-        } else if (std.mem.eql(u8, arg, "--format")) {
-            passed.format_flag = true;
-            if (args_iter.next()) |fmt| {
-                if (std.mem.eql(u8, fmt, "json")) {
-                    args.validate_format = .json;
-                } else if (std.mem.eql(u8, fmt, "text")) {
-                    args.validate_format = .text;
-                } else if (std.mem.eql(u8, fmt, "stylish")) {
-                    args.validate_format = .stylish;
-                }
-            }
         } else if (std.mem.eql(u8, arg, "--json")) {
-            passed.format_flag = true;
-            args.validate_format = .json;
-        } else if (std.mem.eql(u8, arg, "--strict")) {
-            passed.strict_flag = true;
-            args.strict = true;
-        } else if (std.mem.eql(u8, arg, "--line-offset")) {
-            passed.line_offset_flag = true;
-            if (args_iter.next()) |val| {
-                args.line_offset = std.fmt.parseInt(i32, val, 10) catch 0;
-            }
-        } else if (std.mem.eql(u8, arg, "--compact")) {
-            passed.compact_flag = true;
-            args.compact = true;
-        } else if (std.mem.eql(u8, arg, "--reflect-format")) {
-            passed.reflect_format_flag = true;
-            if (args_iter.next()) |fmt| {
-                if (std.mem.eql(u8, fmt, "v1")) {
-                    args.reflect_format = .v1;
-                } else if (std.mem.eql(u8, fmt, "v2")) {
-                    args.reflect_format = .v2;
-                } else {
-                    File.stderr().writeStreamingAll(io, "error: --reflect-format must be v1 or v2\n") catch {};
-                    return null;
-                }
+            // Sugar for `--format json`. Single-flag alias — too narrow
+            // for a spec primitive, so it stays hand-rolled. Subcommand
+            // gating mirrors `--format` (validate + lint).
+            switch (args.subcommand) {
+                .validate, .lint => args.validate_options.format = .json,
+                else => warnFlagIgnored(io, arg, args.subcommand),
             }
         } else if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v")) {
             File.stdout().writeStreamingAll(io, "wgslender v" ++ wgslender.version ++ "\n") catch {};
@@ -342,6 +344,13 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
 ///   2. `source_map_specs` → writes to `CliArgs.SourceMapFlags`
 ///   3. `lint_specs` → writes to `CliArgs.LintOptions` (lint_extends /
 ///      lint_rules accumulators)
+///   4. `cli_lint_extra_specs` → writes to `CliArgs.LintOptions`
+///      (--max-warnings, --quiet, --fix, --fix-dry-run)
+///   5. `cli_validate_specs` → writes to `CliArgs.ValidateOptions`
+///      (--format, --strict, --line-offset; format/line-offset shared
+///       with lint)
+///   6. `cli_reflect_specs` → writes to `CliArgs.ReflectOptions`
+///      (--compact, --reflect-format)
 /// Returns true if matched (consumed — caller should not try other arms).
 /// Emits a per-flag stderr warning when the flag is recognized but the
 /// current subcommand excludes it. When a source-map / lint spec matches
@@ -362,6 +371,8 @@ fn dispatchSpecFlag(
     minify_target: *wgslender.Minifier.Options,
     lint_target: *CliArgs.LintOptions,
     source_map_target: *CliArgs.SourceMapFlags,
+    validate_target: *CliArgs.ValidateOptions,
+    reflect_target: *CliArgs.ReflectOptions,
     passed: *Passed,
     io: std.Io,
 ) DispatchError!bool {
@@ -435,6 +446,81 @@ fn dispatchSpecFlag(
             warnInvalidValue(io, arg);
             return error.InvalidCliValue;
         },
+        .no_match => {},
+    }
+
+    // CLI-only lint extras (--max-warnings, --quiet, --fix, --fix-dry-run).
+    // Same target as `lint_specs`; separate table because these have no
+    // JSON shape (live in cli/main.zig, not src/options.zig).
+    const lint_extra_result = try wgslender.OptionsSpec.matchFlag(
+        arg,
+        args_iter,
+        arena,
+        subcommand,
+        &cli_lint_extra_specs,
+        lint_target,
+    );
+    switch (lint_extra_result) {
+        .matched => {
+            passed.lint_flag = true;
+            return true;
+        },
+        .wrong_subcommand => {
+            passed.lint_flag = true;
+            warnFlagIgnored(io, arg, subcommand);
+            return true;
+        },
+        .invalid_value => {
+            passed.lint_flag = true;
+            warnInvalidValue(io, arg);
+            return error.InvalidCliValue;
+        },
+        .no_match => {},
+    }
+
+    // Validate-subcommand flags (--format, --strict, --line-offset).
+    // `--format` and `--line-offset` also accepted on lint (their spec
+    // entries pin both subcommands).
+    const validate_result = try wgslender.OptionsSpec.matchFlag(
+        arg,
+        args_iter,
+        arena,
+        subcommand,
+        &cli_validate_specs,
+        validate_target,
+    );
+    switch (validate_result) {
+        .matched => return true,
+        .wrong_subcommand => {
+            warnFlagIgnored(io, arg, subcommand);
+            return true;
+        },
+        .invalid_value => {
+            warnInvalidValue(io, arg);
+            return error.InvalidCliValue;
+        },
+        .no_match => {},
+    }
+
+    // Reflect-subcommand flags (--compact, --reflect-format).
+    const reflect_result = try wgslender.OptionsSpec.matchFlag(
+        arg,
+        args_iter,
+        arena,
+        subcommand,
+        &cli_reflect_specs,
+        reflect_target,
+    );
+    switch (reflect_result) {
+        .matched => return true,
+        .wrong_subcommand => {
+            warnFlagIgnored(io, arg, subcommand);
+            return true;
+        },
+        .invalid_value => {
+            warnInvalidValue(io, arg);
+            return error.InvalidCliValue;
+        },
         .no_match => return false,
     }
 }
@@ -481,52 +567,34 @@ fn warnIgnoredFlags(
         }
     };
 
+    // Per-flag wrong-subcommand warnings fire from the spec dispatcher
+    // (`OptionsSpec.matchFlag`); only the multi-flag categorical
+    // warnings live here, where one consolidated message reads better
+    // than N individual ones (minify cluster, source-map suite, lint
+    // accumulators).
     switch (subcommand) {
         .minify => {
-            // Accepts: minify, source_map, output_path, config.
-            if (passed.format_flag) W.warn(io, "--format / --json has no effect on minify; only validate/lint use it");
-            if (passed.strict_flag) W.warn(io, "--strict has no effect on minify");
-            if (passed.line_offset_flag) W.warn(io, "--line-offset has no effect on minify");
-            if (passed.compact_flag) W.warn(io, "--compact has no effect on minify (reflect-only)");
-            if (passed.reflect_format_flag) W.warn(io, "--reflect-format has no effect on minify (reflect-only)");
             if (passed.lint_flag) W.warn(io, "lint flags (--extends/--rule/--fix/...) have no effect on minify");
         },
         .compile => {
-            // Accepts: minify, output_path, config. (No source maps in compile.)
             if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on compile (source maps are not embedded in the binary)");
-            if (passed.format_flag) W.warn(io, "--format / --json has no effect on compile");
-            if (passed.strict_flag) W.warn(io, "--strict has no effect on compile");
-            if (passed.line_offset_flag) W.warn(io, "--line-offset has no effect on compile");
-            if (passed.compact_flag) W.warn(io, "--compact has no effect on compile (reflect-only)");
-            if (passed.reflect_format_flag) W.warn(io, "--reflect-format has no effect on compile (reflect-only)");
             if (passed.lint_flag) W.warn(io, "lint flags have no effect on compile");
         },
         .validate => {
-            // Accepts: format, strict, line_offset, config (auto-discovery only — no minify config keys apply).
             if (passed.minify_cluster) W.warn(io, "minify flags (--minify-*/--no-*/--keep-names/...) have no effect on validate");
             if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on validate");
             if (passed.output_path) W.warn(io, "-o/--output has no effect on validate (diagnostics go to stderr/stdout)");
-            if (passed.compact_flag) W.warn(io, "--compact has no effect on validate (reflect-only)");
-            if (passed.reflect_format_flag) W.warn(io, "--reflect-format has no effect on validate (reflect-only)");
             if (passed.lint_flag) W.warn(io, "lint flags have no effect on validate");
         },
         .reflect => {
-            // Accepts: compact, reflect_format, output_path.
             if (passed.minify_cluster) W.warn(io, "minify flags have no effect on reflect");
             if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on reflect");
-            if (passed.format_flag) W.warn(io, "--format / --json has no effect on reflect (use --compact / --reflect-format)");
-            if (passed.strict_flag) W.warn(io, "--strict has no effect on reflect");
-            if (passed.line_offset_flag) W.warn(io, "--line-offset has no effect on reflect");
             if (passed.lint_flag) W.warn(io, "lint flags have no effect on reflect");
         },
         .lint => {
-            // Accepts: format, line_offset, lint_flag.
             if (passed.minify_cluster) W.warn(io, "minify flags have no effect on lint");
             if (passed.source_map_flag) W.warn(io, "--source-map* has no effect on lint");
             if (passed.output_path) W.warn(io, "-o/--output has no effect on lint (--fix rewrites the input file in place)");
-            if (passed.strict_flag) W.warn(io, "--strict has no effect on lint; use --max-warnings 0 to fail on warnings");
-            if (passed.compact_flag) W.warn(io, "--compact has no effect on lint (reflect-only)");
-            if (passed.reflect_format_flag) W.warn(io, "--reflect-format has no effect on lint (reflect-only)");
         },
     }
 }
@@ -942,7 +1010,7 @@ fn runLint(
     //        (--max-warnings unset OR warning_count <= --max-warnings)
     //   1  — any parse/validator error, any lint error, or warnings exceed
     //        --max-warnings threshold
-    const exceeds_max_warnings = lint_opts.max_warnings >= 0 and lint_warnings > @as(u32, @intCast(lint_opts.max_warnings));
+    const exceeds_max_warnings = if (lint_opts.max_warnings) |max| lint_warnings > max else false;
     if (analysis_errors > 0 or lint_errors > 0 or exceeds_max_warnings) {
         std.process.exit(1);
     }
@@ -1056,11 +1124,10 @@ fn emitJson(
     try File.stdout().writeStreamingAll(io, buf.items);
 }
 
-/// Write `wgslender --help` to stdout. Spec-driven flags come from
-/// `OptionsSpec.printHelp`; the static prologue, command list, and
-/// outlier flags (tri-state minify cluster, validate / reflect / lint
-/// specifics) live in the constants below — they don't have OptionSpec
-/// entries today.
+/// Write `wgslender --help` to stdout. Every section pulls its body
+/// from spec tables via `OptionsSpec.printHelp`; only the prologue,
+/// command list, the minify-cluster outliers (hand-rolled tri-state),
+/// and the `--no-recommended` outlier remain as static text.
 fn printUsage(arena: std.mem.Allocator, io: std.Io) !void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
 
@@ -1073,10 +1140,16 @@ fn printUsage(arena: std.mem.Allocator, io: std.Io) !void {
     try buf.appendSlice(arena, "\nSource maps (minify):\n");
     try wgslender.OptionsSpec.printHelp(&buf, arena, &wgslender.OptionsSpec.source_map_specs, null);
 
-    try buf.appendSlice(arena, usage_subcommand_specifics);
+    try buf.appendSlice(arena, "\nReflect:\n");
+    try wgslender.OptionsSpec.printHelp(&buf, arena, &cli_reflect_specs, null);
+
+    try buf.appendSlice(arena, "\nValidate / lint:\n");
+    try wgslender.OptionsSpec.printHelp(&buf, arena, &cli_validate_specs, null);
+    try buf.appendSlice(arena, usage_validate_outliers);
 
     try buf.appendSlice(arena, "\nLint:\n");
     try wgslender.OptionsSpec.printHelp(&buf, arena, &wgslender.OptionsSpec.lint_specs, null);
+    try wgslender.OptionsSpec.printHelp(&buf, arena, &cli_lint_extra_specs, null);
     try buf.appendSlice(arena, usage_lint_outliers);
 
     try buf.appendSlice(arena, usage_epilogue);
@@ -1110,26 +1183,17 @@ const usage_minify_outliers =
     \\  --no-syntax                       Don't apply syntax-level optimizations
 ;
 
-const usage_subcommand_specifics =
-    \\
-    \\Reflect:
-    \\  --compact                         Compact JSON output
-    \\  --reflect-format <v1|v2>          Reflect JSON schema (default: v2)
-    \\
-    \\Validate / lint:
-    \\  --format <text|json|stylish>      Output format (default: text)
+// Hand-rolled outliers (single-line, no JSON shape) appended below the
+// spec-driven `--format`/`--strict`/`--line-offset` block. `--json` is
+// an alias for `--format json` so it lives here, not in the spec table.
+const usage_validate_outliers =
     \\  --json                            Shorthand for --format json
-    \\  --strict                          (validate) Treat warnings as errors
-    \\                                      (for lint use --max-warnings 0)
-    \\  --line-offset <n>                 Add n to reported line numbers
 ;
 
+// `--no-recommended` has no JSON shape and no spec entry (CLI-only meta-flag
+// suppressing the auto-recommended default), so it stays static here.
 const usage_lint_outliers =
     \\  --no-recommended                  Do not auto-apply @wgslender/recommended
-    \\  --max-warnings <n>                Exit non-zero if lint warnings exceed n
-    \\  --quiet                           Show errors only; hide warnings
-    \\  --fix                             Apply autofixes in place (requires a file input)
-    \\  --fix-dry-run                     Print fixed source to stdout without writing
 ;
 
 const usage_epilogue =

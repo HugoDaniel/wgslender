@@ -795,17 +795,15 @@ pub const source_map_specs = [_]OptionSpec{
 /// `rules`) sit at the root of `wgslender.json`, not under a `lint`
 /// namespace, hence the explicit `json_override`s.
 ///
-/// `--report-unused-disable-directives` stays `cli_simple = false` for
-/// now: the CLI target is `bool` (not `?bool`) and the JSON target is
-/// `?bool`; the dispatcher's affirmative-form arm writes `true` to
-/// either, but the merge step in `cli/main.zig` already handles the
-/// `Config.report_unused_disable_directives orelse cli_value` precedence
-/// hand-rolled, so promoting it to `cli_simple = true` would duplicate
-/// that logic. Future cleanup, not in scope here.
+/// `--report-unused-disable-directives` dispatches via the affirmative
+/// form (writes `true` to `LintOptions.report_unused_disable_directives:
+/// bool`); the CLI-vs-config merge in `cli/main.zig` then folds in the
+/// `Config.report_unused_disable_directives: ?bool` value with the
+/// standard "CLI true wins, else config value, else false" precedence.
 pub const lint_specs = [_]OptionSpec{
     .{ .field = "lint_extends", .kind = .string_accum, .cli_takes_value = true, .subcommands = &lint_only, .json_override = "extends", .cli_override = "extends", .summary = "Inherit rules from a shareable lint config pack (repeatable)" },
     .{ .field = "lint_rules", .kind = .rule_override_accum, .cli_takes_value = true, .cli_strict_value = true, .subcommands = &lint_only, .json_override = "rules", .cli_override = "rule", .summary = "Override a rule severity (id=off|warn|error, repeatable)" },
-    .{ .field = "report_unused_disable_directives", .kind = .bool_opt, .cli_simple = false, .subcommands = &lint_only, .summary = "Warn on wgslender-disable comments that never match" },
+    .{ .field = "report_unused_disable_directives", .kind = .bool_opt, .subcommands = &lint_only, .summary = "Warn on wgslender-disable comments that never match" },
 };
 
 /// LSP-only feature toggles that live on `Config` directly. Applied to
