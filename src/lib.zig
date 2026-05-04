@@ -3,6 +3,13 @@
 //! Each export is a thin shell over `api_json.zig`: open one arena over
 //! `page_allocator`, run the operation, copy the result out, tear the
 //! arena down. Callers free returned pointers via `wgslender_free_c`.
+//!
+//! JSON-input exports (`*_json_c`, `lint_*_c`, `compile_c`,
+//! `minify_and_reflect_c`) all route through `Config.parseJson` (directly
+//! or via `api_json.parseLintConfig`), so the per-rule lint options shape
+//! `["warn", { ... }]` and any other unified-config feature threads through
+//! to consumers without these `extern struct` ABIs needing to change.
+//! Don't add a parallel JSON parser here — extend `Config` instead.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;

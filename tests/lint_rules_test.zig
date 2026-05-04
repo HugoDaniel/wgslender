@@ -1349,6 +1349,32 @@ test "max-params: per-rule options thread end-to-end through Config.parseJson" {
     try std.testing.expect(hasCode(r, "W0220"));
 }
 
+test "C-FFI lint shape: per-rule options thread through api_json shim" {
+    // Mirrors the `wgslender_lint_c` flow in `src/lib.zig`: open one
+    // arena, `makeSentinelSource` → `parseLintConfig` → `lintToResult`.
+    // Locks in the §8.1 promise that the `WgslenderLintResult`-family
+    // C-FFI auto-benefits from the M3+M4 consolidation — `["warn",
+    // { "max": N }]` reaches the rule and surfaces in the JSON payload
+    // without any change to the extern struct shape.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = try wgslender.api_json.makeSentinelSource(
+        alloc,
+        "fn f(a: i32, b: i32, c: i32) -> i32 { return a + b + c; }",
+    );
+    const opts = try wgslender.api_json.parseLintConfig(
+        alloc,
+        \\{"rules":{"max-params":["warn",{"max":2}]}}
+    );
+    const r = try wgslender.api_json.lintToResult(alloc, source, opts);
+
+    try std.testing.expectEqual(@as(u32, 0), r.error_count);
+    try std.testing.expect(r.warning_count >= 1);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "\"W0220\"") != null);
+}
+
 // =========================================================================
 // max-depth (W0221)
 // =========================================================================
