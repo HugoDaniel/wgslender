@@ -496,18 +496,8 @@ fn analyzeFromParse(
 
     var analyzed = try wgslender.Validator.analyze(alloc, parse.module, .{});
 
-    // Merge parser + visit-pass errors (E0001/E0004/E0101/E0102/E0401)
-    // into the validator's diagnostics. Mirrors the slow path at
-    // src/root.zig:179-187 so both entry points produce identical sets.
-    for (parse.errors) |err| {
-        const end = if (err.end > err.pos) err.end else err.pos + 1;
-        if (err.code.len > 0) {
-            analyzed.diagnostics.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
-        } else {
-            analyzed.diagnostics.addErrorRange(alloc, err.pos, end, err.message);
-        }
-        analyzed.valid = false;
-    }
+    wgslender.Parser.mergeErrorsInto(parse.errors, analyzed.diagnostics, alloc);
+    if (parse.errors.len > 0) analyzed.valid = false;
 
     // Allocate a fresh Liveness side-table per analyze call (B.M5: the
     // `Symbol.flags.is_live` field was deleted, so this is the only

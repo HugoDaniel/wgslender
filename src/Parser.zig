@@ -88,6 +88,22 @@ pub const ParseError = struct {
     code: []const u8 = "",
 };
 
+/// Append `errors` (parser + visit-pass diagnostics) to `into` as `error`-
+/// severity entries. Single source of truth for the conversion: matches the
+/// fast (LSP `analyzeFromParse`) and slow (`root.validateWithOptions` /
+/// `analyzeWithOptions`) paths so every entry point produces identical
+/// diagnostic sets, including the `end > pos` widening rule.
+pub fn mergeErrorsInto(errors: []const ParseError, into: *Diagnostic, alloc: std.mem.Allocator) void {
+    for (errors) |err| {
+        const end = if (err.end > err.pos) err.end else err.pos + 1;
+        if (err.code.len > 0) {
+            into.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
+        } else {
+            into.addErrorRange(alloc, err.pos, end, err.message);
+        }
+    }
+}
+
 // =========================================================================
 // Initialization
 // =========================================================================

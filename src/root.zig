@@ -158,28 +158,13 @@ pub fn validateWithOptions(gpa: Allocator, source: [:0]const u8, options: Valida
             const diags = try alloc.create(Diagnostic);
             diags.* = try Diagnostic.init(alloc, source);
             diags.line_offset = options.line_offset;
-            for (parser.errors.items) |err| {
-                const end = if (err.end > err.pos) err.end else err.pos + 1;
-                if (err.code.len > 0) {
-                    diags.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
-                } else {
-                    diags.addErrorRange(alloc, err.pos, end, err.message);
-                }
-            }
+            Parser.mergeErrorsInto(parser.errors.items, diags, alloc);
             return .{ .valid = false, .diagnostics = diags, ._arena = arena };
         },
     };
     var result = try Validator.validate(alloc, module, options);
-    // Inject parser errors (e.g. reserved word usage) into validation diagnostics
-    for (parser.errors.items) |err| {
-        const end = if (err.end > err.pos) err.end else err.pos + 1;
-        if (err.code.len > 0) {
-            result.diagnostics.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
-        } else {
-            result.diagnostics.addErrorRange(alloc, err.pos, end, err.message);
-        }
-        result.valid = false;
-    }
+    Parser.mergeErrorsInto(parser.errors.items, result.diagnostics, alloc);
+    if (parser.errors.items.len > 0) result.valid = false;
     result._arena = arena;
     return result;
 }
@@ -219,14 +204,7 @@ pub fn analyzeWithOptions(gpa: Allocator, source: [:0]const u8, options: Validat
             const diags = try alloc.create(Diagnostic);
             diags.* = try Diagnostic.init(alloc, source);
             diags.line_offset = options.line_offset;
-            for (parser.errors.items) |err| {
-                const end = if (err.end > err.pos) err.end else err.pos + 1;
-                if (err.code.len > 0) {
-                    diags.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
-                } else {
-                    diags.addErrorRange(alloc, err.pos, end, err.message);
-                }
-            }
+            Parser.mergeErrorsInto(parser.errors.items, diags, alloc);
             return .{
                 .valid = false,
                 .diagnostics = diags,
@@ -235,16 +213,8 @@ pub fn analyzeWithOptions(gpa: Allocator, source: [:0]const u8, options: Validat
         },
     };
     var result = try Validator.analyze(alloc, module, options);
-    // Inject parser errors (e.g. reserved word usage) into analysis diagnostics
-    for (parser.errors.items) |err| {
-        const end = if (err.end > err.pos) err.end else err.pos + 1;
-        if (err.code.len > 0) {
-            result.diagnostics.addErrorWithCodeRange(alloc, err.pos, end, err.code, err.message);
-        } else {
-            result.diagnostics.addErrorRange(alloc, err.pos, end, err.message);
-        }
-        result.valid = false;
-    }
+    Parser.mergeErrorsInto(parser.errors.items, result.diagnostics, alloc);
+    if (parser.errors.items.len > 0) result.valid = false;
     result._arena = arena;
     return result;
 }
