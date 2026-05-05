@@ -27,6 +27,7 @@ const Handler = @import("Handler");
 const wasm_diagnostics = @import("wasm/diagnostics.zig");
 const wasm_code_actions = @import("wasm/code_actions.zig");
 const wasm_document_sync = @import("wasm/document_sync.zig");
+const wasm_lifecycle = @import("wasm/lifecycle.zig");
 const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
@@ -184,8 +185,7 @@ fn handleDidSave(root: std.json.ObjectMap, _: ?std.json.Value) void {
 }
 
 fn handleDidChangeConfiguration(_: std.json.ObjectMap, _: ?std.json.Value) void {
-    if (!client_supports_configuration) return;
-    sendConfigurationRequest();
+    wasm_lifecycle.handleDidChangeConfiguration(lifecycleCtx());
 }
 
 /// Phase 7 — `wgslender/recomputeMinifyInsights` notification. The WASM
@@ -333,66 +333,28 @@ fn handleExecuteCommand(root: std.json.ObjectMap, id: ?std.json.Value) void {
     if (id != null) sendResult(id, "null");
 }
 
+fn lifecycleCtx() wasm_lifecycle.Ctx {
+    return .{
+        .gpa = wasm_allocator,
+        .handler = &handler,
+        .outbox = &outbox,
+        .client_supports_configuration = &client_supports_configuration,
+        .next_request_id = &next_request_id,
+        .pending_config_id = &pending_config_id,
+        .sendResult = sendResult,
+    };
+}
+
 fn handleInitialize(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    if (root.getPtr("params")) |params| {
-        if (objGet(params, "capabilities")) |cap|
-            if (objGet(cap, "workspace")) |ws|
-                if (objGet(ws, "configuration")) |c| switch (c.*) {
-                    .bool => |b| client_supports_configuration = b,
-                    else => {},
-                };
-        if (objGet(params, "initializationOptions")) |opts|
-            handler.applyClientConfig(opts.*);
-    }
-    sendResult(id, "{\"capabilities\":" ++ Handler.capabilities_json ++ ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"1.0.0\"}}");
+    wasm_lifecycle.handleInitialize(lifecycleCtx(), root, id);
 }
 
 fn handleResponse(root: std.json.ObjectMap) void {
-    const id_val = root.get("id") orelse return;
-    const id: i64 = switch (id_val) {
-        .integer => |n| n,
-        else => return,
-    };
-    if (pending_config_id == null or pending_config_id.? != id) return;
-    pending_config_id = null;
-
-    const result_val = root.get("result") orelse return;
-    const arr = switch (result_val) {
-        .array => |a| a,
-        else => return,
-    };
-    if (arr.items.len == 0) return;
-    handler.applyClientConfig(arr.items[0]);
-    republishAllDocuments();
-}
-
-fn sendConfigurationRequest() void {
-    const id = next_request_id;
-    next_request_id +%= 1;
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"id\":");
-    appendI64(&buf, id);
-    appendStr(&buf, ",\"method\":\"workspace/configuration\",\"params\":{\"items\":[{\"section\":\"wgslender\"}]}}");
-    const msg = buf.toOwnedSlice(wasm_allocator) catch return;
-    enqueue(msg);
-    pending_config_id = id;
+    wasm_lifecycle.handleResponse(lifecycleCtx(), root);
 }
 
 fn republishAllDocuments() void {
-    var it = handler.documents.iterator();
-    while (it.next()) |entry| {
-        const uri = entry.key_ptr.*;
-        if (handler.diagnosticsEnabled()) {
-            emitDiagnostics(uri);
-        } else {
-            var buf: std.ArrayListUnmanaged(u8) = .empty;
-            appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
-            appendStr(&buf, "\",\"diagnostics\":[]}}");
-            enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
-        }
-    }
+    wasm_lifecycle.republishAllDocuments(lifecycleCtx());
 }
 
 // =========================================================================

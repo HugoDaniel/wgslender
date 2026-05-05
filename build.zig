@@ -137,6 +137,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "Handler", .module = handler_mod },
         },
     });
+    const native_lifecycle_mod = b.addModule("native_lifecycle", .{
+        .root_source_file = b.path("lsp/native/lifecycle.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lsp", .module = lsp_mod },
+        },
+    });
 
     // NativeServer dispatcher — extracted from main.zig so the Phase 7
     // perf tests can drive the timer-thread + debouncer integration
@@ -152,6 +160,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "bridge", .module = bridge_mod },
             .{ .name = "native_code_actions", .module = native_code_actions_mod },
             .{ .name = "native_document_sync", .module = native_document_sync_mod },
+            .{ .name = "native_lifecycle", .module = native_lifecycle_mod },
         },
     });
 

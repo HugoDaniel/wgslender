@@ -37,6 +37,7 @@ const Handler = @import("Handler");
 const bridge = @import("bridge");
 const native_code_actions = @import("native_code_actions");
 const native_document_sync = @import("native_document_sync");
+const native_lifecycle = @import("native_lifecycle");
 const Debouncer = @import("Debouncer.zig");
 const uri_module = @import("uri.zig");
 
@@ -194,86 +195,16 @@ pub fn initialize(
     if (params.capabilities.workspace) |ws| {
         if (ws.configuration orelse false) self.client_supports_configuration = true;
     }
-    // Pick a workspace root for `wgslender.json` discovery in this
-    // precedence order (matches the LSP spec's deprecation chain):
-    //   1. params.workspaceFolders[0].uri  (preferred — modern clients)
-    //   2. params.rootUri                  (deprecated single-root form)
-    //   3. params.rootPath                 (most-deprecated; already a path)
-    //   4. cwd                             (the LSP's own working dir)
-    // Non-`file://` URIs and Windows-style `file:///C:/...` paths fall
-    // through to the next option, eventually landing on cwd. The path
-    // string lives on the per-call arena and dies with the function.
+    // Workspace-root precedence chain — see `pickWorkspaceRoot` doc.
+    // The path string lives on the per-call arena and dies with the function.
     const start_dir: ?[]const u8 = pickWorkspaceRoot(arena, params);
     self.handler.discoverProjectConfig(self.io, start_dir);
     if (params.initializationOptions) |opts| {
         self.handler.applyClientConfig(opts);
     }
     return .{
-        .serverInfo = .{ .name = "wgslender-lsp", .version = "1.0.0" },
-        .capabilities = .{
-            .positionEncoding = .@"utf-16",
-            .textDocumentSync = .{
-                .text_document_sync_options = .{
-                    .openClose = true,
-                    .change = .Incremental,
-                    .save = .{ .save_options = .{ .includeText = false } },
-                },
-            },
-            .codeActionProvider = .{
-                .code_action_options = .{
-                    .codeActionKinds = &.{.quickfix},
-                },
-            },
-            .hoverProvider = .{ .bool = true },
-            .definitionProvider = .{ .bool = true },
-            .referencesProvider = .{ .bool = true },
-            .renameProvider = .{
-                .rename_options = .{ .prepareProvider = true },
-            },
-            .completionProvider = .{
-                .triggerCharacters = &.{ ".", "@" },
-            },
-            .signatureHelpProvider = .{
-                .triggerCharacters = &.{ "(", "," },
-            },
-            .documentSymbolProvider = .{ .bool = true },
-            .foldingRangeProvider = .{ .bool = true },
-            .typeDefinitionProvider = .{ .bool = true },
-            .inlayHintProvider = .{ .bool = true },
-            .codeLensProvider = .{},
-            .documentFormattingProvider = .{ .bool = true },
-            .callHierarchyProvider = .{ .bool = true },
-            .selectionRangeProvider = .{ .bool = true },
-            .semanticTokensProvider = .{
-                .semantic_tokens_options = .{
-                    .full = .{ .bool = true },
-                    .legend = .{
-                        .tokenTypes = &[_][]const u8{
-                            "keyword", "function", "struct",  "parameter", "variable",
-                            "number",  "type",     "comment", "decorator",
-                        },
-                        .tokenModifiers = &[_][]const u8{
-                            "declaration", "readonly", "defaultLibrary",
-                        },
-                    },
-                },
-            },
-            .diagnosticProvider = .{
-                .diagnostic_options = .{
-                    .interFileDependencies = false,
-                    .workspaceDiagnostics = false,
-                },
-            },
-            .executeCommandProvider = .{
-                .commands = &.{
-                    "wgslender.setMinifyMode",
-                    "wgslender.toggleMinifyMode",
-                    "wgslender.showMinifiedOutput",
-                    "wgslender.recomputeMinifyInsights",
-                    "wgslender.reflect",
-                },
-            },
-        },
+        .serverInfo = native_lifecycle.server_info,
+        .capabilities = native_lifecycle.server_capabilities,
     };
 }
 
