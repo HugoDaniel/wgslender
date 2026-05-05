@@ -103,16 +103,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "wgslender", .module = wgslender_mod },
         },
     });
-    const bridge_mod = b.addModule("bridge", .{
-        .root_source_file = b.path("lsp/native/diagnostics.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "lsp", .module = lsp_mod },
-            .{ .name = "Handler", .module = handler_mod },
-        },
-    });
-
     // Per-feature native adapters live under lsp/native/. Each one takes
     // a `*Handler` + per-call arena and converts between `Handler` types
     // and `lsp.types.*`. NativeServer keeps the lifecycle / mutex / timer
@@ -127,6 +117,31 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "wgslender", .module = wgslender_mod },
+        },
+    });
+    // Native-target wire codec tree — manual-JSON encoders shared with the
+    // WASM transport. Native side uses these for the diagnostic-corruption
+    // regression test and the parity harness.
+    const wire_mod = b.addModule("wire", .{
+        .root_source_file = b.path("lsp/wire_root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "wgslender", .module = wgslender_mod },
+        },
+    });
+    // The `bridge` alias keeps existing test imports working; the file it
+    // points to is now a thin shim over `lspkit/diagnostics.zig`.
+    const bridge_mod = b.addModule("bridge", .{
+        .root_source_file = b.path("lsp/native/diagnostics.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
         },
     });
     const native_code_actions_mod = b.addModule("native_code_actions", .{
@@ -275,6 +290,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
         .imports = &.{
             .{ .name = "Handler", .module = handler_wasm_mod },
+            .{ .name = "wgslender", .module = wgslender_wasm_mod },
         },
     });
     const lsp_wasm = b.addExecutable(.{
@@ -496,16 +512,35 @@ pub fn build(b: *std.Build) void {
         .{ .name = "bridge", .module = bridge_mod },
         .{ .name = "lsp", .module = lsp_mod },
     });
-    // Unit tests for the shared WASM diagnostic-items JSON encoder.
-    // Tested with the named `Handler` module because the file lives in
-    // `lsp/wasm/` — its module root path can't reach `../Handler.zig`.
-    _ = addTestStep(b, test_step, "lsp/wasm/diagnostics.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // Unit tests for the shared diagnostic-items JSON encoder. Lives in
+    // `lsp/wire/` so both transports (and the parity harness) can reach
+    // it as a registered module.
+    _ = addTestStep(b, test_step, "lsp/wire/diagnostics.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // Native parity harness — asserts `lspkit/diagnostics.zig` and
+    // `wire/diagnostics.zig` produce byte-equivalent JSON for every
+    // `QuickFixHint` variant.
+    _ = addTestStep(b, test_step, "lsp/lspkit/diagnostics.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+    });
+    _ = addTestStep(b, test_step, "tests/lsp_diagnostic_parity_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+        .{ .name = "lspkit", .module = lspkit_mod },
+        .{ .name = "wire", .module = wire_mod },
+    });
     // Regression test for publishDiagnostics message/codeDescription.href
     // corruption after codeLens/documentHighlight + incremental edit.
     // Drives the Handler directly and renders through the same
-    // `wasm/diagnostics.appendDiagnosticItems` path the WASM transport
+    // `wire/diagnostics.appendDiagnosticItems` path the WASM transport
     // uses, so byte-level assertions see what an editor sees on the wire.
-    _ = addTestStep(b, test_step, "lsp/diagnostic_corruption_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "lsp/diagnostic_corruption_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "wire", .module = wire_mod },
+    });
     // Phase 7 idle-debounce data structure. Pure unit tests against the
     // arm / clear / popDue / nextDeadline contract that the native
     // timer thread will later drive.

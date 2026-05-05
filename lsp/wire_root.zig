@@ -6,3 +6,4 @@
 //! between the two transports.
 
 pub const primitives = @import("wire/primitives.zig");
+pub const diagnostics = @import("wire/diagnostics.zig");

@@ -689,7 +689,7 @@ fn publishFullDiagnosticsLocked(self: *NativeServer, uri: []const u8) void {
 }
 
 fn writePublishLocked(self: *NativeServer, uri: []const u8, diags: []const Handler.LspDiagnostic) void {
-    var bridged = bridge.toLspKitDiagnostics(self.handler.gpa, diags, uri) catch return;
+    var bridged = bridge.toLspKitDiagnosticsBorrowed(self.handler.gpa, diags, uri) catch return;
     defer bridged.deinit();
     self.transport.writeNotification(
         self.io,

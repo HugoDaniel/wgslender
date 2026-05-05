@@ -1,6 +1,6 @@
 //! End-to-end tests for the `textDocument/publishDiagnostics` JSON
 //! payload. Drives real WGSL sources through `Handler.validateDocument`
-//! → `bridge.toLspKitDiagnostics` → `lsp.writeNotification`, captures
+//! → `bridge.toLspKitDiagnosticsBorrowed` → `lsp.writeNotification`, captures
 //! the raw JSON-RPC bytes, and asserts the serialized fields editors
 //! actually consume:
 //!
@@ -89,7 +89,7 @@ fn captureForSource(source: []const u8) !Captured {
     const handler_diags = try handler.validateDocument(source);
     defer Handler.freeDiagnostics(std.testing.allocator, handler_diags);
 
-    var bridged = try bridge.toLspKitDiagnostics(std.testing.allocator, handler_diags, test_uri);
+    var bridged = try bridge.toLspKitDiagnosticsBorrowed(std.testing.allocator, handler_diags, test_uri);
     defer bridged.deinit();
 
     var aw: std.Io.Writer.Allocating = .init(aa);
@@ -519,7 +519,7 @@ test "publishDiagnostics JSON sweep: spec_url / related / absence invariants hol
         const handler_diags = try handler.validateDocument(source);
         defer Handler.freeDiagnostics(std.testing.allocator, handler_diags);
 
-        var bridged = try bridge.toLspKitDiagnostics(std.testing.allocator, handler_diags, test_uri);
+        var bridged = try bridge.toLspKitDiagnosticsBorrowed(std.testing.allocator, handler_diags, test_uri);
         defer bridged.deinit();
 
         var sweep_arena: std.heap.ArenaAllocator = .init(std.testing.allocator);

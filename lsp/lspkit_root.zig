@@ -6,3 +6,4 @@
 //! `lspkit.diagnostics.*`, and so on (later PRs add the rest).
 
 pub const primitives = @import("lspkit/primitives.zig");
+pub const diagnostics = @import("lspkit/diagnostics.zig");

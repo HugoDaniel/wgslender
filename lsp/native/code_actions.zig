@@ -8,6 +8,7 @@ const lsp = @import("lsp");
 const Handler = @import("Handler");
 const lspkit = @import("lspkit");
 const codec = lspkit.primitives;
+const diag_codec = lspkit.diagnostics;
 
 pub fn handle(
     h: *Handler,
@@ -34,6 +35,7 @@ fn convertClientDiagnostics(
                 .string => |s| s,
                 .number => "",
             } else "",
+            .data = diag_codec.quickFixHintFromLspKit(d.data),
         };
     }
     return handler_diags;
@@ -60,6 +62,7 @@ fn convertToLspCodeActions(
             .code = if (action.diagnostic.code.len > 0) .{ .string = action.diagnostic.code } else null,
             .source = "wgslender",
             .message = action.diagnostic.message,
+            .data = diag_codec.quickFixHintToLspKitBorrowed(arena, action.diagnostic.data),
         };
         const diag_slice = arena.alloc(lsp.types.Diagnostic, 1) catch continue;
         diag_slice[0] = lsp_diag;

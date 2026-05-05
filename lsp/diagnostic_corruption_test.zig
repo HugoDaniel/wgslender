@@ -4,12 +4,9 @@
 //! a validator-error-producing `didChange`.
 //!
 //! Drives the Handler directly and renders diagnostics through the same
-//! `lsp/diagnostic_json.zig` path the WASM transport uses, so the
+//! `wire/diagnostics.zig` path the WASM transport uses, so the
 //! assertions see exactly the bytes a real editor would receive on the
-//! wire. Lives under `lsp/` (not `tests/`) because the test needs sibling
-//! file-path imports to Handler.zig and diagnostic_json.zig — a `tests/`
-//! file can't `@import("../lsp/...")` (Zig forbids file imports outside
-//! the module's root path).
+//! wire.
 //!
 //! Assertions are byte-strict: every byte of `message` and `href` must be
 //! printable ASCII (no NULs, no bytes outside 0x20..0x7e), and the message
@@ -18,7 +15,7 @@
 
 const std = @import("std");
 const Handler = @import("Handler");
-const diagnostic_json = @import("wasm/diagnostics.zig");
+const wire = @import("wire");
 
 const uri = "test://t.wgsl";
 
@@ -34,7 +31,7 @@ fn renderDiagnostics(gpa: std.mem.Allocator, h: *Handler) ![]u8 {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     errdefer buf.deinit(gpa);
 
-    diagnostic_json.appendDiagnosticItems(&buf, gpa, uri, diags);
+    wire.diagnostics.appendDiagnosticItems(&buf, gpa, uri, diags);
     return try buf.toOwnedSlice(gpa);
 }
 

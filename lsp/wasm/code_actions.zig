@@ -1,13 +1,15 @@
 //! WASM `textDocument/codeAction` adapter. Hand-builds JSON to keep
 //! lsp-kit out of the WASM binary; reads `params.context.diagnostics`
-//! through the shared `wasm/diagnostics.parseDiagnosticItems` codec.
+//! through the shared `wire.diagnostics.parseDiagnosticItems` codec, and
+//! emits each action's embedded diagnostic via the same encoder used by
+//! `publishDiagnostics` so a `data` payload survives the round-trip.
 
 const std = @import("std");
 const Handler = @import("Handler");
 const wgslender = @import("wgslender");
 const wire = @import("wire");
 const json = wire.primitives;
-const wasm_diagnostics = @import("diagnostics.zig");
+const wire_diag = wire.diagnostics;
 
 const Diagnostic = wgslender.Diagnostic;
 
@@ -28,7 +30,7 @@ pub fn handle(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
         else => return,
     };
 
-    const handler_diags = wasm_diagnostics.parseDiagnosticItems(ctx.gpa, diag_array) orelse return;
+    const handler_diags = wire_diag.parseDiagnosticItems(ctx.gpa, diag_array) orelse return;
     defer ctx.gpa.free(handler_diags);
 
     const actions = ctx.handler.computeCodeActions(handler_diags) catch return;
@@ -55,23 +57,9 @@ fn buildJsonResponse(
             json.appendStr(&buf, ctx.gpa, ",\"isPreferred\":true");
         }
 
-        json.appendStr(&buf, ctx.gpa, ",\"diagnostics\":[{\"range\":{\"start\":{\"line\":");
-        json.appendUint(&buf, ctx.gpa, action.diagnostic.range.start.line);
-        json.appendStr(&buf, ctx.gpa, ",\"character\":");
-        json.appendUint(&buf, ctx.gpa, action.diagnostic.range.start.character);
-        json.appendStr(&buf, ctx.gpa, "},\"end\":{\"line\":");
-        json.appendUint(&buf, ctx.gpa, action.diagnostic.range.end.line);
-        json.appendStr(&buf, ctx.gpa, ",\"character\":");
-        json.appendUint(&buf, ctx.gpa, action.diagnostic.range.end.character);
-        json.appendStr(&buf, ctx.gpa, "}},\"message\":\"");
-        Diagnostic.appendJsonEscaped(&buf, ctx.gpa, action.diagnostic.message) catch return;
-        json.appendStr(&buf, ctx.gpa, "\"");
-        if (action.diagnostic.code.len > 0) {
-            json.appendStr(&buf, ctx.gpa, ",\"code\":\"");
-            Diagnostic.appendJsonEscaped(&buf, ctx.gpa, action.diagnostic.code) catch return;
-            json.appendStr(&buf, ctx.gpa, "\"");
-        }
-        json.appendStr(&buf, ctx.gpa, "}]");
+        json.appendStr(&buf, ctx.gpa, ",\"diagnostics\":[");
+        wire_diag.appendDiagnosticItem(&buf, ctx.gpa, uri, action.diagnostic);
+        json.appendStr(&buf, ctx.gpa, "]");
 
         json.appendStr(&buf, ctx.gpa, ",\"edit\":{\"changes\":{\"");
         Diagnostic.appendJsonEscaped(&buf, ctx.gpa, uri) catch return;
