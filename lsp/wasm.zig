@@ -30,6 +30,7 @@ const wasm_document_sync = @import("wasm/document_sync.zig");
 const wasm_lifecycle = @import("wasm/lifecycle.zig");
 const wasm_navigation = @import("wasm/navigation.zig");
 const wasm_symbols = @import("wasm/symbols.zig");
+const wasm_editing = @import("wasm/editing.zig");
 const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
@@ -419,66 +420,16 @@ fn handlePrepareRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_symbols.handlePrepareRename(symbolsCtx(), root, id);
 }
 
-fn handleCompletion(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const items = handler.computeCompletion(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
-    defer handler.gpa.free(items);
-    if (items.len == 0) return sendResult(id, "null");
+fn editingCtx() wasm_editing.Ctx {
+    return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
+}
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (items, 0..) |item, i| {
-        if (i > 0) appendStr(&buf, ",");
-        appendStr(&buf, "{\"label\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, item.label) catch return;
-        appendStr(&buf, "\",\"kind\":");
-        const kind_num: u32 = switch (item.kind) {
-            .variable => 6,
-            .function => 3,
-            .struct_type => 22,
-            .field => 5,
-            .keyword => 14,
-            .builtin => 3,
-            .type_name => 7,
-            .attribute => 10,
-        };
-        appendUint(&buf, kind_num);
-        if (item.detail.len > 0) {
-            appendStr(&buf, ",\"detail\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, item.detail) catch return;
-            appendStr(&buf, "\"");
-        }
-        appendStr(&buf, "}");
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+fn handleCompletion(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_editing.handleCompletion(editingCtx(), root, id);
 }
 
 fn handleSignatureHelp(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const result = handler.computeSignatureHelp(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
-    const r = result orelse return sendResult(id, "null");
-    defer handler.gpa.free(r.label);
-    if (r.parameters.len > 0) handler.gpa.free(r.parameters);
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"signatures\":[{\"label\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, r.label) catch return;
-    appendStr(&buf, "\"");
-    if (r.parameters.len > 0) {
-        appendStr(&buf, ",\"parameters\":[");
-        for (r.parameters, 0..) |param, i| {
-            if (i > 0) appendStr(&buf, ",");
-            appendStr(&buf, "{\"label\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, param) catch return;
-            appendStr(&buf, "\"}");
-        }
-        appendStr(&buf, "]");
-    }
-    appendStr(&buf, "}],\"activeSignature\":0,\"activeParameter\":");
-    appendUint(&buf, r.active_parameter);
-    appendStr(&buf, "}");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_editing.handleSignatureHelp(editingCtx(), root, id);
 }
 
 fn handleDocumentSymbol(root: std.json.ObjectMap, id: ?std.json.Value) void {
@@ -486,25 +437,7 @@ fn handleDocumentSymbol(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 fn handleFoldingRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const uri = extractUri(root) orelse return sendResult(id, "null");
-    const ranges = handler.computeFoldingRanges(uri) catch return sendResult(id, "null");
-    defer handler.gpa.free(ranges);
-    if (ranges.len == 0) return sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (ranges, 0..) |r, i| {
-        if (i > 0) appendStr(&buf, ",");
-        appendStr(&buf, "{\"startLine\":");
-        appendUint(&buf, r.start_line);
-        appendStr(&buf, ",\"endLine\":");
-        appendUint(&buf, r.end_line);
-        appendStr(&buf, ",\"kind\":\"");
-        appendStr(&buf, if (r.kind == .comment) "comment" else "region");
-        appendStr(&buf, "\"}");
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_editing.handleFoldingRange(editingCtx(), root, id);
 }
 
 fn handleTypeDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
@@ -512,165 +445,23 @@ fn handleTypeDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 fn handleInlayHint(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
-    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
-    const range_obj = objGet(params, "range") orelse return sendResult(id, "null");
-    const start_obj = objGet(range_obj, "start") orelse return sendResult(id, "null");
-    const end_obj = objGet(range_obj, "end") orelse return sendResult(id, "null");
-    const start_line: u32 = if (intVal(objGet(start_obj, "line"))) |v| @intCast(v) else 0;
-    const start_char: u32 = if (intVal(objGet(start_obj, "character"))) |v| @intCast(v) else 0;
-    const end_line: u32 = if (intVal(objGet(end_obj, "line"))) |v| @intCast(v) else 0;
-    const end_char: u32 = if (intVal(objGet(end_obj, "character"))) |v| @intCast(v) else 0;
-
-    const hints = handler.computeInlayHints(uri, .{
-        .start = .{ .line = start_line, .character = start_char },
-        .end = .{ .line = end_line, .character = end_char },
-    }) catch return sendResult(id, "null");
-    defer handler.gpa.free(hints);
-    if (hints.len == 0) return sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (hints, 0..) |h, i| {
-        if (i > 0) appendStr(&buf, ",");
-        appendStr(&buf, "{\"position\":{\"line\":");
-        appendUint(&buf, h.position.line);
-        appendStr(&buf, ",\"character\":");
-        appendUint(&buf, h.position.character);
-        appendStr(&buf, "},\"label\":");
-        if (h.def_range) |dr| {
-            // Label parts with location for navigation/hover
-            appendStr(&buf, "[{\"value\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, h.label) catch return;
-            appendStr(&buf, "\",\"location\":{\"uri\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
-            appendStr(&buf, "\",\"range\":");
-            formatRange(&buf, dr);
-            appendStr(&buf, "}}]");
-        } else {
-            appendStr(&buf, "\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, h.label) catch return;
-            appendStr(&buf, "\"");
-        }
-        appendStr(&buf, ",\"kind\":");
-        appendUint(&buf, if (h.kind == .parameter_hint) @as(u32, 2) else @as(u32, 1));
-        if (h.tooltip) |t| {
-            appendStr(&buf, ",\"tooltip\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, t) catch return;
-            appendStr(&buf, "\"");
-        }
-        appendStr(&buf, "}");
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_editing.handleInlayHint(editingCtx(), root, id);
 }
 
 fn handleCodeLens(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const uri = extractUri(root) orelse return sendResult(id, "null");
-    const lenses = handler.computeCodeLens(uri) catch return sendResult(id, "null");
-    defer Handler.freeCodeLens(handler.gpa, lenses);
-    if (lenses.len == 0) return sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (lenses, 0..) |l, i| {
-        if (i > 0) appendStr(&buf, ",");
-        appendStr(&buf, "{\"range\":");
-        formatRange(&buf, l.range);
-        appendStr(&buf, ",\"command\":{\"title\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, l.title) catch return;
-        appendStr(&buf, "\",\"command\":\"");
-        if (l.command) |c| {
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, c) catch return;
-        }
-        appendStr(&buf, "\"");
-        if (l.arguments) |args| {
-            appendStr(&buf, ",\"arguments\":[");
-            for (args, 0..) |arg, j| {
-                if (j > 0) appendStr(&buf, ",");
-                switch (arg) {
-                    .string => |s| {
-                        appendStr(&buf, "\"");
-                        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, s) catch return;
-                        appendStr(&buf, "\"");
-                    },
-                    else => appendStr(&buf, "null"),
-                }
-            }
-            appendStr(&buf, "]");
-        }
-        appendStr(&buf, "}}");
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_editing.handleCodeLens(editingCtx(), root, id);
 }
 
 fn handleFormatting(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const uri = extractUri(root) orelse return sendResult(id, "null");
-    const edit = handler.computeFormatting(uri) catch return sendResult(id, "null");
-    const e = edit orelse return sendResult(id, "null");
-    defer handler.gpa.free(e.new_text);
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[{\"range\":");
-    formatRange(&buf, e.range);
-    appendStr(&buf, ",\"newText\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, e.new_text) catch return;
-    appendStr(&buf, "\"}]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_editing.handleFormatting(editingCtx(), root, id);
 }
 
 fn handleSemanticTokens(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const uri = extractUri(root) orelse return sendResult(id, "null");
-    const data = handler.computeSemanticTokens(uri) catch return sendResult(id, "null");
-    defer handler.gpa.free(data);
-    if (data.len == 0) return sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"data\":[");
-    for (data, 0..) |v, i| {
-        if (i > 0) appendStr(&buf, ",");
-        appendUint(&buf, v);
-    }
-    appendStr(&buf, "]}");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_editing.handleSemanticTokens(editingCtx(), root, id);
 }
 
 fn handleSelectionRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
-    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
-    const positions = switch ((objGet(params, "positions") orelse return sendResult(id, "null")).*) {
-        .array => |a| a.items,
-        else => return sendResult(id, "null"),
-    };
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (positions, 0..) |*pos_val, pi| {
-        if (pi > 0) appendStr(&buf, ",");
-        const line: u32 = if (intVal(objGet(pos_val, "line"))) |v| @intCast(v) else 0;
-        const char: u32 = if (intVal(objGet(pos_val, "character"))) |v| @intCast(v) else 0;
-        const sel = handler.computeSelectionRange(uri, .{ .line = line, .character = char }) catch null;
-        if (sel) |s| {
-            emitSelectionRange(&buf, s);
-        } else {
-            appendStr(&buf, "{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}}");
-        }
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
-}
-
-fn emitSelectionRange(buf: *std.ArrayListUnmanaged(u8), sel: *const Handler.SelectionRangeInfo) void {
-    appendStr(buf, "{\"range\":");
-    formatRange(buf, sel.range);
-    if (sel.parent) |p| {
-        appendStr(buf, ",\"parent\":");
-        emitSelectionRange(buf, p);
-    }
-    appendStr(buf, "}");
+    wasm_editing.handleSelectionRange(editingCtx(), root, id);
 }
 
 fn handlePrepareCallHierarchy(root: std.json.ObjectMap, id: ?std.json.Value) void {

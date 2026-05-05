@@ -40,6 +40,7 @@ const native_document_sync = @import("native_document_sync");
 const native_lifecycle = @import("native_lifecycle");
 const native_navigation = @import("native_navigation");
 const native_symbols = @import("native_symbols");
+const native_editing = @import("native_editing");
 const Debouncer = @import("Debouncer.zig");
 const uri_module = @import("uri.zig");
 
@@ -573,30 +574,7 @@ pub fn @"textDocument/completion"(
 ) ?lsp.types.completion.Result {
     self.lock();
     defer self.unlock();
-    const items = self.handler.computeCompletion(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-    ) catch return null;
-    defer self.handler.gpa.free(items);
-    if (items.len == 0) return null;
-    const lsp_items = arena.alloc(lsp.types.completion.Item, items.len) catch return null;
-    for (items, 0..) |item, i| {
-        lsp_items[i] = .{
-            .label = item.label,
-            .kind = switch (item.kind) {
-                .variable => .Variable,
-                .function => .Function,
-                .struct_type => .Struct,
-                .field => .Field,
-                .keyword => .Keyword,
-                .builtin => .Function,
-                .type_name => .Class,
-                .attribute => .Property,
-            },
-            .detail = if (item.detail.len > 0) item.detail else null,
-        };
-    }
-    return .{ .completion_items = lsp_items };
+    return native_editing.handleCompletion(&self.handler, arena, params);
 }
 
 // =========================================================================
@@ -610,32 +588,7 @@ pub fn @"textDocument/signatureHelp"(
 ) ?lsp.types.SignatureHelp {
     self.lock();
     defer self.unlock();
-    const result = self.handler.computeSignatureHelp(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-    ) catch return null;
-    const r = result orelse return null;
-
-    const lsp_params = if (r.parameters.len > 0) blk: {
-        const ps = arena.alloc(lsp.types.SignatureHelp.Signature.Parameter, r.parameters.len) catch break :blk null;
-        for (r.parameters, 0..) |p, i| {
-            ps[i] = .{ .label = .{ .string = p } };
-        }
-        break :blk ps;
-    } else null;
-
-    const sig = arena.alloc(lsp.types.SignatureHelp.Signature, 1) catch return null;
-    sig[0] = .{
-        .label = r.label,
-        .parameters = lsp_params,
-        .activeParameter = r.active_parameter,
-    };
-
-    return .{
-        .signatures = sig,
-        .activeSignature = 0,
-        .activeParameter = r.active_parameter,
-    };
+    return native_editing.handleSignatureHelp(&self.handler, arena, params);
 }
 
 // =========================================================================
@@ -663,21 +616,7 @@ pub fn @"textDocument/foldingRange"(
 ) ?[]const lsp.types.FoldingRange {
     self.lock();
     defer self.unlock();
-    const ranges = self.handler.computeFoldingRanges(params.textDocument.uri) catch return null;
-    defer self.handler.gpa.free(ranges);
-    if (ranges.len == 0) return null;
-    const lsp_ranges = arena.alloc(lsp.types.FoldingRange, ranges.len) catch return null;
-    for (ranges, 0..) |r, i| {
-        lsp_ranges[i] = .{
-            .startLine = r.start_line,
-            .endLine = r.end_line,
-            .kind = switch (r.kind) {
-                .comment => .comment,
-                .region => .region,
-            },
-        };
-    }
-    return lsp_ranges;
+    return native_editing.handleFoldingRange(&self.handler, arena, params);
 }
 
 // =========================================================================
@@ -705,42 +644,7 @@ pub fn @"textDocument/inlayHint"(
 ) ?[]const lsp.types.InlayHint {
     self.lock();
     defer self.unlock();
-    const hints = self.handler.computeInlayHints(
-        params.textDocument.uri,
-        .{
-            .start = .{ .line = params.range.start.line, .character = params.range.start.character },
-            .end = .{ .line = params.range.end.line, .character = params.range.end.character },
-        },
-    ) catch return null;
-    defer self.handler.gpa.free(hints);
-    if (hints.len == 0) return null;
-    const lsp_hints = arena.alloc(lsp.types.InlayHint, hints.len) catch return null;
-    for (hints, 0..) |h, i| {
-        const label: lsp.types.InlayHint.Label = if (h.def_range) |dr| blk: {
-            const parts = arena.alloc(lsp.types.InlayHint.LabelPart, 1) catch return null;
-            parts[0] = .{
-                .value = h.label,
-                .location = .{
-                    .uri = params.textDocument.uri,
-                    .range = .{
-                        .start = .{ .line = dr.start.line, .character = dr.start.character },
-                        .end = .{ .line = dr.end.line, .character = dr.end.character },
-                    },
-                },
-            };
-            break :blk .{ .inlay_hint_label_parts = parts };
-        } else .{ .string = h.label };
-        lsp_hints[i] = .{
-            .position = .{ .line = h.position.line, .character = h.position.character },
-            .label = label,
-            .kind = switch (h.kind) {
-                .type_hint, .const_value_hint, .minify_size => .Type,
-                .parameter_hint => .Parameter,
-            },
-            .tooltip = if (h.tooltip) |t| .{ .string = t } else null,
-        };
-    }
-    return lsp_hints;
+    return native_editing.handleInlayHint(&self.handler, arena, params);
 }
 
 // =========================================================================
@@ -754,36 +658,7 @@ pub fn @"textDocument/codeLens"(
 ) ?[]const lsp.types.code_lens.Response {
     self.lock();
     defer self.unlock();
-    const lenses = self.handler.computeCodeLens(params.textDocument.uri) catch return null;
-    defer Handler.freeCodeLens(self.handler.gpa, lenses);
-    if (lenses.len == 0) return null;
-    const lsp_lenses = arena.alloc(lsp.types.code_lens.Response, lenses.len) catch return null;
-    for (lenses, 0..) |l, i| {
-        const cmd_name: []const u8 = if (l.command) |c| arena.dupe(u8, c) catch "" else "";
-        // Re-encode the JSON args slice into the arena so the LSP
-        // serializer can read it after the Handler-owned buffer is
-        // freed by the defer above.
-        const args: ?[]std.json.Value = if (l.arguments) |src| blk: {
-            const dst = arena.alloc(std.json.Value, src.len) catch break :blk null;
-            for (src, 0..) |arg, j| dst[j] = switch (arg) {
-                .string => |s| .{ .string = arena.dupe(u8, s) catch "" },
-                else => arg,
-            };
-            break :blk dst;
-        } else null;
-        lsp_lenses[i] = .{
-            .range = .{
-                .start = .{ .line = l.range.start.line, .character = l.range.start.character },
-                .end = .{ .line = l.range.end.line, .character = l.range.end.character },
-            },
-            .command = .{
-                .title = arena.dupe(u8, l.title) catch "",
-                .command = cmd_name,
-                .arguments = args,
-            },
-        };
-    }
-    return lsp_lenses;
+    return native_editing.handleCodeLens(&self.handler, arena, params);
 }
 
 // =========================================================================
@@ -916,41 +791,7 @@ pub fn @"textDocument/selectionRange"(
 ) ?[]const lsp.types.SelectionRange {
     self.lock();
     defer self.unlock();
-    if (params.positions.len == 0) return null;
-    const results = arena.alloc(lsp.types.SelectionRange, params.positions.len) catch return null;
-    for (params.positions, 0..) |pos, i| {
-        const sel = self.handler.computeSelectionRange(
-            params.textDocument.uri,
-            .{ .line = pos.line, .character = pos.character },
-        ) catch return null;
-        if (sel) |s| {
-            results[i] = convertSelectionRange(arena, s);
-        } else {
-            results[i] = .{ .range = .{
-                .start = .{ .line = pos.line, .character = pos.character },
-                .end = .{ .line = pos.line, .character = pos.character },
-            } };
-        }
-    }
-    return results;
-}
-
-fn convertSelectionRange(arena: std.mem.Allocator, sel: *const Handler.SelectionRangeInfo) lsp.types.SelectionRange {
-    var parent: ?*const lsp.types.SelectionRange = null;
-    if (sel.parent) |p| {
-        const lsp_parent = arena.create(lsp.types.SelectionRange) catch return .{
-            .range = .{ .start = .{ .line = sel.range.start.line, .character = sel.range.start.character }, .end = .{ .line = sel.range.end.line, .character = sel.range.end.character } },
-        };
-        lsp_parent.* = convertSelectionRange(arena, p);
-        parent = lsp_parent;
-    }
-    return .{
-        .range = .{
-            .start = .{ .line = sel.range.start.line, .character = sel.range.start.character },
-            .end = .{ .line = sel.range.end.line, .character = sel.range.end.character },
-        },
-        .parent = parent,
-    };
+    return native_editing.handleSelectionRange(&self.handler, arena, params);
 }
 
 // =========================================================================
@@ -964,10 +805,7 @@ pub fn @"textDocument/semanticTokens/full"(
 ) ?lsp.types.semantic_tokens.Result {
     self.lock();
     defer self.unlock();
-    const data = self.handler.computeSemanticTokens(params.textDocument.uri) catch return null;
-    defer self.handler.gpa.free(data);
-    if (data.len == 0) return null;
-    return .{ .data = arena.dupe(u32, data) catch return null };
+    return native_editing.handleSemanticTokensFull(&self.handler, arena, params);
 }
 
 // =========================================================================
@@ -981,18 +819,7 @@ pub fn @"textDocument/formatting"(
 ) ?[]const lsp.types.TextEdit {
     self.lock();
     defer self.unlock();
-    const edit = self.handler.computeFormatting(params.textDocument.uri) catch return null;
-    const e = edit orelse return null;
-    defer self.handler.gpa.free(e.new_text);
-    const result = arena.alloc(lsp.types.TextEdit, 1) catch return null;
-    result[0] = .{
-        .range = .{
-            .start = .{ .line = e.range.start.line, .character = e.range.start.character },
-            .end = .{ .line = e.range.end.line, .character = e.range.end.character },
-        },
-        .newText = arena.dupe(u8, e.new_text) catch return null,
-    };
-    return result;
+    return native_editing.handleFormatting(&self.handler, arena, params);
 }
 
 // =========================================================================
