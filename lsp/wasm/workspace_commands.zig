@@ -7,7 +7,8 @@
 const std = @import("std");
 const Handler = @import("Handler");
 const wgslender = @import("wgslender");
-const json = @import("json.zig");
+const wire = @import("wire");
+const json = wire.primitives;
 const wasm_diagnostics = @import("diagnostics.zig");
 const wasm_lifecycle = @import("lifecycle.zig");
 

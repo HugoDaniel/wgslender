@@ -1,6 +1,10 @@
-//! Per-feature lsp-kit adapters share these conversions between the
-//! transport-agnostic `Handler` types and the lsp-kit JSON-shaped
-//! types. Pure functions — no I/O, no allocation.
+//! Range / Position / Severity bridges between the transport-agnostic
+//! `Handler` types and the lsp-kit JSON-shaped types. Pure functions —
+//! no I/O, no allocation.
+//!
+//! Reached as `lspkit.primitives.*` via `lsp/lspkit_root.zig`. Sibling
+//! per-feature modules (`lspkit/diagnostics.zig`, `lspkit/edits.zig`, …)
+//! consume these helpers when assembling their compound shapes.
 
 const lsp = @import("lsp");
 const Handler = @import("Handler");

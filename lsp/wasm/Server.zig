@@ -10,7 +10,8 @@
 
 const std = @import("std");
 const Handler = @import("Handler");
-const json = @import("json.zig");
+const wire = @import("wire");
+const json = wire.primitives;
 
 const Server = @This();
 

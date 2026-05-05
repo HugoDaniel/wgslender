@@ -116,11 +116,12 @@ pub fn build(b: *std.Build) void {
     // Per-feature native adapters live under lsp/native/. Each one takes
     // a `*Handler` + per-call arena and converts between `Handler` types
     // and `lsp.types.*`. NativeServer keeps the lifecycle / mutex / timer
-    // and delegates the per-method body to these. `codec.zig` is its own
-    // module since multiple per-feature adapters share it (Zig requires
-    // each file to belong to exactly one module).
-    const native_codec_mod = b.addModule("native_codec", .{
-        .root_source_file = b.path("lsp/native/codec.zig"),
+    // and delegates the per-method body to these. The `lspkit` module
+    // (rooted at lsp/lspkit_root.zig) aggregates the shared codec tree —
+    // primitives + per-feature shape conversions — so each adapter
+    // imports it once and reaches helpers as `lspkit.primitives.*` etc.
+    const lspkit_mod = b.addModule("lspkit", .{
+        .root_source_file = b.path("lsp/lspkit_root.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -135,7 +136,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "Handler", .module = handler_mod },
-            .{ .name = "codec", .module = native_codec_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
         },
     });
     const native_document_sync_mod = b.addModule("native_document_sync", .{
@@ -162,7 +163,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "Handler", .module = handler_mod },
-            .{ .name = "codec", .module = native_codec_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
         },
     });
     const native_symbols_mod = b.addModule("native_symbols", .{
@@ -172,7 +173,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "Handler", .module = handler_mod },
-            .{ .name = "codec", .module = native_codec_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
         },
     });
     const native_editing_mod = b.addModule("native_editing", .{
@@ -182,7 +183,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "Handler", .module = handler_mod },
-            .{ .name = "codec", .module = native_codec_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
         },
     });
     const native_call_hierarchy_mod = b.addModule("native_call_hierarchy", .{
@@ -192,7 +193,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "Handler", .module = handler_mod },
-            .{ .name = "codec", .module = native_codec_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
         },
     });
     const native_workspace_commands_mod = b.addModule("native_workspace_commands", .{
@@ -264,6 +265,18 @@ pub fn build(b: *std.Build) void {
             .{ .name = "wgslender", .module = wgslender_wasm_mod },
         },
     });
+    // Wire codec tree — manual-JSON helpers shared by every wasm/<feature>.zig
+    // adapter. Registered as a build module so `lsp/wasm/<feature>.zig` and
+    // its tests can reach `wire/primitives.zig` without a `../`-style
+    // relative import (forbidden across module roots).
+    const wire_wasm_mod = b.addModule("wire-wasm", .{
+        .root_source_file = b.path("lsp/wire_root.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "Handler", .module = handler_wasm_mod },
+        },
+    });
     const lsp_wasm = b.addExecutable(.{
         .name = "wgslender-lsp",
         .root_module = b.createModule(.{
@@ -273,6 +286,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "wgslender", .module = wgslender_wasm_mod },
                 .{ .name = "Handler", .module = handler_wasm_mod },
+                .{ .name = "wire", .module = wire_wasm_mod },
             },
         }),
     });

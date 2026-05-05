@@ -6,7 +6,8 @@
 const std = @import("std");
 const lsp = @import("lsp");
 const Handler = @import("Handler");
-const codec = @import("codec");
+const lspkit = @import("lspkit");
+const codec = lspkit.primitives;
 
 pub fn handle(
     h: *Handler,

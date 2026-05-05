@@ -1,7 +1,10 @@
-//! Manual-JSON helpers shared by every WASM per-feature adapter.
+//! Manual-JSON primitives shared by every wire codec.
 //!
-//! The WASM transport hand-builds JSON-RPC frames to keep the binary small
-//! (no lsp-kit dependency). These helpers fall into three groups:
+//! Reached as `wire.primitives.*` via `lsp/wire_root.zig`. The WASM
+//! transport uses these directly; the native transport reuses them from
+//! parity tests in PR3+.
+//!
+//! These helpers fall into two groups:
 //!
 //!   1. Read helpers — pure, allocator-free: `objGet`, `strVal`, `intVal`,
 //!      `boolVal`, `extractUri`, `extractUriAndPosition`.
@@ -10,8 +13,8 @@
 //!      caller-supplied allocator: `appendStr`, `appendUint`, `appendI64`,
 //!      `appendId`, `formatRange`.
 //!
-//!   3. Outbox helpers — `enqueue`, `sendResult`, `sendErrorCode` sit on
-//!      `Server.zig` since they need access to the per-instance outbox.
+//! Outbox helpers (`enqueue`, `sendResult`, `sendErrorCode`) stay on
+//! `lsp/wasm.zig` since they need access to the per-instance outbox.
 
 const std = @import("std");
 const Handler = @import("Handler");
