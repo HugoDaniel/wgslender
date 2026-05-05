@@ -95,6 +95,49 @@ pub const Fix = struct {
     text: []const u8 = "",
 };
 
+/// Structured payload that lets the LSP build code-action quickfixes
+/// without re-parsing the diagnostic message. Set by the validator / lint
+/// rules at the few emit sites where the LSP offers a fix; defaults to
+/// `.none` everywhere else.
+///
+/// String slices are borrowed from the same arena as `Entry.message`
+/// (typically the validator's per-call arena). The bridge into
+/// `Handler.LspDiagnostic` dupes them onto the LSP's allocator so the
+/// payload outlives the validator.
+pub const QuickFixHint = union(enum) {
+    /// No quickfix applies.
+    none,
+    /// Fuzzy-match suggestion ("did you mean 'X'?"). The LSP replaces
+    /// the diagnostic range with this string. Used by E0100, E0200
+    /// (unknown type), E0204, E0206, E0403.
+    did_you_mean: []const u8,
+    /// Type mismatch with castable scalar/vector types. Drives the
+    /// "Cast to '{expected}'" quickfix on E0200. Stays unset when the
+    /// shapes aren't safely castable so the LSP doesn't have to redo
+    /// the whitelist check.
+    type_mismatch: TypeMismatch,
+    /// Numeric value of a duplicate `@location(N)` annotation. Drives
+    /// the "Change to @location(N+1)" quickfix on E0602.
+    duplicate_location: u32,
+    /// Original name of the unused symbol. Drives "Remove unused 'X'"
+    /// and "Rename to '_X'" quickfixes on W0001.
+    unused_symbol: []const u8,
+    /// Name of the WGSL feature that needs an `enable` directive
+    /// (currently always "f16"). Drives the "Add 'enable f16;'"
+    /// quickfix on E0900.
+    feature_not_enabled: []const u8,
+    /// Vertex entry point is missing `@builtin(position)`. Drives the
+    /// E0600 quickfix that prepends the attribute or adds a struct
+    /// member; no extra payload is needed since the source-scan logic
+    /// in the LSP rediscovers the insertion point.
+    vertex_missing_builtin_position,
+
+    pub const TypeMismatch = struct {
+        actual: []const u8,
+        expected: []const u8,
+    };
+};
+
 // =========================================================================
 // Entry
 // =========================================================================
@@ -123,6 +166,12 @@ pub const Entry = struct {
     /// `Entry` stays compact — fixes live on the same arena as the
     /// diagnostic list, so the pointer lifetime tracks the list.
     fix: ?*const Fix = null,
+    /// Structured payload for the LSP's code-action engine. Let the
+    /// emit site stash the data (suggestion strings, location numbers,
+    /// type-mismatch pair) it already has in hand, instead of forcing
+    /// the LSP to re-parse `message`. Defaults to `.none` for the vast
+    /// majority of diagnostics where no quickfix is available.
+    data: QuickFixHint = .none,
 
     /// Format as "line:col: severity: message".
     pub fn format(self: *const Entry, writer: anytype) !void {

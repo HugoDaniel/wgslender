@@ -384,6 +384,7 @@ test "code action: actions for warnings (not just errors)" {
         .severity = .warning,
         .message = "use of undeclared identifier 'pos'; did you mean 'position'?",
         .code = "E0100",
+        .data = .{ .did_you_mean = "position" },
     }};
 
     const actions = try handler.computeCodeActions(&diags);
@@ -409,6 +410,7 @@ test "code action: action diagnostic field preserves original diagnostic" {
         .severity = .@"error",
         .message = "use of undeclared identifier 'positon'; did you mean 'position'?",
         .code = "E0100",
+        .data = .{ .did_you_mean = "position" },
     }};
 
     const actions = try handler.computeCodeActions(&diags);
@@ -449,6 +451,7 @@ test "code action: W0001 unused produces remove action" {
         .severity = .warning,
         .message = "'unused_var' is declared but never used",
         .code = "W0001",
+        .data = .{ .unused_symbol = "unused_var" },
     };
     const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
     defer std.testing.allocator.free(diags);
@@ -486,6 +489,7 @@ test "code action: W0001 offers rename to '_name' action alongside remove" {
         .severity = .warning,
         .message = "'unused_var' is declared but never used",
         .code = "W0001",
+        .data = .{ .unused_symbol = "unused_var" },
     };
     const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
     defer std.testing.allocator.free(diags);
@@ -529,6 +533,7 @@ test "code action: W0001 rename action is not preferred" {
         .severity = .warning,
         .message = "'foo' is declared but never used",
         .code = "W0001",
+        .data = .{ .unused_symbol = "foo" },
     };
     const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
     defer std.testing.allocator.free(diags);
@@ -567,6 +572,7 @@ test "code action: W0001 skips underscore-rename when name already starts with _
         .severity = .warning,
         .message = "'_tmp' is declared but never used",
         .code = "W0001",
+        .data = .{ .unused_symbol = "_tmp" },
     };
     const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
     defer std.testing.allocator.free(diags);
@@ -610,6 +616,7 @@ test "code action: W0001 rename edit spans exactly the identifier" {
         .severity = .warning,
         .message = "'unused_var' is declared but never used",
         .code = "W0001",
+        .data = .{ .unused_symbol = "unused_var" },
     };
     const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
     defer std.testing.allocator.free(diags);
@@ -646,39 +653,6 @@ test "code action: W0001 rename edit spans exactly the identifier" {
 // =========================================================================
 // Code actions: insert cast on type mismatch (E0200)
 // =========================================================================
-
-test "code action: extractTypeMismatch parses the three validator message shapes" {
-    // Assignment form.
-    {
-        const tm = Handler.extractTypeMismatch("cannot assign 'vec3f' to 'vec4f'") orelse
-            return error.TestUnexpectedResult;
-        try std.testing.expectEqualStrings("vec3f", tm.actual);
-        try std.testing.expectEqualStrings("vec4f", tm.expected);
-    }
-    // Return form.
-    {
-        const tm = Handler.extractTypeMismatch("cannot return 'i32' from function expecting 'f32'") orelse
-            return error.TestUnexpectedResult;
-        try std.testing.expectEqualStrings("i32", tm.actual);
-        try std.testing.expectEqualStrings("f32", tm.expected);
-    }
-    // Call-arg form (E0203 — helper parses it, dispatch still skips it).
-    {
-        const tm = Handler.extractTypeMismatch("argument 1 of 'myFn' has type 'vec3f', expected 'vec4f'") orelse
-            return error.TestUnexpectedResult;
-        // The 'myFn' pair comes first; the helper is purely positional. This
-        // documents the behavior — the dispatch gates by diagnostic code so the
-        // E0203 form never reaches isSafeCastTarget with a function name.
-        try std.testing.expectEqualStrings("myFn", tm.actual);
-        try std.testing.expectEqualStrings("vec3f", tm.expected);
-    }
-}
-
-test "code action: extractTypeMismatch returns null on messages without two quoted tokens" {
-    try std.testing.expect(Handler.extractTypeMismatch("type error") == null);
-    try std.testing.expect(Handler.extractTypeMismatch("'only one'") == null);
-    try std.testing.expect(Handler.extractTypeMismatch("") == null);
-}
 
 test "code action: isSafeCastTarget accepts scalar-to-scalar and same-shape vector casts" {
     try std.testing.expect(Handler.isSafeCastTarget("i32", "f32"));
@@ -833,33 +807,10 @@ test "code action: E0200 round-trip — applied cast suppresses the original dia
     }
 }
 
-test "code action: E0200 cast coexists with did-you-mean rename when message has both" {
-    // Synthesize a diagnostic that carries both patterns. Both branches should fire.
-    var handler = Handler.init(std.testing.allocator);
-    defer handler.deinit();
-    try handler.openDocument("test://file.wgsl", "let x = y;\n", 1);
-
-    const diags = [_]Handler.LspDiagnostic{.{
-        .range = .{ .start = .{ .line = 0, .character = 8 }, .end = .{ .line = 0, .character = 9 } },
-        .severity = .@"error",
-        .message = "cannot assign 'i32' to 'f32'; did you mean 'z'?",
-        .code = "E0200",
-    }};
-
-    const actions = try handler.computeCodeActions(&diags);
-    defer {
-        for (actions) |a| {
-            std.testing.allocator.free(a.title);
-            for (a.edits) |e| std.testing.allocator.free(e.new_text);
-            std.testing.allocator.free(a.edits);
-        }
-        std.testing.allocator.free(actions);
-    }
-
-    // Both a rename and a cast action should be present.
-    try std.testing.expect(findActionByTitle(actions, "Replace with 'z'") != null);
-    try std.testing.expect(findActionByTitle(actions, "Cast to 'f32'") != null);
-}
+// (Old test "E0200 cast coexists with did-you-mean rename" was deleted —
+//  in the new architecture each diagnostic carries exactly one structured
+//  `data` payload, so a synthetic message containing both patterns is no
+//  longer possible. The validator only ever stamps one or the other.)
 
 // =========================================================================
 // Code actions: insert @builtin(position) for vertex entry point (E0600)
@@ -1124,6 +1075,7 @@ test "code action: E0900 feature not enabled offers enable f16" {
         .severity = .@"error",
         .message = "type 'f16' requires 'enable f16;' directive",
         .code = "E0900",
+        .data = .{ .feature_not_enabled = "f16" },
     };
     const diags = try std.testing.allocator.alloc(Handler.LspDiagnostic, 1);
     defer std.testing.allocator.free(diags);

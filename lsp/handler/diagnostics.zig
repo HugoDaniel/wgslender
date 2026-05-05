@@ -211,6 +211,33 @@ fn freeSingleDiagnostic(gpa: std.mem.Allocator, d: LspDiagnostic) void {
         }
         gpa.free(d.related);
     }
+    freeQuickFixHint(gpa, d.data);
+}
+
+fn freeQuickFixHint(gpa: std.mem.Allocator, data: WgslDiagnostic.QuickFixHint) void {
+    switch (data) {
+        .none, .duplicate_location, .vertex_missing_builtin_position => {},
+        .did_you_mean, .unused_symbol, .feature_not_enabled => |s| {
+            if (s.len > 0) gpa.free(s);
+        },
+        .type_mismatch => |tm| {
+            if (tm.actual.len > 0) gpa.free(tm.actual);
+            if (tm.expected.len > 0) gpa.free(tm.expected);
+        },
+    }
+}
+
+fn dupeQuickFixHint(gpa: std.mem.Allocator, data: WgslDiagnostic.QuickFixHint) WgslDiagnostic.QuickFixHint {
+    return switch (data) {
+        .none, .duplicate_location, .vertex_missing_builtin_position => data,
+        .did_you_mean => |s| .{ .did_you_mean = gpa.dupe(u8, s) catch "" },
+        .unused_symbol => |s| .{ .unused_symbol = gpa.dupe(u8, s) catch "" },
+        .feature_not_enabled => |s| .{ .feature_not_enabled = gpa.dupe(u8, s) catch "" },
+        .type_mismatch => |tm| .{ .type_mismatch = .{
+            .actual = gpa.dupe(u8, tm.actual) catch "",
+            .expected = gpa.dupe(u8, tm.expected) catch "",
+        } },
+    };
 }
 
 const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
@@ -259,6 +286,7 @@ pub fn convertDiagnostic(
             break :blk url;
         } else "",
         .related = related,
+        .data = dupeQuickFixHint(gpa, entry.data),
     };
 }
 
@@ -273,6 +301,7 @@ pub fn freeDiagnostics(gpa: std.mem.Allocator, diags: []LspDiagnostic) void {
         }
         if (d.message.len > 0) gpa.free(d.message);
         if (d.spec_url.len > 0) gpa.free(d.spec_url);
+        freeQuickFixHint(gpa, d.data);
     }
     gpa.free(diags);
 }

@@ -25,13 +25,23 @@ pub fn appendUnusedWarnings(
         const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, "'{s}' is declared but never used", .{sym.original_name}) catch continue;
+        const owned_msg = gpa.dupe(u8, msg) catch continue;
+        const owned_name = gpa.dupe(u8, sym.original_name) catch {
+            gpa.free(owned_msg);
+            continue;
+        };
         diags.append(gpa, .{
             .range = range,
             .severity = .warning,
-            .message = gpa.dupe(u8, msg) catch continue,
+            .message = owned_msg,
             .code = "W0001",
             .tags = &.{.unnecessary},
-        }) catch continue;
+            .data = .{ .unused_symbol = owned_name },
+        }) catch {
+            gpa.free(owned_name);
+            gpa.free(owned_msg);
+            continue;
+        };
     }
 }
 

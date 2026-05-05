@@ -14,6 +14,10 @@ fn getUnusedWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
 fn freeWarnings(warnings: []Handler.LspDiagnostic) void {
     for (warnings) |w| {
         std.testing.allocator.free(w.message);
+        switch (w.data) {
+            .unused_symbol => |s| std.testing.allocator.free(s),
+            else => {},
+        }
     }
     std.testing.allocator.free(warnings);
 }

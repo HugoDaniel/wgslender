@@ -128,6 +128,11 @@ pub const LspDiagnostic = struct {
     spec_url: []const u8 = "",
     related: []const LspRelatedInfo = &.{},
     tags: []const DiagnosticTag = &.{},
+    /// Mirror of `Diagnostic.Entry.data`, carried across the bridge so
+    /// `code_actions.zig` can dispatch on a tagged union instead of
+    /// re-parsing `message`. Owned strings live on the same allocator
+    /// as `message`/`code` and are freed by `freeDiagnostics`.
+    data: wgslender.Diagnostic.QuickFixHint = .none,
 };
 
 pub const LspTextEdit = struct {
@@ -676,10 +681,7 @@ pub const CodeActions = @import("handler/code_actions.zig");
 pub const VertexReturnTarget = CodeActions.VertexReturnTarget;
 pub const computeCodeActions = CodeActions.computeCodeActions;
 pub const freeCodeActions = CodeActions.freeCodeActions;
-pub const extractDidYouMean = CodeActions.extractDidYouMean;
-pub const extractTypeMismatch = CodeActions.extractTypeMismatch;
 pub const isSafeCastTarget = CodeActions.isSafeCastTarget;
-pub const extractDuplicateLocation = CodeActions.extractDuplicateLocation;
 
 // =========================================================================
 // Position / Offset Conversion

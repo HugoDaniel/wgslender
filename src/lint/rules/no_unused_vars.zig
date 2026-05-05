@@ -43,6 +43,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
         ctx.report(.{
             .message = msg,
             .range = ctx.makeRange(sym.loc, end),
+            .data = .{ .unused_symbol = sym.original_name },
         });
     }
 }
