@@ -25,6 +25,7 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 const Handler = @import("Handler.zig");
 const diagnostic_json = @import("diagnostic_json.zig");
+const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
 const ffi = wgslender.ffi;
@@ -84,8 +85,46 @@ export fn wgslender_lsp_recv() callconv(.c) ?[*]u8 {
 // JSON-RPC dispatch
 // =========================================================================
 
-fn handleMessage(json: []const u8) void {
-    const parsed = std.json.parseFromSlice(std.json.Value, wasm_allocator, json, .{
+const HandlerFn = *const fn (std.json.ObjectMap, ?std.json.Value) void;
+
+const dispatch_table = [_]struct { method: []const u8, handler: HandlerFn }{
+    .{ .method = "initialize", .handler = handleInitialize },
+    .{ .method = "initialized", .handler = handleNoop },
+    .{ .method = "exit", .handler = handleNoop },
+    .{ .method = "shutdown", .handler = handleShutdown },
+    .{ .method = "textDocument/didOpen", .handler = handleDidOpen },
+    .{ .method = "textDocument/didChange", .handler = handleDidChange },
+    .{ .method = "textDocument/didClose", .handler = handleDidClose },
+    .{ .method = "textDocument/didSave", .handler = handleDidSave },
+    .{ .method = "workspace/didChangeConfiguration", .handler = handleDidChangeConfiguration },
+    .{ .method = "wgslender/recomputeMinifyInsights", .handler = handleRecomputeMinifyInsights },
+    .{ .method = "wgslender/reflect", .handler = handleReflect },
+    .{ .method = "textDocument/codeAction", .handler = handleCodeAction },
+    .{ .method = "textDocument/hover", .handler = handleHover },
+    .{ .method = "textDocument/definition", .handler = handleDefinition },
+    .{ .method = "textDocument/references", .handler = handleReferences },
+    .{ .method = "textDocument/documentHighlight", .handler = handleDocumentHighlight },
+    .{ .method = "textDocument/rename", .handler = handleRename },
+    .{ .method = "textDocument/prepareRename", .handler = handlePrepareRename },
+    .{ .method = "textDocument/completion", .handler = handleCompletion },
+    .{ .method = "textDocument/signatureHelp", .handler = handleSignatureHelp },
+    .{ .method = "textDocument/documentSymbol", .handler = handleDocumentSymbol },
+    .{ .method = "textDocument/foldingRange", .handler = handleFoldingRange },
+    .{ .method = "textDocument/typeDefinition", .handler = handleTypeDefinition },
+    .{ .method = "textDocument/inlayHint", .handler = handleInlayHint },
+    .{ .method = "textDocument/codeLens", .handler = handleCodeLens },
+    .{ .method = "textDocument/formatting", .handler = handleFormatting },
+    .{ .method = "textDocument/semanticTokens/full", .handler = handleSemanticTokens },
+    .{ .method = "textDocument/selectionRange", .handler = handleSelectionRange },
+    .{ .method = "textDocument/prepareCallHierarchy", .handler = handlePrepareCallHierarchy },
+    .{ .method = "callHierarchy/incomingCalls", .handler = handleIncomingCalls },
+    .{ .method = "callHierarchy/outgoingCalls", .handler = handleOutgoingCalls },
+    .{ .method = "textDocument/diagnostic", .handler = handlePullDiagnostic },
+    .{ .method = "workspace/executeCommand", .handler = handleExecuteCommand },
+};
+
+fn handleMessage(msg_json: []const u8) void {
+    const parsed = std.json.parseFromSlice(std.json.Value, wasm_allocator, msg_json, .{
         .ignore_unknown_fields = true,
         .max_value_len = null,
     }) catch return;
@@ -103,85 +142,26 @@ fn handleMessage(json: []const u8) void {
     };
     const id = root.get("id");
 
-    if (eql(method, "initialize")) {
-        handleInitialize(root);
-        sendResult(id, "{\"capabilities\":" ++ Handler.capabilities_json ++ ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"1.0.0\"}}");
-    } else if (eql(method, "initialized") or eql(method, "exit")) {
-        // No-op.
-    } else if (eql(method, "shutdown")) {
-        sendResult(id, "null");
-    } else if (eql(method, "textDocument/didOpen")) {
-        handleDidOpen(root);
-    } else if (eql(method, "textDocument/didChange")) {
-        handleDidChange(root);
-    } else if (eql(method, "textDocument/didClose")) {
-        handleDidClose(root);
-    } else if (eql(method, "textDocument/didSave")) {
-        handleDidSave(root);
-    } else if (eql(method, "workspace/didChangeConfiguration")) {
-        handleDidChangeConfiguration(root);
-    } else if (eql(method, "wgslender/recomputeMinifyInsights")) {
-        handleRecomputeMinifyInsights(root);
-    } else if (eql(method, "wgslender/reflect")) {
-        handleReflect(root, id);
-    } else if (eql(method, "textDocument/codeAction")) {
-        handleCodeAction(root, id);
-    } else if (eql(method, "textDocument/hover")) {
-        handleHover(root, id);
-    } else if (eql(method, "textDocument/definition")) {
-        handleDefinition(root, id);
-    } else if (eql(method, "textDocument/references")) {
-        handleReferences(root, id);
-    } else if (eql(method, "textDocument/documentHighlight")) {
-        handleDocumentHighlight(root, id);
-    } else if (eql(method, "textDocument/rename")) {
-        handleRename(root, id);
-    } else if (eql(method, "textDocument/prepareRename")) {
-        handlePrepareRename(root, id);
-    } else if (eql(method, "textDocument/completion")) {
-        handleCompletion(root, id);
-    } else if (eql(method, "textDocument/signatureHelp")) {
-        handleSignatureHelp(root, id);
-    } else if (eql(method, "textDocument/documentSymbol")) {
-        handleDocumentSymbol(root, id);
-    } else if (eql(method, "textDocument/foldingRange")) {
-        handleFoldingRange(root, id);
-    } else if (eql(method, "textDocument/typeDefinition")) {
-        handleTypeDefinition(root, id);
-    } else if (eql(method, "textDocument/inlayHint")) {
-        handleInlayHint(root, id);
-    } else if (eql(method, "textDocument/codeLens")) {
-        handleCodeLens(root, id);
-    } else if (eql(method, "textDocument/formatting")) {
-        handleFormatting(root, id);
-    } else if (eql(method, "textDocument/semanticTokens/full")) {
-        handleSemanticTokens(root, id);
-    } else if (eql(method, "textDocument/selectionRange")) {
-        handleSelectionRange(root, id);
-    } else if (eql(method, "textDocument/prepareCallHierarchy")) {
-        handlePrepareCallHierarchy(root, id);
-    } else if (eql(method, "callHierarchy/incomingCalls")) {
-        handleIncomingCalls(root, id);
-    } else if (eql(method, "callHierarchy/outgoingCalls")) {
-        handleOutgoingCalls(root, id);
-    } else if (eql(method, "textDocument/diagnostic")) {
-        handlePullDiagnostic(root, id);
-    } else if (eql(method, "workspace/executeCommand")) {
-        handleExecuteCommand(root, id);
-    } else if (id != null) {
-        sendResult(id, "null");
+    for (&dispatch_table) |entry| {
+        if (std.mem.eql(u8, method, entry.method)) {
+            entry.handler(root, id);
+            return;
+        }
     }
+    if (id != null) sendResult(id, "null");
 }
 
-fn eql(a: []const u8, b: []const u8) bool {
-    return std.mem.eql(u8, a, b);
+fn handleNoop(_: std.json.ObjectMap, _: ?std.json.Value) void {}
+
+fn handleShutdown(_: std.json.ObjectMap, id: ?std.json.Value) void {
+    sendResult(id, "null");
 }
 
 // =========================================================================
 // Document handlers (delegate to shared Handler)
 // =========================================================================
 
-fn handleDidOpen(root: std.json.ObjectMap) void {
+fn handleDidOpen(root: std.json.ObjectMap, _: ?std.json.Value) void {
     const params = root.getPtr("params") orelse return;
     const td = objGet(params, "textDocument") orelse return;
     const uri = strVal(objGet(td, "uri")) orelse return;
@@ -191,7 +171,7 @@ fn handleDidOpen(root: std.json.ObjectMap) void {
     emitDiagnostics(uri);
 }
 
-fn handleDidChange(root: std.json.ObjectMap) void {
+fn handleDidChange(root: std.json.ObjectMap, _: ?std.json.Value) void {
     const params = root.getPtr("params") orelse return;
     const td = objGet(params, "textDocument") orelse return;
     const uri = strVal(objGet(td, "uri")) orelse return;
@@ -229,10 +209,8 @@ fn handleDidChange(root: std.json.ObjectMap) void {
     emitDiagnosticsCheap(uri);
 }
 
-fn handleDidClose(root: std.json.ObjectMap) void {
-    const params = root.getPtr("params") orelse return;
-    const td = objGet(params, "textDocument") orelse return;
-    const uri = strVal(objGet(td, "uri")) orelse return;
+fn handleDidClose(root: std.json.ObjectMap, _: ?std.json.Value) void {
+    const uri = extractUri(root) orelse return;
     handler.closeDocument(uri);
 
     // Clear diagnostics.
@@ -243,15 +221,13 @@ fn handleDidClose(root: std.json.ObjectMap) void {
     enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
 }
 
-fn handleDidSave(root: std.json.ObjectMap) void {
-    const params = root.getPtr("params") orelse return;
-    const td = objGet(params, "textDocument") orelse return;
-    const uri = strVal(objGet(td, "uri")) orelse return;
+fn handleDidSave(root: std.json.ObjectMap, _: ?std.json.Value) void {
+    const uri = extractUri(root) orelse return;
     handler.handleDidSave(uri);
     emitDiagnostics(uri);
 }
 
-fn handleDidChangeConfiguration(_: std.json.ObjectMap) void {
+fn handleDidChangeConfiguration(_: std.json.ObjectMap, _: ?std.json.Value) void {
     if (!client_supports_configuration) return;
     sendConfigurationRequest();
 }
@@ -264,10 +240,8 @@ fn handleDidChangeConfiguration(_: std.json.ObjectMap) void {
 /// shape matches LSP convention — `params.textDocument.uri` carries the
 /// target. Unknown URIs / inactive minify modes turn into no-ops inside
 /// the handler.
-fn handleRecomputeMinifyInsights(root: std.json.ObjectMap) void {
-    const params = root.getPtr("params") orelse return;
-    const td = objGet(params, "textDocument") orelse return;
-    const uri = strVal(objGet(td, "uri")) orelse return;
+fn handleRecomputeMinifyInsights(root: std.json.ObjectMap, _: ?std.json.Value) void {
+    const uri = extractUri(root) orelse return;
     handler.refreshMinifyInsights(uri);
     emitDiagnostics(uri);
 }
@@ -403,16 +377,18 @@ fn handleExecuteCommand(root: std.json.ObjectMap, id: ?std.json.Value) void {
     if (id != null) sendResult(id, "null");
 }
 
-fn handleInitialize(root: std.json.ObjectMap) void {
-    const params = root.getPtr("params") orelse return;
-    if (objGet(params, "capabilities")) |cap|
-        if (objGet(cap, "workspace")) |ws|
-            if (objGet(ws, "configuration")) |c| switch (c.*) {
-                .bool => |b| client_supports_configuration = b,
-                else => {},
-            };
-    if (objGet(params, "initializationOptions")) |opts|
-        handler.applyClientConfig(opts.*);
+fn handleInitialize(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    if (root.getPtr("params")) |params| {
+        if (objGet(params, "capabilities")) |cap|
+            if (objGet(cap, "workspace")) |ws|
+                if (objGet(ws, "configuration")) |c| switch (c.*) {
+                    .bool => |b| client_supports_configuration = b,
+                    else => {},
+                };
+        if (objGet(params, "initializationOptions")) |opts|
+            handler.applyClientConfig(opts.*);
+    }
+    sendResult(id, "{\"capabilities\":" ++ Handler.capabilities_json ++ ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"1.0.0\"}}");
 }
 
 fn handleResponse(root: std.json.ObjectMap) void {
@@ -479,7 +455,7 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
         else => return,
     };
 
-    const handler_diags = convertJsonDiagnostics(diag_array) orelse return;
+    const handler_diags = diagnostic_json.parseDiagnosticItems(wasm_allocator, diag_array) orelse return;
     defer wasm_allocator.free(handler_diags);
 
     const actions = handler.computeCodeActions(handler_diags) catch return;
@@ -488,61 +464,9 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
     buildCodeActionJsonResponse(id, uri, actions);
 }
 
-fn convertJsonDiagnostics(diag_array: []std.json.Value) ?[]Handler.LspDiagnostic {
-    const handler_diags = wasm_allocator.alloc(Handler.LspDiagnostic, diag_array.len) catch return null;
-
-    for (diag_array, 0..) |*diag_val, i| {
-        const diag_obj = objGet(diag_val, "range") orelse continue;
-        const start_obj = objGet(diag_obj, "start");
-        const end_obj = objGet(diag_obj, "end");
-
-        const start_line: u32 = if (intVal(if (start_obj) |s| objGet(s, "line") else null)) |v| @intCast(v) else 0;
-        const start_char: u32 = if (intVal(if (start_obj) |s| objGet(s, "character") else null)) |v| @intCast(v) else 0;
-        const end_line: u32 = if (intVal(if (end_obj) |e| objGet(e, "line") else null)) |v| @intCast(v) else 0;
-        const end_char: u32 = if (intVal(if (end_obj) |e| objGet(e, "character") else null)) |v| @intCast(v) else 0;
-
-        const code_val = objGet(diag_val, "code");
-        const code: []const u8 = if (code_val) |cv| (strVal(cv) orelse "") else "";
-
-        const sev_int: u32 = if (intVal(objGet(diag_val, "severity"))) |v| @intCast(v) else 1;
-        handler_diags[i] = .{
-            .range = .{
-                .start = .{ .line = start_line, .character = start_char },
-                .end = .{ .line = end_line, .character = end_char },
-            },
-            .severity = switch (sev_int) {
-                1 => .@"error",
-                2 => .warning,
-                3 => .information,
-                4 => .hint,
-                else => .information,
-            },
-            .message = strVal(objGet(diag_val, "message")) orelse "",
-            .code = code,
-        };
-    }
-
-    return handler_diags;
-}
-
 fn buildCodeActionJsonResponse(id: ?std.json.Value, uri: []const u8, actions: []const Handler.LspCodeAction) void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"id\":");
-    if (id) |id_val| switch (id_val) {
-        .integer => |n| {
-            var num_buf: [20]u8 = undefined;
-            const s = std.fmt.bufPrint(&num_buf, "{d}", .{n}) catch return;
-            buf.appendSlice(wasm_allocator, s) catch return;
-        },
-        .string => |s| {
-            buf.append(wasm_allocator, '"') catch return;
-            buf.appendSlice(wasm_allocator, s) catch return;
-            buf.append(wasm_allocator, '"') catch return;
-        },
-        else => appendStr(&buf, "null"),
-    } else appendStr(&buf, "null");
-
-    appendStr(&buf, ",\"result\":[");
+    appendStr(&buf, "[");
 
     for (actions, 0..) |action, ai| {
         if (ai > 0) buf.append(wasm_allocator, ',') catch {};
@@ -593,22 +517,22 @@ fn buildCodeActionJsonResponse(id: ?std.json.Value, uri: []const u8, actions: []
         appendStr(&buf, "]}}}");
     }
 
-    appendStr(&buf, "]}");
-    enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
+    appendStr(&buf, "]");
+    const body = buf.toOwnedSlice(wasm_allocator) catch return;
+    defer wasm_allocator.free(body);
+    sendResult(id, body);
 }
 
 // =========================================================================
 // Hover, Definition, References, Rename (WASM handlers)
 // =========================================================================
 
-fn extractUriAndPosition(root: std.json.ObjectMap) ?struct { uri: []const u8, line: u32, char: u32 } {
-    const params = root.getPtr("params") orelse return null;
-    const td = objGet(params, "textDocument") orelse return null;
-    const uri = strVal(objGet(td, "uri")) orelse return null;
-    const pos = objGet(params, "position") orelse return null;
-    const line: u32 = if (intVal(objGet(pos, "line"))) |v| @intCast(v) else return null;
-    const char: u32 = if (intVal(objGet(pos, "character"))) |v| @intCast(v) else return null;
-    return .{ .uri = uri, .line = line, .char = char };
+fn extractUri(root: std.json.ObjectMap) ?[]const u8 {
+    return json.extractUri(root);
+}
+
+fn extractUriAndPosition(root: std.json.ObjectMap) ?json.UriPosition {
+    return json.extractUriAndPosition(root);
 }
 
 fn handleHover(root: std.json.ObjectMap, id: ?std.json.Value) void {
@@ -633,15 +557,7 @@ fn handleHover(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 fn formatRange(buf: *std.ArrayListUnmanaged(u8), range: Handler.Range) void {
-    appendStr(buf, "{\"start\":{\"line\":");
-    appendUint(buf, range.start.line);
-    appendStr(buf, ",\"character\":");
-    appendUint(buf, range.start.character);
-    appendStr(buf, "},\"end\":{\"line\":");
-    appendUint(buf, range.end.line);
-    appendStr(buf, ",\"character\":");
-    appendUint(buf, range.end.character);
-    appendStr(buf, "}}");
+    json.formatRange(buf, wasm_allocator, range);
 }
 
 fn handleDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
@@ -811,9 +727,7 @@ fn handleSignatureHelp(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 fn handleDocumentSymbol(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
-    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const uri = extractUri(root) orelse return sendResult(id, "null");
     const symbols = handler.computeDocumentSymbols(uri) catch return sendResult(id, "null");
     defer handler.gpa.free(symbols);
     if (symbols.len == 0) return sendResult(id, "null");
@@ -858,9 +772,7 @@ fn emitDocSymbol(buf: *std.ArrayListUnmanaged(u8), sym: Handler.DocumentSymbolIn
 }
 
 fn handleFoldingRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
-    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const uri = extractUri(root) orelse return sendResult(id, "null");
     const ranges = handler.computeFoldingRanges(uri) catch return sendResult(id, "null");
     defer handler.gpa.free(ranges);
     if (ranges.len == 0) return sendResult(id, "null");
@@ -951,9 +863,7 @@ fn handleInlayHint(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 fn handleCodeLens(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
-    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const uri = extractUri(root) orelse return sendResult(id, "null");
     const lenses = handler.computeCodeLens(uri) catch return sendResult(id, "null");
     defer Handler.freeCodeLens(handler.gpa, lenses);
     if (lenses.len == 0) return sendResult(id, "null");
@@ -993,9 +903,7 @@ fn handleCodeLens(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 fn handleFormatting(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
-    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const uri = extractUri(root) orelse return sendResult(id, "null");
     const edit = handler.computeFormatting(uri) catch return sendResult(id, "null");
     const e = edit orelse return sendResult(id, "null");
     defer handler.gpa.free(e.new_text);
@@ -1010,9 +918,7 @@ fn handleFormatting(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 fn handleSemanticTokens(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const td = objGet(params, "textDocument") orelse return sendResult(id, "null");
-    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "null");
+    const uri = extractUri(root) orelse return sendResult(id, "null");
     const data = handler.computeSemanticTokens(uri) catch return sendResult(id, "null");
     defer handler.gpa.free(data);
     if (data.len == 0) return sendResult(id, "null");
@@ -1245,25 +1151,17 @@ fn handlePullDiagnostic(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 // =========================================================================
-// JSON-RPC helpers
+// JSON-RPC helpers — thin forwarders to wasm/json.zig.
+//
+// Per-feature WASM adapters (lsp/wasm/<feature>.zig) call the json.*
+// functions directly. The forwarders below preserve the existing
+// in-file call sites until each feature group is migrated.
 // =========================================================================
 
 fn sendResult(id: ?std.json.Value, result_json: []const u8) void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"id\":");
-    if (id) |id_val| switch (id_val) {
-        .integer => |n| {
-            var num_buf: [20]u8 = undefined;
-            const s = std.fmt.bufPrint(&num_buf, "{d}", .{n}) catch return;
-            buf.appendSlice(wasm_allocator, s) catch return;
-        },
-        .string => |s| {
-            buf.append(wasm_allocator, '"') catch return;
-            buf.appendSlice(wasm_allocator, s) catch return;
-            buf.append(wasm_allocator, '"') catch return;
-        },
-        else => appendStr(&buf, "null"),
-    } else appendStr(&buf, "null");
+    appendId(&buf, id);
     appendStr(&buf, ",\"result\":");
     buf.appendSlice(wasm_allocator, result_json) catch return;
     buf.append(wasm_allocator, '}') catch return;
@@ -1274,22 +1172,14 @@ fn enqueue(msg: []u8) void {
     outbox.append(wasm_allocator, msg) catch wasm_allocator.free(msg);
 }
 
+fn appendId(buf: *std.ArrayListUnmanaged(u8), id: ?std.json.Value) void {
+    json.appendId(buf, wasm_allocator, id);
+}
+
 fn sendErrorCode(id: ?std.json.Value, code: i32, message: []const u8) void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"id\":");
-    if (id) |id_val| switch (id_val) {
-        .integer => |n| {
-            var num_buf: [20]u8 = undefined;
-            const s = std.fmt.bufPrint(&num_buf, "{d}", .{n}) catch return;
-            buf.appendSlice(wasm_allocator, s) catch return;
-        },
-        .string => |s| {
-            buf.append(wasm_allocator, '"') catch return;
-            buf.appendSlice(wasm_allocator, s) catch return;
-            buf.append(wasm_allocator, '"') catch return;
-        },
-        else => appendStr(&buf, "null"),
-    } else appendStr(&buf, "null");
+    appendId(&buf, id);
     appendStr(&buf, ",\"error\":{\"code\":");
     var num_buf: [12]u8 = undefined;
     const s = std.fmt.bufPrint(&num_buf, "{d}", .{code}) catch return;
@@ -1304,45 +1194,29 @@ fn sendErrorCode(id: ?std.json.Value, code: i32, message: []const u8) void {
 }
 
 // =========================================================================
-// Tiny JSON read helpers
+// Tiny JSON read helpers — thin forwarders.
 // =========================================================================
 
 fn objGet(val: ?*const std.json.Value, key: []const u8) ?*const std.json.Value {
-    const v = val orelse return null;
-    return switch (v.*) {
-        .object => |obj| obj.getPtr(key),
-        else => null,
-    };
+    return json.objGet(val, key);
 }
 
 fn strVal(val: ?*const std.json.Value) ?[]const u8 {
-    const v = val orelse return null;
-    return switch (v.*) {
-        .string => |s| s,
-        else => null,
-    };
+    return json.strVal(val);
 }
 
 fn intVal(val: ?*const std.json.Value) ?i64 {
-    const v = val orelse return null;
-    return switch (v.*) {
-        .integer => |n| n,
-        else => null,
-    };
+    return json.intVal(val);
 }
 
 fn appendStr(buf: *std.ArrayListUnmanaged(u8), s: []const u8) void {
-    buf.appendSlice(wasm_allocator, s) catch {};
+    json.appendStr(buf, wasm_allocator, s);
 }
 
 fn appendUint(buf: *std.ArrayListUnmanaged(u8), val: u32) void {
-    var num_buf: [10]u8 = undefined;
-    const s = std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch return;
-    buf.appendSlice(wasm_allocator, s) catch {};
+    json.appendUint(buf, wasm_allocator, val);
 }
 
 fn appendI64(buf: *std.ArrayListUnmanaged(u8), val: i64) void {
-    var num_buf: [21]u8 = undefined;
-    const s = std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch return;
-    buf.appendSlice(wasm_allocator, s) catch {};
+    json.appendI64(buf, wasm_allocator, val);
 }
