@@ -185,6 +185,16 @@ pub fn build(b: *std.Build) void {
             .{ .name = "codec", .module = native_codec_mod },
         },
     });
+    const native_call_hierarchy_mod = b.addModule("native_call_hierarchy", .{
+        .root_source_file = b.path("lsp/native/call_hierarchy.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "codec", .module = native_codec_mod },
+        },
+    });
 
     // NativeServer dispatcher — extracted from main.zig so the Phase 7
     // perf tests can drive the timer-thread + debouncer integration
@@ -204,6 +214,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "native_navigation", .module = native_navigation_mod },
             .{ .name = "native_symbols", .module = native_symbols_mod },
             .{ .name = "native_editing", .module = native_editing_mod },
+            .{ .name = "native_call_hierarchy", .module = native_call_hierarchy_mod },
         },
     });
 

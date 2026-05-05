@@ -31,6 +31,7 @@ const wasm_lifecycle = @import("wasm/lifecycle.zig");
 const wasm_navigation = @import("wasm/navigation.zig");
 const wasm_symbols = @import("wasm/symbols.zig");
 const wasm_editing = @import("wasm/editing.zig");
+const wasm_call_hierarchy = @import("wasm/call_hierarchy.zig");
 const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
@@ -464,92 +465,20 @@ fn handleSelectionRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_editing.handleSelectionRange(editingCtx(), root, id);
 }
 
-fn handlePrepareCallHierarchy(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const item = handler.prepareCallHierarchy(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
-    const i = item orelse return sendResult(id, "null");
+fn callHierarchyCtx() wasm_call_hierarchy.Ctx {
+    return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
+}
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[{\"name\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, i.name) catch return;
-    appendStr(&buf, "\",\"kind\":12,\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
-    appendStr(&buf, "\",\"range\":");
-    formatRange(&buf, i.range);
-    appendStr(&buf, ",\"selectionRange\":");
-    formatRange(&buf, i.selection_range);
-    appendStr(&buf, "}]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+fn handlePrepareCallHierarchy(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_call_hierarchy.handlePrepare(callHierarchyCtx(), root, id);
 }
 
 fn handleIncomingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const item_val = objGet(params, "item") orelse return sendResult(id, "null");
-    const name = strVal(objGet(item_val, "name")) orelse return sendResult(id, "null");
-    const uri_val = objGet(item_val, "uri");
-    const uri = if (uri_val) |u| strVal(u) orelse return sendResult(id, "null") else return sendResult(id, "null");
-    const calls = handler.computeIncomingCalls(uri, name) catch return sendResult(id, "null");
-    defer {
-        for (calls) |c| handler.gpa.free(c.from_ranges);
-        handler.gpa.free(calls);
-    }
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (calls, 0..) |call, ci| {
-        if (ci > 0) appendStr(&buf, ",");
-        appendStr(&buf, "{\"from\":{\"name\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, call.from.name) catch return;
-        appendStr(&buf, "\",\"kind\":12,\"uri\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
-        appendStr(&buf, "\",\"range\":");
-        formatRange(&buf, call.from.range);
-        appendStr(&buf, ",\"selectionRange\":");
-        formatRange(&buf, call.from.selection_range);
-        appendStr(&buf, "},\"fromRanges\":[");
-        for (call.from_ranges, 0..) |fr, fi| {
-            if (fi > 0) appendStr(&buf, ",");
-            formatRange(&buf, fr);
-        }
-        appendStr(&buf, "]}");
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_call_hierarchy.handleIncomingCalls(callHierarchyCtx(), root, id);
 }
 
 fn handleOutgoingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const item_val = objGet(params, "item") orelse return sendResult(id, "null");
-    const name = strVal(objGet(item_val, "name")) orelse return sendResult(id, "null");
-    const uri_val = objGet(item_val, "uri");
-    const uri = if (uri_val) |u| strVal(u) orelse return sendResult(id, "null") else return sendResult(id, "null");
-    const calls = handler.computeOutgoingCalls(uri, name) catch return sendResult(id, "null");
-    defer {
-        for (calls) |c| handler.gpa.free(c.from_ranges);
-        handler.gpa.free(calls);
-    }
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (calls, 0..) |call, ci| {
-        if (ci > 0) appendStr(&buf, ",");
-        appendStr(&buf, "{\"to\":{\"name\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, call.to.name) catch return;
-        appendStr(&buf, "\",\"kind\":12,\"uri\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
-        appendStr(&buf, "\",\"range\":");
-        formatRange(&buf, call.to.range);
-        appendStr(&buf, ",\"selectionRange\":");
-        formatRange(&buf, call.to.selection_range);
-        appendStr(&buf, "},\"fromRanges\":[");
-        for (call.from_ranges, 0..) |fr, fi| {
-            if (fi > 0) appendStr(&buf, ",");
-            formatRange(&buf, fr);
-        }
-        appendStr(&buf, "]}");
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_call_hierarchy.handleOutgoingCalls(callHierarchyCtx(), root, id);
 }
 
 // =========================================================================

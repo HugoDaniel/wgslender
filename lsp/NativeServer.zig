@@ -41,6 +41,7 @@ const native_lifecycle = @import("native_lifecycle");
 const native_navigation = @import("native_navigation");
 const native_symbols = @import("native_symbols");
 const native_editing = @import("native_editing");
+const native_call_hierarchy = @import("native_call_hierarchy");
 const Debouncer = @import("Debouncer.zig");
 const uri_module = @import("uri.zig");
 
@@ -672,26 +673,7 @@ pub fn @"textDocument/prepareCallHierarchy"(
 ) ?[]const lsp.types.call_hierarchy.Item {
     self.lock();
     defer self.unlock();
-    const item = self.handler.prepareCallHierarchy(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-    ) catch return null;
-    const i = item orelse return null;
-    const result = arena.alloc(lsp.types.call_hierarchy.Item, 1) catch return null;
-    result[0] = .{
-        .name = i.name,
-        .kind = .Function,
-        .uri = params.textDocument.uri,
-        .range = .{
-            .start = .{ .line = i.range.start.line, .character = i.range.start.character },
-            .end = .{ .line = i.range.end.line, .character = i.range.end.character },
-        },
-        .selectionRange = .{
-            .start = .{ .line = i.selection_range.start.line, .character = i.selection_range.start.character },
-            .end = .{ .line = i.selection_range.end.line, .character = i.selection_range.end.character },
-        },
-    };
-    return result;
+    return native_call_hierarchy.handlePrepare(&self.handler, arena, params);
 }
 
 pub fn @"callHierarchy/incomingCalls"(
@@ -701,40 +683,7 @@ pub fn @"callHierarchy/incomingCalls"(
 ) ?[]const lsp.types.call_hierarchy.IncomingCall {
     self.lock();
     defer self.unlock();
-    const uri = params.item.uri;
-    const calls = self.handler.computeIncomingCalls(uri, params.item.name) catch return null;
-    defer {
-        for (calls) |c| self.handler.gpa.free(c.from_ranges);
-        self.handler.gpa.free(calls);
-    }
-    if (calls.len == 0) return null;
-    const result = arena.alloc(lsp.types.call_hierarchy.IncomingCall, calls.len) catch return null;
-    for (calls, 0..) |call, ci| {
-        const from_ranges = arena.alloc(lsp.types.Range, call.from_ranges.len) catch continue;
-        for (call.from_ranges, 0..) |fr, fi| {
-            from_ranges[fi] = .{
-                .start = .{ .line = fr.start.line, .character = fr.start.character },
-                .end = .{ .line = fr.end.line, .character = fr.end.character },
-            };
-        }
-        result[ci] = .{
-            .from = .{
-                .name = call.from.name,
-                .kind = .Function,
-                .uri = uri,
-                .range = .{
-                    .start = .{ .line = call.from.range.start.line, .character = call.from.range.start.character },
-                    .end = .{ .line = call.from.range.end.line, .character = call.from.range.end.character },
-                },
-                .selectionRange = .{
-                    .start = .{ .line = call.from.selection_range.start.line, .character = call.from.selection_range.start.character },
-                    .end = .{ .line = call.from.selection_range.end.line, .character = call.from.selection_range.end.character },
-                },
-            },
-            .fromRanges = from_ranges,
-        };
-    }
-    return result;
+    return native_call_hierarchy.handleIncomingCalls(&self.handler, arena, params);
 }
 
 pub fn @"callHierarchy/outgoingCalls"(
@@ -744,40 +693,7 @@ pub fn @"callHierarchy/outgoingCalls"(
 ) ?[]const lsp.types.call_hierarchy.OutgoingCall {
     self.lock();
     defer self.unlock();
-    const uri = params.item.uri;
-    const calls = self.handler.computeOutgoingCalls(uri, params.item.name) catch return null;
-    defer {
-        for (calls) |c| self.handler.gpa.free(c.from_ranges);
-        self.handler.gpa.free(calls);
-    }
-    if (calls.len == 0) return null;
-    const result = arena.alloc(lsp.types.call_hierarchy.OutgoingCall, calls.len) catch return null;
-    for (calls, 0..) |call, ci| {
-        const from_ranges = arena.alloc(lsp.types.Range, call.from_ranges.len) catch continue;
-        for (call.from_ranges, 0..) |fr, fi| {
-            from_ranges[fi] = .{
-                .start = .{ .line = fr.start.line, .character = fr.start.character },
-                .end = .{ .line = fr.end.line, .character = fr.end.character },
-            };
-        }
-        result[ci] = .{
-            .to = .{
-                .name = call.to.name,
-                .kind = .Function,
-                .uri = uri,
-                .range = .{
-                    .start = .{ .line = call.to.range.start.line, .character = call.to.range.start.character },
-                    .end = .{ .line = call.to.range.end.line, .character = call.to.range.end.character },
-                },
-                .selectionRange = .{
-                    .start = .{ .line = call.to.selection_range.start.line, .character = call.to.selection_range.start.character },
-                    .end = .{ .line = call.to.selection_range.end.line, .character = call.to.selection_range.end.character },
-                },
-            },
-            .fromRanges = from_ranges,
-        };
-    }
-    return result;
+    return native_call_hierarchy.handleOutgoingCalls(&self.handler, arena, params);
 }
 
 // =========================================================================
