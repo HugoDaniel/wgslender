@@ -113,6 +113,22 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Per-feature native adapters live under lsp/native/. Each one takes
+    // a `*Handler` + per-call arena and converts between `Handler` types
+    // and `lsp.types.*`. NativeServer keeps the lifecycle / mutex / timer
+    // and delegates the per-method body to these. Sibling files (`codec.zig`)
+    // are pulled in via relative imports — only the top-level entry needs
+    // a named module registration so NativeServer can `@import("native_*")`.
+    const native_code_actions_mod = b.addModule("native_code_actions", .{
+        .root_source_file = b.path("lsp/native/code_actions.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "Handler", .module = handler_mod },
+        },
+    });
+
     // NativeServer dispatcher — extracted from main.zig so the Phase 7
     // perf tests can drive the timer-thread + debouncer integration
     // without spawning a real stdio LSP.
@@ -125,6 +141,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "wgslender", .module = wgslender_mod },
             .{ .name = "Handler", .module = handler_mod },
             .{ .name = "bridge", .module = bridge_mod },
+            .{ .name = "native_code_actions", .module = native_code_actions_mod },
         },
     });
 

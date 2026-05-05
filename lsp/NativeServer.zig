@@ -35,6 +35,7 @@ const lsp = @import("lsp");
 const wgslender = @import("wgslender");
 const Handler = @import("Handler");
 const bridge = @import("bridge");
+const native_code_actions = @import("native_code_actions");
 const Debouncer = @import("Debouncer.zig");
 const uri_module = @import("uri.zig");
 
@@ -569,83 +570,7 @@ pub fn @"textDocument/codeAction"(
 ) ?[]const lsp.types.CodeAction.Result {
     self.lock();
     defer self.unlock();
-    const handler_diags = convertClientDiagnostics(arena, params.context.diagnostics) orelse return null;
-    const actions = self.handler.computeCodeActions(handler_diags) catch return null;
-    if (actions.len == 0) return null;
-    return convertToLspCodeActions(arena, params.textDocument.uri, actions);
-}
-
-fn convertClientDiagnostics(arena: std.mem.Allocator, diagnostics: []const lsp.types.Diagnostic) ?[]Handler.LspDiagnostic {
-    const handler_diags = arena.alloc(Handler.LspDiagnostic, diagnostics.len) catch return null;
-    for (diagnostics, 0..) |d, i| {
-        handler_diags[i] = .{
-            .range = .{
-                .start = .{ .line = d.range.start.line, .character = d.range.start.character },
-                .end = .{ .line = d.range.end.line, .character = d.range.end.character },
-            },
-            .severity = if (d.severity) |s| switch (s) {
-                .Error => .@"error",
-                .Warning => .warning,
-                .Information => .information,
-                .Hint => .hint,
-                _ => .information,
-            } else .information,
-            .message = d.message,
-            .code = if (d.code) |c| switch (c) {
-                .string => |s| s,
-                .number => "",
-            } else "",
-        };
-    }
-    return handler_diags;
-}
-
-fn convertToLspCodeActions(arena: std.mem.Allocator, uri: []const u8, actions: []const Handler.LspCodeAction) ?[]const lsp.types.CodeAction.Result {
-    const results = arena.alloc(lsp.types.CodeAction.Result, actions.len) catch return null;
-    for (actions, 0..) |action, i| {
-        const text_edits = arena.alloc(lsp.types.TextEdit, action.edits.len) catch continue;
-        for (action.edits, 0..) |edit, ei| {
-            text_edits[ei] = .{
-                .range = .{
-                    .start = .{ .line = edit.range.start.line, .character = edit.range.start.character },
-                    .end = .{ .line = edit.range.end.line, .character = edit.range.end.character },
-                },
-                .newText = edit.new_text,
-            };
-        }
-
-        const lsp_diag = lsp.types.Diagnostic{
-            .range = .{
-                .start = .{ .line = action.diagnostic.range.start.line, .character = action.diagnostic.range.start.character },
-                .end = .{ .line = action.diagnostic.range.end.line, .character = action.diagnostic.range.end.character },
-            },
-            .severity = switch (action.diagnostic.severity) {
-                .@"error" => .Error,
-                .warning => .Warning,
-                .information => .Information,
-                .hint => .Hint,
-            },
-            .code = if (action.diagnostic.code.len > 0) .{ .string = action.diagnostic.code } else null,
-            .source = "wgslender",
-            .message = action.diagnostic.message,
-        };
-        const diag_slice = arena.alloc(lsp.types.Diagnostic, 1) catch continue;
-        diag_slice[0] = lsp_diag;
-
-        var changes = std.json.ArrayHashMap([]const lsp.types.TextEdit){};
-        changes.map.put(arena, uri, text_edits) catch continue;
-
-        results[i] = .{
-            .code_action = .{
-                .title = action.title,
-                .kind = .quickfix,
-                .isPreferred = action.is_preferred,
-                .diagnostics = diag_slice,
-                .edit = .{ .changes = changes },
-            },
-        };
-    }
-    return results;
+    return native_code_actions.handle(&self.handler, arena, params);
 }
 
 // =========================================================================

@@ -25,6 +25,7 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 const Handler = @import("Handler");
 const wasm_diagnostics = @import("wasm/diagnostics.zig");
+const wasm_code_actions = @import("wasm/code_actions.zig");
 const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
@@ -443,84 +444,12 @@ fn republishAllDocuments() void {
 // Code Actions
 // =========================================================================
 
-fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return;
-    const td = objGet(params, "textDocument") orelse return;
-    const uri = strVal(objGet(td, "uri")) orelse return;
-
-    // Extract diagnostics from context
-    const context = objGet(params, "context") orelse return;
-    const diag_array = switch ((objGet(context, "diagnostics") orelse return).*) {
-        .array => |a| a.items,
-        else => return,
-    };
-
-    const handler_diags = wasm_diagnostics.parseDiagnosticItems(wasm_allocator, diag_array) orelse return;
-    defer wasm_allocator.free(handler_diags);
-
-    const actions = handler.computeCodeActions(handler_diags) catch return;
-    defer Handler.freeCodeActions(wasm_allocator, actions);
-
-    buildCodeActionJsonResponse(id, uri, actions);
+fn codeActionCtx() wasm_code_actions.Ctx {
+    return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
 }
 
-fn buildCodeActionJsonResponse(id: ?std.json.Value, uri: []const u8, actions: []const Handler.LspCodeAction) void {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-
-    for (actions, 0..) |action, ai| {
-        if (ai > 0) buf.append(wasm_allocator, ',') catch {};
-        appendStr(&buf, "{\"title\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, action.title) catch return;
-        appendStr(&buf, "\",\"kind\":\"quickfix\"");
-        if (action.is_preferred) {
-            appendStr(&buf, ",\"isPreferred\":true");
-        }
-
-        // Diagnostics array
-        appendStr(&buf, ",\"diagnostics\":[{\"range\":{\"start\":{\"line\":");
-        appendUint(&buf, action.diagnostic.range.start.line);
-        appendStr(&buf, ",\"character\":");
-        appendUint(&buf, action.diagnostic.range.start.character);
-        appendStr(&buf, "},\"end\":{\"line\":");
-        appendUint(&buf, action.diagnostic.range.end.line);
-        appendStr(&buf, ",\"character\":");
-        appendUint(&buf, action.diagnostic.range.end.character);
-        appendStr(&buf, "}},\"message\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, action.diagnostic.message) catch return;
-        appendStr(&buf, "\"");
-        if (action.diagnostic.code.len > 0) {
-            appendStr(&buf, ",\"code\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, action.diagnostic.code) catch return;
-            appendStr(&buf, "\"");
-        }
-        appendStr(&buf, "}]");
-
-        // Edit (WorkspaceEdit with changes)
-        appendStr(&buf, ",\"edit\":{\"changes\":{\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
-        appendStr(&buf, "\":[");
-        for (action.edits, 0..) |edit, ei| {
-            if (ei > 0) buf.append(wasm_allocator, ',') catch {};
-            appendStr(&buf, "{\"range\":{\"start\":{\"line\":");
-            appendUint(&buf, edit.range.start.line);
-            appendStr(&buf, ",\"character\":");
-            appendUint(&buf, edit.range.start.character);
-            appendStr(&buf, "},\"end\":{\"line\":");
-            appendUint(&buf, edit.range.end.line);
-            appendStr(&buf, ",\"character\":");
-            appendUint(&buf, edit.range.end.character);
-            appendStr(&buf, "}},\"newText\":\"");
-            Diagnostic.appendJsonEscaped(&buf, wasm_allocator, edit.new_text) catch return;
-            appendStr(&buf, "\"}");
-        }
-        appendStr(&buf, "]}}}");
-    }
-
-    appendStr(&buf, "]");
-    const body = buf.toOwnedSlice(wasm_allocator) catch return;
-    defer wasm_allocator.free(body);
-    sendResult(id, body);
+fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_code_actions.handle(codeActionCtx(), root, id);
 }
 
 // =========================================================================
