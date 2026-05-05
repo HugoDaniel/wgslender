@@ -11,8 +11,11 @@ const Handler = @import("Handler");
 const lspkit = @import("lspkit");
 const wire = @import("wire");
 const wgslender = @import("wgslender");
+const helpers = @import("lsp_parity_helpers.zig");
 
 const Diagnostic = wgslender.Diagnostic;
+
+const expectEqualJson = helpers.expectEqualJson;
 
 const test_uri = "test://parity.wgsl";
 
@@ -45,36 +48,6 @@ fn encodeViaWire(arena: std.mem.Allocator, diags: []const Handler.LspDiagnostic)
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     wire.diagnostics.appendDiagnosticItems(&buf, arena, test_uri, diags);
     return std.json.parseFromSliceLeaky(std.json.Value, arena, buf.items, .{});
-}
-
-fn expectEqualJson(want: std.json.Value, got: std.json.Value) !void {
-    try std.testing.expect(jsonEql(want, got));
-}
-
-fn jsonEql(a: std.json.Value, b: std.json.Value) bool {
-    if (@as(std.meta.Tag(std.json.Value), a) != @as(std.meta.Tag(std.json.Value), b)) return false;
-    return switch (a) {
-        .null => true,
-        .bool => |x| x == b.bool,
-        .integer => |x| x == b.integer,
-        .float => |x| x == b.float,
-        .number_string => |x| std.mem.eql(u8, x, b.number_string),
-        .string => |x| std.mem.eql(u8, x, b.string),
-        .array => |arr| blk: {
-            if (arr.items.len != b.array.items.len) break :blk false;
-            for (arr.items, b.array.items) |x, y| if (!jsonEql(x, y)) break :blk false;
-            break :blk true;
-        },
-        .object => |obj| blk: {
-            if (obj.count() != b.object.count()) break :blk false;
-            var it = obj.iterator();
-            while (it.next()) |entry| {
-                const other = b.object.get(entry.key_ptr.*) orelse break :blk false;
-                if (!jsonEql(entry.value_ptr.*, other)) break :blk false;
-            }
-            break :blk true;
-        },
-    };
 }
 
 fn assertParity(diag: Handler.LspDiagnostic) !void {

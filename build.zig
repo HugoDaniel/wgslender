@@ -223,6 +223,25 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Native-target build of the WASM workspace handlers, used by the
+    // workspace-error parity test to drive `handleExecuteCommand` /
+    // `handleReflect` directly. The wasm/*.zig source has no
+    // wasm-specific intrinsics, so it compiles cleanly for the native
+    // target. Sibling `lifecycle.zig` / `diagnostics.zig` are reached
+    // via `@import("foo.zig")` and become sub-graph nodes of this
+    // module — the test reflects on the field type to construct a
+    // matching lifecycle Ctx.
+    const wasm_workspace_commands_mod = b.addModule("wasm_workspace_commands", .{
+        .root_source_file = b.path("lsp/wasm/workspace_commands.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "wgslender", .module = wgslender_mod },
+            .{ .name = "wire", .module = wire_mod },
+        },
+    });
+
     // NativeServer dispatcher — extracted from main.zig so the Phase 7
     // perf tests can drive the timer-thread + debouncer integration
     // without spawning a real stdio LSP.
@@ -571,6 +590,28 @@ pub fn build(b: *std.Build) void {
         .{ .name = "Handler", .module = handler_mod },
         .{ .name = "lsp", .module = lsp_mod },
         .{ .name = "lspkit", .module = lspkit_mod },
+        .{ .name = "wire", .module = wire_mod },
+    });
+    // Error-envelope parity for `workspace/executeCommand` — drives both
+    // transports' workspace-command error paths and asserts the JSON-RPC
+    // `code` matches between native (`@errorName(err)` via lsp-kit) and
+    // wasm (hardcoded English via `sendErrorCode`). Each side's message
+    // is locked separately so accidental drift fails a test.
+    _ = addTestStep(b, test_step, "tests/lsp_workspace_error_parity_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+        .{ .name = "wire", .module = wire_mod },
+        .{ .name = "native_workspace_commands", .module = native_workspace_commands_mod },
+        .{ .name = "wasm_workspace_commands", .module = wasm_workspace_commands_mod },
+    });
+    // Internal smoke tests for the shared parity helpers module
+    // (`jsonEql`, `expectEqualErrorCode` round-trip, escape-aware
+    // `buildAndParseWasmErrorEnvelope`). Lives in its own file so the
+    // inline tests don't fire inside every parity-test binary that
+    // imports `lsp_parity_helpers.zig` as a sibling module.
+    _ = addTestStep(b, test_step, "tests/lsp_parity_helpers_test.zig", target, optimize, &.{
+        .{ .name = "lsp", .module = lsp_mod },
         .{ .name = "wire", .module = wire_mod },
     });
     // Standalone test for the lspkit edits + symbols + code_actions

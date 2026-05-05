@@ -14,65 +14,12 @@ const lsp = @import("lsp");
 const Handler = @import("Handler");
 const lspkit = @import("lspkit");
 const wire = @import("wire");
+const helpers = @import("lsp_parity_helpers.zig");
+
+const expectEqualJson = helpers.expectEqualJson;
+const writeAndParse = helpers.writeAndParseResult;
 
 const test_uri = "test://parity.wgsl";
-
-fn expectEqualJson(want: std.json.Value, got: std.json.Value) !void {
-    if (!jsonEql(want, got)) {
-        std.debug.print("\nJSON mismatch.\n", .{});
-        return error.JsonMismatch;
-    }
-}
-
-fn jsonEql(a: std.json.Value, b: std.json.Value) bool {
-    if (@as(std.meta.Tag(std.json.Value), a) != @as(std.meta.Tag(std.json.Value), b)) return false;
-    return switch (a) {
-        .null => true,
-        .bool => |x| x == b.bool,
-        .integer => |x| x == b.integer,
-        .float => |x| x == b.float,
-        .number_string => |x| std.mem.eql(u8, x, b.number_string),
-        .string => |x| std.mem.eql(u8, x, b.string),
-        .array => |arr| blk: {
-            if (arr.items.len != b.array.items.len) break :blk false;
-            for (arr.items, b.array.items) |x, y| if (!jsonEql(x, y)) break :blk false;
-            break :blk true;
-        },
-        .object => |obj| blk: {
-            if (obj.count() != b.object.count()) break :blk false;
-            var it = obj.iterator();
-            while (it.next()) |entry| {
-                const other = b.object.get(entry.key_ptr.*) orelse break :blk false;
-                if (!jsonEql(entry.value_ptr.*, other)) break :blk false;
-            }
-            break :blk true;
-        },
-    };
-}
-
-fn writeAndParse(
-    arena: std.mem.Allocator,
-    comptime Result: type,
-    result: Result,
-) !std.json.Value {
-    var aw: std.Io.Writer.Allocating = .init(arena);
-    try lsp.writeResponse(
-        &aw.writer,
-        arena,
-        .{ .number = 0 },
-        Result,
-        result,
-        .{ .emit_null_optional_fields = false },
-    );
-
-    const full = aw.written();
-    const sep = "\r\n\r\n";
-    const sep_idx = std.mem.indexOf(u8, full, sep) orelse return error.MalformedEnvelope;
-    const body = full[sep_idx + sep.len ..];
-
-    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, body, .{});
-    return parsed.object.get("result") orelse return error.MissingResult;
-}
 
 const sample_range: Handler.Range = .{
     .start = .{ .line = 1, .character = 2 },
