@@ -39,7 +39,7 @@ echo 'fn main() {}' | ./zig-out/bin/wgslender          # From stdin
 ./zig-out/bin/wgslender compile shader.wgsl -o shader.wasm
 
 # NPM package
-cd npm/wgslender && node test.js            # Run JS tests
+cd npm/wgslender && npm test                # Run all 4 wrapper variants
 cd npm/wgslender && npm pack --dry-run      # Check package contents
 ```
 

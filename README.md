@@ -460,7 +460,7 @@ echo 'fn main() {}' | ./zig-out/bin/wgslender
 ./zig-out/bin/wgslender compile shader.wgsl -o shader.wasm
 
 # NPM package tests
-cd npm/wgslender && node test.js
+cd npm/wgslender && npm test                # all 4 wrapper variants
 cd npm/wgslender-lsp && node test.js
 ```
 
