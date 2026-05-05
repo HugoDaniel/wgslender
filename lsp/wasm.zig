@@ -26,6 +26,7 @@ const wgslender = @import("wgslender");
 const Handler = @import("Handler");
 const wasm_diagnostics = @import("wasm/diagnostics.zig");
 const wasm_code_actions = @import("wasm/code_actions.zig");
+const wasm_document_sync = @import("wasm/document_sync.zig");
 const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
@@ -159,73 +160,27 @@ fn handleShutdown(_: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 // =========================================================================
-// Document handlers (delegate to shared Handler)
+// Document handlers (delegate to wasm/document_sync.zig)
 // =========================================================================
 
+fn docSyncCtx() wasm_document_sync.Ctx {
+    return .{ .gpa = wasm_allocator, .handler = &handler, .outbox = &outbox };
+}
+
 fn handleDidOpen(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return;
-    const td = objGet(params, "textDocument") orelse return;
-    const uri = strVal(objGet(td, "uri")) orelse return;
-    const text = strVal(objGet(td, "text")) orelse return;
-    const version: i32 = if (intVal(objGet(td, "version"))) |v| @intCast(v) else 0;
-    handler.openDocument(uri, text, version) catch return;
-    emitDiagnostics(uri);
+    wasm_document_sync.handleDidOpen(docSyncCtx(), root);
 }
 
 fn handleDidChange(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse return;
-    const td = objGet(params, "textDocument") orelse return;
-    const uri = strVal(objGet(td, "uri")) orelse return;
-    const changes = switch ((objGet(params, "contentChanges") orelse return).*) {
-        .array => |a| a.items,
-        else => return,
-    };
-    if (changes.len == 0) return;
-
-    // Apply each change (may be incremental or full)
-    for (changes) |*change_val| {
-        const change = objGet(change_val, "text") orelse continue;
-        const text = strVal(change) orelse continue;
-        const range_val = objGet(change_val, "range");
-        if (range_val) |rv| {
-            // Incremental change with range
-            const start_obj = objGet(rv, "start");
-            const end_obj = objGet(rv, "end");
-            const start_line: u32 = if (intVal(if (start_obj) |s| objGet(s, "line") else null)) |v| @intCast(v) else continue;
-            const start_char: u32 = if (intVal(if (start_obj) |s| objGet(s, "character") else null)) |v| @intCast(v) else continue;
-            const end_line: u32 = if (intVal(if (end_obj) |e| objGet(e, "line") else null)) |v| @intCast(v) else continue;
-            const end_char: u32 = if (intVal(if (end_obj) |e| objGet(e, "character") else null)) |v| @intCast(v) else continue;
-            handler.changeDocumentIncremental(uri, .{
-                .start = .{ .line = start_line, .character = start_char },
-                .end = .{ .line = end_line, .character = end_char },
-            }, text) catch continue;
-        } else {
-            // Full document replacement
-            handler.changeDocument(uri, text) catch continue;
-        }
-    }
-    // Phase 7: cheap-path on the hot edit channel. The JS client is
-    // responsible for sending `wgslender/recomputeMinifyInsights` after
-    // typing settles to surface M-rule diagnostics.
-    emitDiagnosticsCheap(uri);
+    wasm_document_sync.handleDidChange(docSyncCtx(), root);
 }
 
 fn handleDidClose(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    const uri = extractUri(root) orelse return;
-    handler.closeDocument(uri);
-
-    // Clear diagnostics.
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
-    appendStr(&buf, "\",\"diagnostics\":[]}}");
-    enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_document_sync.handleDidClose(docSyncCtx(), root);
 }
 
 fn handleDidSave(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    const uri = extractUri(root) orelse return;
-    handler.handleDidSave(uri);
-    emitDiagnostics(uri);
+    wasm_document_sync.handleDidSave(docSyncCtx(), root);
 }
 
 fn handleDidChangeConfiguration(_: std.json.ObjectMap, _: ?std.json.Value) void {

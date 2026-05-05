@@ -36,6 +36,7 @@ const wgslender = @import("wgslender");
 const Handler = @import("Handler");
 const bridge = @import("bridge");
 const native_code_actions = @import("native_code_actions");
+const native_document_sync = @import("native_document_sync");
 const Debouncer = @import("Debouncer.zig");
 const uri_module = @import("uri.zig");
 
@@ -446,11 +447,11 @@ pub fn @"textDocument/didOpen"(
 ) !void {
     self.lock();
     defer self.unlock();
-    const uri = notification.textDocument.uri;
-    try self.handler.openDocument(uri, notification.textDocument.text, notification.textDocument.version);
+    try native_document_sync.handleDidOpen(&self.handler, notification);
     // Open is rare and the user expects M-rule diagnostics on first
     // paint. Run the full path immediately, then arm so the next
     // edit's debounce window is in place.
+    const uri = notification.textDocument.uri;
     self.publishFullDiagnosticsLocked(uri);
     self.armIfActiveLocked(uri);
 }
@@ -463,22 +464,10 @@ pub fn @"textDocument/didChange"(
 ) !void {
     self.lock();
     defer self.unlock();
-    const uri = notification.textDocument.uri;
-    for (notification.contentChanges) |change| {
-        switch (change) {
-            .text_document_content_change_whole_document => |full| {
-                try self.handler.changeDocument(uri, full.text);
-            },
-            .text_document_content_change_partial => |partial| {
-                try self.handler.changeDocumentIncremental(uri, .{
-                    .start = .{ .line = partial.range.start.line, .character = partial.range.start.character },
-                    .end = .{ .line = partial.range.end.line, .character = partial.range.end.character },
-                }, partial.text);
-            },
-        }
-    }
+    try native_document_sync.handleDidChange(&self.handler, notification);
     // Hot path: cheap publish on every keystroke. The debounce timer
     // will republish with M-rule diagnostics once the burst settles.
+    const uri = notification.textDocument.uri;
     self.publishCheapDiagnosticsLocked(uri);
     self.armIfActiveLocked(uri);
 }
@@ -493,7 +482,7 @@ pub fn @"textDocument/didClose"(
     defer self.unlock();
     const uri = notification.textDocument.uri;
     self.debouncer.clear(uri);
-    self.handler.closeDocument(uri);
+    native_document_sync.handleDidClose(&self.handler, notification);
     self.transport.writeNotification(
         self.io,
         self.handler.gpa,
@@ -514,11 +503,10 @@ pub fn @"textDocument/didSave"(
 ) void {
     self.lock();
     defer self.unlock();
-    const uri = notification.textDocument.uri;
-    self.handler.handleDidSave(uri);
+    native_document_sync.handleDidSave(&self.handler, notification);
     // Save is a punctuation event — user expects up-to-date M-rule
     // diagnostics, so go straight to the full path.
-    self.publishFullDiagnosticsLocked(uri);
+    self.publishFullDiagnosticsLocked(notification.textDocument.uri);
 }
 
 /// Pull-model diagnostics (LSP 3.17 `textDocument/diagnostic`).
