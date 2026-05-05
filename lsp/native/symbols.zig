@@ -1,10 +1,14 @@
-//! Native symbol adapters: rename, prepareRename, documentSymbol.
+//! Native symbol adapters: rename, prepareRename, documentSymbol. Thin
+//! dispatch shims — call Handler, delegate shape conversion to
+//! `lspkit/edits.zig` + `lspkit/symbols.zig`.
 
 const std = @import("std");
 const lsp = @import("lsp");
 const Handler = @import("Handler");
 const lspkit = @import("lspkit");
 const codec = lspkit.primitives;
+const edits_codec = lspkit.edits;
+const sym_codec = lspkit.symbols;
 
 pub fn handleRename(
     h: *Handler,
@@ -18,16 +22,7 @@ pub fn handleRename(
     ) catch return null;
     const handler_edits = edits orelse return null;
     defer h.gpa.free(handler_edits);
-    const text_edits = arena.alloc(lsp.types.TextEdit, handler_edits.len) catch return null;
-    for (handler_edits, 0..) |edit, i| {
-        text_edits[i] = .{
-            .range = codec.toLspKitRange(edit.range),
-            .newText = edit.new_text,
-        };
-    }
-    var changes = std.json.ArrayHashMap([]const lsp.types.TextEdit){};
-    changes.map.put(arena, params.textDocument.uri, text_edits) catch return null;
-    return .{ .changes = changes };
+    return edits_codec.toLspKitWorkspaceEdit(arena, params.textDocument.uri, handler_edits) catch null;
 }
 
 pub fn handlePrepareRename(
@@ -55,37 +50,6 @@ pub fn handleDocumentSymbol(
     const symbols = h.computeDocumentSymbols(params.textDocument.uri) catch return null;
     defer h.gpa.free(symbols);
     if (symbols.len == 0) return null;
-    const lsp_symbols = arena.alloc(lsp.types.DocumentSymbol, symbols.len) catch return null;
-    for (symbols, 0..) |sym, i| {
-        lsp_symbols[i] = convertDocSymbol(arena, sym);
-    }
+    const lsp_symbols = sym_codec.toLspKitDocumentSymbols(arena, symbols) catch return null;
     return .{ .document_symbols = lsp_symbols };
-}
-
-fn convertDocSymbol(arena: std.mem.Allocator, sym: Handler.DocumentSymbolInfo) lsp.types.DocumentSymbol {
-    var children: ?[]const lsp.types.DocumentSymbol = null;
-    if (sym.children.len > 0) {
-        const ch = arena.alloc(lsp.types.DocumentSymbol, sym.children.len) catch null;
-        if (ch) |c| {
-            for (sym.children, 0..) |child, ci| {
-                c[ci] = convertDocSymbol(arena, child);
-            }
-            children = c;
-        }
-    }
-    return .{
-        .name = sym.name,
-        .kind = switch (sym.kind) {
-            .function => .Function,
-            .struct_type => .Struct,
-            .variable => .Variable,
-            .constant => .Constant,
-            .field => .Field,
-            .type_alias => .Class,
-            .override => .Constant,
-        },
-        .range = codec.toLspKitRange(sym.range),
-        .selectionRange = codec.toLspKitRange(sym.selection_range),
-        .children = children,
-    };
 }

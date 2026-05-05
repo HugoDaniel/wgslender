@@ -1,17 +1,14 @@
-//! WASM `textDocument/codeAction` adapter. Hand-builds JSON to keep
-//! lsp-kit out of the WASM binary; reads `params.context.diagnostics`
-//! through the shared `wire.diagnostics.parseDiagnosticItems` codec, and
-//! emits each action's embedded diagnostic via the same encoder used by
-//! `publishDiagnostics` so a `data` payload survives the round-trip.
+//! WASM `textDocument/codeAction` adapter. Thin dispatch shim — parses
+//! `params.context.diagnostics` via the shared `wire/diagnostics.zig`
+//! codec, calls `Handler.computeCodeActions`, encodes the result via
+//! `wire/code_actions.zig`. lsp-kit-free.
 
 const std = @import("std");
 const Handler = @import("Handler");
-const wgslender = @import("wgslender");
 const wire = @import("wire");
 const json = wire.primitives;
 const wire_diag = wire.diagnostics;
-
-const Diagnostic = wgslender.Diagnostic;
+const wire_actions = wire.code_actions;
 
 pub const Ctx = struct {
     gpa: std.mem.Allocator,
@@ -36,52 +33,8 @@ pub fn handle(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
     const actions = ctx.handler.computeCodeActions(handler_diags) catch return;
     defer Handler.freeCodeActions(ctx.gpa, actions);
 
-    buildJsonResponse(ctx, id, uri, actions);
-}
-
-fn buildJsonResponse(
-    ctx: Ctx,
-    id: ?std.json.Value,
-    uri: []const u8,
-    actions: []const Handler.LspCodeAction,
-) void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    json.appendStr(&buf, ctx.gpa, "[");
-
-    for (actions, 0..) |action, ai| {
-        if (ai > 0) buf.append(ctx.gpa, ',') catch {};
-        json.appendStr(&buf, ctx.gpa, "{\"title\":\"");
-        Diagnostic.appendJsonEscaped(&buf, ctx.gpa, action.title) catch return;
-        json.appendStr(&buf, ctx.gpa, "\",\"kind\":\"quickfix\"");
-        if (action.is_preferred) {
-            json.appendStr(&buf, ctx.gpa, ",\"isPreferred\":true");
-        }
-
-        json.appendStr(&buf, ctx.gpa, ",\"diagnostics\":[");
-        wire_diag.appendDiagnosticItem(&buf, ctx.gpa, uri, action.diagnostic);
-        json.appendStr(&buf, ctx.gpa, "]");
-
-        json.appendStr(&buf, ctx.gpa, ",\"edit\":{\"changes\":{\"");
-        Diagnostic.appendJsonEscaped(&buf, ctx.gpa, uri) catch return;
-        json.appendStr(&buf, ctx.gpa, "\":[");
-        for (action.edits, 0..) |edit, ei| {
-            if (ei > 0) buf.append(ctx.gpa, ',') catch {};
-            json.appendStr(&buf, ctx.gpa, "{\"range\":{\"start\":{\"line\":");
-            json.appendUint(&buf, ctx.gpa, edit.range.start.line);
-            json.appendStr(&buf, ctx.gpa, ",\"character\":");
-            json.appendUint(&buf, ctx.gpa, edit.range.start.character);
-            json.appendStr(&buf, ctx.gpa, "},\"end\":{\"line\":");
-            json.appendUint(&buf, ctx.gpa, edit.range.end.line);
-            json.appendStr(&buf, ctx.gpa, ",\"character\":");
-            json.appendUint(&buf, ctx.gpa, edit.range.end.character);
-            json.appendStr(&buf, ctx.gpa, "}},\"newText\":\"");
-            Diagnostic.appendJsonEscaped(&buf, ctx.gpa, edit.new_text) catch return;
-            json.appendStr(&buf, ctx.gpa, "\"}");
-        }
-        json.appendStr(&buf, ctx.gpa, "]}}}");
-    }
-
-    json.appendStr(&buf, ctx.gpa, "]");
+    wire_actions.appendCodeActionItems(&buf, ctx.gpa, uri, actions);
     const body = buf.toOwnedSlice(ctx.gpa) catch return;
     defer ctx.gpa.free(body);
     ctx.sendResult(id, body);

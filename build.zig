@@ -518,6 +518,9 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "lsp/wire/diagnostics.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "lsp/wire/navigation.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "lsp/wire/call_hierarchy.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "lsp/wire/edits.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "lsp/wire/symbols.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "lsp/wire/code_actions.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // Native parity harness — asserts `lspkit/diagnostics.zig` and
     // `wire/diagnostics.zig` produce byte-equivalent JSON for every
     // `QuickFixHint` variant.
@@ -542,6 +545,35 @@ pub fn build(b: *std.Build) void {
         .{ .name = "lsp", .module = lsp_mod },
         .{ .name = "lspkit", .module = lspkit_mod },
         .{ .name = "wire", .module = wire_mod },
+    });
+    // Parity harness for symbols + edits + code_actions: same property
+    // as the navigation harness but covers the recursive `DocumentSymbol`,
+    // the `WorkspaceEdit.changes` map, and the composed `CodeAction`
+    // shape — `lspkit/{edits,symbols,code_actions}.zig` vs
+    // `wire/{edits,symbols,code_actions}.zig`.
+    _ = addTestStep(b, test_step, "tests/lsp_symbols_parity_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+        .{ .name = "lspkit", .module = lspkit_mod },
+        .{ .name = "wire", .module = wire_mod },
+    });
+    // Standalone test for the lspkit edits + symbols + code_actions
+    // bridges (assertions on the resulting `lsp.types.*` shape).
+    _ = addTestStep(b, test_step, "lsp/lspkit/edits.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+    });
+    _ = addTestStep(b, test_step, "lsp/lspkit/symbols.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+    });
+    _ = addTestStep(b, test_step, "lsp/lspkit/code_actions.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
     });
     // Regression test for publishDiagnostics message/codeDescription.href
     // corruption after codeLens/documentHighlight + incremental edit.
