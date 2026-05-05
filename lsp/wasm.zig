@@ -3,7 +3,8 @@
 //! Exports C-ABI functions for JavaScript interop. The JS side sends
 //! JSON-RPC messages via wgslender_lsp_send() and polls responses via
 //! wgslender_lsp_recv(). All WGSL-specific logic lives in Handler.zig
-//! (shared with the native entry point).
+//! (shared with the native entry point); per-method JSON conversion
+//! lives in lsp/wasm/<feature>.zig.
 //!
 //! JS usage:
 //!   // Send a JSON-RPC message:
@@ -24,6 +25,7 @@
 const std = @import("std");
 const wgslender = @import("wgslender");
 const Handler = @import("Handler");
+const json = @import("wasm/json.zig");
 const wasm_diagnostics = @import("wasm/diagnostics.zig");
 const wasm_code_actions = @import("wasm/code_actions.zig");
 const wasm_document_sync = @import("wasm/document_sync.zig");
@@ -33,9 +35,7 @@ const wasm_symbols = @import("wasm/symbols.zig");
 const wasm_editing = @import("wasm/editing.zig");
 const wasm_call_hierarchy = @import("wasm/call_hierarchy.zig");
 const wasm_workspace_commands = @import("wasm/workspace_commands.zig");
-const json = @import("wasm/json.zig");
 
-const Diagnostic = wgslender.Diagnostic;
 const ffi = wgslender.ffi;
 const wasm_allocator = std.heap.wasm_allocator;
 
@@ -141,7 +141,7 @@ fn handleMessage(msg_json: []const u8) void {
     const root = parsed.value.object;
     const method_val = root.get("method") orelse {
         // No `method` field — this is a response to a server-initiated request.
-        handleResponse(root);
+        wasm_lifecycle.handleResponse(lifecycleCtx(), root);
         return;
     };
     const method = switch (method_val) {
@@ -159,69 +159,18 @@ fn handleMessage(msg_json: []const u8) void {
     if (id != null) sendResult(id, "null");
 }
 
-fn handleNoop(_: std.json.ObjectMap, _: ?std.json.Value) void {}
-
-fn handleShutdown(_: std.json.ObjectMap, id: ?std.json.Value) void {
-    sendResult(id, "null");
-}
-
 // =========================================================================
-// Document handlers (delegate to wasm/document_sync.zig)
+// Per-feature Ctx builders. Each per-feature WASM module gets a context
+// of pointers into the module-level state above; constructing it on every
+// call is free (compiler inlines the literal).
 // =========================================================================
 
-fn docSyncCtx() wasm_document_sync.Ctx {
+fn diagCtx() wasm_diagnostics.Ctx {
     return .{ .gpa = wasm_allocator, .handler = &handler, .outbox = &outbox };
 }
 
-fn handleDidOpen(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    wasm_document_sync.handleDidOpen(docSyncCtx(), root);
-}
-
-fn handleDidChange(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    wasm_document_sync.handleDidChange(docSyncCtx(), root);
-}
-
-fn handleDidClose(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    wasm_document_sync.handleDidClose(docSyncCtx(), root);
-}
-
-fn handleDidSave(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    wasm_document_sync.handleDidSave(docSyncCtx(), root);
-}
-
-fn handleDidChangeConfiguration(_: std.json.ObjectMap, _: ?std.json.Value) void {
-    wasm_lifecycle.handleDidChangeConfiguration(lifecycleCtx());
-}
-
-/// Phase 7 — `wgslender/recomputeMinifyInsights` notification. The WASM
-/// transport doesn't have a native idle timer, so the JS client owns the
-/// debounce window: it batches `didChange` notifications, waits for the
-/// idle gap, then sends this notification to ask the server to warm the
-/// per-document estimator cache and re-emit diagnostics. The notification
-/// shape matches LSP convention — `params.textDocument.uri` carries the
-/// target. Unknown URIs / inactive minify modes turn into no-ops inside
-/// the handler.
-fn workspaceCommandsCtx() wasm_workspace_commands.Ctx {
-    return .{
-        .gpa = wasm_allocator,
-        .handler = &handler,
-        .outbox = &outbox,
-        .sendResult = sendResult,
-        .sendErrorCode = sendErrorCode,
-        .lifecycleCtx = lifecycleCtx(),
-    };
-}
-
-fn handleRecomputeMinifyInsights(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    wasm_workspace_commands.handleRecomputeMinifyInsights(workspaceCommandsCtx(), root);
-}
-
-fn handleReflect(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_workspace_commands.handleReflect(workspaceCommandsCtx(), root, id);
-}
-
-fn handleExecuteCommand(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_workspace_commands.handleExecuteCommand(workspaceCommandsCtx(), root, id);
+fn docSyncCtx() wasm_document_sync.Ctx {
+    return .{ .gpa = wasm_allocator, .handler = &handler, .outbox = &outbox };
 }
 
 fn lifecycleCtx() wasm_lifecycle.Ctx {
@@ -236,152 +185,139 @@ fn lifecycleCtx() wasm_lifecycle.Ctx {
     };
 }
 
-fn handleInitialize(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_lifecycle.handleInitialize(lifecycleCtx(), root, id);
-}
-
-fn handleResponse(root: std.json.ObjectMap) void {
-    wasm_lifecycle.handleResponse(lifecycleCtx(), root);
-}
-
-fn republishAllDocuments() void {
-    wasm_lifecycle.republishAllDocuments(lifecycleCtx());
-}
-
-// =========================================================================
-// Code Actions
-// =========================================================================
-
 fn codeActionCtx() wasm_code_actions.Ctx {
     return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
-}
-
-fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_code_actions.handle(codeActionCtx(), root, id);
-}
-
-// =========================================================================
-// Hover, Definition, References, Rename (WASM handlers)
-// =========================================================================
-
-fn extractUri(root: std.json.ObjectMap) ?[]const u8 {
-    return json.extractUri(root);
-}
-
-fn extractUriAndPosition(root: std.json.ObjectMap) ?json.UriPosition {
-    return json.extractUriAndPosition(root);
 }
 
 fn navCtx() wasm_navigation.Ctx {
     return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
 }
 
-fn handleHover(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_navigation.handleHover(navCtx(), root, id);
-}
-
-fn formatRange(buf: *std.ArrayListUnmanaged(u8), range: Handler.Range) void {
-    json.formatRange(buf, wasm_allocator, range);
-}
-
-fn handleDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_navigation.handleDefinition(navCtx(), root, id);
-}
-
-fn handleReferences(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_navigation.handleReferences(navCtx(), root, id);
-}
-
-fn handleDocumentHighlight(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_navigation.handleDocumentHighlight(navCtx(), root, id);
-}
-
 fn symbolsCtx() wasm_symbols.Ctx {
     return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
-}
-
-fn handleRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_symbols.handleRename(symbolsCtx(), root, id);
-}
-
-fn handlePrepareRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_symbols.handlePrepareRename(symbolsCtx(), root, id);
 }
 
 fn editingCtx() wasm_editing.Ctx {
     return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
 }
 
-fn handleCompletion(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_editing.handleCompletion(editingCtx(), root, id);
+fn callHierarchyCtx() wasm_call_hierarchy.Ctx {
+    return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
 }
 
-fn handleSignatureHelp(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_editing.handleSignatureHelp(editingCtx(), root, id);
+fn workspaceCommandsCtx() wasm_workspace_commands.Ctx {
+    return .{
+        .gpa = wasm_allocator,
+        .handler = &handler,
+        .outbox = &outbox,
+        .sendResult = sendResult,
+        .sendErrorCode = sendErrorCode,
+        .lifecycleCtx = lifecycleCtx(),
+    };
 }
 
-fn handleDocumentSymbol(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_symbols.handleDocumentSymbol(symbolsCtx(), root, id);
+// =========================================================================
+// Dispatch wrappers — one line each, by design.
+// =========================================================================
+
+fn handleNoop(_: std.json.ObjectMap, _: ?std.json.Value) void {}
+fn handleShutdown(_: std.json.ObjectMap, id: ?std.json.Value) void {
+    sendResult(id, "null");
 }
 
-fn handleFoldingRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    wasm_editing.handleFoldingRange(editingCtx(), root, id);
+fn handleInitialize(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_lifecycle.handleInitialize(lifecycleCtx(), root, id);
+}
+fn handleDidChangeConfiguration(_: std.json.ObjectMap, _: ?std.json.Value) void {
+    wasm_lifecycle.handleDidChangeConfiguration(lifecycleCtx());
 }
 
+fn handleDidOpen(root: std.json.ObjectMap, _: ?std.json.Value) void {
+    wasm_document_sync.handleDidOpen(docSyncCtx(), root);
+}
+fn handleDidChange(root: std.json.ObjectMap, _: ?std.json.Value) void {
+    wasm_document_sync.handleDidChange(docSyncCtx(), root);
+}
+fn handleDidClose(root: std.json.ObjectMap, _: ?std.json.Value) void {
+    wasm_document_sync.handleDidClose(docSyncCtx(), root);
+}
+fn handleDidSave(root: std.json.ObjectMap, _: ?std.json.Value) void {
+    wasm_document_sync.handleDidSave(docSyncCtx(), root);
+}
+
+fn handleRecomputeMinifyInsights(root: std.json.ObjectMap, _: ?std.json.Value) void {
+    wasm_workspace_commands.handleRecomputeMinifyInsights(workspaceCommandsCtx(), root);
+}
+fn handleReflect(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_workspace_commands.handleReflect(workspaceCommandsCtx(), root, id);
+}
+fn handleExecuteCommand(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_workspace_commands.handleExecuteCommand(workspaceCommandsCtx(), root, id);
+}
+
+fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_code_actions.handle(codeActionCtx(), root, id);
+}
+
+fn handleHover(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_navigation.handleHover(navCtx(), root, id);
+}
+fn handleDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_navigation.handleDefinition(navCtx(), root, id);
+}
+fn handleReferences(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_navigation.handleReferences(navCtx(), root, id);
+}
+fn handleDocumentHighlight(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_navigation.handleDocumentHighlight(navCtx(), root, id);
+}
 fn handleTypeDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_navigation.handleTypeDefinition(navCtx(), root, id);
 }
 
+fn handleRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_symbols.handleRename(symbolsCtx(), root, id);
+}
+fn handlePrepareRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_symbols.handlePrepareRename(symbolsCtx(), root, id);
+}
+fn handleDocumentSymbol(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_symbols.handleDocumentSymbol(symbolsCtx(), root, id);
+}
+
+fn handleCompletion(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_editing.handleCompletion(editingCtx(), root, id);
+}
+fn handleSignatureHelp(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_editing.handleSignatureHelp(editingCtx(), root, id);
+}
+fn handleFoldingRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_editing.handleFoldingRange(editingCtx(), root, id);
+}
 fn handleInlayHint(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_editing.handleInlayHint(editingCtx(), root, id);
 }
-
 fn handleCodeLens(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_editing.handleCodeLens(editingCtx(), root, id);
 }
-
 fn handleFormatting(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_editing.handleFormatting(editingCtx(), root, id);
 }
-
 fn handleSemanticTokens(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_editing.handleSemanticTokens(editingCtx(), root, id);
 }
-
 fn handleSelectionRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_editing.handleSelectionRange(editingCtx(), root, id);
-}
-
-fn callHierarchyCtx() wasm_call_hierarchy.Ctx {
-    return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
 }
 
 fn handlePrepareCallHierarchy(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_call_hierarchy.handlePrepare(callHierarchyCtx(), root, id);
 }
-
 fn handleIncomingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_call_hierarchy.handleIncomingCalls(callHierarchyCtx(), root, id);
 }
-
 fn handleOutgoingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_call_hierarchy.handleOutgoingCalls(callHierarchyCtx(), root, id);
-}
-
-// =========================================================================
-// Diagnostics (reuses Handler.validateDocument + Handler.LspDiagnostic)
-// =========================================================================
-
-fn diagCtx() wasm_diagnostics.Ctx {
-    return .{ .gpa = wasm_allocator, .handler = &handler, .outbox = &outbox };
-}
-
-fn emitDiagnostics(uri: []const u8) void {
-    wasm_diagnostics.emitDiagnostics(diagCtx(), uri);
-}
-
-fn emitDiagnosticsCheap(uri: []const u8) void {
-    wasm_diagnostics.emitDiagnosticsCheap(diagCtx(), uri);
 }
 
 fn handlePullDiagnostic(root: std.json.ObjectMap, id: ?std.json.Value) void {
@@ -389,72 +325,36 @@ fn handlePullDiagnostic(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 // =========================================================================
-// JSON-RPC helpers — thin forwarders to wasm/json.zig.
-//
-// Per-feature WASM adapters (lsp/wasm/<feature>.zig) call the json.*
-// functions directly. The forwarders below preserve the existing
-// in-file call sites until each feature group is migrated.
+// JSON-RPC response framing — referenced by per-feature ctxes via fn ptr.
 // =========================================================================
 
 fn sendResult(id: ?std.json.Value, result_json: []const u8) void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"id\":");
-    appendId(&buf, id);
-    appendStr(&buf, ",\"result\":");
+    json.appendStr(&buf, wasm_allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    json.appendId(&buf, wasm_allocator, id);
+    json.appendStr(&buf, wasm_allocator, ",\"result\":");
     buf.appendSlice(wasm_allocator, result_json) catch return;
     buf.append(wasm_allocator, '}') catch return;
     enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
 }
 
-fn enqueue(msg: []u8) void {
-    outbox.append(wasm_allocator, msg) catch wasm_allocator.free(msg);
-}
-
-fn appendId(buf: *std.ArrayListUnmanaged(u8), id: ?std.json.Value) void {
-    json.appendId(buf, wasm_allocator, id);
-}
-
 fn sendErrorCode(id: ?std.json.Value, code: i32, message: []const u8) void {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"id\":");
-    appendId(&buf, id);
-    appendStr(&buf, ",\"error\":{\"code\":");
+    json.appendStr(&buf, wasm_allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
+    json.appendId(&buf, wasm_allocator, id);
+    json.appendStr(&buf, wasm_allocator, ",\"error\":{\"code\":");
     var num_buf: [12]u8 = undefined;
     const s = std.fmt.bufPrint(&num_buf, "{d}", .{code}) catch return;
     buf.appendSlice(wasm_allocator, s) catch return;
-    appendStr(&buf, ",\"message\":\"");
+    json.appendStr(&buf, wasm_allocator, ",\"message\":\"");
     for (message) |c| {
         if (c == '"' or c == '\\') buf.append(wasm_allocator, '\\') catch return;
         buf.append(wasm_allocator, c) catch return;
     }
-    appendStr(&buf, "\"}}");
+    json.appendStr(&buf, wasm_allocator, "\"}}");
     enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
 }
 
-// =========================================================================
-// Tiny JSON read helpers — thin forwarders.
-// =========================================================================
-
-fn objGet(val: ?*const std.json.Value, key: []const u8) ?*const std.json.Value {
-    return json.objGet(val, key);
-}
-
-fn strVal(val: ?*const std.json.Value) ?[]const u8 {
-    return json.strVal(val);
-}
-
-fn intVal(val: ?*const std.json.Value) ?i64 {
-    return json.intVal(val);
-}
-
-fn appendStr(buf: *std.ArrayListUnmanaged(u8), s: []const u8) void {
-    json.appendStr(buf, wasm_allocator, s);
-}
-
-fn appendUint(buf: *std.ArrayListUnmanaged(u8), val: u32) void {
-    json.appendUint(buf, wasm_allocator, val);
-}
-
-fn appendI64(buf: *std.ArrayListUnmanaged(u8), val: i64) void {
-    json.appendI64(buf, wasm_allocator, val);
+fn enqueue(msg: []u8) void {
+    outbox.append(wasm_allocator, msg) catch wasm_allocator.free(msg);
 }
