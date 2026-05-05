@@ -1,14 +1,14 @@
 //! Lower a `Cst.Tree` into an `Ast.Module`.
 //!
-//! Stage 4 (minimum-viable) entry point. Walks the green tree once to build
-//! AST nodes, register symbols, and construct the scope tree (Pass 1),
-//! then runs the shared `AstVisit.visit` (Pass 2) to bind identifiers and
-//! mark purity. The produced `Ast.Module` is structurally equivalent to
-//! what `Parser.parse` would yield for the same source — that equivalence
-//! is enforced by `tests/cst_lower_test.zig`.
+//! Walks the green tree once to build AST nodes, register symbols, and
+//! construct the scope tree (Pass 1), then runs the shared `AstVisit.visit`
+//! (Pass 2) to bind identifiers and mark purity. The produced
+//! `Ast.Module` is structurally equivalent to what `Parser.parse` would
+//! yield for the same source — `tests/cst_lower_test.zig` enforces that
+//! equivalence.
 //!
 //! Error recovery: CST `error_tree` subtrees are skipped. A clean-parse
-//! source is assumed; malformed input coverage stays in `fuzz_test.zig`.
+//! source is assumed; malformed input coverage lives in `fuzz_test.zig`.
 //!
 //! Invariants:
 //!   - For any clean-parse source, `lowerTree(cst).module` deep-equals
@@ -43,9 +43,9 @@ pub fn lowerTree(
 /// list. When `errors_out` is non-null, the caller owns the storage and
 /// the lower's `LowerCtx.errors` aliases it — entries appended during
 /// Pass 2 (identifier resolution) survive past this call. When null,
-/// errors land in a throwaway local that goes out of scope (the
-/// arena-owned message bytes leak harmlessly into the arena, matching
-/// historical behavior).
+/// errors land in a throwaway local that goes out of scope; the
+/// arena-owned message bytes are left in the arena (and will be freed
+/// when it is).
 pub fn lowerTreeWithErrors(
     gpa: Allocator,
     arena: Allocator,
@@ -141,18 +141,17 @@ pub const LoweredSubtree = union(enum) {
     expr: Ast.Expr,
 };
 
-/// Lower a single anchor-kind subtree into its AST form. Intended for
-/// the symbol-free incremental hot path: the subtree kinds that
-/// `Incremental` classifies as `.symbol_free` (expression anchors and
-/// non-scope-introducing statement anchors). The lowered output has
-/// ident references left as `.none` — a subsequent targeted re-visit
+/// Lower a single symbol-free anchor subtree (expressions and
+/// non-scope-introducing statements — the kinds for which
+/// `Anchor.isSymbolFreeAnchor` is true) into its AST form. Ident
+/// references are left as `.none`; a subsequent targeted re-visit
 /// resolves them against the prev module's symbol table.
 ///
-/// Allocates from `arena` (the prev module's arena on the hot path so
+/// Allocates from `arena` (the prev module's arena, so the lowered
 /// nodes are reachable from `Module`). Uses an empty throwaway symbol
-/// table / scope because no new symbols are introduced by
-/// symbol-free anchors; if a symbol IS introduced (e.g. decl_stmt), the
-/// caller must classify as non-symbol-free and fall back.
+/// table / scope; if the anchor would introduce a symbol (e.g.
+/// `decl_stmt`), the caller is expected to route through
+/// `lowerSubtreeInScope` instead.
 pub fn lowerSubtree(
     arena: Allocator,
     cst: *const Cst.Tree,
@@ -215,10 +214,10 @@ pub const SubtreeInScopeOut = struct {
 };
 
 /// Lower a `compound_stmt` or `decl_stmt` subtree that DOES introduce
-/// new scopes and/or symbols. Used by the Phase 2 in-place hot path:
-/// declared symbols are appended to `symbols` at fresh indices (old
-/// `SymbolIndex` values stay valid), and new scopes are pushed under
-/// `parent_scope` in creation order.
+/// new scopes and/or symbols. Used by the in-place splice path for
+/// scope/decl anchors: declared symbols are appended to `symbols` at
+/// fresh indices (old `SymbolIndex` values stay valid), and new scopes
+/// are pushed under `parent_scope` in creation order.
 ///
 /// Callers must position `parent_scope` at the AST scope that will own
 /// the new subtree's top-level decls (function body's block scope for
@@ -665,12 +664,7 @@ const LowerCtx = struct {
             break :blk false;
         };
         var flags: Ast.Symbol.Flags = .{};
-        if (is_entry_point) {
-            flags.is_entry_point = true;
-            // B.M5: `must_not_be_renamed` and `parser_wants_no_rename`
-            // were deleted; `RenamePolicy.Builder.markEntryPoints` keys
-            // off `is_entry_point` directly.
-        }
+        if (is_entry_point) flags.is_entry_point = true;
 
         _ = w.eatToken(.keyword_fn);
         if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {

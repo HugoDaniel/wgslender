@@ -30,7 +30,7 @@ const Parser = @import("../Parser.zig");
 /// straddles `old_anchor.start` is dropped because its end no longer
 /// describes a valid byte span after the splice.
 ///
-/// Decision table (matches the wgsl-bidirectional-tooling roadmap §5):
+/// Decision table:
 ///
 /// | position vs old_anchor                         | action                |
 /// |------------------------------------------------|-----------------------|

@@ -108,12 +108,15 @@ pub fn isReparseAnchor(k: Cst.Kind) bool {
 }
 
 /// Anchor kinds the parser can re-enter at via `reparseAnchor` and whose
-/// lowering we trust on the incremental hot path. Symbol introduction
-/// (e.g. inside `compound_stmt` or `decl_stmt`) is fine because the hot
-/// path re-lowers the whole module via `CstLower.lowerTree`, which
-/// rebuilds `module.symbols` and the scope tree from the spliced CST.
-/// Surgical symbol-table patching (append-without-relower) is a later
-/// optimization.
+/// lowering the incremental hot path can splice. Three families:
+///
+///   - Expressions (no symbol introduction).
+///   - Non-scope-introducing statements (return, assign, ...).
+///   - Scope/symbol-introducing statements (`compound_stmt`, `decl_stmt`).
+///     These dispatch to the dedicated splice routines in `Splice.zig`,
+///     which append new symbols to `module.symbols` and patch the scope
+///     tree under the enclosing parent without re-lowering the whole
+///     module.
 pub fn isHotPathAnchor(k: Cst.Kind) bool {
     return switch (k) {
         // Expressions never declare symbols.
@@ -146,8 +149,8 @@ pub fn isHotPathAnchor(k: Cst.Kind) bool {
 /// True for the anchor kinds where the add/sub hot path is safe:
 /// expressions (which never declare symbols) and non-scope-introducing
 /// statements. `compound_stmt` and `decl_stmt` are hot-path anchors but
-/// NOT symbol-free — they introduce scopes and/or symbols and stay on
-/// the whole-module re-lower path in Phase 1.
+/// NOT symbol-free — they introduce scopes and/or symbols and route to
+/// `tryCompoundSpliceInPlace` / `tryDeclStmtSpliceInPlace` instead.
 pub fn isSymbolFreeAnchor(k: Cst.Kind) bool {
     return switch (k) {
         // Expressions.
@@ -195,10 +198,8 @@ pub fn isStmtKind(k: Cst.Kind) bool {
 
 /// Find the smallest reparse-anchor CST node whose old-source range fully
 /// covers `[edit.start, edit.end)`. Returns `null` when the edit straddles
-/// root-level boundaries (e.g. spans across two top-level decls) — callers
-/// must fall back to `parseFull` in that case. The current `reparse` still
-/// full-parses regardless; this function is the scaffolding the hot path
-/// will consume once subtree reuse lands.
+/// root-level boundaries (e.g. spans across two top-level decls); callers
+/// must fall back to `parseFull` in that case.
 pub fn findAnchor(cst: *const Cst.Tree, edit: Edit) ?Cst.Cursor {
     const root = cst.rootCursor();
     if (!containsEditForDescent(root, edit)) return null;
@@ -257,10 +258,10 @@ fn firstNonTriviaStart(cursor: Cst.Cursor) ?u32 {
 }
 
 /// Compare the non-trivia token sequences of two sources and report
-/// whether the edit was confined to trivia. This is the cheapest shortcut
-/// today — callers that see `.trivia_only` can keep their cached semantic
-/// analysis and just swap in the new tree. Quadratic-in-token-count in the
-/// pathological case but O(n) in practice.
+/// whether the edit was confined to trivia. A `.trivia_only` result
+/// means cached semantic analysis stays valid and only the source +
+/// trees need updating. Quadratic-in-token-count worst case but O(n)
+/// in practice.
 pub fn classifyEdit(
     gpa: Allocator,
     old_source: [:0]const u8,

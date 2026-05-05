@@ -2,10 +2,16 @@
 //!
 //! Each `OptionSpec` is a single source of truth for one option's three
 //! names — Zig snake_case field, camelCase JSON key, kebab-case CLI flag.
-//! Today the spec drives JSON parsing for `Config`; Cut B of the Phase 2
-//! refactor will plug the same spec into the CLI flag parser and the
-//! `--help` text generator (see `docs/parser-template-postfix-plan.md`
-//! and the §8.1 entry in the audit plan for context).
+//! The spec drives JSON parsing (`applyJson`), CLI flag matching
+//! (`matchFlag` + `applyValue`), magic-comment directives
+//! (`MagicComment.scan`), and `--help` text (`printHelp`). Holdouts that
+//! still need bespoke handling set `cli_simple = false` so the
+//! dispatcher skips them: today the `--minify-*` / `--no-mangle` /
+//! `--no-whitespace` / `--no-syntax` tri-state cluster (hand-rolled in
+//! `cli/main.zig`) and the LSP-only toggles (no CLI surface, JSON only).
+//! The source-map basename post-step (`configureSourceMap`) is also
+//! hand-rolled but lives outside this spec system — it's not a
+//! single-field knob.
 //!
 //! Conventions:
 //!   * Field names are snake_case and must match the corresponding field
@@ -77,7 +83,9 @@ pub const OptionSpec = struct {
     /// Snake-case Zig field name. Drives the derived JSON / CLI names.
     field: []const u8,
     kind: OptionKind,
-    /// Human-readable description used by the future `--help` generator.
+    /// Human-readable description rendered by `printHelp`. Empty string
+    /// opts the spec out of `--help` — used by entries whose CLI form is
+    /// hand-rolled (the `--minify-*` cluster) or by JSON-only knobs.
     summary: []const u8 = "",
     /// CamelCase JSON key override. Default: `snakeToCamel(field)`.
     json_override: ?[]const u8 = null,
@@ -591,7 +599,7 @@ pub fn applyValue(
         .string_list => {
             // Trimmed comma-split. Slices alias `value` (which lives on
             // the caller's argv arena), so the result borrows for the
-            // process lifetime — same shape as the legacy `parseKeepNames`.
+            // process lifetime — no dupe.
             var names: std.ArrayListUnmanaged([]const u8) = .empty;
             errdefer names.deinit(arena);
             var it = std.mem.splitScalar(u8, value, ',');

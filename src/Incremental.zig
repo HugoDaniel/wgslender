@@ -1,23 +1,26 @@
 //! Incremental reparse driver.
 //!
-//! Top-level API for building — and later, incrementally updating — a
-//! unified parse state that carries the source, the AST, and the CST side
-//! by side. Stage 6 MVP: every call to `reparse` performs a full source
-//! splice + full parse. The `ReparseResult` shape is the real deliverable,
-//! so LSP / FFI callers can commit to a stable API that doesn't change
-//! when subtree reuse lands in a follow-up.
+//! Top-level API for a unified parse state that carries the source, the
+//! AST, and the CST side by side. `parseFull` builds it from scratch;
+//! `reparse` applies a byte-level edit and returns an updated state,
+//! reusing as much of the previous parse as the edit shape allows.
 //!
-//! Fast path today:
-//!   - `classifyEdit` inspects the old + new sources and reports whether
-//!     the edit is confined to trivia tokens (pure whitespace / comment
-//!     content). A `.trivia_only` classification is a legal signal for
-//!     callers to keep any cached semantic analysis hot while still
-//!     updating the source + trees.
+//! `reparse` dispatches on the edit:
+//!   - **Trivia-only zero-delta** (`classifyEdit` ⇒ `.trivia_only` and
+//!     `new_text.len == end - start`) — swap the source pointer in place,
+//!     reuse prev's module, CST, symbol table, and errors byte-for-byte.
+//!   - **Anchor splice** (`tryIncrementalReparseInPlace`) — find the
+//!     smallest reparse-able CST subtree containing the edit, reparse
+//!     just that anchor, splice the new subtree into prev's CST, then
+//!     either patch the AST in place (symbol-free anchors) or re-lower
+//!     the affected scope (compound_stmt / decl_stmt anchors).
+//!   - **Fallback** — any failure on the splice path drops to a fresh
+//!     full parse on a new arena. `parseFull` is the correctness oracle,
+//!     so degrading to it is always safe.
 //!
-//! Slow path (semantic edits): a fresh full parse, new arena.
-//!
-//! When subtree reuse arrives, the hot path migrates to an
-//! `anchor_found + subtree_splice` strategy; callers keep the same API.
+//! All splice paths reuse `prev.arena` rather than allocating a new one;
+//! prev is left holding `sentinel_stub` so `prev.deinit()` stays a safe
+//! no-op for callers that bracket each edit with `defer prev.deinit()`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -75,11 +78,10 @@ pub var sentinel_stub: std.heap.ArenaAllocator =
 /// from which fresh allocations happen. On every hot path (symbol-free,
 /// `compound_stmt`, `decl_stmt`) this is simply `prev.arena` — extended
 /// in place, not replaced — and `prev` receives an empty stub arena so
-/// `prev.deinit()` stays a safe no-op. `retained_arenas` is reserved
-/// for a future non-in-place path; today it is **always empty** after
-/// any `reparse` or `parseFull` return. The field is kept so
-/// `arenaBytes()` sums defensively and external telemetry readers
-/// don't break if the invariant is ever relaxed.
+/// `prev.deinit()` stays a safe no-op. `retained_arenas` is **always
+/// empty** after any `reparse` or `parseFull` return; the field is
+/// kept so `arenaBytes()` sums defensively and external telemetry
+/// readers don't break if a future path ever appends to it.
 ///
 /// **Lifecycle.** A `ReparseResult` is in one of three states:
 ///
@@ -413,23 +415,21 @@ fn tryTriviaOnlyShortcut(
 }
 
 // =========================================================================
-// In-place hot-path variant (see `docs/arena-transfer-zero-alloc-plan.md`).
+// Anchor-splice driver.
 //
-// `tryIncrementalReparseInPlace` mirrors `tryIncrementalReparse` but for
-// symbol-free anchors it allocates the new source, tokens, CST splice,
-// and lowered AST subtree directly into `prev.arena`. On success:
+// `tryIncrementalReparseInPlace` is the single entry point for every
+// hot-path anchor kind. It allocates the new source, tokens, CST splice,
+// and lowered AST subtree directly into `prev.arena`, then dispatches
+// to the matching splice routine in `incremental/Splice.zig`:
 //
-//   - `result.arena = prev.arena` (no `gpa.create(ArenaAllocator)` on the
-//     hot path).
-//   - `result.retained_arenas = prev.retained_arenas` unchanged — prev's
-//     own arena is NOT appended, so a hot-path burst doesn't grow the
-//     retained chain.
-//   - `prev` gets an empty stub arena so `prev.deinit()` stays a safe
-//     no-op (unchanged semantics for callers).
+//   - symbol-free anchors → `tryAddSubSpliceInPlace`
+//   - `compound_stmt` anchors → `tryCompoundSpliceInPlace`
+//   - `decl_stmt` anchors → `tryDeclStmtSpliceInPlace`
 //
-// Non-symbol-free anchors (compound_stmt / decl_stmt) still go through
-// the original fresh-arena path; this function delegates to
-// `tryIncrementalReparse` for that case.
+// On success, the returned `ReparseResult` reuses `prev.arena` directly
+// (no `gpa.create(ArenaAllocator)` on the hot path), `retained_arenas`
+// stays empty, and `prev` is set to `moved = true` with `sentinel_stub`
+// installed so `prev.deinit()` remains a safe no-op.
 // =========================================================================
 
 fn tryIncrementalReparseInPlace(
@@ -438,48 +438,37 @@ fn tryIncrementalReparseInPlace(
     edit: Edit,
     new_buf: []const u8,
 ) !ReparseResult {
-    // 0. Compaction watermark. The in-place hot path extends prev.arena
-    //    forever; left unchecked, a long editing session accumulates
-    //    stale CST splices, old source copies, and dead token arrays in
-    //    that arena. Before committing to another in-place edit, bail
-    //    when prev.arena's live capacity has drifted past 8× the prev
-    //    source size (floor 256 KiB to absorb the initial parse's
-    //    overhead and to give short edit bursts on small sources room
-    //    to run purely on the hot path). `reparse()` catches the error
-    //    and falls through to `parseFull`, which allocates a clean
-    //    arena and starts a new growth window.
-    // 1. Anchor lookup — same as the fresh-arena path. Reads only
-    //    prev.cst, no allocation into prev.arena yet.
+    // 1. Anchor lookup. Reads only prev.cst; no arena allocation yet.
     var anchor_cursor = findAnchor(&prev.cst, edit) orelse return error.NoAnchor;
     while (!Anchor.isHotPathAnchor(anchor_cursor.kind())) {
         anchor_cursor = anchor_cursor.parent() orelse return error.NotHotPathAnchor;
     }
     const anchor_kind = anchor_cursor.kind();
 
-    // Route compound_stmt and decl_stmt anchors through the Phase 2
-    // in-place scope-splice paths. `isHotPathAnchor` (checked above)
-    // admits exactly the union of symbol-free + compound_stmt +
-    // decl_stmt kinds, so any other kind here would be a routing bug.
+    // `isHotPathAnchor` admits exactly the union of symbol-free anchors
+    // plus `compound_stmt` and `decl_stmt`. Each gets its own splice
+    // routine in `incremental/Splice.zig` (dispatched at the bottom of
+    // this function); any other kind reaching here would be a routing
+    // bug.
     const is_compound_inplace = anchor_kind == .compound_stmt;
     const is_decl_stmt_inplace = anchor_kind == .decl_stmt;
     std.debug.assert(Anchor.isSymbolFreeAnchor(anchor_kind) or is_compound_inplace or is_decl_stmt_inplace);
 
-    // 0. Compaction watermark. The in-place hot path extends prev.arena
-    //    forever; left unchecked, a long editing session accumulates
-    //    stale CST splices, old source copies, and dead token arrays in
-    //    that arena. `reparse()` catches the error below and falls
-    //    through to `parseFull`, which allocates a clean arena.
+    // 2. Compaction watermarks. The in-place path extends prev.arena
+    //    forever; without a bound, a long editing session accumulates
+    //    stale CST splices, old source copies, and dead token arrays.
+    //    Two complementary watermarks bail to `parseFull` (which starts
+    //    a fresh arena):
     //
-    //    Symbol-free edits and compound/decl_stmt edits use different
-    //    floors because their per-edit cost differs by roughly an order
-    //    of magnitude: symbol-free touches one stmt/expr (~KB/edit);
-    //    compound_stmt and decl_stmt re-lower and re-visit the entire
-    //    enclosing body plus append symbols, so realistic edit bursts
-    //    on typical module sizes need more headroom before compacting.
-    // Edit-count coalesce. On tiny shaders the byte-watermark below
-    // can take hundreds of edits to trip; this bound forces a fresh
-    // parseFull every `HOT_EDIT_COALESCE_MAX` in-place extensions so
-    // arena debt never accumulates without bound.
+    //    - Byte watermark: 8× the source size, with a floor that
+    //      depends on anchor kind. Symbol-free edits cost ~KB each
+    //      (one stmt/expr); compound_stmt and decl_stmt re-lower and
+    //      re-visit the whole enclosing body plus append symbols, so
+    //      they need a higher floor to avoid premature compaction on
+    //      typical-sized shaders.
+    //    - Edit count: tiny shaders can take hundreds of edits to
+    //      trip the byte watermark, so `HOT_EDIT_COALESCE_MAX` caps
+    //      consecutive in-place edits regardless of source size.
     if (prev.hot_edits_since_full >= HOT_EDIT_COALESCE_MAX) return error.EditCountWatermarkTripped;
 
     const big_floor: bool = is_compound_inplace or is_decl_stmt_inplace;
@@ -490,15 +479,15 @@ fn tryIncrementalReparseInPlace(
 
     const arena = prev.arena.allocator();
 
-    // 2. Copy the new source into prev.arena.
+    // 3. Copy the new source into prev.arena.
     const new_source = try arena.allocSentinel(u8, new_buf.len, 0);
     @memcpy(new_source, new_buf);
 
-    // 3. Lex into prev.arena.
+    // 4. Lex into prev.arena.
     var new_all_tokens = try Lexer.tokenizeAll(arena, new_source);
     const new_stream = try Parser.TokenStream.init(arena, &new_all_tokens);
 
-    // 4. Locate the non-trivia token that begins the anchor.
+    // 5. Locate the non-trivia token that begins the anchor.
     const anchor_byte = anchor_cursor.range().start;
     var nt_pos: u32 = 0;
     while (nt_pos < new_stream.non_trivia_starts.len and
@@ -507,7 +496,7 @@ fn tryIncrementalReparseInPlace(
     if (nt_pos >= new_stream.non_trivia_starts.len) return error.AnchorBoundaryShifted;
     if (new_stream.non_trivia_starts[nt_pos] > edit.start) return error.AnchorBoundaryShifted;
 
-    // 5. Reparse the anchor into prev.arena.
+    // 6. Reparse the anchor into prev.arena.
     var sub_builder = Cst.Builder.init(gpa);
     defer sub_builder.deinit();
     var sub_parser = try Parser.initWithCst(arena, new_source, new_stream, &sub_builder);
@@ -516,7 +505,7 @@ fn tryIncrementalReparseInPlace(
     if (sub_parser.errors.items.len > 0) return error.AnchorParseError;
     var new_sub = try sub_builder.finish(arena, new_all_tokens, new_source);
 
-    // 6. Validate the reparse — identical to the fresh-arena path.
+    // 7. Validate the reparse.
     if (new_sub.nodes.len == 0) return error.AnchorParseFailed;
     if (new_sub.rootCursor().kind() != anchor_kind) return error.AnchorKindMismatch;
     if (new_sub.errors.len > 0) return error.AnchorParseError;
@@ -535,14 +524,17 @@ fn tryIncrementalReparseInPlace(
         .end = anchor_cursor.range().end,
     };
 
-    // 7. Splice the CST into prev.arena.
+    // 8. Splice the CST into prev.arena.
     const new_tree = try Cst.spliceSubtree(arena, &prev.cst, anchor_cursor.node, &new_sub, new_source, new_all_tokens);
 
-    // 8. Dispatch on anchor kind. Symbol-free anchors go through the
-    //    existing add/sub splice. compound_stmt goes through the Phase 2
-    //    scope-splice path which rebuilds the enclosing scope subtree
-    //    and re-runs a targeted Pass 2. decl_stmt goes through a sibling
-    //    path that revisits the decl's PARENT compound.
+    // 9. Dispatch on anchor kind:
+    //    - symbol-free → add/sub splice (rewrites one AST slot, re-runs
+    //      the visit walker over the new subtree to rebind idents).
+    //    - compound_stmt → scope-splice (rebuilds the enclosing block
+    //      scope subtree, re-runs a targeted Pass 2 over the body).
+    //    - decl_stmt → sibling path that revisits the decl's PARENT
+    //      compound (a renamed decl can invalidate sibling references
+    //      by name, so the revisit root has to be the parent block).
     if (is_compound_inplace) {
         return try Splice.tryCompoundSpliceInPlace(
             gpa,

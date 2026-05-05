@@ -52,9 +52,9 @@ pub fn enclosingCompoundCst(cst: *const Cst.Tree, node: Cst.NodeIndex) ?Cst.Node
     if (start_kind == .compound_stmt) return node;
 
     // decl_stmt anchor: walk parents until we hit compound_stmt or run
-    // out of parents. Any intervening scope-opener that is NOT a
-    // compound_stmt (only for_stmt qualifies today) means we are inside
-    // a for-init/update slot — bail.
+    // out of parents. The only other scope-opener kind is `for_stmt`;
+    // hitting one means the decl_stmt sits in a for-init/update slot,
+    // which the splice paths don't handle — bail.
     var cur = node;
     while (true) {
         const n = cst.getNode(cur);
@@ -80,13 +80,16 @@ pub fn collectScopeSubtreeDfs(
     }
 }
 
-/// In-place symbol-free add/sub splice. See `tryAddSubSplice` for the
-/// semantics; the only difference is that `prev.arena` is reused rather
-/// than replaced, so `retained_arenas` does not grow and no new
-/// `ArenaAllocator` is created for the hot-path result itself. A stub
-/// arena is still installed on `prev` so `prev.deinit()` remains a
-/// safe no-op — one `gpa.create(ArenaAllocator)` per edit, down from
-/// two.
+/// In-place add/sub splice for symbol-free anchors.
+///
+/// Locates the AST `*Stmt` / `*Expr` slot whose span matches the old
+/// anchor, sub-walks the slot's old contents to drop `use_count` for
+/// every resolved ident, lowers the new CST subtree into `prev.arena`,
+/// overwrites the slot, then add-walks the new subtree to rebind idents
+/// against the prev module's symbol table.
+///
+/// `prev.arena` is reused (no new `ArenaAllocator`); `prev` is left
+/// holding `sentinel_stub` so `prev.deinit()` stays a safe no-op.
 pub fn tryAddSubSpliceInPlace(
     gpa: Allocator,
     prev: *Incremental.ReparseResult,
@@ -132,7 +135,7 @@ pub fn tryAddSubSpliceInPlace(
     };
 
     // 3. Shift downstream AST spans by delta before splicing in the new
-    //    subtree — same ordering as `tryAddSubSplice`.
+    //    subtree (so spans remain consistent during the add-walk below).
     const old_len: u32 = old_anchor_span.end - old_anchor_span.start;
     const new_node_span = new_tree.getNode(new_subtree_node);
     const new_len: u32 = new_node_span.end - new_node_span.start;
@@ -168,10 +171,9 @@ pub fn tryAddSubSpliceInPlace(
     // 7. Add-walk. Skipped only for attr-arg slots whose enclosing
     //    attribute's args are enum-keyword (per the step-2 comment). For
     //    const-expression attrs, full-parse Pass 2 binds and bumps via
-    //    `AstVisit.visitAttributes`, so the hot path mirrors here. The
-    //    historical hazard the gate guarded against — bumping `use_count`
-    //    on sibling symbols that the oracle leaves at zero — is now
-    //    closed by the predicate filter in both paths.
+    //    `AstVisit.visitAttributes`, so the hot path mirrors that. Both
+    //    paths gate on the same `attributeArgsResolveSymbols` predicate,
+    //    so neither bumps `use_count` on idents the oracle leaves at zero.
     var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
     defer add_errors.deinit(prev_arena);
     var add_ctx = AstVisit.Context{
@@ -227,7 +229,7 @@ pub fn tryAddSubSpliceInPlace(
     return result;
 }
 
-/// Phase 2 in-place splice for `compound_stmt` anchors.
+/// In-place splice for `compound_stmt` anchors.
 ///
 /// Reuses prev.arena. Mutates the AST compound at the anchor's span in
 /// place by copying the freshly-lowered compound's fields over it; the
@@ -235,8 +237,7 @@ pub fn tryAddSubSpliceInPlace(
 /// the old compound stay in `module.symbols` with `use_count == 0`
 /// (append-only; existing `SymbolIndex` values unchanged).
 ///
-/// Ordering of mutations, gated on every validation already passed
-/// upstream:
+/// Ordering of mutations:
 ///   1. Resolve the OLD AST compound via span lookup.
 ///   2. Sub-walk the old compound (Pass 2 `.sub` mode) — decrements
 ///      use_counts for every resolved ident inside. Internal (let/var)
@@ -414,7 +415,7 @@ pub fn tryCompoundSpliceInPlace(
     return result;
 }
 
-/// Phase 2 in-place splice for `decl_stmt` anchors.
+/// In-place splice for `decl_stmt` anchors.
 ///
 /// Unlike compound_stmt, a decl_stmt edit can affect sibling statements
 /// in the enclosing compound (a renamed `let` invalidates sibling refs
@@ -850,8 +851,10 @@ fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlo
                 // init_stmt is stored by value in ForStmt — we can't take
                 // its mutable slot pointer through the union here, so
                 // only descend if init_stmt itself contains target by
-                // span. If the target IS the init_stmt, bail (non-anchor
-                // position in Phase 1).
+                // span. If the target IS the init_stmt, bail: a slot
+                // replace at this position would have to rewrite the
+                // ForStmt's by-value field, which the splice paths do
+                // not handle.
                 if (spanContains(is.span(), target)) {
                     if (spanEq(is.span(), target)) return null;
                     if (findSlotInStmt(&s.init_stmt.?, target, kind)) |m| return m;

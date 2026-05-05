@@ -105,10 +105,10 @@ pub fn applyJsonValue(allocator: Allocator, root: std.json.Value, target: *Confi
     if (root != .object) return;
 
     // Spec-driven parse for every option declared in `options.config_specs`,
-    // including the lint accumulators (`extends`, `rules`) which used to be
-    // hand-parsed below this call. The `lsp` nested object stays separate
-    // because it walks two distinct spec tables (MinifySettings.partial_specs
-    // and lsp_toggle_specs) against the inner object as root.
+    // including the lint accumulators (`extends`, `rules`). The `lsp`
+    // nested object is handled separately because it walks two distinct
+    // spec tables (`MinifySettings.partial_specs` and `lsp_toggle_specs`)
+    // against the inner object as root.
     try options.applyJson(allocator, &options.config_specs, root, target);
 
     if (root.object.get("lsp")) |lsp| {
