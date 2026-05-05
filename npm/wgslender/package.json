@@ -1,6 +1,6 @@
 {
   "name": "wgslender",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "WGSL minifier for WebGPU shaders - WebAssembly build",
   "main": "lib/main.js",
   "module": "esm/browser.js",
@@ -54,7 +54,7 @@
   "homepage": "https://github.com/HugoDaniel/wgslender",
   "license": "CC0-1.0",
   "scripts": {
-    "test": "node test/node-cjs.cjs && node test/node-esm.mjs"
+    "test": "node test/node-cjs.cjs && node test/node-esm.mjs && node test/browser-shim.cjs"
   },
   "engines": {
     "node": ">=16"
