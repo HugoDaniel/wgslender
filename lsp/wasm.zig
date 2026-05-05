@@ -32,6 +32,7 @@ const wasm_navigation = @import("wasm/navigation.zig");
 const wasm_symbols = @import("wasm/symbols.zig");
 const wasm_editing = @import("wasm/editing.zig");
 const wasm_call_hierarchy = @import("wasm/call_hierarchy.zig");
+const wasm_workspace_commands = @import("wasm/workspace_commands.zig");
 const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
@@ -200,141 +201,27 @@ fn handleDidChangeConfiguration(_: std.json.ObjectMap, _: ?std.json.Value) void 
 /// shape matches LSP convention — `params.textDocument.uri` carries the
 /// target. Unknown URIs / inactive minify modes turn into no-ops inside
 /// the handler.
-fn handleRecomputeMinifyInsights(root: std.json.ObjectMap, _: ?std.json.Value) void {
-    const uri = extractUri(root) orelse return;
-    handler.refreshMinifyInsights(uri);
-    emitDiagnostics(uri);
+fn workspaceCommandsCtx() wasm_workspace_commands.Ctx {
+    return .{
+        .gpa = wasm_allocator,
+        .handler = &handler,
+        .outbox = &outbox,
+        .sendResult = sendResult,
+        .sendErrorCode = sendErrorCode,
+        .lifecycleCtx = lifecycleCtx(),
+    };
 }
 
-/// `wgslender/reflect` — custom request that reflects the named document
-/// and returns the JSON payload (compact or pretty-printed) at the
-/// requested schema version. Params:
-///   `textDocument.uri`   document to reflect (must be opened)
-///   `format`             "v1" | "v2", default "v2"
-///   `pretty`             bool, default false
+fn handleRecomputeMinifyInsights(root: std.json.ObjectMap, _: ?std.json.Value) void {
+    wasm_workspace_commands.handleRecomputeMinifyInsights(workspaceCommandsCtx(), root);
+}
+
 fn handleReflect(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    if (id == null) return; // request, must have an id
-    const params = root.getPtr("params") orelse return sendErrorCode(id, -32602, "missing params");
-    const td = objGet(params, "textDocument") orelse return sendErrorCode(id, -32602, "missing textDocument.uri");
-    const uri = strVal(objGet(td, "uri")) orelse return sendErrorCode(id, -32602, "missing textDocument.uri");
-
-    var version: wgslender.Reflect.JsonVersion = .v2;
-    if (objGet(params, "format")) |fmt_val| switch (fmt_val.*) {
-        .string => |s| {
-            if (std.mem.eql(u8, s, "v1")) {
-                version = .v1;
-            } else if (std.mem.eql(u8, s, "v2")) {
-                version = .v2;
-            } else return sendErrorCode(id, -32602, "format must be 'v1' or 'v2'");
-        },
-        else => return sendErrorCode(id, -32602, "format must be a string"),
-    };
-
-    var pretty = false;
-    if (objGet(params, "pretty")) |p| switch (p.*) {
-        .bool => |b| pretty = b,
-        else => {},
-    };
-
-    var arena = std.heap.ArenaAllocator.init(wasm_allocator);
-    defer arena.deinit();
-    const result = handler.runReflect(arena.allocator(), uri, version, pretty) catch |err| {
-        switch (err) {
-            error.UnknownCommand => sendErrorCode(id, -32601, "unknown command"),
-            error.InvalidParams => sendErrorCode(id, -32602, "invalid params"),
-            error.DocumentNotFound => sendErrorCode(id, -32602, "document not found"),
-            error.MinifyFailed => sendErrorCode(id, -32603, "reflect failed"),
-            error.ReflectFailed => sendErrorCode(id, -32603, "reflect failed"),
-            error.OutOfMemory => sendErrorCode(id, -32603, "out of memory"),
-        }
-        return;
-    };
-
-    // Wrap the (already-serialised) JSON payload under {"uri", "version", "json"}.
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, result.uri) catch return;
-    appendStr(&buf, "\",\"version\":");
-    appendStr(&buf, switch (result.version) {
-        .v1 => "1",
-        .v2 => "2",
-    });
-    appendStr(&buf, ",\"json\":");
-    buf.appendSlice(wasm_allocator, result.json) catch return;
-    appendStr(&buf, "}");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_workspace_commands.handleReflect(workspaceCommandsCtx(), root, id);
 }
 
 fn handleExecuteCommand(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const params = root.getPtr("params") orelse {
-        if (id != null) sendErrorCode(id, -32602, "missing params");
-        return;
-    };
-    const command = strVal(objGet(params, "command")) orelse {
-        if (id != null) sendErrorCode(id, -32602, "missing command");
-        return;
-    };
-    // `arguments` may be omitted, null, or an array of LSPAny. Extract the
-    // slice (null/missing → null).
-    var args_slice: ?[]const std.json.Value = null;
-    if (objGet(params, "arguments")) |a| switch (a.*) {
-        .array => |arr| args_slice = arr.items,
-        .null => {},
-        else => {
-            if (id != null) sendErrorCode(id, -32602, "arguments must be an array");
-            return;
-        },
-    };
-    if (std.mem.eql(u8, command, "wgslender.showMinifiedOutput")) {
-        if (id == null) return;
-        const items = args_slice orelse return sendErrorCode(id, -32602, "missing uri");
-        if (items.len < 1) return sendErrorCode(id, -32602, "missing uri");
-        const uri = switch (items[0]) {
-            .string => |s| s,
-            else => return sendErrorCode(id, -32602, "uri must be a string"),
-        };
-        var arena = std.heap.ArenaAllocator.init(wasm_allocator);
-        defer arena.deinit();
-        const result = handler.runShowMinifiedOutput(arena.allocator(), uri) catch |err| {
-            switch (err) {
-                error.UnknownCommand => sendErrorCode(id, -32601, "unknown command"),
-                error.InvalidParams => sendErrorCode(id, -32602, "invalid command arguments"),
-                error.DocumentNotFound => sendErrorCode(id, -32602, "document not found"),
-                error.MinifyFailed => sendErrorCode(id, -32603, "minify failed"),
-                error.ReflectFailed => sendErrorCode(id, -32603, "reflect failed"),
-                error.OutOfMemory => sendErrorCode(id, -32603, "out of memory"),
-            }
-            return;
-        };
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
-        appendStr(&buf, "{\"uri\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, result.uri) catch return;
-        appendStr(&buf, "\",\"minified_text\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, result.minified_text) catch return;
-        appendStr(&buf, "\",\"byte_count\":");
-        appendUint(&buf, result.byte_count);
-        appendStr(&buf, ",\"gz_count\":");
-        appendUint(&buf, result.gz_count);
-        appendStr(&buf, "}");
-        sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
-        return;
-    }
-    handler.executeCommand(command, args_slice) catch |err| {
-        if (id == null) return;
-        switch (err) {
-            error.UnknownCommand => sendErrorCode(id, -32601, "unknown command"),
-            error.InvalidParams => sendErrorCode(id, -32602, "invalid command arguments"),
-            error.DocumentNotFound => sendErrorCode(id, -32602, "document not found"),
-            error.MinifyFailed => sendErrorCode(id, -32603, "minify failed"),
-            error.ReflectFailed => sendErrorCode(id, -32603, "reflect failed"),
-            error.OutOfMemory => sendErrorCode(id, -32603, "out of memory"),
-        }
-        return;
-    };
-    // Re-publish diagnostics for every open document so any minify-mode
-    // change takes effect immediately.
-    republishAllDocuments();
-    if (id != null) sendResult(id, "null");
+    wasm_workspace_commands.handleExecuteCommand(workspaceCommandsCtx(), root, id);
 }
 
 fn lifecycleCtx() wasm_lifecycle.Ctx {

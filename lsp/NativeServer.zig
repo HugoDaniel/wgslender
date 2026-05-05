@@ -42,6 +42,7 @@ const native_navigation = @import("native_navigation");
 const native_symbols = @import("native_symbols");
 const native_editing = @import("native_editing");
 const native_call_hierarchy = @import("native_call_hierarchy");
+const native_workspace_commands = @import("native_workspace_commands");
 const Debouncer = @import("Debouncer.zig");
 const uri_module = @import("uri.zig");
 
@@ -212,11 +213,11 @@ pub fn initialize(
     };
 }
 
-/// Handles `workspace/executeCommand`. Dispatches to `Handler.executeCommand`
-/// for the void-returning mode commands, or `runShowMinifiedOutput` for
-/// the data-returning minified-text command. Mode commands re-publish
-/// diagnostics on success; the show-minified command does not (it's a
-/// pure read).
+/// Handles `workspace/executeCommand`. Dispatches by command name to the
+/// matching `Handler.run*` entry point. Void-mode commands (the modes
+/// toggle / set / recompute-insights families) republish diagnostics on
+/// success; the data-returning commands (showMinifiedOutput, reflect)
+/// don't — they are pure reads.
 pub fn @"workspace/executeCommand"(
     self: *NativeServer,
     arena: std.mem.Allocator,
@@ -224,85 +225,9 @@ pub fn @"workspace/executeCommand"(
 ) !?std.json.Value {
     self.lock();
     defer self.unlock();
-    if (std.mem.eql(u8, params.command, "wgslender.showMinifiedOutput")) {
-        const items = params.arguments orelse return error.InvalidParams;
-        if (items.len < 1) return error.InvalidParams;
-        const uri = switch (items[0]) {
-            .string => |s| s,
-            else => return error.InvalidParams,
-        };
-        const result = self.handler.runShowMinifiedOutput(arena, uri) catch |err| switch (err) {
-            error.UnknownCommand => return error.MethodNotFound,
-            error.InvalidParams => return error.InvalidParams,
-            error.DocumentNotFound => return error.InvalidParams,
-            error.MinifyFailed, error.ReflectFailed => return error.InternalError,
-            error.OutOfMemory => return error.OutOfMemory,
-        };
-        var obj: std.json.ObjectMap = .empty;
-        try obj.put(arena, "uri", .{ .string = result.uri });
-        try obj.put(arena, "minified_text", .{ .string = result.minified_text });
-        try obj.put(arena, "byte_count", .{ .integer = @as(i64, result.byte_count) });
-        try obj.put(arena, "gz_count", .{ .integer = @as(i64, result.gz_count) });
-        return .{ .object = obj };
-    }
-    if (std.mem.eql(u8, params.command, "wgslender.reflect")) {
-        const items = params.arguments orelse return error.InvalidParams;
-        if (items.len < 1) return error.InvalidParams;
-        const uri = switch (items[0]) {
-            .string => |s| s,
-            else => return error.InvalidParams,
-        };
-        var version: wgslender.Reflect.JsonVersion = .v2;
-        if (items.len >= 2) {
-            const fmt_str = switch (items[1]) {
-                .string => |s| s,
-                .null => "v2",
-                else => return error.InvalidParams,
-            };
-            if (std.mem.eql(u8, fmt_str, "v1")) {
-                version = .v1;
-            } else if (std.mem.eql(u8, fmt_str, "v2")) {
-                version = .v2;
-            } else return error.InvalidParams;
-        }
-        var pretty = false;
-        if (items.len >= 3) switch (items[2]) {
-            .bool => |b| pretty = b,
-            .null => {},
-            else => return error.InvalidParams,
-        };
-        const result = self.handler.runReflect(arena, uri, version, pretty) catch |err| switch (err) {
-            error.UnknownCommand => return error.MethodNotFound,
-            error.InvalidParams => return error.InvalidParams,
-            error.DocumentNotFound => return error.InvalidParams,
-            error.MinifyFailed, error.ReflectFailed => return error.InternalError,
-            error.OutOfMemory => return error.OutOfMemory,
-        };
-        var obj: std.json.ObjectMap = .empty;
-        try obj.put(arena, "uri", .{ .string = result.uri });
-        try obj.put(arena, "version", .{ .integer = switch (result.version) {
-            .v1 => 1,
-            .v2 => 2,
-        } });
-        // Parse the reflect-emitted JSON back into LSPAny so the JSON-RPC
-        // response carries it as a structured object rather than a string.
-        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, result.json, .{
-            .max_value_len = null,
-        });
-        try obj.put(arena, "json", parsed);
-        return .{ .object = obj };
-    }
-    self.handler.executeCommand(params.command, params.arguments) catch |err| switch (err) {
-        error.UnknownCommand => return error.MethodNotFound,
-        error.InvalidParams => return error.InvalidParams,
-        error.DocumentNotFound => return error.InvalidParams,
-        error.MinifyFailed, error.ReflectFailed => return error.InternalError,
-        error.OutOfMemory => return error.OutOfMemory,
-    };
-    // Re-publish diagnostics so any minify-mode change takes effect
-    // immediately across all open documents.
-    self.republishAllDocumentsLocked();
-    return null;
+    const result = try native_workspace_commands.handle(&self.handler, arena, params);
+    if (result == null) self.republishAllDocumentsLocked();
+    return result;
 }
 
 fn pickWorkspaceRoot(
