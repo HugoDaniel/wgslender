@@ -29,6 +29,7 @@ const wasm_code_actions = @import("wasm/code_actions.zig");
 const wasm_document_sync = @import("wasm/document_sync.zig");
 const wasm_lifecycle = @import("wasm/lifecycle.zig");
 const wasm_navigation = @import("wasm/navigation.zig");
+const wasm_symbols = @import("wasm/symbols.zig");
 const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
@@ -406,41 +407,16 @@ fn handleDocumentHighlight(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_navigation.handleDocumentHighlight(navCtx(), root, id);
 }
 
+fn symbolsCtx() wasm_symbols.Ctx {
+    return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
+}
+
 fn handleRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const new_name = strVal(objGet(params, "newName")) orelse return sendResult(id, "null");
-
-    const edits = handler.computeRename(p.uri, .{ .line = p.line, .character = p.char }, new_name) catch return sendResult(id, "null");
-    const handler_edits = edits orelse return sendResult(id, "null");
-    defer handler.gpa.free(handler_edits);
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"changes\":{\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
-    appendStr(&buf, "\":[");
-    for (handler_edits, 0..) |edit, i| {
-        if (i > 0) appendStr(&buf, ",");
-        appendStr(&buf, "{\"range\":");
-        formatRange(&buf, edit.range);
-        appendStr(&buf, ",\"newText\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, edit.new_text) catch return;
-        appendStr(&buf, "\"}");
-    }
-    appendStr(&buf, "]}}");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_symbols.handleRename(symbolsCtx(), root, id);
 }
 
 fn handlePrepareRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const range = handler.prepareRename(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
-    const r = range orelse return sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"range\":");
-    formatRange(&buf, r);
-    appendStr(&buf, ",\"placeholder\":\"\"}");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_symbols.handlePrepareRename(symbolsCtx(), root, id);
 }
 
 fn handleCompletion(root: std.json.ObjectMap, id: ?std.json.Value) void {
@@ -506,48 +482,7 @@ fn handleSignatureHelp(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 fn handleDocumentSymbol(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const uri = extractUri(root) orelse return sendResult(id, "null");
-    const symbols = handler.computeDocumentSymbols(uri) catch return sendResult(id, "null");
-    defer handler.gpa.free(symbols);
-    if (symbols.len == 0) return sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (symbols, 0..) |sym, i| {
-        if (i > 0) appendStr(&buf, ",");
-        emitDocSymbol(&buf, sym);
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
-}
-
-fn emitDocSymbol(buf: *std.ArrayListUnmanaged(u8), sym: Handler.DocumentSymbolInfo) void {
-    appendStr(buf, "{\"name\":\"");
-    Diagnostic.appendJsonEscaped(buf, wasm_allocator, sym.name) catch return;
-    appendStr(buf, "\",\"kind\":");
-    const kind_num: u32 = switch (sym.kind) {
-        .function => 12,
-        .struct_type => 23,
-        .variable => 13,
-        .constant => 14,
-        .field => 8,
-        .type_alias => 5,
-        .override => 14,
-    };
-    appendUint(buf, kind_num);
-    appendStr(buf, ",\"range\":");
-    formatRange(buf, sym.range);
-    appendStr(buf, ",\"selectionRange\":");
-    formatRange(buf, sym.selection_range);
-    if (sym.children.len > 0) {
-        appendStr(buf, ",\"children\":[");
-        for (sym.children, 0..) |child, ci| {
-            if (ci > 0) appendStr(buf, ",");
-            emitDocSymbol(buf, child);
-        }
-        appendStr(buf, "]");
-    }
-    appendStr(buf, "}");
+    wasm_symbols.handleDocumentSymbol(symbolsCtx(), root, id);
 }
 
 fn handleFoldingRange(root: std.json.ObjectMap, id: ?std.json.Value) void {

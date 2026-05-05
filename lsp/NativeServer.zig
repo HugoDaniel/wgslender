@@ -39,6 +39,7 @@ const native_code_actions = @import("native_code_actions");
 const native_document_sync = @import("native_document_sync");
 const native_lifecycle = @import("native_lifecycle");
 const native_navigation = @import("native_navigation");
+const native_symbols = @import("native_symbols");
 const Debouncer = @import("Debouncer.zig");
 const uri_module = @import("uri.zig");
 
@@ -548,26 +549,7 @@ pub fn @"textDocument/rename"(
 ) ?lsp.types.WorkspaceEdit {
     self.lock();
     defer self.unlock();
-    const edits = self.handler.computeRename(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-        params.newName,
-    ) catch return null;
-    const handler_edits = edits orelse return null;
-    defer self.handler.gpa.free(handler_edits);
-    const text_edits = arena.alloc(lsp.types.TextEdit, handler_edits.len) catch return null;
-    for (handler_edits, 0..) |edit, i| {
-        text_edits[i] = .{
-            .range = .{
-                .start = .{ .line = edit.range.start.line, .character = edit.range.start.character },
-                .end = .{ .line = edit.range.end.line, .character = edit.range.end.character },
-            },
-            .newText = edit.new_text,
-        };
-    }
-    var changes = std.json.ArrayHashMap([]const lsp.types.TextEdit){};
-    changes.map.put(arena, params.textDocument.uri, text_edits) catch return null;
-    return .{ .changes = changes };
+    return native_symbols.handleRename(&self.handler, arena, params);
 }
 
 pub fn @"textDocument/prepareRename"(
@@ -577,20 +559,7 @@ pub fn @"textDocument/prepareRename"(
 ) ?lsp.types.prepare_rename.Result {
     self.lock();
     defer self.unlock();
-    const range = self.handler.prepareRename(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-    ) catch return null;
-    const r = range orelse return null;
-    return .{
-        .prepare_rename_placeholder = .{
-            .range = .{
-                .start = .{ .line = r.start.line, .character = r.start.character },
-                .end = .{ .line = r.end.line, .character = r.end.character },
-            },
-            .placeholder = "",
-        },
-    };
+    return native_symbols.handlePrepareRename(&self.handler, params);
 }
 
 // =========================================================================
@@ -680,48 +649,7 @@ pub fn @"textDocument/documentSymbol"(
 ) ?lsp.types.DocumentSymbol.Result {
     self.lock();
     defer self.unlock();
-    const symbols = self.handler.computeDocumentSymbols(params.textDocument.uri) catch return null;
-    defer self.handler.gpa.free(symbols);
-    if (symbols.len == 0) return null;
-    const lsp_symbols = arena.alloc(lsp.types.DocumentSymbol, symbols.len) catch return null;
-    for (symbols, 0..) |sym, i| {
-        lsp_symbols[i] = convertDocSymbol(arena, sym);
-    }
-    return .{ .document_symbols = lsp_symbols };
-}
-
-fn convertDocSymbol(arena: std.mem.Allocator, sym: Handler.DocumentSymbolInfo) lsp.types.DocumentSymbol {
-    var children: ?[]const lsp.types.DocumentSymbol = null;
-    if (sym.children.len > 0) {
-        const ch = arena.alloc(lsp.types.DocumentSymbol, sym.children.len) catch null;
-        if (ch) |c| {
-            for (sym.children, 0..) |child, ci| {
-                c[ci] = convertDocSymbol(arena, child);
-            }
-            children = c;
-        }
-    }
-    return .{
-        .name = sym.name,
-        .kind = switch (sym.kind) {
-            .function => .Function,
-            .struct_type => .Struct,
-            .variable => .Variable,
-            .constant => .Constant,
-            .field => .Field,
-            .type_alias => .Class,
-            .override => .Constant,
-        },
-        .range = .{
-            .start = .{ .line = sym.range.start.line, .character = sym.range.start.character },
-            .end = .{ .line = sym.range.end.line, .character = sym.range.end.character },
-        },
-        .selectionRange = .{
-            .start = .{ .line = sym.selection_range.start.line, .character = sym.selection_range.start.character },
-            .end = .{ .line = sym.selection_range.end.line, .character = sym.selection_range.end.character },
-        },
-        .children = children,
-    };
+    return native_symbols.handleDocumentSymbol(&self.handler, arena, params);
 }
 
 // =========================================================================
