@@ -54,7 +54,7 @@
   "homepage": "https://github.com/HugoDaniel/wgslender",
   "license": "CC0-1.0",
   "scripts": {
-    "test": "node test/node-cjs.cjs"
+    "test": "node test/node-cjs.cjs && node test/node-esm.mjs"
   },
   "engines": {
     "node": ">=16"
