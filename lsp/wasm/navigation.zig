@@ -1,13 +1,12 @@
 //! WASM navigation adapters: hover, definition, typeDefinition,
-//! references, documentHighlight. Builds JSON manually.
+//! references, documentHighlight. Param parsing lives here; JSON
+//! emission for each result shape is delegated to `wire/navigation.zig`.
 
 const std = @import("std");
 const Handler = @import("Handler");
-const wgslender = @import("wgslender");
 const wire = @import("wire");
 const json = wire.primitives;
-
-const Diagnostic = wgslender.Diagnostic;
+const wire_nav = wire.navigation;
 
 pub const Ctx = struct {
     gpa: std.mem.Allocator,
@@ -22,11 +21,13 @@ pub fn handleHover(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void
     defer ctx.handler.gpa.free(r.contents);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    json.appendStr(&buf, ctx.gpa, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
-    Diagnostic.appendJsonEscaped(&buf, ctx.gpa, r.contents) catch return;
-    json.appendStr(&buf, ctx.gpa, "\"},\"range\":");
-    json.formatRange(&buf, ctx.gpa, r.range);
-    json.appendStr(&buf, ctx.gpa, "}");
+    wire_nav.appendHover(&buf, ctx.gpa, r);
+    ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
+}
+
+fn sendSingleLocation(ctx: Ctx, id: ?std.json.Value, uri: []const u8, range: Handler.Range) void {
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    wire_nav.appendLocation(&buf, ctx.gpa, uri, range);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
 
@@ -34,60 +35,33 @@ pub fn handleDefinition(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value)
     const p = json.extractUriAndPosition(root) orelse return ctx.sendResult(id, "null");
     const range = ctx.handler.computeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return ctx.sendResult(id, "null");
     const r = range orelse return ctx.sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    json.appendStr(&buf, ctx.gpa, "{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, ctx.gpa, p.uri) catch return;
-    json.appendStr(&buf, ctx.gpa, "\",\"range\":");
-    json.formatRange(&buf, ctx.gpa, r);
-    json.appendStr(&buf, ctx.gpa, "}");
-    ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
+    sendSingleLocation(ctx, id, p.uri, r);
 }
 
 pub fn handleTypeDefinition(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
     const p = json.extractUriAndPosition(root) orelse return ctx.sendResult(id, "null");
     const range = ctx.handler.computeTypeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return ctx.sendResult(id, "null");
     const r = range orelse return ctx.sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    json.appendStr(&buf, ctx.gpa, "{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, ctx.gpa, p.uri) catch return;
-    json.appendStr(&buf, ctx.gpa, "\",\"range\":");
-    json.formatRange(&buf, ctx.gpa, r);
-    json.appendStr(&buf, ctx.gpa, "}");
-    ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
+    sendSingleLocation(ctx, id, p.uri, r);
 }
 
 pub fn handleReferences(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
     const p = json.extractUriAndPosition(root) orelse return ctx.sendResult(id, "null");
     const params = root.getPtr("params") orelse return ctx.sendResult(id, "null");
     const c = json.objGet(params, "context");
-    const include_decl = if (c) |cv| blk: {
-        const v = json.objGet(cv, "includeDeclaration");
-        if (v) |val| {
-            break :blk switch (val.*) {
-                .bool => |b| b,
-                else => true,
-            };
-        }
-        break :blk true;
-    } else true;
+    const include_decl = if (c) |cv| json.boolVal(json.objGet(cv, "includeDeclaration")) orelse true else true;
 
     const refs = ctx.handler.computeReferences(p.uri, .{ .line = p.line, .character = p.char }, include_decl) catch return ctx.sendResult(id, "null");
     const handler_refs = refs orelse return ctx.sendResult(id, "null");
     defer ctx.handler.gpa.free(handler_refs);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    json.appendStr(&buf, ctx.gpa, "[");
+    buf.append(ctx.gpa, '[') catch return;
     for (handler_refs, 0..) |ref, i| {
-        if (i > 0) json.appendStr(&buf, ctx.gpa, ",");
-        json.appendStr(&buf, ctx.gpa, "{\"uri\":\"");
-        Diagnostic.appendJsonEscaped(&buf, ctx.gpa, p.uri) catch return;
-        json.appendStr(&buf, ctx.gpa, "\",\"range\":");
-        json.formatRange(&buf, ctx.gpa, ref);
-        json.appendStr(&buf, ctx.gpa, "}");
+        if (i > 0) buf.append(ctx.gpa, ',') catch {};
+        wire_nav.appendLocation(&buf, ctx.gpa, p.uri, ref);
     }
-    json.appendStr(&buf, ctx.gpa, "]");
+    buf.append(ctx.gpa, ']') catch return;
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
 
@@ -98,15 +72,11 @@ pub fn handleDocumentHighlight(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json
     defer ctx.handler.gpa.free(handler_highlights);
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    json.appendStr(&buf, ctx.gpa, "[");
+    buf.append(ctx.gpa, '[') catch return;
     for (handler_highlights, 0..) |h, i| {
-        if (i > 0) json.appendStr(&buf, ctx.gpa, ",");
-        json.appendStr(&buf, ctx.gpa, "{\"range\":");
-        json.formatRange(&buf, ctx.gpa, h.range);
-        json.appendStr(&buf, ctx.gpa, ",\"kind\":");
-        json.appendUint(&buf, ctx.gpa, @intFromEnum(h.kind));
-        json.appendStr(&buf, ctx.gpa, "}");
+        if (i > 0) buf.append(ctx.gpa, ',') catch {};
+        wire_nav.appendDocumentHighlight(&buf, ctx.gpa, h);
     }
-    json.appendStr(&buf, ctx.gpa, "]");
+    buf.append(ctx.gpa, ']') catch return;
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }

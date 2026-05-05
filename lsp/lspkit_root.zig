@@ -7,3 +7,5 @@
 
 pub const primitives = @import("lspkit/primitives.zig");
 pub const diagnostics = @import("lspkit/diagnostics.zig");
+pub const navigation = @import("lspkit/navigation.zig");
+pub const call_hierarchy = @import("lspkit/call_hierarchy.zig");

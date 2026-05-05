@@ -1,11 +1,14 @@
 //! Native navigation adapters: hover, definition, typeDefinition,
-//! references, documentHighlight. Lock/unlock stays in NativeServer.
+//! references, documentHighlight. Handler call + ownership lives here;
+//! shape conversion is delegated to `lspkit/navigation.zig`. Lock /
+//! unlock stays in NativeServer.
 
 const std = @import("std");
 const lsp = @import("lsp");
 const Handler = @import("Handler");
 const lspkit = @import("lspkit");
 const codec = lspkit.primitives;
+const nav = lspkit.navigation;
 
 pub fn handleHover(
     h: *Handler,
@@ -16,10 +19,7 @@ pub fn handleHover(
         codec.fromLspKitPosition(params.position),
     ) catch return null;
     const r = result orelse return null;
-    return .{
-        .contents = .{ .markup_content = .{ .kind = .markdown, .value = r.contents } },
-        .range = codec.toLspKitRange(r.range),
-    };
+    return nav.toLspKitHover(r);
 }
 
 pub fn handleDefinition(
@@ -31,14 +31,7 @@ pub fn handleDefinition(
         codec.fromLspKitPosition(params.position),
     ) catch return null;
     const r = range orelse return null;
-    return .{
-        .definition = .{
-            .location = .{
-                .uri = params.textDocument.uri,
-                .range = codec.toLspKitRange(r),
-            },
-        },
-    };
+    return nav.toLspKitDefinitionLocation(params.textDocument.uri, r);
 }
 
 pub fn handleTypeDefinition(
@@ -50,14 +43,7 @@ pub fn handleTypeDefinition(
         codec.fromLspKitPosition(params.position),
     ) catch return null;
     const r = range orelse return null;
-    return .{
-        .definition = .{
-            .location = .{
-                .uri = params.textDocument.uri,
-                .range = codec.toLspKitRange(r),
-            },
-        },
-    };
+    return nav.toLspKitDefinitionLocation(params.textDocument.uri, r);
 }
 
 pub fn handleReferences(
@@ -72,14 +58,7 @@ pub fn handleReferences(
     ) catch return null;
     const handler_refs = refs orelse return null;
     defer h.gpa.free(handler_refs);
-    const locations = arena.alloc(lsp.types.Location, handler_refs.len) catch return null;
-    for (handler_refs, 0..) |ref, i| {
-        locations[i] = .{
-            .uri = params.textDocument.uri,
-            .range = codec.toLspKitRange(ref),
-        };
-    }
-    return locations;
+    return nav.toLspKitLocations(arena, params.textDocument.uri, handler_refs) catch null;
 }
 
 pub fn handleDocumentHighlight(
@@ -93,16 +72,5 @@ pub fn handleDocumentHighlight(
     ) catch return null;
     const handler_highlights = highlights orelse return null;
     defer h.gpa.free(handler_highlights);
-    const result = arena.alloc(lsp.types.DocumentHighlight, handler_highlights.len) catch return null;
-    for (handler_highlights, 0..) |hl, i| {
-        result[i] = .{
-            .range = codec.toLspKitRange(hl.range),
-            .kind = switch (hl.kind) {
-                .text => .Text,
-                .read => .Read,
-                .write => .Write,
-            },
-        };
-    }
-    return result;
+    return nav.toLspKitDocumentHighlights(arena, handler_highlights) catch null;
 }

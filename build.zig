@@ -516,6 +516,8 @@ pub fn build(b: *std.Build) void {
     // `lsp/wire/` so both transports (and the parity harness) can reach
     // it as a registered module.
     _ = addTestStep(b, test_step, "lsp/wire/diagnostics.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "lsp/wire/navigation.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "lsp/wire/call_hierarchy.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // Native parity harness — asserts `lspkit/diagnostics.zig` and
     // `wire/diagnostics.zig` produce byte-equivalent JSON for every
     // `QuickFixHint` variant.
@@ -525,6 +527,16 @@ pub fn build(b: *std.Build) void {
         .{ .name = "lsp", .module = lsp_mod },
     });
     _ = addTestStep(b, test_step, "tests/lsp_diagnostic_parity_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+        .{ .name = "lspkit", .module = lspkit_mod },
+        .{ .name = "wire", .module = wire_mod },
+    });
+    // Parity harness for navigation + call_hierarchy: same property as
+    // diagnostics, but for `lspkit/{navigation,call_hierarchy}.zig` vs
+    // `wire/{navigation,call_hierarchy}.zig`.
+    _ = addTestStep(b, test_step, "tests/lsp_navigation_parity_test.zig", target, optimize, &.{
         w,
         .{ .name = "Handler", .module = handler_mod },
         .{ .name = "lsp", .module = lsp_mod },

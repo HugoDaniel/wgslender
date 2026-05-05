@@ -7,3 +7,5 @@
 
 pub const primitives = @import("wire/primitives.zig");
 pub const diagnostics = @import("wire/diagnostics.zig");
+pub const navigation = @import("wire/navigation.zig");
+pub const call_hierarchy = @import("wire/call_hierarchy.zig");
