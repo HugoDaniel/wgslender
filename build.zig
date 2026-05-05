@@ -104,7 +104,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     const bridge_mod = b.addModule("bridge", .{
-        .root_source_file = b.path("lsp/bridge.zig"),
+        .root_source_file = b.path("lsp/native/diagnostics.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -146,6 +146,23 @@ pub fn build(b: *std.Build) void {
     lsp_step.dependOn(&install_lsp.step);
 
     // LSP server (WASM)
+    const wgslender_wasm_mod = b.addModule("wgslender-wasm", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+    });
+    // Wasm-target Handler module — referenced by `lsp/wasm/<feature>.zig`
+    // adapters via `@import("Handler")` so they don't need cross-directory
+    // relative imports (Zig forbids `../` reaches outside a test module's
+    // root path).
+    const handler_wasm_mod = b.addModule("Handler-wasm", .{
+        .root_source_file = b.path("lsp/Handler.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "wgslender", .module = wgslender_wasm_mod },
+        },
+    });
     const lsp_wasm = b.addExecutable(.{
         .name = "wgslender-lsp",
         .root_module = b.createModule(.{
@@ -153,11 +170,8 @@ pub fn build(b: *std.Build) void {
             .target = wasm_target,
             .optimize = .ReleaseSmall,
             .imports = &.{
-                .{ .name = "wgslender", .module = b.addModule("wgslender-wasm", .{
-                    .root_source_file = b.path("src/root.zig"),
-                    .target = wasm_target,
-                    .optimize = .ReleaseSmall,
-                }) },
+                .{ .name = "wgslender", .module = wgslender_wasm_mod },
+                .{ .name = "Handler", .module = handler_wasm_mod },
             },
         }),
     });
@@ -368,17 +382,15 @@ pub fn build(b: *std.Build) void {
         .{ .name = "lsp", .module = lsp_mod },
     });
     // Unit tests for the shared WASM diagnostic-items JSON encoder.
-    // Tested as its own root module so `@import("Handler.zig")` resolves
-    // locally (matches how `lsp/wasm.zig` consumes it at build time).
-    _ = addTestStep(b, test_step, "lsp/diagnostic_json.zig", target, optimize, &.{w});
+    // Tested with the named `Handler` module because the file lives in
+    // `lsp/wasm/` — its module root path can't reach `../Handler.zig`.
+    _ = addTestStep(b, test_step, "lsp/wasm/diagnostics.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // Regression test for publishDiagnostics message/codeDescription.href
     // corruption after codeLens/documentHighlight + incremental edit.
     // Drives the Handler directly and renders through the same
-    // `diagnostic_json.appendDiagnosticItems` path the WASM transport
+    // `wasm/diagnostics.appendDiagnosticItems` path the WASM transport
     // uses, so byte-level assertions see what an editor sees on the wire.
-    // Lives under lsp/ so sibling file imports for Handler.zig and
-    // diagnostic_json.zig stay inside the test module's path.
-    _ = addTestStep(b, test_step, "lsp/diagnostic_corruption_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "lsp/diagnostic_corruption_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // Phase 7 idle-debounce data structure. Pure unit tests against the
     // arm / clear / popDue / nextDeadline contract that the native
     // timer thread will later drive.

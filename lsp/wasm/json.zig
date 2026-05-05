@@ -14,7 +14,7 @@
 //!      `Server.zig` since they need access to the per-instance outbox.
 
 const std = @import("std");
-const Handler = @import("../Handler.zig");
+const Handler = @import("Handler");
 
 // =========================================================================
 // Pure read helpers

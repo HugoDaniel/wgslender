@@ -9,7 +9,7 @@
 //! identity is preserved across calls because `Server` is a single global.
 
 const std = @import("std");
-const Handler = @import("../Handler.zig");
+const Handler = @import("Handler");
 const json = @import("json.zig");
 
 const Server = @This();

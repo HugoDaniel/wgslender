@@ -23,8 +23,8 @@
 
 const std = @import("std");
 const wgslender = @import("wgslender");
-const Handler = @import("Handler.zig");
-const diagnostic_json = @import("diagnostic_json.zig");
+const Handler = @import("Handler");
+const wasm_diagnostics = @import("wasm/diagnostics.zig");
 const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
@@ -455,7 +455,7 @@ fn handleCodeAction(root: std.json.ObjectMap, id: ?std.json.Value) void {
         else => return,
     };
 
-    const handler_diags = diagnostic_json.parseDiagnosticItems(wasm_allocator, diag_array) orelse return;
+    const handler_diags = wasm_diagnostics.parseDiagnosticItems(wasm_allocator, diag_array) orelse return;
     defer wasm_allocator.free(handler_diags);
 
     const actions = handler.computeCodeActions(handler_diags) catch return;
@@ -1061,93 +1061,20 @@ fn handleOutgoingCalls(root: std.json.ObjectMap, id: ?std.json.Value) void {
 // Diagnostics (reuses Handler.validateDocument + Handler.LspDiagnostic)
 // =========================================================================
 
-/// Emit diagnostics for `uri`. The full variant runs the validator AND
-/// the minify lint pack — used for paths that explicitly want M-rules:
-/// didOpen (initial impression), didSave, and the
-/// `wgslender/recomputeMinifyInsights` notification (which warms the
-/// cache up front so the estimator runs at most once).
+fn diagCtx() wasm_diagnostics.Ctx {
+    return .{ .gpa = wasm_allocator, .handler = &handler, .outbox = &outbox };
+}
+
 fn emitDiagnostics(uri: []const u8) void {
-    emitDiagnosticsImpl(uri, true);
+    wasm_diagnostics.emitDiagnostics(diagCtx(), uri);
 }
 
-/// Phase 7 cheap-path emit for the WASM transport. Skips the minify
-/// lint pack so a rapid `didChange` burst doesn't hit the estimator
-/// every keystroke. JS clients that care about M-rule diagnostics
-/// schedule a `wgslender/recomputeMinifyInsights` notification on
-/// idle (≈300ms) — that's the contract documented in master plan
-/// §18.5. The native transport will pick up the same split when its
-/// idle-timer thread lands.
 fn emitDiagnosticsCheap(uri: []const u8) void {
-    emitDiagnosticsImpl(uri, false);
+    wasm_diagnostics.emitDiagnosticsCheap(diagCtx(), uri);
 }
 
-fn emitDiagnosticsImpl(uri: []const u8, include_minify_lints: bool) void {
-    if (!handler.diagnosticsEnabled()) return;
-    const diags = if (include_minify_lints)
-        handler.validateDocumentFull(uri) catch return
-    else
-        handler.validateDocumentCheap(uri) catch return;
-    defer Handler.freeDiagnostics(handler.gpa, diags);
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, uri) catch return;
-    appendStr(&buf, "\",\"diagnostics\":");
-    diagnostic_json.appendDiagnosticItems(&buf, wasm_allocator, uri, diags);
-    appendStr(&buf, "}}");
-    enqueue(buf.toOwnedSlice(wasm_allocator) catch return);
-}
-
-/// Pull-model diagnostics (LSP 3.17 `textDocument/diagnostic`). Returns a
-/// Full report (or Unchanged when `previousResultId` matches the current
-/// revision key). Unknown URIs and `diagnostics.enabled=false` both answer
-/// with an empty Full report — pull clients wait for a response, so
-/// silence would hang the UI.
 fn handlePullDiagnostic(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    if (id == null) return;
-    const params = root.getPtr("params") orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-    const td = objGet(params, "textDocument") orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-
-    if (!handler.diagnosticsEnabled()) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-    if (handler.getDocumentSource(uri) == null) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-
-    var id_buf: [10]u8 = undefined;
-    const current_id: ?[]const u8 = if (handler.currentResultId(uri)) |v|
-        std.fmt.bufPrint(&id_buf, "{d}", .{v}) catch null
-    else
-        null;
-
-    if (current_id) |cur| {
-        const prev = strVal(objGet(params, "previousResultId"));
-        if (prev != null and std.mem.eql(u8, prev.?, cur)) {
-            var ubuf: std.ArrayListUnmanaged(u8) = .empty;
-            appendStr(&ubuf, "{\"kind\":\"unchanged\",\"resultId\":\"");
-            appendStr(&ubuf, cur);
-            appendStr(&ubuf, "\"}");
-            const ubody = ubuf.toOwnedSlice(wasm_allocator) catch return;
-            defer wasm_allocator.free(ubody);
-            sendResult(id, ubody);
-            return;
-        }
-    }
-
-    const diags = handler.validateDocumentFull(uri) catch return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-    defer Handler.freeDiagnostics(handler.gpa, diags);
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"kind\":\"full\"");
-    if (current_id) |cur| {
-        appendStr(&buf, ",\"resultId\":\"");
-        appendStr(&buf, cur);
-        appendStr(&buf, "\"");
-    }
-    appendStr(&buf, ",\"items\":");
-    diagnostic_json.appendDiagnosticItems(&buf, wasm_allocator, uri, diags);
-    appendStr(&buf, "}");
-    const body = buf.toOwnedSlice(wasm_allocator) catch return;
-    defer wasm_allocator.free(body);
-    sendResult(id, body);
+    wasm_diagnostics.handlePullDiagnostic(diagCtx(), sendResult, root, id);
 }
 
 // =========================================================================

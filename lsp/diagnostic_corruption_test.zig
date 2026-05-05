@@ -17,8 +17,8 @@
 //! (`'vec3f' requires 3 components`).
 
 const std = @import("std");
-const Handler = @import("Handler.zig");
-const diagnostic_json = @import("diagnostic_json.zig");
+const Handler = @import("Handler");
+const diagnostic_json = @import("wasm/diagnostics.zig");
 
 const uri = "test://t.wgsl";
 
