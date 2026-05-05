@@ -16,3 +16,9 @@
 [submodule "external/eslint"]
 	path = external/eslint
 	url = git@github.com:eslint/eslint.git
+[submodule "external/wgsl_reflect"]
+	path = external/wgsl_reflect
+	url = git@github.com:brendan-duncan/wgsl_reflect.git
+[submodule "external/vscode-extension-samples"]
+	path = external/vscode-extension-samples
+	url = git@github.com:microsoft/vscode-extension-samples.git
