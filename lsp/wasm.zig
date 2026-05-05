@@ -28,6 +28,7 @@ const wasm_diagnostics = @import("wasm/diagnostics.zig");
 const wasm_code_actions = @import("wasm/code_actions.zig");
 const wasm_document_sync = @import("wasm/document_sync.zig");
 const wasm_lifecycle = @import("wasm/lifecycle.zig");
+const wasm_navigation = @import("wasm/navigation.zig");
 const json = @import("wasm/json.zig");
 
 const Diagnostic = wgslender.Diagnostic;
@@ -381,25 +382,12 @@ fn extractUriAndPosition(root: std.json.ObjectMap) ?json.UriPosition {
     return json.extractUriAndPosition(root);
 }
 
-fn handleHover(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const result = handler.computeHover(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
-    const r = result orelse return sendResult(id, "null");
-    defer handler.gpa.free(r.contents);
+fn navCtx() wasm_navigation.Ctx {
+    return .{ .gpa = wasm_allocator, .handler = &handler, .sendResult = sendResult };
+}
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, r.contents) catch return;
-    appendStr(&buf, "\"},\"range\":{\"start\":{\"line\":");
-    appendUint(&buf, r.range.start.line);
-    appendStr(&buf, ",\"character\":");
-    appendUint(&buf, r.range.start.character);
-    appendStr(&buf, "},\"end\":{\"line\":");
-    appendUint(&buf, r.range.end.line);
-    appendStr(&buf, ",\"character\":");
-    appendUint(&buf, r.range.end.character);
-    appendStr(&buf, "}}}");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+fn handleHover(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_navigation.handleHover(navCtx(), root, id);
 }
 
 fn formatRange(buf: *std.ArrayListUnmanaged(u8), range: Handler.Range) void {
@@ -407,70 +395,15 @@ fn formatRange(buf: *std.ArrayListUnmanaged(u8), range: Handler.Range) void {
 }
 
 fn handleDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const range = handler.computeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
-    const r = range orelse return sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
-    appendStr(&buf, "\",\"range\":");
-    formatRange(&buf, r);
-    appendStr(&buf, "}");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_navigation.handleDefinition(navCtx(), root, id);
 }
 
 fn handleReferences(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const params = root.getPtr("params") orelse return sendResult(id, "null");
-    const ctx = objGet(params, "context");
-    const include_decl = if (ctx) |c| blk: {
-        const v = objGet(c, "includeDeclaration");
-        if (v) |val| {
-            break :blk switch (val.*) {
-                .bool => |b| b,
-                else => true,
-            };
-        }
-        break :blk true;
-    } else true;
-
-    const refs = handler.computeReferences(p.uri, .{ .line = p.line, .character = p.char }, include_decl) catch return sendResult(id, "null");
-    const handler_refs = refs orelse return sendResult(id, "null");
-    defer handler.gpa.free(handler_refs);
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (handler_refs, 0..) |ref, i| {
-        if (i > 0) appendStr(&buf, ",");
-        appendStr(&buf, "{\"uri\":\"");
-        Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
-        appendStr(&buf, "\",\"range\":");
-        formatRange(&buf, ref);
-        appendStr(&buf, "}");
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_navigation.handleReferences(navCtx(), root, id);
 }
 
 fn handleDocumentHighlight(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const highlights = handler.computeDocumentHighlight(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
-    const handler_highlights = highlights orelse return sendResult(id, "null");
-    defer handler.gpa.free(handler_highlights);
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "[");
-    for (handler_highlights, 0..) |h, i| {
-        if (i > 0) appendStr(&buf, ",");
-        appendStr(&buf, "{\"range\":");
-        formatRange(&buf, h.range);
-        appendStr(&buf, ",\"kind\":");
-        appendUint(&buf, @intFromEnum(h.kind));
-        appendStr(&buf, "}");
-    }
-    appendStr(&buf, "]");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_navigation.handleDocumentHighlight(navCtx(), root, id);
 }
 
 fn handleRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
@@ -640,17 +573,7 @@ fn handleFoldingRange(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 
 fn handleTypeDefinition(root: std.json.ObjectMap, id: ?std.json.Value) void {
-    const p = extractUriAndPosition(root) orelse return sendResult(id, "null");
-    const range = handler.computeTypeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return sendResult(id, "null");
-    const r = range orelse return sendResult(id, "null");
-
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, "{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, wasm_allocator, p.uri) catch return;
-    appendStr(&buf, "\",\"range\":");
-    formatRange(&buf, r);
-    appendStr(&buf, "}");
-    sendResult(id, buf.toOwnedSlice(wasm_allocator) catch return);
+    wasm_navigation.handleTypeDefinition(navCtx(), root, id);
 }
 
 fn handleInlayHint(root: std.json.ObjectMap, id: ?std.json.Value) void {

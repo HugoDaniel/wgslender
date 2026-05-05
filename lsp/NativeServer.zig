@@ -38,6 +38,7 @@ const bridge = @import("bridge");
 const native_code_actions = @import("native_code_actions");
 const native_document_sync = @import("native_document_sync");
 const native_lifecycle = @import("native_lifecycle");
+const native_navigation = @import("native_navigation");
 const Debouncer = @import("Debouncer.zig");
 const uri_module = @import("uri.zig");
 
@@ -493,7 +494,7 @@ pub fn @"textDocument/codeAction"(
 }
 
 // =========================================================================
-// Hover
+// Navigation (hover, definition, references, documentHighlight)
 // =========================================================================
 
 pub fn @"textDocument/hover"(
@@ -503,23 +504,8 @@ pub fn @"textDocument/hover"(
 ) ?lsp.types.Hover {
     self.lock();
     defer self.unlock();
-    const result = self.handler.computeHover(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-    ) catch return null;
-    const r = result orelse return null;
-    return .{
-        .contents = .{ .markup_content = .{ .kind = .markdown, .value = r.contents } },
-        .range = .{
-            .start = .{ .line = r.range.start.line, .character = r.range.start.character },
-            .end = .{ .line = r.range.end.line, .character = r.range.end.character },
-        },
-    };
+    return native_navigation.handleHover(&self.handler, params);
 }
-
-// =========================================================================
-// Go-to-Definition
-// =========================================================================
 
 pub fn @"textDocument/definition"(
     self: *NativeServer,
@@ -528,27 +514,8 @@ pub fn @"textDocument/definition"(
 ) ?lsp.types.Definition.Result {
     self.lock();
     defer self.unlock();
-    const range = self.handler.computeDefinition(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-    ) catch return null;
-    const r = range orelse return null;
-    return .{
-        .definition = .{
-            .location = .{
-                .uri = params.textDocument.uri,
-                .range = .{
-                    .start = .{ .line = r.start.line, .character = r.start.character },
-                    .end = .{ .line = r.end.line, .character = r.end.character },
-                },
-            },
-        },
-    };
+    return native_navigation.handleDefinition(&self.handler, params);
 }
-
-// =========================================================================
-// Find References
-// =========================================================================
 
 pub fn @"textDocument/references"(
     self: *NativeServer,
@@ -557,29 +524,8 @@ pub fn @"textDocument/references"(
 ) ?[]const lsp.types.Location {
     self.lock();
     defer self.unlock();
-    const refs = self.handler.computeReferences(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-        params.context.includeDeclaration,
-    ) catch return null;
-    const handler_refs = refs orelse return null;
-    defer self.handler.gpa.free(handler_refs);
-    const locations = arena.alloc(lsp.types.Location, handler_refs.len) catch return null;
-    for (handler_refs, 0..) |ref, i| {
-        locations[i] = .{
-            .uri = params.textDocument.uri,
-            .range = .{
-                .start = .{ .line = ref.start.line, .character = ref.start.character },
-                .end = .{ .line = ref.end.line, .character = ref.end.character },
-            },
-        };
-    }
-    return locations;
+    return native_navigation.handleReferences(&self.handler, arena, params);
 }
-
-// =========================================================================
-// Document Highlight
-// =========================================================================
 
 pub fn @"textDocument/documentHighlight"(
     self: *NativeServer,
@@ -588,27 +534,7 @@ pub fn @"textDocument/documentHighlight"(
 ) ?[]const lsp.types.DocumentHighlight {
     self.lock();
     defer self.unlock();
-    const highlights = self.handler.computeDocumentHighlight(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-    ) catch return null;
-    const handler_highlights = highlights orelse return null;
-    defer self.handler.gpa.free(handler_highlights);
-    const result = arena.alloc(lsp.types.DocumentHighlight, handler_highlights.len) catch return null;
-    for (handler_highlights, 0..) |h, i| {
-        result[i] = .{
-            .range = .{
-                .start = .{ .line = h.range.start.line, .character = h.range.start.character },
-                .end = .{ .line = h.range.end.line, .character = h.range.end.character },
-            },
-            .kind = switch (h.kind) {
-                .text => .Text,
-                .read => .Read,
-                .write => .Write,
-            },
-        };
-    }
-    return result;
+    return native_navigation.handleDocumentHighlight(&self.handler, arena, params);
 }
 
 // =========================================================================
@@ -837,22 +763,7 @@ pub fn @"textDocument/typeDefinition"(
 ) ?lsp.types.Definition.Result {
     self.lock();
     defer self.unlock();
-    const range = self.handler.computeTypeDefinition(
-        params.textDocument.uri,
-        .{ .line = params.position.line, .character = params.position.character },
-    ) catch return null;
-    const r = range orelse return null;
-    return .{
-        .definition = .{
-            .location = .{
-                .uri = params.textDocument.uri,
-                .range = .{
-                    .start = .{ .line = r.start.line, .character = r.start.character },
-                    .end = .{ .line = r.end.line, .character = r.end.character },
-                },
-            },
-        },
-    };
+    return native_navigation.handleTypeDefinition(&self.handler, params);
 }
 
 // =========================================================================

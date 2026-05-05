@@ -6,7 +6,7 @@
 const std = @import("std");
 const lsp = @import("lsp");
 const Handler = @import("Handler");
-const codec = @import("codec.zig");
+const codec = @import("codec");
 
 pub fn handle(
     h: *Handler,

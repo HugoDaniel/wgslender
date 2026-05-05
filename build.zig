@@ -116,9 +116,18 @@ pub fn build(b: *std.Build) void {
     // Per-feature native adapters live under lsp/native/. Each one takes
     // a `*Handler` + per-call arena and converts between `Handler` types
     // and `lsp.types.*`. NativeServer keeps the lifecycle / mutex / timer
-    // and delegates the per-method body to these. Sibling files (`codec.zig`)
-    // are pulled in via relative imports — only the top-level entry needs
-    // a named module registration so NativeServer can `@import("native_*")`.
+    // and delegates the per-method body to these. `codec.zig` is its own
+    // module since multiple per-feature adapters share it (Zig requires
+    // each file to belong to exactly one module).
+    const native_codec_mod = b.addModule("native_codec", .{
+        .root_source_file = b.path("lsp/native/codec.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "Handler", .module = handler_mod },
+        },
+    });
     const native_code_actions_mod = b.addModule("native_code_actions", .{
         .root_source_file = b.path("lsp/native/code_actions.zig"),
         .target = target,
@@ -126,6 +135,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "codec", .module = native_codec_mod },
         },
     });
     const native_document_sync_mod = b.addModule("native_document_sync", .{
@@ -145,6 +155,16 @@ pub fn build(b: *std.Build) void {
             .{ .name = "lsp", .module = lsp_mod },
         },
     });
+    const native_navigation_mod = b.addModule("native_navigation", .{
+        .root_source_file = b.path("lsp/native/navigation.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "codec", .module = native_codec_mod },
+        },
+    });
 
     // NativeServer dispatcher — extracted from main.zig so the Phase 7
     // perf tests can drive the timer-thread + debouncer integration
@@ -161,6 +181,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "native_code_actions", .module = native_code_actions_mod },
             .{ .name = "native_document_sync", .module = native_document_sync_mod },
             .{ .name = "native_lifecycle", .module = native_lifecycle_mod },
+            .{ .name = "native_navigation", .module = native_navigation_mod },
         },
     });
 
