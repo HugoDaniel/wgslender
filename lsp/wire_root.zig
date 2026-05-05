@@ -12,3 +12,5 @@ pub const call_hierarchy = @import("wire/call_hierarchy.zig");
 pub const edits = @import("wire/edits.zig");
 pub const symbols = @import("wire/symbols.zig");
 pub const code_actions = @import("wire/code_actions.zig");
+pub const editing = @import("wire/editing.zig");
+pub const workspace_commands = @import("wire/workspace_commands.zig");

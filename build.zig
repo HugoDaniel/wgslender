@@ -219,6 +219,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "wgslender", .module = wgslender_mod },
             .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
         },
     });
 
@@ -521,6 +522,8 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "lsp/wire/edits.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "lsp/wire/symbols.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "lsp/wire/code_actions.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "lsp/wire/editing.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "lsp/wire/workspace_commands.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // Native parity harness — asserts `lspkit/diagnostics.zig` and
     // `wire/diagnostics.zig` produce byte-equivalent JSON for every
     // `QuickFixHint` variant.
@@ -558,6 +561,18 @@ pub fn build(b: *std.Build) void {
         .{ .name = "lspkit", .module = lspkit_mod },
         .{ .name = "wire", .module = wire_mod },
     });
+    // Parity harness for the editing batch + workspace_commands. Asserts
+    // `lspkit/{editing,workspace_commands}.zig` and
+    // `wire/{editing,workspace_commands}.zig` produce byte-equivalent
+    // JSON, including the InlayHint LabelPart `def_range` null-vs-set
+    // case the migration plan called out as a known divergence.
+    _ = addTestStep(b, test_step, "tests/lsp_editing_parity_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+        .{ .name = "lspkit", .module = lspkit_mod },
+        .{ .name = "wire", .module = wire_mod },
+    });
     // Standalone test for the lspkit edits + symbols + code_actions
     // bridges (assertions on the resulting `lsp.types.*` shape).
     _ = addTestStep(b, test_step, "lsp/lspkit/edits.zig", target, optimize, &.{
@@ -571,6 +586,16 @@ pub fn build(b: *std.Build) void {
         .{ .name = "lsp", .module = lsp_mod },
     });
     _ = addTestStep(b, test_step, "lsp/lspkit/code_actions.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+    });
+    _ = addTestStep(b, test_step, "lsp/lspkit/editing.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+    });
+    _ = addTestStep(b, test_step, "lsp/lspkit/workspace_commands.zig", target, optimize, &.{
         w,
         .{ .name = "Handler", .module = handler_mod },
         .{ .name = "lsp", .module = lsp_mod },

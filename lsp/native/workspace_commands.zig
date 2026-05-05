@@ -7,6 +7,8 @@ const std = @import("std");
 const lsp = @import("lsp");
 const wgslender = @import("wgslender");
 const Handler = @import("Handler");
+const lspkit = @import("lspkit");
+const ws_codec = lspkit.workspace_commands;
 
 pub fn handle(
     h: *Handler,
@@ -47,12 +49,7 @@ fn runShowMinifiedOutput(
         error.MinifyFailed, error.ReflectFailed => return error.InternalError,
         error.OutOfMemory => return error.OutOfMemory,
     };
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "uri", .{ .string = result.uri });
-    try obj.put(arena, "minified_text", .{ .string = result.minified_text });
-    try obj.put(arena, "byte_count", .{ .integer = @as(i64, result.byte_count) });
-    try obj.put(arena, "gz_count", .{ .integer = @as(i64, result.gz_count) });
-    return .{ .object = obj };
+    return try ws_codec.toLspKitShowMinifiedOutput(arena, result);
 }
 
 fn runReflect(
@@ -92,15 +89,5 @@ fn runReflect(
         error.MinifyFailed, error.ReflectFailed => return error.InternalError,
         error.OutOfMemory => return error.OutOfMemory,
     };
-    var obj: std.json.ObjectMap = .empty;
-    try obj.put(arena, "uri", .{ .string = result.uri });
-    try obj.put(arena, "version", .{ .integer = switch (result.version) {
-        .v1 => 1,
-        .v2 => 2,
-    } });
-    const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena, result.json, .{
-        .max_value_len = null,
-    });
-    try obj.put(arena, "json", parsed);
-    return .{ .object = obj };
+    return try ws_codec.toLspKitReflectResult(arena, result);
 }

@@ -12,3 +12,5 @@ pub const call_hierarchy = @import("lspkit/call_hierarchy.zig");
 pub const edits = @import("lspkit/edits.zig");
 pub const symbols = @import("lspkit/symbols.zig");
 pub const code_actions = @import("lspkit/code_actions.zig");
+pub const editing = @import("lspkit/editing.zig");
+pub const workspace_commands = @import("lspkit/workspace_commands.zig");

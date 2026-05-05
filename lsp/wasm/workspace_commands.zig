@@ -9,10 +9,9 @@ const Handler = @import("Handler");
 const wgslender = @import("wgslender");
 const wire = @import("wire");
 const json = wire.primitives;
+const wire_workspace = wire.workspace_commands;
 const wasm_diagnostics = @import("diagnostics.zig");
 const wasm_lifecycle = @import("lifecycle.zig");
-
-const Diagnostic = wgslender.Diagnostic;
 
 pub const Ctx = struct {
     gpa: std.mem.Allocator,
@@ -74,16 +73,7 @@ pub fn handleReflect(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) vo
     };
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    json.appendStr(&buf, ctx.gpa, "{\"uri\":\"");
-    Diagnostic.appendJsonEscaped(&buf, ctx.gpa, result.uri) catch return;
-    json.appendStr(&buf, ctx.gpa, "\",\"version\":");
-    json.appendStr(&buf, ctx.gpa, switch (result.version) {
-        .v1 => "1",
-        .v2 => "2",
-    });
-    json.appendStr(&buf, ctx.gpa, ",\"json\":");
-    buf.appendSlice(ctx.gpa, result.json) catch return;
-    json.appendStr(&buf, ctx.gpa, "}");
+    wire_workspace.appendReflectResult(&buf, ctx.gpa, result);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
 
@@ -127,15 +117,7 @@ pub fn handleExecuteCommand(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Va
             return;
         };
         var buf: std.ArrayListUnmanaged(u8) = .empty;
-        json.appendStr(&buf, ctx.gpa, "{\"uri\":\"");
-        Diagnostic.appendJsonEscaped(&buf, ctx.gpa, result.uri) catch return;
-        json.appendStr(&buf, ctx.gpa, "\",\"minified_text\":\"");
-        Diagnostic.appendJsonEscaped(&buf, ctx.gpa, result.minified_text) catch return;
-        json.appendStr(&buf, ctx.gpa, "\",\"byte_count\":");
-        json.appendUint(&buf, ctx.gpa, result.byte_count);
-        json.appendStr(&buf, ctx.gpa, ",\"gz_count\":");
-        json.appendUint(&buf, ctx.gpa, result.gz_count);
-        json.appendStr(&buf, ctx.gpa, "}");
+        wire_workspace.appendShowMinifiedOutput(&buf, ctx.gpa, result);
         ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
         return;
     }
