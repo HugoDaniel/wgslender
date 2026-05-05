@@ -134,9 +134,10 @@ fn emitDiagnosticsImpl(ctx: Ctx, uri: []const u8, include_minify_lints: bool) vo
 /// with an empty Full report — pull clients wait for a response, so
 /// silence would hang the UI.
 ///
-/// Caller is responsible for the JSON-RPC response framing — this function
-/// builds the `result` payload via `sendResult` (passed in). That keeps
-/// `wasm/diagnostics.zig` ignorant of the outbox response framer.
+/// The settings/document/short-circuit decision tree lives in
+/// `Handler.producePullReport`; this function only handles transport-level
+/// param parsing, the empty-Full fallback on internal errors, and JSON
+/// framing of the result envelope.
 pub fn handlePullDiagnostic(
     ctx: Ctx,
     sendResult: *const fn (id: ?std.json.Value, result_json: []const u8) void,
@@ -144,46 +145,41 @@ pub fn handlePullDiagnostic(
     id: ?std.json.Value,
 ) void {
     if (id == null) return;
-    const params = root.getPtr("params") orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-    const td = objGet(params, "textDocument") orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
+    const empty_full = "{\"kind\":\"full\",\"items\":[]}";
+    const params = root.getPtr("params") orelse return sendResult(id, empty_full);
+    const td = objGet(params, "textDocument") orelse return sendResult(id, empty_full);
+    const uri = strVal(objGet(td, "uri")) orelse return sendResult(id, empty_full);
+    const prev = strVal(objGet(params, "previousResultId"));
 
-    if (!ctx.handler.diagnosticsEnabled()) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-    if (ctx.handler.getDocumentSource(uri) == null) return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-
-    var id_buf: [10]u8 = undefined;
-    const current_id: ?[]const u8 = if (ctx.handler.currentResultId(uri)) |v|
-        std.fmt.bufPrint(&id_buf, "{d}", .{v}) catch null
-    else
-        null;
-
-    if (current_id) |cur| {
-        const prev = strVal(objGet(params, "previousResultId"));
-        if (prev != null and std.mem.eql(u8, prev.?, cur)) {
-            var ubuf: std.ArrayListUnmanaged(u8) = .empty;
-            appendStr(&ubuf, ctx.gpa, "{\"kind\":\"unchanged\",\"resultId\":\"");
-            appendStr(&ubuf, ctx.gpa, cur);
-            appendStr(&ubuf, ctx.gpa, "\"}");
-            const ubody = ubuf.toOwnedSlice(ctx.gpa) catch return;
-            defer ctx.gpa.free(ubody);
-            sendResult(id, ubody);
-            return;
-        }
-    }
-
-    const diags = ctx.handler.validateDocumentFull(uri) catch return sendResult(id, "{\"kind\":\"full\",\"items\":[]}");
-    defer Handler.freeDiagnostics(ctx.handler.gpa, diags);
+    const report = Handler.producePullReport(ctx.handler, ctx.gpa, uri, prev) catch
+        return sendResult(id, empty_full);
+    defer switch (report) {
+        .unchanged => |u| ctx.gpa.free(u.result_id),
+        .full => |f| {
+            Handler.freeDiagnostics(ctx.handler.gpa, @constCast(f.items));
+            if (f.result_id) |r| ctx.gpa.free(r);
+        },
+    };
 
     var buf: std.ArrayListUnmanaged(u8) = .empty;
-    appendStr(&buf, ctx.gpa, "{\"kind\":\"full\"");
-    if (current_id) |cur| {
-        appendStr(&buf, ctx.gpa, ",\"resultId\":\"");
-        appendStr(&buf, ctx.gpa, cur);
-        appendStr(&buf, ctx.gpa, "\"");
+    switch (report) {
+        .unchanged => |u| {
+            appendStr(&buf, ctx.gpa, "{\"kind\":\"unchanged\",\"resultId\":\"");
+            appendStr(&buf, ctx.gpa, u.result_id);
+            appendStr(&buf, ctx.gpa, "\"}");
+        },
+        .full => |f| {
+            appendStr(&buf, ctx.gpa, "{\"kind\":\"full\"");
+            if (f.result_id) |cur| {
+                appendStr(&buf, ctx.gpa, ",\"resultId\":\"");
+                appendStr(&buf, ctx.gpa, cur);
+                appendStr(&buf, ctx.gpa, "\"");
+            }
+            appendStr(&buf, ctx.gpa, ",\"items\":");
+            appendDiagnosticItems(&buf, ctx.gpa, uri, f.items);
+            appendStr(&buf, ctx.gpa, "}");
+        },
     }
-    appendStr(&buf, ctx.gpa, ",\"items\":");
-    appendDiagnosticItems(&buf, ctx.gpa, uri, diags);
-    appendStr(&buf, ctx.gpa, "}");
     const body = buf.toOwnedSlice(ctx.gpa) catch return;
     defer ctx.gpa.free(body);
     sendResult(id, body);

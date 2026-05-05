@@ -54,6 +54,60 @@ pub fn validateDocumentCheap(handler: *Handler, uri: []const u8) ![]LspDiagnosti
     return validateDocumentInner(handler, uri, .{ .include_minify_lints = false });
 }
 
+/// Outcome of the pull-mode `textDocument/diagnostic` decision tree.
+/// Both transports share the same logic; only the wire encoding differs.
+///
+/// Ownership:
+///   - `full.items` is allocated by `handler.gpa` (free with
+///     `Handler.freeDiagnostics`). The disabled / unknown-URI fallbacks set
+///     it to the empty literal `&.{}` — `freeDiagnostics` short-circuits on
+///     zero-length input, so callers may free unconditionally.
+///   - `result_id` (in either arm) is allocated on the `allocator` passed
+///     to `producePullReport`. Native passes a per-request arena (freed
+///     wholesale), so no explicit free is needed; WASM passes a long-lived
+///     allocator and must free explicitly.
+pub const PullReport = union(enum) {
+    full: struct {
+        items: []const LspDiagnostic,
+        result_id: ?[]const u8,
+    },
+    unchanged: struct {
+        result_id: []const u8,
+    },
+};
+
+/// Pure pipeline behind the pull-mode `textDocument/diagnostic` handler.
+/// Encapsulates the four behaviors both transports must implement
+/// identically: settings gate (`diagnosticsEnabled`), document existence,
+/// `currentResultId` short-circuit (Unchanged), and full revalidation.
+///
+/// The disabled, unknown-URI, and "no parse yet" branches all collapse to
+/// `.full{ .items = &.{}, .result_id = null }` — pull clients hang on
+/// silence, so an empty Full is the safe default. There is intentionally
+/// no `.empty` arm: it would conflate "empty full report" (a real LSP
+/// shape) with "no response" (a transport policy).
+pub fn producePullReport(
+    handler: *Handler,
+    allocator: std.mem.Allocator,
+    uri: []const u8,
+    previous_result_id: ?[]const u8,
+) !PullReport {
+    if (!handler.diagnosticsEnabled()) return .{ .full = .{ .items = &.{}, .result_id = null } };
+    if (handler.getDocumentSource(uri) == null) return .{ .full = .{ .items = &.{}, .result_id = null } };
+
+    const current_id: ?[]const u8 = if (handler.currentResultId(uri)) |v|
+        try std.fmt.allocPrint(allocator, "{d}", .{v})
+    else
+        null;
+    errdefer if (current_id) |c| allocator.free(c);
+
+    if (current_id) |cur| if (previous_result_id) |prev|
+        if (std.mem.eql(u8, prev, cur)) return .{ .unchanged = .{ .result_id = cur } };
+
+    const items = try validateDocumentFull(handler, uri);
+    return .{ .full = .{ .items = items, .result_id = current_id } };
+}
+
 const ValidateOptions = struct {
     include_minify_lints: bool,
 };
@@ -386,4 +440,115 @@ test "spec_url round-trips through validateDocument" {
         std.debug.print("  [{s}] {s}\n", .{ d.code, d.message });
     }
     return error.TestUnexpectedResult;
+}
+
+// =========================================================================
+// producePullReport — drive the pull-mode decision tree directly.
+// =========================================================================
+
+const test_pull_uri = "test://pull.wgsl";
+
+fn freeReportForTest(gpa: std.mem.Allocator, arena: std.mem.Allocator, report: PullReport) void {
+    switch (report) {
+        .unchanged => |u| arena.free(u.result_id),
+        .full => |f| {
+            freeDiagnostics(gpa, @constCast(f.items));
+            if (f.result_id) |r| arena.free(r);
+        },
+    }
+}
+
+test "producePullReport: unknown URI yields empty Full with null result_id" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+
+    const report = try producePullReport(&handler, std.testing.allocator, "test://never-opened.wgsl", null);
+    defer freeReportForTest(std.testing.allocator, std.testing.allocator, report);
+
+    switch (report) {
+        .full => |f| {
+            try std.testing.expectEqual(@as(usize, 0), f.items.len);
+            try std.testing.expect(f.result_id == null);
+        },
+        .unchanged => return error.TestUnexpectedResult,
+    }
+}
+
+test "producePullReport: diagnostics disabled yields empty Full with null result_id" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument(test_pull_uri, "const x: i32 = 1.5;", 1);
+    handler.workspace_config.lsp_diagnostics_enabled = false;
+
+    const report = try producePullReport(&handler, std.testing.allocator, test_pull_uri, null);
+    defer freeReportForTest(std.testing.allocator, std.testing.allocator, report);
+
+    switch (report) {
+        .full => |f| {
+            try std.testing.expectEqual(@as(usize, 0), f.items.len);
+            try std.testing.expect(f.result_id == null);
+        },
+        .unchanged => return error.TestUnexpectedResult,
+    }
+}
+
+test "producePullReport: clean source yields empty-items Full with result_id" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument(
+        test_pull_uri,
+        "@compute @workgroup_size(1) fn main() {}",
+        1,
+    );
+
+    const report = try producePullReport(&handler, std.testing.allocator, test_pull_uri, null);
+    defer freeReportForTest(std.testing.allocator, std.testing.allocator, report);
+
+    switch (report) {
+        .full => |f| {
+            try std.testing.expectEqual(@as(usize, 0), f.items.len);
+            try std.testing.expect(f.result_id != null);
+            try std.testing.expect(f.result_id.?.len > 0);
+        },
+        .unchanged => return error.TestUnexpectedResult,
+    }
+}
+
+test "producePullReport: type-mismatch source yields populated Full with result_id" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument(test_pull_uri, "const x: i32 = 1.5;", 1);
+
+    const report = try producePullReport(&handler, std.testing.allocator, test_pull_uri, null);
+    defer freeReportForTest(std.testing.allocator, std.testing.allocator, report);
+
+    switch (report) {
+        .full => |f| {
+            try std.testing.expect(f.items.len > 0);
+            try std.testing.expect(f.result_id != null);
+        },
+        .unchanged => return error.TestUnexpectedResult,
+    }
+}
+
+test "producePullReport: matching previousResultId yields Unchanged" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument(test_pull_uri, "const x: i32 = 1.5;", 1);
+
+    const first = try producePullReport(&handler, std.testing.allocator, test_pull_uri, null);
+    const first_id = switch (first) {
+        .full => |f| try std.testing.allocator.dupe(u8, f.result_id orelse return error.TestUnexpectedResult),
+        .unchanged => return error.TestUnexpectedResult,
+    };
+    freeReportForTest(std.testing.allocator, std.testing.allocator, first);
+    defer std.testing.allocator.free(first_id);
+
+    const second = try producePullReport(&handler, std.testing.allocator, test_pull_uri, first_id);
+    defer freeReportForTest(std.testing.allocator, std.testing.allocator, second);
+
+    switch (second) {
+        .unchanged => |u| try std.testing.expectEqualStrings(first_id, u.result_id),
+        .full => return error.TestUnexpectedResult,
+    }
 }

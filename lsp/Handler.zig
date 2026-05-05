@@ -672,6 +672,8 @@ pub const validateDocumentFull = Diagnostics.validateDocumentFull;
 pub const validateDocumentCheap = Diagnostics.validateDocumentCheap;
 pub const freeDiagnostics = Diagnostics.freeDiagnostics;
 pub const convertDiagnostic = Diagnostics.convertDiagnostic;
+pub const PullReport = Diagnostics.PullReport;
+pub const producePullReport = Diagnostics.producePullReport;
 
 // =========================================================================
 // Code Actions — see lsp/handler/code_actions.zig
