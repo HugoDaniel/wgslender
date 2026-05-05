@@ -1719,7 +1719,7 @@ fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error
         .vertex => {
             // Must return @builtin(position)
             if (!v.vertexHasPositionOutput(fn_decl)) {
-                v.addErrorWithCodeR(fn_range, Diagnostic.Code.invalid_entry_point, v.fmtError("vertex entry point '{s}' must include @builtin(position) output", .{v.symbolName(fn_decl.name)}));
+                v.addErrorWithCodeDataR(fn_range, Diagnostic.Code.invalid_entry_point, v.fmtError("vertex entry point '{s}' must include @builtin(position) output", .{v.symbolName(fn_decl.name)}), .vertex_missing_builtin_position);
             }
         },
         .fragment => {
@@ -1787,7 +1787,8 @@ fn validateEntryPointInputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator
         // Direct @location on parameter
         if (getLocationInfo(param.attributes)) |info| {
             if (input_locations.get(info.value)) |first_loc| {
-                v.addErrorWithRelatedR(v.symbolRange(param.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
+                const loc_u32: u32 = std.math.cast(u32, info.value) orelse 0;
+                v.addErrorWithRelatedDataR(v.symbolRange(param.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})), .{ .duplicate_location = loc_u32 });
             } else {
                 try input_locations.put(v.arena, info.value, info.loc);
             }
@@ -1807,7 +1808,8 @@ fn validateEntryPointInputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator
                     }
                     if (getLocationInfo(member.attributes)) |info| {
                         if (input_locations.get(info.value)) |first_loc| {
-                            v.addErrorWithRelatedR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
+                            const loc_u32: u32 = std.math.cast(u32, info.value) orelse 0;
+                            v.addErrorWithRelatedDataR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate input @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first_loc, .end = first_loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})), .{ .duplicate_location = loc_u32 });
                         } else {
                             try input_locations.put(v.arena, info.value, info.loc);
                         }
@@ -1908,7 +1910,8 @@ fn validateEntryPointStructOutputMember(v: *Validator, member: anytype, fn_range
             // validates the full rule.
             const both_blend_src = first.blend_src != null and bs_info != null;
             if (!both_blend_src) {
-                v.addErrorWithRelatedR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first.loc, .end = first.loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})));
+                const loc_u32: u32 = std.math.cast(u32, info.value) orelse 0;
+                v.addErrorWithRelatedDataR(fn_range, Diagnostic.Code.invalid_shader_io, v.fmtError("duplicate output @location({d})", .{info.value}), v.makeRelatedR(.{ .start = first.loc, .end = first.loc +| 1 }, v.fmtError("@location({d}) first used here", .{info.value})), .{ .duplicate_location = loc_u32 });
             }
         } else {
             try output_locations.put(v.arena, info.value, .{ .loc = info.loc, .blend_src = if (bs_info) |b| b.value else null });
@@ -2345,7 +2348,7 @@ fn validateBuiltinForStage(v: *Validator, builtin_name: []const u8, is_input: bo
     // Check if the name is a known builtin value at all
     if (!isKnownBuiltinValue(builtin_name)) {
         if (suggestName(builtin_name, &all_builtin_values, 3)) |s| {
-            v.addErrorWithCodeR(r, Diagnostic.Code.invalid_builtin, v.fmtError("unknown @builtin value '{s}'; did you mean '{s}'?", .{ builtin_name, s }));
+            v.addErrorWithCodeDataR(r, Diagnostic.Code.invalid_builtin, v.fmtError("unknown @builtin value '{s}'; did you mean '{s}'?", .{ builtin_name, s }), .{ .did_you_mean = s });
         } else {
             v.addErrorWithCodeR(r, Diagnostic.Code.invalid_builtin, v.fmtError("unknown @builtin value '{s}'", .{builtin_name}));
         }
@@ -2371,7 +2374,7 @@ fn validateBuiltinForStage(v: *Validator, builtin_name: []const u8, is_input: bo
     if (!valid) {
         const stage_builtins = getStageBuiltins(v.current_stage, is_input);
         if (suggestName(builtin_name, stage_builtins, 3)) |s| {
-            v.addErrorWithCodeR(r, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders; did you mean '{s}'?", .{ builtin_name, v.current_stage.string(), s }));
+            v.addErrorWithCodeDataR(r, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders; did you mean '{s}'?", .{ builtin_name, v.current_stage.string(), s }), .{ .did_you_mean = s });
         } else {
             v.addErrorWithCodeR(r, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders", .{ builtin_name, v.current_stage.string() }));
         }
@@ -2668,7 +2671,7 @@ fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!void {
                 }
                 break :blk &[_]Diagnostic.RelatedInfo{};
             } else &[_]Diagnostic.RelatedInfo{};
-            v.addErrorWithRelatedR(exprSpan(s.value.?), Diagnostic.Code.type_mismatch, v.fmtError("cannot return '{s}' from function expecting '{s}'", .{ expr_type.string(), rt.string() }), related);
+            v.addErrorWithRelatedDataR(exprSpan(s.value.?), Diagnostic.Code.type_mismatch, v.fmtError("cannot return '{s}' from function expecting '{s}'", .{ expr_type.string(), rt.string() }), related, .{ .type_mismatch = .{ .actual = expr_type.string(), .expected = rt.string() } });
         }
     } else {
         const fn_name = if (v.current_func) |f| v.symbolName(f.name) else "";
@@ -2859,7 +2862,7 @@ fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
     if (s.op == .simple) {
         // Simple assignment: RHS must be convertible to LHS.
         if (!Types.canConvertTo(rhs_type, lhs_type)) {
-            v.addErrorWithRelatedR(exprSpan(s.right), Diagnostic.Code.type_mismatch, v.fmtError("cannot assign '{s}' to '{s}'", .{ rhs_type.string(), lhs_type.string() }), v.makeRelatedR(exprRange(s.left), v.fmtError("left-hand side has type '{s}'", .{lhs_type.string()})));
+            v.addErrorWithRelatedDataR(exprSpan(s.right), Diagnostic.Code.type_mismatch, v.fmtError("cannot assign '{s}' to '{s}'", .{ rhs_type.string(), lhs_type.string() }), v.makeRelatedR(exprRange(s.left), v.fmtError("left-hand side has type '{s}'", .{lhs_type.string()})), .{ .type_mismatch = .{ .actual = rhs_type.string(), .expected = lhs_type.string() } });
         }
         return;
     }
@@ -3346,7 +3349,7 @@ fn checkOneSide(v: *Validator, b: *Ast.BinaryExpr, side: Ast.Expr) void {
 
 fn checkF16Enabled(v: *Validator, loc: u32) void {
     if (!v.enabled_features.contains("f16")) {
-        v.addErrorWithCodeR(.{ .start = loc, .end = loc +| 1 }, Diagnostic.Code.feature_not_enabled, "'f16' requires 'enable f16;'");
+        v.addErrorWithCodeDataR(.{ .start = loc, .end = loc +| 1 }, Diagnostic.Code.feature_not_enabled, "'f16' requires 'enable f16;'", .{ .feature_not_enabled = "f16" });
     }
 }
 
@@ -3444,7 +3447,7 @@ fn checkIdent(v: *Validator, e: *Ast.IdentExpr) InferResult {
 
     // Undefined identifier
     if (v.suggestIdentifier(e.name)) |s| {
-        v.addErrorWithCodeR(exprRange(.{ .ident = e }), Diagnostic.Code.undefined_symbol, v.fmtError("use of undeclared identifier '{s}'; did you mean '{s}'?", .{ e.name, s }));
+        v.addErrorWithCodeDataR(exprRange(.{ .ident = e }), Diagnostic.Code.undefined_symbol, v.fmtError("use of undeclared identifier '{s}'; did you mean '{s}'?", .{ e.name, s }), .{ .did_you_mean = s });
     } else {
         v.addErrorWithCodeR(exprRange(.{ .ident = e }), Diagnostic.Code.undefined_symbol, v.fmtError("use of undeclared identifier '{s}'", .{e.name}));
     }
@@ -4364,7 +4367,7 @@ fn unifyScalarKinds(a: ?*const Types.Scalar, b: *const Types.Scalar) ?*const Typ
 
 fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8) void {
     if (v.suggestCallable(callee_name, e.args.items.len)) |s| {
-        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }));
+        v.addErrorWithCodeDataR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor; did you mean '{s}'?", .{ callee_name, s }), .{ .did_you_mean = s });
     } else {
         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
     }
@@ -4998,7 +5001,7 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!InferResult {
                 break :blk suggestName(e.member_name, field_names[0..count], 3);
             };
             if (suggestion) |s| {
-                v.addErrorWithRelatedR(mr, Diagnostic.Code.no_such_member, v.fmtError("struct '{s}' has no member '{s}'; did you mean '{s}'?", .{ st.name, e.member_name, s }), related);
+                v.addErrorWithRelatedDataR(mr, Diagnostic.Code.no_such_member, v.fmtError("struct '{s}' has no member '{s}'; did you mean '{s}'?", .{ st.name, e.member_name, s }), related, .{ .did_you_mean = s });
             } else {
                 v.addErrorWithRelatedR(mr, Diagnostic.Code.no_such_member, v.fmtError("struct '{s}' has no member '{s}'", .{ st.name, e.member_name }), related);
             }
@@ -5030,397 +5033,10 @@ fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!InferResult {
 }
 
 // =========================================================================
-// Phase 5: Uniformity Analysis
+// Phase 5: Uniformity Analysis (moved to src/validator/Uniformity.zig)
 // =========================================================================
 
-fn analyzeUniformity(v: *Validator) Allocator.Error!void {
-    var ua = UniformityAnalyzer{
-        .module = v.module,
-        .diags = v.diags,
-        .arena = v.arena,
-        .filters = if (v.options.diagnostic_filters) |f| f else null,
-    };
-    try ua.analyze();
-}
-
-/// Uniformity analysis detects non-uniform control flow violations.
-/// Implements WGSL spec section 15.
-const UniformityAnalyzer = struct {
-    module: *Ast.Module,
-    diags: *Diagnostic,
-    arena: Allocator,
-    filters: ?*Diagnostic.DiagnosticFilter,
-
-    // Current function context
-    current_func: ?*Ast.FunctionDecl = null,
-    current_stage: ShaderStage = .none,
-
-    // Current uniformity state
-    state: UniformityState = .uniform,
-
-    // Sources of non-uniformity
-    non_uniform_sources: std.ArrayListUnmanaged(NonUniformSource) = .empty,
-
-    const UniformityState = enum(u8) {
-        uniform,
-        may_be_non_uniform,
-        non_uniform,
-    };
-
-    const NonUniformSource = struct {
-        loc: u32,
-        reason: []const u8,
-        builtin_name: []const u8,
-    };
-
-    fn analyze(ua: *UniformityAnalyzer) Allocator.Error!void {
-        for (ua.module.declarations.items) |decl| {
-            switch (decl) {
-                .function => |fn_decl| try ua.analyzeFunction(fn_decl),
-                else => {},
-            }
-        }
-    }
-
-    fn analyzeFunction(ua: *UniformityAnalyzer, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
-        ua.current_func = fn_decl;
-        ua.state = .uniform;
-        ua.non_uniform_sources = .empty;
-
-        // Determine shader stage
-        ua.current_stage = .none;
-        for (fn_decl.attributes.items) |attr| {
-            if (std.mem.eql(u8, attr.name, "vertex")) {
-                ua.current_stage = .vertex;
-            } else if (std.mem.eql(u8, attr.name, "fragment")) {
-                ua.current_stage = .fragment;
-            } else if (std.mem.eql(u8, attr.name, "compute")) {
-                ua.current_stage = .compute;
-            }
-        }
-
-        // Parameters may introduce non-uniformity
-        try ua.analyzeParameters(fn_decl.parameters.items);
-
-        // Analyze function body
-        if (fn_decl.body) |body| {
-            ua.analyzeCompoundStmt(body);
-        }
-
-        ua.current_func = null;
-    }
-
-    fn analyzeParameters(ua: *UniformityAnalyzer, params: []const Ast.Parameter) Allocator.Error!void {
-        for (params) |param| {
-            for (param.attributes.items) |attr| {
-                if (std.mem.eql(u8, attr.name, "builtin") and attr.args.items.len > 0) {
-                    switch (attr.args.items[0]) {
-                        .ident => |ident| {
-                            if (isNonUniformBuiltin(ident.name)) {
-                                try ua.non_uniform_sources.append(ua.arena, .{
-                                    .loc = ident.loc,
-                                    .reason = "builtin input is non-uniform",
-                                    .builtin_name = ident.name,
-                                });
-                            }
-                        },
-                        else => {},
-                    }
-                }
-            }
-        }
-    }
-
-    fn analyzeCompoundStmt(ua: *UniformityAnalyzer, s: *Ast.CompoundStmt) void {
-        for (s.stmts.items) |stmt| {
-            ua.analyzeStmt(stmt);
-        }
-    }
-
-    fn analyzeStmt(ua: *UniformityAnalyzer, stmt: Ast.Stmt) void {
-        switch (stmt) {
-            .compound => |s| ua.analyzeCompoundStmt(s),
-            .@"if" => |s| ua.analyzeIfStmt(s),
-            .@"switch" => |s| ua.analyzeSwitchStmt(s),
-            .loop => |s| ua.analyzeLoopStmt(s),
-            .@"while" => |s| ua.analyzeWhileStmt(s),
-            .@"for" => |s| ua.analyzeForStmt(s),
-            .@"return" => |s| {
-                if (s.value) |val| ua.analyzeExpr(val);
-            },
-            .assign => |s| {
-                ua.analyzeExpr(s.left);
-                ua.analyzeExpr(s.right);
-            },
-            .call => |s| ua.analyzeExpr(.{ .call = s.call }),
-            .decl => |s| {
-                switch (s.decl) {
-                    .@"var" => |d| {
-                        if (d.initializer) |init| ua.analyzeExpr(init);
-                    },
-                    .let => |d| {
-                        if (d.initializer) |init| ua.analyzeExpr(init);
-                    },
-                    .@"const" => |d| {
-                        if (d.initializer) |init| ua.analyzeExpr(init);
-                    },
-                    else => {},
-                }
-            },
-            .incr_decr => |s| ua.analyzeExpr(s.expr),
-            .break_if => |s| ua.analyzeExpr(s.condition),
-            .@"break", .@"continue", .discard => {},
-        }
-    }
-
-    fn analyzeIfStmt(ua: *UniformityAnalyzer, s: *Ast.IfStmt) void {
-        const cond_non_uniform = ua.analyzeExprUniformity(s.condition);
-
-        const prev_state = ua.state;
-        if (cond_non_uniform) {
-            ua.state = .non_uniform;
-        }
-
-        ua.analyzeCompoundStmt(s.body);
-        if (s.else_branch) |else_stmt| {
-            ua.analyzeStmt(else_stmt);
-        }
-
-        ua.state = prev_state;
-    }
-
-    fn analyzeSwitchStmt(ua: *UniformityAnalyzer, s: *Ast.SwitchStmt) void {
-        const cond_non_uniform = ua.analyzeExprUniformity(s.expr);
-
-        const prev_state = ua.state;
-        if (cond_non_uniform) {
-            ua.state = .non_uniform;
-        }
-
-        for (s.cases.items) |case| {
-            for (case.selectors.items) |sel| {
-                ua.analyzeExpr(sel);
-            }
-            ua.analyzeCompoundStmt(case.body);
-        }
-
-        ua.state = prev_state;
-    }
-
-    fn analyzeLoopStmt(ua: *UniformityAnalyzer, s: *Ast.LoopStmt) void {
-        const prev_state = ua.state;
-        ua.analyzeCompoundStmt(s.body);
-        if (s.continuing) |cont| {
-            ua.analyzeCompoundStmt(cont);
-        }
-        ua.state = prev_state;
-    }
-
-    fn analyzeWhileStmt(ua: *UniformityAnalyzer, s: *Ast.WhileStmt) void {
-        const cond_non_uniform = ua.analyzeExprUniformity(s.condition);
-
-        const prev_state = ua.state;
-        if (cond_non_uniform) {
-            ua.state = .non_uniform;
-        }
-        ua.analyzeCompoundStmt(s.body);
-        ua.state = prev_state;
-    }
-
-    fn analyzeForStmt(ua: *UniformityAnalyzer, s: *Ast.ForStmt) void {
-        if (s.init_stmt) |init| {
-            ua.analyzeStmt(init);
-        }
-
-        var cond_non_uniform = false;
-        if (s.condition) |cond| {
-            cond_non_uniform = ua.analyzeExprUniformity(cond);
-        }
-
-        const prev_state = ua.state;
-        if (cond_non_uniform) {
-            ua.state = .non_uniform;
-        }
-
-        ua.analyzeCompoundStmt(s.body);
-
-        if (s.update) |update| {
-            ua.analyzeStmt(update);
-        }
-
-        ua.state = prev_state;
-    }
-
-    fn analyzeExpr(ua: *UniformityAnalyzer, expr: Ast.Expr) void {
-        switch (expr) {
-            .call => |e| ua.analyzeCallExpr(e),
-            .binary => |e| {
-                ua.analyzeExpr(e.left);
-                ua.analyzeExpr(e.right);
-            },
-            .unary => |e| ua.analyzeExpr(e.operand),
-            .index => |e| {
-                ua.analyzeExpr(e.base);
-                ua.analyzeExpr(e.idx);
-            },
-            .member => |e| ua.analyzeExpr(e.base),
-            .paren => |e| ua.analyzeExpr(e.expr),
-            .ident, .literal => {},
-        }
-    }
-
-    fn analyzeCallExpr(ua: *UniformityAnalyzer, e: *Ast.CallExpr) void {
-        var callee_name: []const u8 = "";
-        if (e.func) |func| {
-            switch (func) {
-                .ident => |ident| callee_name = ident.name,
-                else => {},
-            }
-        }
-
-        // Check arguments
-        for (e.args.items) |arg| {
-            ua.analyzeExpr(arg);
-        }
-
-        // Check if this is a builtin that requires uniform control flow
-        if (Builtins.lookup(callee_name)) |builtin| {
-            if (builtin.requiresUniform() and ua.state != .uniform) {
-                ua.reportUniformityError(e, callee_name, builtin.kind);
-            }
-        }
-    }
-
-    fn analyzeExprUniformity(ua: *UniformityAnalyzer, expr: Ast.Expr) bool {
-        switch (expr) {
-            .ident => |e| {
-                // Check if identifier refers to non-uniform source
-                for (ua.non_uniform_sources.items) |src| {
-                    if (std.mem.eql(u8, src.builtin_name, e.name)) {
-                        return true;
-                    }
-                }
-                if (isNonUniformBuiltin(e.name)) {
-                    return true;
-                }
-                return false;
-            },
-            .call => |e| {
-                // Some builtins produce non-uniform results
-                var callee_name: []const u8 = "";
-                if (e.func) |func| {
-                    switch (func) {
-                        .ident => |ident| callee_name = ident.name,
-                        else => {},
-                    }
-                }
-                if (Builtins.lookup(callee_name)) |builtin| {
-                    if (builtin.kind == .texture) {
-                        return true; // Simplified
-                    }
-                }
-                for (e.args.items) |arg| {
-                    if (ua.analyzeExprUniformity(arg)) {
-                        return true;
-                    }
-                }
-                return false;
-            },
-            .binary => |e| {
-                return ua.analyzeExprUniformity(e.left) or ua.analyzeExprUniformity(e.right);
-            },
-            .unary => |e| return ua.analyzeExprUniformity(e.operand),
-            .index => |e| {
-                return ua.analyzeExprUniformity(e.base) or ua.analyzeExprUniformity(e.idx);
-            },
-            .member => |e| return ua.analyzeExprUniformity(e.base),
-            .paren => |e| return ua.analyzeExprUniformity(e.expr),
-            .literal => return false,
-        }
-    }
-
-    fn reportUniformityError(ua: *UniformityAnalyzer, e: *Ast.CallExpr, func_name: []const u8, kind: Builtins.Kind) void {
-        // Determine the location
-        var loc: u32 = 0;
-        if (e.func) |func| {
-            switch (func) {
-                .ident => |ident| loc = ident.loc,
-                else => {},
-            }
-        }
-
-        // Determine the diagnostic rule and code
-        var rule: []const u8 = "";
-        var code: []const u8 = "";
-
-        switch (kind) {
-            .derivative => {
-                rule = Diagnostic.rule_derivative_uniformity;
-                code = Diagnostic.Code.non_uniform_derivative;
-            },
-            .synchronization => {
-                rule = ""; // Always an error, cannot be filtered
-                code = Diagnostic.Code.non_uniform_barrier;
-            },
-            .texture => {
-                rule = Diagnostic.rule_derivative_uniformity;
-                code = Diagnostic.Code.non_uniform_texture;
-            },
-            .subgroup => {
-                rule = Diagnostic.rule_subgroup_uniformity;
-                code = Diagnostic.Code.non_uniform_subgroup;
-            },
-            else => return,
-        }
-
-        // Check if this rule is filtered
-        if (rule.len > 0 and ua.filters != null) {
-            if (ua.filters.?.isDisabled(rule)) {
-                return;
-            }
-        }
-
-        // Determine severity
-        var severity = Diagnostic.Severity.@"error";
-        if (rule.len > 0 and ua.filters != null) {
-            severity = ua.filters.?.getSeverity(rule, .@"error");
-        }
-
-        // Build message
-        const message = switch (kind) {
-            .derivative => "derivative function must only be called from uniform control flow",
-            .synchronization => "barrier function must only be called from uniform control flow",
-            .texture => "texture sampling with implicit LOD must only be called from uniform control flow",
-            .subgroup => "subgroup operation requires uniform control flow",
-            else => "function requires uniform control flow",
-        };
-
-        _ = func_name;
-
-        ua.diags.add(ua.arena, .{
-            .severity = severity,
-            .code = code,
-            .message = message,
-            .range = ua.diags.makeRange(loc, loc + 1),
-        });
-    }
-};
-
-/// Returns true if the builtin input is known to be non-uniform.
-fn isNonUniformBuiltin(name: []const u8) bool {
-    const non_uniform = std.StaticStringMap(void).initComptime(.{
-        .{ "vertex_index", {} },
-        .{ "instance_index", {} },
-        .{ "position", {} },
-        .{ "front_facing", {} },
-        .{ "sample_index", {} },
-        .{ "sample_mask", {} },
-        .{ "local_invocation_id", {} },
-        .{ "local_invocation_index", {} },
-        .{ "global_invocation_id", {} },
-    });
-    return non_uniform.has(name);
-}
+pub const analyzeUniformity = @import("validator/Uniformity.zig").analyzeUniformity;
 
 // =========================================================================
 // Type Resolution Helpers
@@ -5443,7 +5059,7 @@ fn resolveIdentType(v: *Validator, t: anytype) ?Types.Type {
     if (v.lookupType(t.name)) |typ| return typ;
     // Type not found — report with suggestion if close match exists.
     if (v.suggestType(t.name, null)) |suggestion| {
-        v.addErrorWithCodeR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'; did you mean '{s}'?", .{ t.name, suggestion }));
+        v.addErrorWithCodeDataR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'; did you mean '{s}'?", .{ t.name, suggestion }), .{ .did_you_mean = suggestion });
     } else {
         v.addErrorWithCodeR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'", .{t.name}));
     }
@@ -5629,7 +5245,7 @@ fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
     if (std.mem.eql(u8, name, "f32")) return Types.F32;
     if (std.mem.eql(u8, name, "f16")) {
         if (!v.enabled_features.contains("f16")) {
-            v.addErrorWithCodeR(.{ .start = 0, .end = 1 }, Diagnostic.Code.feature_not_enabled, "'f16' requires 'enable f16;'");
+            v.addErrorWithCodeDataR(.{ .start = 0, .end = 1 }, Diagnostic.Code.feature_not_enabled, "'f16' requires 'enable f16;'", .{ .feature_not_enabled = "f16" });
         }
         return Types.F16;
     }
@@ -6064,6 +5680,34 @@ fn addErrorWithRelatedR(v: *Validator, r: LocRange, code: []const u8, message: [
     });
 }
 
+/// Range-aware error emitter with a structured `QuickFixHint`. The LSP
+/// reads `data` to build code-action edits without re-parsing the
+/// message. Use this at emit sites where the LSP offers a quickfix
+/// (did-you-mean, cast, location bump, vertex builtin, feature enable).
+fn addErrorWithCodeDataR(v: *Validator, r: LocRange, code: []const u8, message: []const u8, data: Diagnostic.QuickFixHint) void {
+    v.diags.add(v.arena, .{
+        .severity = .@"error",
+        .code = code,
+        .message = message,
+        .range = v.diags.makeRange(r.start, r.end),
+        .data = data,
+    });
+}
+
+/// `addErrorWithRelatedR` + `data`. Currently used by the duplicate-
+/// `@location(N)` E0602 sites so the LSP knows N without parsing the
+/// message back.
+fn addErrorWithRelatedDataR(v: *Validator, r: LocRange, code: []const u8, message: []const u8, related: []const Diagnostic.RelatedInfo, data: Diagnostic.QuickFixHint) void {
+    v.diags.add(v.arena, .{
+        .severity = .@"error",
+        .code = code,
+        .message = message,
+        .range = v.diags.makeRange(r.start, r.end),
+        .related = related,
+        .data = data,
+    });
+}
+
 fn addWarningR(v: *Validator, r: LocRange, message: []const u8) void {
     if (v.options.strict_mode) {
         v.diags.addErrorRange(v.arena, r.start, r.end, message);
@@ -6444,20 +6088,6 @@ test "validator: ShaderStage string" {
     try std.testing.expectEqualStrings("fragment", ShaderStage.fragment.string());
     try std.testing.expectEqualStrings("compute", ShaderStage.compute.string());
     try std.testing.expectEqualStrings("none", ShaderStage.none.string());
-}
-
-test "validator: isNonUniformBuiltin" {
-    try std.testing.expect(isNonUniformBuiltin("vertex_index"));
-    try std.testing.expect(isNonUniformBuiltin("instance_index"));
-    try std.testing.expect(isNonUniformBuiltin("position"));
-    try std.testing.expect(isNonUniformBuiltin("front_facing"));
-    try std.testing.expect(isNonUniformBuiltin("sample_index"));
-    try std.testing.expect(isNonUniformBuiltin("local_invocation_id"));
-    try std.testing.expect(isNonUniformBuiltin("global_invocation_id"));
-    // Uniform builtins
-    try std.testing.expect(!isNonUniformBuiltin("workgroup_id"));
-    try std.testing.expect(!isNonUniformBuiltin("num_workgroups"));
-    try std.testing.expect(!isNonUniformBuiltin("not_a_builtin"));
 }
 
 test "validator: isVertexInput" {
