@@ -27,8 +27,10 @@ pub fn freeBuf(ptr: [*]u8, len: u32) void {
 /// `wasm_allocator` buffer. Returns null on OOM. Caller transfers
 /// ownership to JS, which frees via `freeBuf(ptr, 4 + bytes.len)`.
 pub fn packLenPrefixed(bytes: []const u8) ?[*]u8 {
-    const buf = std.heap.wasm_allocator.alloc(u8, 4 + bytes.len) catch return null;
-    std.mem.writeInt(u32, buf[0..4], @intCast(bytes.len), .little);
+    const len = std.math.cast(u32, bytes.len) orelse return null;
+    const total = std.math.add(u32, 4, len) catch return null;
+    const buf = std.heap.wasm_allocator.alloc(u8, total) catch return null;
+    std.mem.writeInt(u32, buf[0..4], len, .little);
     @memcpy(buf[4..][0..bytes.len], bytes);
     return buf.ptr;
 }

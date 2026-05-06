@@ -44,42 +44,53 @@ export fn wgslender_dealloc(ptr: [*]u8, len: u32) callconv(.c) void {
 const packLenPrefixed = ffi.packLenPrefixed;
 
 fn packValidate(valid: bool, error_count: u32, warning_count: u32, json: []const u8) ?[*]u8 {
+    const json_len = std.math.cast(u32, json.len) orelse return null;
     const buf = wasm_allocator.alloc(u8, 16 + json.len) catch return null;
     std.mem.writeInt(u32, buf[0..4], if (valid) 1 else 0, .little);
     std.mem.writeInt(u32, buf[4..8], error_count, .little);
     std.mem.writeInt(u32, buf[8..12], warning_count, .little);
-    std.mem.writeInt(u32, buf[12..16], @intCast(json.len), .little);
+    std.mem.writeInt(u32, buf[12..16], json_len, .little);
     @memcpy(buf[16..][0..json.len], json);
     return buf.ptr;
 }
 
 fn packCompile(wasm_bytes: []const u8, original_size: u32, errors_json: []const u8) ?[*]u8 {
-    const total: u32 = @intCast(12 + wasm_bytes.len + errors_json.len);
+    // Bound each slice to u32 first so the addition can't wrap on wasm32
+    // (where usize is also u32). The envelope length itself must fit u32
+    // because that's what we write into the header.
+    const wasm_len = std.math.cast(u32, wasm_bytes.len) orelse return null;
+    const errs_len = std.math.cast(u32, errors_json.len) orelse return null;
+    const payload = std.math.add(u32, wasm_len, errs_len) catch return null;
+    const total = std.math.add(u32, 12, payload) catch return null;
     const buf = wasm_allocator.alloc(u8, total) catch return null;
-    std.mem.writeInt(u32, buf[0..4], @intCast(wasm_bytes.len), .little);
+    std.mem.writeInt(u32, buf[0..4], wasm_len, .little);
     std.mem.writeInt(u32, buf[4..8], original_size, .little);
-    std.mem.writeInt(u32, buf[8..12], @intCast(errors_json.len), .little);
+    std.mem.writeInt(u32, buf[8..12], errs_len, .little);
     @memcpy(buf[12..][0..wasm_bytes.len], wasm_bytes);
     @memcpy(buf[12 + wasm_bytes.len ..][0..errors_json.len], errors_json);
     return buf.ptr;
 }
 
 fn packLint(error_count: u32, warning_count: u32, json: []const u8) ?[*]u8 {
+    const json_len = std.math.cast(u32, json.len) orelse return null;
     const buf = wasm_allocator.alloc(u8, 12 + json.len) catch return null;
     std.mem.writeInt(u32, buf[0..4], error_count, .little);
     std.mem.writeInt(u32, buf[4..8], warning_count, .little);
-    std.mem.writeInt(u32, buf[8..12], @intCast(json.len), .little);
+    std.mem.writeInt(u32, buf[8..12], json_len, .little);
     @memcpy(buf[12..][0..json.len], json);
     return buf.ptr;
 }
 
 fn packLintFix(fixed: []const u8, error_count: u32, warning_count: u32, json: []const u8) ?[*]u8 {
-    const total: usize = 16 + fixed.len + json.len;
+    const fixed_len = std.math.cast(u32, fixed.len) orelse return null;
+    const json_len = std.math.cast(u32, json.len) orelse return null;
+    const payload = std.math.add(u32, fixed_len, json_len) catch return null;
+    const total = std.math.add(u32, 16, payload) catch return null;
     const buf = wasm_allocator.alloc(u8, total) catch return null;
-    std.mem.writeInt(u32, buf[0..4], @intCast(fixed.len), .little);
+    std.mem.writeInt(u32, buf[0..4], fixed_len, .little);
     std.mem.writeInt(u32, buf[4..8], error_count, .little);
     std.mem.writeInt(u32, buf[8..12], warning_count, .little);
-    std.mem.writeInt(u32, buf[12..16], @intCast(json.len), .little);
+    std.mem.writeInt(u32, buf[12..16], json_len, .little);
     @memcpy(buf[16..][0..fixed.len], fixed);
     @memcpy(buf[16 + fixed.len ..][0..json.len], json);
     return buf.ptr;
