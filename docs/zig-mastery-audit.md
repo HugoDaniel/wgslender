@@ -266,10 +266,10 @@ The plan (`/Users/hugo/.claude/plans/go-for-each-zig-temporal-sky.md`) approved 
 - All are tree walks bounded *implicitly* by AST/CST depth. Replace with `for (0..MAX) |_| { … } else unreachable` using a new `cst_walk_max` constant in `src/constants.zig` sized off the existing depth ceilings.
 - Single commit. Verified by `zig build test`.
 
-### Pass B — Split functions >70 lines (RE-SCOPE NEEDED)
+### Pass B — Split functions >70 lines (SKIPPED)
 - Original plan targeted `Printer.optimizeNumericLiteral` (claimed 217 lines), `Handler.offsetRangeToLspRange` (211), `Parser.initWithCst` (82). **Actual sizes: 73, 5, 29 lines.** The original three are non-issues.
 - The actual >100-line offenders are: `Reflect.{reflectWithRenamer,computeStructLayout,writeTypeInfoJson}`, `Cst.finish`, `cli/main.{parseArgs,dispatchSpecFlag}`, `incremental/Splice.{tryDeclStmtSpliceInPlace,tryCompoundSpliceInPlace,tryAddSubSpliceInPlace}`, `lsp/handler/{hover,semantic_tokens,signature_help}.compute*`, `lint/Linter.run`, `Compiler.{emitDecl,emitStmt,emitType,generate}`, `Incremental.tryIncrementalReparseInPlace`, `options.applyJson`. Many are wide-but-shallow dispatch tables where mastery's 70-line rule is least applicable.
-- **Status: surface re-scope to user before executing. Recommend skipping Pass B in favour of finishing A/C/D.**
+- **Status: skipped by user decision** — these offenders remain candidates for future targeted refactors but are not addressed in this audit's commit chain.
 
 ### Pass D — Raise assertion density
 - Original plan: 7 files (`Builtins`, `Diagnostic`, `Types`, `Validator`, `WasmBinary`, `Lexer`, `Dce`).
