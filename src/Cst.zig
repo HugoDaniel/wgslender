@@ -37,6 +37,7 @@
 
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
+const constants = @import("constants.zig");
 
 // =========================================================================
 // Kind — one variant per grammar production, plus trivia + recovery.
@@ -325,7 +326,7 @@ pub const Builder = struct {
                     // Walk forward-parent chain; outermost last.
                     chain.clearRetainingCapacity();
                     var chain_idx = ev_idx;
-                    while (true) {
+                    for (0..constants.max_tree_walk_iterations) |_| {
                         const e = &events[chain_idx].start;
                         try chain.append(self.gpa, e.kind);
                         const fp = e.forward_parent;
@@ -334,7 +335,7 @@ pub const Builder = struct {
                         if (fp) |next| {
                             chain_idx = next;
                         } else break;
-                    }
+                    } else unreachable;
 
                     // Open outermost-first (reverse of traversal order).
                     var i = chain.items.len;
@@ -949,7 +950,7 @@ pub const Cursor = struct {
     /// smaller.
     pub fn findSmallestContaining(c: Cursor, needle: Span) Cursor {
         var cur = c;
-        descend: while (true) {
+        descend: for (0..constants.max_tree_walk_iterations) |_| {
             const sibs = cur.childElements();
             for (sibs) |el| {
                 if (el.asNode()) |n| {
@@ -961,7 +962,7 @@ pub const Cursor = struct {
                 }
             }
             return cur;
-        }
+        } else unreachable;
     }
 
     /// Depth-first iterator over every token under this node (including

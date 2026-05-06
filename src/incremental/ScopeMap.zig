@@ -21,6 +21,7 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("../Ast.zig");
 const Cst = @import("../Cst.zig");
 const Incremental = @import("../Incremental.zig");
+const constants = @import("../constants.zig");
 
 /// Walk a CST node's ancestor chain until we find one that has a
 /// registered scope in `result.scope_for_cst_node`, and return that scope.
@@ -32,12 +33,12 @@ const Incremental = @import("../Incremental.zig");
 pub fn scopeAtCstNode(result: *const Incremental.ReparseResult, node: Cst.NodeIndex) *Ast.Scope {
     std.debug.assert(!result.moved);
     var cur = node;
-    while (true) {
+    for (0..constants.max_tree_walk_iterations) |_| {
         if (result.scope_for_cst_node.get(@intFromEnum(cur))) |s| return s;
         const n = result.cst.getNode(cur);
         if (n.parent == cur) return result.module.scope; // reached the root
         cur = n.parent;
-    }
+    } else unreachable;
 }
 
 /// True when this CST kind opens an AST scope during lowering. Kept in

@@ -15,6 +15,7 @@ const Overload = @import("../Overload.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const Suggest = @import("../Suggest.zig");
 const Validator = @import("../Validator.zig");
+const constants = @import("../constants.zig");
 
 const suggestName = Suggest.suggestName;
 
@@ -565,7 +566,7 @@ pub const AddrSpaceAndMode = struct {
 /// and bailing at the call site keeps the diagnostic stream honest.
 pub fn addrOfOperandAsAm(v: *Validator, expr: Ast.Expr, er: LocRange) Allocator.Error!?AddrSpaceAndMode {
     var cur = expr;
-    while (true) {
+    for (0..constants.max_tree_walk_iterations) |_| {
         switch (cur) {
             .ident => |id| {
                 if (!id.ref.isValid()) return null; // undefined-ident already reported
@@ -626,7 +627,7 @@ pub fn addrOfOperandAsAm(v: *Validator, expr: Ast.Expr, er: LocRange) Allocator.
             },
             else => return null, // unreachable after syntactic gate
         }
-    }
+    } else unreachable;
 }
 
 /// `&` / `*` diagnostics helper: returns true when `base_type` is a vector,

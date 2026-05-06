@@ -23,6 +23,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Cst = @import("../Cst.zig");
 const Lexer = @import("../Lexer.zig");
+const constants = @import("../constants.zig");
 
 /// A single contiguous byte-level edit, in OLD-source coordinates.
 /// `[start, end)` is the range being replaced (may be empty for pure
@@ -206,7 +207,7 @@ pub fn findAnchor(cst: *const Cst.Tree, edit: Edit) ?Cst.Cursor {
 
     var best: ?Cst.Cursor = if (isReparseAnchor(root.kind())) root else null;
     var cur = root;
-    descend: while (true) {
+    descend: for (0..constants.max_tree_walk_iterations) |_| {
         for (cur.childElements()) |el| {
             const n = el.asNode() orelse continue;
             const child = Cst.Cursor{ .tree = cur.tree, .node = n };
@@ -216,7 +217,7 @@ pub fn findAnchor(cst: *const Cst.Tree, edit: Edit) ?Cst.Cursor {
             continue :descend;
         }
         break;
-    }
+    } else unreachable;
     return best;
 }
 

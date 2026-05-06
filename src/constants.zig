@@ -29,6 +29,12 @@ pub const max_parser_stmt_depth: u16 = 127;
 /// certainly machine-generated or malicious.
 pub const max_parser_type_depth: u16 = 64;
 
+/// Loop-iteration cap for AST/CST walking and token-stream walkers.
+/// Bigger than any realistic shader's token count by orders of magnitude,
+/// small enough that an infinite walker bug panics promptly. Used by
+/// `for (0..max_tree_walk_iterations) |_| { ... } else unreachable`.
+pub const max_tree_walk_iterations: u32 = 1 << 20;
+
 comptime {
     std.debug.assert(max_parser_expr_depth > 0);
     std.debug.assert(max_parser_stmt_depth > 0);
@@ -36,4 +42,5 @@ comptime {
     std.debug.assert(max_parser_expr_depth < (1 << 20));
     std.debug.assert(max_parser_stmt_depth < (1 << 20));
     std.debug.assert(max_parser_type_depth < (1 << 20));
+    std.debug.assert(max_tree_walk_iterations >= max_parser_expr_depth);
 }

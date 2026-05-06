@@ -28,6 +28,7 @@ const UseCounts = @import("UseCounts.zig");
 const Cst = @import("Cst.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
+const constants = @import("constants.zig");
 
 const Tag = Lexer.Tag;
 
@@ -489,7 +490,7 @@ const LowerCtx = struct {
         switch (self.tokenTag(kw)) {
             .keyword_enable => {
                 var features: std.ArrayList([]const u8) = .empty;
-                while (true) {
+                for (0..constants.max_tree_walk_iterations) |_| {
                     const t = w.peekTokenTag() orelse break;
                     if (t == .ident) {
                         const token = w.eatAnyToken().?;
@@ -497,12 +498,12 @@ const LowerCtx = struct {
                     } else if (t == .comma) {
                         _ = w.eatAnyToken();
                     } else break;
-                }
+                } else unreachable;
                 return .{ .enable = .{ .features = features, .span = span } };
             },
             .keyword_requires => {
                 var features: std.ArrayList([]const u8) = .empty;
-                while (true) {
+                for (0..constants.max_tree_walk_iterations) |_| {
                     const t = w.peekTokenTag() orelse break;
                     if (t == .ident) {
                         const token = w.eatAnyToken().?;
@@ -510,7 +511,7 @@ const LowerCtx = struct {
                     } else if (t == .comma) {
                         _ = w.eatAnyToken();
                     } else break;
-                }
+                } else unreachable;
                 return .{ .requires = .{ .features = features, .span = span } };
             },
             .keyword_diagnostic => {
@@ -702,7 +703,7 @@ const LowerCtx = struct {
     /// `parameter_list` marker today).
     fn lowerParametersInline(self: *LowerCtx, w: *Walker) !std.ArrayList(Ast.Parameter) {
         var params: std.ArrayList(Ast.Parameter) = .empty;
-        while (true) {
+        for (0..constants.max_tree_walk_iterations) |_| {
             if (w.peekTokenTag()) |t| {
                 if (t == .r_paren) break;
                 if (t == .comma) {
@@ -742,7 +743,7 @@ const LowerCtx = struct {
                 .typ = typ,
                 .span = .{ .start = param_start.?, .end = param_end },
             });
-        }
+        } else unreachable;
         return params;
     }
 
@@ -758,7 +759,7 @@ const LowerCtx = struct {
         }
         _ = w.eatToken(.l_brace);
 
-        while (true) {
+        for (0..constants.max_tree_walk_iterations) |_| {
             if (w.peekTokenTag()) |t| {
                 if (t == .r_brace or t == .eof) break;
                 if (t == .comma) {
@@ -797,7 +798,7 @@ const LowerCtx = struct {
                 .typ = typ,
                 .span = .{ .start = member_start.?, .end = member_end },
             });
-        }
+        } else unreachable;
         _ = w.eatToken(.r_brace);
         return decl;
     }
@@ -879,7 +880,7 @@ const LowerCtx = struct {
         var args: std.ArrayList(Ast.Expr) = .empty;
         var w = self.walker(cur);
         _ = w.eatToken(.l_paren);
-        while (true) {
+        for (0..constants.max_tree_walk_iterations) |_| {
             if (w.peekTokenTag()) |t| {
                 if (t == .r_paren) break;
                 if (t == .comma) {
@@ -892,7 +893,7 @@ const LowerCtx = struct {
             } else {
                 break;
             }
-        }
+        } else unreachable;
         _ = w.eatToken(.r_paren);
         return args;
     }
@@ -1308,7 +1309,7 @@ const LowerCtx = struct {
         if (w.eatToken(.l_paren)) |token| paren_loc = self.tokenStart(token);
 
         var args: std.ArrayList(Ast.Expr) = .empty;
-        while (true) {
+        for (0..constants.max_tree_walk_iterations) |_| {
             if (w.peekTokenTag()) |t| {
                 if (t == .r_paren) break;
                 if (t == .comma) {
@@ -1319,7 +1320,7 @@ const LowerCtx = struct {
             if (w.eatAnyNode()) |an| {
                 try args.append(self.arena, try self.lowerExpr(an));
             } else break;
-        }
+        } else unreachable;
 
         var end_loc: u32 = paren_loc +| 1;
         if (w.peekElement()) |el| {
@@ -1474,7 +1475,7 @@ const LowerCtx = struct {
 
         var w = self.walker(cur);
         _ = w.eatToken(.l_brace);
-        while (true) {
+        for (0..constants.max_tree_walk_iterations) |_| {
             // Bail if the walker is past all children — protects against
             // a malformed compound_stmt whose `r_brace` is missing. In
             // practice this never fires for a full parse, but guards the
@@ -1495,7 +1496,7 @@ const LowerCtx = struct {
             } else {
                 break; // defensive — nothing eaten, so nothing would advance next iter
             }
-        }
+        } else unreachable;
         _ = w.eatToken(.r_brace);
 
         self.popScope();
@@ -1611,7 +1612,7 @@ const LowerCtx = struct {
 
         var cases: std.ArrayList(Ast.SwitchCase) = .empty;
         _ = w.eatToken(.l_brace);
-        while (true) {
+        for (0..constants.max_tree_walk_iterations) |_| {
             const t = w.peekTokenTag() orelse break;
             if (t == .r_brace or t == .eof) break;
 
@@ -1619,12 +1620,12 @@ const LowerCtx = struct {
             if (w.eatToken(.keyword_default) != null) {
                 // default — no selectors
             } else if (w.eatToken(.keyword_case) != null) {
-                while (true) {
+                for (0..constants.max_tree_walk_iterations) |_| {
                     if (w.eatAnyNode()) |sn| {
                         try c.selectors.append(self.arena, try self.lowerExpr(sn));
                     } else break;
                     if (w.eatToken(.comma) == null) break;
-                }
+                } else unreachable;
             } else {
                 // Stray token — consume to make progress.
                 _ = w.eatAnyToken();
@@ -1638,7 +1639,7 @@ const LowerCtx = struct {
                 c.body.* = .{ .stmts = .empty, .span = .empty };
             }
             try cases.append(self.arena, c);
-        }
+        } else unreachable;
         _ = w.eatToken(.r_brace);
 
         const node = try self.arena.create(Ast.SwitchStmt);
@@ -1817,7 +1818,7 @@ const LowerCtx = struct {
 
         var w = self.walker(cur);
         _ = w.eatToken(.l_brace);
-        while (true) {
+        for (0..constants.max_tree_walk_iterations) |_| {
             if (w.i >= w.children.len) break;
             if (w.peekTokenTag()) |t| {
                 if (t == .r_brace or t == .eof) break;
@@ -1837,7 +1838,7 @@ const LowerCtx = struct {
             } else {
                 break;
             }
-        }
+        } else unreachable;
         _ = w.eatToken(.r_brace);
 
         self.popScope();

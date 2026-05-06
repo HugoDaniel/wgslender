@@ -36,6 +36,7 @@ const AstVisit = @import("../AstVisit.zig");
 const Incremental = @import("../Incremental.zig");
 const Errors = @import("Errors.zig");
 const ScopeMap = @import("ScopeMap.zig");
+const constants = @import("../constants.zig");
 
 /// For a `compound_stmt` or `decl_stmt` anchor, return the `compound_stmt`
 /// CST node we will revisit.
@@ -56,14 +57,14 @@ pub fn enclosingCompoundCst(cst: *const Cst.Tree, node: Cst.NodeIndex) ?Cst.Node
     // hitting one means the decl_stmt sits in a for-init/update slot,
     // which the splice paths don't handle — bail.
     var cur = node;
-    while (true) {
+    for (0..constants.max_tree_walk_iterations) |_| {
         const n = cst.getNode(cur);
         if (n.parent == cur) return null; // reached root without a compound_stmt
         cur = n.parent;
         const k = cst.getNode(cur).kind;
         if (k == .compound_stmt) return cur;
         if (k == .for_stmt) return null;
-    }
+    } else unreachable;
 }
 
 /// DFS-collect every descendant scope of `root` into `out` in creation

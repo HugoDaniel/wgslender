@@ -20,6 +20,7 @@ const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
 const walk = @import("../walk.zig");
 const MultiVisitor = @import("../MultiVisitor.zig");
+const constants = @import("../../constants.zig");
 const exprStart = walk.exprStart;
 const exprEnd = walk.exprEnd;
 
@@ -81,10 +82,12 @@ fn matchLerpMul(a_expr: Ast.Expr, diff_side: Ast.Expr, t_side: Ast.Expr) ?Match 
 
 fn unwrap(e: Ast.Expr) Ast.Expr {
     var cur = e;
-    while (true) switch (cur) {
-        .paren => |p| cur = p.expr,
-        else => return cur,
-    };
+    for (0..constants.max_tree_walk_iterations) |_| {
+        switch (cur) {
+            .paren => |p| cur = p.expr,
+            else => return cur,
+        }
+    } else unreachable;
 }
 
 fn sameExprText(a: Ast.Expr, b: Ast.Expr) bool {
