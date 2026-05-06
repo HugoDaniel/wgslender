@@ -19,6 +19,7 @@
 //!     Callers that compute storage layout MUST handle the 0 case.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("Ast.zig");
 const Allocator = std.mem.Allocator;
 
@@ -295,11 +296,15 @@ pub const Vector = struct {
     }
 
     pub fn size(self: *const Vector) u32 {
+        assert(self.width >= 2 and self.width <= 4);
+        // Note: abstract scalars have size 0 (not host-shareable), so
+        // Vector.size() can legitimately be 0 — only `width` is bounded.
         return self.element.size() * @as(u32, self.width);
     }
 
     /// vec2 aligns to 2*element, vec3 and vec4 align to 4*element.
     pub fn alignment(self: *const Vector) u32 {
+        assert(self.width >= 2 and self.width <= 4);
         if (self.width == 2) {
             return self.element.size() * 2;
         }
@@ -343,15 +348,19 @@ pub const Matrix = struct {
 
     /// Matrix size is column_vector_align * cols.
     pub fn size(self: *const Matrix) u32 {
+        assert(self.cols >= 2 and self.cols <= 4);
+        assert(self.rows >= 2 and self.rows <= 4);
         return self.columnVectorAlign() * @as(u32, self.cols);
     }
 
     /// Matrix aligns to column vector alignment.
     pub fn alignment(self: *const Matrix) u32 {
+        assert(self.rows >= 2 and self.rows <= 4);
         return self.columnVectorAlign();
     }
 
     fn columnVectorAlign(self: *const Matrix) u32 {
+        assert(self.rows >= 2 and self.rows <= 4);
         // Column vector alignment: vec2 -> 2*elem, vec3/vec4 -> 4*elem.
         if (self.rows == 2) {
             return self.element.size() * 2;
@@ -411,7 +420,9 @@ pub const Struct = struct {
     align_bytes: u32,
     has_runtime_array: bool,
 
-    /// Computes field offsets, struct size, and alignment.
+    /// Computes field offsets, struct size, and alignment. Empty structs
+    /// (produced by error-recovery paths where every member type was
+    /// rejected) get align=1, size=0, has_runtime_array=false.
     pub fn computeLayout(self: *Struct) void {
         var offset: u32 = 0;
         var max_align: u32 = 1;
@@ -441,10 +452,13 @@ pub const Struct = struct {
         // Struct size is rounded up to alignment.
         self.align_bytes = max_align;
         self.size_bytes = ((offset + max_align - 1) / max_align) * max_align;
+        assert(self.align_bytes > 0);
+        assert(self.size_bytes >= offset);
     }
 
     /// Returns the field with the given name, or null.
     pub fn getField(self: *const Struct, name: []const u8) ?*const StructField {
+        assert(name.len > 0);
         for (self.fields) |*f| {
             if (std.mem.eql(u8, f.name, name)) {
                 return f;
