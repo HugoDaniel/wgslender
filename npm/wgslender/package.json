@@ -54,7 +54,8 @@
   "homepage": "https://github.com/HugoDaniel/wgslender",
   "license": "CC0-1.0",
   "scripts": {
-    "test": "node test/node-cjs.cjs && node test/node-esm.mjs && node test/browser-shim.cjs"
+    "test": "node test/node-cjs.cjs && node test/node-esm.mjs && node test/browser-shim.cjs",
+    "prepublishOnly": "cd ../.. && zig build wasm -Doptimize=ReleaseSafe && cp zig-out/bin/wgslender.wasm npm/wgslender/wgslender.wasm"
   },
   "engines": {
     "node": ">=16"
