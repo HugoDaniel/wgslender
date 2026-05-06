@@ -74,7 +74,7 @@ fn dupeLiteral(alloc: Allocator, comptime literal: []const u8) Allocator.Error![
     return alloc.dupe(u8, literal);
 }
 
-fn finalize(buf: std.ArrayListUnmanaged(u8)) []u8 {
+fn finalize(buf: std.ArrayList(u8)) []u8 {
     return buf.items;
 }
 
@@ -116,7 +116,7 @@ pub fn minifyJsonToJson(
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(alloc, "{\"code\":\"");
     try Diagnostic.appendJsonEscaped(&buf, alloc, result.code);
     try buf.appendSlice(alloc, "\",\"errors\":[");
@@ -158,7 +158,7 @@ pub fn minifyAndReflectJsonToJson(
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
 
     try buf.appendSlice(alloc, "{\"minify\":{\"code\":\"");
     try Diagnostic.appendJsonEscaped(&buf, alloc, result.minify.code);
@@ -190,7 +190,7 @@ pub fn minifyAndReflectJsonToJson(
 // =========================================================================
 
 fn writeDiagnosticsBare(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     alloc: Allocator,
     entries: []const Diagnostic.Entry,
 ) Allocator.Error!void {
@@ -218,7 +218,7 @@ pub fn validateToJson(
     const error_count = result.diagnostics.errorCount();
     const warning_count = result.diagnostics.warningCount();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(alloc, "{\"valid\":");
     try buf.appendSlice(alloc, if (result.valid) "true" else "false");
     try buf.appendSlice(alloc, ",\"diagnostics\":");
@@ -248,7 +248,7 @@ pub fn reflectToJson(alloc: Allocator, source: [:0]const u8) Allocator.Error![]u
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try result.toJson(&buf, alloc);
     return finalize(buf);
 }
@@ -258,7 +258,7 @@ pub fn reflectToJson(alloc: Allocator, source: [:0]const u8) Allocator.Error![]u
 // =========================================================================
 
 fn writeEdit(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     alloc: Allocator,
     edit: Edits.TextEdit,
     new_text: []const u8,
@@ -273,7 +273,7 @@ fn writeEdit(
 }
 
 fn writeEditsArray(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     alloc: Allocator,
     edits: []const Edits.TextEdit,
     new_text: []const u8,
@@ -291,7 +291,7 @@ fn editsEnvelopeJson(
     edits: []const Edits.TextEdit,
     new_text: []const u8,
 ) Allocator.Error![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(alloc, "{\"edits\":");
     try writeEditsArray(&buf, alloc, edits, new_text);
     try buf.append(alloc, '}');
@@ -304,7 +304,7 @@ fn renameApplySuccessJson(
     edits: []const Edits.TextEdit,
     new_text: []const u8,
 ) Allocator.Error![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(alloc, "{\"ok\":true,\"source\":\"");
     try Diagnostic.appendJsonEscaped(&buf, alloc, rewritten);
     try buf.appendSlice(alloc, "\",\"edits\":");
@@ -318,7 +318,7 @@ fn renameApplyFailureJson(
     original: []const u8,
     msg: []const u8,
 ) Allocator.Error![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(alloc, "{\"ok\":false,\"source\":\"");
     try Diagnostic.appendJsonEscaped(&buf, alloc, original);
     try buf.appendSlice(alloc, "\",\"edits\":[],\"error\":\"");
@@ -341,7 +341,7 @@ pub fn findReferencesToJson(
 
     const refs = try Edits.findReferences(alloc, module, target, include_declaration);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(alloc, "{\"references\":[");
     for (refs, 0..) |r, i| {
         if (i > 0) try buf.append(alloc, ',');
@@ -420,7 +420,7 @@ pub fn stableIdAtOffsetToJson(
         error.IdTooLong => return dupeLiteral(alloc, "{\"stableId\":null,\"error\":\"id too long\"}"),
     };
     if (maybe_id) |id| {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         try buf.appendSlice(alloc, "{\"stableId\":\"");
         try Diagnostic.appendJsonEscaped(&buf, alloc, id.bytes);
         try buf.appendSlice(alloc, "\"}");
@@ -430,7 +430,7 @@ pub fn stableIdAtOffsetToJson(
 }
 
 fn rangeJson(alloc: Allocator, range: StableId.Range) Allocator.Error![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(alloc, "{\"start\":");
     try Diagnostic.appendInt(&buf, alloc, range.start);
     try buf.appendSlice(alloc, ",\"end\":");
@@ -601,7 +601,7 @@ pub fn parseLintConfig(
 }
 
 fn writeLintDiagnostics(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     alloc: Allocator,
     result: *const wgslender.LintResult,
 ) Allocator.Error!void {
@@ -629,7 +629,7 @@ pub fn lintToResult(
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try writeLintDiagnostics(&buf, alloc, &result);
 
     const error_count = result.analysis.diagnostics.errorCount() + result.lint.error_count;
@@ -655,7 +655,7 @@ pub fn lintFixToResult(
         result.lint.diagnostics.items(),
     );
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try writeLintDiagnostics(&buf, alloc, &result);
 
     const error_count = result.analysis.diagnostics.errorCount() + result.lint.error_count;

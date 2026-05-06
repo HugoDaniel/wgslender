@@ -38,7 +38,7 @@ pub fn apply(
     entries: []const Diagnostic.Entry,
 ) Allocator.Error!Result {
     // Collect fixes with their byte ranges. Skip entries without a fix.
-    var fixes: std.ArrayListUnmanaged(OrderedFix) = .empty;
+    var fixes: std.ArrayList(OrderedFix) = .empty;
     defer fixes.deinit(arena);
     for (entries) |e| {
         const f = e.fix orelse continue;
@@ -54,7 +54,7 @@ pub fn apply(
 
     std.mem.sort(OrderedFix, fixes.items, {}, byStart);
 
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     try out.ensureTotalCapacity(arena, source.len);
     var cursor: u32 = 0;
     var applied: u32 = 0;

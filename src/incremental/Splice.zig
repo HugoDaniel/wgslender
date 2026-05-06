@@ -72,7 +72,7 @@ pub fn enclosingCompoundCst(cst: *const Cst.Tree, node: Cst.NodeIndex) ?Cst.Node
 pub fn collectScopeSubtreeDfs(
     arena: Allocator,
     root: *Ast.Scope,
-    out: *std.ArrayListUnmanaged(*Ast.Scope),
+    out: *std.ArrayList(*Ast.Scope),
 ) error{OutOfMemory}!void {
     for (root.children.items) |c| {
         try out.append(arena, c);
@@ -116,7 +116,7 @@ pub fn tryAddSubSpliceInPlace(
     //    add-walk's own predicate gate. For const-expression attrs
     //    (`@group`, `@workgroup_size`, `@id`, ...), full-parse DOES bump,
     //    so the hot path must decrement here to maintain parity.
-    var discard_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var discard_errors: std.ArrayList(Parser.ParseError) = .empty;
     defer discard_errors.deinit(prev_arena);
     var sub_ctx = AstVisit.Context{
         .arena = prev_arena,
@@ -174,7 +174,7 @@ pub fn tryAddSubSpliceInPlace(
     //    `AstVisit.visitAttributes`, so the hot path mirrors that. Both
     //    paths gate on the same `attributeArgsResolveSymbols` predicate,
     //    so neither bumps `use_count` on idents the oracle leaves at zero.
-    var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var add_errors: std.ArrayList(Parser.ParseError) = .empty;
     defer add_errors.deinit(prev_arena);
     var add_ctx = AstVisit.Context{
         .arena = prev_arena,
@@ -276,12 +276,12 @@ pub fn tryCompoundSpliceInPlace(
     // 2. Sub-walk the old compound. Scopes_in_order is the DFS listing
     //    starting with the compound's own scope (the walker calls
     //    `enterNextScope` once on entering the compound).
-    var sub_scopes: std.ArrayListUnmanaged(*Ast.Scope) = .empty;
+    var sub_scopes: std.ArrayList(*Ast.Scope) = .empty;
     defer sub_scopes.deinit(prev_arena);
     try sub_scopes.append(prev_arena, old_block_scope);
     try collectScopeSubtreeDfs(prev_arena, old_block_scope, &sub_scopes);
 
-    var discard_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var discard_errors: std.ArrayList(Parser.ParseError) = .empty;
     defer discard_errors.deinit(prev_arena);
     var sub_ctx = AstVisit.Context{
         .arena = prev_arena,
@@ -365,7 +365,7 @@ pub fn tryCompoundSpliceInPlace(
     //    `old_scope_idx` above). Its descendants are in `lowered.new_scopes`
     //    minus the compound's own scope, which is the first entry of
     //    `new_scopes`.
-    var add_scopes: std.ArrayListUnmanaged(*Ast.Scope) = .empty;
+    var add_scopes: std.ArrayList(*Ast.Scope) = .empty;
     defer add_scopes.deinit(prev_arena);
     try add_scopes.appendSlice(prev_arena, lowered.new_scopes.items);
 
@@ -373,7 +373,7 @@ pub fn tryCompoundSpliceInPlace(
     // grow `use_counts` to match before the add-walk indexes into it.
     try prev.module.resizeUseCounts(prev_arena, prev.module.symbols.items.len);
 
-    var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var add_errors: std.ArrayList(Parser.ParseError) = .empty;
     defer add_errors.deinit(prev_arena);
     var add_ctx = AstVisit.Context{
         .arena = prev_arena,
@@ -511,12 +511,12 @@ pub fn tryDeclStmtSpliceInPlace(
     // 5. Sub-walk the PARENT compound (not just the decl). Uses
     //    scopes_in_order = [parent_scope] + DFS descendants so the
     //    walker's `enterNextScope` advances correctly.
-    var sub_scopes: std.ArrayListUnmanaged(*Ast.Scope) = .empty;
+    var sub_scopes: std.ArrayList(*Ast.Scope) = .empty;
     defer sub_scopes.deinit(prev_arena);
     try sub_scopes.append(prev_arena, parent_scope);
     try collectScopeSubtreeDfs(prev_arena, parent_scope, &sub_scopes);
 
-    var discard_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var discard_errors: std.ArrayList(Parser.ParseError) = .empty;
     defer discard_errors.deinit(prev_arena);
     var sub_ctx = AstVisit.Context{
         .arena = prev_arena,
@@ -565,7 +565,7 @@ pub fn tryDeclStmtSpliceInPlace(
     };
     try ScopeMap.buildScopeForCstNodeMap(prev_arena, &tmp_result);
 
-    var add_scopes: std.ArrayListUnmanaged(*Ast.Scope) = .empty;
+    var add_scopes: std.ArrayList(*Ast.Scope) = .empty;
     defer add_scopes.deinit(prev_arena);
     try add_scopes.append(prev_arena, parent_scope);
     try collectScopeSubtreeDfs(prev_arena, parent_scope, &add_scopes);
@@ -574,7 +574,7 @@ pub fn tryDeclStmtSpliceInPlace(
     // grow `use_counts` to match before the add-walk indexes into it.
     try prev.module.resizeUseCounts(prev_arena, prev.module.symbols.items.len);
 
-    var add_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var add_errors: std.ArrayList(Parser.ParseError) = .empty;
     defer add_errors.deinit(prev_arena);
     var add_ctx = AstVisit.Context{
         .arena = prev_arena,

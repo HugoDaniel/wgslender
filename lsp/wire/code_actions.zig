@@ -21,7 +21,7 @@ const Diagnostic = wgslender.Diagnostic;
 
 /// Append `[{<action>}, …]`. Writes the enclosing brackets.
 pub fn appendCodeActionItems(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     uri: []const u8,
     actions: []const Handler.LspCodeAction,
@@ -37,7 +37,7 @@ pub fn appendCodeActionItems(
 /// Append a single `{"title":"…","kind":"quickfix"[,"isPreferred":true],
 /// "diagnostics":[<diag>],"edit":{"changes":{"<uri>":[<edits>]}}}`.
 pub fn appendCodeActionItem(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     uri: []const u8,
     action: Handler.LspCodeAction,
@@ -87,7 +87,7 @@ test "appendCodeActionItem: shape — title, kind, diagnostics, edit.changes" {
         .edits = &edits,
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendCodeActionItem(&buf, aa, "test://a.wgsl", action);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -114,7 +114,7 @@ test "appendCodeActionItem: isPreferred only when true" {
         .edits = &.{},
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendCodeActionItem(&buf, aa, "test://a.wgsl", action);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -126,7 +126,7 @@ test "appendCodeActionItems: empty slice emits []" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendCodeActionItems(&buf, aa, "test://a.wgsl", &.{});
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});

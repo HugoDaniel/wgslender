@@ -1422,7 +1422,7 @@ fn expectTriviaRoundtrip(source: [:0]const u8) !void {
     const starts = tokens.items(.start);
     const ends = tokens.items(.end);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
     for (tags, 0..) |tag, i| {
         if (tag == .eof) break;

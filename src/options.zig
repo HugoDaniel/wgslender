@@ -268,7 +268,7 @@ pub fn applyJson(
                 },
                 .string_list => {
                     if (value == .array) {
-                        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+                        var names: std.ArrayList([]const u8) = .empty;
                         errdefer {
                             for (names.items) |s| allocator.free(s);
                             names.deinit(allocator);
@@ -309,7 +309,7 @@ pub fn applyJson(
                     // accumulates; the JSON form ships every element in one
                     // array, so a single `applyJson` write is correct.
                     if (value == .array) {
-                        var names: std.ArrayListUnmanaged([]const u8) = .empty;
+                        var names: std.ArrayList([]const u8) = .empty;
                         errdefer {
                             for (names.items) |s| allocator.free(s);
                             names.deinit(allocator);
@@ -330,7 +330,7 @@ pub fn applyJson(
                     // `RuleOverride.options` and `allocator.free` each `id`
                     // (see `Config.deinit` for the canonical wind-down).
                     if (value == .object) {
-                        var list: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
+                        var list: std.ArrayList(Linter.Options.RuleOverride) = .empty;
                         errdefer {
                             for (list.items) |r| {
                                 allocator.free(r.id);
@@ -600,7 +600,7 @@ pub fn applyValue(
             // Trimmed comma-split. Slices alias `value` (which lives on
             // the caller's argv arena), so the result borrows for the
             // process lifetime — no dupe.
-            var names: std.ArrayListUnmanaged([]const u8) = .empty;
+            var names: std.ArrayList([]const u8) = .empty;
             errdefer names.deinit(arena);
             var it = std.mem.splitScalar(u8, value, ',');
             while (it.next()) |raw| {
@@ -645,7 +645,7 @@ pub fn applyValue(
             // The element aliases `value` directly (caller's argv arena
             // owns the storage) — same lifetime contract as `string_list`.
             const current = @field(target, spec.field);
-            var list: std.ArrayListUnmanaged([]const u8) = .empty;
+            var list: std.ArrayList([]const u8) = .empty;
             try list.appendSlice(arena, current);
             try list.append(arena, value);
             @field(target, spec.field) = try list.toOwnedSlice(arena);
@@ -654,7 +654,7 @@ pub fn applyValue(
         .rule_override_accum => {
             const override = parseRuleOverrideToken(value) orelse return false;
             const current = @field(target, spec.field);
-            var list: std.ArrayListUnmanaged(Linter.Options.RuleOverride) = .empty;
+            var list: std.ArrayList(Linter.Options.RuleOverride) = .empty;
             try list.appendSlice(arena, current);
             try list.append(arena, override);
             @field(target, spec.field) = try list.toOwnedSlice(arena);
@@ -671,7 +671,7 @@ pub fn applyValue(
 /// (JSON-only knobs) are skipped. `cli_inverse` adds a second line
 /// describing the disable form.
 pub fn printHelp(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     comptime specs: []const OptionSpec,
     subcommand: ?Subcommand,

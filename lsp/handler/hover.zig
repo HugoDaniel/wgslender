@@ -291,7 +291,7 @@ fn formatBuiltinHover(handler: *Handler, buf: *[1024]u8, name: []const u8, built
 
 /// Format a struct type with per-field byte offsets, sizes, and padding gaps.
 fn formatStructLayout(gpa: std.mem.Allocator, name: []const u8, st: *wgslender.Types.Struct) ![]const u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     var scratch: [256]u8 = undefined;
 

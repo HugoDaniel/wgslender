@@ -40,7 +40,7 @@ pub fn completionKindCode(kind: Handler.CompletionKind) u32 {
 }
 
 pub fn appendCompletionItem(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     item: Handler.CompletionItem,
 ) void {
@@ -57,7 +57,7 @@ pub fn appendCompletionItem(
 }
 
 pub fn appendCompletionItems(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     items: []const Handler.CompletionItem,
 ) void {
@@ -74,7 +74,7 @@ pub fn appendCompletionItems(
 // =========================================================================
 
 pub fn appendSignatureHelp(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     info: Handler.SignatureInfo,
 ) void {
@@ -101,7 +101,7 @@ pub fn appendSignatureHelp(
 // =========================================================================
 
 pub fn appendFoldingRanges(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     ranges: []const Handler.FoldingRangeInfo,
 ) void {
@@ -133,7 +133,7 @@ pub fn inlayHintKindCode(kind: @FieldType(Handler.InlayHintInfo, "kind")) u32 {
 }
 
 pub fn appendInlayHints(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     uri: []const u8,
     hints: []const Handler.InlayHintInfo,
@@ -176,7 +176,7 @@ pub fn appendInlayHints(
 // =========================================================================
 
 pub fn appendCodeLenses(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     lenses: []const Handler.CodeLensInfo,
 ) void {
@@ -215,7 +215,7 @@ pub fn appendCodeLenses(
 // =========================================================================
 
 pub fn appendSelectionRange(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     sel: *const Handler.SelectionRangeInfo,
 ) void {
@@ -232,7 +232,7 @@ pub fn appendSelectionRange(
 /// for one of the requested positions: a zero-width range at (0, 0)
 /// with no parent. Matches the previous wasm/native behavior.
 pub fn appendNullSelectionRange(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
 ) void {
     primitives.appendStr(buf, gpa, "{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":0}}}");
@@ -243,7 +243,7 @@ pub fn appendNullSelectionRange(
 // =========================================================================
 
 pub fn appendSemanticTokens(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     data: []const u32,
 ) void {
@@ -263,7 +263,7 @@ pub fn appendSemanticTokens(
 /// edit. WGSL formatting always replaces the whole document with one
 /// edit, so the wrapping array always has exactly one entry.
 pub fn appendFormattingEdit(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     edit: Handler.LspTextEdit,
 ) void {
@@ -294,7 +294,7 @@ test "appendCompletionItems: kind table + optional detail" {
         .{ .label = "foo", .kind = .function, .detail = "fn() -> u32" },
         .{ .label = "bar", .kind = .keyword },
     };
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendCompletionItems(&buf, aa, &items);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -312,7 +312,7 @@ test "appendSignatureHelp: with and without parameters" {
     const aa = arena.allocator();
 
     const params = [_][]const u8{ "x", "y" };
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendSignatureHelp(&buf, aa, .{ .label = "f(x,y)", .parameters = &params, .active_parameter = 1 });
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -320,7 +320,7 @@ test "appendSignatureHelp: with and without parameters" {
     try testing.expectEqual(@as(i64, 1), v.object.get("activeParameter").?.integer);
     try testing.expectEqual(@as(usize, 2), v.object.get("signatures").?.array.items[0].object.get("parameters").?.array.items.len);
 
-    var buf2: std.ArrayListUnmanaged(u8) = .empty;
+    var buf2: std.ArrayList(u8) = .empty;
     appendSignatureHelp(&buf2, aa, .{ .label = "g()", .parameters = &.{}, .active_parameter = 0 });
     const v2 = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf2.items, .{});
     try testing.expect(v2.object.get("signatures").?.array.items[0].object.get("parameters") == null);
@@ -335,7 +335,7 @@ test "appendFoldingRanges: kind string follows enum" {
         .{ .start_line = 1, .end_line = 3, .kind = .region },
         .{ .start_line = 5, .end_line = 7, .kind = .comment },
     };
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendFoldingRanges(&buf, aa, &ranges);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -352,7 +352,7 @@ test "appendInlayHints: def_range null vs set" {
         .{ .position = .{ .line = 1, .character = 2 }, .label = "x", .kind = .type_hint },
         .{ .position = .{ .line = 3, .character = 4 }, .label = "S", .kind = .type_hint, .def_range = sample_range },
     };
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendInlayHints(&buf, aa, "test://a.wgsl", &hints);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -376,7 +376,7 @@ test "appendCodeLenses: command + arguments shape" {
         .command = "wgslender.showMinifiedOutput",
         .arguments = @constCast(&args),
     }};
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendCodeLenses(&buf, aa, &lenses);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -396,7 +396,7 @@ test "appendSelectionRange: parent recursion" {
         .range = .{ .start = .{ .line = 1, .character = 3 }, .end = .{ .line = 1, .character = 5 } },
         .parent = &outer,
     };
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendSelectionRange(&buf, aa, &inner);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -410,7 +410,7 @@ test "appendSemanticTokens: data array passthrough" {
     const aa = arena.allocator();
 
     const data = [_]u32{ 1, 0, 4, 1, 0 };
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendSemanticTokens(&buf, aa, &data);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -424,7 +424,7 @@ test "appendFormattingEdit: single-edit array" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendFormattingEdit(&buf, aa, .{ .range = sample_range, .new_text = "fn main(){}" });
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});

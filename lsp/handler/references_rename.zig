@@ -35,7 +35,7 @@ pub fn computeReferences(handler: *Handler, uri: []const u8, position: Position,
     const refs = try Edits.findReferences(handler.gpa, module, target, include_declaration);
     defer handler.gpa.free(refs);
 
-    var ranges: std.ArrayListUnmanaged(Range) = .empty;
+    var ranges: std.ArrayList(Range) = .empty;
     defer ranges.deinit(handler.gpa);
     try ranges.ensureTotalCapacity(handler.gpa, refs.len);
     for (refs) |r| {
@@ -65,7 +65,7 @@ pub fn computeDocumentHighlight(handler: *Handler, uri: []const u8, position: Po
     const refs = try Edits.findReferences(handler.gpa, module, target, true);
     defer handler.gpa.free(refs);
 
-    var highlights: std.ArrayListUnmanaged(DocumentHighlight) = .empty;
+    var highlights: std.ArrayList(DocumentHighlight) = .empty;
     defer highlights.deinit(handler.gpa);
     try highlights.ensureTotalCapacity(handler.gpa, refs.len);
     for (refs) |r| {

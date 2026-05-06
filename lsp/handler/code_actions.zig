@@ -81,7 +81,7 @@ pub fn computeCodeActions(
     handler: *Handler,
     diags: []const LspDiagnostic,
 ) ![]LspCodeAction {
-    var actions: std.ArrayListUnmanaged(LspCodeAction) = .empty;
+    var actions: std.ArrayList(LspCodeAction) = .empty;
 
     for (diags) |diag| switch (diag.data) {
         .none => {},
@@ -98,7 +98,7 @@ pub fn computeCodeActions(
 
 fn addDidYouMeanAction(
     handler: *Handler,
-    actions: *std.ArrayListUnmanaged(LspCodeAction),
+    actions: *std.ArrayList(LspCodeAction),
     diag: LspDiagnostic,
     suggestion: []const u8,
 ) void {
@@ -128,7 +128,7 @@ fn addDidYouMeanAction(
 
 fn addDuplicateLocationAction(
     handler: *Handler,
-    actions: *std.ArrayListUnmanaged(LspCodeAction),
+    actions: *std.ArrayList(LspCodeAction),
     diag: LspDiagnostic,
     loc_val: u32,
 ) void {
@@ -164,7 +164,7 @@ fn addDuplicateLocationAction(
 
 fn addVertexMissingPositionActions(
     handler: *Handler,
-    actions: *std.ArrayListUnmanaged(LspCodeAction),
+    actions: *std.ArrayList(LspCodeAction),
     diag: LspDiagnostic,
 ) void {
     switch (findVertexReturnTarget(handler, diag.range)) {
@@ -226,7 +226,7 @@ fn addVertexMissingPositionActions(
 /// sense for same-shape scalar/vector pairs.
 fn addCastAction(
     handler: *Handler,
-    actions: *std.ArrayListUnmanaged(LspCodeAction),
+    actions: *std.ArrayList(LspCodeAction),
     diag: LspDiagnostic,
     tm: WgslDiagnostic.QuickFixHint.TypeMismatch,
 ) void {
@@ -269,7 +269,7 @@ fn addCastAction(
 
 fn addUnusedSymbolActions(
     handler: *Handler,
-    actions: *std.ArrayListUnmanaged(LspCodeAction),
+    actions: *std.ArrayList(LspCodeAction),
     diag: LspDiagnostic,
     name: []const u8,
 ) void {
@@ -327,7 +327,7 @@ fn addUnusedSymbolActions(
 
 fn addFeatureNotEnabledAction(
     handler: *Handler,
-    actions: *std.ArrayListUnmanaged(LspCodeAction),
+    actions: *std.ArrayList(LspCodeAction),
     diag: LspDiagnostic,
     feature: []const u8,
 ) void {

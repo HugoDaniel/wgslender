@@ -16,7 +16,7 @@ const Diagnostic = wgslender.Diagnostic;
 /// Emit the success body for `wgslender.showMinifiedOutput`:
 /// `{"uri":"…","minified_text":"…","byte_count":N,"gz_count":N}`.
 pub fn appendShowMinifiedOutput(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     result: Handler.MinifyCommandResult,
 ) void {
@@ -37,7 +37,7 @@ pub fn appendShowMinifiedOutput(
 /// `result.json` is already-rendered JSON produced by `Reflect`; we
 /// embed it verbatim so the wasm transport doesn't pay to re-parse it.
 pub fn appendReflectResult(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     result: Handler.ReflectCommandResult,
 ) void {
@@ -64,7 +64,7 @@ test "appendShowMinifiedOutput: shape + escapes uri/minified_text" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendShowMinifiedOutput(&buf, aa, .{
         .uri = "test://a.wgsl",
         .minified_text = "fn main(){}",
@@ -84,7 +84,7 @@ test "appendReflectResult: embeds pre-rendered json verbatim" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendReflectResult(&buf, aa, .{
         .uri = "test://a.wgsl",
         .json = "{\"entries\":[]}",

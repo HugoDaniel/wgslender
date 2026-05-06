@@ -290,7 +290,7 @@ fn countAttrUsage(
 
 /// Iteratively counts symbol usage in an expression tree using a worklist.
 fn countExprUsage(arena: Allocator, expr: Ast.Expr, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) Allocator.Error!void {
-    var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+    var stack: std.ArrayList(Ast.Expr) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, expr);
 
@@ -329,7 +329,7 @@ fn countExprUsage(arena: Allocator, expr: Ast.Expr, uses: *std.AutoHashMapUnmana
 
 /// Iteratively counts symbol usage in a statement tree using a worklist.
 fn countStmtUsage(arena: Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) Allocator.Error!void {
-    var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
+    var stack: std.ArrayList(Ast.Stmt) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, stmt);
 
@@ -468,7 +468,7 @@ pub const ScopeLocalRenamer = struct {
         reserved: *const std.StringHashMapUnmanaged(void),
         policy: *const RenamePolicy,
     ) Allocator.Error!void {
-        var bodies: std.ArrayListUnmanaged(*const Ast.CompoundStmt) = .empty;
+        var bodies: std.ArrayList(*const Ast.CompoundStmt) = .empty;
         defer bodies.deinit(arena);
         try bodies.append(arena, body);
 
@@ -535,7 +535,7 @@ pub const ScopeLocalRenamer = struct {
 /// Sort module-level declarations by kind (struct→alias→const→var→fn) then
 /// by estimated size. Filters to live declarations.
 pub fn sortDeclarations(arena: Allocator, module: *const Ast.Module) ![]Ast.Decl {
-    var live: std.ArrayListUnmanaged(Ast.Decl) = .empty;
+    var live: std.ArrayList(Ast.Decl) = .empty;
     for (module.declarations.items) |decl| {
         if (Dce.isDeclarationLive(decl, module.liveness)) {
             try live.append(arena, decl);

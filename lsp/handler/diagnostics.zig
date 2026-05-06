@@ -117,7 +117,7 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
     const source: []const u8 = if (analysis.module) |m| m.source else handler.getDocumentSource(uri) orelse "";
 
     const entries = analysis.diagnostics.diagnostics.items;
-    var diags: std.ArrayListUnmanaged(LspDiagnostic) = .empty;
+    var diags: std.ArrayList(LspDiagnostic) = .empty;
     errdefer {
         for (diags.items) |d| freeSingleDiagnostic(handler.gpa, d);
         diags.deinit(handler.gpa);
@@ -234,7 +234,7 @@ fn buildMinifyRuleOverrides(
         gop.value_ptr.options = .{ .object = obj };
     }
 
-    var overrides: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
+    var overrides: std.ArrayList(wgslender.Linter.Options.RuleOverride) = .empty;
     var it = by_id.iterator();
     while (it.next()) |kv| {
         const acc = kv.value_ptr.*;

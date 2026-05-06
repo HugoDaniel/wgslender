@@ -120,7 +120,7 @@ fn checkStmt(ctx: *Context, stmt: Ast.Stmt) error{OutOfMemory}!void {
 }
 
 fn checkExpr(ctx: *Context, root: Ast.Expr) error{OutOfMemory}!void {
-    var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+    var stack: std.ArrayList(Ast.Expr) = .empty;
     defer stack.deinit(ctx.arena);
     try stack.append(ctx.arena, root);
 

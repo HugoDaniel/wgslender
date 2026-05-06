@@ -47,7 +47,7 @@ const Seen = struct {
 };
 
 fn checkSwitch(ctx: *Context, s: *Ast.SwitchStmt) error{OutOfMemory}!void {
-    var seen: std.ArrayListUnmanaged(Seen) = .empty;
+    var seen: std.ArrayList(Seen) = .empty;
     defer seen.deinit(ctx.arena);
 
     for (s.cases.items) |case| {

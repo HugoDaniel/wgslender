@@ -119,7 +119,7 @@ fn collectAddrsInStmt(ctx: *Context, stmt: Ast.Stmt, out: *MutatedSet) error{Out
 }
 
 fn collectAddrsInExpr(ctx: *Context, root: Ast.Expr, out: *MutatedSet) error{OutOfMemory}!void {
-    var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+    var stack: std.ArrayList(Ast.Expr) = .empty;
     defer stack.deinit(ctx.arena);
     try stack.append(ctx.arena, root);
     while (stack.pop()) |e| switch (e) {

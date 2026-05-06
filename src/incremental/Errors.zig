@@ -44,7 +44,7 @@ pub fn fixupErrors(
     old_anchor: Ast.Span,
     delta: i64,
 ) Allocator.Error![]Parser.ParseError {
-    var out: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var out: std.ArrayList(Parser.ParseError) = .empty;
     try out.ensureTotalCapacity(arena, prev_errors.len);
     for (prev_errors) |e| {
         if (e.pos < old_anchor.start) {
@@ -86,7 +86,7 @@ pub fn filterNonVisitErrors(
     arena: Allocator,
     in: []const Parser.ParseError,
 ) Allocator.Error![]Parser.ParseError {
-    var out: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var out: std.ArrayList(Parser.ParseError) = .empty;
     try out.ensureTotalCapacity(arena, in.len);
     for (in) |e| {
         if (std.mem.eql(u8, e.code, "E0102")) continue;

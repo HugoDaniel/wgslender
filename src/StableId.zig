@@ -80,7 +80,7 @@ pub fn stableIdFor(
     const s = module.symbols.items[idx];
     if (s.original_name.len == 0) return null;
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(arena);
     try buf.appendSlice(arena, VERSION_PREFIX);
 
@@ -449,7 +449,7 @@ fn findOwningScope(root: *const Ast.Scope, sym: Ast.SymbolIndex) ?*const Ast.Sco
 /// `fn:<name>`; a `.block` scope contributes `block#<sibling_index>`.
 fn writeScopePath(
     arena: Allocator,
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     module: *const Ast.Module,
     target: *const Ast.Scope,
 ) Error!void {
@@ -657,7 +657,7 @@ fn findSiblingByIndex(
     return null;
 }
 
-fn finishId(arena: Allocator, buf: *std.ArrayListUnmanaged(u8)) Error!StableId {
+fn finishId(arena: Allocator, buf: *std.ArrayList(u8)) Error!StableId {
     if (buf.items.len > MAX_LEN) return error.IdTooLong;
     const bytes = try arena.dupe(u8, buf.items);
     return .{ .bytes = bytes };

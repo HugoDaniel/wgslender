@@ -36,13 +36,13 @@ const Printer = @import("Printer.zig");
 pub const JsonVersion = enum { v1, v2 };
 
 pub const ReflectResult = struct {
-    bindings: std.ArrayListUnmanaged(BindingInfo) = .empty,
+    bindings: std.ArrayList(BindingInfo) = .empty,
     structs: std.StringHashMapUnmanaged(StructLayout) = .{},
-    entry_points: std.ArrayListUnmanaged(EntryPointInfo) = .empty,
-    overrides: std.ArrayListUnmanaged(OverrideInfo) = .empty,
-    functions: std.ArrayListUnmanaged(FunctionInfo) = .empty,
-    aliases: std.ArrayListUnmanaged(AliasInfo) = .empty,
-    errors: std.ArrayListUnmanaged([]const u8) = .empty,
+    entry_points: std.ArrayList(EntryPointInfo) = .empty,
+    overrides: std.ArrayList(OverrideInfo) = .empty,
+    functions: std.ArrayList(FunctionInfo) = .empty,
+    aliases: std.ArrayList(AliasInfo) = .empty,
+    errors: std.ArrayList([]const u8) = .empty,
     _arena: ?std.heap.ArenaAllocator = null,
 
     /// Free all memory owned by this result. If this result was created
@@ -65,14 +65,14 @@ pub const ReflectResult = struct {
     }
 
     /// Serialize the reflect result to JSON. Defaults to v2.
-    pub fn toJson(self: *const ReflectResult, buf: *std.ArrayListUnmanaged(u8), arena: Allocator) Allocator.Error!void {
+    pub fn toJson(self: *const ReflectResult, buf: *std.ArrayList(u8), arena: Allocator) Allocator.Error!void {
         try self.toJsonVersion(buf, arena, .v2);
     }
 
     /// Serialize the reflect result to JSON at the requested schema version.
     pub fn toJsonVersion(
         self: *const ReflectResult,
-        buf: *std.ArrayListUnmanaged(u8),
+        buf: *std.ArrayList(u8),
         arena: Allocator,
         version: JsonVersion,
     ) Allocator.Error!void {
@@ -141,7 +141,7 @@ pub const ReflectResult = struct {
 
     /// Serialize the reflect result to pretty-printed JSON (2-space indent).
     /// Defaults to v2.
-    pub fn toJsonPretty(self: *const ReflectResult, buf: *std.ArrayListUnmanaged(u8), arena: Allocator) Allocator.Error!void {
+    pub fn toJsonPretty(self: *const ReflectResult, buf: *std.ArrayList(u8), arena: Allocator) Allocator.Error!void {
         try self.toJsonPrettyVersion(buf, arena, .v2);
     }
 
@@ -149,11 +149,11 @@ pub const ReflectResult = struct {
     /// schema version.
     pub fn toJsonPrettyVersion(
         self: *const ReflectResult,
-        buf: *std.ArrayListUnmanaged(u8),
+        buf: *std.ArrayList(u8),
         arena: Allocator,
         version: JsonVersion,
     ) Allocator.Error!void {
-        var compact: std.ArrayListUnmanaged(u8) = .empty;
+        var compact: std.ArrayList(u8) = .empty;
         try self.toJsonVersion(&compact, arena, version);
         try prettyPrintJson(buf, arena, compact.items);
     }
@@ -192,7 +192,7 @@ fn isSamplerBinding(b: *const BindingInfo) bool {
 }
 
 fn writeBindingSubset(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     arena: Allocator,
     key: []const u8,
     bindings: []const BindingInfo,
@@ -210,7 +210,7 @@ fn writeBindingSubset(
     try appendStr(buf, arena, "]");
 }
 
-fn prettyPrintJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, json: []const u8) Allocator.Error!void {
+fn prettyPrintJson(buf: *std.ArrayList(u8), arena: Allocator, json: []const u8) Allocator.Error!void {
     var depth: u32 = 0;
     var in_string = false;
     var i: usize = 0;
@@ -265,7 +265,7 @@ fn prettyPrintJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, json: []c
     }
 }
 
-fn writeIndent(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, depth: u32) Allocator.Error!void {
+fn writeIndent(buf: *std.ArrayList(u8), arena: Allocator, depth: u32) Allocator.Error!void {
     for (0..depth) |_| {
         try buf.appendSlice(arena, "  ");
     }
@@ -310,7 +310,7 @@ pub const BindingInfo = struct {
     /// set of samplers it has been observed paired with in
     /// `textureSample*` / `textureGather*` calls; for a `sampler` it is
     /// the set of textures. Populated bidirectionally. May be empty.
-    relations: std.ArrayListUnmanaged([]const u8) = .empty,
+    relations: std.ArrayList([]const u8) = .empty,
 };
 
 pub const ArrayInfo = struct {
@@ -327,7 +327,7 @@ pub const ArrayInfo = struct {
 pub const StructLayout = struct {
     size: u32,
     alignment: u32,
-    fields: std.ArrayListUnmanaged(FieldInfo) = .empty,
+    fields: std.ArrayList(FieldInfo) = .empty,
 };
 
 pub const FieldInfo = struct {
@@ -456,19 +456,19 @@ pub const EntryPointInfo = struct {
     /// `@workgroup_size(...)` arguments. When an axis is set from an
     /// override, `workgroup_size[i]` is reported as `0` (the runtime
     /// must supply the value). Empty if no overrides drive the size.
-    overrides: std.ArrayListUnmanaged([]const u8) = .empty,
+    overrides: std.ArrayList([]const u8) = .empty,
     /// One entry per `@location(N)`/`@builtin(name)` carrying input from
     /// the prior pipeline stage. Struct-typed parameters are flattened
     /// into one entry per attributed member.
-    inputs: std.ArrayListUnmanaged(InputOutputInfo) = .empty,
+    inputs: std.ArrayList(InputOutputInfo) = .empty,
     /// One entry per `@location(N)`/`@builtin(name)` produced by this
     /// stage. Struct-typed return types are flattened.
-    outputs: std.ArrayListUnmanaged(InputOutputInfo) = .empty,
+    outputs: std.ArrayList(InputOutputInfo) = .empty,
     /// Names of bindings (module-scope `var`s with `@group/@binding`)
     /// reachable from this entry point's transitive call graph. Order
     /// matches the order in which each binding was first observed,
     /// then deduplicated.
-    resources: std.ArrayListUnmanaged([]const u8) = .empty,
+    resources: std.ArrayList([]const u8) = .empty,
 };
 
 pub const InputOutputInfo = struct {
@@ -509,14 +509,14 @@ pub const FunctionInfo = struct {
     stable_id: []const u8 = "",
     decl_span: SpanInfo = .{},
     /// Names of user-defined functions called directly from this body.
-    calls: std.ArrayListUnmanaged([]const u8) = .empty,
+    calls: std.ArrayList([]const u8) = .empty,
     /// Names of module-scope `var` declarations referenced directly
     /// from this body. Texture / sampler / storage / uniform — all
     /// kinds are included; consumers filter by looking up the
     /// matching `BindingInfo`.
-    direct_resources: std.ArrayListUnmanaged([]const u8) = .empty,
+    direct_resources: std.ArrayList([]const u8) = .empty,
     /// Names of `@override` constants referenced directly.
-    direct_overrides: std.ArrayListUnmanaged([]const u8) = .empty,
+    direct_overrides: std.ArrayList([]const u8) = .empty,
     /// True iff this function is an entry point or transitively
     /// called from one.
     in_use: bool = false,
@@ -871,7 +871,7 @@ fn extractEntryPoint(
     var stage: []const u8 = "";
     var workgroup_size: [3]u32 = .{ 1, 1, 1 };
     var has_workgroup_size = false;
-    var overrides: std.ArrayListUnmanaged([]const u8) = .empty;
+    var overrides: std.ArrayList([]const u8) = .empty;
 
     for (fn_decl.attributes.items) |attr| {
         if (std.mem.eql(u8, attr.name, "vertex")) {
@@ -888,8 +888,8 @@ fn extractEntryPoint(
 
     if (stage.len == 0) return null;
 
-    var inputs: std.ArrayListUnmanaged(InputOutputInfo) = .empty;
-    var outputs: std.ArrayListUnmanaged(InputOutputInfo) = .empty;
+    var inputs: std.ArrayList(InputOutputInfo) = .empty;
+    var outputs: std.ArrayList(InputOutputInfo) = .empty;
     try collectEntryInputs(arena, fn_decl, lc, &inputs);
     try collectEntryOutputs(arena, fn_decl, lc, &outputs);
 
@@ -909,7 +909,7 @@ fn collectEntryInputs(
     arena: Allocator,
     fn_decl: *Ast.FunctionDecl,
     lc: *LayoutComputer,
-    out: *std.ArrayListUnmanaged(InputOutputInfo),
+    out: *std.ArrayList(InputOutputInfo),
 ) Allocator.Error!void {
     for (fn_decl.parameters.items) |p| {
         const param_name = lc.getSymbolName(p.name);
@@ -921,7 +921,7 @@ fn collectEntryOutputs(
     arena: Allocator,
     fn_decl: *Ast.FunctionDecl,
     lc: *LayoutComputer,
-    out: *std.ArrayListUnmanaged(InputOutputInfo),
+    out: *std.ArrayList(InputOutputInfo),
 ) Allocator.Error!void {
     const ret = fn_decl.return_type orelse return;
     try collectIoFromAttributedSlot(arena, fn_decl.return_attr.items, ret, "", lc, out);
@@ -936,7 +936,7 @@ fn collectIoFromAttributedSlot(
     typ: Ast.Type,
     slot_name: []const u8,
     lc: *LayoutComputer,
-    out: *std.ArrayListUnmanaged(InputOutputInfo),
+    out: *std.ArrayList(InputOutputInfo),
 ) Allocator.Error!void {
     const resolved = lc.resolveAliasType(typ);
     if (resolved == .ident) {
@@ -1026,7 +1026,7 @@ fn parseWorkgroupSize(
     module: *Ast.Module,
     lc: *LayoutComputer,
     out: *[3]u32,
-    overrides: *std.ArrayListUnmanaged([]const u8),
+    overrides: *std.ArrayList([]const u8),
 ) Allocator.Error!void {
     out.* = .{ 1, 1, 1 };
     for (args, 0..) |arg, i| {
@@ -1195,7 +1195,7 @@ const LayoutComputer = struct {
     struct_cache: std.StringHashMapUnmanaged(StructLayout),
     renamer: ?*const Printer.Renamer,
     /// Scratch buffer for typeToStringMapped.
-    fmt_buf: std.ArrayListUnmanaged(u8) = .empty,
+    fmt_buf: std.ArrayList(u8) = .empty,
     /// Cache of evaluated const declarations keyed by `SymbolIndex.index()`.
     /// Speeds up repeated identifier lookups and breaks cycles.
     const_cache: std.AutoHashMapUnmanaged(u32, ?ConstValue) = .{},
@@ -2044,7 +2044,7 @@ const LayoutComputer = struct {
         if (self.struct_cache.get(name)) |cached| return cached;
 
         // Pre-allocate fields with expected capacity.
-        var fields: std.ArrayListUnmanaged(FieldInfo) = .empty;
+        var fields: std.ArrayList(FieldInfo) = .empty;
         try fields.ensureTotalCapacity(self.arena, decl.members.items.len);
 
         var layout = StructLayout{
@@ -2373,12 +2373,12 @@ fn isPow2(x: u32) bool {
 /// call, member, and index — i.e. every form that can appear inside an
 /// `@override` initializer or `@id(...)` value.
 fn renderExprText(arena: Allocator, expr: Ast.Expr) Allocator.Error![]const u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try renderExpr(&buf, arena, expr);
     return buf.items;
 }
 
-fn renderExpr(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, expr: Ast.Expr) Allocator.Error!void {
+fn renderExpr(buf: *std.ArrayList(u8), arena: Allocator, expr: Ast.Expr) Allocator.Error!void {
     switch (expr) {
         .literal => |lit| try buf.appendSlice(arena, lit.value),
         .ident => |id| try buf.appendSlice(arena, id.name),
@@ -2845,7 +2845,7 @@ fn symbolName(module: *Ast.Module, idx: u32) ?[]const u8 {
     return module.symbols.items[idx].original_name;
 }
 
-fn appendUnique(arena: Allocator, list: *std.ArrayListUnmanaged([]const u8), name: []const u8) Allocator.Error!void {
+fn appendUnique(arena: Allocator, list: *std.ArrayList([]const u8), name: []const u8) Allocator.Error!void {
     if (name.len == 0) return;
     for (list.items) |existing| {
         if (std.mem.eql(u8, existing, name)) return;
@@ -2872,7 +2872,7 @@ fn propagateEntryReachability(arena: Allocator, result: *ReflectResult) Allocato
         defer arena.free(visited);
         @memset(visited, false);
 
-        var queue: std.ArrayListUnmanaged(u32) = .empty;
+        var queue: std.ArrayList(u32) = .empty;
         defer queue.deinit(arena);
         try queue.append(arena, start_idx);
         visited[start_idx] = true;
@@ -2900,17 +2900,17 @@ fn propagateEntryReachability(arena: Allocator, result: *ReflectResult) Allocato
 // JSON serialization helpers
 // =========================================================================
 
-fn appendStr(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, s: []const u8) Allocator.Error!void {
+fn appendStr(buf: *std.ArrayList(u8), arena: Allocator, s: []const u8) Allocator.Error!void {
     try buf.appendSlice(arena, s);
 }
 
-fn appendInt(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, value: anytype) Allocator.Error!void {
+fn appendInt(buf: *std.ArrayList(u8), arena: Allocator, value: anytype) Allocator.Error!void {
     var scratch: [20]u8 = undefined;
     const s = std.fmt.bufPrint(&scratch, "{d}", .{value}) catch return;
     try appendStr(buf, arena, s);
 }
 
-fn appendJsonStr(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, s: []const u8) Allocator.Error!void {
+fn appendJsonStr(buf: *std.ArrayList(u8), arena: Allocator, s: []const u8) Allocator.Error!void {
     try buf.append(arena, '"');
     for (s) |c| {
         switch (c) {
@@ -2934,7 +2934,7 @@ fn appendJsonStr(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, s: []const 
 }
 
 fn writeSpanField(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     arena: Allocator,
     name: []const u8,
     span: SpanInfo,
@@ -2950,7 +2950,7 @@ fn writeSpanField(
     try appendStr(buf, arena, "}");
 }
 
-fn writeBindingJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, b: *const BindingInfo) Allocator.Error!void {
+fn writeBindingJson(buf: *std.ArrayList(u8), arena: Allocator, b: *const BindingInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"group\":");
     try appendInt(buf, arena, b.group);
     try appendStr(buf, arena, ",\"binding\":");
@@ -3000,7 +3000,7 @@ fn writeBindingJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, b: *cons
     try appendStr(buf, arena, "}");
 }
 
-fn writeFunctionJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, f: *const FunctionInfo) Allocator.Error!void {
+fn writeFunctionJson(buf: *std.ArrayList(u8), arena: Allocator, f: *const FunctionInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"name\":");
     try appendJsonStr(buf, arena, f.name);
     if (f.name_mapped.len > 0) {
@@ -3034,7 +3034,7 @@ fn writeFunctionJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, f: *con
     try appendStr(buf, arena, "]}");
 }
 
-fn writeStructLayoutJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, layout: *const StructLayout) Allocator.Error!void {
+fn writeStructLayoutJson(buf: *std.ArrayList(u8), arena: Allocator, layout: *const StructLayout) Allocator.Error!void {
     try appendStr(buf, arena, "{\"size\":");
     try appendInt(buf, arena, layout.size);
     try appendStr(buf, arena, ",\"alignment\":");
@@ -3047,7 +3047,7 @@ fn writeStructLayoutJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, lay
     try appendStr(buf, arena, "]}");
 }
 
-fn writeFieldInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, f: *const FieldInfo) Allocator.Error!void {
+fn writeFieldInfoJson(buf: *std.ArrayList(u8), arena: Allocator, f: *const FieldInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"name\":");
     try appendJsonStr(buf, arena, f.name);
     try appendStr(buf, arena, ",\"nameMapped\":");
@@ -3080,7 +3080,7 @@ fn writeFieldInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, f: *co
     try appendStr(buf, arena, "}");
 }
 
-fn writeTypeInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, t: *const TypeInfo) Allocator.Error!void {
+fn writeTypeInfoJson(buf: *std.ArrayList(u8), arena: Allocator, t: *const TypeInfo) Allocator.Error!void {
     switch (t.*) {
         .scalar => |s| {
             try appendStr(buf, arena, "{\"kind\":\"scalar\",\"name\":");
@@ -3208,7 +3208,7 @@ fn textureKindString(kind: Ast.TextureKind) []const u8 {
     };
 }
 
-fn writeArrayInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, arr: *const ArrayInfo) Allocator.Error!void {
+fn writeArrayInfoJson(buf: *std.ArrayList(u8), arena: Allocator, arr: *const ArrayInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"depth\":");
     try appendInt(buf, arena, arr.depth);
     try appendStr(buf, arena, ",\"elementCount\":");
@@ -3240,7 +3240,7 @@ fn writeArrayInfoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, arr: *
     try appendStr(buf, arena, "}");
 }
 
-fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, ep: *const EntryPointInfo) Allocator.Error!void {
+fn writeEntryPointJson(buf: *std.ArrayList(u8), arena: Allocator, ep: *const EntryPointInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"name\":");
     try appendJsonStr(buf, arena, ep.name);
     try appendStr(buf, arena, ",\"nameOffset\":");
@@ -3290,7 +3290,7 @@ fn writeEntryPointJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, ep: *
     try appendStr(buf, arena, "}");
 }
 
-fn writeIoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, io: *const InputOutputInfo) Allocator.Error!void {
+fn writeIoJson(buf: *std.ArrayList(u8), arena: Allocator, io: *const InputOutputInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"name\":");
     try appendJsonStr(buf, arena, io.name);
     if (io.location) |l| {
@@ -3321,7 +3321,7 @@ fn writeIoJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, io: *const In
     try appendStr(buf, arena, "}");
 }
 
-fn writeOverrideJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, o: *const OverrideInfo) Allocator.Error!void {
+fn writeOverrideJson(buf: *std.ArrayList(u8), arena: Allocator, o: *const OverrideInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"name\":");
     try appendJsonStr(buf, arena, o.name);
     try appendStr(buf, arena, ",\"nameMapped\":");
@@ -3354,7 +3354,7 @@ fn writeOverrideJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, o: *con
     try appendStr(buf, arena, "}");
 }
 
-fn writeAliasJson(buf: *std.ArrayListUnmanaged(u8), arena: Allocator, a: *const AliasInfo) Allocator.Error!void {
+fn writeAliasJson(buf: *std.ArrayList(u8), arena: Allocator, a: *const AliasInfo) Allocator.Error!void {
     try appendStr(buf, arena, "{\"name\":");
     try appendJsonStr(buf, arena, a.name);
     try appendStr(buf, arena, ",\"nameMapped\":");

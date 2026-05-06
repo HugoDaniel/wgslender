@@ -17,7 +17,7 @@ pub fn computeFoldingRanges(handler: *Handler, uri: []const u8) ![]FoldingRangeI
     const module = analysis.module orelse return &.{};
     const source = module.source;
 
-    var ranges: std.ArrayListUnmanaged(FoldingRangeInfo) = .empty;
+    var ranges: std.ArrayList(FoldingRangeInfo) = .empty;
     defer ranges.deinit(handler.gpa);
 
     for (module.declarations.items) |decl| {

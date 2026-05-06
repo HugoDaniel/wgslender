@@ -108,7 +108,7 @@ pub const ReparseResult = struct {
     gpa: Allocator,
     arena: *std.heap.ArenaAllocator,
     /// Invariant: always empty. See the ownership-model block above.
-    retained_arenas: std.ArrayListUnmanaged(*std.heap.ArenaAllocator) = .empty,
+    retained_arenas: std.ArrayList(*std.heap.ArenaAllocator) = .empty,
     source: [:0]const u8,
     module: *Ast.Module,
     cst: Cst.Tree,
@@ -240,7 +240,7 @@ pub fn parseFull(gpa: Allocator, source: []const u8) !ReparseResult {
     // direct AST) means every `Ast.Expr` gains a populated `span`, which
     // the incremental add/sub hot path relies on to locate the AST slot
     // corresponding to a CST anchor.
-    var visit_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var visit_errors: std.ArrayList(Parser.ParseError) = .empty;
     const module = try CstLower.lowerTreeWithErrors(gpa, arena, &tree, &visit_errors);
 
     // Merge parser-grammar errors (E0001/E0004/E0101/E0401) with

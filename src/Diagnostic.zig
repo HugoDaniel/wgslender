@@ -189,7 +189,7 @@ pub const Entry = struct {
 // =========================================================================
 
 /// Serialize a single diagnostic entry as a JSON object (no surrounding braces array).
-pub fn entryToJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, entry: *const Entry) Allocator.Error!void {
+pub fn entryToJson(buf: *std.ArrayList(u8), allocator: Allocator, entry: *const Entry) Allocator.Error!void {
     try buf.appendSlice(allocator, "{\"severity\":\"");
     try buf.appendSlice(allocator, entry.severity.string());
     try buf.appendSlice(allocator, "\",\"message\":\"");
@@ -255,7 +255,7 @@ pub fn entryToJson(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, entry
     try buf.append(allocator, '}');
 }
 
-pub fn appendJsonEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
+pub fn appendJsonEscaped(buf: *std.ArrayList(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
     for (s) |c| {
         switch (c) {
             '"' => try buf.appendSlice(allocator, "\\\""),
@@ -268,7 +268,7 @@ pub fn appendJsonEscaped(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator,
     }
 }
 
-pub fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: anytype) Allocator.Error!void {
+pub fn appendInt(buf: *std.ArrayList(u8), allocator: Allocator, value: anytype) Allocator.Error!void {
     var scratch: [20]u8 = undefined;
     const s = std.fmt.bufPrint(&scratch, "{d}", .{value}) catch return;
     try buf.appendSlice(allocator, s);
@@ -280,11 +280,11 @@ pub fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: 
 
 /// Pre-computed line-start offsets for O(log n) byte-offset to line/column.
 pub const LineIndex = struct {
-    line_starts: std.ArrayListUnmanaged(u32),
+    line_starts: std.ArrayList(u32),
 
     /// Build a line index by scanning `source` for newlines.
     pub fn init(allocator: Allocator, source: []const u8) Allocator.Error!LineIndex {
-        var starts: std.ArrayListUnmanaged(u32) = .empty;
+        var starts: std.ArrayList(u32) = .empty;
         try starts.append(allocator, 0);
 
         var i: usize = 0;
@@ -352,7 +352,7 @@ pub const LineIndex = struct {
 // =========================================================================
 
 /// Collects diagnostics during compilation.
-diagnostics: std.ArrayListUnmanaged(Entry),
+diagnostics: std.ArrayList(Entry),
 line_index: LineIndex,
 source: []const u8,
 has_errors: bool,
@@ -377,7 +377,7 @@ pub fn init(allocator: Allocator, source: []const u8) Allocator.Error!Diagnostic
     var line_index = try LineIndex.init(allocator, source);
     errdefer line_index.deinit(allocator);
 
-    var diags: std.ArrayListUnmanaged(Entry) = .empty;
+    var diags: std.ArrayList(Entry) = .empty;
     errdefer diags.deinit(allocator);
     try diags.ensureTotalCapacity(allocator, 8);
 
@@ -540,7 +540,7 @@ pub fn warningCount(self: *const Diagnostic) u32 {
 
 /// Return only error-level diagnostics (caller owns returned slice).
 pub fn errors(self: *const Diagnostic, allocator: Allocator) Allocator.Error![]const Entry {
-    var result: std.ArrayListUnmanaged(Entry) = .empty;
+    var result: std.ArrayList(Entry) = .empty;
     for (self.diagnostics.items) |d| {
         if (d.severity == .@"error") {
             try result.append(allocator, d);
@@ -551,7 +551,7 @@ pub fn errors(self: *const Diagnostic, allocator: Allocator) Allocator.Error![]c
 
 /// Return only warning-level diagnostics (caller owns returned slice).
 pub fn warnings(self: *const Diagnostic, allocator: Allocator) Allocator.Error![]const Entry {
-    var result: std.ArrayListUnmanaged(Entry) = .empty;
+    var result: std.ArrayList(Entry) = .empty;
     for (self.diagnostics.items) |d| {
         if (d.severity == .warning) {
             try result.append(allocator, d);
@@ -568,7 +568,7 @@ pub fn warnings(self: *const Diagnostic, allocator: Allocator) Allocator.Error![
 pub fn format(self: *const Diagnostic, allocator: Allocator) Allocator.Error![]const u8 {
     if (self.diagnostics.items.len == 0) return "";
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     const writer = buf.writer(allocator);
     for (self.diagnostics.items) |*d| {
         try self.formatDiagnostic(d, writer);
@@ -1083,7 +1083,7 @@ test "diagnostic: DiagnosticFilter" {
 
 test "entryToJson: propagates OOM" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     const entry = Entry{ .severity = .@"error", .message = "test error" };
     const result = entryToJson(&buf, failing.allocator(), &entry);
     try std.testing.expect(result == error.OutOfMemory);

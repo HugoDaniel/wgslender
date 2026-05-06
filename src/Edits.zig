@@ -265,7 +265,7 @@ pub fn findReferences(
     include_declaration: bool,
 ) Allocator.Error![]Reference {
     module.absorbInteriors();
-    var refs: std.ArrayListUnmanaged(Reference) = .empty;
+    var refs: std.ArrayList(Reference) = .empty;
     defer refs.deinit(gpa);
 
     if (!target.isValid()) return try gpa.dupe(Reference, refs.items);
@@ -290,7 +290,7 @@ fn collectInDecl(
     gpa: Allocator,
     decl: Ast.Decl,
     target: Ast.SymbolIndex,
-    refs: *std.ArrayListUnmanaged(Reference),
+    refs: *std.ArrayList(Reference),
     is_write: bool,
 ) Allocator.Error!void {
     switch (decl) {
@@ -327,7 +327,7 @@ fn collectInType(
     gpa: Allocator,
     typ: Ast.Type,
     target: Ast.SymbolIndex,
-    refs: *std.ArrayListUnmanaged(Reference),
+    refs: *std.ArrayList(Reference),
 ) Allocator.Error!void {
     switch (typ) {
         .ident => |t| {
@@ -355,7 +355,7 @@ fn collectInCompound(
     gpa: Allocator,
     compound: *const Ast.CompoundStmt,
     target: Ast.SymbolIndex,
-    refs: *std.ArrayListUnmanaged(Reference),
+    refs: *std.ArrayList(Reference),
 ) Allocator.Error!void {
     for (compound.stmts.items) |stmt| try collectInStmt(gpa, stmt, target, refs);
 }
@@ -364,7 +364,7 @@ fn collectInStmt(
     gpa: Allocator,
     stmt: Ast.Stmt,
     target: Ast.SymbolIndex,
-    refs: *std.ArrayListUnmanaged(Reference),
+    refs: *std.ArrayList(Reference),
 ) Allocator.Error!void {
     switch (stmt) {
         .compound => |c| try collectInCompound(gpa, c, target, refs),
@@ -411,7 +411,7 @@ fn collectInExpr(
     gpa: Allocator,
     expr: Ast.Expr,
     target: Ast.SymbolIndex,
-    refs: *std.ArrayListUnmanaged(Reference),
+    refs: *std.ArrayList(Reference),
     is_write: bool,
 ) Allocator.Error!void {
     switch (expr) {

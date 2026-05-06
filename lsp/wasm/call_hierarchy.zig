@@ -18,7 +18,7 @@ pub fn handlePrepare(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) vo
     const item = ctx.handler.prepareCallHierarchy(p.uri, .{ .line = p.line, .character = p.char }) catch return ctx.sendResult(id, "null");
     const i = item orelse return ctx.sendResult(id, "null");
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     buf.append(ctx.gpa, '[') catch return;
     wire_ch.appendItem(&buf, ctx.gpa, p.uri, i);
     buf.append(ctx.gpa, ']') catch return;
@@ -43,7 +43,7 @@ pub fn handleIncomingCalls(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Val
         ctx.handler.gpa.free(calls);
     }
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     buf.append(ctx.gpa, '[') catch return;
     for (calls, 0..) |call, ci| {
         if (ci > 0) buf.append(ctx.gpa, ',') catch {};
@@ -61,7 +61,7 @@ pub fn handleOutgoingCalls(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Val
         ctx.handler.gpa.free(calls);
     }
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     buf.append(ctx.gpa, '[') catch return;
     for (calls, 0..) |call, ci| {
         if (ci > 0) buf.append(ctx.gpa, ',') catch {};

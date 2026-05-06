@@ -23,7 +23,7 @@ const Diagnostic = wgslender.Diagnostic;
 /// Used standalone for `prepareCallHierarchy` and as the inner `from` /
 /// `to` object inside an `IncomingCall` / `OutgoingCall`.
 pub fn appendItem(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     uri: []const u8,
     item: Handler.CallHierarchyItem,
@@ -40,7 +40,7 @@ pub fn appendItem(
 }
 
 fn appendFromRanges(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     ranges: []const Handler.Range,
 ) void {
@@ -54,7 +54,7 @@ fn appendFromRanges(
 
 /// Append `{"from":{<item>},"fromRanges":[…]}`.
 pub fn appendIncomingCall(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     uri: []const u8,
     call: Handler.IncomingCall,
@@ -67,7 +67,7 @@ pub fn appendIncomingCall(
 
 /// Append `{"to":{<item>},"fromRanges":[…]}`.
 pub fn appendOutgoingCall(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     uri: []const u8,
     call: Handler.OutgoingCall,
@@ -98,7 +98,7 @@ test "appendItem: shape, kind=12, range fields" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendItem(&buf, aa, "test://x.wgsl", .{
         .name = "main",
         .kind = .function,
@@ -119,7 +119,7 @@ test "appendIncomingCall: empty fromRanges array stays empty" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendIncomingCall(&buf, aa, "test://x.wgsl", .{
         .from = .{ .name = "caller", .kind = .function, .range = sample_range, .selection_range = sample_sel },
         .from_ranges = &.{},
@@ -140,7 +140,7 @@ test "appendOutgoingCall: from_ranges length preserved" {
         .{ .start = .{ .line = 5, .character = 6 }, .end = .{ .line = 5, .character = 9 } },
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendOutgoingCall(&buf, aa, "test://x.wgsl", .{
         .to = .{ .name = "callee", .kind = .function, .range = sample_range, .selection_range = sample_sel },
         .from_ranges = &ranges,

@@ -164,7 +164,7 @@ fn compileInner(arena: Allocator, source: [:0]const u8, options: CompileOptions)
     const data_end = data_start + data_len;
 
     // 8. Generate BPE decoder WASM
-    var vm_body: std.ArrayListUnmanaged(u8) = .empty;
+    var vm_body: std.ArrayList(u8) = .empty;
     try BpeVmGen.generate(&vm_body, arena, .{
         .data_start = data_start,
         .data_end = data_end,
@@ -173,7 +173,7 @@ fn compileInner(arena: Allocator, source: [:0]const u8, options: CompileOptions)
     });
 
     // 9. Build code section
-    var code_section: std.ArrayListUnmanaged(u8) = .empty;
+    var code_section: std.ArrayList(u8) = .empty;
     try WasmBinary.writeUleb128(&code_section, arena, 1);
     try WasmBinary.writeUleb128(&code_section, arena, @intCast(vm_body.items.len));
     try code_section.appendSlice(arena, vm_body.items);
@@ -269,7 +269,7 @@ fn prepareRenamer(arena: Allocator, source: [:0]const u8, module: *Ast.Module, o
 
 const StringTable = struct {
     map: std.StringHashMapUnmanaged(u8),
-    strings: std.ArrayListUnmanaged([]const u8),
+    strings: std.ArrayList([]const u8),
     count: usize,
 
     fn init() StringTable {
@@ -294,7 +294,7 @@ const StringTable = struct {
 
 const SymbolTable = struct {
     map: std.StringHashMapUnmanaged(u8),
-    names: std.ArrayListUnmanaged([]const u8),
+    names: std.ArrayList([]const u8),
     count: usize,
 
     fn init() SymbolTable {
@@ -318,7 +318,7 @@ const SymbolTable = struct {
 // =========================================================================
 
 const OpEmitter = struct {
-    ops: std.ArrayListUnmanaged(u8),
+    ops: std.ArrayList(u8),
     str_table: StringTable,
     sym_table: SymbolTable,
     alloc: Allocator,
@@ -765,7 +765,7 @@ const OpEmitter = struct {
             emit_type: Ast.Type,
         };
 
-        var stack: std.ArrayListUnmanaged(EmitWork) = .empty;
+        var stack: std.ArrayList(EmitWork) = .empty;
         defer stack.deinit(self.alloc);
         try stack.append(self.alloc, .{ .expr = e });
 
@@ -855,7 +855,7 @@ const OpEmitter = struct {
             close_brace,
         };
 
-        var stack: std.ArrayListUnmanaged(StmtEmitWork) = .empty;
+        var stack: std.ArrayList(StmtEmitWork) = .empty;
         defer stack.deinit(self.alloc);
         try stack.append(self.alloc, .{ .stmt = root });
 
@@ -1154,7 +1154,7 @@ const VmGen = struct {
 
     /// Generate the WASM function body for `generate() -> i32`.
     /// The VM dispatches on op bytes: literal ASCII, string ref, symbol ref.
-    fn generate(body: *std.ArrayListUnmanaged(u8), alloc: Allocator, layout: Layout) !void {
+    fn generate(body: *std.ArrayList(u8), alloc: Allocator, layout: Layout) !void {
         const e = WasmBinary.Emit.init(body, alloc);
 
         // Locals: 0=rp (read pointer), 1=wp (write pointer), 2=op, 3=idx, 4=len, 5=src
@@ -1318,7 +1318,7 @@ pub fn decodeOps(
     sym_names: []const []const u8,
     str_consts: []const []const u8,
 ) ![]const u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     var rp: usize = 0;
     while (rp < ops.len) {
         const op = ops[rp];
@@ -1457,7 +1457,7 @@ const BpeVmGen = struct {
     };
 
     /// Emit the `generate() → i32` function body.
-    fn generate(body: *std.ArrayListUnmanaged(u8), alloc: Allocator, layout: Layout) !void {
+    fn generate(body: *std.ArrayList(u8), alloc: Allocator, layout: Layout) !void {
         const e = WasmBinary.Emit.init(body, alloc);
 
         // Locals: 0=rp, 1=wp, 2=sp, 3=byte
@@ -1584,7 +1584,7 @@ const BpeVmGen = struct {
 /// Uses the same stack-based algorithm as the WASM decoder.
 fn decodeBpe(arena: Allocator, data: []const u8, rules: []const [2]u8) ![]const u8 {
     std.debug.assert(rules.len <= BpeEncoder.MAX_RULES);
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     var stack: [512]u8 = undefined;
     var sp: usize = 0;
     var rp: usize = 0;

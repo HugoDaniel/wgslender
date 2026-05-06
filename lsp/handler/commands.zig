@@ -166,7 +166,7 @@ pub fn runReflect(
     // `reflect()` allocates from `arena`; no internal arena to drain.
     _ = &result;
 
-    var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+    var json_buf: std.ArrayList(u8) = .empty;
     if (pretty) {
         result.toJsonPrettyVersion(&json_buf, arena, version) catch return error.OutOfMemory;
     } else {

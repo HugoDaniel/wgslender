@@ -33,7 +33,7 @@ pub fn computeInlayHints(handler: *Handler, uri: []const u8, range: Range) ![]In
     const range_start = Handler.lspPositionToOffset(source, range.start) orelse 0;
     const range_end = Handler.lspPositionToOffset(source, range.end) orelse source.len;
 
-    var hints: std.ArrayListUnmanaged(InlayHintInfo) = .empty;
+    var hints: std.ArrayList(InlayHintInfo) = .empty;
     defer hints.deinit(handler.gpa);
 
     for (module.declarations.items) |decl| {
@@ -70,7 +70,7 @@ fn collectMinifyHints(
     module: *const wgslender.Ast.Module,
     label_alloc: std.mem.Allocator,
     source: [:0]const u8,
-    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+    hints: *std.ArrayList(InlayHintInfo),
 ) std.mem.Allocator.Error!void {
     const eff = handler.effectiveMinifyFor(uri);
     if (!eff.insightsActive()) return;
@@ -177,7 +177,7 @@ fn collectInlayHintsFromDecl(
     decl: Ast.Decl,
     range_start: usize,
     range_end: usize,
-    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+    hints: *std.ArrayList(InlayHintInfo),
 ) std.mem.Allocator.Error!void {
     switch (decl) {
         .let => |l| {
@@ -234,7 +234,7 @@ fn collectInlayHintsFromStmt(
     stmt: Ast.Stmt,
     range_start: usize,
     range_end: usize,
-    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+    hints: *std.ArrayList(InlayHintInfo),
 ) std.mem.Allocator.Error!void {
     switch (stmt) {
         .decl => |d| try collectInlayHintsFromDecl(handler, module, analysis, label_alloc, source, d.decl, range_start, range_end, hints),
@@ -281,7 +281,7 @@ fn collectArraySizeHints(
     typ: Ast.Type,
     range_start: usize,
     range_end: usize,
-    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+    hints: *std.ArrayList(InlayHintInfo),
 ) std.mem.Allocator.Error!void {
     switch (typ) {
         .array => |arr| {
@@ -347,7 +347,7 @@ fn collectExprTypeHints(
     expr: Ast.Expr,
     range_start: usize,
     range_end: usize,
-    hints: *std.ArrayListUnmanaged(InlayHintInfo),
+    hints: *std.ArrayList(InlayHintInfo),
     depth: u32,
 ) std.mem.Allocator.Error!void {
     if (depth > 8) return;

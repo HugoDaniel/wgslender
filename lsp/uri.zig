@@ -23,7 +23,7 @@ pub fn fileUriToPath(allocator: std.mem.Allocator, uri: []const u8) !?[]u8 {
     // we don't speak SMB-style paths.
     if (after_scheme.len == 0 or after_scheme[0] != '/') return null;
 
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
     var i: usize = 0;

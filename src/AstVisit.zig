@@ -54,7 +54,7 @@ pub const Context = struct {
     /// bodies (module-scope lookups ignore it).
     current_loc: u32 = 0,
     /// Diagnostics bucket; `visit` appends use-before-declaration errors.
-    errors: *std.ArrayListUnmanaged(Parser.ParseError),
+    errors: *std.ArrayList(Parser.ParseError),
     /// Upper bound on worklist iterations in stmt/expr visits. Parser
     /// supplies `token_tags.len * 2`; CstLower supplies an equivalent
     /// bound derived from CST node count. Purely a safety guard.
@@ -145,7 +145,7 @@ const Work = union(enum) {
 };
 
 fn visitCompoundStmt(ctx: *Context, stmt: *Ast.CompoundStmt) error{OutOfMemory}!void {
-    var stack: std.ArrayListUnmanaged(Work) = .empty;
+    var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(ctx.arena);
     try stack.append(ctx.arena, .{ .compound = stmt });
     try drainStmtStack(ctx, &stack);
@@ -155,7 +155,7 @@ fn visitCompoundStmt(ctx: *Context, stmt: *Ast.CompoundStmt) error{OutOfMemory}!
 /// (seeded with a `.compound`) and `visitSubtreeStmt` (seeded with a
 /// single `.stmt`). Mode-sensitivity is entirely inside `processOneStmt`
 /// and `visitExpr`, so this loop is mode-agnostic.
-fn drainStmtStack(ctx: *Context, stack: *std.ArrayListUnmanaged(Work)) error{OutOfMemory}!void {
+fn drainStmtStack(ctx: *Context, stack: *std.ArrayList(Work)) error{OutOfMemory}!void {
     for (0..ctx.safety_budget) |_| {
         const work = stack.pop() orelse break;
         switch (work) {
@@ -176,7 +176,7 @@ fn drainStmtStack(ctx: *Context, stack: *std.ArrayListUnmanaged(Work)) error{Out
 
 /// Process a single statement, pushing child work items onto the stack.
 /// Expression visits are done inline (already iterative).
-fn processOneStmt(ctx: *Context, s: Ast.Stmt, stack: *std.ArrayListUnmanaged(Work)) error{OutOfMemory}!void {
+fn processOneStmt(ctx: *Context, s: Ast.Stmt, stack: *std.ArrayList(Work)) error{OutOfMemory}!void {
     switch (s) {
         .compound => |stmt| try stack.append(ctx.arena, .{ .compound = stmt }),
         .@"return" => |stmt| {
@@ -252,7 +252,7 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
         mark: Ast.Expr,
     };
 
-    var stack: std.ArrayListUnmanaged(ExprWork) = .empty;
+    var stack: std.ArrayList(ExprWork) = .empty;
     defer stack.deinit(ctx.arena);
     try stack.append(ctx.arena, .{ .visit = e });
 
@@ -396,7 +396,7 @@ pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
 // =========================================================================
 
 pub fn visitSubtreeStmt(ctx: *Context, stmt: Ast.Stmt) error{OutOfMemory}!void {
-    var stack: std.ArrayListUnmanaged(Work) = .empty;
+    var stack: std.ArrayList(Work) = .empty;
     defer stack.deinit(ctx.arena);
     try stack.append(ctx.arena, .{ .stmt = stmt });
     try drainStmtStack(ctx, &stack);

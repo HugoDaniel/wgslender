@@ -120,7 +120,7 @@ fn walkExprTree(
     state: anytype,
     comptime cb: fn (@TypeOf(state), Ast.Expr) void,
 ) Allocator.Error!void {
-    var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+    var stack: std.ArrayList(Ast.Expr) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, root);
 

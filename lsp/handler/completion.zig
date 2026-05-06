@@ -123,7 +123,7 @@ fn memberCompletion(handler: *Handler, uri: []const u8, source: []const u8, dot_
 }
 
 fn generalCompletion(handler: *Handler, uri: []const u8) ![]CompletionItem {
-    var items: std.ArrayListUnmanaged(CompletionItem) = .empty;
+    var items: std.ArrayList(CompletionItem) = .empty;
     defer items.deinit(handler.gpa);
 
     // Module-level symbols from analysis

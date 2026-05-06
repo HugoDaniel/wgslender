@@ -14,7 +14,7 @@ const Diagnostic = wgslender.Diagnostic;
 pub const Ctx = struct {
     gpa: std.mem.Allocator,
     handler: *Handler,
-    outbox: *std.ArrayListUnmanaged([]u8),
+    outbox: *std.ArrayList([]u8),
 
     fn diagCtx(self: Ctx) wasm_diagnostics.Ctx {
         return .{ .gpa = self.gpa, .handler = self.handler, .outbox = self.outbox };
@@ -75,7 +75,7 @@ pub fn handleDidClose(ctx: Ctx, root: std.json.ObjectMap) void {
     ctx.handler.closeDocument(uri);
 
     // Clear diagnostics.
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     json.appendStr(&buf, ctx.gpa, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
     Diagnostic.appendJsonEscaped(&buf, ctx.gpa, uri) catch return;
     json.appendStr(&buf, ctx.gpa, "\",\"diagnostics\":[]}}");

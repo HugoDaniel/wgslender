@@ -16,7 +16,7 @@ const wasm_lifecycle = @import("lifecycle.zig");
 pub const Ctx = struct {
     gpa: std.mem.Allocator,
     handler: *Handler,
-    outbox: *std.ArrayListUnmanaged([]u8),
+    outbox: *std.ArrayList([]u8),
     sendResult: *const fn (id: ?std.json.Value, result_json: []const u8) void,
     sendErrorCode: *const fn (id: ?std.json.Value, code: i32, message: []const u8) void,
     /// Forwarded to wasm_lifecycle.republishAllDocuments after a void-mode
@@ -72,7 +72,7 @@ pub fn handleReflect(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) vo
         return;
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_workspace.appendReflectResult(&buf, ctx.gpa, result);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
@@ -116,7 +116,7 @@ pub fn handleExecuteCommand(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Va
             }
             return;
         };
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         wire_workspace.appendShowMinifiedOutput(&buf, ctx.gpa, result);
         ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
         return;

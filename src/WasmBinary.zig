@@ -61,7 +61,7 @@ comptime {
 // LEB128 encoding
 // =========================================================================
 
-pub fn writeUleb128(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: u32) Allocator.Error!void {
+pub fn writeUleb128(buf: *std.ArrayList(u8), allocator: Allocator, value: u32) Allocator.Error!void {
     var v = value;
     for (0..5) |_| { // ceil(32/7) = 5 bytes max for u32 LEB128
         const byte: u8 = @truncate(v & 0x7F);
@@ -74,7 +74,7 @@ pub fn writeUleb128(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, valu
     } else unreachable;
 }
 
-pub fn writeSleb128(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: i32) Allocator.Error!void {
+pub fn writeSleb128(buf: *std.ArrayList(u8), allocator: Allocator, value: i32) Allocator.Error!void {
     var v = value;
     for (0..5) |_| { // ceil(32/7) = 5 bytes max for i32 SLEB128
         const byte: u8 = @truncate(@as(u32, @bitCast(v)) & 0x7F);
@@ -93,14 +93,14 @@ pub fn writeSleb128(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, valu
 // =========================================================================
 
 /// Write a raw section: [section_id] [uleb128 size] [content].
-fn writeSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, section_id: SectionId, content: []const u8) Allocator.Error!void {
+fn writeSection(buf: *std.ArrayList(u8), allocator: Allocator, section_id: SectionId, content: []const u8) Allocator.Error!void {
     try buf.append(allocator, @intFromEnum(section_id));
     try writeUleb128(buf, allocator, @intCast(content.len));
     try buf.appendSlice(allocator, content);
 }
 
 /// Write a Type section with a single function type: () -> (i32).
-pub fn writeTypeSectionSingleI32Return(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator) Allocator.Error!void {
+pub fn writeTypeSectionSingleI32Return(buf: *std.ArrayList(u8), allocator: Allocator) Allocator.Error!void {
     const content = [_]u8{
         0x01, // 1 type entry
         0x60, // func type marker
@@ -116,8 +116,8 @@ pub const FuncType = struct {
 };
 
 /// Write a Type section with custom function type entries.
-pub fn writeTypeSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, types: []const FuncType) Allocator.Error!void {
-    var content: std.ArrayListUnmanaged(u8) = .empty;
+pub fn writeTypeSection(buf: *std.ArrayList(u8), allocator: Allocator, types: []const FuncType) Allocator.Error!void {
+    var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);
 
     try writeUleb128(&content, allocator, @intCast(types.len));
@@ -132,8 +132,8 @@ pub fn writeTypeSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, 
 }
 
 /// Write a Function section mapping N functions to type index 0.
-pub fn writeFunctionSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, func_count: u32) Allocator.Error!void {
-    var content: std.ArrayListUnmanaged(u8) = .empty;
+pub fn writeFunctionSection(buf: *std.ArrayList(u8), allocator: Allocator, func_count: u32) Allocator.Error!void {
+    var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);
 
     try writeUleb128(&content, allocator, func_count);
@@ -144,8 +144,8 @@ pub fn writeFunctionSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocat
 }
 
 /// Write a Function section mapping functions to specific type indices.
-pub fn writeFunctionSectionTyped(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, type_indices: []const u32) Allocator.Error!void {
-    var content: std.ArrayListUnmanaged(u8) = .empty;
+pub fn writeFunctionSectionTyped(buf: *std.ArrayList(u8), allocator: Allocator, type_indices: []const u32) Allocator.Error!void {
+    var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);
 
     try writeUleb128(&content, allocator, @intCast(type_indices.len));
@@ -156,8 +156,8 @@ pub fn writeFunctionSectionTyped(buf: *std.ArrayListUnmanaged(u8), allocator: Al
 }
 
 /// Write a Memory section with min pages and no max.
-pub fn writeMemorySection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, min_pages: u32) Allocator.Error!void {
-    var content: std.ArrayListUnmanaged(u8) = .empty;
+pub fn writeMemorySection(buf: *std.ArrayList(u8), allocator: Allocator, min_pages: u32) Allocator.Error!void {
+    var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);
 
     try writeUleb128(&content, allocator, 1); // 1 memory
@@ -173,8 +173,8 @@ pub const GlobalType = struct {
 };
 
 /// Write a Global section with mutable i32 globals.
-pub fn writeGlobalSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, globals: []const GlobalType) Allocator.Error!void {
-    var content: std.ArrayListUnmanaged(u8) = .empty;
+pub fn writeGlobalSection(buf: *std.ArrayList(u8), allocator: Allocator, globals: []const GlobalType) Allocator.Error!void {
+    var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);
 
     try writeUleb128(&content, allocator, @intCast(globals.len));
@@ -197,8 +197,8 @@ pub const Export = struct {
 };
 
 /// Write an Export section.
-pub fn writeExportSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, exports: []const Export) Allocator.Error!void {
-    var content: std.ArrayListUnmanaged(u8) = .empty;
+pub fn writeExportSection(buf: *std.ArrayList(u8), allocator: Allocator, exports: []const Export) Allocator.Error!void {
+    var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);
 
     try writeUleb128(&content, allocator, @intCast(exports.len));
@@ -214,8 +214,8 @@ pub fn writeExportSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator
 /// Write a Code section with pre-built function bodies.
 /// Each body is the raw bytes INSIDE the function (locals + instructions),
 /// NOT including the body size prefix.
-pub fn writeCodeSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, bodies: []const []const u8) Allocator.Error!void {
-    var content: std.ArrayListUnmanaged(u8) = .empty;
+pub fn writeCodeSection(buf: *std.ArrayList(u8), allocator: Allocator, bodies: []const []const u8) Allocator.Error!void {
+    var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);
 
     try writeUleb128(&content, allocator, @intCast(bodies.len));
@@ -227,7 +227,7 @@ pub fn writeCodeSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, 
 }
 
 /// Write a Code section from raw section content (already includes func count + bodies).
-pub fn writeCodeSectionRaw(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, raw_content: []const u8) Allocator.Error!void {
+pub fn writeCodeSectionRaw(buf: *std.ArrayList(u8), allocator: Allocator, raw_content: []const u8) Allocator.Error!void {
     try writeSection(buf, allocator, .code, raw_content);
 }
 
@@ -237,8 +237,8 @@ pub const DataSegment = struct {
 };
 
 /// Write a Data section with active segments at specified offsets.
-pub fn writeDataSection(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, segments: []const DataSegment) Allocator.Error!void {
-    var content: std.ArrayListUnmanaged(u8) = .empty;
+pub fn writeDataSection(buf: *std.ArrayList(u8), allocator: Allocator, segments: []const DataSegment) Allocator.Error!void {
+    var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);
 
     try writeUleb128(&content, allocator, @intCast(segments.len));
@@ -267,7 +267,7 @@ pub fn writeModule(
     code_section_content: []const u8,
     data_segments: []const DataSegment,
 ) Allocator.Error![]const u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
     try buf.appendSlice(allocator, &magic);
@@ -364,10 +364,10 @@ pub fn findSection(sections: []const ParsedSection, id: SectionId) ?ParsedSectio
 /// All methods propagate `Allocator.Error`. Use with an arena allocator
 /// for bulk operations where individual error handling is unnecessary.
 pub const Emit = struct {
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     alloc: Allocator,
 
-    pub fn init(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator) Emit {
+    pub fn init(buf: *std.ArrayList(u8), allocator: Allocator) Emit {
         return .{ .buf = buf, .alloc = allocator };
     }
 
@@ -546,7 +546,7 @@ pub const Emit = struct {
 
 test "wasm binary: ULEB128 encoding" {
     const a = std.testing.allocator;
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(a);
 
     try writeUleb128(&buf, a, 0);
@@ -567,7 +567,7 @@ test "wasm binary: ULEB128 encoding" {
 
 test "wasm binary: SLEB128 encoding" {
     const a = std.testing.allocator;
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(a);
 
     try writeSleb128(&buf, a, 0);
@@ -619,7 +619,7 @@ test "wasm binary: parse sections round-trip" {
 
 test "wasm binary: Emit produces valid instruction sequence" {
     const a = std.testing.allocator;
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(a);
 
     const e = Emit.init(&buf, a);

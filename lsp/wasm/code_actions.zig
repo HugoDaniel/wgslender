@@ -33,7 +33,7 @@ pub fn handle(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
     const actions = ctx.handler.computeCodeActions(handler_diags) catch return;
     defer Handler.freeCodeActions(ctx.gpa, actions);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_actions.appendCodeActionItems(&buf, ctx.gpa, uri, actions);
     const body = buf.toOwnedSlice(ctx.gpa) catch return;
     defer ctx.gpa.free(body);

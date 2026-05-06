@@ -18,7 +18,7 @@ const Diagnostic = wgslender.Diagnostic;
 
 /// Append `{"range":{…},"newText":"…"}`.
 pub fn appendTextEdit(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     edit: Handler.LspTextEdit,
 ) void {
@@ -31,7 +31,7 @@ pub fn appendTextEdit(
 
 /// Append `[{<edit>}, …]`. Writes the enclosing brackets.
 pub fn appendTextEdits(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     edits: []const Handler.LspTextEdit,
 ) void {
@@ -47,7 +47,7 @@ pub fn appendTextEdits(
 /// WGSL edits are always intra-document, so the `changes` map only ever
 /// has a single key.
 pub fn appendWorkspaceEdit(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     uri: []const u8,
     edits: []const Handler.LspTextEdit,
@@ -75,7 +75,7 @@ test "appendTextEdit: shape + escapes newText" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendTextEdit(&buf, aa, .{ .range = sample_range, .new_text = "foo \"bar\"" });
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -88,7 +88,7 @@ test "appendTextEdits: empty slice emits []" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendTextEdits(&buf, aa, &.{});
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -106,7 +106,7 @@ test "appendWorkspaceEdit: changes map keyed by uri, single entry" {
         .{ .range = sample_range, .new_text = "y" },
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendWorkspaceEdit(&buf, aa, "test://a.wgsl", &edits);
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
@@ -123,7 +123,7 @@ test "appendWorkspaceEdit: escapes uri" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendWorkspaceEdit(&buf, aa, "test://a\"b.wgsl", &.{});
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});

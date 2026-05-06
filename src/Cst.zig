@@ -193,7 +193,7 @@ pub const Marker = enum(u32) {
 
 pub const Builder = struct {
     gpa: std.mem.Allocator,
-    events: std.ArrayListUnmanaged(Event),
+    events: std.ArrayList(Event),
     open_count: u32,
 
     pub fn init(gpa: std.mem.Allocator) Builder {
@@ -283,9 +283,9 @@ pub const Builder = struct {
         // Work buffers ------------------------------------------------------
         var nodes: std.MultiArrayList(Tree.Node) = .empty;
         errdefer nodes.deinit(arena);
-        var children: std.ArrayListUnmanaged(Tree.Element) = .empty;
+        var children: std.ArrayList(Tree.Element) = .empty;
         errdefer children.deinit(arena);
-        var errors: std.ArrayListUnmanaged(Tree.ErrorEntry) = .empty;
+        var errors: std.ArrayList(Tree.ErrorEntry) = .empty;
         errdefer errors.deinit(arena);
 
         // Open-stack entry: the node being built and the slice of its
@@ -299,14 +299,14 @@ pub const Builder = struct {
         // emitted before any real token arrived.
         const OpenNode = struct {
             node_idx: u32,
-            pending_children: std.ArrayListUnmanaged(Tree.Element),
+            pending_children: std.ArrayList(Tree.Element),
             touched: bool,
         };
-        var stack: std.ArrayListUnmanaged(OpenNode) = .empty;
+        var stack: std.ArrayList(OpenNode) = .empty;
         defer stack.deinit(self.gpa);
 
         // Forward-parent chain scratch.
-        var chain: std.ArrayListUnmanaged(Kind) = .empty;
+        var chain: std.ArrayList(Kind) = .empty;
         defer chain.deinit(self.gpa);
 
         // Source bounds for nodes that never saw a token — they collapse to
@@ -1332,7 +1332,7 @@ test "Cst.Cursor.tokens / nonTriviaTokens round-trip" {
     // tokens() yields every non-eof leaf in source order.
     const starts = tree.tokens.items(.start);
     const ends = tree.tokens.items(.end);
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(testing.allocator);
     var it = root.tokens();
     while (it.next()) |idx| {

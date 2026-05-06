@@ -45,7 +45,7 @@ pub fn computeCodeLens(handler: *Handler, uri: []const u8) ![]CodeLensInfo {
     const module = analysis.module orelse return &.{};
     const source = module.source;
 
-    var lenses: std.ArrayListUnmanaged(CodeLensInfo) = .empty;
+    var lenses: std.ArrayList(CodeLensInfo) = .empty;
     defer lenses.deinit(handler.gpa);
 
     for (module.declarations.items) |decl| {
@@ -136,7 +136,7 @@ fn appendTotalSizeLens(
     handler: *Handler,
     uri: []const u8,
     source: [:0]const u8,
-    lenses: *std.ArrayListUnmanaged(CodeLensInfo),
+    lenses: *std.ArrayList(CodeLensInfo),
 ) !void {
     // Phase 7 — read through the per-document cache. The first
     // codeLens / inlayHint / minify-lint pass after a parse-version
@@ -185,7 +185,7 @@ fn appendTotalSizeLens(
 
 /// Collect a one-line summary of all @group/@binding declarations in the module.
 fn collectBindingSummary(gpa: std.mem.Allocator, module: *const Ast.Module) ?[]const u8 {
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     defer out.deinit(gpa);
     var scratch: [128]u8 = undefined;
     var count: usize = 0;

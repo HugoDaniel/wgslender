@@ -134,7 +134,7 @@ fn walkStmt(arena: Allocator, stmt: Ast.Stmt, listeners: []const Listener) Alloc
 }
 
 fn walkExpr(arena: Allocator, root: Ast.Expr, listeners: []const Listener) Allocator.Error!void {
-    var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+    var stack: std.ArrayList(Ast.Expr) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, root);
 

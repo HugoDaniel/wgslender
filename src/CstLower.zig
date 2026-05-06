@@ -50,7 +50,7 @@ pub fn lowerTreeWithErrors(
     gpa: Allocator,
     arena: Allocator,
     cst: *const Cst.Tree,
-    errors_out: ?*std.ArrayListUnmanaged(Parser.ParseError),
+    errors_out: ?*std.ArrayList(Parser.ParseError),
 ) !*Ast.Module {
     _ = gpa;
 
@@ -60,7 +60,7 @@ pub fn lowerTreeWithErrors(
     const module = try arena.create(Ast.Module);
     module.* = Ast.Module.init(module_scope, cst.source);
 
-    var local_errors: std.ArrayListUnmanaged(Parser.ParseError) = .empty;
+    var local_errors: std.ArrayList(Parser.ParseError) = .empty;
     const errors_ptr = errors_out orelse &local_errors;
 
     var ctx = LowerCtx{
@@ -210,7 +210,7 @@ pub fn lowerSubtree(
 /// path can feed them to a subsequent `AstVisit` as `scopes_in_order`.
 pub const SubtreeInScopeOut = struct {
     stmt: Ast.Stmt,
-    new_scopes: std.ArrayListUnmanaged(*Ast.Scope),
+    new_scopes: std.ArrayList(*Ast.Scope),
 };
 
 /// Lower a `compound_stmt` or `decl_stmt` subtree that DOES introduce
@@ -232,7 +232,7 @@ pub fn lowerSubtreeInScope(
     cst: *const Cst.Tree,
     node: Cst.NodeIndex,
     parent_scope: *Ast.Scope,
-    symbols: *std.ArrayListUnmanaged(Ast.Symbol),
+    symbols: *std.ArrayList(Ast.Symbol),
 ) error{ OutOfMemory, InvalidCst }!SubtreeInScopeOut {
     var ctx = LowerCtx{
         .arena = arena,
@@ -270,10 +270,10 @@ const LowerCtx = struct {
     token_tags: []const Tag,
     token_starts: []const u32,
     token_ends: []const u32,
-    symbols: std.ArrayListUnmanaged(Ast.Symbol),
+    symbols: std.ArrayList(Ast.Symbol),
     scope: *Ast.Scope,
-    scopes_in_order: std.ArrayListUnmanaged(*Ast.Scope),
-    errors: std.ArrayListUnmanaged(Parser.ParseError),
+    scopes_in_order: std.ArrayList(*Ast.Scope),
+    errors: std.ArrayList(Parser.ParseError),
 
     // ---- symbol / scope helpers (mirror Parser.declareSymbol etc.) ------
 
@@ -488,7 +488,7 @@ const LowerCtx = struct {
         const kw = w.eatAnyToken() orelse return error.InvalidCst;
         switch (self.tokenTag(kw)) {
             .keyword_enable => {
-                var features: std.ArrayListUnmanaged([]const u8) = .empty;
+                var features: std.ArrayList([]const u8) = .empty;
                 while (true) {
                     const t = w.peekTokenTag() orelse break;
                     if (t == .ident) {
@@ -501,7 +501,7 @@ const LowerCtx = struct {
                 return .{ .enable = .{ .features = features, .span = span } };
             },
             .keyword_requires => {
-                var features: std.ArrayListUnmanaged([]const u8) = .empty;
+                var features: std.ArrayList([]const u8) = .empty;
                 while (true) {
                     const t = w.peekTokenTag() orelse break;
                     if (t == .ident) {
@@ -700,8 +700,8 @@ const LowerCtx = struct {
     /// Walks parameters between `(` and `)` — which live as loose children
     /// of the `fn_decl` node (Parser does not wrap them in a
     /// `parameter_list` marker today).
-    fn lowerParametersInline(self: *LowerCtx, w: *Walker) !std.ArrayListUnmanaged(Ast.Parameter) {
-        var params: std.ArrayListUnmanaged(Ast.Parameter) = .empty;
+    fn lowerParametersInline(self: *LowerCtx, w: *Walker) !std.ArrayList(Ast.Parameter) {
+        var params: std.ArrayList(Ast.Parameter) = .empty;
         while (true) {
             if (w.peekTokenTag()) |t| {
                 if (t == .r_paren) break;
@@ -710,7 +710,7 @@ const LowerCtx = struct {
                     continue;
                 }
             }
-            var param_attrs: std.ArrayListUnmanaged(Ast.Attribute) = .empty;
+            var param_attrs: std.ArrayList(Ast.Attribute) = .empty;
             var param_start: ?u32 = null;
             if (w.peekNodeKind()) |k| {
                 if (k == .attribute_list) {
@@ -766,7 +766,7 @@ const LowerCtx = struct {
                     continue;
                 }
             }
-            var member_attrs: std.ArrayListUnmanaged(Ast.Attribute) = .empty;
+            var member_attrs: std.ArrayList(Ast.Attribute) = .empty;
             var member_start: ?u32 = null;
             if (w.peekNodeKind()) |k| {
                 if (k == .attribute_list) {
@@ -850,8 +850,8 @@ const LowerCtx = struct {
     // Attributes
     // =====================================================================
 
-    fn lowerAttributeList(self: *LowerCtx, cur: Cst.Cursor) !std.ArrayListUnmanaged(Ast.Attribute) {
-        var list: std.ArrayListUnmanaged(Ast.Attribute) = .empty;
+    fn lowerAttributeList(self: *LowerCtx, cur: Cst.Cursor) !std.ArrayList(Ast.Attribute) {
+        var list: std.ArrayList(Ast.Attribute) = .empty;
         var w = self.walker(cur);
         while (w.peekNodeKind()) |k| {
             if (k != .attribute) break;
@@ -875,8 +875,8 @@ const LowerCtx = struct {
         return attr;
     }
 
-    fn lowerAttributeArgs(self: *LowerCtx, cur: Cst.Cursor) !std.ArrayListUnmanaged(Ast.Expr) {
-        var args: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+    fn lowerAttributeArgs(self: *LowerCtx, cur: Cst.Cursor) !std.ArrayList(Ast.Expr) {
+        var args: std.ArrayList(Ast.Expr) = .empty;
         var w = self.walker(cur);
         _ = w.eatToken(.l_paren);
         while (true) {
@@ -1307,7 +1307,7 @@ const LowerCtx = struct {
         var paren_loc: u32 = 0;
         if (w.eatToken(.l_paren)) |token| paren_loc = self.tokenStart(token);
 
-        var args: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+        var args: std.ArrayList(Ast.Expr) = .empty;
         while (true) {
             if (w.peekTokenTag()) |t| {
                 if (t == .r_paren) break;
@@ -1555,7 +1555,7 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const chain_span = self.nonTriviaSpan(cur.node);
 
-        var starts: std.ArrayListUnmanaged(struct { start: u32, ptr: *Ast.IfStmt }) = .empty;
+        var starts: std.ArrayList(struct { start: u32, ptr: *Ast.IfStmt }) = .empty;
         defer starts.deinit(self.arena);
 
         const root_if_tok = w.eatToken(.keyword_if) orelse return error.InvalidCst;
@@ -1609,7 +1609,7 @@ const LowerCtx = struct {
         const expr_n = w.eatAnyNode() orelse return error.InvalidCst;
         const expr = try self.lowerExpr(expr_n);
 
-        var cases: std.ArrayListUnmanaged(Ast.SwitchCase) = .empty;
+        var cases: std.ArrayList(Ast.SwitchCase) = .empty;
         _ = w.eatToken(.l_brace);
         while (true) {
             const t = w.peekTokenTag() orelse break;

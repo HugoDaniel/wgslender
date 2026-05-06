@@ -49,7 +49,7 @@ const vlq_sign_bit: u32 = 1;
 const vlq_max_digits = 8;
 
 /// Encode a signed integer as a VLQ base64 sequence, appending to `buf`.
-pub fn encodeVlq(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: i32) Allocator.Error!void {
+pub fn encodeVlq(buf: *std.ArrayList(u8), allocator: Allocator, value: i32) Allocator.Error!void {
     // Convert to VLQ signed representation:
     //   positive: value << 1
     //   negative: ((-value) << 1) | 1
@@ -147,11 +147,11 @@ pub fn decodeVlq(input: []const u8) ?struct { value: i32, consumed: u32 } {
 /// line/column conversion. Standalone from Diagnostic.LineIndex so the
 /// source-map module stays self-contained.
 pub const LineIndex = struct {
-    line_starts: std.ArrayListUnmanaged(u32),
+    line_starts: std.ArrayList(u32),
 
     /// Build a line index by scanning `source` for newlines.
     pub fn init(allocator: Allocator, source: []const u8) Allocator.Error!LineIndex {
-        var starts: std.ArrayListUnmanaged(u32) = .empty;
+        var starts: std.ArrayList(u32) = .empty;
         try starts.append(allocator, 0);
 
         var i: usize = 0;
@@ -313,10 +313,10 @@ pub const Mapping = struct {
 pub const Generator = struct {
     source: []const u8,
     line_index: LineIndex,
-    mappings: std.ArrayListUnmanaged(Mapping),
+    mappings: std.ArrayList(Mapping),
     names: std.StringHashMapUnmanaged(u32),
-    names_list: std.ArrayListUnmanaged([]const u8),
-    encoded_buf: std.ArrayListUnmanaged(u8),
+    names_list: std.ArrayList([]const u8),
+    encoded_buf: std.ArrayList(u8),
     file: []const u8,
     source_name: []const u8,
     include_source: bool,
@@ -526,7 +526,7 @@ pub const Result = struct {
     mappings: []const u8 = "",
 
     /// Serialize to JSON, appending to `buf`.
-    pub fn toJson(self: *const Result, buf: *std.ArrayListUnmanaged(u8), allocator: Allocator) Allocator.Error!void {
+    pub fn toJson(self: *const Result, buf: *std.ArrayList(u8), allocator: Allocator) Allocator.Error!void {
         try appendStr(buf, allocator, "{\"version\":");
         try appendInt(buf, allocator, self.version);
 
@@ -553,9 +553,9 @@ pub const Result = struct {
     }
 
     /// Serialize to a data URI (`data:application/json;base64,...`).
-    pub fn toDataUri(self: *const Result, buf: *std.ArrayListUnmanaged(u8), allocator: Allocator) Allocator.Error!void {
+    pub fn toDataUri(self: *const Result, buf: *std.ArrayList(u8), allocator: Allocator) Allocator.Error!void {
         // First produce the JSON into a temporary buffer.
-        var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+        var json_buf: std.ArrayList(u8) = .empty;
         defer json_buf.deinit(allocator);
         try self.toJson(&json_buf, allocator);
 
@@ -572,7 +572,7 @@ pub const Result = struct {
 
     /// Return a source-mapping comment for appending to generated code.
     /// When `inline_uri` is true, emits a data URI; otherwise emits a file reference.
-    pub fn toComment(self: *const Result, buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, inline_uri: bool) Allocator.Error!void {
+    pub fn toComment(self: *const Result, buf: *std.ArrayList(u8), allocator: Allocator, inline_uri: bool) Allocator.Error!void {
         try appendStr(buf, allocator, "//# sourceMappingURL=");
         if (inline_uri) {
             try self.toDataUri(buf, allocator);
@@ -590,7 +590,7 @@ pub const Result = struct {
 /// Result of decoding a mappings string. Call `deinit` to free.
 pub const DecodedMappings = struct {
     items: []Mapping,
-    list: std.ArrayListUnmanaged(Mapping),
+    list: std.ArrayList(Mapping),
     allocator: Allocator,
 
     pub fn deinit(self: *DecodedMappings) void {
@@ -602,7 +602,7 @@ pub const DecodedMappings = struct {
 pub fn decodeMappings(allocator: Allocator, mappings: []const u8) Allocator.Error!DecodedMappings {
     if (mappings.len == 0) return .{ .items = &.{}, .list = .empty, .allocator = allocator };
 
-    var result: std.ArrayListUnmanaged(Mapping) = .empty;
+    var result: std.ArrayList(Mapping) = .empty;
 
     // Delta state.
     var gen_col: i32 = 0;
@@ -679,17 +679,17 @@ pub fn decodeMappings(allocator: Allocator, mappings: []const u8) Allocator.Erro
 // JSON helpers
 // =========================================================================
 
-fn appendStr(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
+fn appendStr(buf: *std.ArrayList(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
     try buf.appendSlice(allocator, s);
 }
 
-fn appendInt(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, value: u32) Allocator.Error!void {
+fn appendInt(buf: *std.ArrayList(u8), allocator: Allocator, value: u32) Allocator.Error!void {
     var scratch: [20]u8 = undefined;
     const s = std.fmt.bufPrint(&scratch, "{d}", .{value}) catch return;
     try appendStr(buf, allocator, s);
 }
 
-fn appendJsonString(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
+fn appendJsonString(buf: *std.ArrayList(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
     try buf.append(allocator, '"');
     for (s) |c| {
         switch (c) {
@@ -713,7 +713,7 @@ fn appendJsonString(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, s: [
     try buf.append(allocator, '"');
 }
 
-fn appendJsonStringArray(buf: *std.ArrayListUnmanaged(u8), allocator: Allocator, items: []const []const u8) Allocator.Error!void {
+fn appendJsonStringArray(buf: *std.ArrayList(u8), allocator: Allocator, items: []const []const u8) Allocator.Error!void {
     try buf.append(allocator, '[');
     for (items, 0..) |item, idx| {
         if (idx > 0) try buf.append(allocator, ',');
@@ -731,7 +731,7 @@ test "VLQ: encode/decode round-trip" {
     const test_values = [_]i32{ 0, 1, -1, 5, -5, 15, -15, 16, -16, 31, 100, -100, 1000, -1000, 100000, -100000 };
 
     for (test_values) |val| {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
 
         try encodeVlq(&buf, allocator, val);
@@ -747,21 +747,21 @@ test "VLQ: encode known values" {
 
     // 0 -> 'A' (vlq=0, digit=0)
     {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         try encodeVlq(&buf, allocator, 0);
         try std.testing.expectEqualStrings("A", buf.items);
     }
     // 1 -> 'C' (vlq=2, digit=2)
     {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         try encodeVlq(&buf, allocator, 1);
         try std.testing.expectEqualStrings("C", buf.items);
     }
     // -1 -> 'D' (vlq=3, digit=3)
     {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         try encodeVlq(&buf, allocator, -1);
         try std.testing.expectEqualStrings("D", buf.items);
@@ -865,7 +865,7 @@ test "source map: Result toJson serialization" {
         .mappings = "AAAA",
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try result.toJson(&buf, allocator);
 
@@ -883,7 +883,7 @@ test "source map: Result toDataUri encoding" {
         .mappings = "AAAA",
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try result.toDataUri(&buf, allocator);
 
@@ -923,7 +923,7 @@ test "decodeMappings: round-trip encode and decode" {
 // =========================================================================
 
 test "VLQ: large values" {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
     // Large positive
@@ -945,7 +945,7 @@ test "VLQ: base64 alphabet covers 64 chars" {
 }
 
 test "VLQ: fast path small positive via encode/decode" {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
     // Value 0 should encode to single char 'A'
@@ -955,7 +955,7 @@ test "VLQ: fast path small positive via encode/decode" {
 }
 
 test "VLQ: fast path small negative via encode/decode" {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
     try encodeVlq(&buf, std.testing.allocator, -1);
@@ -964,7 +964,7 @@ test "VLQ: fast path small negative via encode/decode" {
 }
 
 test "VLQ: boundary value 15" {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
     try encodeVlq(&buf, std.testing.allocator, 15);
@@ -982,7 +982,7 @@ test "VLQ: decode invalid base64 char" {
 }
 
 test "VLQ: decode sequence of multiple values" {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(std.testing.allocator);
 
     // Encode multiple values
@@ -1191,7 +1191,7 @@ test "VLQ: encode known positive values" {
     };
 
     inline for (cases) |c| {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         try encodeVlq(&buf, allocator, c[0]);
         try std.testing.expectEqualStrings(c[1], buf.items);
@@ -1211,7 +1211,7 @@ test "VLQ: encode known negative values" {
     };
 
     inline for (cases) |c| {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         try encodeVlq(&buf, allocator, c[0]);
         try std.testing.expectEqualStrings(c[1], buf.items);
@@ -1226,7 +1226,7 @@ test "VLQ: fast path small positive all single char" {
     const allocator = std.testing.allocator;
     var v: i32 = 0;
     while (v <= 15) : (v += 1) {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         try encodeVlq(&buf, allocator, v);
         try std.testing.expectEqual(@as(usize, 1), buf.items.len);
@@ -1237,7 +1237,7 @@ test "VLQ: fast path small negative all single char" {
     const allocator = std.testing.allocator;
     var v: i32 = -1;
     while (v >= -15) : (v -= 1) {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         try encodeVlq(&buf, allocator, v);
         try std.testing.expectEqual(@as(usize, 1), buf.items.len);
@@ -1247,13 +1247,13 @@ test "VLQ: fast path small negative all single char" {
 test "VLQ: fast path boundary 16 needs two digits" {
     const allocator = std.testing.allocator;
     {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         try encodeVlq(&buf, allocator, 16);
         try std.testing.expectEqual(@as(usize, 2), buf.items.len);
     }
     {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(allocator);
         try encodeVlq(&buf, allocator, -16);
         try std.testing.expectEqual(@as(usize, 2), buf.items.len);
@@ -1771,7 +1771,7 @@ test "source map: Result toComment inline" {
         .mappings = "AAAA",
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try result.toComment(&buf, allocator, true);
 
@@ -1786,7 +1786,7 @@ test "source map: Result toComment external" {
         .mappings = "AAAA",
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     try result.toComment(&buf, allocator, false);
 
@@ -1878,7 +1878,7 @@ test "utf8ToUtf16Column: invalid UTF-8" {
 
 test "encodeVlq: propagates OOM" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     const result = encodeVlq(&buf, failing.allocator(), 42);
     try std.testing.expect(result == error.OutOfMemory);
 }

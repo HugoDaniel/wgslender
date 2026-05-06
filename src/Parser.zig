@@ -29,14 +29,14 @@ token_starts: []u32,
 pos: u32,
 
 // Symbol table
-symbols: std.ArrayListUnmanaged(Ast.Symbol),
+symbols: std.ArrayList(Ast.Symbol),
 scope: *Ast.Scope,
 /// DFS append-order list of non-root scopes, consumed by `AstVisit.visit`
 /// to walk scopes in the same order `parseTranslationUnit` created them.
-scopes_in_order: std.ArrayListUnmanaged(*Ast.Scope),
+scopes_in_order: std.ArrayList(*Ast.Scope),
 
 // Errors
-errors: std.ArrayListUnmanaged(ParseError),
+errors: std.ArrayList(ParseError),
 expr_context: []const u8 = "",
 
 /// Recursive descent depth counters. Each `parseExpression` /
@@ -738,7 +738,7 @@ fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
 fn parseEnableDirective(self: *Parser) !Ast.Directive {
     const dir_start = self.currentStart();
     _ = try self.expect(.keyword_enable);
-    var features: std.ArrayListUnmanaged([]const u8) = .empty;
+    var features: std.ArrayList([]const u8) = .empty;
     for (0..self.token_tags.len) |_| {
         if (self.currentTag() == .ident) {
             try features.append(self.arena, self.currentText());
@@ -756,7 +756,7 @@ fn parseEnableDirective(self: *Parser) !Ast.Directive {
 fn parseRequiresDirective(self: *Parser) !Ast.Directive {
     const dir_start = self.currentStart();
     _ = try self.expect(.keyword_requires);
-    var features: std.ArrayListUnmanaged([]const u8) = .empty;
+    var features: std.ArrayList([]const u8) = .empty;
     for (0..self.token_tags.len) |_| {
         if (self.currentTag() == .ident) {
             try features.append(self.arena, self.currentText());
@@ -861,8 +861,8 @@ fn parseDeclaration(self: *Parser) !?Ast.Decl {
     }
 }
 
-fn parseAttributes(self: *Parser) !std.ArrayListUnmanaged(Ast.Attribute) {
-    var attrs: std.ArrayListUnmanaged(Ast.Attribute) = .empty;
+fn parseAttributes(self: *Parser) !std.ArrayList(Ast.Attribute) {
+    var attrs: std.ArrayList(Ast.Attribute) = .empty;
     // Only open an attribute_list marker if at least one attribute is coming.
     const list_marker = if (self.currentTag() == .at) self.cstOpen() else null;
     while (self.currentTag() == .at) {
@@ -918,7 +918,7 @@ fn parseConstDecl(self: *Parser, decl_start: u32) !*Ast.ConstDecl {
     return decl;
 }
 
-fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), decl_start: u32) !*Ast.OverrideDecl {
+fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayList(Ast.Attribute), decl_start: u32) !*Ast.OverrideDecl {
     _ = try self.expect(.keyword_override);
     const decl = try self.arena.create(Ast.OverrideDecl);
     decl.* = .{ .attributes = attrs.*, .name = .none };
@@ -939,7 +939,7 @@ fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
     return decl;
 }
 
-fn parseVarDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), decl_start: u32) !*Ast.VarDecl {
+fn parseVarDecl(self: *Parser, attrs: *std.ArrayList(Ast.Attribute), decl_start: u32) !*Ast.VarDecl {
     _ = try self.expect(.keyword_var);
     const decl = try self.arena.create(Ast.VarDecl);
     decl.* = .{ .attributes = attrs.*, .name = .none };
@@ -992,7 +992,7 @@ fn parseLetDecl(self: *Parser, decl_start: u32) !*Ast.LetDecl {
     return decl;
 }
 
-fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute), decl_start: u32) !*Ast.FunctionDecl {
+fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayList(Ast.Attribute), decl_start: u32) !*Ast.FunctionDecl {
     _ = try self.expect(.keyword_fn);
     const decl = try self.arena.create(Ast.FunctionDecl);
     decl.* = .{
@@ -1049,8 +1049,8 @@ fn parseFunctionDecl(self: *Parser, attrs: *std.ArrayListUnmanaged(Ast.Attribute
     return decl;
 }
 
-fn parseParameters(self: *Parser) !std.ArrayListUnmanaged(Ast.Parameter) {
-    var params: std.ArrayListUnmanaged(Ast.Parameter) = .empty;
+fn parseParameters(self: *Parser) !std.ArrayList(Ast.Parameter) {
+    var params: std.ArrayList(Ast.Parameter) = .empty;
     for (0..self.token_tags.len) |_| {
         const param_attrs = try self.parseAttributes();
         if (!self.isIdentLike()) break;
@@ -1850,8 +1850,8 @@ fn parseBitcastExpr(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
     return .{ .call = node };
 }
 
-fn parseExpressionList(self: *Parser) !std.ArrayListUnmanaged(Ast.Expr) {
-    var exprs: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+fn parseExpressionList(self: *Parser) !std.ArrayList(Ast.Expr) {
+    var exprs: std.ArrayList(Ast.Expr) = .empty;
     if (self.currentTag() == .r_paren) return exprs;
     self.expr_context = "in arguments";
     if (try self.parseExpression()) |first| {
@@ -2190,7 +2190,7 @@ fn parseIfStmt(self: *Parser) !*Ast.IfStmt {
     // end of the chain. Every IfStmt in the chain ends at the same byte
     // (the end of the final body or final `else` compound) — they all
     // wrap one another via `else_branch`.
-    var starts: std.ArrayListUnmanaged(struct { start: u32, ptr: *Ast.IfStmt }) = .empty;
+    var starts: std.ArrayList(struct { start: u32, ptr: *Ast.IfStmt }) = .empty;
     defer starts.deinit(self.arena);
 
     const root_start = self.currentStart();
@@ -4125,12 +4125,12 @@ fn expectCstRoundtrip(source: [:0]const u8) !void {
     // Tree lives in arena, no explicit deinit needed.
 
     // Walk every token child in document order and rebuild the source.
-    var recovered: std.ArrayListUnmanaged(u8) = .empty;
+    var recovered: std.ArrayList(u8) = .empty;
     defer recovered.deinit(std.testing.allocator);
 
     const WalkCtx = struct {
         tree: *const Cst.Tree,
-        buf: *std.ArrayListUnmanaged(u8),
+        buf: *std.ArrayList(u8),
         alloc: std.mem.Allocator,
 
         fn walk(self: @This(), node_idx: Cst.NodeIndex) !void {
@@ -4211,7 +4211,7 @@ test "cst shadow: root kind is module, child kinds match each decl" {
         .struct_decl,
         .alias_decl,
     };
-    var found: std.ArrayListUnmanaged(Cst.Kind) = .empty;
+    var found: std.ArrayList(Cst.Kind) = .empty;
     defer found.deinit(std.testing.allocator);
     for (root_cursor.childElements()) |el| {
         if (el.asNode()) |n| {

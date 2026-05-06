@@ -307,7 +307,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         // / `.lint_rules` from the spec dispatcher; the merged result is
         // written back to the same fields for `runLint` to read.
         const cli_extends = args.lint_options.lint_extends;
-        var merged_extends: std.ArrayListUnmanaged([]const u8) = .empty;
+        var merged_extends: std.ArrayList([]const u8) = .empty;
         if (loaded_config) |cfg| {
             merged_extends.appendSlice(arena, cfg.lint_extends) catch return null;
         }
@@ -318,7 +318,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         args.lint_options.lint_extends = merged_extends.items;
 
         const cli_rules = args.lint_options.lint_rules;
-        var merged_rules: std.ArrayListUnmanaged(wgslender.Linter.Options.RuleOverride) = .empty;
+        var merged_rules: std.ArrayList(wgslender.Linter.Options.RuleOverride) = .empty;
         if (loaded_config) |cfg| {
             merged_rules.appendSlice(arena, cfg.lint_rules) catch return null;
         }
@@ -703,7 +703,7 @@ fn readSource(arena: std.mem.Allocator, io: std.Io, input_path: ?[]const u8) ![:
     if (input_path) |path| {
         source_bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .unlimited);
     } else {
-        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        var buf: std.ArrayList(u8) = .empty;
         var scratch: [4096]u8 = undefined;
         // Unbounded by design: input length is whatever the user pipes in.
         // Terminates on EOF (n == 0) or stdin read error.
@@ -733,7 +733,7 @@ fn runMinify(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, options
         // Append inline source map comment
         if (source_map_inline) {
             if (result.source_map) |sm| {
-                var comment_buf: std.ArrayListUnmanaged(u8) = .empty;
+                var comment_buf: std.ArrayList(u8) = .empty;
                 try comment_buf.append(arena, '\n');
                 try sm.toComment(&comment_buf, arena, true);
                 try file.writeStreamingAll(io, comment_buf.items);
@@ -745,7 +745,7 @@ fn runMinify(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, options
         // Append inline source map comment to stdout
         if (source_map_inline) {
             if (result.source_map) |sm| {
-                var comment_buf: std.ArrayListUnmanaged(u8) = .empty;
+                var comment_buf: std.ArrayList(u8) = .empty;
                 try comment_buf.append(arena, '\n');
                 try sm.toComment(&comment_buf, arena, true);
                 try File.stdout().writeStreamingAll(io, comment_buf.items);
@@ -757,12 +757,12 @@ fn runMinify(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, options
     if (ext_source_map and !source_map_inline) {
         if (result.source_map) |sm| {
             if (output_path) |path| {
-                var map_path_buf: std.ArrayListUnmanaged(u8) = .empty;
+                var map_path_buf: std.ArrayList(u8) = .empty;
                 try map_path_buf.appendSlice(arena, path);
                 try map_path_buf.appendSlice(arena, ".map");
                 const map_path = map_path_buf.items;
 
-                var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+                var json_buf: std.ArrayList(u8) = .empty;
                 try sm.toJson(&json_buf, arena);
 
                 const map_file = try Dir.cwd().createFile(io, map_path, .{});
@@ -822,7 +822,7 @@ fn emitValidateJson(
 ) !void {
     const File = std.Io.File;
     const Diagnostic = wgslender.Diagnostic;
-    var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+    var json_buf: std.ArrayList(u8) = .empty;
     try json_buf.appendSlice(arena, "{\"valid\":");
     try json_buf.appendSlice(arena, if (is_valid) "true" else "false");
     try json_buf.appendSlice(arena, ",\"diagnostics\":[");
@@ -902,7 +902,7 @@ fn runReflect(
     const result = try wgslender.Reflect.reflect(arena, module);
 
     // Serialize to JSON
-    var json_buf: std.ArrayListUnmanaged(u8) = .empty;
+    var json_buf: std.ArrayList(u8) = .empty;
     if (compact) {
         try result.toJsonVersion(&json_buf, arena, version);
     } else {
@@ -998,7 +998,7 @@ fn runLint(
     // (on `result.analysis.diagnostics`), and lint warnings
     // (on `result.lint.diagnostics`). The CLI merges them so the user
     // sees one unified list ordered by severity.
-    var combined: std.ArrayListUnmanaged(Diagnostic.Entry) = .empty;
+    var combined: std.ArrayList(Diagnostic.Entry) = .empty;
     for (result.analysis.diagnostics.items()) |d| try combined.append(arena, d);
     for (result.lint.diagnostics.items()) |d| try combined.append(arena, d);
 
@@ -1033,7 +1033,7 @@ fn filterErrorsOnly(
     arena: std.mem.Allocator,
     entries: []const wgslender.Diagnostic.Entry,
 ) ![]wgslender.Diagnostic.Entry {
-    var out: std.ArrayListUnmanaged(wgslender.Diagnostic.Entry) = .empty;
+    var out: std.ArrayList(wgslender.Diagnostic.Entry) = .empty;
     for (entries) |e| if (e.severity == .@"error") try out.append(arena, e);
     return out.items;
 }
@@ -1076,7 +1076,7 @@ fn emitStylish(
 ) !void {
     const File = std.Io.File;
     if (entries.len == 0) return;
-    var out: std.ArrayListUnmanaged(u8) = .empty;
+    var out: std.ArrayList(u8) = .empty;
     try out.appendSlice(arena, "\n");
     try out.appendSlice(arena, file_prefix);
     try out.appendSlice(arena, "\n");
@@ -1113,7 +1113,7 @@ fn emitJson(
 ) !void {
     const Diagnostic = wgslender.Diagnostic;
     const File = std.Io.File;
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     try buf.appendSlice(arena, "{\"results\":[{\"filePath\":\"");
     try Diagnostic.appendJsonEscaped(&buf, arena, file_prefix);
     try buf.appendSlice(arena, "\",\"diagnostics\":[");
@@ -1142,7 +1142,7 @@ fn emitJson(
 /// command list, the minify-cluster outliers (hand-rolled tri-state),
 /// and the `--no-recommended` outlier remain as static text.
 fn printUsage(arena: std.mem.Allocator, io: std.Io) !void {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
 
     try buf.appendSlice(arena, usage_prologue);
 

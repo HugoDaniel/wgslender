@@ -15,7 +15,7 @@ const LspDiagnostic = Handler.LspDiagnostic;
 pub fn appendUnusedWarnings(
     gpa: std.mem.Allocator,
     analysis: *const wgslender.Validator.AnalysisResult,
-    diags: *std.ArrayListUnmanaged(LspDiagnostic),
+    diags: *std.ArrayList(LspDiagnostic),
 ) void {
     const module = analysis.module orelse return;
     const source = module.source;
@@ -50,7 +50,7 @@ pub fn appendUnusedWarnings(
 pub fn appendDeadCodeWarnings(
     gpa: std.mem.Allocator,
     analysis: *const wgslender.Validator.AnalysisResult,
-    diags: *std.ArrayListUnmanaged(LspDiagnostic),
+    diags: *std.ArrayList(LspDiagnostic),
 ) void {
     const module = analysis.module orelse return;
     const source = module.source;
@@ -102,7 +102,7 @@ pub fn appendDeadCodeWarnings(
 pub fn appendUnusedBindingWarnings(
     gpa: std.mem.Allocator,
     analysis: *const wgslender.Validator.AnalysisResult,
-    diags: *std.ArrayListUnmanaged(LspDiagnostic),
+    diags: *std.ArrayList(LspDiagnostic),
 ) void {
     const module = analysis.module orelse return;
     const source = module.source;

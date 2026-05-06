@@ -71,7 +71,7 @@ pub const DirectiveList = struct {
 /// Scan `source` for wgslender-disable directives. Returns a flat list
 /// keyed by line number. Allocates onto `arena`.
 pub fn parse(arena: Allocator, source: []const u8) Allocator.Error!DirectiveList {
-    var out: std.ArrayListUnmanaged(Directive) = .empty;
+    var out: std.ArrayList(Directive) = .empty;
     var line: u32 = 1;
     var i: usize = 0;
     while (i < source.len) {
@@ -126,7 +126,7 @@ pub fn parse(arena: Allocator, source: []const u8) Allocator.Error!DirectiveList
 
 fn tryParseDirective(
     arena: Allocator,
-    out: *std.ArrayListUnmanaged(Directive),
+    out: *std.ArrayList(Directive),
     comment_text: []const u8,
     loc: u32,
     line: u32,
@@ -178,7 +178,7 @@ fn strip(text: []const u8) []const u8 {
 }
 
 fn parseRuleList(arena: Allocator, rest: []const u8) Allocator.Error![]const []const u8 {
-    var rules: std.ArrayListUnmanaged([]const u8) = .empty;
+    var rules: std.ArrayList([]const u8) = .empty;
     var it = std.mem.splitScalar(u8, rest, ',');
     while (it.next()) |piece| {
         const id = std.mem.trim(u8, piece, " \t");
@@ -212,7 +212,7 @@ pub fn filter(
     directives: *DirectiveList,
     rule_id_of: *const fn (code: []const u8) ?[]const u8,
 ) Allocator.Error![]Diagnostic.Entry {
-    var kept: std.ArrayListUnmanaged(Diagnostic.Entry) = .empty;
+    var kept: std.ArrayList(Diagnostic.Entry) = .empty;
     for (entries) |entry| {
         const rule_id = rule_id_of(entry.code) orelse {
             // Non-lint diagnostic (validator); never silenced.
@@ -273,7 +273,7 @@ pub fn reportUnused(
     arena: Allocator,
     source: []const u8,
     directives: *const DirectiveList,
-    diags: *std.ArrayListUnmanaged(Diagnostic.Entry),
+    diags: *std.ArrayList(Diagnostic.Entry),
 ) Allocator.Error!void {
     _ = source;
     for (directives.items) |d| {

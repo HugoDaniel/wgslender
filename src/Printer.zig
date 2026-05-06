@@ -41,7 +41,7 @@ pub const Renamer = struct {
 options: Options,
 symbols: []const Ast.Symbol,
 arena: std.mem.Allocator,
-buf: std.ArrayListUnmanaged(u8) = .empty,
+buf: std.ArrayList(u8) = .empty,
 indent: u32 = 0,
 needs_space: bool = false,
 output_line: u32 = 0,
@@ -753,7 +753,7 @@ const PrintWork = union(enum) {
 };
 
 fn printExpr(self: *Printer, e: Ast.Expr) !void {
-    var stack: std.ArrayListUnmanaged(PrintWork) = .empty;
+    var stack: std.ArrayList(PrintWork) = .empty;
     defer stack.deinit(self.arena);
     try stack.append(self.arena, .{ .expr = e });
 
@@ -772,7 +772,7 @@ fn printExpr(self: *Printer, e: Ast.Expr) !void {
 
 /// Per-Ast.Expr dispatch from the printExpr worklist. Emits leaf text
 /// and/or pushes follow-up PrintWork items onto `stack`.
-fn dispatchExpr(self: *Printer, ex: Ast.Expr, stack: *std.ArrayListUnmanaged(PrintWork)) error{OutOfMemory}!void {
+fn dispatchExpr(self: *Printer, ex: Ast.Expr, stack: *std.ArrayList(PrintWork)) error{OutOfMemory}!void {
     switch (ex) {
         .ident => |expr| {
             if (expr.ref.isValid()) {
@@ -828,7 +828,7 @@ fn dispatchExpr(self: *Printer, ex: Ast.Expr, stack: *std.ArrayListUnmanaged(Pri
     }
 }
 
-fn pushCallExpr(self: *Printer, expr: anytype, stack: *std.ArrayListUnmanaged(PrintWork)) error{OutOfMemory}!void {
+fn pushCallExpr(self: *Printer, expr: anytype, stack: *std.ArrayList(PrintWork)) error{OutOfMemory}!void {
     // Execution order: func/type "(" arg0 "," arg1 ... ")"
     try stack.append(self.arena, .{ .literal = ")" });
     var i = expr.args.items.len;
@@ -891,7 +891,7 @@ const StmtWork = union(enum) {
 /// Iteratively prints a statement tree. Expression printing (printExpr)
 /// and else-if chains are already iterative.
 fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
-    var stack: std.ArrayListUnmanaged(StmtWork) = .empty;
+    var stack: std.ArrayList(StmtWork) = .empty;
     defer stack.deinit(self.arena);
     try stack.append(self.arena, .{ .stmt = root });
 
@@ -923,7 +923,7 @@ fn printStmt(self: *Printer, root: Ast.Stmt) error{OutOfMemory}!void {
     } else unreachable;
 }
 
-fn pushCompound(self: *Printer, body: anytype, stack: *std.ArrayListUnmanaged(StmtWork)) error{OutOfMemory}!void {
+fn pushCompound(self: *Printer, body: anytype, stack: *std.ArrayList(StmtWork)) error{OutOfMemory}!void {
     // Execution order: "{" indent++ (newline stmt)* indent-- newline "}"
     // Push in reverse:
     try stack.append(self.arena, .{ .literal = "}" });
@@ -939,7 +939,7 @@ fn pushCompound(self: *Printer, body: anytype, stack: *std.ArrayListUnmanaged(St
     try stack.append(self.arena, .{ .literal = "{" });
 }
 
-fn pushElseChain(self: *Printer, ec: Ast.Stmt, stack: *std.ArrayListUnmanaged(StmtWork)) error{OutOfMemory}!void {
+fn pushElseChain(self: *Printer, ec: Ast.Stmt, stack: *std.ArrayList(StmtWork)) error{OutOfMemory}!void {
     if (ec == .@"if") {
         const if_stmt = ec.@"if";
         try self.emit(" else if ");
@@ -954,7 +954,7 @@ fn pushElseChain(self: *Printer, ec: Ast.Stmt, stack: *std.ArrayListUnmanaged(St
     }
 }
 
-fn pushSwitchCase(self: *Printer, c: anytype, stack: *std.ArrayListUnmanaged(StmtWork)) error{OutOfMemory}!void {
+fn pushSwitchCase(self: *Printer, c: anytype, stack: *std.ArrayList(StmtWork)) error{OutOfMemory}!void {
     try self.emitNewline();
     if (c.selectors.items.len == 0) {
         try self.emit("default");
@@ -973,7 +973,7 @@ fn pushSwitchCase(self: *Printer, c: anytype, stack: *std.ArrayListUnmanaged(Stm
     try stack.append(self.arena, .{ .compound = c.body });
 }
 
-fn pushForStmt(self: *Printer, stmt: anytype, stack: *std.ArrayListUnmanaged(StmtWork)) error{OutOfMemory}!void {
+fn pushForStmt(self: *Printer, stmt: anytype, stack: *std.ArrayList(StmtWork)) error{OutOfMemory}!void {
     try self.emit("for");
     try self.emitSpace();
     try self.emit("(");
@@ -991,7 +991,7 @@ fn pushForStmt(self: *Printer, stmt: anytype, stack: *std.ArrayListUnmanaged(Stm
 
 /// Per-Ast.Stmt dispatch from the printStmt worklist. Emits the leaf text
 /// and/or pushes follow-up StmtWork items onto `stack` for nested bodies.
-fn dispatchStmt(self: *Printer, s: Ast.Stmt, stack: *std.ArrayListUnmanaged(StmtWork)) error{OutOfMemory}!void {
+fn dispatchStmt(self: *Printer, s: Ast.Stmt, stack: *std.ArrayList(StmtWork)) error{OutOfMemory}!void {
     switch (s) {
         .compound => |stmt| try stack.append(self.arena, .{ .compound = stmt }),
         .@"return" => |stmt| {
@@ -1047,7 +1047,7 @@ fn dispatchStmt(self: *Printer, s: Ast.Stmt, stack: *std.ArrayListUnmanaged(Stmt
     }
 }
 
-fn pushSwitchStmt(self: *Printer, stmt: anytype, stack: *std.ArrayListUnmanaged(StmtWork)) error{OutOfMemory}!void {
+fn pushSwitchStmt(self: *Printer, stmt: anytype, stack: *std.ArrayList(StmtWork)) error{OutOfMemory}!void {
     try self.emit("switch ");
     try self.printExpr(stmt.expr);
     try self.emitSpace();
@@ -1064,7 +1064,7 @@ fn pushSwitchStmt(self: *Printer, stmt: anytype, stack: *std.ArrayListUnmanaged(
     try stack.append(self.arena, .{ .literal = "{" });
 }
 
-fn pushLoopStmt(self: *Printer, stmt: anytype, stack: *std.ArrayListUnmanaged(StmtWork)) error{OutOfMemory}!void {
+fn pushLoopStmt(self: *Printer, stmt: anytype, stack: *std.ArrayList(StmtWork)) error{OutOfMemory}!void {
     try self.emit("loop");
     try self.emitSpace();
     // WGSL §8.8: `continuing` is the final statement inside the loop

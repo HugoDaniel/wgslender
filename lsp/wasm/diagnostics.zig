@@ -18,7 +18,7 @@ const Diagnostic = wgslender.Diagnostic;
 pub const Ctx = struct {
     gpa: std.mem.Allocator,
     handler: *Handler,
-    outbox: *std.ArrayListUnmanaged([]u8),
+    outbox: *std.ArrayList([]u8),
 
     fn enqueue(self: Ctx, msg: []u8) void {
         self.outbox.append(self.gpa, msg) catch self.gpa.free(msg);
@@ -48,7 +48,7 @@ fn emitDiagnosticsImpl(ctx: Ctx, uri: []const u8, include_minify_lints: bool) vo
         ctx.handler.validateDocumentCheap(uri) catch return;
     defer Handler.freeDiagnostics(ctx.handler.gpa, diags);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     json.appendStr(&buf, ctx.gpa, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
     Diagnostic.appendJsonEscaped(&buf, ctx.gpa, uri) catch return;
     json.appendStr(&buf, ctx.gpa, "\",\"diagnostics\":");
@@ -90,7 +90,7 @@ pub fn handlePullDiagnostic(
         },
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     switch (report) {
         .unchanged => |u| {
             json.appendStr(&buf, ctx.gpa, "{\"kind\":\"unchanged\",\"resultId\":\"");

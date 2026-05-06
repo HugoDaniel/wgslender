@@ -298,7 +298,7 @@ override_ids: std.AutoHashMapUnmanaged(u32, LocName) = .{},
 binding_pairs: std.AutoHashMapUnmanaged(u64, LocName) = .{},
 
 // Binding info collection for suspicious pattern analysis and per-entry-point validation
-binding_infos: std.ArrayListUnmanaged(BindingInfo) = .empty,
+binding_infos: std.ArrayList(BindingInfo) = .empty,
 
 // True when module has >= 2 entry points (per-entry-point binding validation needed)
 multi_entry_point: bool = false,

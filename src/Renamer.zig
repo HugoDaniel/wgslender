@@ -50,12 +50,12 @@ pub const NoOpRenamer = struct {
 pub const MinifyRenamer = struct {
     symbols: []Ast.Symbol,
     reserved_names: std.StringHashMapUnmanaged(void),
-    slots: std.ArrayListUnmanaged(SymbolSlot),
+    slots: std.ArrayList(SymbolSlot),
     /// Maps symbol index → slot index. Only renameable symbols (use_count > 0,
     /// !must_not_be_renamed) get entries. Populated by allocateSlots.
     top_level_slots: std.AutoHashMapUnmanaged(u32, u32),
-    name_buf: std.ArrayListUnmanaged(u8), // storage for generated names
-    name_offsets: std.ArrayListUnmanaged(NameSlice), // offset+len into name_buf
+    name_buf: std.ArrayList(u8), // storage for generated names
+    name_offsets: std.ArrayList(NameSlice), // offset+len into name_buf
     arena: Allocator,
     renamer: Printer.Renamer,
     /// Optional side-tables. When set, reads consult them with parity
@@ -138,7 +138,7 @@ pub const MinifyRenamer = struct {
         std.debug.assert(self.top_level_slots.count() == 0);
 
         const SymWithCount = struct { idx: u32, count: u32 };
-        var renameable: std.ArrayListUnmanaged(SymWithCount) = .empty;
+        var renameable: std.ArrayList(SymWithCount) = .empty;
         defer renameable.deinit(self.arena);
 
         for (self.symbols, 0..) |*sym, i| {
@@ -185,7 +185,7 @@ pub const MinifyRenamer = struct {
 
         // First pass: compute total name storage needed
         var total_len: usize = 0;
-        var indices: std.ArrayListUnmanaged(u32) = .empty;
+        var indices: std.ArrayList(u32) = .empty;
         defer indices.deinit(self.arena);
         for (self.slots.items) |_| {
             skipReservedNames(&buf, &name_index, &self.reserved_names);

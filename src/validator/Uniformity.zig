@@ -39,7 +39,7 @@ const UniformityAnalyzer = struct {
     state: UniformityState = .uniform,
 
     // Sources of non-uniformity
-    non_uniform_sources: std.ArrayListUnmanaged(NonUniformSource) = .empty,
+    non_uniform_sources: std.ArrayList(NonUniformSource) = .empty,
 
     const UniformityState = enum(u8) {
         uniform,

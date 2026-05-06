@@ -32,7 +32,7 @@ pub fn symbolKindCode(kind: Handler.SymbolKind) u32 {
 
 /// Append `[{<sym>}, …]`. Writes the enclosing brackets.
 pub fn appendDocSymbols(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     syms: []const Handler.DocumentSymbolInfo,
 ) void {
@@ -47,7 +47,7 @@ pub fn appendDocSymbols(
 /// Append `{"name":"…","kind":<int>,"range":{…},"selectionRange":{…},
 /// "children":[…]?}`. `children` is omitted when empty.
 pub fn appendDocSymbol(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     sym: Handler.DocumentSymbolInfo,
 ) void {
@@ -86,7 +86,7 @@ test "appendDocSymbol: leaf, kind=function (12), no children field" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDocSymbol(&buf, aa, .{
         .name = "main",
         .kind = .function,
@@ -111,7 +111,7 @@ test "appendDocSymbol: struct with field children (recursive)" {
         .{ .name = "b", .kind = .field, .range = sample_range, .selection_range = sample_sel, .children = &.{} },
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDocSymbol(&buf, aa, .{
         .name = "S",
         .kind = .struct_type,
@@ -133,7 +133,7 @@ test "appendDocSymbols: empty slice emits []" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDocSymbols(&buf, aa, &.{});
 
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});

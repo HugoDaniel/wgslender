@@ -16,7 +16,7 @@ const json = wire.primitives;
 const Server = @This();
 
 handler: Handler,
-outbox: std.ArrayListUnmanaged([]u8) = .empty,
+outbox: std.ArrayList([]u8) = .empty,
 gpa: std.mem.Allocator,
 /// True iff the client advertised `workspace.configuration` in InitializeParams.
 client_supports_configuration: bool = false,
@@ -41,7 +41,7 @@ pub fn enqueue(self: *Server, msg: []u8) void {
 /// Send a JSON-RPC `result` response. `result_json` is the already-
 /// serialised value for the `"result"` field — it is not re-quoted.
 pub fn sendResult(self: *Server, id: ?std.json.Value, result_json: []const u8) void {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     json.appendStr(&buf, self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
     json.appendId(&buf, self.gpa, id);
     json.appendStr(&buf, self.gpa, ",\"result\":");
@@ -54,7 +54,7 @@ pub fn sendResult(self: *Server, id: ?std.json.Value, result_json: []const u8) v
 /// message. The message is JSON-escaped for `"` and `\` only — full
 /// escape isn't needed since the codes are server-authored.
 pub fn sendErrorCode(self: *Server, id: ?std.json.Value, code: i32, message: []const u8) void {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     json.appendStr(&buf, self.gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
     json.appendId(&buf, self.gpa, id);
     json.appendStr(&buf, self.gpa, ",\"error\":{\"code\":");

@@ -62,7 +62,7 @@ pub const ScanResult = struct {
 /// slice and any nested message strings) is allocated on `arena`.
 pub fn scan(arena: Allocator, source: []const u8) Allocator.Error!ScanResult {
     var partial: MinifySettings.Partial = .{};
-    var diags: std.ArrayListUnmanaged(Diagnostic.Entry) = .empty;
+    var diags: std.ArrayList(Diagnostic.Entry) = .empty;
 
     var line: u32 = 1;
     var i: usize = 0;
@@ -123,7 +123,7 @@ const directive_prefix = "wgslender-minify-";
 fn scanComment(
     arena: Allocator,
     partial: *MinifySettings.Partial,
-    diags: *std.ArrayListUnmanaged(Diagnostic.Entry),
+    diags: *std.ArrayList(Diagnostic.Entry),
     comment_text: []const u8,
     loc: u32,
     line: u32,
@@ -156,7 +156,7 @@ fn scanComment(
 fn applyDirective(
     arena: Allocator,
     partial: *MinifySettings.Partial,
-    diags: *std.ArrayListUnmanaged(Diagnostic.Entry),
+    diags: *std.ArrayList(Diagnostic.Entry),
     text: []const u8,
     loc: u32,
     line: u32,
@@ -271,7 +271,7 @@ fn CamelDottedToKebab(comptime s: []const u8) type {
 
 fn emitUnknown(
     arena: Allocator,
-    diags: *std.ArrayListUnmanaged(Diagnostic.Entry),
+    diags: *std.ArrayList(Diagnostic.Entry),
     loc: u32,
     line: u32,
     text: []const u8,

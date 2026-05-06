@@ -176,7 +176,7 @@ pub const ScopeKind = enum(u8) {
 
 pub const Scope = struct {
     parent: ?*Scope,
-    children: std.ArrayListUnmanaged(*Scope),
+    children: std.ArrayList(*Scope),
     members: std.StringHashMapUnmanaged(ScopeMember),
     kind: ScopeKind,
     /// Index among same-kind children of the parent scope. Zero for the
@@ -207,12 +207,12 @@ pub const Module = struct {
     /// LSP hover, StableId).
     source: [:0]const u8,
     /// Top-level `enable`/`requires`/`diagnostic` directives in source order.
-    directives: std.ArrayListUnmanaged(Directive),
+    directives: std.ArrayList(Directive),
     /// Top-level declarations (fn / var / const / override / struct / alias)
     /// in source order. Printer and Dce iterate this list.
-    declarations: std.ArrayListUnmanaged(Decl),
+    declarations: std.ArrayList(Decl),
     /// Global symbol table. `SymbolIndex` values are indices into this list.
-    symbols: std.ArrayListUnmanaged(Symbol),
+    symbols: std.ArrayList(Symbol),
     /// Root scope. All nested scopes are reachable via `scope.children`.
     scope: *Scope,
     /// Per-symbol use counts produced by AstVisit Pass 2. Length matches
@@ -525,12 +525,12 @@ pub const Directive = union(enum) {
 };
 
 pub const EnableDirective = struct {
-    features: std.ArrayListUnmanaged([]const u8),
+    features: std.ArrayList([]const u8),
     span: Span = .empty,
 };
 
 pub const RequiresDirective = struct {
-    features: std.ArrayListUnmanaged([]const u8),
+    features: std.ArrayList([]const u8),
     span: Span = .empty,
 };
 
@@ -600,7 +600,7 @@ pub const ConstDecl = struct {
 };
 
 pub const OverrideDecl = struct {
-    attributes: std.ArrayListUnmanaged(Attribute),
+    attributes: std.ArrayList(Attribute),
     name: SymbolIndex,
     typ: ?Type = null,
     initializer: ?Expr = null,
@@ -612,7 +612,7 @@ pub const OverrideDecl = struct {
 };
 
 pub const VarDecl = struct {
-    attributes: std.ArrayListUnmanaged(Attribute),
+    attributes: std.ArrayList(Attribute),
     address_space: AddressSpace = .none,
     access_mode: AccessMode = .none,
     name: SymbolIndex,
@@ -637,11 +637,11 @@ pub const LetDecl = struct {
 };
 
 pub const FunctionDecl = struct {
-    attributes: std.ArrayListUnmanaged(Attribute),
+    attributes: std.ArrayList(Attribute),
     name: SymbolIndex,
-    parameters: std.ArrayListUnmanaged(Parameter),
+    parameters: std.ArrayList(Parameter),
     return_type: ?Type = null,
-    return_attr: std.ArrayListUnmanaged(Attribute),
+    return_attr: std.ArrayList(Attribute),
     body: ?*CompoundStmt = null,
     /// Full syntactic span: from the first `@` attribute (if any) or
     /// `fn` keyword through the closing `}` of the body.
@@ -651,7 +651,7 @@ pub const FunctionDecl = struct {
 };
 
 pub const Parameter = struct {
-    attributes: std.ArrayListUnmanaged(Attribute),
+    attributes: std.ArrayList(Attribute),
     name: SymbolIndex,
     typ: Type,
     /// Byte span from the first attribute or name token through the end of
@@ -662,7 +662,7 @@ pub const Parameter = struct {
 
 pub const StructDecl = struct {
     name: SymbolIndex,
-    members: std.ArrayListUnmanaged(StructMember),
+    members: std.ArrayList(StructMember),
     /// Full syntactic span: from the `struct` keyword through the
     /// closing `}`.
     decl_span: Span = .empty,
@@ -671,7 +671,7 @@ pub const StructDecl = struct {
 };
 
 pub const StructMember = struct {
-    attributes: std.ArrayListUnmanaged(Attribute),
+    attributes: std.ArrayList(Attribute),
     name: SymbolIndex,
     typ: Type,
     /// Byte span from the first attribute or name token through the end of
@@ -744,7 +744,7 @@ pub const AccessMode = enum(u8) {
 
 pub const Attribute = struct {
     name: []const u8,
-    args: std.ArrayListUnmanaged(Expr),
+    args: std.ArrayList(Expr),
     loc: u32 = 0,
     /// Byte span from the `@` through the closing `)` (or the identifier
     /// end for argument-less attributes). Populated by `CstLower`.
@@ -999,7 +999,7 @@ pub const CallExpr = struct {
     end_loc: u32 = 0,
     func: ?Expr = null,
     template_type: ?Type = null,
-    args: std.ArrayListUnmanaged(Expr),
+    args: std.ArrayList(Expr),
     flags: ExprFlags = .{},
     span: Span = .empty,
 };
@@ -1086,7 +1086,7 @@ pub const Stmt = union(enum) {
 };
 
 pub const CompoundStmt = struct {
-    stmts: std.ArrayListUnmanaged(Stmt),
+    stmts: std.ArrayList(Stmt),
     span: Span = .empty,
 };
 
@@ -1105,12 +1105,12 @@ pub const IfStmt = struct {
 
 pub const SwitchStmt = struct {
     expr: Expr,
-    cases: std.ArrayListUnmanaged(SwitchCase),
+    cases: std.ArrayList(SwitchCase),
     span: Span = .empty,
 };
 
 pub const SwitchCase = struct {
-    selectors: std.ArrayListUnmanaged(Expr),
+    selectors: std.ArrayList(Expr),
     body: *CompoundStmt,
 };
 

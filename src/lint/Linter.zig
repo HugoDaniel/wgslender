@@ -210,9 +210,9 @@ pub fn run(
     // Phase 1: build per-enabled-rule contexts and collect listeners. Rules
     // with a non-null `listener` are folded into one shared `MultiVisitor.walk`
     // so the AST is traversed once for all of them instead of N times.
-    var contexts: std.ArrayListUnmanaged(*Context) = .empty;
-    var rule_indices: std.ArrayListUnmanaged(usize) = .empty;
-    var listeners: std.ArrayListUnmanaged(MultiVisitor.Listener) = .empty;
+    var contexts: std.ArrayList(*Context) = .empty;
+    var rule_indices: std.ArrayList(usize) = .empty;
+    var listeners: std.ArrayList(MultiVisitor.Listener) = .empty;
     try contexts.ensureTotalCapacity(alloc, registry.all.len);
     try rule_indices.ensureTotalCapacity(alloc, registry.all.len);
 
@@ -306,7 +306,7 @@ pub fn run(
     }
 
     if (options.report_unused_disable_directives) {
-        var scratch: std.ArrayListUnmanaged(Diagnostic.Entry) = .empty;
+        var scratch: std.ArrayList(Diagnostic.Entry) = .empty;
         try Disable.reportUnused(alloc, module.source, &directives, &scratch);
         for (scratch.items) |e| diags.add(alloc, e);
     }

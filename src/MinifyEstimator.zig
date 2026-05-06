@@ -291,7 +291,7 @@ fn buildLengthRenamer(
     // (e.g., function-name call sites). Their sum is the quantity the
     // real renamer ranks against.
     const RankedSym = struct { idx: u32, count: u32 };
-    var ranked: std.ArrayListUnmanaged(RankedSym) = .empty;
+    var ranked: std.ArrayList(RankedSym) = .empty;
     for (module.symbols.items, 0..) |*sym, i| {
         if (!isRenameable(@intCast(i), sym, policy, options)) continue;
         const ref: Ast.SymbolIndex = @enumFromInt(@as(u32, @intCast(i)));

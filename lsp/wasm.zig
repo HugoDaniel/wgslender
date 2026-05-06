@@ -45,7 +45,7 @@ const wasm_allocator = std.heap.wasm_allocator;
 // =========================================================================
 
 var handler: Handler = .init(wasm_allocator);
-var outbox: std.ArrayListUnmanaged([]u8) = .empty;
+var outbox: std.ArrayList([]u8) = .empty;
 /// True iff the client advertised `workspace.configuration` in InitializeParams.
 var client_supports_configuration: bool = false;
 var next_request_id: i64 = 1;
@@ -330,7 +330,7 @@ fn handlePullDiagnostic(root: std.json.ObjectMap, id: ?std.json.Value) void {
 // =========================================================================
 
 fn sendResult(id: ?std.json.Value, result_json: []const u8) void {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     json.appendStr(&buf, wasm_allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
     json.appendId(&buf, wasm_allocator, id);
     json.appendStr(&buf, wasm_allocator, ",\"result\":");
@@ -340,7 +340,7 @@ fn sendResult(id: ?std.json.Value, result_json: []const u8) void {
 }
 
 fn sendErrorCode(id: ?std.json.Value, code: i32, message: []const u8) void {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     json.appendStr(&buf, wasm_allocator, "{\"jsonrpc\":\"2.0\",\"id\":");
     json.appendId(&buf, wasm_allocator, id);
     json.appendStr(&buf, wasm_allocator, ",\"error\":{\"code\":");

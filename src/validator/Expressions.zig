@@ -817,7 +817,7 @@ pub fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResul
     }
 
     // For non-builtin calls, validate all argument expressions and collect types
-    var constructor_arg_types: std.ArrayListUnmanaged(?Types.Type) = .empty;
+    var constructor_arg_types: std.ArrayList(?Types.Type) = .empty;
     var args_stage: ExprStage = .const_expr;
     for (e.args.items) |arg| {
         const ar = try checkExpr(v, arg);
@@ -875,7 +875,7 @@ pub fn checkTemplateTypeCtor(v: *Validator, e: *Ast.CallExpr, tt: Ast.Type, call
     // Use type string as callee_name when the parser doesn't set func
     const name = if (callee_name.len > 0) callee_name else resolved.string();
     // Validate constructor arguments against the resolved type
-    var constructor_arg_types: std.ArrayListUnmanaged(?Types.Type) = .empty;
+    var constructor_arg_types: std.ArrayList(?Types.Type) = .empty;
     var args_stage: ExprStage = .const_expr;
     for (e.args.items) |arg| {
         const ar = try checkExpr(v, arg);

@@ -71,14 +71,14 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
     const module = if (analysis) |a| a.module else null;
 
     // Build semantic token data (groups of 5: deltaLine, deltaStartChar, length, tokenType, tokenModifiers)
-    var data: std.ArrayListUnmanaged(u32) = .empty;
+    var data: std.ArrayList(u32) = .empty;
     defer data.deinit(handler.gpa);
 
     var prev_line: u32 = 0;
     var prev_char: u32 = 0;
 
     // First, scan for comments and collect them
-    var comment_ranges: std.ArrayListUnmanaged(struct { start: u32, end: u32 }) = .empty;
+    var comment_ranges: std.ArrayList(struct { start: u32, end: u32 }) = .empty;
     defer comment_ranges.deinit(handler.gpa);
     {
         var i: u32 = 0;
@@ -223,7 +223,7 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
 fn emitSemanticToken(
     gpa: std.mem.Allocator,
     source: []const u8,
-    data: *std.ArrayListUnmanaged(u32),
+    data: *std.ArrayList(u32),
     prev_line: *u32,
     prev_char: *u32,
     start: u32,

@@ -85,23 +85,23 @@ fn posU32(val: ?*const std.json.Value) ?u32 {
 // Buffer write helpers (allocator-explicit)
 // =========================================================================
 
-pub fn appendStr(buf: *std.ArrayListUnmanaged(u8), gpa: std.mem.Allocator, s: []const u8) void {
+pub fn appendStr(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, s: []const u8) void {
     buf.appendSlice(gpa, s) catch {};
 }
 
-pub fn appendUint(buf: *std.ArrayListUnmanaged(u8), gpa: std.mem.Allocator, val: u32) void {
+pub fn appendUint(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, val: u32) void {
     var num_buf: [10]u8 = undefined;
     const s = std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch return;
     buf.appendSlice(gpa, s) catch {};
 }
 
-pub fn appendI64(buf: *std.ArrayListUnmanaged(u8), gpa: std.mem.Allocator, val: i64) void {
+pub fn appendI64(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, val: i64) void {
     var num_buf: [21]u8 = undefined;
     const s = std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch return;
     buf.appendSlice(gpa, s) catch {};
 }
 
-pub fn appendId(buf: *std.ArrayListUnmanaged(u8), gpa: std.mem.Allocator, id: ?std.json.Value) void {
+pub fn appendId(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, id: ?std.json.Value) void {
     if (id) |id_val| switch (id_val) {
         .integer => |n| appendI64(buf, gpa, n),
         .string => |s| {
@@ -113,7 +113,7 @@ pub fn appendId(buf: *std.ArrayListUnmanaged(u8), gpa: std.mem.Allocator, id: ?s
     } else appendStr(buf, gpa, "null");
 }
 
-pub fn formatRange(buf: *std.ArrayListUnmanaged(u8), gpa: std.mem.Allocator, range: Handler.Range) void {
+pub fn formatRange(buf: *std.ArrayList(u8), gpa: std.mem.Allocator, range: Handler.Range) void {
     appendStr(buf, gpa, "{\"start\":{\"line\":");
     appendUint(buf, gpa, range.start.line);
     appendStr(buf, gpa, ",\"character\":");

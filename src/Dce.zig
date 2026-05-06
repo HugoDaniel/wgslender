@@ -22,7 +22,7 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
     if (module.symbols.items.len == 0) return 0;
 
     // Build dependency graph
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
         while (it.next()) |list| list.deinit(arena);
@@ -31,7 +31,7 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
     try buildDependencyGraph(arena, module, &deps);
 
     // Find entry points
-    var entry_points: std.ArrayListUnmanaged(u32) = .empty;
+    var entry_points: std.ArrayList(u32) = .empty;
     defer entry_points.deinit(arena);
     for (module.symbols.items, 0..) |sym, i| {
         if (sym.flags.is_entry_point) {
@@ -50,7 +50,7 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
     var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
     defer visited.deinit(arena);
 
-    var queue: std.ArrayListUnmanaged(u32) = .empty;
+    var queue: std.ArrayList(u32) = .empty;
     defer queue.deinit(arena);
     for (entry_points.items) |ep| {
         try queue.append(arena, ep);
@@ -92,7 +92,7 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
 pub fn buildDependencyGraph(
     arena: Allocator,
     module: *const Ast.Module,
-    deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),
+    deps: *std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)),
 ) Allocator.Error!void {
     for (module.declarations.items) |decl| {
         try collectDeclDeps(arena, decl, deps);
@@ -102,13 +102,13 @@ pub fn buildDependencyGraph(
 fn collectDeclDeps(
     arena: Allocator,
     decl: Ast.Decl,
-    deps: *std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)),
+    deps: *std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)),
 ) Allocator.Error!void {
     const name_ref = decl.nameRef();
     if (!name_ref.isValid()) return;
     const sym_idx = name_ref.index();
 
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
 
     switch (decl) {
         .@"const" => |d| {
@@ -161,7 +161,7 @@ fn collectDeclDeps(
 fn collectAttrRefs(
     arena: Allocator,
     attrs: []const Ast.Attribute,
-    refs: *std.ArrayListUnmanaged(u32),
+    refs: *std.ArrayList(u32),
 ) Allocator.Error!void {
     for (attrs) |attr| {
         if (!Ast.attributeArgsResolveSymbols(attr.name)) continue;
@@ -173,9 +173,9 @@ fn collectAttrRefs(
 pub fn collectExprRefs(
     arena: Allocator,
     expr: Ast.Expr,
-    refs: *std.ArrayListUnmanaged(u32),
+    refs: *std.ArrayList(u32),
 ) Allocator.Error!void {
-    var stack: std.ArrayListUnmanaged(Ast.Expr) = .empty;
+    var stack: std.ArrayList(Ast.Expr) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, expr);
 
@@ -214,7 +214,7 @@ pub fn collectExprRefs(
 fn collectTypeRefs(
     arena: Allocator,
     typ: Ast.Type,
-    refs: *std.ArrayListUnmanaged(u32),
+    refs: *std.ArrayList(u32),
 ) Allocator.Error!void {
     var current = typ;
     for (0..32) |_| {
@@ -251,9 +251,9 @@ fn collectTypeRefs(
 pub fn collectStmtRefs(
     arena: Allocator,
     stmt: Ast.Stmt,
-    refs: *std.ArrayListUnmanaged(u32),
+    refs: *std.ArrayList(u32),
 ) Allocator.Error!void {
-    var stack: std.ArrayListUnmanaged(Ast.Stmt) = .empty;
+    var stack: std.ArrayList(Ast.Stmt) = .empty;
     defer stack.deinit(arena);
     try stack.append(arena, stmt);
 
@@ -631,7 +631,7 @@ test "isDeclarationLive: var decl" {
 }
 
 test "collectExprRefs: ident expr" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var ident = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(5) };
@@ -642,7 +642,7 @@ test "collectExprRefs: ident expr" {
 }
 
 test "collectExprRefs: invalid ref ignored" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var ident = Ast.IdentExpr{ .name = "x", .ref = .none };
@@ -652,7 +652,7 @@ test "collectExprRefs: invalid ref ignored" {
 }
 
 test "collectExprRefs: literal expr" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var lit = Ast.LiteralExpr{ .kind = .int_literal, .value = "42" };
@@ -662,7 +662,7 @@ test "collectExprRefs: literal expr" {
 }
 
 test "collectTypeRefs: ident type with ref" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var ident = Ast.IdentType{ .name = "MyStruct", .ref = @enumFromInt(3) };
@@ -673,7 +673,7 @@ test "collectTypeRefs: ident type with ref" {
 }
 
 test "collectTypeRefs: vec type with elem" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var elem = Ast.IdentType{ .name = "f32" };
@@ -685,7 +685,7 @@ test "collectTypeRefs: vec type with elem" {
 }
 
 test "collectTypeRefs: array with struct element" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var elem_ident = Ast.IdentType{ .name = "Particle", .ref = @enumFromInt(7) };
@@ -697,7 +697,7 @@ test "collectTypeRefs: array with struct element" {
 }
 
 test "collectTypeRefs: sampler type" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var sampler = Ast.SamplerType{ .comparison = false };
@@ -711,7 +711,7 @@ test "collectTypeRefs: sampler type" {
 // -------------------------------------------------------------------------
 
 test "collectExprRefs: binary expr" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var left = Ast.IdentExpr{ .name = "a", .ref = @enumFromInt(1) };
@@ -723,7 +723,7 @@ test "collectExprRefs: binary expr" {
 }
 
 test "collectExprRefs: unary expr" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var operand = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(1) };
@@ -734,7 +734,7 @@ test "collectExprRefs: unary expr" {
 }
 
 test "collectExprRefs: call expr" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var func_id = Ast.IdentExpr{ .name = "f", .ref = @enumFromInt(0) };
@@ -748,7 +748,7 @@ test "collectExprRefs: call expr" {
 }
 
 test "collectExprRefs: index expr" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var base = Ast.IdentExpr{ .name = "arr", .ref = @enumFromInt(1) };
@@ -760,7 +760,7 @@ test "collectExprRefs: index expr" {
 }
 
 test "collectExprRefs: member expr" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var base = Ast.IdentExpr{ .name = "s", .ref = @enumFromInt(1) };
@@ -771,7 +771,7 @@ test "collectExprRefs: member expr" {
 }
 
 test "collectExprRefs: paren expr" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var inner = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(1) };
@@ -786,7 +786,7 @@ test "collectExprRefs: paren expr" {
 // -------------------------------------------------------------------------
 
 test "collectTypeRefs: ident type invalid ref" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var ident = Ast.IdentType{ .name = "f32" }; // builtin, no ref
@@ -796,7 +796,7 @@ test "collectTypeRefs: ident type invalid ref" {
 }
 
 test "collectTypeRefs: mat type with elem" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var elem = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
@@ -807,7 +807,7 @@ test "collectTypeRefs: mat type with elem" {
 }
 
 test "collectTypeRefs: ptr type" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var elem = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
@@ -818,7 +818,7 @@ test "collectTypeRefs: ptr type" {
 }
 
 test "collectTypeRefs: atomic type builtin" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var elem = Ast.IdentType{ .name = "u32" }; // builtin, no ref
@@ -829,7 +829,7 @@ test "collectTypeRefs: atomic type builtin" {
 }
 
 test "collectTypeRefs: texture type with sampled type" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var sampled = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
@@ -840,7 +840,7 @@ test "collectTypeRefs: texture type with sampled type" {
 }
 
 test "collectTypeRefs: array with size expr" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var elem = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
@@ -856,7 +856,7 @@ test "collectTypeRefs: array with size expr" {
 // -------------------------------------------------------------------------
 
 test "collectStmtRefs: return stmt with value" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var value = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(1) };
@@ -867,7 +867,7 @@ test "collectStmtRefs: return stmt with value" {
 }
 
 test "collectStmtRefs: assign stmt" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var left = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(0) };
@@ -879,7 +879,7 @@ test "collectStmtRefs: assign stmt" {
 }
 
 test "collectStmtRefs: incr_decr stmt" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var expr = Ast.IdentExpr{ .name = "i", .ref = @enumFromInt(0) };
@@ -890,7 +890,7 @@ test "collectStmtRefs: incr_decr stmt" {
 }
 
 test "collectStmtRefs: call stmt" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var func_id = Ast.IdentExpr{ .name = "f", .ref = @enumFromInt(0) };
@@ -904,7 +904,7 @@ test "collectStmtRefs: call stmt" {
 }
 
 test "collectStmtRefs: break_if stmt" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var cond = Ast.IdentExpr{ .name = "done", .ref = @enumFromInt(0) };
@@ -915,7 +915,7 @@ test "collectStmtRefs: break_if stmt" {
 }
 
 test "collectStmtRefs: break and continue have no refs" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var brk = Ast.BreakStmt{};
@@ -936,7 +936,7 @@ test "collectStmtRefs: break and continue have no refs" {
 // -------------------------------------------------------------------------
 
 test "collectStmtRefs: compound stmt" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var value = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(1) };
@@ -949,7 +949,7 @@ test "collectStmtRefs: compound stmt" {
 }
 
 test "collectStmtRefs: if stmt with else" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var cond = Ast.IdentExpr{ .name = "c", .ref = @enumFromInt(0) };
@@ -972,7 +972,7 @@ test "collectStmtRefs: if stmt with else" {
 }
 
 test "collectStmtRefs: while stmt" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var cond = Ast.IdentExpr{ .name = "c", .ref = @enumFromInt(0) };
@@ -987,7 +987,7 @@ test "collectStmtRefs: while stmt" {
 }
 
 test "collectStmtRefs: loop stmt with continuing" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var body_val = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(0) };
@@ -1008,7 +1008,7 @@ test "collectStmtRefs: loop stmt with continuing" {
 }
 
 test "collectStmtRefs: switch stmt" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var expr = Ast.IdentExpr{ .name = "x", .ref = @enumFromInt(0) };
@@ -1032,7 +1032,7 @@ test "collectStmtRefs: switch stmt" {
 }
 
 test "collectStmtRefs: for stmt" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var init_left = Ast.IdentExpr{ .name = "i", .ref = @enumFromInt(0) };
@@ -1064,7 +1064,7 @@ test "collectStmtRefs: for stmt" {
 // -------------------------------------------------------------------------
 
 test "collectStmtRefs: decl stmt const" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var init_val = Ast.IdentExpr{ .name = "y", .ref = @enumFromInt(1) };
@@ -1076,7 +1076,7 @@ test "collectStmtRefs: decl stmt const" {
 }
 
 test "collectStmtRefs: decl stmt let" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var init_val = Ast.IdentExpr{ .name = "y", .ref = @enumFromInt(1) };
@@ -1088,7 +1088,7 @@ test "collectStmtRefs: decl stmt let" {
 }
 
 test "collectStmtRefs: decl stmt var with type and init" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var init_val = Ast.IdentExpr{ .name = "y", .ref = @enumFromInt(1) };
@@ -1106,7 +1106,7 @@ test "collectStmtRefs: decl stmt var with type and init" {
 }
 
 test "collectStmtRefs: decl stmt var type only" {
-    var refs: std.ArrayListUnmanaged(u32) = .empty;
+    var refs: std.ArrayList(u32) = .empty;
     defer refs.deinit(std.testing.allocator);
 
     var type_id = Ast.IdentType{ .name = "MyType", .ref = @enumFromInt(1) };
@@ -1128,7 +1128,7 @@ test "collectDeclDeps: const depends on const" {
 
     const module = parseModule(alloc, "const a = 1; const b = a;") orelse return error.TestParseFailed;
 
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
         while (it.next()) |list| list.deinit(alloc);
@@ -1146,7 +1146,7 @@ test "collectDeclDeps: override with init" {
 
     const module = parseModule(alloc, "const base = 1.0; @id(0) override scale: f32 = base;") orelse return error.TestParseFailed;
 
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
         while (it.next()) |list| list.deinit(alloc);
@@ -1164,7 +1164,7 @@ test "collectDeclDeps: override without init" {
 
     const module = parseModule(alloc, "@id(0) override x: f32;") orelse return error.TestParseFailed;
 
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
         while (it.next()) |list| list.deinit(alloc);
@@ -1181,7 +1181,7 @@ test "collectDeclDeps: var without init" {
 
     const module = parseModule(alloc, "var<private> x: i32;") orelse return error.TestParseFailed;
 
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
         while (it.next()) |list| list.deinit(alloc);
@@ -1198,7 +1198,7 @@ test "collectDeclDeps: var with init" {
 
     const module = parseModule(alloc, "const init_val = 0; var<private> x: i32 = init_val;") orelse return error.TestParseFailed;
 
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
         while (it.next()) |list| list.deinit(alloc);
@@ -1219,7 +1219,7 @@ test "collectDeclDeps: function with body" {
         \\fn helper(d: Data) -> f32 { return d.value; }
     ) orelse return error.TestParseFailed;
 
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
         while (it.next()) |list| list.deinit(alloc);
@@ -1240,7 +1240,7 @@ test "collectDeclDeps: struct with nested type" {
         \\struct Outer { inner: Inner }
     ) orelse return error.TestParseFailed;
 
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
         while (it.next()) |list| list.deinit(alloc);
@@ -1261,7 +1261,7 @@ test "collectDeclDeps: alias depends on struct" {
         \\alias DataRef = Data;
     ) orelse return error.TestParseFailed;
 
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     defer {
         var it = deps.valueIterator();
         while (it.next()) |list| list.deinit(alloc);

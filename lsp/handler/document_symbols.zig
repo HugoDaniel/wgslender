@@ -30,7 +30,7 @@ pub fn computeDocumentSymbols(handler: *Handler, uri: []const u8) ![]DocumentSym
     const module = analysis.module orelse return &.{};
     const source = module.source;
 
-    var symbols: std.ArrayListUnmanaged(DocumentSymbolInfo) = .empty;
+    var symbols: std.ArrayList(DocumentSymbolInfo) = .empty;
     defer symbols.deinit(handler.gpa);
 
     for (module.declarations.items, 0..) |decl, di| {
@@ -64,7 +64,7 @@ pub fn computeDocumentSymbols(handler: *Handler, uri: []const u8) ![]DocumentSym
         var children: []const DocumentSymbolInfo = &.{};
         if (decl == .@"struct") {
             const st = decl.@"struct";
-            var ch: std.ArrayListUnmanaged(DocumentSymbolInfo) = .empty;
+            var ch: std.ArrayList(DocumentSymbolInfo) = .empty;
             for (st.members.items) |member| {
                 if (!member.name.isValid()) continue;
                 const m_sym = module.symbols.items[member.name.index()];

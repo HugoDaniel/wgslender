@@ -22,7 +22,7 @@ pub fn handleCompletion(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value)
     defer ctx.handler.gpa.free(items);
     if (items.len == 0) return ctx.sendResult(id, "null");
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_editing.appendCompletionItems(&buf, ctx.gpa, items);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
@@ -34,7 +34,7 @@ pub fn handleSignatureHelp(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Val
     defer ctx.handler.gpa.free(r.label);
     if (r.parameters.len > 0) ctx.handler.gpa.free(r.parameters);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_editing.appendSignatureHelp(&buf, ctx.gpa, r);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
@@ -45,7 +45,7 @@ pub fn handleFoldingRange(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Valu
     defer ctx.handler.gpa.free(ranges);
     if (ranges.len == 0) return ctx.sendResult(id, "null");
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_editing.appendFoldingRanges(&buf, ctx.gpa, ranges);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
@@ -69,7 +69,7 @@ pub fn handleInlayHint(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) 
     defer ctx.handler.gpa.free(hints);
     if (hints.len == 0) return ctx.sendResult(id, "null");
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_editing.appendInlayHints(&buf, ctx.gpa, uri, hints);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
@@ -80,7 +80,7 @@ pub fn handleCodeLens(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) v
     defer Handler.freeCodeLens(ctx.handler.gpa, lenses);
     if (lenses.len == 0) return ctx.sendResult(id, "null");
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_editing.appendCodeLenses(&buf, ctx.gpa, lenses);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
@@ -91,7 +91,7 @@ pub fn handleFormatting(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value)
     const e = edit orelse return ctx.sendResult(id, "null");
     defer ctx.handler.gpa.free(e.new_text);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_editing.appendFormattingEdit(&buf, ctx.gpa, e);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
@@ -102,7 +102,7 @@ pub fn handleSemanticTokens(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Va
     defer ctx.handler.gpa.free(data);
     if (data.len == 0) return ctx.sendResult(id, "null");
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_editing.appendSemanticTokens(&buf, ctx.gpa, data);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
@@ -116,7 +116,7 @@ pub fn handleSelectionRange(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Va
         else => return ctx.sendResult(id, "null"),
     };
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     json.appendStr(&buf, ctx.gpa, "[");
     for (positions, 0..) |*pos_val, pi| {
         if (pi > 0) json.appendStr(&buf, ctx.gpa, ",");

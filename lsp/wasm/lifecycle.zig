@@ -15,7 +15,7 @@ const Diagnostic = wgslender.Diagnostic;
 pub const Ctx = struct {
     gpa: std.mem.Allocator,
     handler: *Handler,
-    outbox: *std.ArrayListUnmanaged([]u8),
+    outbox: *std.ArrayList([]u8),
     client_supports_configuration: *bool,
     next_request_id: *i64,
     pending_config_id: *?i64,
@@ -55,7 +55,7 @@ pub fn sendConfigurationRequest(ctx: Ctx) void {
     const id = ctx.next_request_id.*;
     ctx.next_request_id.* +%= 1;
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     json.appendStr(&buf, ctx.gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
     json.appendI64(&buf, ctx.gpa, id);
     json.appendStr(&buf, ctx.gpa, ",\"method\":\"workspace/configuration\",\"params\":{\"items\":[{\"section\":\"wgslender\"}]}}");
@@ -94,7 +94,7 @@ pub fn republishAllDocuments(ctx: Ctx) void {
         if (ctx.handler.diagnosticsEnabled()) {
             wasm_diagnostics.emitDiagnostics(ctx.diagCtx(), uri);
         } else {
-            var buf: std.ArrayListUnmanaged(u8) = .empty;
+            var buf: std.ArrayList(u8) = .empty;
             json.appendStr(&buf, ctx.gpa, "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":\"");
             Diagnostic.appendJsonEscaped(&buf, ctx.gpa, uri) catch return;
             json.appendStr(&buf, ctx.gpa, "\",\"diagnostics\":[]}}");

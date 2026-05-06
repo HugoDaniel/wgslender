@@ -53,7 +53,7 @@ fn collectCstOpeners(
     gpa: Allocator,
     cst: *const Cst.Tree,
     node: Cst.NodeIndex,
-    out: *std.ArrayListUnmanaged(Cst.NodeIndex),
+    out: *std.ArrayList(Cst.NodeIndex),
 ) error{OutOfMemory}!void {
     const n = cst.getNode(node);
     if (isScopeOpener(n.kind)) try out.append(gpa, node);
@@ -67,7 +67,7 @@ fn collectCstOpeners(
 fn collectAstScopes(
     gpa: Allocator,
     scope: *Ast.Scope,
-    out: *std.ArrayListUnmanaged(*Ast.Scope),
+    out: *std.ArrayList(*Ast.Scope),
 ) error{OutOfMemory}!void {
     for (scope.children.items) |c| {
         try out.append(gpa, c);
@@ -90,11 +90,11 @@ pub fn buildScopeForCstNodeMap(
 ) !void {
     result.scope_for_cst_node.clearRetainingCapacity();
 
-    var cst_openers: std.ArrayListUnmanaged(Cst.NodeIndex) = .empty;
+    var cst_openers: std.ArrayList(Cst.NodeIndex) = .empty;
     defer cst_openers.deinit(arena);
     try collectCstOpeners(arena, &result.cst, result.cst.root(), &cst_openers);
 
-    var ast_scopes: std.ArrayListUnmanaged(*Ast.Scope) = .empty;
+    var ast_scopes: std.ArrayList(*Ast.Scope) = .empty;
     defer ast_scopes.deinit(arena);
     try collectAstScopes(arena, result.module.scope, &ast_scopes);
 

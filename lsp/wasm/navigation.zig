@@ -20,13 +20,13 @@ pub fn handleHover(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void
     const r = result orelse return ctx.sendResult(id, "null");
     defer ctx.handler.gpa.free(r.contents);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_nav.appendHover(&buf, ctx.gpa, r);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
 
 fn sendSingleLocation(ctx: Ctx, id: ?std.json.Value, uri: []const u8, range: Handler.Range) void {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     wire_nav.appendLocation(&buf, ctx.gpa, uri, range);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
@@ -55,7 +55,7 @@ pub fn handleReferences(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value)
     const handler_refs = refs orelse return ctx.sendResult(id, "null");
     defer ctx.handler.gpa.free(handler_refs);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     buf.append(ctx.gpa, '[') catch return;
     for (handler_refs, 0..) |ref, i| {
         if (i > 0) buf.append(ctx.gpa, ',') catch {};
@@ -71,7 +71,7 @@ pub fn handleDocumentHighlight(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json
     const handler_highlights = highlights orelse return ctx.sendResult(id, "null");
     defer ctx.handler.gpa.free(handler_highlights);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     buf.append(ctx.gpa, '[') catch return;
     for (handler_highlights, 0..) |h, i| {
         if (i > 0) buf.append(ctx.gpa, ',') catch {};

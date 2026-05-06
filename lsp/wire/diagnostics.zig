@@ -24,7 +24,7 @@ const Diagnostic = wgslender.Diagnostic;
 /// only surfaceable error is OOM on the outer buf writes, which callers
 /// already ignore in the WASM transport.
 pub fn appendDiagnosticItems(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     uri: []const u8,
     diags: []const Handler.LspDiagnostic,
@@ -41,7 +41,7 @@ pub fn appendDiagnosticItems(
 /// WASM code-action path that embeds a diagnostic synopsis inside each
 /// action's `diagnostics[]` array.
 pub fn appendDiagnosticItem(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     allocator: std.mem.Allocator,
     uri: []const u8,
     diag: Handler.LspDiagnostic,
@@ -149,7 +149,7 @@ pub fn parseDiagnosticItems(
 /// Emit `,"data":{...}` for the variants the LSP knows how to consume,
 /// or nothing at all for `.none`. The shape is opaque LSP `data` —
 /// clients round-trip it back on `textDocument/codeAction`.
-pub fn appendData(buf: *std.ArrayListUnmanaged(u8), allocator: std.mem.Allocator, data: Diagnostic.QuickFixHint) void {
+pub fn appendData(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, data: Diagnostic.QuickFixHint) void {
     switch (data) {
         .none => return,
         .did_you_mean => |s| {
@@ -240,7 +240,7 @@ fn renderAndParse(
     uri: []const u8,
     diags: []const Handler.LspDiagnostic,
 ) !std.json.Value {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDiagnosticItems(&buf, testing.allocator, uri, diags);
     defer buf.deinit(testing.allocator);
     return std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), buf.items, .{});
@@ -381,7 +381,7 @@ test "data round-trip: did_you_mean" {
         .data = .{ .did_you_mean = "position" },
     }};
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDiagnosticItems(&buf, testing.allocator, "test://a.wgsl", &diags);
     defer buf.deinit(testing.allocator);
 
@@ -405,7 +405,7 @@ test "data round-trip: type_mismatch" {
         .data = .{ .type_mismatch = .{ .actual = "i32", .expected = "f32" } },
     }};
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDiagnosticItems(&buf, testing.allocator, "test://a.wgsl", &diags);
     defer buf.deinit(testing.allocator);
 
@@ -431,7 +431,7 @@ test "data round-trip: duplicate_location" {
         .data = .{ .duplicate_location = 7 },
     }};
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDiagnosticItems(&buf, testing.allocator, "test://a.wgsl", &diags);
     defer buf.deinit(testing.allocator);
 
@@ -454,7 +454,7 @@ test "data round-trip: vertex_missing_builtin_position (payloadless)" {
         .data = .vertex_missing_builtin_position,
     }};
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDiagnosticItems(&buf, testing.allocator, "test://a.wgsl", &diags);
     defer buf.deinit(testing.allocator);
 
@@ -473,7 +473,7 @@ test "data round-trip: .none omits the field entirely" {
         .message = "x",
     }};
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDiagnosticItems(&buf, testing.allocator, "test://a.wgsl", &diags);
     defer buf.deinit(testing.allocator);
 

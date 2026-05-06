@@ -28,7 +28,7 @@ fn renderDiagnostics(gpa: std.mem.Allocator, h: *Handler) ![]u8 {
     const diags = try h.validateDocumentFull(uri);
     defer Handler.freeDiagnostics(gpa, diags);
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(gpa);
 
     wire.diagnostics.appendDiagnosticItems(&buf, gpa, uri, diags);

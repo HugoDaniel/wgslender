@@ -215,7 +215,7 @@ pub fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error
     }
 
     // Build fields list, checking for duplicate member names
-    var fields: std.ArrayListUnmanaged(Types.StructField) = .empty;
+    var fields: std.ArrayList(Types.StructField) = .empty;
     var seen_members: std.StringHashMapUnmanaged(LocRange) = .{};
     for (d.members.items) |member| {
         try validateStructMember(v, name, member, &fields, &seen_members);
@@ -234,7 +234,7 @@ pub fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error
     st.computeLayout();
 }
 
-pub fn validateStructMember(v: *Validator, struct_name: []const u8, member: anytype, fields: *std.ArrayListUnmanaged(Types.StructField), seen_members: *std.StringHashMapUnmanaged(LocRange)) Allocator.Error!void {
+pub fn validateStructMember(v: *Validator, struct_name: []const u8, member: anytype, fields: *std.ArrayList(Types.StructField), seen_members: *std.StringHashMapUnmanaged(LocRange)) Allocator.Error!void {
     const member_name = v.symbolName(member.name);
     const member_range = v.symbolRange(member.name);
     if (seen_members.get(member_name)) |first_range| {
@@ -322,7 +322,7 @@ pub fn checkRecursiveStructs(v: *Validator) Allocator.Error!void {
 /// is reachable from any nested struct field of `start`.
 pub fn structContainsCycle(v: *Validator, root_name: []const u8, start: *Types.Struct) Allocator.Error!bool {
     var visited: std.StringHashMapUnmanaged(void) = .{};
-    var worklist: std.ArrayListUnmanaged(*Types.Struct) = .empty;
+    var worklist: std.ArrayList(*Types.Struct) = .empty;
     try worklist.append(v.arena, start);
 
     // Bounded iteration — struct count is finite and small.
@@ -375,7 +375,7 @@ pub fn findStructRange(v: *Validator, name: []const u8) LocRange {
 pub fn checkRecursiveFunctions(v: *Validator) Allocator.Error!void {
     // Build call graph: for each function, collect which other functions it calls.
     // Key: function symbol index, Value: list of called function symbol indices.
-    var call_graph: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .{};
+    var call_graph: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .{};
 
     for (v.module.declarations.items) |decl| {
         switch (decl) {
@@ -384,13 +384,13 @@ pub fn checkRecursiveFunctions(v: *Validator) Allocator.Error!void {
                 const fn_idx = fn_decl.name.index();
 
                 // Collect all symbol refs from the function body
-                var all_refs: std.ArrayListUnmanaged(u32) = .empty;
+                var all_refs: std.ArrayList(u32) = .empty;
                 if (fn_decl.body) |body| {
                     try Dce.collectStmtRefs(v.arena, .{ .compound = body }, &all_refs);
                 }
 
                 // Filter to only function symbols
-                var fn_refs: std.ArrayListUnmanaged(u32) = .empty;
+                var fn_refs: std.ArrayList(u32) = .empty;
                 for (all_refs.items) |ref_idx| {
                     if (ref_idx < v.module.symbols.items.len and
                         v.module.symbols.items[ref_idx].kind == .function)
@@ -417,9 +417,9 @@ pub fn checkRecursiveFunctions(v: *Validator) Allocator.Error!void {
 }
 
 /// Iterative DFS cycle detection using an explicit stack.
-pub fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)), color: *std.AutoHashMapUnmanaged(u32, u2), start: u32) Allocator.Error!void {
+pub fn dfsFunctionCycle(v: *Validator, call_graph: *const std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)), color: *std.AutoHashMapUnmanaged(u32, u2), start: u32) Allocator.Error!void {
     const Frame = struct { fn_idx: u32, callee_idx: u32 };
-    var stack: std.ArrayListUnmanaged(Frame) = .empty;
+    var stack: std.ArrayList(Frame) = .empty;
     defer stack.deinit(v.arena);
 
     const num_syms: usize = v.module.symbols.items.len;
@@ -890,7 +890,7 @@ pub fn validatePerEntryPointBindings(v: *Validator) Allocator.Error!void {
     if (v.binding_infos.items.len < 2) return;
 
     // Build dependency graph using the same logic as DCE
-    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayListUnmanaged(u32)) = .empty;
+    var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
     try Dce.buildDependencyGraph(v.arena, v.module, &deps);
 
     // For each entry point, BFS to find reachable symbols, then check binding collisions
@@ -899,7 +899,7 @@ pub fn validatePerEntryPointBindings(v: *Validator) Allocator.Error!void {
 
         // BFS from this entry point
         var visited: std.AutoHashMapUnmanaged(u32, void) = .empty;
-        var queue: std.ArrayListUnmanaged(u32) = .empty;
+        var queue: std.ArrayList(u32) = .empty;
         try queue.append(v.arena, @intCast(idx));
 
         var head: usize = 0;
@@ -1087,7 +1087,7 @@ pub fn registerFunctionSignatures(v: *Validator) Allocator.Error!void {
     for (v.module.declarations.items) |decl| {
         switch (decl) {
             .function => |fn_decl| {
-                var param_types: std.ArrayListUnmanaged(Types.Type) = .empty;
+                var param_types: std.ArrayList(Types.Type) = .empty;
                 for (fn_decl.parameters.items) |param| {
                     if (v.resolveType(param.typ)) |pt| {
                         try param_types.append(v.arena, pt);
@@ -1126,7 +1126,7 @@ pub fn determineShaderStage(fn_decl: *Ast.FunctionDecl) ShaderStage {
 }
 
 pub fn resolveFunctionParameters(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error![]Types.Type {
-    var param_types: std.ArrayListUnmanaged(Types.Type) = .empty;
+    var param_types: std.ArrayList(Types.Type) = .empty;
     for (fn_decl.parameters.items) |param| {
         const param_type = v.resolveType(param.typ);
         if (param_type) |pt| {
@@ -1201,7 +1201,7 @@ pub fn validateReturnAttributes(v: *Validator, fn_decl: *Ast.FunctionDecl) void 
 /// WGSL spec §11.1 (`builtin`) / §11.2 (`location`): these attributes must
 /// not appear on module-scope declarations. `site` is inserted into the
 /// diagnostic (e.g. `"var"`, `"override"`).
-pub fn rejectIOAttrsOnModuleDecl(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attribute), site: []const u8) void {
+pub fn rejectIOAttrsOnModuleDecl(v: *Validator, attrs: std.ArrayList(Ast.Attribute), site: []const u8) void {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, "location")) {
             v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, v.fmtError("@location is not valid on module-scope {s} declarations", .{site}));
@@ -1396,7 +1396,7 @@ pub fn validateEntryPointStructOutput(v: *Validator, fn_decl: *Ast.FunctionDecl,
     _ = fn_decl;
     const sd = findStructDecl(v, ret_type.@"struct".name) orelse return;
     var output_builtins: std.StringHashMapUnmanaged(u32) = .{};
-    var blend_src_members: std.ArrayListUnmanaged(BlendSrcEntry) = .empty;
+    var blend_src_members: std.ArrayList(BlendSrcEntry) = .empty;
     for (sd.members.items) |member| {
         try validateEntryPointStructOutputMember(v, member, fn_range, output_locations, &output_builtins, &blend_src_members);
     }
@@ -1406,7 +1406,7 @@ pub fn validateEntryPointStructOutput(v: *Validator, fn_decl: *Ast.FunctionDecl,
     validateBlendSrcPairing(v, blend_src_members.items, fn_range);
 }
 
-pub fn validateEntryPointStructOutputMember(v: *Validator, member: anytype, fn_range: LocRange, output_locations: *std.AutoHashMapUnmanaged(i64, OutputLocEntry), output_builtins: *std.StringHashMapUnmanaged(u32), blend_src_members: *std.ArrayListUnmanaged(BlendSrcEntry)) Allocator.Error!void {
+pub fn validateEntryPointStructOutputMember(v: *Validator, member: anytype, fn_range: LocRange, output_locations: *std.AutoHashMapUnmanaged(i64, OutputLocEntry), output_builtins: *std.StringHashMapUnmanaged(u32), blend_src_members: *std.ArrayList(BlendSrcEntry)) Allocator.Error!void {
     const out_mt = v.resolveType(member.typ);
     // Nested struct in output I/O is invalid.
     if (out_mt != null and out_mt.? == .@"struct") {
@@ -1468,7 +1468,7 @@ pub fn validateEntryPointStructOutputMember(v: *Validator, member: anytype, fn_r
     }
 }
 
-pub fn checkBlendSrcAttr(v: *Validator, member: anytype, bs: anytype, out_mt: ?Types.Type, blend_src_members: *std.ArrayListUnmanaged(BlendSrcEntry)) Allocator.Error!void {
+pub fn checkBlendSrcAttr(v: *Validator, member: anytype, bs: anytype, out_mt: ?Types.Type, blend_src_members: *std.ArrayList(BlendSrcEntry)) Allocator.Error!void {
     const bs_range: LocRange = .{ .start = bs.loc, .end = bs.loc +| 9 };
     if (v.current_stage != .fragment) {
         v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, "@blend_src is only valid on fragment outputs");
@@ -1554,7 +1554,7 @@ pub fn validateBlendSrcPairing(v: *Validator, entries: []const BlendSrcEntry, fn
 
 /// Validate @interpolate attributes on entry point I/O members.
 /// Called from validateEntryPointIO for fragment inputs and vertex outputs.
-pub fn validateInterpolation(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attribute), member_type: ?Types.Type, member_loc: u32) void {
+pub fn validateInterpolation(v: *Validator, attrs: std.ArrayList(Ast.Attribute), member_type: ?Types.Type, member_loc: u32) void {
     const has_location = hasAttr(attrs, "location");
     const has_interpolate = hasAttr(attrs, "interpolate");
 
@@ -1674,14 +1674,14 @@ pub fn isSwizzleName(name: []const u8) bool {
 }
 
 /// @invariant can only apply to @builtin(position) (WGSL spec section 9.3.3).
-pub fn validateInvariantAttr(v: *Validator, attrs: std.ArrayListUnmanaged(Ast.Attribute), member_loc: u32) void {
+pub fn validateInvariantAttr(v: *Validator, attrs: std.ArrayList(Ast.Attribute), member_loc: u32) void {
     if (!hasAttr(attrs, "invariant")) return;
     if (!hasBuiltinAttr(attrs, "position")) {
         v.addErrorWithCodeR(.{ .start = member_loc, .end = member_loc +| 1 }, Diagnostic.Code.invalid_attribute, "@invariant can only be applied to @builtin(position)");
     }
 }
 
-pub fn hasAttr(attrs: std.ArrayListUnmanaged(Ast.Attribute), name: []const u8) bool {
+pub fn hasAttr(attrs: std.ArrayList(Ast.Attribute), name: []const u8) bool {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, name)) return true;
     }
@@ -1740,12 +1740,12 @@ pub fn findStructDecl(v: *Validator, struct_name: []const u8) ?*Ast.StructDecl {
     return null;
 }
 
-pub fn getLocationValue(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?i64 {
+pub fn getLocationValue(attrs: std.ArrayList(Ast.Attribute)) ?i64 {
     if (getLocationInfo(attrs)) |info| return info.value;
     return null;
 }
 
-pub fn getLocationInfo(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?struct { value: i64, loc: u32 } {
+pub fn getLocationInfo(attrs: std.ArrayList(Ast.Attribute)) ?struct { value: i64, loc: u32 } {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, "location") and attr.args.items.len > 0) {
             if (extractLiteralIntValue(attr.args.items[0])) |val| {
@@ -1759,7 +1759,7 @@ pub fn getLocationInfo(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?struct { v
 /// @blend_src attribute info: returns the const value (0 or 1 when valid)
 /// and the attribute's source location. Returns null when absent or when
 /// the argument is not extractable as an integer literal.
-pub fn getBlendSrcInfo(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?struct { value: i64, loc: u32 } {
+pub fn getBlendSrcInfo(attrs: std.ArrayList(Ast.Attribute)) ?struct { value: i64, loc: u32 } {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, "blend_src") and attr.args.items.len > 0) {
             if (extractLiteralIntValue(attr.args.items[0])) |val| {
@@ -1771,7 +1771,7 @@ pub fn getBlendSrcInfo(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?struct { v
     return null;
 }
 
-pub fn attrLocByName(attrs: std.ArrayListUnmanaged(Ast.Attribute), name: []const u8) u32 {
+pub fn attrLocByName(attrs: std.ArrayList(Ast.Attribute), name: []const u8) u32 {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, name)) return attr.loc;
     }
@@ -1779,7 +1779,7 @@ pub fn attrLocByName(attrs: std.ArrayListUnmanaged(Ast.Attribute), name: []const
 }
 
 /// Extract @builtin name from attributes, or null.
-pub fn getBuiltinAttrName(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?[]const u8 {
+pub fn getBuiltinAttrName(attrs: std.ArrayList(Ast.Attribute)) ?[]const u8 {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, "builtin") and attr.args.items.len > 0) {
             switch (attr.args.items[0]) {
@@ -1791,14 +1791,14 @@ pub fn getBuiltinAttrName(attrs: std.ArrayListUnmanaged(Ast.Attribute)) ?[]const
     return null;
 }
 
-pub fn hasLocationOrBuiltin(attrs: std.ArrayListUnmanaged(Ast.Attribute)) bool {
+pub fn hasLocationOrBuiltin(attrs: std.ArrayList(Ast.Attribute)) bool {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, "location") or std.mem.eql(u8, attr.name, "builtin")) return true;
     }
     return false;
 }
 
-pub fn hasBuiltinAttr(attrs: std.ArrayListUnmanaged(Ast.Attribute), builtin_name: []const u8) bool {
+pub fn hasBuiltinAttr(attrs: std.ArrayList(Ast.Attribute), builtin_name: []const u8) bool {
     for (attrs.items) |attr| {
         if (std.mem.eql(u8, attr.name, "builtin") and attr.args.items.len > 0) {
             switch (attr.args.items[0]) {

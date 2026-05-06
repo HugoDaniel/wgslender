@@ -60,7 +60,7 @@ pub fn computeIncomingCalls(handler: *Handler, uri: []const u8, target_name: []c
     const module = analysis.module orelse return &.{};
     const source = module.source;
 
-    var calls: std.ArrayListUnmanaged(IncomingCall) = .empty;
+    var calls: std.ArrayList(IncomingCall) = .empty;
     defer calls.deinit(handler.gpa);
 
     // For each function, check if it calls the target
@@ -73,7 +73,7 @@ pub fn computeIncomingCalls(handler: *Handler, uri: []const u8, target_name: []c
                 if (std.mem.eql(u8, caller_sym.original_name, target_name)) continue; // skip self
 
                 // Scan for calls to target in this function body
-                var call_locs: std.ArrayListUnmanaged(Range) = .empty;
+                var call_locs: std.ArrayList(Range) = .empty;
                 defer call_locs.deinit(handler.gpa);
                 findCallsInCompound(handler.gpa, module, f.body.?, target_name, source, &call_locs);
 
@@ -112,7 +112,7 @@ pub fn computeOutgoingCalls(handler: *Handler, uri: []const u8, caller_name: []c
                 if (!std.mem.eql(u8, sym.original_name, caller_name)) continue;
 
                 // Collect all outgoing calls
-                var calls_map = std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range)){};
+                var calls_map = std.StringHashMapUnmanaged(std.ArrayList(Range)){};
                 defer {
                     var it = calls_map.iterator();
                     while (it.next()) |entry| entry.value_ptr.deinit(handler.gpa);
@@ -121,7 +121,7 @@ pub fn computeOutgoingCalls(handler: *Handler, uri: []const u8, caller_name: []c
 
                 collectOutgoingCalls(handler.gpa, module, f.body.?, source, &calls_map);
 
-                var results: std.ArrayListUnmanaged(OutgoingCall) = .empty;
+                var results: std.ArrayList(OutgoingCall) = .empty;
                 defer results.deinit(handler.gpa);
 
                 var it = calls_map.iterator();
@@ -159,7 +159,7 @@ fn findCallsInCompound(
     compound: *const Ast.CompoundStmt,
     target_name: []const u8,
     source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(Range),
+    locations: *std.ArrayList(Range),
 ) void {
     for (compound.stmts.items) |stmt| {
         findCallsInStmt(gpa, module, stmt, target_name, source, locations);
@@ -172,7 +172,7 @@ fn findCallsInStmt(
     stmt: Ast.Stmt,
     target_name: []const u8,
     source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(Range),
+    locations: *std.ArrayList(Range),
 ) void {
     switch (stmt) {
         .compound => |c| findCallsInCompound(gpa, module, c, target_name, source, locations),
@@ -229,7 +229,7 @@ fn findCallsInExprTree(
     expr: Ast.Expr,
     target_name: []const u8,
     source: [:0]const u8,
-    locations: *std.ArrayListUnmanaged(Range),
+    locations: *std.ArrayList(Range),
 ) void {
     switch (expr) {
         .call => |e| {
@@ -268,7 +268,7 @@ fn collectOutgoingCalls(
     module: *const Ast.Module,
     compound: *const Ast.CompoundStmt,
     source: [:0]const u8,
-    calls_map: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range)),
+    calls_map: *std.StringHashMapUnmanaged(std.ArrayList(Range)),
 ) void {
     for (compound.stmts.items) |stmt| {
         collectOutgoingCallsStmt(gpa, module, stmt, source, calls_map);
@@ -280,7 +280,7 @@ fn collectOutgoingCallsStmt(
     module: *const Ast.Module,
     stmt: Ast.Stmt,
     source: [:0]const u8,
-    calls_map: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range)),
+    calls_map: *std.StringHashMapUnmanaged(std.ArrayList(Range)),
 ) void {
     switch (stmt) {
         .compound => |c| collectOutgoingCalls(gpa, module, c, source, calls_map),
@@ -334,7 +334,7 @@ fn collectOutgoingCallsExpr(
     module: *const Ast.Module,
     expr: Ast.Expr,
     source: [:0]const u8,
-    calls_map: *std.StringHashMapUnmanaged(std.ArrayListUnmanaged(Range)),
+    calls_map: *std.StringHashMapUnmanaged(std.ArrayList(Range)),
 ) void {
     switch (expr) {
         .call => |e| {

@@ -22,7 +22,7 @@ const Diagnostic = wgslender.Diagnostic;
 /// Append `{"uri":"…","range":{…}}` — the LSP `Location` shape, used by
 /// definition, typeDefinition, and each entry of references.
 pub fn appendLocation(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     uri: []const u8,
     range: Handler.Range,
@@ -36,7 +36,7 @@ pub fn appendLocation(
 
 /// Append `{"range":{…},"kind":N}` — the LSP `DocumentHighlight` shape.
 pub fn appendDocumentHighlight(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     h: Handler.DocumentHighlight,
 ) void {
@@ -51,7 +51,7 @@ pub fn appendDocumentHighlight(
 /// the LSP `Hover` shape. The caller owns `hover.contents`; it is escaped
 /// inline.
 pub fn appendHover(
-    buf: *std.ArrayListUnmanaged(u8),
+    buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
     hover: Handler.HoverResult,
 ) void {
@@ -73,7 +73,7 @@ fn parseValue(arena: std.mem.Allocator, body: []const u8) !std.json.Value {
 }
 
 fn renderLocation(gpa: std.mem.Allocator, uri: []const u8, range: Handler.Range) ![]u8 {
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(gpa);
     appendLocation(&buf, gpa, uri, range);
     return try buf.toOwnedSlice(gpa);
@@ -104,7 +104,7 @@ test "appendDocumentHighlight: kind = read" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendDocumentHighlight(&buf, aa, .{
         .range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 4 } },
         .kind = .read,
@@ -120,7 +120,7 @@ test "appendHover: markdown shape and value escape" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    var buf: std.ArrayList(u8) = .empty;
     appendHover(&buf, aa, .{
         .contents = "**fn** `f`(\"x\\y\") -> `i32`",
         .range = .{ .start = .{ .line = 1, .character = 2 }, .end = .{ .line = 1, .character = 3 } },
