@@ -3,6 +3,46 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **lint W0206 (`require-entry-point-attrs`)**: diagnostic range now
+  points at the actual `@compute` attribute instead of
+  `attributes.items[0]`. Affects the multi-attribute case where another
+  attribute (e.g. `@diagnostic(...)`) precedes `@compute`. **Behavior
+  change**: range shifts in that case — surfaces through `validate
+  --format json`, lint JSON output, and LSP
+  `textDocument/publishDiagnostics`.
+- **Linter `fixable_count`**: tally moved below the
+  `wgslender-disable*` filter. Diagnostics silenced by an active
+  directive no longer inflate the count returned to the npm wrapper,
+  the LSP `applyAllFixes` summary, and the CLI. **Behavior change**:
+  `fixable_count` shrinks for sources with active disable directives.
+- **CLI**: `-o` / `--output` and `--config` now exit with code 1 and a
+  clear `error: <flag> requires a value` message when invoked without a
+  value. Previously the value silently became `null`, the minifier ran
+  with default behavior, and the user's intent was lost. **Behavior
+  change**: missing-value invocations now fail loudly.
+- **LSP `Position`**: `line` / `character` from inbound JSON are
+  bounds-checked against `u32` range. Negative or `> maxInt(u32)`
+  values now reject cleanly via `std.math.cast` instead of panicking
+  in debug or silently wrapping in release.
+- **WASM API**: pack envelope helpers (`wgslender_validate`,
+  `wgslender_compile`, `wgslender_lint`, `wgslender_lint_fix`,
+  `wgslender_minify_*`) route slice lengths through
+  `std.math.cast(u32, ...)` with checked addition. Oversized payloads
+  now return `null` (the existing OOM signal) instead of silently
+  truncating the header length while `@memcpy` walked the full slice.
+- **AST `Decl.interior_pending`**: widened from `i32` to `i64` and
+  switched to saturating add. A pathological sequence of incremental
+  edits could previously wrap the bias and corrupt every interior span
+  on the next absorb. Internal field — no FFI / wire / JSON change.
+- **`MinifyRenamer`**: `SymbolSlot` no longer holds a `[]const u8`
+  slice into `name_buf`. Names resolve through `name_offsets` on every
+  lookup, so any future append to `name_buf` after `assignNames`
+  cannot dangle prior names. Pure internal refactor.
+
 ## [1.1.0] — 2026-05-06
 
 This release synchronizes versions across all artifacts (`build.zig.zon`,
