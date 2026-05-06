@@ -9,6 +9,7 @@
 //! an arena allocator that bulk-frees on deinit).
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
 // =========================================================================
@@ -94,9 +95,12 @@ pub fn writeSleb128(buf: *std.ArrayList(u8), allocator: Allocator, value: i32) A
 
 /// Write a raw section: [section_id] [uleb128 size] [content].
 fn writeSection(buf: *std.ArrayList(u8), allocator: Allocator, section_id: SectionId, content: []const u8) Allocator.Error!void {
+    assert(content.len < std.math.maxInt(u32));
+    const before = buf.items.len;
     try buf.append(allocator, @intFromEnum(section_id));
     try writeUleb128(buf, allocator, @intCast(content.len));
     try buf.appendSlice(allocator, content);
+    assert(buf.items.len > before);
 }
 
 /// Write a Type section with a single function type: () -> (i32).
@@ -157,12 +161,14 @@ pub fn writeFunctionSectionTyped(buf: *std.ArrayList(u8), allocator: Allocator, 
 
 /// Write a Memory section with min pages and no max.
 pub fn writeMemorySection(buf: *std.ArrayList(u8), allocator: Allocator, min_pages: u32) Allocator.Error!void {
+    assert(min_pages > 0);
     var content: std.ArrayList(u8) = .empty;
     defer content.deinit(allocator);
 
     try writeUleb128(&content, allocator, 1); // 1 memory
     try content.append(allocator, 0x00); // flags: no max
     try writeUleb128(&content, allocator, min_pages);
+    assert(content.items.len > 0);
     try writeSection(buf, allocator, .memory, content.items);
 }
 
@@ -316,6 +322,8 @@ pub fn parseSections(wasm_data: []const u8) []const ParsedSection {
     var count: usize = 0;
 
     if (wasm_data.len < 8) return sections[0..0];
+    assert(std.mem.eql(u8, wasm_data[0..4], "\x00asm"));
+    assert(wasm_data.len <= std.math.maxInt(u32));
     var pos: usize = 8; // skip magic + version
 
     while (pos < wasm_data.len and count < max_sections) {
