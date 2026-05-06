@@ -67,10 +67,13 @@ pub const MinifyRenamer = struct {
     rename_policy: ?*const RenamePolicy = null,
 
     const SymbolSlot = struct {
-        name: []const u8,
         count: u32,
     };
 
+    /// Position of a slot's generated name inside `name_buf`. Stored as
+    /// (offset, len) instead of a `[]const u8` slice so future appends
+    /// to `name_buf` cannot dangle prior entries — the slice is rebuilt
+    /// fresh on every `nameForSymbol` call.
     const NameSlice = struct {
         offset: u32,
         len: u32,
@@ -160,7 +163,7 @@ pub const MinifyRenamer = struct {
         try self.slots.ensureTotalCapacity(self.arena, renameable.items.len);
         for (renameable.items, 0..) |item, i| {
             try self.top_level_slots.put(self.arena, item.idx, @intCast(i));
-            try self.slots.append(self.arena, .{ .name = "", .count = item.count });
+            try self.slots.append(self.arena, .{ .count = item.count });
         }
     }
 
@@ -192,17 +195,19 @@ pub const MinifyRenamer = struct {
             name_index += 1;
         }
 
-        // Pre-allocate name buffer to avoid reallocation
+        // Pre-allocate the name buffer in one shot. Names are stored
+        // back-to-back; the (offset, len) entries in `name_offsets`
+        // index into them. Avoids retaining slices into a growable
+        // buffer — see `NameSlice`.
         try self.name_buf.ensureTotalCapacity(self.arena, total_len);
+        try self.name_offsets.ensureTotalCapacity(self.arena, self.slots.items.len);
 
-        // Second pass: store names (no reallocation will occur)
-        for (self.slots.items, 0..) |*slot, i| {
+        for (self.slots.items, 0..) |_, i| {
             const idx = indices.items[i];
             const name = numberToMinifiedName(&buf, idx);
             const offset: u32 = @intCast(self.name_buf.items.len);
-            try self.name_buf.appendSlice(self.arena, name);
-            try self.name_offsets.append(self.arena, .{ .offset = offset, .len = @intCast(name.len) });
-            slot.name = self.name_buf.items[offset .. offset + name.len];
+            self.name_buf.appendSliceAssumeCapacity(name);
+            self.name_offsets.appendAssumeCapacity(.{ .offset = offset, .len = @intCast(name.len) });
         }
     }
 
@@ -214,7 +219,8 @@ pub const MinifyRenamer = struct {
         const sym = &self.symbols[idx];
         if (mustNotBeRenamed(self, idx, sym)) return sym.original_name;
         if (self.top_level_slots.get(idx)) |slot_idx| {
-            return self.slots.items[slot_idx].name;
+            const ns = self.name_offsets.items[slot_idx];
+            return self.name_buf.items[ns.offset..][0..ns.len];
         }
         return sym.original_name;
     }
@@ -803,6 +809,70 @@ test "renamer: MinifyRenamer rename policy pin" {
 
     // Policy-pinned symbol should keep its original name.
     try std.testing.expectEqualStrings("keepMe", renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
+}
+
+test "renamer: nameForSymbol stays valid after name_buf grows post-assignNames" {
+    // Regression: previously SymbolSlot stored a `[]const u8` slice into
+    // name_buf. assignNames pre-allocated capacity so the slice was
+    // valid for the typical lifetime, but any later append to name_buf
+    // (or a second assignNames call) would dangle every prior slot.
+    // Now slots resolve names via name_offsets on every lookup, so
+    // forcing name_buf to grow must not affect prior names.
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    var symbols = [_]Ast.Symbol{
+        .{ .original_name = "alpha", .kind = .function, .flags = .{} },
+        .{ .original_name = "beta", .kind = .function, .flags = .{} },
+        .{ .original_name = "gamma", .kind = .function, .flags = .{} },
+    };
+
+    var policy_builder = try RenamePolicy.Builder.init(arena, symbols.len);
+    var policy = policy_builder.build();
+
+    var use_counts = try UseCounts.init(arena, symbols.len);
+
+    const reserved = std.StringHashMapUnmanaged(void){};
+    var renamer = MinifyRenamer.init(std.testing.allocator, &symbols, reserved);
+    renamer.renamer.ptr = @ptrCast(&renamer);
+    renamer.setSideTables(&use_counts, &policy);
+    defer {
+        renamer.slots.deinit(std.testing.allocator);
+        renamer.top_level_slots.deinit(std.testing.allocator);
+        renamer.name_buf.deinit(std.testing.allocator);
+        renamer.name_offsets.deinit(std.testing.allocator);
+    }
+
+    var uses = std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32){};
+    defer uses.deinit(std.testing.allocator);
+    try uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(0)), 5);
+    try uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(1)), 3);
+    try uses.put(std.testing.allocator, @as(Ast.SymbolIndex, @enumFromInt(2)), 1);
+
+    renamer.accumulateSymbolUseCounts(&uses);
+    try renamer.allocateSlots();
+    try renamer.assignNames();
+
+    // Snapshot the names before forcing a realloc.
+    const before_0 = try std.testing.allocator.dupe(u8, renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
+    defer std.testing.allocator.free(before_0);
+    const before_1 = try std.testing.allocator.dupe(u8, renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(1))));
+    defer std.testing.allocator.free(before_1);
+    const before_2 = try std.testing.allocator.dupe(u8, renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(2))));
+    defer std.testing.allocator.free(before_2);
+
+    // Force name_buf to reallocate. ensureTotalCapacity bumps capacity
+    // well past the original size; appending after that triggers a real
+    // move on most allocators.
+    try renamer.name_buf.ensureTotalCapacity(std.testing.allocator, renamer.name_buf.items.len + 4096);
+    try renamer.name_buf.appendSlice(std.testing.allocator, "ZZZZ");
+
+    // Same lookups must still return identical bytes — slots resolve
+    // through name_offsets, not a stale slice.
+    try std.testing.expectEqualStrings(before_0, renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))));
+    try std.testing.expectEqualStrings(before_1, renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(1))));
+    try std.testing.expectEqualStrings(before_2, renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(2))));
 }
 
 test "renamer: CharFreq scan lowercase" {
