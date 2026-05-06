@@ -4,6 +4,7 @@
 //! If no entry points exist, all symbols are conservatively marked live.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Liveness = @import("Liveness.zig");
@@ -94,6 +95,8 @@ pub fn buildDependencyGraph(
     module: *const Ast.Module,
     deps: *std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)),
 ) Allocator.Error!void {
+    assert(deps.count() == 0);
+    assert(module.symbols.items.len < std.math.maxInt(u32));
     for (module.declarations.items) |decl| {
         try collectDeclDeps(arena, decl, deps);
     }
@@ -337,7 +340,9 @@ pub fn isDeclarationLive(decl: Ast.Decl, liveness: Liveness) bool {
     }
     if (!ref.isValid()) return true;
     const idx = ref.index();
+    assert(idx < std.math.maxInt(u32));
     if (idx >= liveness.bits.bit_length) return true;
+    assert(liveness.bits.bit_length > 0);
     return liveness.bits.isSet(idx);
 }
 
