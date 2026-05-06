@@ -537,6 +537,28 @@ test "require-entry-point-attrs: default severity is error" {
     try std.testing.expect(hasSeverity(r, "W0206", .@"error"));
 }
 
+test "require-entry-point-attrs: range targets @compute when other attributes precede it" {
+    // Regression: previously the diagnostic range was computed from
+    // attributes.items[0], so a leading @diagnostic underlined the wrong
+    // attribute. Lock the range start at @compute's actual offset.
+    const src = "@diagnostic(off, derivative_uniformity) @compute fn bad() {}";
+    var r = try runLint(src, portability_opts);
+    defer r.deinit(std.testing.allocator);
+    const compute_offset: u32 = @intCast(std.mem.indexOf(u8, src, "@compute").?);
+    var found = false;
+    for (r.lint.diagnostics.items()) |d| {
+        if (!std.mem.eql(u8, d.code, "W0206")) continue;
+        try std.testing.expectEqual(compute_offset, d.range.start.offset);
+        try std.testing.expect(d.range.end.offset > compute_offset);
+        // End must not extend past `@compute` plus a small allowance for
+        // an arg list — and definitely not into the ` fn bad` that follows.
+        const fn_offset: u32 = @intCast(std.mem.indexOf(u8, src, " fn ").?);
+        try std.testing.expect(d.range.end.offset <= fn_offset);
+        found = true;
+    }
+    try std.testing.expect(found);
+}
+
 // =========================================================================
 // consistent-binding-annotations (W0208)
 // =========================================================================

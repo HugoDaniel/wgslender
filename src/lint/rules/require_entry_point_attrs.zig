@@ -35,18 +35,17 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
 }
 
 fn checkFunction(ctx: *Context, fd: *Ast.FunctionDecl) error{OutOfMemory}!void {
-    var is_compute = false;
+    var compute_idx: ?usize = null;
     var has_workgroup_size = false;
-    var compute_loc: u32 = 0;
-    for (fd.attributes.items) |attr| {
+    for (fd.attributes.items, 0..) |attr, i| {
         if (std.mem.eql(u8, attr.name, "compute")) {
-            is_compute = true;
-            compute_loc = attr.loc;
+            compute_idx = i;
         } else if (std.mem.eql(u8, attr.name, "workgroup_size")) {
             has_workgroup_size = true;
         }
     }
-    if (!is_compute or has_workgroup_size) return;
+    const ci = compute_idx orelse return;
+    if (has_workgroup_size) return;
 
     // Point at the @compute attribute itself — that's what the user would
     // add @workgroup_size next to.
@@ -54,15 +53,15 @@ fn checkFunction(ctx: *Context, fd: *Ast.FunctionDecl) error{OutOfMemory}!void {
         "@compute entry point is missing @workgroup_size — add `@workgroup_size(x, y, z)` alongside @compute",
         .{},
     );
-    // @compute is typically 8 characters (`@compute`), but attributes
-    // may have varying span if arguments follow. Use the attribute's
-    // span if populated, otherwise a fixed length guess.
-    const end: u32 = if (fd.attributes.items.len > 0 and fd.attributes.items[0].span.end > compute_loc)
-        fd.attributes.items[0].span.end
+    const compute_attr = fd.attributes.items[ci];
+    // Prefer the parser-populated span; fall back to the attribute's loc
+    // plus the literal length when CstLower hasn't filled span in.
+    const end: u32 = if (compute_attr.span.end > compute_attr.loc)
+        compute_attr.span.end
     else
-        compute_loc + @as(u32, @intCast("@compute".len));
+        compute_attr.loc + @as(u32, @intCast("@compute".len));
     ctx.report(.{
         .message = msg,
-        .range = ctx.makeRange(compute_loc, end),
+        .range = ctx.makeRange(compute_attr.loc, end),
     });
 }
