@@ -68,9 +68,17 @@ pub fn extractUriAndPosition(root: std.json.ObjectMap) ?UriPosition {
     const td = objGet(params, "textDocument") orelse return null;
     const uri = strVal(objGet(td, "uri")) orelse return null;
     const pos = objGet(params, "position") orelse return null;
-    const line: u32 = if (intVal(objGet(pos, "line"))) |v| @intCast(v) else return null;
-    const char: u32 = if (intVal(objGet(pos, "character"))) |v| @intCast(v) else return null;
+    const line = posU32(objGet(pos, "line")) orelse return null;
+    const char = posU32(objGet(pos, "character")) orelse return null;
     return .{ .uri = uri, .line = line, .char = char };
+}
+
+/// Read a JSON integer that the LSP spec defines as `uinteger` (a u32).
+/// Returns null for any non-integer, negative, or out-of-range value so
+/// callers don't silently wrap on hostile input.
+fn posU32(val: ?*const std.json.Value) ?u32 {
+    const i = intVal(val) orelse return null;
+    return std.math.cast(u32, i);
 }
 
 // =========================================================================
@@ -115,4 +123,38 @@ pub fn formatRange(buf: *std.ArrayListUnmanaged(u8), gpa: std.mem.Allocator, ran
     appendStr(buf, gpa, ",\"character\":");
     appendUint(buf, gpa, range.end.character);
     appendStr(buf, gpa, "}}");
+}
+
+// =========================================================================
+// Tests
+// =========================================================================
+
+test "posU32: in-range integer" {
+    const v: std.json.Value = .{ .integer = 42 };
+    try std.testing.expectEqual(@as(?u32, 42), posU32(&v));
+}
+
+test "posU32: zero" {
+    const v: std.json.Value = .{ .integer = 0 };
+    try std.testing.expectEqual(@as(?u32, 0), posU32(&v));
+}
+
+test "posU32: rejects negative" {
+    const v: std.json.Value = .{ .integer = -1 };
+    try std.testing.expectEqual(@as(?u32, null), posU32(&v));
+}
+
+test "posU32: rejects > maxInt(u32)" {
+    const v: std.json.Value = .{ .integer = @as(i64, std.math.maxInt(u32)) + 1 };
+    try std.testing.expectEqual(@as(?u32, null), posU32(&v));
+}
+
+test "posU32: accepts maxInt(u32)" {
+    const v: std.json.Value = .{ .integer = std.math.maxInt(u32) };
+    try std.testing.expectEqual(@as(?u32, std.math.maxInt(u32)), posU32(&v));
+}
+
+test "posU32: rejects non-integer json value" {
+    const v: std.json.Value = .{ .string = "12" };
+    try std.testing.expectEqual(@as(?u32, null), posU32(&v));
 }

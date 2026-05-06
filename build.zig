@@ -535,6 +535,7 @@ pub fn build(b: *std.Build) void {
     // Unit tests for the shared diagnostic-items JSON encoder. Lives in
     // `lsp/wire/` so both transports (and the parity harness) can reach
     // it as a registered module.
+    _ = addTestStep(b, test_step, "lsp/wire/primitives.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "lsp/wire/diagnostics.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "lsp/wire/navigation.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "lsp/wire/call_hierarchy.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
