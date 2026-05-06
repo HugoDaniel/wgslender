@@ -6,6 +6,7 @@
 //! eliminates bounds checks in the hot path.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("Ast.zig");
 const unicode_xid = @import("unicode_xid.zig");
 
@@ -346,6 +347,7 @@ pub fn peekIdentContinue(src: []const u8, pos: u32) bool {
 /// The hot ASCII loop matches the in-line `.identifier` state machine; the
 /// non-ASCII branch decodes one codepoint per step.
 pub fn scanIdentEnd(src: []const u8, start: u32) u32 {
+    assert(start <= src.len);
     var pos: u32 = start;
     while (pos < src.len) {
         const c = src[pos];
@@ -358,6 +360,7 @@ pub fn scanIdentEnd(src: []const u8, start: u32) u32 {
         if (!unicode_xid.isXidContinue(dec.cp)) return pos;
         pos += dec.len;
     }
+    assert(pos >= start);
     return pos;
 }
 
@@ -1289,9 +1292,11 @@ fn nextAny(self: *Lexer) TokenResult {
 
 /// Return the source text for the token at `index`.
 pub fn tokenText(self: *const Lexer, index: u32) []const u8 {
+    assert(index < self.tokens.len);
     const tags = self.tokens.items(.tag);
     const starts = self.tokens.items(.start);
     const start = starts[index];
+    assert(start <= self.source.len);
 
     // End is the start of the next token, or the token's own scan end
     if (index + 1 < self.tokens.len) {
