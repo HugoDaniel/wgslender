@@ -276,15 +276,6 @@ pub fn run(
         if (r.run) |run_fn| try run_fn(ctx);
     }
 
-    // Count fixes once at the end. `meta.fixable` is documentation; the
-    // truth is whether an entry actually carries a `fix`. Listener-driven
-    // rules interleave during the shared walk, so per-rule index ranges
-    // wouldn't isolate them anyway.
-    var fixable: u32 = 0;
-    for (diags.diagnostics.items) |d| {
-        if (d.fix != null) fixable += 1;
-    }
-
     // Parse wgslender-disable directives and filter the diagnostics list.
     // Validator diagnostics (non-lint codes) are never silenced — only
     // entries whose code resolves to a registered rule id.
@@ -301,6 +292,17 @@ pub fn run(
             diags.has_errors = true;
             break;
         }
+    }
+
+    // Count fixes against the post-filter list. Silenced diagnostics
+    // never surface as quickfixes, so they shouldn't inflate
+    // `fixable_count` (consumed by the npm wrapper, the LSP
+    // applyAllFixes summary, and the CLI). `meta.fixable` is
+    // documentation; the truth is whether an entry actually carries a
+    // `fix`.
+    var fixable: u32 = 0;
+    for (diags.diagnostics.items) |d| {
+        if (d.fix != null) fixable += 1;
     }
 
     if (options.report_unused_disable_directives) {
@@ -467,6 +469,26 @@ test "Linter: listener-driven rule fires via shared MultiVisitor walk" {
     for (result.diagnostics.items()) |d| {
         try std.testing.expectEqualStrings("W0201", d.code);
     }
+}
+
+test "Linter: fixable_count excludes diagnostics silenced by disable directives" {
+    const root = @import("../root.zig");
+    // Same two redundant casts as the previous test, but the function is
+    // wrapped in a wgslender-disable-file directive that silences the
+    // rule. Both diagnostics get filtered out, so `fixable_count` must
+    // be 0 — not 2.
+    const src: [:0]const u8 =
+        "// wgslender-disable-file no-redundant-casts\n" ++
+        "fn f(x: f32, y: f32) -> f32 { return f32(x) + f32(y); }";
+    var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
+    defer analysis.deinit(std.testing.allocator);
+
+    var result = try run(std.testing.allocator, &analysis, .{
+        .rules = &.{.{ .id = "no-redundant-casts", .severity = .warning }},
+    });
+    defer result.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u32, 0), result.warning_count);
+    try std.testing.expectEqual(@as(u32, 0), result.fixable_count);
 }
 
 test "Linter: two listener-driven rules share one walk and both fire" {
