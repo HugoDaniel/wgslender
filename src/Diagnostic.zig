@@ -15,6 +15,7 @@
 //!     that produce overlapping diagnostics rely on this for safety.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
 const Diagnostic = @This();
@@ -328,6 +329,7 @@ pub const LineIndex = struct {
     pub fn byteOffsetToLineColumn(self: *const LineIndex, offset: u32) struct { line: u32, col: u32 } {
         const starts = self.line_starts.items;
         if (starts.len == 0) return .{ .line = 0, .col = 0 };
+        assert(starts[0] == 0); // first line always starts at byte 0
 
         // Binary search: find last start <= offset.
         var lo: usize = 0;
@@ -343,6 +345,7 @@ pub const LineIndex = struct {
         // lo is first index where starts[lo] > offset, so line = lo - 1.
         const line: u32 = if (lo > 0) @intCast(lo - 1) else 0;
         const col: u32 = offset - starts[line];
+        assert(line < starts.len);
         return .{ .line = line, .col = col };
     }
 };
@@ -417,8 +420,12 @@ pub fn addError(self: *Diagnostic, allocator: Allocator, offset: u32, message: [
     self.addErrorRange(allocator, offset, offset + 1, message);
 }
 
-/// Add an error spanning a byte range.
+/// Add an error spanning a byte range. End-of-file errors legitimately
+/// pass `end == source.len`, so we only assert ordering — not a tight
+/// upper bound.
 pub fn addErrorRange(self: *Diagnostic, allocator: Allocator, start: u32, end: u32, message: []const u8) void {
+    assert(start <= end);
+    assert(message.len > 0);
     self.add(allocator, .{
         .severity = .@"error",
         .message = message,
@@ -438,6 +445,8 @@ pub fn addErrorWithCode(self: *Diagnostic, allocator: Allocator, offset: u32, co
 
 /// Add an error with an error code spanning a byte range.
 pub fn addErrorWithCodeRange(self: *Diagnostic, allocator: Allocator, start: u32, end: u32, code: []const u8, message: []const u8) void {
+    assert(start <= end);
+    assert(code.len > 0);
     self.add(allocator, .{
         .severity = .@"error",
         .code = code,
@@ -457,6 +466,8 @@ pub fn addWarning(self: *Diagnostic, allocator: Allocator, offset: u32, message:
 
 /// Add a warning spanning a byte range.
 pub fn addWarningRange(self: *Diagnostic, allocator: Allocator, start: u32, end: u32, message: []const u8) void {
+    assert(start <= end);
+    assert(message.len > 0);
     self.add(allocator, .{
         .severity = .warning,
         .message = message,
@@ -491,10 +502,13 @@ pub fn makePosition(self: *const Diagnostic, offset: u32) Position {
 
 /// Convert a byte range to a Range (1-based line/col).
 pub fn makeRange(self: *const Diagnostic, start: u32, end: u32) Range {
-    return .{
+    assert(start <= end);
+    const r: Range = .{
         .start = self.makePosition(start),
         .end = self.makePosition(end),
     };
+    assert(r.start.offset == start and r.end.offset == end);
+    return r;
 }
 
 // -------------------------------------------------------------------------
@@ -893,12 +907,16 @@ pub const DiagnosticFilter = struct {
 
     /// Set the severity for a diagnostic rule.
     pub fn setRule(self: *DiagnosticFilter, allocator: Allocator, rule: []const u8, severity: Severity) Allocator.Error!void {
+        assert(rule.len > 0);
         try self.rules.put(allocator, rule, severity);
+        assert(self.rules.contains(rule));
     }
 
     /// Disable a diagnostic rule.
     pub fn disableRule(self: *DiagnosticFilter, allocator: Allocator, rule: []const u8) Allocator.Error!void {
+        assert(rule.len > 0);
         try self.rules.put(allocator, rule, .disabled);
+        assert(self.isDisabled(rule));
     }
 
     /// True if the rule has been disabled.
