@@ -14,6 +14,7 @@
 //!     argument purity / uniformity in the surrounding expression.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Overload = @import("Overload.zig");
 const Types = @import("Types.zig");
 
@@ -85,7 +86,10 @@ pub const Builtin = struct {
 
     /// Stub overload resolution: checks argument count is in the valid range.
     pub fn checkArgCount(self: *const Builtin, arg_count: u32) bool {
-        return arg_count >= self.min_args and arg_count <= self.max_args;
+        assert(self.min_args <= self.max_args);
+        const ok = arg_count >= self.min_args and arg_count <= self.max_args;
+        if (ok) assert(arg_count <= self.max_args);
+        return ok;
     }
 };
 
@@ -103,22 +107,30 @@ const table = std.StaticStringMap(Builtin).initComptime(builtin_entries);
 const sig_table = std.StaticStringMap([]const Overload.OverloadSig).initComptime(sig_entries);
 
 /// Look up a builtin function by name, or return null if not found.
+/// Empty `name` is permitted and returns null — callers use it as a
+/// "no callee identifier" sentinel (e.g. method-call expressions).
 pub fn lookup(name: []const u8) ?Builtin {
     var b = table.get(name) orelse return null;
+    assert(b.min_args <= b.max_args);
+    assert(std.mem.eql(u8, b.name, name));
     if (sig_table.get(name)) |sigs| {
         b.overloads = sigs;
     }
     return b;
 }
 
-/// Returns true if the given name is a builtin function.
+/// Returns true if the given name is a builtin function. Empty `name` is
+/// permitted and returns false (paired with `lookup` semantics).
 pub fn isBuiltin(name: []const u8) bool {
     return table.has(name);
 }
 
 /// Returns a slice of all builtin function name strings.
 pub fn names() []const []const u8 {
-    return table.keys();
+    const keys = table.keys();
+    assert(keys.len > 0);
+    assert(keys.len == table.kvs.len);
+    return keys;
 }
 
 // =========================================================================
@@ -430,6 +442,8 @@ fn entry(
     comptime max_args: u8,
     comptime must_use: bool,
 ) struct { []const u8, Builtin } {
+    comptime assert(name.len > 0);
+    comptime assert(min_args <= max_args);
     return .{
         name,
         .{
@@ -488,6 +502,8 @@ fn docEntry(
     comptime description: []const u8,
     comptime type_constraint: []const u8,
 ) struct { []const u8, BuiltinDoc } {
+    comptime assert(name.len > 0);
+    comptime assert(signature.len > 0);
     return .{ name, .{ .signature = signature, .description = description, .type_constraint = type_constraint } };
 }
 
