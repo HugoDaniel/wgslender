@@ -24,6 +24,7 @@
 //!     `validate` returns only diagnostics.
 
 const std = @import("std");
+const assert = std.debug.assert;
 const Ast = @import("Ast.zig");
 const Types = @import("Types.zig");
 const Builtins = @import("Builtins.zig");
@@ -754,6 +755,8 @@ pub fn resolveTextureType(v: *Validator, t: anytype) ?Types.Type {
 }
 
 pub fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
+    assert(name.len > 0);
+    assert(v.module.source.len < std.math.maxInt(u32));
     // Built-in scalar types
     if (std.mem.eql(u8, name, "bool")) return Types.Bool;
     if (std.mem.eql(u8, name, "i32")) return Types.I32;
@@ -894,8 +897,10 @@ const suggestName = Suggest.suggestName;
 
 /// Suggest a close match for an undeclared identifier from all visible symbols and builtin functions.
 pub fn suggestIdentifier(v: *Validator, name: []const u8) ?[]const u8 {
+    assert(name.len > 0);
     var best: ?[]const u8 = null;
     var best_dist: usize = 3;
+    assert(best_dist > 0);
     // User-defined symbols
     for (v.module.symbols.items) |sym| {
         if (sym.original_name.len == 0 or sym.kind == .unbound) continue;
@@ -918,8 +923,10 @@ pub fn suggestIdentifier(v: *Validator, name: []const u8) ?[]const u8 {
 
 /// Suggest a close match for a not-callable name from builtin functions, user functions, and type constructors.
 pub fn suggestCallable(v: *Validator, name: []const u8, arg_count: ?usize) ?[]const u8 {
+    assert(name.len > 0);
     var best: ?[]const u8 = null;
     var best_dist: usize = 3;
+    assert(best_dist > 0);
     // Builtin functions
     for (Builtins.names()) |bname| {
         const d = levenshteinBounded(name, bname, best_dist);
@@ -952,6 +959,8 @@ pub fn suggestCallable(v: *Validator, name: []const u8, arg_count: ?usize) ?[]co
 /// For matrix shorthands (mat2x3f, ...) returns the column count.
 /// Returns null for types that don't encode arity in their name.
 pub fn arityOfTypeConstructor(name: []const u8) ?usize {
+    if (name.len == 0) return null;
+    assert(name.len < std.math.maxInt(u16));
     if (name.len >= 4 and name.len <= 5 and std.mem.startsWith(u8, name, "vec")) {
         return switch (name[3]) {
             '2' => 2,
@@ -973,6 +982,10 @@ pub fn arityOfTypeConstructor(name: []const u8) ?usize {
 
 pub fn parseVectorShorthand(v: *Validator, name: []const u8) ?Types.Type {
     if (name.len < 4) return null;
+    assert(std.mem.startsWith(u8, name, "vec"));
+    // Accept any "vec*" prefix length — `lookupType` passes through
+    // unrecognised names; bare-len-or-suffix mismatch returns null below.
+    if (name.len > 5) return null;
 
     const size: u8 = switch (name[3]) {
         '2' => 2,
