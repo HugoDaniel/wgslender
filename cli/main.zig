@@ -208,10 +208,10 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             lint_use_recommended = false;
         } else if (std.mem.eql(u8, arg, "-o") or std.mem.eql(u8, arg, "--output")) {
             passed.output_path = true;
-            args.output_path = args_iter.next();
+            args.output_path = args_iter.next() orelse warnMissingValue(io, arg);
         } else if (std.mem.eql(u8, arg, "--config")) {
             passed.config_flag = true;
-            config_path = args_iter.next();
+            config_path = args_iter.next() orelse warnMissingValue(io, arg);
         } else if (std.mem.eql(u8, arg, "--no-config")) {
             passed.config_flag = true;
             no_config = true;
@@ -536,6 +536,19 @@ fn warnInvalidValue(io: std.Io, arg: []const u8) void {
         f.writeStreamingAll(io, " (expected id=severity, severity ∈ off|warn|error)") catch {};
     }
     f.writeStreamingAll(io, "\n") catch {};
+}
+
+/// Print "<arg> requires a value" and abort with exit code 1.
+/// `parseArgs` itself returns `?CliArgs` where `null` is reserved for the
+/// successful early-exit paths (`--help`, `--version`), so a missing-value
+/// failure can't piggyback on that. Exit directly so the process surfaces
+/// a non-zero code to scripts.
+fn warnMissingValue(io: std.Io, arg: []const u8) noreturn {
+    const f = std.Io.File.stderr();
+    f.writeStreamingAll(io, "error: ") catch {};
+    f.writeStreamingAll(io, arg) catch {};
+    f.writeStreamingAll(io, " requires a value\n") catch {};
+    std.process.exit(1);
 }
 
 fn warnFlagIgnored(
