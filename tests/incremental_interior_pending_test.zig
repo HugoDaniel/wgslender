@@ -23,7 +23,7 @@ const Edits = wgslender.Edits;
 // Helpers
 // =========================================================================
 
-fn expectBias(module: *const Ast.Module, decl_idx: usize, expected: i32) !void {
+fn expectBias(module: *const Ast.Module, decl_idx: usize, expected: i64) !void {
     const got = Ast.declInteriorPending(module.declarations.items[decl_idx]);
     try std.testing.expectEqual(expected, got);
 }
@@ -122,7 +122,7 @@ test "IP-bias-03: two sequential edits inside the same function keep owner bias 
     } else {
         // One or both edits fell back to parseFull → fresh decls carry
         // bias 0. Just assert we still have the expected shape.
-        try std.testing.expectEqual(@as(i32, 0), Ast.declInteriorPending(cur.module.declarations.items[g_idx]));
+        try std.testing.expectEqual(@as(i64, 0), Ast.declInteriorPending(cur.module.declarations.items[g_idx]));
     }
 }
 
@@ -186,7 +186,7 @@ test "IP-bias-05: zero-delta edit does not bump any bias" {
     // Whether this edit takes the hot path or falls back, the delta is
     // zero, so no bump can have happened on ANY decl.
     for (next.module.declarations.items) |d| {
-        try std.testing.expectEqual(@as(i32, 0), Ast.declInteriorPending(d));
+        try std.testing.expectEqual(@as(i64, 0), Ast.declInteriorPending(d));
     }
 }
 
@@ -295,7 +295,7 @@ test "IP-read-01: Validator.analyze absorbs all pending bias" {
 
     // Every bias must now be zero — absorb contract.
     for (cur.module.declarations.items) |d| {
-        try std.testing.expectEqual(@as(i32, 0), Ast.declInteriorPending(d));
+        try std.testing.expectEqual(@as(i64, 0), Ast.declInteriorPending(d));
     }
 }
 
@@ -415,7 +415,7 @@ test "IP-edge-01: fallback reparse resets biases via fresh module" {
     // Every bias must be zero now — either because edit 2 was a fresh
     // parse (fallback) or because hot-path correctly absorbed.
     for (cur.module.declarations.items) |d| {
-        try std.testing.expectEqual(@as(i32, 0), Ast.declInteriorPending(d));
+        try std.testing.expectEqual(@as(i64, 0), Ast.declInteriorPending(d));
     }
 }
 

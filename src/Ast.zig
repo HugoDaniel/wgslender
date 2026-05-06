@@ -327,11 +327,11 @@ pub const Module = struct {
                 // different thresholds because the bias absorb phase uses
                 // threshold 0 (shift everything) while the edit phase uses
                 // splice_end_old.
-                const existing_bias: i32 = declInteriorPending(d_ptr.*);
+                const existing_bias: i64 = declInteriorPending(d_ptr.*);
                 if (existing_bias != 0) {
                     // Absorb interior only; decl_span was shifted at bump
                     // time so it already sits in current coordinates.
-                    shiftDeclInteriorBy(d_ptr, @as(i64, existing_bias));
+                    shiftDeclInteriorBy(d_ptr, existing_bias);
                     clearDeclInteriorPending(d_ptr);
                 }
                 shiftDeclInteriorPart(d_ptr, splice_end_old, delta);
@@ -380,16 +380,19 @@ pub const Module = struct {
 };
 
 /// Read a decl's interior bias regardless of variant.
-pub fn declInteriorPending(decl: Decl) i32 {
+pub fn declInteriorPending(decl: Decl) i64 {
     return switch (decl) {
         inline else => |d| d.interior_pending,
     };
 }
 
 /// Add `delta` to a decl's interior bias. Does not mutate inner spans.
+/// Uses saturating add so a pathological sequence of deltas cannot wrap
+/// past the i64 range — the saturated value still won't match any real
+/// byte offset, so absorb-time `shiftXxxSpans` calls remain bounds-safe.
 pub fn bumpDeclInteriorPending(decl: *Decl, delta: i64) void {
     switch (decl.*) {
-        inline else => |d| d.interior_pending = @intCast(@as(i64, d.interior_pending) + delta),
+        inline else => |d| d.interior_pending +|= delta,
     }
 }
 
@@ -473,9 +476,9 @@ pub fn shiftDeclInteriorPart(decl: *Decl, splice_end_old: u32, delta: i64) void 
 /// time (by `Module.shiftModuleForEdit`) and always sits in current
 /// coordinates, regardless of interior_pending.
 pub fn absorbDeclInterior(decl: *Decl) void {
-    const bias_i32: i32 = declInteriorPending(decl.*);
-    if (bias_i32 == 0) return;
-    shiftDeclInteriorBy(decl, @as(i64, bias_i32));
+    const bias = declInteriorPending(decl.*);
+    if (bias == 0) return;
+    shiftDeclInteriorBy(decl, bias);
     clearDeclInteriorPending(decl);
 }
 
@@ -593,7 +596,7 @@ pub const ConstDecl = struct {
     /// etc.). Drained by `absorbDeclInterior` / `Module.absorbInteriors`.
     /// Zero after a fresh parse. Populated by the incremental hot path
     /// for decls strictly after an edit.
-    interior_pending: i32 = 0,
+    interior_pending: i64 = 0,
 };
 
 pub const OverrideDecl = struct {
@@ -605,7 +608,7 @@ pub const OverrideDecl = struct {
     /// `override` keyword through the terminating `;`.
     decl_span: Span = .empty,
     /// See `ConstDecl.interior_pending`.
-    interior_pending: i32 = 0,
+    interior_pending: i64 = 0,
 };
 
 pub const VarDecl = struct {
@@ -619,7 +622,7 @@ pub const VarDecl = struct {
     /// `var` keyword through the terminating `;`.
     decl_span: Span = .empty,
     /// See `ConstDecl.interior_pending`.
-    interior_pending: i32 = 0,
+    interior_pending: i64 = 0,
 };
 
 pub const LetDecl = struct {
@@ -630,7 +633,7 @@ pub const LetDecl = struct {
     /// terminating `;`.
     decl_span: Span = .empty,
     /// See `ConstDecl.interior_pending`.
-    interior_pending: i32 = 0,
+    interior_pending: i64 = 0,
 };
 
 pub const FunctionDecl = struct {
@@ -644,7 +647,7 @@ pub const FunctionDecl = struct {
     /// `fn` keyword through the closing `}` of the body.
     decl_span: Span = .empty,
     /// See `ConstDecl.interior_pending`.
-    interior_pending: i32 = 0,
+    interior_pending: i64 = 0,
 };
 
 pub const Parameter = struct {
@@ -664,7 +667,7 @@ pub const StructDecl = struct {
     /// closing `}`.
     decl_span: Span = .empty,
     /// See `ConstDecl.interior_pending`.
-    interior_pending: i32 = 0,
+    interior_pending: i64 = 0,
 };
 
 pub const StructMember = struct {
@@ -684,13 +687,13 @@ pub const AliasDecl = struct {
     /// terminating `;`.
     decl_span: Span = .empty,
     /// See `ConstDecl.interior_pending`.
-    interior_pending: i32 = 0,
+    interior_pending: i64 = 0,
 };
 
 pub const ConstAssertDecl = struct {
     expr: Expr,
     /// See `ConstDecl.interior_pending`.
-    interior_pending: i32 = 0,
+    interior_pending: i64 = 0,
 };
 
 // =========================================================================
@@ -2168,7 +2171,7 @@ test "interior_pending: fresh decls start at zero bias" {
     let.* = .{ .name = .none, .decl_span = .{ .start = 10, .end = 30 } };
     try m.declarations.append(arena.allocator(), .{ .let = let });
 
-    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[0]));
+    try std.testing.expectEqual(@as(i64, 0), declInteriorPending(m.declarations.items[0]));
 }
 
 test "interior_pending: bump adds to stored bias without touching inner spans" {
@@ -2188,7 +2191,7 @@ test "interior_pending: bump adds to stored bias without touching inner spans" {
     try m.declarations.append(arena.allocator(), .{ .let = let });
 
     bumpDeclInteriorPending(&m.declarations.items[0], 5);
-    try std.testing.expectEqual(@as(i32, 5), declInteriorPending(m.declarations.items[0]));
+    try std.testing.expectEqual(@as(i64, 5), declInteriorPending(m.declarations.items[0]));
     // Inner loc untouched — bias is stored, not applied.
     try std.testing.expectEqual(@as(u32, 100), lit.loc);
 }
@@ -2210,7 +2213,7 @@ test "interior_pending: absorbDeclInterior drains bias and shifts inner loc" {
     bumpDeclInteriorPending(&m.declarations.items[0], 5);
 
     absorbDeclInterior(&m.declarations.items[0]);
-    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[0]));
+    try std.testing.expectEqual(@as(i64, 0), declInteriorPending(m.declarations.items[0]));
     try std.testing.expectEqual(@as(u32, 105), lit.loc);
 }
 
@@ -2253,7 +2256,7 @@ test "interior_pending: absorb with zero bias is no-op" {
 
     absorbDeclInterior(&m.declarations.items[0]);
     try std.testing.expectEqual(@as(u32, 100), lit.loc);
-    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[0]));
+    try std.testing.expectEqual(@as(i64, 0), declInteriorPending(m.declarations.items[0]));
 }
 
 test "interior_pending: Module.absorbInteriors drains every decl" {
@@ -2289,8 +2292,8 @@ test "interior_pending: Module.absorbInteriors drains every decl" {
 
     try std.testing.expectEqual(@as(u32, 103), lit_a.loc);
     try std.testing.expectEqual(@as(u32, 307), lit_b.loc);
-    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[0]));
-    try std.testing.expectEqual(@as(i32, 0), declInteriorPending(m.declarations.items[1]));
+    try std.testing.expectEqual(@as(i64, 0), declInteriorPending(m.declarations.items[0]));
+    try std.testing.expectEqual(@as(i64, 0), declInteriorPending(m.declarations.items[1]));
 }
 
 test "interior_pending: bump composition accumulates before absorb" {
@@ -2312,7 +2315,7 @@ test "interior_pending: bump composition accumulates before absorb" {
     bumpDeclInteriorPending(&m.declarations.items[0], 5);
     bumpDeclInteriorPending(&m.declarations.items[0], -2);
     bumpDeclInteriorPending(&m.declarations.items[0], 4);
-    try std.testing.expectEqual(@as(i32, 7), declInteriorPending(m.declarations.items[0]));
+    try std.testing.expectEqual(@as(i64, 7), declInteriorPending(m.declarations.items[0]));
     try std.testing.expectEqual(@as(u32, 100), lit.loc);
 
     absorbDeclInterior(&m.declarations.items[0]);
@@ -2369,4 +2372,28 @@ test "interior_pending: shiftDeclInteriorPart only touches spans >= splice_end_o
     // Compound span: start 60 (< 100, unchanged), end 160 (≥ 100, +5).
     try std.testing.expectEqual(@as(u32, 60), body.span.start);
     try std.testing.expectEqual(@as(u32, 165), body.span.end);
+}
+
+test "interior_pending: bumps past maxInt(i32) accumulate without truncation" {
+    // Regression: when the field was i32, two bumps near maxInt(i32) were
+    // truncated by the @intCast back to i32, silently corrupting later
+    // absorbs. Verify the i64 field accumulates the sum cleanly.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var m = try newTestModule(arena.allocator());
+
+    const let = try arena.allocator().create(LetDecl);
+    let.* = .{ .name = .none, .decl_span = .{ .start = 0, .end = 1 } };
+    try m.declarations.append(arena.allocator(), .{ .let = let });
+
+    const big: i64 = std.math.maxInt(i32);
+    bumpDeclInteriorPending(&m.declarations.items[0], big);
+    bumpDeclInteriorPending(&m.declarations.items[0], big);
+    try std.testing.expectEqual(big * 2, declInteriorPending(m.declarations.items[0]));
+
+    // Saturating add at the i64 boundary keeps the value pinned rather
+    // than wrapping to a negative number that would later subtract from
+    // every interior span on absorb.
+    bumpDeclInteriorPending(&m.declarations.items[0], std.math.maxInt(i64));
+    try std.testing.expectEqual(@as(i64, std.math.maxInt(i64)), declInteriorPending(m.declarations.items[0]));
 }
