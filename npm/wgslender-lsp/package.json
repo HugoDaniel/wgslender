@@ -1,6 +1,6 @@
 {
   "name": "wgslender-lsp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "WGSL Language Server powered by wgslender (WASM build)",
   "main": "index.js",
   "module": "index.mjs",
@@ -20,5 +20,13 @@
     "wgslender-lsp.wasm"
   ],
   "keywords": ["wgsl", "lsp", "language-server", "webgpu", "wasm", "codemirror"],
-  "license": "CC0-1.0"
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/HugoDaniel/wgslender"
+  },
+  "homepage": "https://github.com/HugoDaniel/wgslender",
+  "license": "CC0-1.0",
+  "engines": {
+    "node": ">=16"
+  }
 }

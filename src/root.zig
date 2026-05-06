@@ -8,7 +8,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-pub const version = "1.0.0";
+pub const version = "1.1.0";
 
 pub const Ast = @import("Ast.zig");
 pub const AstVisit = @import("AstVisit.zig");

@@ -41,7 +41,7 @@ pub fn handleInitialize(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value)
         if (json.objGet(params, "initializationOptions")) |opts|
             ctx.handler.applyClientConfig(opts.*);
     }
-    ctx.sendResult(id, "{\"capabilities\":" ++ Handler.capabilities_json ++ ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"1.0.0\"}}");
+    ctx.sendResult(id, "{\"capabilities\":" ++ Handler.capabilities_json ++ ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"1.1.0\"}}");
 }
 
 pub fn handleDidChangeConfiguration(ctx: Ctx) void {

@@ -6,7 +6,7 @@ const lsp = @import("lsp");
 
 pub const server_info: lsp.types.ServerInfo = .{
     .name = "wgslender-lsp",
-    .version = "1.0.0",
+    .version = "1.1.0",
 };
 
 pub const server_capabilities: lsp.types.ServerCapabilities = .{
