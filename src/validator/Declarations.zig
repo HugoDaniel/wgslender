@@ -52,6 +52,7 @@ const known_enable_features = [_][]const u8{
     "clip_distances",
     "unrestricted_pointer_parameters",
     "chromium_experimental_framebuffer_fetch",
+    "primitive_index",
 };
 
 const known_diagnostic_rules = [_][]const u8{
