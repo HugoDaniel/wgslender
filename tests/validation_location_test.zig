@@ -1396,7 +1396,10 @@ test "validation location: vec3i rejects AbstractFloat splat" {
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'i32'");
 }
 
-test "validation location: vec3i rejects vec3f copy" {
+test "validation location: vec3i(vec3f) is a valid explicit conversion" {
+    // Single-vector value constructors are explicit conversions (WGSL §16.2.2):
+    // any concrete element type converts to any other, component-wise. This was
+    // previously (incorrectly) rejected as an implicit conversion.
     const source =
         \\@fragment
         \\fn main() {
@@ -1406,7 +1409,7 @@ test "validation location: vec3i rejects vec3f copy" {
     ;
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
-    try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'vec3<f32>' to 'vec3<i32>'");
+    try std.testing.expect(result.valid);
 }
 
 test "validation location: vec3f rejects concrete i32 args" {

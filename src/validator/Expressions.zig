@@ -319,10 +319,11 @@ pub fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocat
     // Arithmetic / bitwise operators type-check against a common operand
     // type, so an outer `exact(T)` / `.concrete` expectation applies
     // symmetrically to both sides. Boolean / comparison forms have fixed
-    // operand shapes that do not benefit from propagating `T`. Shifts
-    // split: RHS takes `.integer_scalar` (rejects floats/bools/vectors at
-    // the sub-expr site with a precise message); LHS stays `.none`
-    // because WGSL accepts integer vectors as shift LHS.
+    // operand shapes that do not benefit from propagating `T`. Shifts pass
+    // `.none` to both operands and let `checkShiftBinary` own all shift
+    // typing: the RHS shape depends on the LHS (scalar `int << u32`;
+    // component-wise `vecN<int> << vecN<u32>`), which a fixed per-operand
+    // expectation can't express.
     //
     // `.integer_scalar` never forwards to arithmetic operands: we want
     // the diagnostic to fire at the binary as a whole (e.g. the full
@@ -337,8 +338,7 @@ pub fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocat
     };
     const right_exp: Expectation = switch (e.op) {
         .add, .sub, .mul, .div, .mod, .@"and", .@"or", .xor => forward_exp,
-        .logical_and, .logical_or, .eq, .ne, .lt, .le, .gt, .ge => .none,
-        .shl, .shr => .integer_scalar,
+        .logical_and, .logical_or, .eq, .ne, .lt, .le, .gt, .ge, .shl, .shr => .none,
     };
     const lr = try checkExprE(v, e.left, left_exp);
     const rr = try checkExprE(v, e.right, right_exp);
@@ -484,8 +484,23 @@ pub fn checkShiftBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type
         v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer left operand, got '{s}'", .{ op_str, left_type.string() }));
         return InferResult.fail;
     }
-    if (!right_type.eql(Types.U32) and !Types.canConvertTo(right_type, Types.U32)) {
-        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'u32', got '{s}'", .{right_type.string()}));
+    // WGSL §8.7: the shift amount is u32 (abstract-int accepted) and its
+    // *shape* must match the LHS — scalar `int << u32`, or component-wise
+    // `vecN<int> << vecN<u32>` (RHS element is u32 regardless of the LHS
+    // element type). Scalar↔vector shape mismatches are rejected. Errors
+    // underline the RHS operand (the offending shift amount), not the operator.
+    const rhs_range = exprRange(e.right);
+    if (left_type == .vector) {
+        const want = left_type.vector.width;
+        const rhs_ok = right_type == .vector and
+            right_type.vector.width == want and
+            shiftAmountElemOk(right_type.vector.element);
+        if (!rhs_ok) {
+            v.addErrorWithCodeR(rhs_range, Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'vec{d}<u32>', got '{s}'", .{ want, right_type.string() }));
+            return InferResult.fail;
+        }
+    } else if (!(right_type == .scalar and shiftAmountElemOk(right_type.scalar))) {
+        v.addErrorWithCodeR(rhs_range, Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'u32', got '{s}'", .{right_type.string()}));
         return InferResult.fail;
     }
     // Shift amount must be less than the bit width of the LHS type (WGSL spec section 8.7).
@@ -504,6 +519,14 @@ pub fn checkShiftBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type
         }
     }
     return InferResult.some(left_type, stage);
+}
+
+/// A shift amount's scalar element must be `u32` (abstract-int accepted, since
+/// it concretizes to u32). `i32`/`f32`/`bool` are rejected — matching the
+/// scalar-shift rule, now applied per component to the vector form too.
+fn shiftAmountElemOk(s: *const Types.Scalar) bool {
+    const t = Types.Type{ .scalar = s };
+    return t.eql(Types.U32) or Types.canConvertTo(t, Types.U32);
 }
 
 /// Syntactic approximation of whether an expression can denote a reference
@@ -1191,6 +1214,8 @@ pub fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentE
 /// unless a concrete arg is present). Returns null when the name is not
 /// a bare numeric constructor or when we fail to pick an element.
 pub fn inferGenericCtorElement(v: *Validator, name: []const u8, default: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
+    if (std.mem.eql(u8, name, "array")) return inferArrayCtorType(v, arg_types);
+
     const is_bare_vec = std.mem.eql(u8, name, "vec2") or
         std.mem.eql(u8, name, "vec3") or
         std.mem.eql(u8, name, "vec4");
@@ -1223,6 +1248,32 @@ pub fn inferGenericCtorElement(v: *Validator, name: []const u8, default: Types.T
     const result = v.arena.create(Types.Matrix) catch return null;
     result.* = .{ .cols = default.matrix.cols, .rows = default.matrix.rows, .element = chosen };
     return .{ .matrix = result };
+}
+
+/// Infers the type of an element-typed array constructor `array(e1, e2, ...)`:
+/// element type is the common type of the arguments (kept abstract, like the
+/// bare vec/mat forms, so it concretizes at the use site) and the count is the
+/// argument count. Returns null — falling back to the default `array<f32, 0>`
+/// so `checkArrayCtor` reports the mismatch — when there are no arguments or
+/// the argument types have no common type.
+fn inferArrayCtorType(v: *Validator, arg_types: []const ?Types.Type) ?Types.Type {
+    if (arg_types.len == 0) return null;
+    var elem: ?Types.Type = null;
+    for (arg_types) |at_opt| {
+        const at = at_opt orelse return null; // unknown arg type — bail
+        elem = if (elem) |prev| (Types.commonType(prev, at) orelse return null) else at;
+    }
+    const chosen = elem orelse return null;
+    // Keep synthesized array types within the same nesting ceiling the parser
+    // enforces on declared types (`max_parser_type_depth`). A pathologically
+    // deep `array(array(array(...)))` therefore falls back to the default
+    // `array<f32, 0>` and is cleanly rejected as not-constructible instead of
+    // producing an unbounded-depth type. `+ 1` accounts for the array level
+    // this call adds on top of `chosen`.
+    if (Types.arrayNestingDepth(chosen, constants.max_parser_type_depth) + 1 >= constants.max_parser_type_depth) return null;
+    const result = v.arena.create(Types.Array) catch return null;
+    result.* = .{ .element = chosen, .count = @intCast(arg_types.len) };
+    return .{ .array = result };
 }
 
 pub fn unifyScalarKinds(a: ?*const Types.Scalar, b: *const Types.Scalar) ?*const Types.Scalar {
@@ -1350,6 +1401,7 @@ pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []cons
     const is_transient_abstract = switch (t) {
         .vector => |vv| !vv.element.isConcrete(),
         .matrix => |mm| !mm.element.isConcrete(),
+        .array => |aa| !aa.element.isConcrete(),
         else => false,
     };
     if (!t.isConstructible() and !is_transient_abstract and !std.mem.eql(u8, callee_name, "bitcast")) {
@@ -1417,8 +1469,10 @@ pub fn checkVectorCtorOne(v: *Validator, range: LocRange, callee_name: []const u
             }
             return null;
         }
-        // Same width — check element type conversion
-        if (!canConvertScalarTo(at.vector.element, ve.element)) {
+        // Same width — the single-vector form is an explicit conversion,
+        // so any concrete element type converts to any other (unlike the
+        // splat/multi-arg overloads, which only allow implicit conversions).
+        if (!isExplicitVectorElemConversion(at.vector.element, ve.element)) {
             v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
             return null;
         }
@@ -1581,6 +1635,19 @@ pub fn checkArrayCtor(v: *Validator, range: LocRange, callee_name: []const u8, t
 pub fn canConvertScalarTo(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
     if (src == dst) return true;
     return Types.canConvertTo(.{ .scalar = src }, .{ .scalar = dst });
+}
+
+/// The single-vector value constructor `vecN<T>(e: vecN<S>)` is an *explicit*
+/// conversion (WGSL §16.2.2): like the scalar ctor, any concrete S converts to
+/// any concrete T (e.g. `vec2f(vec2u(..))`, `vec4u(vec4i(..))`). Abstract
+/// sources still use the implicit rule so a transient `vec2(1, 2)` result
+/// concretizes into the target element. This is deliberately looser than
+/// `canConvertScalarTo`, which models the *implicit* conversions used by the
+/// splat and multi-arg overloads.
+fn isExplicitVectorElemConversion(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
+    if (src == dst) return true;
+    if (src.isConcrete() and dst.isConcrete()) return true;
+    return canConvertScalarTo(src, dst);
 }
 
 pub fn elementTypeOf(t: Types.Type) ?*const Types.Scalar {

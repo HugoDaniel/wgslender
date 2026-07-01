@@ -21,7 +21,17 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Ast = @import("Ast.zig");
+const constants = @import("constants.zig");
 const Allocator = std.mem.Allocator;
+
+/// Upper bound on how many nesting levels the element-chain walks below descend
+/// before giving up. A `Type` nests at most `max_parser_type_depth` levels
+/// (the parser rejects deeper declared types, and constructed array types are
+/// capped to the same ceiling in `inferArrayCtorType`), so `+ 2` leaves room to
+/// reach the leaf of a maximally-nested type. Hitting the limit means the type
+/// is deeper than any parser-valid type — the walks return conservatively
+/// rather than panicking, so adversarial input can't abort the validator.
+const type_chain_walk_limit: usize = @as(usize, constants.max_parser_type_depth) + 2;
 
 // =========================================================================
 // Type (tagged union replacing Go's Type interface)
@@ -65,7 +75,7 @@ pub const Type = union(enum) {
     pub fn eql(self: Type, other: Type) bool {
         var a = self;
         var b = other;
-        for (0..32) |_| {
+        for (0..type_chain_walk_limit) |_| {
             const a_tag = std.meta.activeTag(a);
             const b_tag = std.meta.activeTag(b);
             if (a_tag != b_tag) return false;
@@ -96,7 +106,7 @@ pub const Type = union(enum) {
                 .function => |f| return f.eqlFunction(b.function),
                 .void_type => return true,
             }
-        } else unreachable;
+        } else return false; // deeper than any parser-valid type — treat conservatively (never reached for valid input)
     }
 
     /// Returns true if this type is a runtime-sized array.
@@ -111,7 +121,7 @@ pub const Type = union(enum) {
     /// Follows array element chains iteratively.
     pub fn isConstructible(self: Type) bool {
         var current = self;
-        for (0..32) |_| {
+        for (0..type_chain_walk_limit) |_| {
             switch (current) {
                 .scalar => |s| return s.isConcrete(),
                 .vector => |v| return v.element.isConcrete(),
@@ -123,14 +133,14 @@ pub const Type = union(enum) {
                 .@"struct" => |s| return s.isConstructibleStruct(),
                 .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => return false,
             }
-        } else unreachable;
+        } else return false; // deeper than any parser-valid type — treat conservatively (never reached for valid input)
     }
 
     /// Returns true if this is not an abstract type.
     /// Follows array element chains iteratively.
     pub fn isConcrete(self: Type) bool {
         var current = self;
-        for (0..32) |_| {
+        for (0..type_chain_walk_limit) |_| {
             switch (current) {
                 .scalar => |s| return s.isConcrete(),
                 .vector => |v| return v.element.isConcrete(),
@@ -139,14 +149,14 @@ pub const Type = union(enum) {
                 .@"struct" => |s| return s.isConcreteStruct(),
                 .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => return true,
             }
-        } else unreachable;
+        } else return false; // deeper than any parser-valid type — treat conservatively (never reached for valid input)
     }
 
     /// Returns true if values can be stored in memory.
     /// Follows array element chains iteratively.
     pub fn isStorable(self: Type) bool {
         var current = self;
-        for (0..32) |_| {
+        for (0..type_chain_walk_limit) |_| {
             switch (current) {
                 .scalar => |s| return s.isConcrete(),
                 .vector => |v| return v.element.isConcrete(),
@@ -156,14 +166,14 @@ pub const Type = union(enum) {
                 .atomic => return true,
                 .pointer, .reference, .sampler, .texture, .function, .void_type => return false,
             }
-        } else unreachable;
+        } else return false; // deeper than any parser-valid type — treat conservatively (never reached for valid input)
     }
 
     /// Returns true if this type can cross the CPU/GPU boundary.
     /// Follows array element chains iteratively.
     pub fn isHostShareable(self: Type) bool {
         var current = self;
-        for (0..32) |_| {
+        for (0..type_chain_walk_limit) |_| {
             switch (current) {
                 .scalar => |s| return s.kind != .bool and s.isConcrete(),
                 .vector => |v| return v.element.kind != .bool and v.element.isConcrete(),
@@ -173,7 +183,7 @@ pub const Type = union(enum) {
                 .atomic => return true,
                 .pointer, .reference, .sampler, .texture, .function, .void_type => return false,
             }
-        } else unreachable;
+        } else return false; // deeper than any parser-valid type — treat conservatively (never reached for valid input)
     }
 
     /// Returns the size in bytes (0 for unsized types).
@@ -1000,7 +1010,7 @@ fn scalarConversionRank(src: ScalarKind, dst: ScalarKind) ?u32 {
 pub fn canConvertTo(src: Type, dst: Type) bool {
     var s = src;
     var d = dst;
-    for (0..32) |_| {
+    for (0..type_chain_walk_limit) |_| {
         if (s.eql(d)) return true;
 
         // Abstract scalar types can convert to concrete scalar types.
@@ -1051,8 +1061,20 @@ pub fn canConvertTo(src: Type, dst: Type) bool {
             continue;
         }
 
+        // Array of abstract can convert to array of concrete, element-wise
+        // (same count). Lets `let a = array(1, 2)` (array<abstract-int, 2>)
+        // materialize into its concrete form and match an annotated target.
+        if (s == .array and d == .array) {
+            const sa = s.array;
+            const da = d.array;
+            if (sa.count != da.count) return false;
+            s = sa.element;
+            d = da.element;
+            continue;
+        }
+
         return false;
-    } else unreachable;
+    } else return false; // deeper than any parser-valid type — treat conservatively (never reached for valid input)
 }
 
 /// Returns the common type of two types for binary operations, or null.
@@ -1070,6 +1092,22 @@ pub fn commonType(a: Type, b: Type) ?Type {
     }
 
     return null;
+}
+
+/// Counts how many `array` levels `t` nests through, stopping at (and
+/// returning) `limit`. Bounded so it never loops unbounded on a pathologically
+/// deep type — callers use it to keep synthesized array types within the same
+/// nesting ceiling the parser enforces on declared types.
+pub fn arrayNestingDepth(t: Type, limit: u32) u32 {
+    var current = t;
+    var depth: u32 = 0;
+    while (depth < limit) : (depth += 1) {
+        switch (current) {
+            .array => |a| current = a.element,
+            else => break,
+        }
+    }
+    return depth;
 }
 
 /// Returns the result type of a * b, or null if invalid.
@@ -1252,10 +1290,29 @@ pub fn concreteType(t: Type) Type {
             }
             return t;
         },
-        // Note: Array concretization would require allocation. The caller
-        // should handle that case separately if needed.
+        // Note: Array concretization would require allocation — use
+        // `concreteTypeAlloc` for the array case. Left unchanged here.
         else => t,
     };
+}
+
+/// Like `concreteType`, but allocates so that composite element types (arrays)
+/// concretize too — `concreteType` leaves arrays untouched to stay
+/// allocation-free. Used at declaration sites so `let a = array(1, 2, 3)` binds
+/// `array<i32, 3>` rather than a transient `array<abstract-int, 3>`, matching
+/// how `vec`/`mat` initializers already concretize. Recursion is bounded by the
+/// array nesting depth (capped at `max_parser_type_depth`).
+pub fn concreteTypeAlloc(allocator: Allocator, t: Type) Allocator.Error!Type {
+    switch (t) {
+        .array => |a| {
+            const elem = try concreteTypeAlloc(allocator, a.element);
+            if (elem.eql(a.element)) return t; // already concrete — no alloc
+            const concrete_arr = try allocator.create(Array);
+            concrete_arr.* = .{ .element = elem, .count = a.count };
+            return .{ .array = concrete_arr };
+        },
+        else => return concreteType(t),
+    }
 }
 
 // Comptime-generated singleton vectors for concreteType to avoid allocation.

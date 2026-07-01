@@ -697,7 +697,7 @@ pub fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
         const r_init = try v.checkExprE(init, .concrete);
         init_r = r_init;
         decl_type = r_init.typ;
-        if (decl_type) |dt| decl_type = Types.concreteType(dt);
+        if (decl_type) |dt| decl_type = try Types.concreteTypeAlloc(v.arena, dt);
     }
 
     if (decl_type == null) {
@@ -970,7 +970,8 @@ pub fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
         }
     } else {
         // Infer type from initializer, converting abstract to concrete
-        decl_type = Types.concreteType(init_type);
+        // (arena-aware so inferred arrays like `array(1, 2, 3)` concretize too).
+        decl_type = try Types.concreteTypeAlloc(v.arena, init_type);
     }
 
     try v.setSymbolType(d.name, decl_type);

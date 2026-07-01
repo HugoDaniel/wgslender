@@ -1,6 +1,6 @@
 // @test: errors/operations/shift-rhs-float
-// @expect-error E0200 "expected integer scalar"
-// Float literal RHS is rejected at the shift RHS sub-expression.
+// @expect-error E0201 "shift amount must be 'u32'"
+// Float literal RHS is rejected — the shift amount must be u32.
 
 @compute @workgroup_size(1)
 fn main() {

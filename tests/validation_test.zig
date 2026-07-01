@@ -204,6 +204,114 @@ test "validate: runValidation propagates errors on OOM" {
 }
 
 // =========================================================================
+// False-positive regressions on valid, idiomatic WGSL
+//
+// These constructs are accepted by naga/Tint but were previously rejected.
+// See plan: "Fix validator false-positives on valid, idiomatic WGSL".
+// =========================================================================
+
+// --- Fix 1: single-vector value ctor is an *explicit* conversion ---
+
+test "fp: vec2f(vec2u) vector conversion constructor is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let v = vec2u(1u, 2u); let _w = vec2f(v); }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0209"));
+}
+
+test "fp: vec4u(vec4i) vector conversion constructor is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let v = vec4i(1i, 2i, 3i, 4i); let _w = vec4u(v); }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0209"));
+}
+
+test "fp guard: vec2f(1u) splat still requires implicit conversion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // u32 -> f32 is not an implicit conversion; the splat overload must reject it.
+    const result = try runValidation(arena.allocator(), "fn f() { let _w = vec2f(1u); }");
+    try std.testing.expect(!result.valid);
+}
+
+test "fp guard: vec3f(1u,2u,3u) multi-arg still requires implicit conversion" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let _w = vec3f(1u, 2u, 3u); }");
+    try std.testing.expect(!result.valid);
+}
+
+// --- Fix 2: component-wise vector shifts ---
+
+test "fp: vecN >> vecN component-wise shift is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let a = vec2u(1u, 2u); let b = vec2u(3u, 4u); let _c = a >> b; }");
+    try std.testing.expect(result.valid);
+}
+
+test "fp: vecN << vecN component-wise shift is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let a = vec3i(1i, 2i, 3i); let _c = a << vec3u(1u, 2u, 3u); }");
+    try std.testing.expect(result.valid);
+}
+
+test "fp guard: scalar << vector is a shape mismatch error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let _x = 1u << vec2u(1u, 2u); }");
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0201"));
+}
+
+test "fp guard: vecN >> vecM width mismatch is an error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let a = vec2u(1u, 2u); let _c = a >> vec3u(1u, 2u, 3u); }");
+    try std.testing.expect(!result.valid);
+}
+
+test "fp guard: vector shift RHS must be u32 elements" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // vec2<i32> shift amount: element must be u32, not i32.
+    const result = try runValidation(arena.allocator(), "fn f() { let a = vec2i(1i, 2i); let _c = a >> vec2i(1i, 2i); }");
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0201"));
+}
+
+// --- Fix 3: inferred array(...) constructor ---
+
+test "fp: array(1,2,3) inferred constructor is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let a = array(1, 2, 3); let _u = a[0]; }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0200"));
+}
+
+test "fp: array(1.0, 2.0) inferred float constructor is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let a = array(1.0, 2.0); let _u = a[1]; }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0200"));
+}
+
+// --- Claim 4: never-called builtin shadow is accepted ---
+
+test "fp: never-called builtin shadow (step) is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() -> f32 { let step = 5.0; return step; }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0106"));
+}
+
+// =========================================================================
 // Annotation-driven tests from testdata/validation/
 // =========================================================================
 

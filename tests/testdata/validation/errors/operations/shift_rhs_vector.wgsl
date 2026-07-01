@@ -1,6 +1,6 @@
 // @test: errors/operations/shift-rhs-vector
-// @expect-error E0200 "expected integer scalar"
-// Integer vector RHS is rejected by `.integer_scalar` — scalar only.
+// @expect-error E0201 "shift amount must be 'u32'"
+// A scalar LHS requires a scalar u32 shift amount — a vector RHS is a shape mismatch.
 
 @compute @workgroup_size(1)
 fn main() {

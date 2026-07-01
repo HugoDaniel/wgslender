@@ -266,21 +266,24 @@ test "shift RHS .integer_scalar: abstract-int RHS stays abstract in cache" {
     try std.testing.expect(!t.isConcrete());
 }
 
-test "shift RHS .integer_scalar: float RHS rejected at the sub-expression" {
+test "shift RHS float rejected with precise E0201 message" {
+    // Shift RHS typing is owned by checkShiftBinary now (not `.integer_scalar`):
+    // a float shift amount reports invalid_operand (E0201).
     var r = try validate("fn f() { let _x = 1u << 1.5; }");
     defer r.deinit(std.testing.allocator);
-    const d = firstErrorWithCode(r, "E0200") orelse return error.MissingDiagnostic;
-    try std.testing.expect(std.mem.indexOf(u8, d.message, "expected integer scalar") != null);
+    const d = firstErrorWithCode(r, "E0201") orelse return error.MissingDiagnostic;
+    try std.testing.expect(std.mem.indexOf(u8, d.message, "shift amount must be 'u32'") != null);
     try std.testing.expect(std.mem.indexOf(u8, d.message, "abstract-float") != null);
 }
 
-test "shift RHS .integer_scalar: float RHS does not also emit E0201" {
-    // `.integer_scalar` short-circuits `rr.typ` to null so the u32 narrowing
-    // in `checkBinaryE` is skipped — otherwise we'd double-emit.
+test "shift RHS float emits a single error, not a double" {
+    // checkShiftBinary emits exactly one diagnostic and returns fail, so the
+    // decl's follow-up narrowing can't double-fire and no stale E0200 remains.
     var r = try validate("fn f() { let _x = 1u << 1.5; }");
     defer r.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 1), errorCount(r));
-    try std.testing.expectEqual(@as(usize, 0), countErrorsWithCode(r, "E0201"));
+    try std.testing.expectEqual(@as(usize, 0), countErrorsWithCode(r, "E0200"));
+    try std.testing.expectEqual(@as(usize, 1), countErrorsWithCode(r, "E0201"));
 }
 
 test "shift RHS .integer_scalar: i32 passes expectation but fails u32 narrowing" {
@@ -294,11 +297,13 @@ test "shift RHS .integer_scalar: i32 passes expectation but fails u32 narrowing"
     try std.testing.expect(std.mem.indexOf(u8, d.message, "shift amount must be 'u32'") != null);
 }
 
-test "shift RHS .integer_scalar: vector RHS rejected (scalar-only)" {
+test "shift scalar LHS rejects vector RHS (shape mismatch)" {
+    // A scalar LHS requires a scalar u32 shift amount; a vector RHS is a shape
+    // mismatch reported as invalid_operand (E0201).
     var r = try validate("fn f() { let _x = 1u << vec2<u32>(1u, 2u); }");
     defer r.deinit(std.testing.allocator);
-    const d = firstErrorWithCode(r, "E0200") orelse return error.MissingDiagnostic;
-    try std.testing.expect(std.mem.indexOf(u8, d.message, "expected integer scalar") != null);
+    const d = firstErrorWithCode(r, "E0201") orelse return error.MissingDiagnostic;
+    try std.testing.expect(std.mem.indexOf(u8, d.message, "shift amount must be 'u32'") != null);
 }
 
 test "shift LHS is NOT .integer_scalar: integer LHS path still via E0201" {
@@ -350,14 +355,13 @@ test "function-scope const x = 1 + 2 (no annotation) — cache materializes to i
     try std.testing.expectEqualStrings("i32", t.string());
 }
 
-test "nested: outer .concrete does not override inner .integer_scalar" {
-    // The outer `let` pushes `.concrete`; the inner shift RHS gets
-    // `.integer_scalar` locally; a bad inner type fires E0200 at the RHS
-    // even though the outer context would accept it.
+test "nested: outer .concrete does not suppress inner shift-RHS error" {
+    // The outer `let` pushes `.concrete`; a bad shift RHS still errors from
+    // checkShiftBinary (E0201) even though the outer context would accept a u32.
     var r = try validate("fn f() -> u32 { let x = 1u << 1.5; return x; }");
     defer r.deinit(std.testing.allocator);
-    const d = firstErrorWithCode(r, "E0200") orelse return error.MissingDiagnostic;
-    try std.testing.expect(std.mem.indexOf(u8, d.message, "expected integer scalar") != null);
+    const d = firstErrorWithCode(r, "E0201") orelse return error.MissingDiagnostic;
+    try std.testing.expect(std.mem.indexOf(u8, d.message, "shift amount must be 'u32'") != null);
 }
 
 test "nested: outer .concrete does not override inner index .integer_scalar" {

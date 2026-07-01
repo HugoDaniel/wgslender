@@ -643,8 +643,8 @@ test "validation range: shift RHS float underlines the literal" {
     ;
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
-    // `1.5` is 3 chars — the shift RHS `.integer_scalar` points here.
-    try expectErrorWidth(result, "expected integer scalar", 3);
+    // `1.5` is 3 chars — the shift-amount type error underlines the RHS operand.
+    try expectErrorWidth(result, "shift amount must be 'u32'", 3);
 }
 
 test "validation range: shift RHS bool underlines the literal" {
@@ -656,8 +656,8 @@ test "validation range: shift RHS bool underlines the literal" {
     ;
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
-    // `true` is 4 chars.
-    try expectErrorWidth(result, "expected integer scalar", 4);
+    // `true` is 4 chars — the shift-amount type error underlines the RHS operand.
+    try expectErrorWidth(result, "shift amount must be 'u32'", 4);
 }
 
 // =========================================================================
