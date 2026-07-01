@@ -1472,7 +1472,7 @@ pub fn checkVectorCtorOne(v: *Validator, range: LocRange, callee_name: []const u
         // Same width — the single-vector form is an explicit conversion,
         // so any concrete element type converts to any other (unlike the
         // splat/multi-arg overloads, which only allow implicit conversions).
-        if (!isExplicitVectorElemConversion(at.vector.element, ve.element)) {
+        if (!isExplicitCompositeElemConversion(at.vector.element, ve.element)) {
             v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
             return null;
         }
@@ -1530,7 +1530,10 @@ pub fn checkMatrixCtorOne(v: *Validator, range: LocRange, t: Types.Type, mt: *co
                     v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
                     return null;
                 }
-                if (!canConvertScalarTo(at.matrix.element, mt.element)) {
+                // Single-matrix form is an explicit conversion (like the vector
+                // form): any concrete float element converts to any other
+                // (f16<->f32); abstract sources fall back to the implicit rule.
+                if (!isExplicitCompositeElemConversion(at.matrix.element, mt.element)) {
                     v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
                     return null;
                 }
@@ -1637,14 +1640,15 @@ pub fn canConvertScalarTo(src: *const Types.Scalar, dst: *const Types.Scalar) bo
     return Types.canConvertTo(.{ .scalar = src }, .{ .scalar = dst });
 }
 
-/// The single-vector value constructor `vecN<T>(e: vecN<S>)` is an *explicit*
-/// conversion (WGSL §16.2.2): like the scalar ctor, any concrete S converts to
-/// any concrete T (e.g. `vec2f(vec2u(..))`, `vec4u(vec4i(..))`). Abstract
-/// sources still use the implicit rule so a transient `vec2(1, 2)` result
-/// concretizes into the target element. This is deliberately looser than
+/// The single-composite value constructors `vecN<T>(e: vecN<S>)` and
+/// `matCxR<T>(e: matCxR<S>)` are *explicit* conversions (WGSL §16.2.2): like the
+/// scalar ctor, any concrete S converts element-wise to any concrete T (e.g.
+/// `vec2f(vec2u(..))`, `mat2x2f(mat2x2h(..))`). Abstract sources still use the
+/// implicit rule so a transient `vec2(1, 2)` / `mat2x2(...)` result concretizes
+/// into the target element. This is deliberately looser than
 /// `canConvertScalarTo`, which models the *implicit* conversions used by the
 /// splat and multi-arg overloads.
-fn isExplicitVectorElemConversion(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
+fn isExplicitCompositeElemConversion(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
     if (src == dst) return true;
     if (src.isConcrete() and dst.isConcrete()) return true;
     return canConvertScalarTo(src, dst);

@@ -243,6 +243,31 @@ test "fp guard: vec3f(1u,2u,3u) multi-arg still requires implicit conversion" {
     try std.testing.expect(!result.valid);
 }
 
+// --- Fix 1 (matrix): single-matrix value ctor is an *explicit* conversion ---
+
+test "fp: mat2x2f(mat2x2h) matrix conversion constructor is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "enable f16;\nfn f() { let m = mat2x2h(1.0h, 2.0h, 3.0h, 4.0h); let _n = mat2x2f(m); }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0209"));
+}
+
+test "fp: mat3x3h(mat3x3f) matrix conversion constructor is valid" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "enable f16;\nfn f() { let m = mat3x3f(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0); let _n = mat3x3h(m); }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0209"));
+}
+
+test "fp guard: mat2x2f(mat3x3f) dimension mismatch stays an error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() { let m = mat3x3f(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0); let _n = mat2x2f(m); }");
+    try std.testing.expect(!result.valid);
+}
+
 // --- Fix 2: component-wise vector shifts ---
 
 test "fp: vecN >> vecN component-wise shift is valid" {
