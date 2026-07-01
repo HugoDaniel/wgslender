@@ -812,6 +812,21 @@ pub fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResul
         return try checkTemplateTypeCtor(v, e, tt, callee_name);
     }
 
+    // A value declaration (let/var/const/override/parameter) named after a
+    // builtin function shadows it. The binder already resolved this callee to
+    // that declaration, so the call targets a non-callable value, not the
+    // builtin — the "shadowed builtin is uncallable" error real toolchains
+    // (Tint) reject. Detect it before the builtin dispatch below, which would
+    // otherwise treat the call as the builtin and silently accept it.
+    if (shadowedBuiltinValueCall(v, e)) {
+        for (e.args.items) |arg| _ = try checkExpr(v, arg);
+        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.shadowed_builtin_call, v.fmtError(
+            "'{s}' resolves to a declaration that shadows the WGSL builtin function of the same name; the builtin cannot be called here",
+            .{callee_name},
+        ));
+        return InferResult.fail;
+    }
+
     // Check if it's a builtin function
     if (Builtins.lookup(callee_name)) |builtin_fn| {
         return checkBuiltinCall(v, e, callee_name, builtin_fn);
@@ -1228,6 +1243,33 @@ pub fn reportNotCallable(v: *Validator, e: *Ast.CallExpr, callee_name: []const u
     } else {
         v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, v.fmtError("'{s}' is not a function or type constructor", .{callee_name}));
     }
+}
+
+/// True when a call's callee is an identifier that names a WGSL builtin
+/// function but the binder resolved it to a *value* declaration
+/// (let/var/const/override/parameter) in scope. That declaration shadows the
+/// builtin, so the call targets a non-callable value — the "shadowed builtin
+/// is uncallable" error Tint reports. A user function / struct / alias of the
+/// same name is deliberately excluded: calling it resolves to a callable or
+/// constructible entity, which WGSL permits.
+fn shadowedBuiltinValueCall(v: *Validator, e: *Ast.CallExpr) bool {
+    const func = e.func orelse return false;
+    const ident = switch (func) {
+        .ident => |id| id,
+        else => return false,
+    };
+    // `was_counted` is set only when the binder resolved the callee to an
+    // in-scope symbol on the normal (declared-before) path. It both proves the
+    // ref is valid and excludes the use-before-declaration case (E0102), where
+    // the ref is set for goto-def but the shadow error would be redundant.
+    if (!ident.was_counted or !ident.ref.isValid()) return false;
+    if (!Builtins.isBuiltin(ident.name)) return false;
+    const idx = ident.ref.index();
+    if (idx >= v.module.symbols.items.len) return false;
+    return switch (v.module.symbols.items[idx].kind) {
+        .@"const", .override, .let, .@"var", .parameter => true,
+        else => false,
+    };
 }
 
 // Cache synthesized structs so repeated calls to frexp/modf/

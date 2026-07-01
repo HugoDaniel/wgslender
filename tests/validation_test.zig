@@ -1781,3 +1781,120 @@ test "validation: errors/operations/shift_lhs_float" {
     defer arena.deinit();
     try runValidationTest(arena.allocator(), validation_data.@"errors/operations/shift_lhs_float");
 }
+
+// =========================================================================
+// Calling a shadowed WGSL builtin function (E0106)
+//
+// WGSL builtin functions (dot/mix/max/…) are predeclared but not reserved.
+// A value declaration (let/var/const/override/parameter) with one of these
+// names shadows the builtin. WGSL permits the shadow itself; it becomes an
+// error only when the name is then *called*, because the call resolves to
+// the non-callable value rather than the builtin — which real toolchains
+// (Tint) reject. We match that: bare shadows stay valid; a shadow that is
+// then called is E0106. Function/struct/alias shadows resolve to a callable
+// entity and are allowed. Struct fields are exempt (accessed via `.`).
+// =========================================================================
+
+/// True if any emitted diagnostic carries `code`.
+fn hasDiagCode(result: wgslender.Validator.Result, code: []const u8) bool {
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, code)) return true;
+    }
+    return false;
+}
+
+// Red cases — a value shadows a builtin and is then called → invalid + E0106.
+
+test "validate: shadowed builtin call — local let" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() -> f32 { let max = 3.0; return max(1.0, 2.0); }");
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0106"));
+}
+
+test "validate: shadowed builtin call — function parameter" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f(max: f32) -> f32 { return max(1.0, 2.0); }");
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0106"));
+}
+
+test "validate: shadowed builtin call — module const" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "const distance = 1.0;\nfn f() -> f32 { return distance(1.0, 2.0); }");
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0106"));
+}
+
+test "validate: shadowed builtin call — module var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "var<private> mix: f32;\nfn f() -> f32 { return mix(1.0, 2.0, 3.0); }");
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0106"));
+}
+
+test "validate: shadowed builtin call — nested block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() -> f32 { let a = 1.0; { let step = 5.0; return step(a, 2.0); } }");
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0106"));
+}
+
+// Green guards — must stay valid with no E0106.
+
+test "validate: bare builtin shadow without a call is allowed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `max` shadows the builtin but is only read, never called — legal WGSL.
+    const result = try runValidation(arena.allocator(), "fn f() -> f32 { let max = 3.0; return max; }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0106"));
+}
+
+test "validate: unshadowed builtin call is allowed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f() -> f32 { return max(1.0, 2.0); }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0106"));
+}
+
+test "validate: user function named after a builtin can be called" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A function shadow resolves to the user function — WGSL allows this.
+    const result = try runValidation(arena.allocator(), "fn max(a: f32, b: f32) -> f32 { return a; }\nfn g() -> f32 { return max(1.0, 2.0); }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0106"));
+}
+
+test "validate: builtin call outside the shadow's scope is allowed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // The `let max` shadow is confined to the inner block; the call sits in
+    // the outer scope, where `max` still resolves to the builtin.
+    const result = try runValidation(arena.allocator(), "fn f() -> f32 { { let max = 1.0; _ = max; } return max(1.0, 2.0); }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0106"));
+}
+
+test "validate: struct fields named after builtins are allowed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "struct S { min: f32, max: f32, step: f32 }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0106"));
+}
+
+test "validate: near-miss builtin name is allowed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn dotProduct(a: f32, b: f32) -> f32 { return a * b; }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0106"));
+}

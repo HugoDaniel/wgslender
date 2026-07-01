@@ -728,6 +728,7 @@ pub const Code = struct {
     pub const recursive_function: []const u8 = "E0103";
     pub const recursive_type: []const u8 = "E0104";
     pub const reserved_identifier: []const u8 = "E0105";
+    pub const shadowed_builtin_call: []const u8 = "E0106";
 
     // Type errors (E02xx)
     pub const type_mismatch: []const u8 = "E0200";
