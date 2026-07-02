@@ -1354,3 +1354,68 @@ test "refiner: plain resolveTargeted has no refined field set" {
     try std.testing.expect(r == .err);
     try std.testing.expect(r.err.refined == null);
 }
+
+// =========================================================================
+// 18. Explicit-composite copy/convert (Block 4b)
+//
+// The single-composite value ctors vecN<T>(vecN<S>) / matCxR<T>(matCxR<S>)
+// are *explicit* conversions (WGSL §16.2.2): any concrete S converts
+// element-wise to any concrete T (vec2f(vec2u), mat2x2f(mat2x2h)) — looser
+// than the implicit `conversionRank` the splat/compose forms use. Block 4a's
+// copy sig used `.concrete = target` (implicit only), so these were rejected;
+// the `composite_convert` Pattern closes that gap. Width / dimension
+// mismatches stay rejected (the call-site refiner explains them in Block 4b).
+// =========================================================================
+
+const v2u = Types.Vector{ .width = 2, .element = Types.scalar_u32_ptr };
+const v2u_t: Types.Type = .{ .vector = &v2u };
+const v4i = Types.Vector{ .width = 4, .element = Types.scalar_i32_ptr };
+const v4i_t: Types.Type = .{ .vector = &v4i };
+const v4u = Types.Vector{ .width = 4, .element = Types.scalar_u32_ptr };
+const v4u_t: Types.Type = .{ .vector = &v4u };
+const m2x2h = Types.Matrix{ .cols = 2, .rows = 2, .element = Types.scalar_f16_ptr };
+const m2x2h_t: Types.Type = .{ .matrix = &m2x2h };
+const m3x3f = Types.Matrix{ .cols = 3, .rows = 3, .element = Types.scalar_f32_ptr };
+const m3x3f_t: Types.Type = .{ .matrix = &m3x3f };
+
+test "composite_convert: vec2f(vec2u) explicit element conversion is accepted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v2f_t);
+    try std.testing.expect(ok(sigs, v2f_t, &.{v2u_t})); // concrete u32 -> concrete f32
+}
+
+test "composite_convert: vec4u(vec4i) explicit element conversion is accepted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v4u_t);
+    try std.testing.expect(ok(sigs, v4u_t, &.{v4i_t}));
+}
+
+test "composite_convert: vec2f(vec2f) same-type copy is accepted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v2f_t);
+    try std.testing.expect(ok(sigs, v2f_t, &.{v2f_t}));
+}
+
+test "composite_convert: mat2x2f(mat2x2h) explicit element conversion is accepted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), m2x2f_t);
+    try std.testing.expect(ok(sigs, m2x2f_t, &.{m2x2h_t}));
+}
+
+test "composite_convert: width mismatch vec2f(vec3f) stays rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v2f_t);
+    try std.testing.expect(!ok(sigs, v2f_t, &.{v3f_t}));
+}
+
+test "composite_convert: matrix dimension mismatch mat2x2f(mat3x3f) stays rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), m2x2f_t);
+    try std.testing.expect(!ok(sigs, m2x2f_t, &.{m3x3f_t}));
+}

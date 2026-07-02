@@ -109,7 +109,7 @@ fn walkPattern(ctx: []const u8, name: []const u8, p: Overload.Pattern, kinds: *S
         // is concrete), so they contribute nothing to the slot-usage map.
         // Builtin sigs never use them; this branch only keeps the switch
         // exhaustive.
-        .variadic_components_to_width, .all_scalar_or_all_vector => {},
+        .variadic_components_to_width, .all_scalar_or_all_vector, .composite_convert => {},
     }
 }
 

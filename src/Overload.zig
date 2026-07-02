@@ -198,6 +198,18 @@ pub const Pattern = union(enum) {
     /// on a partial match instead of a generic no-match.
     all_scalar_or_all_vector: struct { cols: u8, rows: u8, elem: Types.Type },
 
+    /// Single-composite copy/convert constructor form (WGSL §16.2.2):
+    /// `vecN<T>(vecN<S>)` / `matCxR<T>(matCxR<S>)`. Unlike the splat/compose
+    /// forms (which admit only *implicit* element conversion via
+    /// `conversionRank`), this is an *explicit* conversion — any concrete S
+    /// element converts element-wise to any concrete T (`vec2f(vec2u)`,
+    /// `mat2x2f(mat2x2h)`); abstract source elements fall back to the implicit
+    /// rule. A per-slot pattern (arity 1): the arg must be a composite of the
+    /// same shape as the carried target (same vector width, or same
+    /// cols×rows). The target type is carried whole because matching by shape
+    /// needs its dimensions.
+    composite_convert: Types.Type,
+
     pub const no_tparam: u8 = std.math.maxInt(u8);
 };
 
@@ -504,6 +516,8 @@ fn unifyArg(p: *const Pattern, arg: Types.Type, bindings: *[max_tparams]Binding)
         // `bound_vector` / `bound_matrix_transposed` only appear in result rules
         // today (frexp/modf/transpose); param-position is a later-phase extension.
         .bound_vector, .bound_matrix_transposed => error.Mismatch,
+        // Per-slot copy/convert: same-shape composite, explicit element rule.
+        .composite_convert => |target| unifyCompositeConvert(target, a),
         // Cross-arg reduction patterns never reach the per-slot path — the
         // solver core folds them over the whole arg list before this runs.
         .variadic_components_to_width, .all_scalar_or_all_vector => error.Mismatch,
@@ -593,6 +607,41 @@ fn unifyMatrixDichotomy(cols: u8, rows: u8, elem: Types.Type, arg_types: []const
         return max_rank;
     }
     return error.Mismatch; // mix of scalars and vectors — refiner explains
+}
+
+/// Element rule for the single-composite copy/convert ctor form (WGSL
+/// §16.2.2): same scalar kind, OR both concrete (the *explicit* conversion,
+/// e.g. u32->f32, f16->f32), OR an implicit conversion (abstract source).
+/// Deliberately looser than `conversionRank`, which the splat/compose forms
+/// use. Mirrors the validator's old `isExplicitCompositeElemConversion`.
+fn explicitElemConvertible(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
+    if (src.kind == dst.kind) return true;
+    if (src.isConcrete() and dst.isConcrete()) return true;
+    return Types.conversionRank(.{ .scalar = src }, .{ .scalar = dst }) != null;
+}
+
+/// Unify one argument against a `composite_convert` pattern: the arg must be a
+/// composite of the same shape as `target` (vector width, or matrix cols×rows)
+/// whose element passes `explicitElemConvertible`. Explicit conversions rank 0
+/// (like a no-op) so the copy form never loses a tie to splat/compose. Shape
+/// mismatches (`vec2f(vec3f)`, `mat2x2f(mat3x3f)`) are a plain Mismatch — the
+/// call-site refiner turns those into the component/dimension message.
+fn unifyCompositeConvert(target: Types.Type, a: Types.Type) error{Mismatch}!u32 {
+    switch (target) {
+        .vector => |tv| {
+            if (a != .vector) return error.Mismatch;
+            if (a.vector.width != tv.width) return error.Mismatch;
+            if (!explicitElemConvertible(a.vector.element, tv.element)) return error.Mismatch;
+            return 0;
+        },
+        .matrix => |tm| {
+            if (a != .matrix) return error.Mismatch;
+            if (a.matrix.cols != tm.cols or a.matrix.rows != tm.rows) return error.Mismatch;
+            if (!explicitElemConvertible(a.matrix.element, tm.element)) return error.Mismatch;
+            return 0;
+        },
+        else => return error.Mismatch,
+    }
 }
 
 fn unifyTparamScalar(ts: anytype, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
@@ -878,8 +927,8 @@ pub fn buildPatternType(
             // returns a pointer, atomic, or texture.
             return null;
         },
-        .variadic_components_to_width, .all_scalar_or_all_vector => {
-            // Param-only cross-arg patterns. Constructor results are fixed to
+        .variadic_components_to_width, .all_scalar_or_all_vector, .composite_convert => {
+            // Param-only constructor patterns. Constructor results are fixed to
             // the target type (see `resolveTargeted`), never materialized here.
             return null;
         },
@@ -935,7 +984,7 @@ fn vectorCtorSigs(arena: std.mem.Allocator, target: Types.Type, ve: *const Types
     const sigs = try arena.alloc(OverloadSig, 4);
     sigs[0] = zeroValueSig(target);
     sigs[1] = try onePatternSig(arena, target, .{ .concrete = elem_t }); // splat
-    sigs[2] = try onePatternSig(arena, target, .{ .concrete = target }); // copy/convert (implicit here; 4b adds explicit)
+    sigs[2] = try onePatternSig(arena, target, .{ .composite_convert = target }); // copy/convert (explicit, §16.2.2)
     sigs[3] = try onePatternSig(arena, target, .{ .variadic_components_to_width = .{ .width = ve.width, .elem = elem_t } });
     return sigs;
 }
@@ -946,7 +995,7 @@ fn matrixCtorSigs(arena: std.mem.Allocator, target: Types.Type, mt: *const Types
     const elem_t: Types.Type = .{ .scalar = mt.element };
     const sigs = try arena.alloc(OverloadSig, 3);
     sigs[0] = zeroValueSig(target);
-    sigs[1] = try onePatternSig(arena, target, .{ .concrete = target }); // copy/convert
+    sigs[1] = try onePatternSig(arena, target, .{ .composite_convert = target }); // copy/convert (explicit, §16.2.2)
     sigs[2] = try onePatternSig(arena, target, .{ .all_scalar_or_all_vector = .{ .cols = mt.cols, .rows = mt.rows, .elem = elem_t } });
     return sigs;
 }
