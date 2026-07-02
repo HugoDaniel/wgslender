@@ -379,6 +379,49 @@ test "fp guard: vecN() zero-value ctor still rejects width/shape mismatch" {
     }
 }
 
+// --- Fix: pointer-composite-access index sugar `p[i]` == `(*p)[i]` ---
+// WGSL lets you index a pointer to a vector/matrix/array directly; wgslender
+// only handled pointer-to-array, rejecting `p[0]` on a ptr<_, vecN> / <_, matCxR>
+// as "not indexable" (E0205) with a cascading "cannot determine type" (E0200).
+// Tint accepts all of these (tint corpus
+// ptr_sugar/{vector_index,matrix,compound_assign_index}.wgsl).
+
+test "fp: pointer-composite index sugar p[i] on vector/matrix pointers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ok = [_][]const u8{
+        // read through a vector pointer, with and without explicit deref
+        "fn f() { var a : vec3<i32>; let p = &a; var b = (*p)[0]; _ = b; }",
+        "fn f() { var a : vec3<i32>; let p = &a; var b = p[0]; _ = b; }",
+        // write through the sugar (simple, compound, increment)
+        "fn f() { var a : vec3<i32>; let p = &a; p[0] = 42; }",
+        "fn f() { var a : vec3<i32>; let p = &a; p[0] += 42; }",
+        "fn f() { var a : vec3<i32>; let p = &a; p[0]++; }",
+        // matrix pointer indexes to a column vector
+        "fn f() { var a : mat2x3<f32>; let p = &a; var b = p[0]; _ = b; }",
+        "fn f() { var a : mat2x3<f32>; let p = &a; p[0] = vec3<f32>(1.0, 2.0, 3.0); }",
+        // pointer-to-array already worked — keep it green
+        "fn f() { var a : array<i32, 4>; let p = &a; var b = p[2]; _ = b; }",
+    };
+    for (ok) |src| {
+        const result = try runValidation(a, src);
+        if (!result.valid) std.debug.print("\nexpected valid: {s}\n", .{src});
+        try std.testing.expect(result.valid);
+        try std.testing.expect(!hasDiagCode(result, "E0205"));
+        try std.testing.expect(!hasDiagCode(result, "E0200"));
+    }
+}
+
+test "fp guard: indexing a scalar pointer is still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `p[0]` where p : ptr<_, f32> has no composite to index — must stay E0205.
+    const result = try runValidation(arena.allocator(), "fn f() { var a : f32; let p = &a; var b = p[0]; _ = b; }");
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0205"));
+}
+
 // --- Claim 4: never-called builtin shadow is accepted ---
 
 test "fp: never-called builtin shadow (step) is valid" {

@@ -1843,8 +1843,18 @@ pub fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!InferResult 
         }
     }
 
-    // Get element type
-    switch (base_type) {
+    // Get element type. A pointer/reference base indexes through to its
+    // pointee per WGSL pointer-composite-access sugar: `p[i]` is shorthand for
+    // `(*p)[i]` when `p` is a pointer (and a reference indexes like its
+    // referent). Previously only pointer/reference-to-array was unwrapped, so
+    // `p[0]` on a `ptr<_, vecN>` / `<_, matCxR>` was wrongly rejected as "not
+    // indexable" (with a cascading "cannot determine type" on the enclosing var).
+    const indexed: Types.Type = switch (base_type) {
+        .pointer => |p| p.element,
+        .reference => |r| r.element,
+        else => base_type,
+    };
+    switch (indexed) {
         .array => |a| return InferResult.some(a.element, stage),
         .vector => |ve| return InferResult.some(.{ .scalar = ve.element }, stage),
         .matrix => |m| {
@@ -1852,19 +1862,6 @@ pub fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!InferResult 
             const col_vec = v.arena.create(Types.Vector) catch return InferResult.fail;
             col_vec.* = .{ .width = m.rows, .element = m.element };
             return InferResult.some(.{ .vector = col_vec }, stage);
-        },
-        .pointer => |p| {
-            // Indexing through pointer to array
-            switch (p.element) {
-                .array => |a| return InferResult.some(a.element, stage),
-                else => {},
-            }
-        },
-        .reference => |r| {
-            switch (r.element) {
-                .array => |a| return InferResult.some(a.element, stage),
-                else => {},
-            }
         },
         else => {},
     }
