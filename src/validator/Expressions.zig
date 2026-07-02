@@ -1423,7 +1423,7 @@ pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []cons
 
     return switch (t) {
         .scalar => ctorViaEngine(v, range, callee_name, t, arg_types),
-        .vector => |ve| checkVectorCtor(v, range, callee_name, t, ve, arg_types, arg_count),
+        .vector => ctorViaEngine(v, range, callee_name, t, arg_types),
         .matrix => |mt| checkMatrixCtor(v, range, callee_name, t, mt, arg_types, arg_count),
         .@"struct" => |st| checkStructCtor(v, range, callee_name, t, st, arg_types, arg_count),
         .array => |arr| checkArrayCtor(v, range, callee_name, t, arr, arg_types, arg_count),
@@ -1484,6 +1484,7 @@ fn ctorRefine(ctx_ptr: *anyopaque, input: Overload.RefineInput) ?Overload.Refine
     const ctx: *CtorRefineCtx = @ptrCast(@alignCast(ctx_ptr));
     return switch (ctx.target) {
         .scalar => refineScalarCtor(ctx.v, ctx.callee_name, ctx.target, input.arg_types),
+        .vector => |ve| refineVectorCtor(ctx.v, ctx.callee_name, ctx.target, ve, input.arg_types),
         else => null,
     };
 }
@@ -1518,78 +1519,69 @@ fn warnRedundantScalarCast(v: *Validator, range: LocRange, t: Types.Type, arg_ty
     }
 }
 
-pub fn checkVectorCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
-    if (arg_count == 0) return t;
-    if (arg_count == 1) return checkVectorCtorOne(v, range, callee_name, t, ve, arg_types);
-    return checkVectorCtorMulti(v, range, callee_name, t, ve, arg_types);
+/// Vector `vecN<E>(...)` failures, dispatched on arity like the old
+/// `checkVectorCtor`. Reproduces the component-count / element-conversion
+/// messages the engine's generic no-match can't. Reached only on engine
+/// failure — a zero-arg / splat / copy / valid-compose call succeeds in the
+/// engine and never lands here.
+fn refineVectorCtor(v: *Validator, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+    if (arg_types.len == 1) return refineVectorCtorOne(v, callee_name, t, ve, arg_types);
+    return refineVectorCtorMulti(v, callee_name, t, ve, arg_types);
 }
 
-pub fn checkVectorCtorOne(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Types.Type {
-    if (arg_types.len == 0) return t;
-    const at = arg_types[0] orelse return t; // unknown arg type, skip validation
-
+fn refineVectorCtorOne(v: *Validator, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+    const at = arg_types[0] orelse return null; // null arg is engine-feasible
     if (at == .scalar) {
-        if (!canConvertScalarTo(at.scalar, ve.element)) {
-            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.string(), ve.element.string(), callee_name }));
-            return null;
-        }
-        return t; // splat
+        // Splat rejected: element not implicitly convertible to E.
+        return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.string(), ve.element.string(), callee_name }) };
     }
     if (at == .vector) {
         const src_width: u8 = at.vector.width;
         if (src_width != ve.width) {
             if (suggestVecForComponents(v, callee_name, src_width)) |suggestion| {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, ve.width, src_width, suggestion }));
-            } else {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, ve.width, src_width }));
+                return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, ve.width, src_width, suggestion }) };
             }
-            return null;
+            return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, ve.width, src_width }) };
         }
-        // Same width — the single-vector form is an explicit conversion,
-        // so any concrete element type converts to any other (unlike the
-        // splat/multi-arg overloads, which only allow implicit conversions).
-        if (!isExplicitCompositeElemConversion(at.vector.element, ve.element)) {
-            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
-            return null;
-        }
-        return t;
+        // Same width: the single-vector copy form is explicit (composite_convert),
+        // so reaching here means a genuinely non-convertible element
+        // (e.g. abstract-float -> i32).
+        return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }) };
     }
-    return t;
+    // Any other argument shape: the old switch silently accepted these (return
+    // t); the engine now rejects them. Report the closest conversion error.
+    return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }) };
 }
 
-pub fn checkVectorCtorMulti(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Types.Type {
-    // Count total components (scalars + vector widths)
+fn refineVectorCtorMulti(v: *Validator, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+    // Count total components (scalars + vector widths).
     var total: usize = 0;
     for (arg_types) |at_opt| {
-        const at = at_opt orelse return t; // unknown type, skip
+        const at = at_opt orelse return null; // null arg is engine-feasible
         if (at == .scalar) {
             total += 1;
         } else if (at == .vector) {
             total += at.vector.width;
         } else {
-            return t; // non-scalar/vector arg, skip validation
+            // Non scalar/vector arg: old switch accepted; engine now rejects.
+            return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }) };
         }
     }
-
     if (total != ve.width) {
         if (suggestVecForComponents(v, callee_name, total)) |suggestion| {
-            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, ve.width, total, suggestion }));
-        } else {
-            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, ve.width, total }));
+            return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, ve.width, total, suggestion }) };
         }
-        return null;
+        return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, ve.width, total }) };
     }
-
-    // Check element type compatibility for each argument
+    // Component count matches: some argument's element failed to convert.
     for (arg_types) |at_opt| {
         const at = at_opt orelse continue;
         const src_elem = elementTypeOf(at) orelse continue;
         if (!canConvertScalarTo(src_elem, ve.element)) {
-            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ src_elem.string(), ve.element.string(), callee_name }));
-            return null;
+            return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ src_elem.string(), ve.element.string(), callee_name }) };
         }
     }
-    return t;
+    return null;
 }
 
 pub fn checkMatrixCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
