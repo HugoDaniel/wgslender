@@ -475,7 +475,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/semantic_test.zig", target, optimize, &.{ w, sd });
     // Source map tests
     _ = addTestStep(b, test_step, "tests/sourcemap_test.zig", target, optimize, &.{w});
-    // Tint tests — bulk semantic preservation test of ~1,445 real Tint shaders.
+    // Tint tests — bulk semantic preservation test of 12,668 real Tint shaders.
     // testdata/tint/ is optional: if absent the test prints a skip message and passes.
     const run_tint_tests = addTestStep(b, test_step, "tests/tint_test.zig", target, optimize, &.{w});
     const tint_step = b.step("tint-test", "Run Tint semantic preservation tests");

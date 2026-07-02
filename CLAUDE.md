@@ -60,25 +60,50 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | Module | Purpose |
 |--------|---------|
 | `src/Lexer.zig` | Tokenizer with fast ASCII lookup tables |
-| `src/Ast.zig` | AST nodes (tagged unions), Symbol table, Scope tree |
+| `src/Cst.zig` | Concrete syntax tree (green+red) — lossless, trivia-preserving front-end |
 | `src/Parser.zig` | Two-pass parser (parse → visit/bind) |
+| `src/CstLower.zig` | Lowers a `Cst.Tree` into an `Ast.Module` |
+| `src/Ast.zig` | AST nodes (tagged unions), Symbol table, Scope tree |
+| `src/AstVisit.zig` | Pass-2 AST visitor shared by `Parser` and `CstLower` (bind refs, use counts, purity) |
 | `src/Printer.zig` | Code generator with minification + syntax optimization |
 | `src/Renamer.zig` | Frequency-based identifier renaming |
+| `src/RenamePolicy.zig` | Per-pipeline policy for which symbols may be renamed |
+| `src/UseCounts.zig` | Per-symbol use counts produced by `AstVisit` Pass 2 (gates renaming) |
 | `src/Dce.zig` | Dead code elimination via BFS from entry points |
+| `src/Liveness.zig` | Per-symbol liveness bits produced by `Dce.mark` |
 | `src/Minifier.zig` | Orchestrates the pipeline |
+| `src/MinifySettings.zig` | Minifier-mode settings shared by CLI/LSP/magic-comment scanner |
+| `src/MinifyEstimator.zig` | Fast byte-size estimator for minified output |
+| `src/MagicComment.zig` | `wgslender-minify-*` per-document magic-comment override layer |
+| `src/Pipeline.zig` | Composable processing passes (default list = the Minifier sequence) |
 | `src/Config.zig` | JSON config file support + auto-discovery |
+| `src/options.zig` | Comptime spec table for configuration options (one source of truth per option) |
 | `src/Diagnostic.zig` | Diagnostic messages with codes, locations, JSON serialization |
+| `src/Suggest.zig` | Fuzzy "did you mean?" helpers shared by Parser and Validator |
 | `src/Types.zig` | WGSL type system representation |
 | `src/Builtins.zig` | Builtin function signatures and uniformity info |
-| `src/Validator.zig` | Semantic validation (types, symbols, uniformity) |
+| `src/Overload.zig` | Declarative builtin overload signatures + unification solver |
+| `src/Validator.zig` | Semantic validation orchestrator (drives `src/validator/*`) |
+| `src/validator/Declarations.zig` | Top-level decls: directives, structs, vars, fn signatures, recursion, entry-point IO |
+| `src/validator/Expressions.zig` | Expression type-checking + inference (`checkExpr` family, type constructors) |
+| `src/validator/Statements.zig` | Statement validation + control-flow analysis |
+| `src/validator/Uniformity.zig` | Phase 5 uniformity analysis (WGSL §15; E08xx) |
+| `src/Incremental.zig` | Incremental reparse driver (LSP fast path) |
+| `src/incremental/Splice.zig` | In-place AST/CST splice paths for the incremental hot path |
+| `src/incremental/Anchor.zig` | Anchor classification + edit shape for the incremental driver |
+| `src/incremental/ScopeMap.zig` | CST↔AST scope-pairing helpers for the incremental hot path |
+| `src/incremental/Errors.zig` | Error-list plumbing across the splice boundary |
+| `src/StableId.zig` | Reparse-stable, human-readable symbol IDs (find-references / rename) |
+| `src/Edits.zig` | Source edits from an analyzed module (byte-offset, transport-independent) |
 | `src/lint/Linter.zig` | Lint orchestrator: resolves config packs + user overrides, runs enabled rules, applies disable comments |
 | `src/lint/Rule.zig` | Rule struct + Meta (id, code, category, default_severity, fixable, requires_dce) |
 | `src/lint/Context.zig` | Per-invocation state passed to each rule — `report()`, `makeRange()`, `fmt()`, config-resolved severity |
 | `src/lint/Disable.zig` | Parses `wgslender-disable[-next-line\|-line\|-file]` comments; filters diagnostics post-lint |
 | `src/lint/Fixer.zig` | Applies non-overlapping `Entry.fix` splices to source (ESLint-style) |
 | `src/lint/registry.zig` | Comptime `[_]Rule{...}` listing every built-in rule |
-| `src/lint/configs.zig` | Shareable packs: @wgslender/recommended, /style, /performance, /portability, /strict |
+| `src/lint/configs.zig` | Shareable packs: @wgslender/recommended, /style, /performance, /portability, /minify, /strict |
 | `src/lint/walk.zig` | Read-only expression/statement walker — used by rules that scan function bodies |
+| `src/lint/MultiVisitor.zig` | Multi-listener AST walker — one traversal fans out to N subscribed rules |
 | `src/lint/rules/` | Individual rule modules (one file per rule, exporting `pub const rule: Rule`) |
 | `src/SourceMap.zig` | Source map v3 generation with VLQ encoding |
 | `src/Reflect.zig` | Shader reflection and WGSL memory layout computation |
@@ -86,11 +111,16 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/WasmBinary.zig` | Low-level WASM binary format writer |
 | `src/wasm.zig` | WASM entry point (C-ABI exports for JS) |
 | `src/lib.zig` | C static library entry point (FFI) |
+| `src/ffi.zig` | Shared FFI helpers for WASM entry points (`src/wasm.zig`, `lsp/wasm.zig`) |
+| `src/api_json.zig` | Shared JSON layer between the C-ABI (`lib.zig`) and WASM (`wasm.zig`) shells |
 | `src/root.zig` | Public API |
+| `src/constants.zig` | Compile-time tunable limits shared across the pipeline |
+| `src/unicode_xid.zig` | Unicode XID_Start / XID_Continue property tables (WGSL identifiers) |
 | `cli/main.zig` | CLI |
 | `lsp/main.zig` | LSP server entry point (native, stdio transport) |
 | `lsp/wasm.zig` | LSP server WASM entry point |
-| `lsp/Handler.zig` | LSP request/notification handler |
+| `lsp/Handler.zig` | LSP request/notification handler; delegates to `lsp/handler/*` |
+| `lsp/handler/` | Per-feature LSP handlers (completion, hover, definition, code_actions, incremental_sync, semantic_tokens, … one file per feature) |
 | `npm/wgslender` | NPM package |
 
 ### Key Design Decisions
@@ -162,7 +192,9 @@ If types like `MyStruct` aren't being renamed:
 - Tests for type errors, symbol resolution, uniformity
 
 **Tint tests** (`tests/testdata/tint/`):
-- ~7,961 shaders from Google's Dawn Tint project
+- 12,668 WGSL shaders from Google's Dawn Tint project (`test/tint` sparse checkout)
+- Semantic-preservation test (`tests/tint_test.zig`) exercises all 12,668
+- Validator false-positive golden (`tests/inference/corpus_golden.txt`) covers 10,479 of them (2,189 excluded)
 - Optional — skipped if directory absent
 
 ## WGSL Specifics

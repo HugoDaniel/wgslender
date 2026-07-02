@@ -5,7 +5,7 @@
 //!   parse -> validate -> minify -> re-parse -> re-validate ->
 //!   verify entry point count and binding count match.
 //!
-//! Since tests/testdata/tint/ is 17MB+ (~1,445 files) we cannot use @embedFile.
+//! Since tests/testdata/tint/ is large (~408 MB, 25k+ files) we cannot use @embedFile.
 //! Files are read at runtime via std.Io.Dir directory walking.
 //!
 //! The tests/testdata/tint/ directory is OPTIONAL — if it does not exist the test

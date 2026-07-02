@@ -49,7 +49,7 @@ console.log(info.entryPoints); // Entry point metadata
 | **Multi-platform** | CLI, npm/WASM, Zig library, C library (FFI)                    |
 | **Editor support** | Full-featured language server — see [Language Server](#language-server-lsp) |
 | **Refactoring API** | Programmatic find-references, rename, and reparse-stable IDs from JS/C |
-| **Well tested**    | Validated against Dawn Tint test suite (7,961 shaders)         |
+| **Well tested**    | Validated against Dawn Tint test suite (12,668 shaders)         |
 
 ## Installation
 
