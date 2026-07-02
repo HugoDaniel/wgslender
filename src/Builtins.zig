@@ -63,8 +63,8 @@ pub const Builtin = struct {
     kind: Kind,
     stage: EvalStage,
     uniformity: UniformityRequirement,
-    min_args: u8, // Minimum argument count for overload resolution stub
-    max_args: u8, // Maximum argument count for overload resolution stub
+    min_args: u8, // Minimum argument count (fast arity pre-check)
+    max_args: u8, // Maximum argument count (fast arity pre-check)
     must_use: bool, // Return value must be consumed (not called as statement)
     /// Declarative overload signatures. Every callable builtin populates
     /// this table; `Validator.checkBuiltinCall` asserts non-empty and
@@ -84,7 +84,8 @@ pub const Builtin = struct {
         return self.stage == .const_eval;
     }
 
-    /// Stub overload resolution: checks argument count is in the valid range.
+    /// Fast arity pre-check: is `arg_count` within `[min_args, max_args]`?
+    /// Full overload resolution routes through `Overload.resolve` (see `overloads`).
     pub fn checkArgCount(self: *const Builtin, arg_count: u32) bool {
         assert(self.min_args <= self.max_args);
         const ok = arg_count >= self.min_args and arg_count <= self.max_args;

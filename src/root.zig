@@ -55,9 +55,10 @@ pub const ffi = @import("ffi.zig");
 pub const OptionsSpec = @import("options.zig");
 
 test {
-    // Force test discovery for modules that have no call-site references
-    // inside the library surface yet. Once stage 7 wires `Incremental` into
-    // the LSP handler, this hook stays correct but becomes redundant.
+    // Belt-and-suspenders: these modules are re-exported above but not called
+    // by this library's own functions, so reference them here to keep their
+    // `test {}` blocks in the `zig build test` build. (`Incremental`'s real
+    // callers live in the LSP layer under `lsp/`, a separate compilation unit.)
     _ = Incremental;
     _ = OptionsSpec;
 }
