@@ -737,6 +737,9 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/inference/builtin_rejection_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/named_edge_cases_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference_corpus_pinning_test.zig", target, optimize, &.{w});
+    // Tint expected-file verdict oracle — pure classifier with corpus-free
+    // fixture tests (feeds the Block-2 triage golden; runs in default CI).
+    _ = addTestStep(b, test_step, "tests/tint_oracle.zig", target, optimize, &.{});
 }
 
 fn addTestStep(
