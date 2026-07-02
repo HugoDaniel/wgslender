@@ -92,6 +92,18 @@ pub const unsupported_features = [_][]const u8{
     "diagnostic(warning",
     "diagnostic(error",
     "@diagnostic",
+    // Tint's pointer-to-buffer proposal — the `buffer<N>` type and the
+    // `bufferView<T>` / `bufferArrayView<T>` / `bufferLength` builtins. Not core
+    // WGSL and gated by NO directive, so unlike the entries above it is matched
+    // by content: the generic-call `<` (bufferView/bufferArrayView always carry
+    // a type arg) and the call `(` for the non-generic bufferLength. WGSL has no
+    // user-defined generics, so `bufferView<`/`bufferArrayView<` cannot appear in
+    // a shipping shader; `bufferLength(` is distinct from the shipping
+    // `arrayLength(`. Verified collision-free: these identifiers occur only under
+    // their own `builtins/buffer*/` dirs across the whole tint corpus.
+    "bufferView<",
+    "bufferArrayView<",
+    "bufferLength(",
 };
 
 pub fn containsUnsupported(source: []const u8) bool {
@@ -201,6 +213,22 @@ test "containsUnsupported flags experimental texel_buffers/atomic_vec2u_min_max"
     try testing.expect(!containsUnsupported("enable clip_distances;\nfn f(){}"));
     try testing.expect(!containsUnsupported("enable dual_source_blending;\nfn f(){}"));
     try testing.expect(!containsUnsupported("enable primitive_index;\nfn f(){}"));
+}
+
+test "containsUnsupported flags experimental buffer<N> builtins (no directive to match)" {
+    // Tint's pointer-to-buffer proposal: the `buffer<N>` type plus the
+    // `bufferView<T>` / `bufferArrayView<T>` / `bufferLength` builtins. Not core
+    // WGSL (no directive gates it), so wgslender correctly rejects it and these
+    // shaders must leave the false-positive triage. Matched by the generic-call
+    // `<` (bufferView/bufferArrayView are always instantiated) and the call `(`
+    // (bufferLength is non-generic) — spellings a shipping shader cannot produce.
+    try testing.expect(containsUnsupported("@group(0) @binding(0) var<uniform> v : buffer<128>;\nfn f() { let p = bufferView<S>(&v, 0); }"));
+    try testing.expect(containsUnsupported("let p = bufferArrayView<array<vec4u>>(&v, 0u, 16);"));
+    try testing.expect(containsUnsupported("out = bufferLength(&v);"));
+    // The shipping `arrayLength` builtin must NOT be swept up by `bufferLength(`.
+    try testing.expect(!containsUnsupported("out = arrayLength(&v.arr);"));
+    // The bare word "buffer" in comments / prose is not a marker.
+    try testing.expect(!containsUnsupported("// storage buffer input\n@group(0) @binding(0) var<storage> s : array<f32>;"));
 }
 
 test "bucketOf maps verdict to triage bucket" {
