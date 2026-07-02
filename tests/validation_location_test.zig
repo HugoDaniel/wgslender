@@ -1344,6 +1344,19 @@ test "validation location: mat2x2f rejects a scalar/vector mix" {
     try expectErrorAtWithMessage(result, 4, 13, "requires all scalar values or all column vectors, not a mix");
 }
 
+test "validation location: struct ctor rejects a bad field type" {
+    const source =
+        \\struct S { a: i32, b: f32 }
+        \\@fragment
+        \\fn main() {
+        \\    let s = S(vec2f(1.0, 2.0), 1.0);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'vec2<f32>' to 'i32' for field 'a'");
+}
+
 test "validation location: f32 rejects 2 arguments" {
     const source =
         \\@fragment

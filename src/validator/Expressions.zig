@@ -1402,7 +1402,6 @@ pub fn synthesizeModfResult(v: *Validator, operand: Types.Type) Allocator.Error!
 }
 
 pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
-    const arg_count = e.args.items.len;
     const range = exprRange(.{ .call = e });
 
     // Spec: only constructible types can be used as value constructors.
@@ -1425,8 +1424,8 @@ pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []cons
         .scalar => ctorViaEngine(v, range, callee_name, t, arg_types),
         .vector => ctorViaEngine(v, range, callee_name, t, arg_types),
         .matrix => ctorViaEngine(v, range, callee_name, t, arg_types),
-        .@"struct" => |st| checkStructCtor(v, range, callee_name, t, st, arg_types, arg_count),
-        .array => |arr| checkArrayCtor(v, range, callee_name, t, arr, arg_types, arg_count),
+        .@"struct" => ctorViaEngine(v, range, callee_name, t, arg_types),
+        .array => ctorViaEngine(v, range, callee_name, t, arg_types),
         else => t,
     };
 }
@@ -1486,6 +1485,8 @@ fn ctorRefine(ctx_ptr: *anyopaque, input: Overload.RefineInput) ?Overload.Refine
         .scalar => refineScalarCtor(ctx.v, ctx.callee_name, ctx.target, input.arg_types),
         .vector => |ve| refineVectorCtor(ctx.v, ctx.callee_name, ctx.target, ve, input.arg_types),
         .matrix => |mt| refineMatrixCtor(ctx.v, ctx.callee_name, ctx.target, mt, input.arg_types),
+        .@"struct" => |st| refineStructCtor(ctx.v, ctx.callee_name, st, input.arg_types),
+        .array => |arr| refineArrayCtor(ctx.v, ctx.callee_name, arr, input.arg_types),
         else => null,
     };
 }
@@ -1648,45 +1649,41 @@ fn refineMatrixCtorMulti(v: *Validator, callee_name: []const u8, mt: *const Type
     return .{ .code = Diagnostic.Code.invalid_arg_type, .message = v.fmtError("'{s}' constructor requires all scalar values or all column vectors, not a mix", .{callee_name}) };
 }
 
-pub fn checkStructCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, st: *const Types.Struct, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
-    if (arg_count != 0 and arg_count != st.fields.len) {
-        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor expects {d} arguments, got {d}", .{ callee_name, st.fields.len, arg_count }));
-        return null;
+/// Struct `S(...)` failures: arity mismatch, or a field whose argument does not
+/// convert. Mirrors the old `checkStructCtor` error branches verbatim. Reached
+/// only on engine failure (arg_count 0 and arg_count == fields.len both succeed
+/// in the engine, so a reached failure is a genuine count or field mismatch).
+fn refineStructCtor(v: *Validator, callee_name: []const u8, st: *const Types.Struct, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+    if (arg_types.len != st.fields.len) {
+        return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' constructor expects {d} arguments, got {d}", .{ callee_name, st.fields.len, arg_types.len }) };
     }
-    if (arg_count == st.fields.len) {
-        for (st.fields, 0..) |field, i| {
-            if (i < arg_types.len) {
-                if (arg_types[i]) |at| {
-                    if (!at.eql(field.typ) and !Types.canConvertTo(at, field.typ)) {
-                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' for field '{s}'", .{ at.string(), field.typ.string(), field.name }));
-                        return null;
-                    }
+    for (st.fields, 0..) |field, i| {
+        if (i < arg_types.len) {
+            if (arg_types[i]) |at| {
+                if (!at.eql(field.typ) and !Types.canConvertTo(at, field.typ)) {
+                    return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' for field '{s}'", .{ at.string(), field.typ.string(), field.name }) };
                 }
             }
         }
     }
-    return t;
+    return null;
 }
 
-pub fn checkArrayCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, arr: *const Types.Array, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
-    if (arg_count == 0) return t;
-
-    // Check element count if the array has a fixed size
-    if (arr.count > 0 and arg_count != arr.count) {
-        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor expects {d} elements, got {d}", .{ callee_name, arr.count, arg_count }));
-        return null;
+/// Array `array<E, N>(...)` failures: wrong element count, or an element that
+/// does not convert to E. Mirrors the old `checkArrayCtor` error branches
+/// verbatim. Reached only on engine failure.
+fn refineArrayCtor(v: *Validator, callee_name: []const u8, arr: *const Types.Array, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+    if (arr.count > 0 and arg_types.len != arr.count) {
+        return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' constructor expects {d} elements, got {d}", .{ callee_name, arr.count, arg_types.len }) };
     }
-
-    // Check each element type
     for (arg_types, 0..) |at_opt, i| {
         if (at_opt) |at| {
             if (!at.eql(arr.element) and !Types.canConvertTo(at, arr.element)) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' for element {d}", .{ at.string(), arr.element.string(), i }));
-                return null;
+                return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' for element {d}", .{ at.string(), arr.element.string(), i }) };
             }
         }
     }
-    return t;
+    return null;
 }
 
 pub fn canConvertScalarTo(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
