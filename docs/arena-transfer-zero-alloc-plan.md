@@ -1,5 +1,11 @@
 # Arena transfer for zero-alloc hot path
 
+> **Status: DONE.** The symbol-free hot path extends `prev.arena` in place
+> instead of allocating per edit; `ReparseResult.retained_arenas` is enforced
+> empty after every `reparse` / `parseFull` (assert in `Incremental.reparse`),
+> and the M9/M13 tests lock the arena-growth envelope. See BENCHMARK.md
+> "Arena growth under sustained edits".
+
 Follow-on to the incremental-reparse roadmap
 (`~/.claude/plans/consider-the-plan-wgsl-bidirectional-too-flickering-cat.md`).
 Stages 1–6 of that plan are landed; add/sub splice lives in

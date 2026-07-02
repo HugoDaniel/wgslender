@@ -2,6 +2,25 @@
 
 Ideas and suggestions for improving wgslender's error reporting, LSP experience, and developer UX — ordered from low-hanging fruit to bigger architectural changes.
 
+> **Status (verified 2026-07):** Everything below has shipped. This file is kept
+> as a historical record of the design direction, not a to-do list.
+>
+> 1. **Related diagnostics** — `Diagnostic.Entry.related` is populated across the
+>    validator (`makeRelatedR`) and passed to the LSP as `relatedInformation`.
+> 2. **"Did you mean?" everywhere** — `src/Suggest.zig` is shared by Parser and
+>    Validator (identifiers, members, builtins), no longer types-only.
+> 3. **Serialized diagnostic fields** — `lsp/handler/diagnostics.zig` passes
+>    `code`, `related`, and a WGSL-spec URL through.
+> 4. **Smarter ranges** — diagnostics carry a full `range` (start+end), not a point.
+> 5. **Phase dedup** — `Diagnostic.deduplicate()` (stable, idempotent).
+> 6. **Contextual parser errors** — e.g. "expected expression after '=' in let declaration".
+> 7. **Code actions** — `lsp/handler/code_actions.zig`.
+> 8. **Hover / go-to-def / find-refs** — `lsp/handler/{hover,definition,references_rename}.zig`.
+> 9. **Spec references on every code** — `Diagnostic.specRefFor` (E00–E09, W00–W02, M).
+> 10. **"Smells bad" warnings** — unused vars/bindings (W0001/W0003), unreachable
+>     code, shadowing, redundant casts (W0101), and const-expr integer overflow
+>     (E0317) / division-by-zero (E0316).
+
 ## 1. Related diagnostics — point to "the other place"
 
 `Diagnostic.Entry` already has a `related: []const RelatedInfo` field and the formatter supports it, but it's never populated anywhere. This is the single highest-impact improvement because so many errors reference two locations.

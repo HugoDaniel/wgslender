@@ -1,5 +1,9 @@
 # npm wrapper factory refactor
 
+> **Status: DONE.** The shared factory shipped as `npm/wgslender/lib/_core.cjs`
+> (see CHANGELOG); the four wrappers now delegate to it instead of duplicating
+> WASM-glue. Kept as historical design context.
+
 ## Context
 
 The npm package at `npm/wgslender/` ships four wrapper files (Node CJS, Node ESM, Browser ESM, Browser UMD) that duplicate ~2,000 lines of WASM-glue logic. Recent commit `24d21f1` had to patch the same `validate()` decoder offsets in three of them — the kind of drift that re-emerges every time the WASM ABI changes.

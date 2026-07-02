@@ -220,13 +220,15 @@ nevertheless gated by the test suite:
   deterministic seeds plus a Smith-driven continuous fuzz under
   `--fuzz`.
 
-The anchor-based hot path itself isn't flipped on yet — the
-`Incremental.findAnchor` + `isReparseAnchor` scaffolding + the
-`ReparseResult.reused` flag are in place, but `reparse` still calls
-`parseFull` internally. When the subtree-splice / symbol-patch
-machinery lands, the existing correctness suite above covers it
-without any test changes (the invariant is stated over the output, not
-the code path).
+The anchor-based hot path is now live: `reparse` builds the new source
+buffer, then attempts an in-place subtree splice — `findAnchor` locates
+the smallest reparse-able CST subtree and the driver dispatches to the
+matching routine in `incremental/Splice.zig` (add/sub, compound, and
+decl-stmt splices), setting `ReparseResult.reused = true` on success.
+`parseFull` remains the graceful fallback on any hot-path failure (OOM,
+no anchor, kind mismatch, error subtree) and doubles as the correctness
+oracle — so the existing suite above covers the splice paths without any
+test changes (the invariant is stated over the output, not the code path).
 
 Future work: once a portable wall-clock primitive lands in Zig 0.16 (or
 we vendor one), add `tests/incremental_bench_test.zig` measuring:

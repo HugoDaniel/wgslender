@@ -1,5 +1,10 @@
 # Fix plan: postfix expressions inside `array<T, …>` template args
 
+> **Status: DONE (76ce2f7, db1e1d8; tests 8ef3e8b, 1d2e07b).** Template-arg
+> expressions now run through a full precedence chain ending in
+> `parseTemplatePostfixExpr` (`src/Parser.zig`), so `.member` / `[idx]` / `(args)`
+> suffixes are preserved. Repro below resolves `array<f32, P.x>` → `array<f32, 4>`.
+
 ## Bug
 
 `parseTemplatePrimaryExprInner` (`src/Parser.zig:1939`) returns immediately
