@@ -2275,3 +2275,59 @@ test "validate: uniform array<mat3x2<f32>> stays rejected (stride 24, not a mult
         "@compute @workgroup_size(1) fn main() { _ = u[0][0].x; }");
     try std.testing.expect(hasDiagCode(result, "E0802"));
 }
+
+// --- Fix: `discard` is not a control-flow terminator ---
+// Per WGSL, executing `discard` demotes the invocation to a helper but control
+// flow *continues* to the next statement (unlike return/break/continue). Tint
+// accepts `discard;` followed by more code (tests/testdata/tint/statements/
+// discard/*). The reachability check (stmtTerminates) previously listed
+// `.discard` as a terminator, so any statement after a `discard` was wrongly
+// reported as E0503 "code is unreachable". The advisory lint W0210
+// (no-unreachable) still flags post-discard orphans; only the hard error is
+// removed here. `discard` still satisfies the return requirement (has_return).
+
+test "fp: statement after discard is reachable (discard is not a terminator)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@fragment fn fs() -> @location(0) vec4f {
+        \\  discard;
+        \\  return vec4f(0.0);
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0503"));
+}
+
+test "fp: statement after discard inside a loop is reachable" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@fragment fn fs() -> @location(0) vec4f {
+        \\  loop {
+        \\    discard;
+        \\    break;
+        \\  }
+        \\  return vec4f(0.0);
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0503"));
+}
+
+test "fp guard: statement after return still flags E0503 (fix is discard-specific)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Dead code after a genuine terminator (return) is a *separate* deferred
+    // sub-bug (Tint permits it; see bug/tint/1474-b). This batch only fixes
+    // discard, so `return; <stmt>` must still emit E0503 — proving the change
+    // did not blanket-remove the reachability check.
+    const result = try runValidation(arena.allocator(),
+        \\fn f() -> i32 {
+        \\  return 1;
+        \\  let dead = 2;
+        \\  return dead;
+        \\}
+    );
+    try std.testing.expect(hasDiagCode(result, "E0503"));
+}

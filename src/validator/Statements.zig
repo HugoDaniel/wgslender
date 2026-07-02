@@ -164,7 +164,12 @@ pub fn stmtTerminates(root: Ast.Stmt) bool {
         // Follow compound→last and if→body+else chains
         for (0..65536) |_| {
             switch (current) {
-                .@"return", .@"break", .@"continue", .discard => break,
+                // `discard` is intentionally NOT a terminator: WGSL control flow
+                // continues past it, so statements after a `discard` are reachable
+                // (Tint accepts `discard; <stmt>`). The return requirement is
+                // satisfied separately via `has_return` in validateDiscardStmt;
+                // the advisory lint W0210 still flags post-discard orphans.
+                .@"return", .@"break", .@"continue" => break,
                 .compound => |s| {
                     if (s.stmts.items.len == 0) return false;
                     current = s.stmts.items[s.stmts.items.len - 1];
