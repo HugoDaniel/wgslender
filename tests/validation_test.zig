@@ -326,6 +326,59 @@ test "fp: array(1.0, 2.0) inferred float constructor is valid" {
     try std.testing.expect(!hasDiagCode(result, "E0200"));
 }
 
+// --- Fix: vecN() zero-value constructor infers element from context ---
+// The WGSL zero-value vector constructor `vecN()` (no template, no args) yields
+// an abstract-int vector that materializes to the annotated concrete element —
+// Tint accepts all of these (tint corpus
+// expressions/type_ctor/vec{2,3,4}/inferred/zero.wgsl). wgslender previously
+// pinned `vec3()` to vec3<f32> and rejected the i32/u32 slots with E0200.
+
+test "fp: vecN() zero-value constructor infers element from annotation" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ok = [_][]const u8{
+        "var<private> f : vec2f = vec2();",
+        "var<private> i : vec2i = vec2();",
+        "var<private> u : vec2u = vec2();",
+        "var<private> f : vec3f = vec3();",
+        "var<private> i : vec3i = vec3();",
+        "var<private> u : vec3u = vec3();",
+        "var<private> f : vec4f = vec4();",
+        "var<private> i : vec4i = vec4();",
+        "var<private> u : vec4u = vec4();",
+        "fn f() { var v : vec3i = vec3(); _ = v; }",
+        "fn g() { let v : vec4u = vec4(); _ = v; }",
+        // Second manifestation: `vec2()` as an integer-coordinate builtin
+        // argument must materialize to the coord type so overload resolution
+        // succeeds (tint corpus bug/tint/349310442.wgsl).
+        "@group(0) @binding(0) var t : texture_external; @compute @workgroup_size(1) fn i() { var r = textureLoad(t, vec2()); _ = r; }",
+    };
+    for (ok) |src| {
+        const result = try runValidation(a, src);
+        if (hasDiagCode(result, "E0200")) std.debug.print("\nunexpected E0200 for: {s}\n", .{src});
+        try std.testing.expect(result.valid);
+        try std.testing.expect(!hasDiagCode(result, "E0200"));
+    }
+}
+
+test "fp guard: vecN() zero-value ctor still rejects width/shape mismatch" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // The abstract-int inference must NOT blanket-accept: a vec2 zero-value can't
+    // fill a vec3 slot, and a vector can't initialize a scalar.
+    const bad = [_][]const u8{
+        "var<private> i : vec3i = vec2();",
+        "var<private> s : i32 = vec3();",
+    };
+    for (bad) |src| {
+        const result = try runValidation(a, src);
+        if (result.valid) std.debug.print("\nexpected invalid: {s}\n", .{src});
+        try std.testing.expect(!result.valid);
+    }
+}
+
 // --- Claim 4: never-called builtin shadow is accepted ---
 
 test "fp: never-called builtin shadow (step) is valid" {

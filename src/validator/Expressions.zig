@@ -1236,6 +1236,18 @@ pub fn inferGenericCtorElement(v: *Validator, name: []const u8, default: Types.T
         elem = unifyScalarKinds(elem, scalar_ptr);
     }
 
+    // WGSL zero-value vector constructor `vecN()` (no template, no args) is an
+    // abstract-int vector, so it materializes to whatever concrete element the
+    // context demands: `var i : vec3i = vec3();` → vec3<i32>, and the f32/u32
+    // slots likewise. This mirrors the argument-typed path below — `vec3(1,2,3)`
+    // already unifies to vec3<abstract-int>. Matrices keep the f32 default here
+    // (their element must be floating-point) and are handled by checkMatrixCtor.
+    if (is_bare_vec and arg_types.len == 0) {
+        const result = v.arena.create(Types.Vector) catch return null;
+        result.* = .{ .width = default.vector.width, .element = Types.scalar_abstract_int_ptr };
+        return .{ .vector = result };
+    }
+
     const chosen = elem orelse return null;
     if (is_bare_vec) {
         const result = v.arena.create(Types.Vector) catch return null;
