@@ -432,6 +432,49 @@ test "fp: never-called builtin shadow (step) is valid" {
     try std.testing.expect(!hasDiagCode(result, "E0106"));
 }
 
+// --- Fix: unrestricted_pointer_parameters is a baseline language feature ---
+// A pointer parameter may live in ANY address space (storage/uniform/workgroup,
+// not just function/private). `unrestricted_pointer_parameters` is a WGSL
+// *language feature* — always available, never spelled via `enable` (that
+// syntax is for extensions) — so Tint accepts all of these with no directive
+// (tint corpus ptr_ref/{load,store}/param/{storage,uniform,workgroup}/**,
+// bug/tint/2177.wgsl). wgslender mis-modeled it as an enable-extension and
+// raised E0304 "must use 'function' or 'private' address space".
+
+test "fp: pointer parameters accept any address space (unrestricted_pointer_parameters)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ok = [_][]const u8{
+        // storage (read) pointer param — tint ptr_ref/load/param/storage/i32.wgsl
+        "@group(0) @binding(0) var<storage> S : i32; fn f(p : ptr<storage, i32>) -> i32 { return *p; } @compute @workgroup_size(1) fn main() { let r = f(&S); _ = r; }",
+        // uniform pointer param
+        "@group(0) @binding(0) var<uniform> U : vec4f; fn f(p : ptr<uniform, vec4f>) -> vec4f { return *p; } @compute @workgroup_size(1) fn main() { let r = f(&U); _ = r; }",
+        // workgroup pointer param
+        "var<workgroup> W : i32; fn f(p : ptr<workgroup, i32>) -> i32 { return *p; } @compute @workgroup_size(1) fn main() { let r = f(&W); _ = r; }",
+        // storage read_write, chained through functions — tint bug/tint/2177.wgsl
+        "@binding(0) @group(0) var<storage, read_write> arr : array<u32>; fn f2(p : ptr<storage, array<u32>, read_write>) -> u32 { return arrayLength(p); } @compute @workgroup_size(1) fn main() { arr[0] = f2(&arr); }",
+        // function still fine (the always-allowed base case)
+        "fn f(p : ptr<function, i32>) -> i32 { return *p; } @compute @workgroup_size(1) fn main() { var x : i32 = 1; let r = f(&x); _ = r; }",
+    };
+    for (ok) |src| {
+        const result = try runValidation(a, src);
+        if (hasDiagCode(result, "E0304")) std.debug.print("\nunexpected E0304 for: {s}\n", .{src});
+        try std.testing.expect(result.valid);
+        try std.testing.expect(!hasDiagCode(result, "E0304"));
+    }
+}
+
+test "fp guard: pointer argument with wrong pointee type still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Relaxing the address-space restriction must not weaken pointer type
+    // checking: a ptr<storage, i32> argument for a ptr<storage, f32> parameter
+    // is still a type mismatch.
+    const result = try runValidation(arena.allocator(), "@group(0) @binding(0) var<storage> S : i32; fn f(p : ptr<storage, f32>) -> f32 { return *p; } @compute @workgroup_size(1) fn main() { let r = f(&S); _ = r; }");
+    try std.testing.expect(!result.valid);
+}
+
 // =========================================================================
 // Annotation-driven tests from testdata/validation/
 // =========================================================================

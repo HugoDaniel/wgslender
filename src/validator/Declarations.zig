@@ -1138,14 +1138,12 @@ pub fn resolveFunctionParameters(v: *Validator, fn_decl: *Ast.FunctionDecl) Allo
             if (!pt.isConstructible() and pt != .pointer and pt != .texture and pt != .sampler) {
                 v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_arg_type, v.fmtError("parameter '{s}' has non-constructible type '{s}'; must be constructible, pointer, texture, or sampler", .{ v.symbolName(param.name), pt.string() }));
             }
-            // Pointer parameters: address space must be function or private by default.
-            // With 'enable unrestricted_pointer_parameters', all address spaces are allowed.
-            if (pt == .pointer and !v.enabled_features.contains("unrestricted_pointer_parameters")) {
-                const space = pt.pointer.address_space;
-                if (space != .function and space != .private and space != .none) {
-                    v.addErrorWithCodeR(v.symbolRange(param.name), Diagnostic.Code.invalid_address_space, v.fmtError("pointer parameter '{s}' must use 'function' or 'private' address space, got '{s}' (enable 'unrestricted_pointer_parameters' to allow this)", .{ v.symbolName(param.name), space.string() }));
-                }
-            }
+            // No pointer-parameter address-space restriction. `unrestricted_pointer_parameters`
+            // is a baseline WGSL *language feature* — always available, never spelled via an
+            // `enable` directive (that syntax is for extensions) — so a pointer parameter may
+            // use any address space its pointee can live in (function/private/workgroup/uniform/
+            // storage). Tint accepts these with no directive; gating on an `enable` produced a
+            // false positive for every storage/uniform/workgroup pointer parameter.
         }
         try validateParameterAttributes(v, param);
     }
