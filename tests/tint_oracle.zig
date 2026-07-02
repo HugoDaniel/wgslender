@@ -93,6 +93,35 @@ pub fn containsUnsupported(source: []const u8) bool {
     return false;
 }
 
+/// Triage bucket for a diagnostic we emit, relative to Tint's verdict on the
+/// shader: fp = we flag a shader Tint *accepts* (false-positive candidate for
+/// E-codes), tp = we flag one Tint *rejects*, unk = Tint's verdict unknown.
+/// Shared by the triage golden and the `tint-triage` tool.
+pub const Bucket = enum { fp, tp, unk };
+
+pub fn bucketOf(v: Verdict) Bucket {
+    return switch (v) {
+        .accepts => .fp,
+        .rejects => .tp,
+        .unknown => .unk,
+    };
+}
+
+pub fn bucketName(b: Bucket) []const u8 {
+    return switch (b) {
+        .fp => "fp",
+        .tp => "tp",
+        .unk => "unk",
+    };
+}
+
+pub fn bucketFromStr(s: []const u8) ?Bucket {
+    if (std.mem.eql(u8, s, "fp")) return .fp;
+    if (std.mem.eql(u8, s, "tp")) return .tp;
+    if (std.mem.eql(u8, s, "unk")) return .unk;
+    return null;
+}
+
 // ---------------------------------------------------------------------------
 // Tests (corpus-free; table-driven so new cases are one-line additions).
 // ---------------------------------------------------------------------------
@@ -155,4 +184,20 @@ test "containsUnsupported flags enable/diagnostic features" {
     try testing.expect(containsUnsupported("@diagnostic(off, derivative_uniformity) fn f(){}"));
     try testing.expect(!containsUnsupported("@group(0) @binding(0) var<uniform> u : f32;"));
     try testing.expect(!containsUnsupported(""));
+}
+
+test "bucketOf maps verdict to triage bucket" {
+    try testing.expectEqual(Bucket.fp, bucketOf(.accepts));
+    try testing.expectEqual(Bucket.tp, bucketOf(.rejects));
+    try testing.expectEqual(Bucket.unk, bucketOf(.unknown));
+}
+
+test "bucketName / bucketFromStr round-trip + rejects unknown strings" {
+    const all = [_]Bucket{ .fp, .tp, .unk };
+    for (all) |b| try testing.expectEqual(b, bucketFromStr(bucketName(b)).?);
+    try testing.expectEqualStrings("fp", bucketName(.fp));
+    try testing.expectEqualStrings("tp", bucketName(.tp));
+    try testing.expectEqualStrings("unk", bucketName(.unk));
+    try testing.expect(bucketFromStr("nope") == null);
+    try testing.expect(bucketFromStr("") == null);
 }

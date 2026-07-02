@@ -489,6 +489,27 @@ pub fn build(b: *std.Build) void {
     const run_tint_tests = addTestStep(b, test_step, "tests/tint_test.zig", target, optimize, &.{w});
     const tint_step = b.step("tint-test", "Run Tint semantic preservation tests");
     tint_step.dependOn(run_tint_tests);
+
+    // tint-triage: Tint-oracle conformance worklist/report tool (reports only).
+    // setCwd(.) so it resolves `tests/testdata/tint` relative to the repo root
+    // regardless of the build's cwd; `--` args pass straight through.
+    const tint_triage_exe = b.addExecutable(.{
+        .name = "tint-triage",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/tint_triage.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{ w, tint_oracle_import },
+        }),
+    });
+    const run_tint_triage = b.addRunArtifact(tint_triage_exe);
+    run_tint_triage.setCwd(b.path("."));
+    if (b.args) |triage_args| run_tint_triage.addArgs(triage_args);
+    const tint_triage_step = b.step("tint-triage", "Tint-oracle triage worklist/report tool");
+    tint_triage_step.dependOn(&run_tint_triage.step);
+    // The tool's pure-fn tests (arg parsing, TSV escaping) run corpus-free in CI.
+    _ = addTestStep(b, test_step, "tools/tint_triage.zig", target, optimize, &.{ w, tint_oracle_import });
+
     // LSP Handler tests
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
     // LSP URI helper tests (no imports needed beyond stdlib)
