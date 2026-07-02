@@ -358,6 +358,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // Tint expected-file verdict classifier (Block 1). Registered here as an
+    // importable module for its first consumers: the corpus pinning/triage
+    // test and the `tint-triage` tool.
+    const tint_oracle_mod = b.addModule("tint_oracle", .{
+        .root_source_file = b.path("tests/tint_oracle.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const tint_oracle_import: std.Build.Module.Import = .{ .name = "tint_oracle", .module = tint_oracle_mod };
     // `handler_mod` and `bridge_mod` are defined above, adjacent to the
     // LSP executable so both binary and tests share the same module graph.
 
@@ -736,7 +745,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/inference/sig_shape_invariant_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/builtin_rejection_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/named_edge_cases_test.zig", target, optimize, &.{w});
-    _ = addTestStep(b, test_step, "tests/inference_corpus_pinning_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/inference_corpus_pinning_test.zig", target, optimize, &.{ w, tint_oracle_import });
     // Tint expected-file verdict oracle — pure classifier with corpus-free
     // fixture tests (feeds the Block-2 triage golden; runs in default CI).
     _ = addTestStep(b, test_step, "tests/tint_oracle.zig", target, optimize, &.{});

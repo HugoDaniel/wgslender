@@ -1,0 +1,37 @@
+# tint-oracle triage. accepts = expected file, no SKIP; rejects = "SKIP: FAILED"; unknown = absent or other SKIP.
+# fp/tp/unk = shaders emitting the code whose verdict is accepts/rejects/unknown.
+# fp is a false-positive *candidate* for E-codes; W/I rows are mechanical.
+# shaders=9399 accepts=8908 rejects=1 unknown=490 excluded=2553 validate_errors=0
+E0100 14 fp=14 tp=0 unk=0
+E0200 691 fp=690 tp=1 unk=0
+E0201 13 fp=12 tp=0 unk=1
+E0202 10 fp=10 tp=0 unk=0
+E0203 9 fp=9 tp=0 unk=0
+E0204 51 fp=51 tp=0 unk=0
+E0205 3 fp=3 tp=0 unk=0
+E0206 5 fp=5 tp=0 unk=0
+E0209 1 fp=1 tp=0 unk=0
+E0210 3 fp=3 tp=0 unk=0
+E0212 4 fp=4 tp=0 unk=0
+E0215 2 fp=2 tp=0 unk=0
+E0300 1 fp=1 tp=0 unk=0
+E0302 4 fp=4 tp=0 unk=0
+E0303 4 fp=4 tp=0 unk=0
+E0304 43 fp=43 tp=0 unk=0
+E0307 3 fp=3 tp=0 unk=0
+E0308 14 fp=14 tp=0 unk=0
+E0500 1 fp=1 tp=0 unk=0
+E0502 49 fp=5 tp=0 unk=44
+E0503 8 fp=8 tp=0 unk=0
+E0802 209 fp=36 tp=0 unk=173
+E0804 1 fp=1 tp=0 unk=0
+E0807 1 fp=1 tp=0 unk=0
+E0901 14 fp=14 tp=0 unk=0
+W0100 56 fp=56 tp=0 unk=0
+W0101 70 fp=69 tp=0 unk=1
+W0102 2 fp=2 tp=0 unk=0
+# tint-rejects: WGSL shaders Tint rejected (expected file = "SKIP: FAILED"), with our outcome.
+#   A rejects-bucket 'accept' is a false negative. The corpus also has 24 non-WGSL
+#   SKIP:FAILED cases (.spvasm reader tests) outside this .wgsl walk; not listed.
+# tint-rejects <path> <our-outcome: accept|reject:<code>|skip|error>
+tint-rejects bug/chromium/1395241.wgsl reject:E0200
