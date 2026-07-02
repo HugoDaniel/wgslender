@@ -192,10 +192,15 @@ If types like `MyStruct` aren't being renamed:
 - Tests for type errors, symbol resolution, uniformity
 
 **Tint tests** (`tests/testdata/tint/`):
-- 12,668 WGSL shaders from Google's Dawn Tint project (`test/tint` sparse checkout)
-- Semantic-preservation test (`tests/tint_test.zig`) exercises all 12,668
-- Validator false-positive golden (`tests/inference/corpus_golden.txt`) covers 10,479 of them (2,189 excluded)
-- Optional — skipped if directory absent
+- 11,952 WGSL shaders from Google's Dawn Tint project (`test/tint` sparse checkout), pinned to the dawn revision in `scripts/tint-testdata.rev`
+- Semantic-preservation test (`tests/tint_test.zig`, `zig build tint-test`) exercises all 11,952 (8,114 run; f16/subgroups/`diagnostic(...)` shaders skipped)
+- Two validator goldens produced by one walk (`tests/inference_corpus_pinning_test.zig`) over 9,399 processed shaders (2,553 excluded):
+  - `tests/inference/corpus_golden.txt` — per-code diagnostic histogram
+  - `tests/inference/triage_golden.txt` — that histogram split by Tint's own verdict into fp/tp/unk (`tests/tint_oracle.zig` classifies each shader's sibling `.expected.wgsl`; fp = a code we emit on a shader Tint accepts = false-positive candidate)
+- Triage tool (`tools/tint_triage.zig`): `zig build tint-triage -- --code E0200 --bucket fp [--max-per-code N]` prints a `path<TAB>line:col<TAB>message` false-positive worklist; `-- --tsv report.tsv` writes a per-shader report; no args prints the summary table. Reports only; the golden test is the gate.
+- Regenerate both goldens after an intentional change: `rm tests/inference/corpus_golden.txt tests/inference/triage_golden.txt && zig build test`
+- Bump the pinned corpus: edit `scripts/tint-testdata.rev`, then `rm -rf tests/testdata/tint tests/inference/corpus_golden.txt tests/inference/triage_golden.txt && ./scripts/fetch-tint-testdata.sh && zig build test`, and commit the rev + both goldens together
+- Optional — all corpus tests self-skip if the directory is absent
 
 ## WGSL Specifics
 
