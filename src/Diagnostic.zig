@@ -830,7 +830,6 @@ pub const Code = struct {
     pub const lint_no_magic_numbers: []const u8 = "W0202";
     pub const lint_prefer_mix: []const u8 = "W0203";
     pub const lint_no_large_local_arrays: []const u8 = "W0204";
-    pub const lint_prefer_workgroup_shared: []const u8 = "W0205";
     pub const lint_require_entry_point_attrs: []const u8 = "W0206";
     pub const lint_no_f16_without_extension: []const u8 = "W0207";
     pub const lint_consistent_binding_annotations: []const u8 = "W0208";
