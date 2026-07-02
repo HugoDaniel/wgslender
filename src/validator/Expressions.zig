@@ -1422,7 +1422,7 @@ pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []cons
     }
 
     return switch (t) {
-        .scalar => checkScalarCtor(v, range, callee_name, t, arg_types, arg_count),
+        .scalar => ctorViaEngine(v, range, callee_name, t, arg_types),
         .vector => |ve| checkVectorCtor(v, range, callee_name, t, ve, arg_types, arg_count),
         .matrix => |mt| checkMatrixCtor(v, range, callee_name, t, mt, arg_types, arg_count),
         .@"struct" => |st| checkStructCtor(v, range, callee_name, t, st, arg_types, arg_count),
@@ -1431,27 +1431,91 @@ pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []cons
     };
 }
 
-pub fn checkScalarCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
-    if (arg_count > 1) {
-        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' constructor takes at most 1 argument, got {d}", .{ callee_name, arg_count }));
-        return null;
+/// Per-invocation context handed to `ctorRefine` through the engine's opaque
+/// `ctx` pointer. Carries what the refiner needs to reproduce constructor
+/// diagnostics — the validator (for `fmtError`), the callee name, and the
+/// target type — none of which live in `Overload.RefineInput`.
+const CtorRefineCtx = struct {
+    v: *Validator,
+    callee_name: []const u8,
+    target: Types.Type,
+};
+
+/// Shared value-constructor validation on the overload engine. Derives the sig
+/// set with `Overload.ctorSigsFor`, resolves against `t`, and on failure lets
+/// `ctorRefine` reproduce the constructor-specific message (component counts,
+/// "did you mean 'vec3'?", field/element conversion, …). On success the result
+/// IS `t`; scalar targets additionally get the W0101 redundant-cast warning the
+/// old switch emitted on a no-op cast. Constructors are migrated onto this path
+/// family by family (Block 4b); the outer `checkTypeConstructor` switch routes
+/// the migrated arms here.
+fn ctorViaEngine(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
+    const sigs = Overload.ctorSigsFor(v.arena, t) catch return null;
+    var rctx = CtorRefineCtx{ .v = v, .callee_name = callee_name, .target = t };
+    const res = Overload.resolveTargetedRefined(sigs, t, arg_types, .{
+        .ctx = &rctx,
+        .refine = ctorRefine,
+    });
+    switch (res) {
+        .ok => |typ| {
+            if (t == .scalar) warnRedundantScalarCast(v, range, t, arg_types);
+            return typ;
+        },
+        .err => |f| {
+            if (f.refined) |rd| {
+                v.addErrorWithCodeR(range, rd.code, rd.message);
+            } else {
+                // Every migrated family's refiner is exhaustive on its failures,
+                // so this fallback is unreachable in practice; keep a generic
+                // message rather than emitting nothing.
+                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_type, v.fmtError("no matching overload for '{s}' constructor", .{callee_name}));
+            }
+            return null;
+        },
     }
-    // Scalar value constructors are explicit conversions — any scalar
-    // to any scalar is valid (e.g. f32(i32_value), i32(0.9)).
-    if (arg_count == 1 and arg_types.len > 0) {
+}
+
+/// Engine failure-path hook: reproduces the constructor diagnostic the
+/// hand-rolled switch used to emit, dispatched on the target type. Cast back
+/// from the opaque `ctx` the validator installed. Returns null only for a
+/// target family not yet migrated onto `ctorViaEngine` (whose arm never routes
+/// here).
+fn ctorRefine(ctx_ptr: *anyopaque, input: Overload.RefineInput) ?Overload.RefinedDiagnostic {
+    const ctx: *CtorRefineCtx = @ptrCast(@alignCast(ctx_ptr));
+    return switch (ctx.target) {
+        .scalar => refineScalarCtor(ctx.v, ctx.callee_name, ctx.target, input.arg_types),
+        else => null,
+    };
+}
+
+/// Scalar `T(...)` failures: too many args, or a non-scalar argument. Mirrors
+/// the old `checkScalarCtor` error branches verbatim.
+fn refineScalarCtor(v: *Validator, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+    if (arg_types.len > 1) return .{
+        .code = Diagnostic.Code.invalid_arg_count,
+        .message = v.fmtError("'{s}' constructor takes at most 1 argument, got {d}", .{ callee_name, arg_types.len }),
+    };
+    if (arg_types.len == 1) {
         if (arg_types[0]) |at| {
-            if (at != .scalar) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
-                return null;
-            }
-            // W0101: argument's concrete scalar type already matches
-            // the constructor target — the cast is a no-op.
-            if (at.scalar.kind == t.scalar.kind and t.scalar.isConcrete()) {
-                v.addWarningWithCodeR(range, Diagnostic.Code.redundant_cast, v.fmtError("redundant cast: '{s}' is already '{s}'", .{ at.string(), t.string() }));
-            }
+            if (at != .scalar) return .{
+                .code = Diagnostic.Code.invalid_conversion,
+                .message = v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }),
+            };
         }
     }
-    return t;
+    return null;
+}
+
+/// W0101 on a no-op scalar cast (`f32(x)` where x is already a concrete f32).
+/// Emitted on the *success* path — the refiner only runs on failure — so it
+/// lives here, not in `ctorRefine`.
+fn warnRedundantScalarCast(v: *Validator, range: LocRange, t: Types.Type, arg_types: []const ?Types.Type) void {
+    if (arg_types.len != 1) return;
+    const at = arg_types[0] orelse return;
+    if (at != .scalar) return;
+    if (at.scalar.kind == t.scalar.kind and t.scalar.isConcrete()) {
+        v.addWarningWithCodeR(range, Diagnostic.Code.redundant_cast, v.fmtError("redundant cast: '{s}' is already '{s}'", .{ at.string(), t.string() }));
+    }
 }
 
 pub fn checkVectorCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
