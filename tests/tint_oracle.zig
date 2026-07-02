@@ -80,6 +80,14 @@ pub const unsupported_features = [_][]const u8{
     "enable f16",
     "enable chromium",
     "enable subgroups",
+    // Non-shipping experimental extensions Tint accepts but the validator does
+    // not model. Matched by their exact directive so shipping features that
+    // share the `requires`/`enable` keyword — clip_distances, dual_source_blending,
+    // primitive_index — are NOT swept up. Without these two the E0200 (type
+    // mismatch) triage bucket is 96% `unknown type 'texel_buffer'` noise that
+    // buries the genuine standard-WGSL false positives.
+    "requires texel_buffers",
+    "enable atomic_vec2u_min_max",
     "diagnostic(off",
     "diagnostic(warning",
     "diagnostic(error",
@@ -184,6 +192,15 @@ test "containsUnsupported flags enable/diagnostic features" {
     try testing.expect(containsUnsupported("@diagnostic(off, derivative_uniformity) fn f(){}"));
     try testing.expect(!containsUnsupported("@group(0) @binding(0) var<uniform> u : f32;"));
     try testing.expect(!containsUnsupported(""));
+}
+
+test "containsUnsupported flags experimental texel_buffers/atomic_vec2u_min_max" {
+    try testing.expect(containsUnsupported("requires texel_buffers;\n@group(0) @binding(0) var t : texel_buffer;"));
+    try testing.expect(containsUnsupported("enable atomic_vec2u_min_max;\nfn f(){}"));
+    // Shipping features sharing the requires/enable keyword must NOT be swept up.
+    try testing.expect(!containsUnsupported("enable clip_distances;\nfn f(){}"));
+    try testing.expect(!containsUnsupported("enable dual_source_blending;\nfn f(){}"));
+    try testing.expect(!containsUnsupported("enable primitive_index;\nfn f(){}"));
 }
 
 test "bucketOf maps verdict to triage bucket" {
