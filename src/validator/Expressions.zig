@@ -1266,7 +1266,7 @@ pub fn inferGenericCtorElement(v: *Validator, name: []const u8, default: Types.T
 /// element type is the common type of the arguments (kept abstract, like the
 /// bare vec/mat forms, so it concretizes at the use site) and the count is the
 /// argument count. Returns null — falling back to the default `array<f32, 0>`
-/// so `checkArrayCtor` reports the mismatch — when there are no arguments or
+/// so the array-ctor overload sigs report the mismatch — when there are no arguments or
 /// the argument types have no common type.
 fn inferArrayCtorType(v: *Validator, arg_types: []const ?Types.Type) ?Types.Type {
     if (arg_types.len == 0) return null;
@@ -1420,12 +1420,12 @@ pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []cons
         return null;
     }
 
+    // scalar / vector / matrix / struct / array all validate through the
+    // overload engine. `ctorSigsFor` yields an empty sig set for any other
+    // target, but the constructibility gate above already excluded those, so
+    // `else` is unreachable for a well-typed call and just passes t through.
     return switch (t) {
-        .scalar => ctorViaEngine(v, range, callee_name, t, arg_types),
-        .vector => ctorViaEngine(v, range, callee_name, t, arg_types),
-        .matrix => ctorViaEngine(v, range, callee_name, t, arg_types),
-        .@"struct" => ctorViaEngine(v, range, callee_name, t, arg_types),
-        .array => ctorViaEngine(v, range, callee_name, t, arg_types),
+        .scalar, .vector, .matrix, .@"struct", .array => ctorViaEngine(v, range, callee_name, t, arg_types),
         else => t,
     };
 }
@@ -1689,20 +1689,6 @@ fn refineArrayCtor(v: *Validator, callee_name: []const u8, arr: *const Types.Arr
 pub fn canConvertScalarTo(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
     if (src == dst) return true;
     return Types.canConvertTo(.{ .scalar = src }, .{ .scalar = dst });
-}
-
-/// The single-composite value constructors `vecN<T>(e: vecN<S>)` and
-/// `matCxR<T>(e: matCxR<S>)` are *explicit* conversions (WGSL §16.2.2): like the
-/// scalar ctor, any concrete S converts element-wise to any concrete T (e.g.
-/// `vec2f(vec2u(..))`, `mat2x2f(mat2x2h(..))`). Abstract sources still use the
-/// implicit rule so a transient `vec2(1, 2)` / `mat2x2(...)` result concretizes
-/// into the target element. This is deliberately looser than
-/// `canConvertScalarTo`, which models the *implicit* conversions used by the
-/// splat and multi-arg overloads.
-fn isExplicitCompositeElemConversion(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
-    if (src == dst) return true;
-    if (src.isConcrete() and dst.isConcrete()) return true;
-    return canConvertScalarTo(src, dst);
 }
 
 pub fn elementTypeOf(t: Types.Type) ?*const Types.Scalar {

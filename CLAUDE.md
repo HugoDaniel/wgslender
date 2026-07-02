@@ -161,6 +161,15 @@ Rules see a `Context` with `.module`, `.source`, `.symbols`, `.arena`, and `.rep
 4. Add to visit pass if it contains identifiers/types
 5. Run `zig build test` — snapshot tests will catch output changes
 
+### Adding a New Value Constructor Form
+
+Constructor validation (`f32(x)`, `vec3<f32>(...)`, `mat2x2f(...)`, `S(...)`, `array<f32,4>(...)`) resolves through the overload engine, not a hand-rolled switch:
+
+1. Emit the target's overload set in `Overload.ctorSigsFor` (`src/Overload.zig`) — one arm per target kind (scalar/vector/matrix/struct/array).
+2. Constructor-only shapes are `Pattern` variants: `variadic_components_to_width` (vector composition), `all_scalar_or_all_vector` (matrix scalar/column dichotomy), `composite_convert` (explicit vecN/matCxR copy/convert, §16.2.2).
+3. The call site is `checkTypeConstructor` → `ctorViaEngine` (`src/validator/Expressions.zig`): resolves via `Overload.resolveTargetedRefined`, and on failure `ctorRefine` reproduces the specific per-family diagnostic.
+4. Exact error wording + positions are pinned by `tests/validation_location_test.zig` — add a case there for any new message (and re-run the `-j1` full suite; the corpus/tint suites are memory-heavy and flake under concurrent `zig build test`).
+
 ### Adding a New CLI Flag
 
 1. Add flag parsing in `cli/main.zig` (string matching in `parseArgs`)
