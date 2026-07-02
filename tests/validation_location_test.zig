@@ -1331,6 +1331,19 @@ test "validation location: mat2x2f rejects 3 column vectors" {
     try expectErrorAtWithMessage(result, 4, 13, "column constructor requires 2 vectors, got 3");
 }
 
+test "validation location: mat2x2f rejects a scalar/vector mix" {
+    const source =
+        \\@fragment
+        \\fn main() {
+        \\    let v = vec2f(1.0, 0.0);
+        \\    let m = mat2x2f(1.0, v);
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit(std.testing.allocator);
+    try expectErrorAtWithMessage(result, 4, 13, "requires all scalar values or all column vectors, not a mix");
+}
+
 test "validation location: f32 rejects 2 arguments" {
     const source =
         \\@fragment

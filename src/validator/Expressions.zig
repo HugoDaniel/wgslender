@@ -1424,7 +1424,7 @@ pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []cons
     return switch (t) {
         .scalar => ctorViaEngine(v, range, callee_name, t, arg_types),
         .vector => ctorViaEngine(v, range, callee_name, t, arg_types),
-        .matrix => |mt| checkMatrixCtor(v, range, callee_name, t, mt, arg_types, arg_count),
+        .matrix => ctorViaEngine(v, range, callee_name, t, arg_types),
         .@"struct" => |st| checkStructCtor(v, range, callee_name, t, st, arg_types, arg_count),
         .array => |arr| checkArrayCtor(v, range, callee_name, t, arr, arg_types, arg_count),
         else => t,
@@ -1485,6 +1485,7 @@ fn ctorRefine(ctx_ptr: *anyopaque, input: Overload.RefineInput) ?Overload.Refine
     return switch (ctx.target) {
         .scalar => refineScalarCtor(ctx.v, ctx.callee_name, ctx.target, input.arg_types),
         .vector => |ve| refineVectorCtor(ctx.v, ctx.callee_name, ctx.target, ve, input.arg_types),
+        .matrix => |mt| refineMatrixCtor(ctx.v, ctx.callee_name, ctx.target, mt, input.arg_types),
         else => null,
     };
 }
@@ -1584,82 +1585,67 @@ fn refineVectorCtorMulti(v: *Validator, callee_name: []const u8, t: Types.Type, 
     return null;
 }
 
-pub fn checkMatrixCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
-    if (arg_count == 0) return t;
-    if (arg_count == 1) return checkMatrixCtorOne(v, range, t, mt, arg_types);
-    return checkMatrixCtorMulti(v, range, callee_name, t, mt, arg_types, arg_count);
+/// Matrix `matCxR<E>(...)` failures, dispatched on arity like the old
+/// `checkMatrixCtor`. Reproduces the dichotomy / conversion messages the
+/// engine's generic no-match can't. Reached only on engine failure.
+fn refineMatrixCtor(v: *Validator, callee_name: []const u8, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+    if (arg_types.len == 1) return refineMatrixCtorOne(v, t, arg_types);
+    return refineMatrixCtorMulti(v, callee_name, mt, arg_types);
 }
 
-pub fn checkMatrixCtorOne(v: *Validator, range: LocRange, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type) ?Types.Type {
-    if (arg_types.len > 0) {
-        if (arg_types[0]) |at| {
-            if (at == .matrix) {
-                if (at.matrix.cols != mt.cols or at.matrix.rows != mt.rows) {
-                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
-                    return null;
-                }
-                // Single-matrix form is an explicit conversion (like the vector
-                // form): any concrete float element converts to any other
-                // (f16<->f32); abstract sources fall back to the implicit rule.
-                if (!isExplicitCompositeElemConversion(at.matrix.element, mt.element)) {
-                    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }));
-                    return null;
-                }
-            }
-        }
-    }
-    return t;
+fn refineMatrixCtorOne(v: *Validator, t: Types.Type, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+    const at = arg_types[0] orelse return null; // null arg is engine-feasible
+    // Single-matrix copy/convert (composite_convert): a dimension or element
+    // mismatch. A single non-matrix argument — which the old switch silently
+    // accepted via `return t` — also lands here now; the same conversion error
+    // is the right report.
+    return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }) };
 }
 
-pub fn checkMatrixCtorMulti(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
-    // Classify args: all scalars or all vectors
+fn refineMatrixCtorMulti(v: *Validator, callee_name: []const u8, mt: *const Types.Matrix, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+    // Classify args: all scalars or all vectors.
     var all_scalar = true;
     var all_vector = true;
     for (arg_types) |at_opt| {
-        const at = at_opt orelse return t; // unknown type, skip
+        const at = at_opt orelse return null; // null arg is engine-feasible
         if (at != .scalar) all_scalar = false;
         if (at != .vector) all_vector = false;
     }
 
     if (all_scalar) {
-        // C*R scalars required
-        if (arg_count != mt.cols * mt.rows) {
-            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' scalar constructor requires {d} values, got {d}", .{ callee_name, mt.cols * mt.rows, arg_count }));
-            return null;
+        // C*R scalars required.
+        if (arg_types.len != mt.cols * mt.rows) {
+            return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' scalar constructor requires {d} values, got {d}", .{ callee_name, mt.cols * mt.rows, arg_types.len }) };
         }
         for (arg_types) |at_opt| {
             const at = at_opt orelse continue;
             if (at == .scalar and !canConvertScalarTo(at.scalar, mt.element)) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.scalar.string(), mt.element.string(), callee_name }));
-                return null;
+                return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.scalar.string(), mt.element.string(), callee_name }) };
             }
         }
-        return t;
+        return null;
     }
     if (all_vector) {
-        // C column vectors of height R required
-        if (arg_count != mt.cols) {
-            v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_count, v.fmtError("'{s}' column constructor requires {d} vectors, got {d}", .{ callee_name, mt.cols, arg_count }));
-            return null;
+        // C column vectors of height R required.
+        if (arg_types.len != mt.cols) {
+            return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' column constructor requires {d} vectors, got {d}", .{ callee_name, mt.cols, arg_types.len }) };
         }
         for (arg_types) |at_opt| {
             if (at_opt) |at| {
                 if (at == .vector) {
                     if (at.vector.width != mt.rows) {
-                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' column vectors must have {d} components, got {d}", .{ callee_name, mt.rows, at.vector.width }));
-                        return null;
+                        return .{ .code = Diagnostic.Code.invalid_arg_type, .message = v.fmtError("'{s}' column vectors must have {d} components, got {d}", .{ callee_name, mt.rows, at.vector.width }) };
                     }
                     if (!canConvertScalarTo(at.vector.element, mt.element)) {
-                        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_conversion, v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.vector.element.string(), mt.element.string(), callee_name }));
-                        return null;
+                        return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.vector.element.string(), mt.element.string(), callee_name }) };
                     }
                 }
             }
         }
-        return t;
+        return null;
     }
-    v.addErrorWithCodeR(range, Diagnostic.Code.invalid_arg_type, v.fmtError("'{s}' constructor requires all scalar values or all column vectors, not a mix", .{callee_name}));
-    return null;
+    // Mix of scalars and column vectors.
+    return .{ .code = Diagnostic.Code.invalid_arg_type, .message = v.fmtError("'{s}' constructor requires all scalar values or all column vectors, not a mix", .{callee_name}) };
 }
 
 pub fn checkStructCtor(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, st: *const Types.Struct, arg_types: []const ?Types.Type, arg_count: usize) ?Types.Type {
