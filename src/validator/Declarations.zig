@@ -1105,7 +1105,7 @@ pub fn validateAddressSpace(v: *Validator, d: *Ast.VarDecl, var_type: Types.Type
             if (d.initializer != null) {
                 v.addErrorWithCodeR(r, Diagnostic.Code.invalid_initializer, v.fmtError("uniform var '{s}' cannot have an initializer", .{name}));
             }
-            // Uniform buffer layout: arrays must have element alignment >= 16
+            // Uniform buffer layout: array element stride must be a multiple of 16.
             checkUniformLayout(v, var_type, r, name);
         },
         .storage => {
@@ -1126,9 +1126,16 @@ pub fn validateAddressSpace(v: *Validator, d: *Ast.VarDecl, var_type: Types.Type
 pub fn checkUniformLayout(v: *Validator, typ: Types.Type, r: LocRange, var_name: []const u8) void {
     switch (typ) {
         .array => |a| {
-            const elem_align = a.element.alignment();
-            if (elem_align > 0 and elem_align < 16) {
-                v.addErrorWithCodeR(r, Diagnostic.Code.invalid_uniform_var, v.fmtError("uniform var '{s}' contains array with element alignment {d} (uniform requires 16)", .{ var_name, elem_align }));
+            // WGSL §13.4.4: an array in the uniform address space must have an
+            // element STRIDE that is a multiple of 16 — not (a common misreading)
+            // an element alignment >= 16. Stride is the element size rounded up to
+            // the element alignment, so `mat2x2<f32>` (align 8, stride 16) and
+            // `mat4x2<f32>` (stride 32) are valid despite their 8-byte alignment,
+            // while `array<f32>` (stride 4) and `array<mat3x2<f32>>` (stride 24)
+            // are not. (0 stride ⇔ unknown element alignment ⇒ skip.)
+            const stride = a.strideBytes();
+            if (stride > 0 and stride % 16 != 0) {
+                v.addErrorWithCodeR(r, Diagnostic.Code.invalid_uniform_var, v.fmtError("uniform var '{s}' contains array with element stride {d} (uniform requires a multiple of 16)", .{ var_name, stride }));
             }
         },
         .@"struct" => |s| {

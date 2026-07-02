@@ -20,7 +20,7 @@ E0307 3 fp=3 tp=0 unk=0
 E0500 1 fp=1 tp=0 unk=0
 E0502 49 fp=5 tp=0 unk=44
 E0503 8 fp=8 tp=0 unk=0
-E0802 209 fp=36 tp=0 unk=173
+E0802 179 fp=6 tp=0 unk=173
 E0804 1 fp=1 tp=0 unk=0
 E0807 1 fp=1 tp=0 unk=0
 W0100 56 fp=56 tp=0 unk=0

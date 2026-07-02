@@ -400,14 +400,22 @@ pub const Array = struct {
         return self.count == 0;
     }
 
-    /// Array stride is element size rounded up to element alignment.
-    pub fn sizeBytes(self: *const Array) u32 {
-        if (self.count == 0) return 0;
-        const elem_size = self.element.size();
+    /// Per-element stride: element size rounded up to element alignment.
+    /// 0 when the element alignment is unknown (error-recovery element types).
+    pub fn strideBytes(self: *const Array) u32 {
         const elem_align = self.element.alignment();
         if (elem_align == 0) return 0;
+        const elem_size = self.element.size();
         const stride = ((elem_size + elem_align - 1) / elem_align) * elem_align;
-        return stride * self.count;
+        assert(stride >= elem_size);
+        assert(stride % elem_align == 0);
+        return stride;
+    }
+
+    /// Array size is the per-element stride times the element count.
+    pub fn sizeBytes(self: *const Array) u32 {
+        if (self.count == 0) return 0;
+        return self.strideBytes() * self.count;
     }
 };
 

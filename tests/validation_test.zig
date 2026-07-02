@@ -2223,3 +2223,55 @@ test "validate: near-miss builtin name is allowed" {
     try std.testing.expect(result.valid);
     try std.testing.expect(!hasDiagCode(result, "E0106"));
 }
+
+// =========================================================================
+// E0802 — uniform array element layout. The WGSL uniform-address-space rule
+// for arrays is that the element STRIDE be a multiple of 16 (WGSL §13.4.4),
+// NOT that the element alignment be >= 16. A `mat2x2<f32>` element has
+// alignment 8 but stride RoundUp(size 16, align 8) = 16, and a `mat4x2<f32>`
+// element has stride 32 — both multiples of 16, so both are valid in uniform
+// and Tint accepts them (tint corpus buffer/uniform/std140/array/matNx2_f32).
+// `mat3x2<f32>` (stride 24), `f32` (4) and `vec2<f32>` (8) stay rejected.
+// =========================================================================
+
+test "validate: uniform array<mat2x2<f32>> is valid (stride 16, element align 8)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "@group(0) @binding(0) var<uniform> u : array<mat2x2<f32>, 4>;\n" ++
+        "@compute @workgroup_size(1) fn main() { _ = u[0][0].x; }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0802"));
+}
+
+test "validate: uniform array<mat4x2<f32>> is valid (stride 32, element align 8)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "@group(0) @binding(0) var<uniform> u : array<mat4x2<f32>, 4>;\n" ++
+        "@compute @workgroup_size(1) fn main() { _ = u[0][0].x; }");
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0802"));
+}
+
+test "validate: uniform array<f32> stays rejected (stride 4, not a multiple of 16)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "@group(0) @binding(0) var<uniform> u : array<f32, 4>;\n" ++
+        "@compute @workgroup_size(1) fn main() { _ = u[0]; }");
+    try std.testing.expect(hasDiagCode(result, "E0802"));
+}
+
+test "validate: uniform array<vec2<f32>> stays rejected (stride 8, not a multiple of 16)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "@group(0) @binding(0) var<uniform> u : array<vec2<f32>, 4>;\n" ++
+        "@compute @workgroup_size(1) fn main() { _ = u[0].x; }");
+    try std.testing.expect(hasDiagCode(result, "E0802"));
+}
+
+test "validate: uniform array<mat3x2<f32>> stays rejected (stride 24, not a multiple of 16)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "@group(0) @binding(0) var<uniform> u : array<mat3x2<f32>, 4>;\n" ++
+        "@compute @workgroup_size(1) fn main() { _ = u[0][0].x; }");
+    try std.testing.expect(hasDiagCode(result, "E0802"));
+}
