@@ -177,6 +177,27 @@ pub const Pattern = union(enum) {
     /// Re-expansion of a bound matrix but with cols/rows swapped (transpose).
     bound_matrix_transposed: struct { elem_idx: u8, cols_idx: u8, rows_idx: u8 },
 
+    /// Variadic component composition for vector constructors (WGSL §16.1,
+    /// vector case): `vec4(s, vec2, s)`. A *cross-arg* pattern — the whole
+    /// argument list (any mix of scalars and vectors) must sum in component
+    /// width to exactly `width`, and every argument's element type must
+    /// implicitly convert to `elem` (a concrete or abstract scalar type).
+    /// Unlike the per-slot `tparam_*` variants this folds across the entire
+    /// `arg_types` slice, so a sig using it holds exactly one `params` entry
+    /// and matches any non-empty arity. `elem` is carried concretely rather
+    /// than as a tparam slot: constructor element types are fixed by the
+    /// target (`ctorSigsFor`), never inferred across args.
+    variadic_components_to_width: struct { width: u8, elem: Types.Type },
+
+    /// Matrix-constructor dichotomy (WGSL §16.1, matrix case): the args are
+    /// either exactly `cols * rows` scalars, or exactly `cols` column
+    /// vectors of width `rows` — never a mix. Every element must implicitly
+    /// convert to `elem`. Also a single cross-arg `params` entry. Modeled as
+    /// one Pattern (not two competing sigs) so the refiner can emit the
+    /// "requires all scalar values or all column vectors, not a mix" wording
+    /// on a partial match instead of a generic no-match.
+    all_scalar_or_all_vector: struct { cols: u8, rows: u8, elem: Types.Type },
+
     pub const no_tparam: u8 = std.math.maxInt(u8);
 };
 
@@ -248,6 +269,27 @@ pub const ResolveResult = union(enum) {
     err: ResolveFailure,
 };
 
+/// A sig whose single parameter folds across the *entire* argument list
+/// rather than matching one slot. Returns that pattern, or null for the
+/// ordinary per-slot sigs. Only constructor sigs (`ctorSigsFor`) use these;
+/// every builtin sig is per-slot, so this is null on the builtin hot path.
+fn reductionPattern(s: OverloadSig) ?Pattern {
+    if (s.params.len != 1) return null;
+    return switch (s.params[0]) {
+        .variadic_components_to_width, .all_scalar_or_all_vector => s.params[0],
+        else => null,
+    };
+}
+
+/// Arity eligibility. Ordinary sigs need an exact param/arg count match; a
+/// reduction sig matches any non-empty arg list (the fold enforces the real
+/// component / column count). An empty arg list only matches an explicit
+/// zero-param sig — the zero-value constructor form — never a reduction.
+fn sigAcceptsArity(s: OverloadSig, n: usize) bool {
+    if (reductionPattern(s) != null) return n >= 1;
+    return s.params.len == n;
+}
+
 /// Resolve a call against the overload set for `name`. Arg count must match
 /// `params.len` for at least one candidate; otherwise `arg_count_mismatch`.
 /// On success, returns the winning sig index and the tparam bindings; the
@@ -271,7 +313,7 @@ pub fn resolveSeeded(
     // Arity filter.
     var arity_ok: bool = false;
     for (sigs) |s| {
-        if (s.params.len == arg_types.len) {
+        if (sigAcceptsArity(s, arg_types.len)) {
             arity_ok = true;
             break;
         }
@@ -297,29 +339,43 @@ pub fn resolveSeeded(
     // first one selected. Matches Naga/Tint; no current signature produces
     // ambiguity between non-equivalent candidates.
     for (sigs, 0..) |s, idx| {
-        if (s.params.len != arg_types.len) continue;
+        if (!sigAcceptsArity(s, arg_types.len)) continue;
         var bindings: [max_tparams]Binding = seed;
         var total_rank: u32 = 0;
-        var ok = true;
-        var bad_arg: u8 = 0;
-        for (s.params, 0..) |p, pi| {
-            const arg = arg_types[pi] orelse {
-                // A null arg (upstream type inference failure) is treated as
-                // feasible — we don't want to invent an overload error while
-                // the real culprit is an earlier inference failure.
+
+        if (reductionPattern(s)) |rp| {
+            // Cross-arg reduction sig (constructor composition / matrix
+            // dichotomy): one pattern folds over the whole argument list.
+            // No tparam slots, so `bindings` stays = seed.
+            total_rank = unifyReduction(rp, arg_types) catch {
+                // Whole-list failure — attribute the culprit to the last arg.
+                const bad: u8 = if (arg_types.len == 0) 0 else @intCast(arg_types.len - 1);
+                if (bad > last_bad_arg) last_bad_arg = bad;
                 continue;
             };
-            const r = unifyArg(&p, arg, &bindings) catch {
-                ok = false;
-                bad_arg = @intCast(pi);
-                break;
-            };
-            total_rank = @max(total_rank, r);
+        } else {
+            var ok = true;
+            var bad_arg: u8 = 0;
+            for (s.params, 0..) |p, pi| {
+                const arg = arg_types[pi] orelse {
+                    // A null arg (upstream type inference failure) is treated as
+                    // feasible — we don't want to invent an overload error while
+                    // the real culprit is an earlier inference failure.
+                    continue;
+                };
+                const r = unifyArg(&p, arg, &bindings) catch {
+                    ok = false;
+                    bad_arg = @intCast(pi);
+                    break;
+                };
+                total_rank = @max(total_rank, r);
+            }
+            if (!ok) {
+                if (bad_arg > last_bad_arg) last_bad_arg = bad_arg;
+                continue;
+            }
         }
-        if (!ok) {
-            if (bad_arg > last_bad_arg) last_bad_arg = bad_arg;
-            continue;
-        }
+
         if (best_idx == null or total_rank < best_rank) {
             best_idx = idx;
             best_rank = total_rank;
@@ -335,6 +391,33 @@ pub fn resolveSeeded(
         } };
     }
     return .{ .err = .{ .kind = .no_matching_overload, .first_bad_arg = last_bad_arg } };
+}
+
+/// Result of `resolveTargeted`. On success the type IS the caller's
+/// `target` — there is no ResultRule to materialize — so unlike
+/// `ResolveResult` it carries the built type directly. On failure it
+/// carries the same `ResolveFailure` the builtin path produces.
+pub const TargetedResult = union(enum) {
+    ok: Types.Type,
+    err: ResolveFailure,
+};
+
+/// Resolve a value-constructor call. Constructor result types are fixed by
+/// the syntax — `vec3<f32>(…)` is a vec3<f32> regardless of the argument
+/// types — so there is no tparam to bind for the result and no ResultRule
+/// to build: on success the result IS `target`. The sigs (produced by
+/// `ctorSigsFor`) constrain only the argument list. Cross-arg reduction
+/// patterns (vector composition, matrix dichotomy) are folded by the shared
+/// solver core, so this is a thin wrapper over `resolveSeeded`.
+pub fn resolveTargeted(
+    sigs: []const OverloadSig,
+    target: Types.Type,
+    arg_types: []const ?Types.Type,
+) TargetedResult {
+    return switch (resolveSeeded(sigs, @splat(.{}), arg_types)) {
+        .ok => .{ .ok = target },
+        .err => |f| .{ .err = f },
+    };
 }
 
 /// Unify one argument against one parameter pattern, updating `bindings`.
@@ -365,7 +448,95 @@ fn unifyArg(p: *const Pattern, arg: Types.Type, bindings: *[max_tparams]Binding)
         // `bound_vector` / `bound_matrix_transposed` only appear in result rules
         // today (frexp/modf/transpose); param-position is a later-phase extension.
         .bound_vector, .bound_matrix_transposed => error.Mismatch,
+        // Cross-arg reduction patterns never reach the per-slot path — the
+        // solver core folds them over the whole arg list before this runs.
+        .variadic_components_to_width, .all_scalar_or_all_vector => error.Mismatch,
     };
+}
+
+/// Apply the load rule to a single type: reference<AS,T,AM> with AM ∈
+/// {read, read_write} is indistinguishable from T at argument sites.
+fn loadUnwrap(arg: Types.Type) Types.Type {
+    if (arg == .reference) {
+        const r = arg.reference;
+        if (r.access_mode == .read or r.access_mode == .read_write) return r.element;
+    }
+    return arg;
+}
+
+/// Fold a whole argument list against a cross-arg reduction pattern, returning
+/// the max element-conversion rank across args, or Mismatch. A null arg
+/// (upstream inference failure) makes the whole call feasible with rank 0 —
+/// this mirrors both the per-slot loop's "null is feasible" rule and the old
+/// `checkVectorCtorMulti` / `checkMatrixCtorMulti` "unknown arg → skip
+/// validation" behavior.
+fn unifyReduction(p: Pattern, arg_types: []const ?Types.Type) error{Mismatch}!u32 {
+    return switch (p) {
+        .variadic_components_to_width => |vc| unifyVariadicComponents(vc.width, vc.elem, arg_types),
+        .all_scalar_or_all_vector => |mm| unifyMatrixDichotomy(mm.cols, mm.rows, mm.elem, arg_types),
+        else => error.Mismatch,
+    };
+}
+
+/// Vector composition: the summed component width of every scalar/vector arg
+/// must equal `width`, and each arg's element type must implicitly convert to
+/// `elem`.
+fn unifyVariadicComponents(width: u8, elem: Types.Type, arg_types: []const ?Types.Type) error{Mismatch}!u32 {
+    var total: u32 = 0;
+    var max_rank: u32 = 0;
+    for (arg_types) |arg_opt| {
+        const arg = loadUnwrap(arg_opt orelse return 0);
+        const elem_type: Types.Type = switch (arg) {
+            .scalar => |s| blk: {
+                total += 1;
+                break :blk .{ .scalar = s };
+            },
+            .vector => |ve| blk: {
+                total += ve.width;
+                break :blk .{ .scalar = ve.element };
+            },
+            else => return error.Mismatch,
+        };
+        const rank = Types.conversionRank(elem_type, elem) orelse return error.Mismatch;
+        max_rank = @max(max_rank, rank);
+    }
+    if (total != width) return error.Mismatch;
+    return max_rank;
+}
+
+/// Matrix constructor dichotomy: args are either exactly `cols * rows` scalars
+/// or exactly `cols` column vectors of width `rows` — never a mix. Each
+/// element must implicitly convert to `elem`.
+fn unifyMatrixDichotomy(cols: u8, rows: u8, elem: Types.Type, arg_types: []const ?Types.Type) error{Mismatch}!u32 {
+    var all_scalar = true;
+    var all_vector = true;
+    for (arg_types) |arg_opt| {
+        const arg = loadUnwrap(arg_opt orelse return 0);
+        if (arg != .scalar) all_scalar = false;
+        if (arg != .vector) all_vector = false;
+    }
+
+    var max_rank: u32 = 0;
+    if (all_scalar) {
+        if (arg_types.len != @as(usize, cols) * rows) return error.Mismatch;
+        for (arg_types) |arg_opt| {
+            const arg = loadUnwrap(arg_opt.?);
+            const rank = Types.conversionRank(.{ .scalar = arg.scalar }, elem) orelse return error.Mismatch;
+            max_rank = @max(max_rank, rank);
+        }
+        return max_rank;
+    }
+    if (all_vector) {
+        if (arg_types.len != cols) return error.Mismatch;
+        for (arg_types) |arg_opt| {
+            const arg = loadUnwrap(arg_opt.?);
+            if (arg.vector.width != rows) return error.Mismatch;
+            const rank = Types.conversionRank(.{ .scalar = arg.vector.element }, elem) orelse return error.Mismatch;
+            max_rank = @max(max_rank, rank);
+        }
+        return max_rank;
+    }
+    return error.Mismatch; // mix of scalars and vectors — refiner explains
 }
 
 fn unifyTparamScalar(ts: anytype, a: Types.Type, bindings: *[max_tparams]Binding) error{Mismatch}!u32 {
@@ -649,6 +820,11 @@ pub fn buildPatternType(
         .tparam_ptr_atomic, .tparam_ptr, .tparam_ptr_runtime_array, .tparam_texture => {
             // Not valid as result patterns: WGSL has no builtin that
             // returns a pointer, atomic, or texture.
+            return null;
+        },
+        .variadic_components_to_width, .all_scalar_or_all_vector => {
+            // Param-only cross-arg patterns. Constructor results are fixed to
+            // the target type (see `resolveTargeted`), never materialized here.
             return null;
         },
     }

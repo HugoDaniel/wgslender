@@ -971,3 +971,195 @@ test "bitcast without template argument rejected" {
     defer r.deinit(std.testing.allocator);
     try std.testing.expect(hasErrorContaining(r, "template type argument"));
 }
+
+// =========================================================================
+// 15. Targeted resolution + cross-arg constructor patterns (Block 4a)
+//
+// Engine-level coverage of the constructor machinery: `resolveTargeted`
+// (result type is the fixed target, not a materialized ResultRule) and the
+// two cross-arg reduction patterns — `variadic_components_to_width` (vector
+// composition, WGSL §16.1) and `all_scalar_or_all_vector` (matrix ctor
+// dichotomy). No validator wiring yet (that is Block 4b); these drive the
+// solver directly. Element convertibility is *implicit* conversion
+// (`Types.conversionRank`), matching the old `canConvertScalarTo` used by
+// the splat/multi-arg constructor paths.
+// =========================================================================
+
+// A few short-lived composite types shared by the blocks below.
+const v2f = Types.Vector{ .width = 2, .element = Types.scalar_f32_ptr };
+const v3f = Types.Vector{ .width = 3, .element = Types.scalar_f32_ptr };
+const v4f = Types.Vector{ .width = 4, .element = Types.scalar_f32_ptr };
+const v2f_t: Types.Type = .{ .vector = &v2f };
+const v3f_t: Types.Type = .{ .vector = &v3f };
+const v4f_t: Types.Type = .{ .vector = &v4f };
+const m2x2f = Types.Matrix{ .cols = 2, .rows = 2, .element = Types.scalar_f32_ptr };
+const m2x3f = Types.Matrix{ .cols = 2, .rows = 3, .element = Types.scalar_f32_ptr };
+const m2x2f_t: Types.Type = .{ .matrix = &m2x2f };
+const m2x3f_t: Types.Type = .{ .matrix = &m2x3f };
+
+fn composeVecSigs(width: u8, elem: Types.Type) [1]Overload.OverloadSig {
+    return .{.{
+        .tparam_count = 0,
+        .params = &.{.{ .variadic_components_to_width = .{ .width = width, .elem = elem } }},
+        .result = .{ .fixed = Types.F32 }, // dummy — never materialized (resolveTargeted uses target)
+    }};
+}
+
+fn matrixDichotomySigs(cols: u8, rows: u8, elem: Types.Type) [1]Overload.OverloadSig {
+    return .{.{
+        .tparam_count = 0,
+        .params = &.{.{ .all_scalar_or_all_vector = .{ .cols = cols, .rows = rows, .elem = elem } }},
+        .result = .{ .fixed = Types.F32 }, // dummy
+    }};
+}
+
+// --- variadic_components_to_width (vector composition) --------------------
+
+test "compose: vec4(scalar, vec2, scalar) sums to width 4" {
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, v2f_t, Types.F32 };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .ok);
+}
+
+test "compose: single vec4 argument sums to width 4" {
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{v4f_t};
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .ok);
+}
+
+test "compose: width mismatch (1+2 = 3 != 4) rejected" {
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, v2f_t };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .err);
+}
+
+test "compose: i32 components into f32 vector rejected (no implicit i32->f32)" {
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{ Types.I32, Types.I32, Types.I32, Types.I32 };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .err);
+}
+
+test "compose: abstract-int components convert to f32 with rank 6" {
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{ Types.AbstractInt, Types.AbstractInt, Types.AbstractInt, Types.AbstractInt };
+    const r = Overload.resolve(&sigs, &args);
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(@as(u32, 6), r.ok.total_rank);
+}
+
+test "compose: bool components into f32 vector rejected" {
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{ Types.Bool, Types.Bool, Types.Bool, Types.Bool };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .err);
+}
+
+test "compose: vec2<bool> accepts bool components" {
+    const sigs = composeVecSigs(2, Types.Bool);
+    const args = [_]?Types.Type{ Types.Bool, Types.Bool };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .ok);
+}
+
+test "compose: null arg makes the whole call feasible (skip width check)" {
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, null, Types.F32 };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .ok);
+}
+
+test "compose: non-scalar/vector arg (matrix) rejected" {
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{m2x2f_t};
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .err);
+}
+
+// --- all_scalar_or_all_vector (matrix dichotomy) -------------------------
+
+test "matrix: 4 scalars build mat2x2 (cols*rows)" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, Types.F32, Types.F32, Types.F32 };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .ok);
+}
+
+test "matrix: 2 column vectors of width 2 build mat2x2" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ v2f_t, v2f_t };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .ok);
+}
+
+test "matrix: mat2x3 needs 2 column vectors of width 3" {
+    const sigs = matrixDichotomySigs(2, 3, Types.F32);
+    const args = [_]?Types.Type{ v3f_t, v3f_t };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .ok);
+}
+
+test "matrix: wrong scalar count (3 != 4) rejected" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, Types.F32, Types.F32 };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .err);
+}
+
+test "matrix: column vectors of wrong width rejected (vec3 into mat2x2)" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ v3f_t, v3f_t };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .err);
+}
+
+test "matrix: mix of scalar and vector rejected" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, v2f_t };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .err);
+}
+
+test "matrix: wrong vector count (3 vectors into mat2x2, cols=2) rejected" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ v2f_t, v2f_t, v2f_t };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .err);
+}
+
+test "matrix: i32 scalars into f32 matrix rejected" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ Types.I32, Types.I32, Types.I32, Types.I32 };
+    try std.testing.expect(Overload.resolve(&sigs, &args) == .err);
+}
+
+test "matrix: abstract-int scalars convert to f32 with rank 6" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ Types.AbstractInt, Types.AbstractInt, Types.AbstractInt, Types.AbstractInt };
+    const r = Overload.resolve(&sigs, &args);
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(@as(u32, 6), r.ok.total_rank);
+}
+
+// --- resolveTargeted (result is the target type) -------------------------
+
+test "resolveTargeted: vec composition returns the target type" {
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, v2f_t, Types.F32 };
+    const r = Overload.resolveTargeted(&sigs, v4f_t, &args);
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqualStrings("vec4<f32>", r.ok.string());
+}
+
+test "resolveTargeted: matrix composition returns the target type" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ v2f_t, v2f_t };
+    const r = Overload.resolveTargeted(&sigs, m2x2f_t, &args);
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqualStrings("mat2x2<f32>", r.ok.string());
+}
+
+test "resolveTargeted: matrix mix fails" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, v2f_t };
+    const r = Overload.resolveTargeted(&sigs, m2x2f_t, &args);
+    try std.testing.expect(r == .err);
+}
+
+test "resolveTargeted: reduction sig with zero args is an arity mismatch" {
+    // A cross-arg reduction sig requires at least one arg; the zero-value
+    // constructor form (`vec4()`) is a separate zero-arg sig (see ctorSigsFor).
+    const sigs = composeVecSigs(4, Types.F32);
+    const args = [_]?Types.Type{};
+    const r = Overload.resolveTargeted(&sigs, v4f_t, &args);
+    try std.testing.expect(r == .err);
+    try std.testing.expectEqual(Overload.ResolveError.arg_count_mismatch, r.err.kind);
+}
