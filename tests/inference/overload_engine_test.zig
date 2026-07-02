@@ -997,7 +997,11 @@ const m2x3f = Types.Matrix{ .cols = 2, .rows = 3, .element = Types.scalar_f32_pt
 const m2x2f_t: Types.Type = .{ .matrix = &m2x2f };
 const m2x3f_t: Types.Type = .{ .matrix = &m2x3f };
 
-fn composeVecSigs(width: u8, elem: Types.Type) [1]Overload.OverloadSig {
+// NOTE: params are `comptime` so the `&.{...}` pattern literal is comptime-known
+// and lives in static storage. With runtime params it would point at a stack
+// temporary that dies when the helper returns — a use-after-return whose reads
+// are non-deterministic garbage. Every caller passes compile-time constants.
+fn composeVecSigs(comptime width: u8, comptime elem: Types.Type) [1]Overload.OverloadSig {
     return .{.{
         .tparam_count = 0,
         .params = &.{.{ .variadic_components_to_width = .{ .width = width, .elem = elem } }},
@@ -1005,7 +1009,7 @@ fn composeVecSigs(width: u8, elem: Types.Type) [1]Overload.OverloadSig {
     }};
 }
 
-fn matrixDichotomySigs(cols: u8, rows: u8, elem: Types.Type) [1]Overload.OverloadSig {
+fn matrixDichotomySigs(comptime cols: u8, comptime rows: u8, comptime elem: Types.Type) [1]Overload.OverloadSig {
     return .{.{
         .tparam_count = 0,
         .params = &.{.{ .all_scalar_or_all_vector = .{ .cols = cols, .rows = rows, .elem = elem } }},
@@ -1266,4 +1270,87 @@ test "ctorSigsFor non-constructible target yields an empty sig set" {
     const ptr = Types.Pointer{ .address_space = .function, .element = Types.F32, .access_mode = .read_write };
     const sigs = try Overload.ctorSigsFor(arena.allocator(), .{ .pointer = &ptr });
     try std.testing.expectEqual(@as(usize, 0), sigs.len);
+}
+
+// =========================================================================
+// 17. Diagnostic refiner hook (Block 4a)
+//
+// The engine emits one generic no-match diagnostic; constructors want better
+// wording ("requires 3 components, got 4", "not a mix", "did you mean
+// vec3?"). `resolveTargetedRefined` gives a caller-installed refiner the
+// failure path. Still engine-only — the validator does not install a refiner
+// until Block 4b, where the swapped-in messages become wire-visible in the
+// validate JSON / LSP payloads (called out there). These tests install a
+// probe refiner directly to pin the mechanism.
+// =========================================================================
+
+const RefinerProbe = struct { calls: u32 = 0 };
+
+fn probeRefine(ctx: *anyopaque, input: Overload.RefineInput) ?Overload.RefinedDiagnostic {
+    const p: *RefinerProbe = @ptrCast(@alignCast(ctx));
+    p.calls += 1;
+    // Thread first_bad_arg into the message to prove it is delivered.
+    return .{
+        .code = "E0204",
+        .message = if (input.first_bad_arg == 1)
+            "refined: culprit is argument 1"
+        else
+            "refined: constructor mismatch",
+    };
+}
+
+fn nullRefine(ctx: *anyopaque, input: Overload.RefineInput) ?Overload.RefinedDiagnostic {
+    _ = ctx;
+    _ = input;
+    return null;
+}
+
+test "refiner: no-match surfaces a refined diagnostic carrying the culprit arg" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    var probe = RefinerProbe{};
+    const refiner = Overload.DiagnosticRefiner{ .ctx = &probe, .refine = &probeRefine };
+    // Mixed scalar/vector args → fold fails; culprit is the last arg (index 1).
+    const args = [_]?Types.Type{ Types.F32, v2f_t };
+    const r = Overload.resolveTargetedRefined(&sigs, m2x2f_t, &args, refiner);
+    try std.testing.expect(r == .err);
+    try std.testing.expect(r.err.refined != null);
+    try std.testing.expectEqualStrings("E0204", r.err.refined.?.code);
+    try std.testing.expectEqualStrings("refined: culprit is argument 1", r.err.refined.?.message);
+    try std.testing.expectEqual(@as(u32, 1), probe.calls);
+}
+
+test "refiner: not invoked on a successful resolution" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    var probe = RefinerProbe{};
+    const refiner = Overload.DiagnosticRefiner{ .ctx = &probe, .refine = &probeRefine };
+    const args = [_]?Types.Type{ v2f_t, v2f_t };
+    const r = Overload.resolveTargetedRefined(&sigs, m2x2f_t, &args, refiner);
+    try std.testing.expect(r == .ok);
+    try std.testing.expectEqual(@as(u32, 0), probe.calls);
+}
+
+test "refiner: absent refiner leaves refined null on failure" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, v2f_t };
+    const r = Overload.resolveTargetedRefined(&sigs, m2x2f_t, &args, null);
+    try std.testing.expect(r == .err);
+    try std.testing.expect(r.err.refined == null);
+}
+
+test "refiner: a refiner returning null leaves refined null" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    var probe = RefinerProbe{};
+    const refiner = Overload.DiagnosticRefiner{ .ctx = &probe, .refine = &nullRefine };
+    const args = [_]?Types.Type{ Types.F32, v2f_t };
+    const r = Overload.resolveTargetedRefined(&sigs, m2x2f_t, &args, refiner);
+    try std.testing.expect(r == .err);
+    try std.testing.expect(r.err.refined == null);
+}
+
+test "refiner: plain resolveTargeted has no refined field set" {
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    const args = [_]?Types.Type{ Types.F32, v2f_t };
+    const r = Overload.resolveTargeted(&sigs, m2x2f_t, &args);
+    try std.testing.expect(r == .err);
+    try std.testing.expect(r.err.refined == null);
 }

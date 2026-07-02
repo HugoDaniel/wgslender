@@ -258,6 +258,10 @@ pub const ResolveFailure = struct {
     /// scalar family / shape description for that slot. Kept minimal —
     /// diagnostics are the Validator's responsibility.
     first_bad_arg: u8 = 0,
+    /// A call-site-specific message installed by a `DiagnosticRefiner` on the
+    /// `resolveTargetedRefined` path (null everywhere else). Constructors set
+    /// one so "requires 3 components, got 4" beats the generic no-match.
+    refined: ?RefinedDiagnostic = null,
 };
 
 pub const ResolveResult = union(enum) {
@@ -418,6 +422,58 @@ pub fn resolveTargeted(
         .ok => .{ .ok = target },
         .err => |f| .{ .err = f },
     };
+}
+
+/// A call-site-specific diagnostic produced on the failure path. `code` is
+/// the diagnostic code string (e.g. "E0204"); the engine stays free of a
+/// `Diagnostic` import, so the code travels as text and the caller maps it.
+pub const RefinedDiagnostic = struct {
+    code: []const u8,
+    message: []const u8,
+};
+
+/// Everything a refiner is allowed to see on a no-match: the candidate set,
+/// the argument types, and the solver's best guess at the culprit argument.
+/// Deliberately narrow — the refiner does NOT see the AST. If a refinement
+/// needs AST context it belongs in a post-engine sweep at the call site.
+pub const RefineInput = struct {
+    sigs: []const OverloadSig,
+    arg_types: []const ?Types.Type,
+    first_bad_arg: u8,
+};
+
+/// A caller-installed hook that turns an engine no-match into a better
+/// message. `ctx` is threaded straight back to `refine` (typically a
+/// `*Validator`). Builtins pass no refiner and get the generic diagnostic;
+/// constructors install one that knows about width-off-by-one, matrix
+/// arg-kind mixing, and component-sum-vs-width (wired in Block 4b).
+pub const DiagnosticRefiner = struct {
+    ctx: *anyopaque,
+    refine: *const fn (ctx: *anyopaque, input: RefineInput) ?RefinedDiagnostic,
+};
+
+/// Like `resolveTargeted`, but on failure gives an optional `refiner` the
+/// chance to replace the generic no-match with a call-site message (stored
+/// in `ResolveFailure.refined`). A null refiner — or one that returns null —
+/// leaves `refined` null and the caller falls back to its generic wording.
+pub fn resolveTargetedRefined(
+    sigs: []const OverloadSig,
+    target: Types.Type,
+    arg_types: []const ?Types.Type,
+    refiner: ?DiagnosticRefiner,
+) TargetedResult {
+    var result = resolveTargeted(sigs, target, arg_types);
+    if (result == .err) {
+        if (refiner) |rf| {
+            const input = RefineInput{
+                .sigs = sigs,
+                .arg_types = arg_types,
+                .first_bad_arg = result.err.first_bad_arg,
+            };
+            if (rf.refine(rf.ctx, input)) |rd| result.err.refined = rd;
+        }
+    }
+    return result;
 }
 
 /// Unify one argument against one parameter pattern, updating `bindings`.
