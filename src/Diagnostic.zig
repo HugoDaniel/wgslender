@@ -710,6 +710,25 @@ pub fn clear(self: *Diagnostic) void {
     self.has_errors = false;
 }
 
+/// A point in the diagnostic stream to roll back to. Captures both the entry
+/// count and the sticky `has_errors` flag, since `add` sets the flag out of
+/// band from the list.
+pub const Savepoint = struct { len: usize, has_errors: bool };
+
+/// Capture the current position for a later `rewind`.
+pub fn mark(self: *const Diagnostic) Savepoint {
+    return .{ .len = self.diagnostics.items.len, .has_errors = self.has_errors };
+}
+
+/// Discard every diagnostic added since `sp`, restoring the `has_errors` flag.
+/// Lets a speculative pass (e.g. the alias-resolution fixpoint) try a resolve
+/// and drop its errors when it will be retried successfully on a later pass.
+pub fn rewind(self: *Diagnostic, sp: Savepoint) void {
+    assert(sp.len <= self.diagnostics.items.len);
+    self.diagnostics.items.len = sp.len;
+    self.has_errors = sp.has_errors;
+}
+
 // =========================================================================
 // DiagnosticCode constants
 // =========================================================================

@@ -475,6 +475,59 @@ test "fp guard: pointer argument with wrong pointee type still rejected" {
     try std.testing.expect(!result.valid);
 }
 
+// --- Fix: out-of-order type-alias references ---
+// WGSL module-scope declarations are order-independent, so a type alias (or a
+// struct field) may reference an alias declared textually later. wgslender
+// resolved aliases in a single textual-order pass, so a forward reference to a
+// not-yet-resolved alias hit its `null` placeholder and mis-reported
+// E0200 "unknown type 'T'; did you mean 'T'?" (the self-suggestion is the tell:
+// the name IS in scope). Forward references to a later struct already worked
+// (structs get a non-null placeholder in phase 1); only aliases were broken.
+// Tint accepts all of these (tint corpus out_of_order_decls/{alias,struct}/*).
+
+test "fp: out-of-order type-alias references resolve" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const ok = [_][]const u8{
+        // alias -> later alias (the core failing case)
+        "alias T1 = T2;\nalias T2 = i32;\n@fragment fn f() { var v : T1; _ = v; }",
+        // struct field -> later alias
+        "struct S { m : T, }\nalias T = i32;\n@fragment fn f() { var v : S; _ = v.m; }",
+        // longer reverse chain needs the fixpoint (T1->T2->T3->i32, all reversed)
+        "alias T1 = T2;\nalias T2 = T3;\nalias T3 = i32;\n@fragment fn f() { var v : T1; _ = v; }",
+        // alias -> later struct (already worked — regression guard)
+        "alias T = S;\nstruct S { m : i32, }\n@fragment fn f() { var v : T; _ = v.m; }",
+        // struct -> later struct (already worked — regression guard)
+        "struct S1 { m : S2, }\nstruct S2 { m : i32, }\n@fragment fn f() { var v : S1; _ = v.m.m; }",
+        // module-scope var typed by a later alias
+        "var<private> A : array<T, 4>;\nalias T = i32;\n@fragment fn f() { A[0] = 1; }",
+    };
+    for (ok) |src| {
+        const result = try runValidation(a, src);
+        if (!result.valid) std.debug.print("\nexpected valid: {s}\n", .{src});
+        try std.testing.expect(result.valid);
+        try std.testing.expect(!hasDiagCode(result, "E0200"));
+    }
+}
+
+test "fp guard: genuinely-undefined and cyclic aliases still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Making forward references resolve must not blanket-accept: an alias to a
+    // truly-undefined type, and a self-referential alias cycle, must still fail.
+    const bad = [_][]const u8{
+        "alias T = DoesNotExist;\n@fragment fn f() { var v : T; _ = v; }",
+        "alias A = B;\nalias B = A;\n@fragment fn f() { var v : A; _ = v; }",
+    };
+    for (bad) |src| {
+        const result = try runValidation(a, src);
+        if (result.valid) std.debug.print("\nexpected invalid: {s}\n", .{src});
+        try std.testing.expect(!result.valid);
+    }
+}
+
 // =========================================================================
 // Annotation-driven tests from testdata/validation/
 // =========================================================================

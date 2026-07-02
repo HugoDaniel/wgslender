@@ -348,6 +348,9 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     // Phase 1: Collect type declarations (structs, aliases)
     try v.collectTypeDeclarations();
 
+    // Phase 1.5: Resolve type aliases (order-independent forward refs)
+    try v.resolveAliasTypes();
+
     // Phase 2: Resolve struct layouts
     try v.resolveStructLayouts();
 
@@ -424,6 +427,7 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
     try v.processDirectives();
     v.checkReservedIdentifiers();
     try v.collectTypeDeclarations();
+    try v.resolveAliasTypes();
     try v.resolveStructLayouts();
     try v.checkRecursiveStructs();
     try v.validateDeclarations();
@@ -466,6 +470,7 @@ const _Declarations = @import("validator/Declarations.zig");
 pub const processDirectives = _Declarations.processDirectives;
 pub const checkReservedIdentifiers = _Declarations.checkReservedIdentifiers;
 pub const collectTypeDeclarations = _Declarations.collectTypeDeclarations;
+pub const resolveAliasTypes = _Declarations.resolveAliasTypes;
 pub const resolveStructLayouts = _Declarations.resolveStructLayouts;
 pub const checkRecursiveStructs = _Declarations.checkRecursiveStructs;
 pub const validateDeclarations = _Declarations.validateDeclarations;

@@ -177,22 +177,84 @@ pub fn collectTypeDeclarations(v: *Validator) Allocator.Error!void {
 }
 
 // =========================================================================
+// Phase 1.5: Resolve Type Aliases (order-independent)
+// =========================================================================
+
+/// Resolve every module-scope type alias into `alias_types`.
+///
+/// WGSL module-scope declarations are order-independent, so an alias may
+/// reference another alias (or struct) declared textually later. A single
+/// textual-order pass fails such forward chains — the later alias still holds
+/// its `null` phase-1 placeholder — so we run a bounded fixpoint: each pass
+/// speculatively resolves any still-unresolved alias, and an alias whose
+/// dependencies became known in an earlier pass now succeeds. Errors emitted by
+/// a speculative attempt (a forward ref that will resolve on a later pass) are
+/// rolled back via a diagnostic savepoint; only the final reporting pass keeps
+/// diagnostics, so genuinely-undefined or cyclic aliases still fail exactly
+/// once. Runs before `resolveStructLayouts` so struct fields see all aliases.
+pub fn resolveAliasTypes(v: *Validator) Allocator.Error!void {
+    const alias_count = v.alias_types.count();
+    if (alias_count == 0) return;
+    std.debug.assert(v.module.declarations.items.len > 0);
+    std.debug.assert(v.module.source.len < std.math.maxInt(u32));
+
+    // Bounded fixpoint. A linear reverse chain (T1->T2->...->Tn) resolves one
+    // alias per pass, so `alias_count` passes suffice; +1 lets the final pass
+    // observe "no progress" and stop early. `else` is unreachable in practice
+    // (a DAG always converges; cycles make no progress and break out).
+    var resolved_any = true;
+    for (0..alias_count + 1) |_| {
+        if (!resolved_any) break;
+        resolved_any = false;
+        for (v.module.declarations.items) |decl| {
+            const d = switch (decl) {
+                .alias => |a| a,
+                else => continue,
+            };
+            const name = v.symbolName(d.name);
+            if (name.len == 0) continue;
+            if (v.alias_types.get(name)) |slot| {
+                if (slot != null) continue; // already resolved
+            }
+            const savepoint = v.diags.mark();
+            if (v.resolveType(d.typ)) |at| {
+                try v.alias_types.put(v.arena, name, at);
+                resolved_any = true;
+            } else {
+                // Forward ref to a not-yet-resolved alias (or a genuine error):
+                // discard the speculative diagnostics; the final pass reports.
+                v.diags.rewind(savepoint);
+            }
+        }
+    }
+
+    // Final reporting pass: any alias still `null` is genuinely undefined or
+    // part of a cycle. Re-resolve (reporting) to emit the precise diagnostic,
+    // then the alias-level summary — matching the pre-fixpoint behavior.
+    for (v.module.declarations.items) |decl| {
+        const d = switch (decl) {
+            .alias => |a| a,
+            else => continue,
+        };
+        const name = v.symbolName(d.name);
+        if (name.len == 0) continue;
+        const slot = v.alias_types.get(name) orelse continue;
+        if (slot != null) continue;
+        _ = v.resolveType(d.typ);
+        v.addErrorR(v.symbolRange(d.name), v.fmtError("cannot resolve type alias '{s}'", .{name}));
+    }
+}
+
+// =========================================================================
 // Phase 2: Resolve Struct Layouts
 // =========================================================================
 
 pub fn resolveStructLayouts(v: *Validator) Allocator.Error!void {
+    // Aliases are resolved earlier in `resolveAliasTypes`; this pass is
+    // structs-only so struct fields can reference forward-declared aliases.
     for (v.module.declarations.items) |decl| {
         switch (decl) {
             .@"struct" => |d| try resolveOneStructLayout(v, d),
-            .alias => |d| {
-                const name = v.symbolName(d.name);
-                const alias_type = v.resolveType(d.typ);
-                if (alias_type) |at| {
-                    try v.alias_types.put(v.arena, name, at);
-                } else {
-                    v.addErrorR(v.symbolRange(d.name), v.fmtError("cannot resolve type alias '{s}'", .{name}));
-                }
-            },
             else => {},
         }
     }
