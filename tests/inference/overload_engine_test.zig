@@ -1163,3 +1163,107 @@ test "resolveTargeted: reduction sig with zero args is an arity mismatch" {
     try std.testing.expect(r == .err);
     try std.testing.expectEqual(Overload.ResolveError.arg_count_mismatch, r.err.kind);
 }
+
+// =========================================================================
+// 16. ctorSigsFor — per-target constructor signature derivation (Block 4a)
+//
+// One function emits the whole overload set for a target type; the tests
+// drive it through `resolveTargeted`. Still engine-only — no validator
+// wiring. The single-composite copy/convert form admits only implicit
+// element conversions here; the explicit form (`vec2f(vec2h(..))`, WGSL
+// §16.2.2) is completed when the validator is migrated in Block 4b.
+// =========================================================================
+
+fn ok(sigs: []const Overload.OverloadSig, target: Types.Type, args: []const ?Types.Type) bool {
+    return Overload.resolveTargeted(sigs, target, args) == .ok;
+}
+
+test "ctorSigsFor scalar: any scalar converts, non-scalar rejected, arity" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), Types.F32);
+    try std.testing.expect(ok(sigs, Types.F32, &.{Types.I32})); // f32(i32): explicit
+    try std.testing.expect(ok(sigs, Types.F32, &.{})); // f32(): zero-value
+    try std.testing.expect(!ok(sigs, Types.F32, &.{v2f_t})); // f32(vec2): rejected
+    try std.testing.expect(!ok(sigs, Types.F32, &.{ Types.F32, Types.F32 })); // arity
+}
+
+test "ctorSigsFor vector: splat / compose / copy / zero-arg; width mismatch rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v4f_t);
+    try std.testing.expect(ok(sigs, v4f_t, &.{Types.F32})); // splat
+    try std.testing.expect(ok(sigs, v4f_t, &.{ Types.F32, v2f_t, Types.F32 })); // compose
+    try std.testing.expect(ok(sigs, v4f_t, &.{v4f_t})); // copy
+    try std.testing.expect(ok(sigs, v4f_t, &.{})); // zero-value
+    try std.testing.expect(!ok(sigs, v4f_t, &.{ Types.F32, Types.F32, Types.F32 })); // width 3 != 4
+    const r = Overload.resolveTargeted(sigs, v4f_t, &.{Types.F32});
+    try std.testing.expectEqualStrings("vec4<f32>", r.ok.string());
+}
+
+test "ctorSigsFor vector: abstract-int splat converts to f32 element" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v4f_t);
+    try std.testing.expect(ok(sigs, v4f_t, &.{Types.AbstractInt})); // vec4f(1)
+    try std.testing.expect(!ok(sigs, v4f_t, &.{Types.I32})); // vec4f(1i): no implicit i32->f32
+}
+
+test "ctorSigsFor matrix: scalars / column vectors / copy / zero-arg; mix rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), m2x2f_t);
+    try std.testing.expect(ok(sigs, m2x2f_t, &.{ Types.F32, Types.F32, Types.F32, Types.F32 }));
+    try std.testing.expect(ok(sigs, m2x2f_t, &.{ v2f_t, v2f_t }));
+    try std.testing.expect(ok(sigs, m2x2f_t, &.{m2x2f_t})); // copy
+    try std.testing.expect(ok(sigs, m2x2f_t, &.{})); // zero-value
+    try std.testing.expect(!ok(sigs, m2x2f_t, &.{ Types.F32, v2f_t })); // mix
+}
+
+test "ctorSigsFor struct: positional args, arity, field mismatch, field convert, zero-arg" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const fields = try arena.allocator().alloc(Types.StructField, 2);
+    fields[0] = .{ .name = "a", .typ = Types.I32, .offset = 0 };
+    fields[1] = .{ .name = "b", .typ = Types.F32, .offset = 0 };
+    const st = try arena.allocator().create(Types.Struct);
+    st.* = .{ .name = "S", .fields = fields, .size_bytes = 0, .align_bytes = 0, .has_runtime_array = false };
+    const target: Types.Type = .{ .@"struct" = st };
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), target);
+    try std.testing.expect(ok(sigs, target, &.{ Types.I32, Types.F32 })); // positional
+    try std.testing.expect(ok(sigs, target, &.{})); // zero-value
+    try std.testing.expect(ok(sigs, target, &.{ Types.AbstractInt, Types.AbstractFloat })); // field convert
+    try std.testing.expect(!ok(sigs, target, &.{Types.I32})); // arity
+    try std.testing.expect(!ok(sigs, target, &.{ v2f_t, Types.F32 })); // field 'a' type mismatch
+}
+
+test "ctorSigsFor array: fixed count positional, arity, element convert, zero-arg" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const arr = Types.Array{ .element = Types.F32, .count = 3 };
+    const target: Types.Type = .{ .array = &arr };
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), target);
+    try std.testing.expect(ok(sigs, target, &.{ Types.F32, Types.F32, Types.F32 }));
+    try std.testing.expect(ok(sigs, target, &.{})); // zero-value
+    try std.testing.expect(ok(sigs, target, &.{ Types.AbstractInt, Types.AbstractInt, Types.AbstractInt })); // convert
+    try std.testing.expect(!ok(sigs, target, &.{ Types.F32, Types.F32 })); // arity
+    try std.testing.expect(!ok(sigs, target, &.{ Types.Bool, Types.Bool, Types.Bool })); // bad element
+}
+
+test "ctorSigsFor runtime array: only the zero-value form, no positional ctor" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const arr = Types.Array{ .element = Types.F32, .count = 0 };
+    const target: Types.Type = .{ .array = &arr };
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), target);
+    try std.testing.expect(ok(sigs, target, &.{})); // runtime-array zero-value
+    try std.testing.expect(!ok(sigs, target, &.{Types.F32})); // no element ctor
+}
+
+test "ctorSigsFor non-constructible target yields an empty sig set" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const ptr = Types.Pointer{ .address_space = .function, .element = Types.F32, .access_mode = .read_write };
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), .{ .pointer = &ptr });
+    try std.testing.expectEqual(@as(usize, 0), sigs.len);
+}

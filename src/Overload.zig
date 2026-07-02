@@ -831,6 +831,98 @@ pub fn buildPatternType(
 }
 
 // =========================================================================
+// Constructor signature derivation
+// =========================================================================
+
+/// Emit the value-constructor overload set for `target`, for use with
+/// `resolveTargeted`. All constructor knowledge lives here instead of being
+/// scattered across a `switch (t)` with per-arm sub-switches — a new
+/// constructor shape is one arm here, not a new validator branch. A
+/// non-constructible target yields an empty set (the caller gates
+/// constructibility separately).
+pub fn ctorSigsFor(arena: std.mem.Allocator, target: Types.Type) std.mem.Allocator.Error![]const OverloadSig {
+    return switch (target) {
+        .scalar => try scalarCtorSigs(arena, target),
+        .vector => |ve| try vectorCtorSigs(arena, target, ve),
+        .matrix => |mt| try matrixCtorSigs(arena, target, mt),
+        .@"struct" => |st| try structCtorSigs(arena, target, st),
+        .array => |arr| try arrayCtorSigs(arena, target, arr),
+        else => &.{},
+    };
+}
+
+/// A zero-parameter sig — the zero-value constructor form `T()`.
+fn zeroValueSig(target: Types.Type) OverloadSig {
+    return .{ .tparam_count = 0, .params = &[_]Pattern{}, .result = .{ .fixed = target } };
+}
+
+/// A one-parameter constructor sig with a fixed result.
+fn onePatternSig(arena: std.mem.Allocator, target: Types.Type, p: Pattern) std.mem.Allocator.Error!OverloadSig {
+    const params = try arena.alloc(Pattern, 1);
+    params[0] = p;
+    return .{ .tparam_count = 0, .params = params, .result = .{ .fixed = target } };
+}
+
+/// Scalar `T`: zero-value, and the explicit conversion `T(any scalar)` —
+/// scalar value constructors convert any scalar to any scalar (`f32(1i)`).
+fn scalarCtorSigs(arena: std.mem.Allocator, target: Types.Type) std.mem.Allocator.Error![]const OverloadSig {
+    const sigs = try arena.alloc(OverloadSig, 2);
+    sigs[0] = zeroValueSig(target);
+    sigs[1] = try onePatternSig(arena, target, .{ .tparam_scalar = .{ .idx = 0, .family = .any } });
+    return sigs;
+}
+
+/// Vector `vecN<E>`: zero-value, splat (a single scalar convertible to E),
+/// copy/convert (a single same-width vector), and variadic composition.
+fn vectorCtorSigs(arena: std.mem.Allocator, target: Types.Type, ve: *const Types.Vector) std.mem.Allocator.Error![]const OverloadSig {
+    const elem_t: Types.Type = .{ .scalar = ve.element };
+    const sigs = try arena.alloc(OverloadSig, 4);
+    sigs[0] = zeroValueSig(target);
+    sigs[1] = try onePatternSig(arena, target, .{ .concrete = elem_t }); // splat
+    sigs[2] = try onePatternSig(arena, target, .{ .concrete = target }); // copy/convert (implicit here; 4b adds explicit)
+    sigs[3] = try onePatternSig(arena, target, .{ .variadic_components_to_width = .{ .width = ve.width, .elem = elem_t } });
+    return sigs;
+}
+
+/// Matrix `matCxR<E>`: zero-value, copy/convert, and the scalar/column-vector
+/// dichotomy.
+fn matrixCtorSigs(arena: std.mem.Allocator, target: Types.Type, mt: *const Types.Matrix) std.mem.Allocator.Error![]const OverloadSig {
+    const elem_t: Types.Type = .{ .scalar = mt.element };
+    const sigs = try arena.alloc(OverloadSig, 3);
+    sigs[0] = zeroValueSig(target);
+    sigs[1] = try onePatternSig(arena, target, .{ .concrete = target }); // copy/convert
+    sigs[2] = try onePatternSig(arena, target, .{ .all_scalar_or_all_vector = .{ .cols = mt.cols, .rows = mt.rows, .elem = elem_t } });
+    return sigs;
+}
+
+/// Struct `S`: zero-value, and positional `(T1, …, TN) -> S` with per-field
+/// implicit convertibility.
+fn structCtorSigs(arena: std.mem.Allocator, target: Types.Type, st: *const Types.Struct) std.mem.Allocator.Error![]const OverloadSig {
+    const sigs = try arena.alloc(OverloadSig, 2);
+    sigs[0] = zeroValueSig(target);
+    const params = try arena.alloc(Pattern, st.fields.len);
+    for (st.fields, 0..) |field, i| params[i] = .{ .concrete = field.typ };
+    sigs[1] = .{ .tparam_count = 0, .params = params, .result = .{ .fixed = target } };
+    return sigs;
+}
+
+/// Array `array<E, N>`: zero-value, and positional `(E, …, E) × N`.
+/// Runtime-sized arrays (`count == 0`) have no element-constructor form.
+fn arrayCtorSigs(arena: std.mem.Allocator, target: Types.Type, arr: *const Types.Array) std.mem.Allocator.Error![]const OverloadSig {
+    if (arr.count == 0) {
+        const sigs = try arena.alloc(OverloadSig, 1);
+        sigs[0] = zeroValueSig(target);
+        return sigs;
+    }
+    const sigs = try arena.alloc(OverloadSig, 2);
+    sigs[0] = zeroValueSig(target);
+    const params = try arena.alloc(Pattern, arr.count);
+    for (params) |*p| p.* = .{ .concrete = arr.element };
+    sigs[1] = .{ .tparam_count = 0, .params = params, .result = .{ .fixed = target } };
+    return sigs;
+}
+
+// =========================================================================
 // Tests (module-local, exercise the solver without touching the validator)
 // =========================================================================
 
