@@ -2551,3 +2551,131 @@ test "fp guard: address-of deref-of-non-pointer is still rejected" {
     try std.testing.expect(!result.valid);
     try std.testing.expect(hasDiagCode(result, "E0214"));
 }
+
+// --- Fix: `break` inside a nested loop/switch within a continuing block ---
+//
+// WGSL forbids a plain `break` in a `continuing` block because it would exit the
+// loop the continuing belongs to (only `break if` may). But a `break` nested in
+// a loop/switch/for/while *inside* the continuing block targets that nested
+// construct, not the outer loop, so it is legal — Tint accepts it. wgslender
+// gated the check on a single `in_continuing` flag that stayed set through nested
+// constructs; the dedicated `break_exits_continuing` flag is cleared when a
+// nested break-target body begins, so only a `break` that would truly exit the
+// continuing's loop is rejected. (`in_continuing` is left untouched — the
+// nesting-insensitive `return`-in-continuing rule still uses it.)
+
+test "fp: break inside a nested loop within a continuing block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Mirrors bug/tint/354627692.wgsl verbatim: the two `break`s target the inner
+    // loop, and `break if` legally ends the continuing block.
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0)
+        \\var<storage, read_write> buffer : i32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var i : i32 = buffer;
+        \\  loop {
+        \\    continuing {
+        \\      loop {
+        \\        if (i > 5) {
+        \\          i = i * 2;
+        \\          break;
+        \\        } else {
+        \\          i = i * 2;
+        \\          break;
+        \\        }
+        \\      }
+        \\      break if i > 10;
+        \\    }
+        \\  }
+        \\  buffer = i;
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0500"));
+}
+
+test "fp: break inside a nested switch within a continuing block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A `break` in a switch case targets the switch, so it is legal even when the
+    // switch is nested inside a continuing block. (The `default` case falls
+    // through so the switch does not terminate — keeping the trailing `break if`
+    // reachable, i.e. free of an unrelated E0503.)
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var i : i32 = 0;
+        \\  loop {
+        \\    continuing {
+        \\      switch i {
+        \\        case 0: { break; }
+        \\        default: { i = i + 1; }
+        \\      }
+        \\      break if i > 10;
+        \\    }
+        \\  }
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0500"));
+}
+
+test "fp: break inside a nested for within a continuing block" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A `break` in a for-loop body targets the for-loop, legal inside a continuing.
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var i : i32 = 0;
+        \\  loop {
+        \\    continuing {
+        \\      for (var j : i32 = 0; j < 3; j++) { break; }
+        \\      break if i > 10;
+        \\    }
+        \\  }
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0500"));
+}
+
+test "fp guard: plain break directly in a continuing block is still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // No nested loop/switch re-targets this break — it would exit the loop from
+    // its continuing block, which WGSL forbids.
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  loop {
+        \\    continuing {
+        \\      break;
+        \\    }
+        \\  }
+        \\}
+    );
+    try std.testing.expect(hasDiagCode(result, "E0500"));
+}
+
+test "fp guard: break inside an if in a continuing block is still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // An `if` is not a break target, so this break still exits the continuing's
+    // loop — the flag is cleared only by a nested loop/switch, not by an `if`.
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var i : i32 = 0;
+        \\  loop {
+        \\    continuing {
+        \\      if (i > 5) { break; }
+        \\      break if i > 10;
+        \\    }
+        \\  }
+        \\}
+    );
+    try std.testing.expect(hasDiagCode(result, "E0500"));
+}

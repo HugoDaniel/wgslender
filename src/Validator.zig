@@ -276,6 +276,13 @@ current_stage: ShaderStage = .none,
 in_loop: bool = false,
 in_switch: bool = false,
 in_continuing: bool = false,
+/// True when a plain `break` at the current position would exit the loop whose
+/// `continuing` block encloses it — i.e. we are lexically inside a continuing
+/// block with no intervening nested loop/switch/for/while (which would re-target
+/// the break to itself). Distinct from `in_continuing`, which the
+/// nesting-insensitive `return`-in-continuing rule uses: a nested break-target
+/// body clears this flag while `in_continuing` stays set.
+break_exits_continuing: bool = false,
 return_type: ?Types.Type = null,
 has_return: bool = false,
 expr_depth: u32 = 0,

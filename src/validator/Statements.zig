@@ -48,6 +48,7 @@ pub fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
     v.current_func = fn_decl;
     v.in_loop = false;
     v.in_switch = false;
+    v.break_exits_continuing = false;
     v.has_return = false;
     v.current_stage = determineShaderStage(fn_decl);
 
@@ -295,6 +296,9 @@ pub fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!voi
 
     const prev_in_switch = v.in_switch;
     v.in_switch = true;
+    // A `break` in a case body targets this switch (see break_exits_continuing).
+    const prev_bec = v.break_exits_continuing;
+    v.break_exits_continuing = false;
 
     var default_count: u32 = 0;
     var seen_values: std.AutoHashMapUnmanaged(i64, u32) = .{};
@@ -335,6 +339,7 @@ pub fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!voi
         v.addErrorWithCodeR(exprSpan(s.expr), Diagnostic.Code.missing_default_case, "switch statement must have a default clause");
     }
 
+    v.break_exits_continuing = prev_bec;
     v.in_switch = prev_in_switch;
 }
 
@@ -342,11 +347,22 @@ pub fn validateLoopStmt(v: *Validator, s: *Ast.LoopStmt) Allocator.Error!void {
     const prev_in_loop = v.in_loop;
     v.in_loop = true;
 
+    // A `break` in this loop's body targets this loop, not any enclosing
+    // continuing block, so it is legal here.
+    const prev_body_bec = v.break_exits_continuing;
+    v.break_exits_continuing = false;
     try validateCompoundStmt(v, s.body);
+    v.break_exits_continuing = prev_body_bec;
+
     if (s.continuing) |cont| {
         const prev_in_continuing = v.in_continuing;
         v.in_continuing = true;
+        // A plain `break` directly in the continuing block would exit THIS loop,
+        // which WGSL forbids (a nested loop/switch below clears this again).
+        const prev_cont_bec = v.break_exits_continuing;
+        v.break_exits_continuing = true;
         try validateCompoundStmt(v, cont);
+        v.break_exits_continuing = prev_cont_bec;
         v.in_continuing = prev_in_continuing;
 
         // Spec: break if must be the last statement in a continuing block.
@@ -377,7 +393,11 @@ pub fn validateWhileStmt(v: *Validator, s: *Ast.WhileStmt) Allocator.Error!void 
 
     const prev_in_loop = v.in_loop;
     v.in_loop = true;
+    // A `break` in the body targets this loop (see break_exits_continuing).
+    const prev_bec = v.break_exits_continuing;
+    v.break_exits_continuing = false;
     try validateCompoundStmt(v, s.body);
+    v.break_exits_continuing = prev_bec;
     v.in_loop = prev_in_loop;
 }
 
@@ -399,7 +419,11 @@ pub fn validateForStmt(v: *Validator, s: *Ast.ForStmt) Allocator.Error!void {
 
     const prev_in_loop = v.in_loop;
     v.in_loop = true;
+    // A `break` in the body targets this loop (see break_exits_continuing).
+    const prev_bec = v.break_exits_continuing;
+    v.break_exits_continuing = false;
     try validateCompoundStmt(v, s.body);
+    v.break_exits_continuing = prev_bec;
     v.in_loop = prev_in_loop;
 }
 
@@ -407,7 +431,7 @@ pub fn validateBreakStmt(v: *Validator, s: *Ast.BreakStmt) void {
     const r: LocRange = .{ .start = s.loc, .end = s.loc +| 5 }; // "break"
     if (!v.in_loop and !v.in_switch) {
         v.addErrorWithCodeR(r, Diagnostic.Code.break_outside_loop, "break statement must be inside a loop or switch");
-    } else if (v.in_continuing) {
+    } else if (v.break_exits_continuing) {
         v.addErrorWithCodeR(r, Diagnostic.Code.break_outside_loop, "'break' must not be used in a continuing block (use 'break if' instead)");
     }
 }
