@@ -2388,3 +2388,77 @@ test "fp guard: override inferred to a non-scalar still flags E0303" {
     );
     try std.testing.expect(hasDiagCode(result, "E0303"));
 }
+
+// --- Fix: frexp/modf are const-evaluable builtins ---
+//
+// WGSL §17.5 lists frexp and modf as const functions: `const res = frexp(1.25)`
+// is a valid const-expression (Tint const-folds them to an OpConstantComposite).
+// They were the lone numeric builtins marked `.runtime` in the Builtins table —
+// every other const-capable numeric (sin/cos/exp/sqrt/…) is `.const_eval` — so a
+// const-context frexp/modf was wrongly rejected with E0302 "initializer is not a
+// const-expression".
+
+test "fp: frexp of a const scalar is a const-expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  const in = 1.25;
+        \\  const res = frexp(in);
+        \\  let fract : f32 = res.fract;
+        \\  let exp : i32 = res.exp;
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0302"));
+}
+
+test "fp: modf of a const scalar is a const-expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  const in = 1.25;
+        \\  const res = modf(in);
+        \\  let fract : f32 = res.fract;
+        \\  let whole : f32 = res.whole;
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0302"));
+}
+
+test "fp: frexp of a const vector is a const-expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  const in = vec2(1.25, 3.75);
+        \\  const res = frexp(in);
+        \\  let fract : vec2<f32> = res.fract;
+        \\  let exp : vec2<i32> = res.exp;
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0302"));
+}
+
+test "fp guard: frexp of a runtime value is not a const-expression" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A const-eval builtin preserves its arguments' stage: `frexp` of a runtime
+    // `let` is still a runtime expression, so a const initialized from it must
+    // still be rejected — proving the fix propagates arg stage rather than
+    // blanket-accepting every frexp/modf call.
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  let in = 1.25;
+        \\  const res = frexp(in);
+        \\}
+    );
+    try std.testing.expect(hasDiagCode(result, "E0302"));
+}

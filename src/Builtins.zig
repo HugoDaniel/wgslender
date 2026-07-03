@@ -289,8 +289,13 @@ const numeric_matrix_entries = [_]struct { []const u8, Builtin }{
 
 const numeric_special_entries = [_]struct { []const u8, Builtin }{
     entry("ldexp", .numeric, .const_eval, .none, 2, 2, true),
-    entry("frexp", .numeric, .runtime, .none, 1, 1, true),
-    entry("modf", .numeric, .runtime, .none, 1, 1, true),
+    // frexp/modf are const functions (WGSL §17.5): `const r = frexp(1.25)` is a
+    // const-expression — Tint const-folds them to an OpConstantComposite. Their
+    // struct result has no bearing on eval stage; `.const_eval` (like every other
+    // const-capable numeric) lets a const arg stay const while a runtime arg still
+    // yields a runtime call. `.runtime` here wrongly forced E0302 in const context.
+    entry("frexp", .numeric, .const_eval, .none, 1, 1, true),
+    entry("modf", .numeric, .const_eval, .none, 1, 1, true),
     entry("quantizeToF16", .numeric, .const_eval, .none, 1, 1, true),
 };
 
