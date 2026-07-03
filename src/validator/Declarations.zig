@@ -648,9 +648,17 @@ pub fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error
     if (d.typ) |ast_type| {
         decl_type = v.resolveType(ast_type);
     } else if (d.initializer) |init| {
+        // No annotation: infer from the initializer and materialize any
+        // abstract type to its concrete default (abstract-int→i32,
+        // abstract-float→f32). An override is always a concrete, pipeline-
+        // overridable scalar, so `override x = 2;` has type i32 — exactly as a
+        // function-scope `const` concretizes (validateConstDecl, .concretize
+        // at ~:596). Keeping the type abstract here made the concrete-scalar
+        // check below reject a valid `override x = 2;` with E0303. Non-scalar
+        // inferences (e.g. `vec2(1, 2)`) stay non-scalar and still reject.
         const r_init = try v.checkExpr(init);
         init_r = r_init;
-        decl_type = r_init.typ;
+        decl_type = if (r_init.typ) |it| Types.concreteType(it) else null;
     }
 
     if (decl_type == null) {

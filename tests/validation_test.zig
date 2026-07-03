@@ -2331,3 +2331,60 @@ test "fp guard: statement after return still flags E0503 (fix is discard-specifi
     );
     try std.testing.expect(hasDiagCode(result, "E0503"));
 }
+
+// --- Fix: an un-annotated override materializes its abstract initializer ---
+//
+// An override is always a concrete pipeline-overridable scalar. When its type
+// is inferred from an un-suffixed numeric literal (`override x = 2;`), WGSL
+// materializes the abstract type to its concrete default (abstract-int→i32,
+// abstract-float→f32), exactly as a function-scope `const` concretizes. The
+// validator previously kept the inferred type abstract, then rejected it with
+// E0303 "'override x' must be bool, i32, u32, f32, or f16, got 'abstract-int'".
+
+test "fp: override with inferred abstract-int initializer materializes to i32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\override x = 2;
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0303"));
+}
+
+test "fp: override abstract-int as workgroup array size materializes to i32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Mirrors bug/tint/1660: the materialized override drives an array count.
+    const result = try runValidation(arena.allocator(),
+        \\override size = 2;
+        \\var<workgroup> a : array<f32, size>;
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  _ = a[0];
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0303"));
+}
+
+test "fp: override with inferred abstract-float initializer materializes to f32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\override f = 1.5;
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0303"));
+}
+
+test "fp guard: override inferred to a non-scalar still flags E0303" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Overrides must be scalar. `vec2(1, 2)` concretizes to vec2<i32> but stays
+    // a vector, so E0303 must still fire — proving the fix materializes the
+    // abstract type without blanket-removing the concrete-scalar requirement.
+    const result = try runValidation(arena.allocator(),
+        \\override v = vec2(1, 2);
+    );
+    try std.testing.expect(hasDiagCode(result, "E0303"));
+}
