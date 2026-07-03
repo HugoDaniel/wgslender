@@ -2242,13 +2242,24 @@ fn parseSwitchStmt(self: *Parser) !*Ast.SwitchStmt {
     while (self.currentTag() != .r_brace and self.currentTag() != .eof) {
         var c = Ast.SwitchCase{ .selectors = .empty, .body = undefined };
         if (self.eat(.keyword_default)) {
-            // default case
+            // Bare `default:` clause.
+            c.has_default = true;
         } else {
             _ = try self.expect(.keyword_case);
             self.expr_context = "in case selector";
-            if (try self.parseExpression()) |sel| try c.selectors.append(self.arena, sel);
+            // Each case selector is `default` or an expression (WGSL grammar),
+            // so a `default` may be mixed into the list: `case 1, default:`.
+            if (self.eat(.keyword_default)) {
+                c.has_default = true;
+            } else if (try self.parseExpression()) |sel| {
+                try c.selectors.append(self.arena, sel);
+            }
             while (self.eat(.comma)) {
-                if (try self.parseExpression()) |sel| try c.selectors.append(self.arena, sel);
+                if (self.eat(.keyword_default)) {
+                    c.has_default = true;
+                } else if (try self.parseExpression()) |sel| {
+                    try c.selectors.append(self.arena, sel);
+                }
             }
         }
         _ = try self.expect(.colon);

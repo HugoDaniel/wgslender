@@ -2679,3 +2679,174 @@ test "fp guard: break inside an if in a continuing block is still rejected" {
     );
     try std.testing.expect(hasDiagCode(result, "E0500"));
 }
+
+// --- Fix: `default` as a member of a `case` selector list ---
+// WGSL grammar: `case_selector: 'default' | expression`, so `default` may
+// appear anywhere in a `case`'s comma-separated selector list (e.g.
+// `case 1, default:`), and `case default:` is equivalent to a bare `default:`.
+// The parser modelled a case as EITHER a bare `default` OR `case <exprs>`, so a
+// `default` mixed into a selector list raised a spurious "expected expression in
+// case selector" and dropped the default — leaving the switch looking
+// default-less and firing E0307. These use the full pipeline (validateWithOptions
+// merges parse errors) so a lingering parse error also fails the accept cases.
+
+test "fp: default mixed into a case selector list" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // statements/switch/case_default_mixed.wgsl verbatim (Tint accepts).
+    const result = try wgslender.validateWithOptions(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn f() {
+        \\    var i : i32;
+        \\    var result : i32;
+        \\    switch(i) {
+        \\        case 0: {
+        \\            result = 10;
+        \\        }
+        \\        case 1, default: {
+        \\            result = 22;
+        \\        }
+        \\        case 2: {
+        \\            result = 33;
+        \\        }
+        \\    }
+        \\}
+    , .{});
+    try std.testing.expect(result.valid);
+}
+
+test "fp: default as the sole selector after case" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `case default:` is equivalent to a bare `default:`.
+    const result = try wgslender.validateWithOptions(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn f() {
+        \\    var i : i32;
+        \\    switch(i) {
+        \\        case default: {
+        \\            i = 1;
+        \\        }
+        \\    }
+        \\}
+    , .{});
+    try std.testing.expect(result.valid);
+}
+
+test "fp: multi-selector case with a trailing default" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // switch/switch_multi_selector.wgsl verbatim (Tint accepts).
+    const result = try wgslender.validateWithOptions(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn a() {
+        \\    var a = 0;
+        \\    switch(a) {
+        \\        case 0, 2, 4: {
+        \\            break;
+        \\        }
+        \\        case 1, default: {
+        \\            return;
+        \\        }
+        \\    }
+        \\}
+    , .{});
+    try std.testing.expect(result.valid);
+}
+
+test "fp: nested switches with mixed default selectors clear E0307" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // switch/switch_nested.wgsl verbatim (Tint accepts). Every nested switch
+    // now sees its default via a mixed selector list, so E0307 is cleared. The
+    // file still stays rejected via E0503 "code is unreachable" (the trailing
+    // `return`/`break` after a now-correctly-terminating inner switch) — a
+    // SEPARATE, deferred dead-code-taxonomy false positive (batch 6 already
+    // listed switch_nested among the E0503 fps). So assert E0307 is gone, not
+    // full validity, which the orthogonal E0503 sub-bug still blocks.
+    const result = try wgslender.validateWithOptions(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn a() {
+        \\    var a = 0;
+        \\    switch(a) {
+        \\        case 0, 2, 4: {
+        \\            var b = 3u;
+        \\            switch(b) {
+        \\                case 0: {
+        \\                    break;
+        \\                }
+        \\                case 1, 2, 3, default: {
+        \\                    var c = 123u;
+        \\                    switch(c) {
+        \\                        case 0: {
+        \\                            break;
+        \\                        }
+        \\                        default: {
+        \\                            return;
+        \\                        }
+        \\                    }
+        \\                    return;
+        \\                }
+        \\            }
+        \\            break;
+        \\        }
+        \\        case 1, default: {
+        \\            return;
+        \\        }
+        \\    }
+        \\}
+    , .{});
+    try std.testing.expect(!hasDiagCode(result, "E0307"));
+}
+
+test "fp guard: switch with no default clause is still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try wgslender.validateWithOptions(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn f() {
+        \\    var i : i32;
+        \\    switch(i) {
+        \\        case 0: { i = 1; }
+        \\        case 1: { i = 2; }
+        \\    }
+        \\}
+    , .{});
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0307"));
+}
+
+test "fp guard: bare default cannot carry extra selectors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A bare `default` clause takes no selectors — `default, 1:` is invalid WGSL.
+    const result = try wgslender.validateWithOptions(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn f() {
+        \\    var i : i32;
+        \\    switch(i) {
+        \\        case 0: { i = 1; }
+        \\        default, 1: { i = 2; }
+        \\    }
+        \\}
+    , .{});
+    try std.testing.expect(!result.valid);
+}
+
+test "fp guard: duplicate default (mixed plus bare) is still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `case 1, default:` provides the default; a second `default:` is a
+    // duplicate — proves has_default drives the multiple-default count.
+    const result = try wgslender.validateWithOptions(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn f() {
+        \\    var i : i32;
+        \\    switch(i) {
+        \\        case 1, default: { i = 1; }
+        \\        default: { i = 2; }
+        \\    }
+        \\}
+    , .{});
+    try std.testing.expect(!result.valid);
+}

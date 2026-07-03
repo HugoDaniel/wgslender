@@ -12,7 +12,6 @@ E0209 1 fp=1 tp=0 unk=0
 E0210 3 fp=3 tp=0 unk=0
 E0212 4 fp=4 tp=0 unk=0
 E0300 1 fp=1 tp=0 unk=0
-E0307 3 fp=3 tp=0 unk=0
 E0502 49 fp=5 tp=0 unk=44
 E0503 3 fp=3 tp=0 unk=0
 E0802 179 fp=6 tp=0 unk=173

@@ -1618,10 +1618,15 @@ const LowerCtx = struct {
 
             var c = Ast.SwitchCase{ .selectors = .empty, .body = undefined };
             if (w.eatToken(.keyword_default) != null) {
-                // default — no selectors
+                // Bare `default:` clause.
+                c.has_default = true;
             } else if (w.eatToken(.keyword_case) != null) {
+                // Each selector is a `default` token or an expression node —
+                // mirrors Parser.parseSwitchStmt so the two paths agree.
                 for (0..constants.max_tree_walk_iterations) |_| {
-                    if (w.eatAnyNode()) |sn| {
+                    if (w.eatToken(.keyword_default) != null) {
+                        c.has_default = true;
+                    } else if (w.eatAnyNode()) |sn| {
                         try c.selectors.append(self.arena, try self.lowerExpr(sn));
                     } else break;
                     if (w.eatToken(.comma) == null) break;

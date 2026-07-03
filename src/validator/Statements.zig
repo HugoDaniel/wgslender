@@ -188,7 +188,7 @@ pub fn stmtTerminates(root: Ast.Stmt) bool {
                 .@"switch" => |s| {
                     var has_default = false;
                     for (s.cases.items) |c| {
-                        if (c.selectors.items.len == 0) has_default = true;
+                        if (c.has_default) has_default = true;
                         if (c.body.stmts.items.len == 0) return false;
                         // Push each case's last statement — all must terminate
                         if (top >= stack.len) return false;
@@ -304,8 +304,8 @@ pub fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!voi
     var seen_values: std.AutoHashMapUnmanaged(i64, u32) = .{};
 
     for (s.cases.items) |case| {
-        if (case.selectors.items.len == 0) {
-            // Default case
+        if (case.has_default) {
+            // Default clause: a bare `default:` or a `default` selector.
             default_count += 1;
             if (default_count > 1) {
                 v.addErrorWithCodeR(exprSpan(s.expr), Diagnostic.Code.missing_default_case, "switch statement has multiple default clauses");

@@ -957,6 +957,7 @@ fn pushElseChain(self: *Printer, ec: Ast.Stmt, stack: *std.ArrayList(StmtWork)) 
 fn pushSwitchCase(self: *Printer, c: anytype, stack: *std.ArrayList(StmtWork)) error{OutOfMemory}!void {
     try self.emitNewline();
     if (c.selectors.items.len == 0) {
+        // Bare `default:` or `case default:` — both canonicalise to `default`.
         try self.emit("default");
     } else {
         try self.emit("case ");
@@ -966,6 +967,12 @@ fn pushSwitchCase(self: *Printer, c: anytype, stack: *std.ArrayList(StmtWork)) e
                 try self.emitSpace();
             }
             try self.printExpr(sel);
+        }
+        if (c.has_default) {
+            // `case 1, default:` — a default mixed with expression selectors.
+            try self.emit(",");
+            try self.emitSpace();
+            try self.emit("default");
         }
     }
     try self.emit(":");

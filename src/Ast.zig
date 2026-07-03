@@ -1111,6 +1111,13 @@ pub const SwitchStmt = struct {
 
 pub const SwitchCase = struct {
     selectors: std.ArrayList(Expr),
+    /// True when this clause acts as the switch's `default` — either a bare
+    /// `default:` clause or a `default` member of a `case` selector list
+    /// (`case 1, default:`). Expression selectors, if any, live in `selectors`.
+    /// This is the canonical default flag; do NOT infer default from
+    /// `selectors.len == 0` (a `case default:` has empty selectors AND a
+    /// `case 1, default:` has non-empty selectors — both are defaults).
+    has_default: bool = false,
     body: *CompoundStmt,
 };
 

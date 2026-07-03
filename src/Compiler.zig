@@ -929,6 +929,12 @@ const OpEmitter = struct {
                                     }
                                     try self.emitExpr(sel);
                                 }
+                                if (c.has_default) {
+                                    // `case 1, default:` — default mixed with selectors.
+                                    try self.emitByte(',');
+                                    try self.emitSpace();
+                                    try self.emitStr("default");
+                                }
                             }
                             try self.emitByte(':');
                             try self.emitSpace();
