@@ -544,7 +544,12 @@ pub fn addrOfOperandLooksAddressable(operand: Ast.Expr) bool {
         .member => |m| addrOfOperandLooksAddressable(m.base),
         .index => |ix| addrOfOperandLooksAddressable(ix.base),
         .paren => |p| addrOfOperandLooksAddressable(p.expr),
-        .unary => |u| u.op == .deref and addrOfOperandLooksAddressable(u.operand),
+        // `*e` denotes a reference whenever `e` type-checks as a pointer — the
+        // deref (E0214) check is the real gate, so a deref is always syntactically
+        // addressable. Recursing into the operand wrongly rejected `&*&x` and
+        // `&*(pointer value)`, whose operand (`&x` / a pointer value) is itself a
+        // value, not a reference.
+        .unary => |u| u.op == .deref,
         .literal, .call, .binary => false,
     };
 }

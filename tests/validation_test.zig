@@ -2462,3 +2462,92 @@ test "fp guard: frexp of a runtime value is not a const-expression" {
     );
     try std.testing.expect(hasDiagCode(result, "E0302"));
 }
+
+// --- Fix: address-of a dereferenced pointer value (&*&x / &*ptr_value) ---
+//
+// `&x` produces a pointer; `*&x` dereferences it back to a reference; `&*&x`
+// re-addresses that reference — a valid pointer round-trip Tint accepts. The
+// syntactic addressability pre-filter (`addrOfOperandLooksAddressable`) wrongly
+// required a deref's *operand* to itself be addressable, so `*&x` was rejected
+// (its operand `&x` is a pointer value, not a reference). A deref `*e` denotes a
+// reference whenever `e` type-checks as a pointer — the deref check (E0214) is
+// the real gate — so `*e` must be treated as syntactically addressable.
+
+test "fp: address-of a dereferenced pointer value (&*&G)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0) var<storage, read> G : array<i32>;
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  let p = &*&G;
+        \\  let n : u32 = arrayLength(p);
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0215"));
+}
+
+test "fp: address-of dereference chain through let-bound pointers" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Mirrors builtins/arrayLength/via_let_complex_no_struct.wgsl: every step is a
+    // pointer/reference round-trip that must resolve without E0215.
+    const result = try runValidation(arena.allocator(),
+        \\@group(0) @binding(0) var<storage, read> G : array<i32>;
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  let p = &*&G;
+        \\  let p2 = &*p;
+        \\  let p3 = &(*p);
+        \\  let l1 : u32 = arrayLength(&*p3);
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0215"));
+}
+
+test "fp guard: address-of a literal is still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // A literal has no memory location — the `.literal` arm stays false.
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  let p = &5;
+        \\}
+    );
+    try std.testing.expect(hasDiagCode(result, "E0215"));
+}
+
+test "fp guard: address-of an arithmetic value is still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // An arithmetic result is a value, not a reference — the `.binary` arm stays false.
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var a = 1;
+        \\  var b = 2;
+        \\  let p = &(a + b);
+        \\}
+    );
+    try std.testing.expect(hasDiagCode(result, "E0215"));
+}
+
+test "fp guard: address-of deref-of-non-pointer is still rejected" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // `&*5`: the relaxed filter treats `*5` as syntactically addressable, but the
+    // deref type-check (E0214 'requires a pointer') rejects `*5` before the
+    // address-of check runs — proving the relaxation defers to the deref gate
+    // rather than blanket-accepting every `&*…` form.
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  let p = &*5;
+        \\}
+    );
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "E0214"));
+}
