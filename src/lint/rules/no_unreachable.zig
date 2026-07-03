@@ -3,7 +3,7 @@
 //!
 //! Only the *immediate textual* continuation is considered — we don't do
 //! full reachability analysis across if/else branches (the validator's
-//! E0503 covers the richer cases). The goal here is to catch the common
+//! W0103 covers the richer cases). The goal here is to catch the common
 //! mistake of leaving orphan statements after an early exit.
 
 const std = @import("std");

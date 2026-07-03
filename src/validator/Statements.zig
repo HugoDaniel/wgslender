@@ -144,7 +144,10 @@ pub fn validateCompoundStmt(v: *Validator, s: *Ast.CompoundStmt) Allocator.Error
     var terminated = false;
     for (s.stmts.items) |stmt| {
         if (terminated) {
-            v.addErrorWithCodeR(getStmtRange(v, stmt), Diagnostic.Code.unreachable_code, "code is unreachable");
+            // Unreachable code is valid WGSL (still type-checked, never runs;
+            // Tint accepts it), so this is a non-fatal W0103 warning — escalated
+            // back to an error only under Options.strict_mode. See Diagnostic.zig.
+            v.addWarningWithCodeR(getStmtRange(v, stmt), Diagnostic.Code.unreachable_code, "code is unreachable");
             break; // report once per block
         }
         try validateStmt(v, stmt);

@@ -13,13 +13,13 @@ E0210 3 fp=3 tp=0 unk=0
 E0212 4 fp=4 tp=0 unk=0
 E0300 1 fp=1 tp=0 unk=0
 E0502 49 fp=5 tp=0 unk=44
-E0503 3 fp=3 tp=0 unk=0
 E0802 179 fp=6 tp=0 unk=173
 E0804 1 fp=1 tp=0 unk=0
 E0807 1 fp=1 tp=0 unk=0
 W0100 56 fp=56 tp=0 unk=0
 W0101 70 fp=69 tp=0 unk=1
 W0102 2 fp=2 tp=0 unk=0
+W0103 3 fp=3 tp=0 unk=0
 # tint-rejects: WGSL shaders Tint rejected (expected file = "SKIP: FAILED"), with our outcome.
 #   A rejects-bucket 'accept' is a false negative. The corpus also has 24 non-WGSL
 #   SKIP:FAILED cases (.spvasm reader tests) outside this .wgsl walk; not listed.

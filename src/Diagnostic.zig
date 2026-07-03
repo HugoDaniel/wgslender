@@ -802,7 +802,10 @@ pub const Code = struct {
     pub const break_outside_loop: []const u8 = "E0500";
     pub const continue_outside_loop: []const u8 = "E0501";
     pub const discard_outside_fragment: []const u8 = "E0502";
-    pub const unreachable_code: []const u8 = "E0503";
+    // E0503 retired: unreachable code is valid WGSL (Tint accepts it), so its
+    // diagnostic was downgraded to the non-fatal `unreachable_code` W0103
+    // warning below. The number stays reserved (not reused) so historical
+    // references remain unambiguous.
     pub const nesting_too_deep: []const u8 = "E0504";
     pub const infinite_loop: []const u8 = "E0505";
     pub const return_in_continuing: []const u8 = "E0506";
@@ -838,6 +841,10 @@ pub const Code = struct {
     // Warnings (W01xx)
     pub const shadowing: []const u8 = "W0100";
     pub const redundant_cast: []const u8 = "W0101";
+    // W0102 is emitted inline in validator/Declarations.zig.
+    // Unreachable ("dead") code — valid WGSL but almost always a mistake, so a
+    // non-fatal warning (former E0503; escalated to an error under strict_mode).
+    pub const unreachable_code: []const u8 = "W0103";
 
     // Lint rules (W0001..W0003 are legacy LSP codes kept for back-compat,
     // W02xx is the new linter namespace for rules added after the refactor).
@@ -880,6 +887,10 @@ pub const Code = struct {
 /// category — callers may still set `spec_ref` explicitly on `Entry`.
 pub fn specRefFor(code: []const u8) []const u8 {
     if (code.len < 5) return "";
+    // Unreachable-code (W0103) lives in the W01xx validator-warning range but is
+    // a statements/behaviors rule, not a module-scope-declaration one — map it to
+    // the correct spec section instead of the W01 prefix default below.
+    if (std.mem.eql(u8, code, Code.unreachable_code)) return "statements";
     // Uniformity-analysis errors get a dedicated slug — the rule identifiers
     // in `rule_derivative_uniformity` / `rule_subgroup_uniformity` map to the
     // spec's "Uniformity" section and users search for it by that name.

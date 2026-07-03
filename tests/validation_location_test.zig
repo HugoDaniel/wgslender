@@ -269,19 +269,25 @@ test "validation location: undefined identifier reports identifier location" {
 // =========================================================================
 
 test "validation location: multiple errors report different locations" {
+    // Two independent errors in separate functions — `break`/`continue` outside
+    // a loop (E0500/E0501). Kept in DISTINCT functions on purpose: a `break;` is
+    // a control-flow terminator, so a following `continue;` in the same block
+    // would be unreachable — a W0103 warning, not a second error, since batch 12
+    // downgraded the reachability diagnostic from a hard E0503 error.
     const source =
-        \\@fragment
-        \\fn main() {
+        \\fn a() {
         \\    break;
+        \\}
+        \\fn b() {
         \\    continue;
         \\}
     ;
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
-    // First error: 'break' at line 3, col 5
-    try expectNthErrorAt(result, 0, 3, 5);
-    // Second error: 'continue' at line 4, col 5
-    try expectNthErrorAt(result, 1, 4, 5);
+    // First error: 'break' at line 2, col 5
+    try expectNthErrorAt(result, 0, 2, 5);
+    // Second error: 'continue' at line 5, col 5
+    try expectNthErrorAt(result, 1, 5, 5);
 }
 
 // =========================================================================
@@ -435,10 +441,13 @@ test "validation location: negative line_offset clamps to line 1" {
 }
 
 test "validation location: line_offset applies to multiple errors" {
+    // Two independent errors (see the sibling multiple-errors test) in separate
+    // functions, so neither `break`/`continue` is unreachable after the other.
     const source =
-        \\@fragment
-        \\fn main() {
+        \\fn a() {
         \\    break;
+        \\}
+        \\fn b() {
         \\    continue;
         \\}
     ;
@@ -446,8 +455,9 @@ test "validation location: line_offset applies to multiple errors" {
         .line_offset = 5,
     });
     defer result.deinit(std.testing.allocator);
-    try expectNthErrorAt(result, 0, 8, 5);
-    try expectNthErrorAt(result, 1, 9, 5);
+    // break at line 2 (+5 = 7), continue at line 5 (+5 = 10)
+    try expectNthErrorAt(result, 0, 7, 5);
+    try expectNthErrorAt(result, 1, 10, 5);
 }
 
 // =========================================================================

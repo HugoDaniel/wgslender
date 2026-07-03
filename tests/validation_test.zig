@@ -2315,13 +2315,16 @@ test "fp: statement after discard inside a loop is reachable" {
     try std.testing.expect(!hasDiagCode(result, "E0503"));
 }
 
-test "fp guard: statement after return still flags E0503 (fix is discard-specific)" {
+test "fp: unreachable code after return is valid and warns W0103 (not E0503)" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    // Dead code after a genuine terminator (return) is a *separate* deferred
-    // sub-bug (Tint permits it; see bug/tint/1474-b). This batch only fixes
-    // discard, so `return; <stmt>` must still emit E0503 — proving the change
-    // did not blanket-remove the reachability check.
+    // Statically-unreachable code is valid WGSL — it is still type-checked but
+    // never executes, and Tint accepts it (see bug/tint/1474-b). Batch 6 removed
+    // `discard` from the reachability terminators; batch 12 then downgraded the
+    // reachability diagnostic itself from a hard error (E0503) to a non-fatal
+    // W0103 validator warning. So `return; <stmt>` is now VALID, yet the advisory
+    // still fires — proving the reachability analysis survived, only its severity
+    // changed.
     const result = try runValidation(arena.allocator(),
         \\fn f() -> i32 {
         \\  return 1;
@@ -2329,7 +2332,77 @@ test "fp guard: statement after return still flags E0503 (fix is discard-specifi
         \\  return dead;
         \\}
     );
-    try std.testing.expect(hasDiagCode(result, "E0503"));
+    try std.testing.expect(result.valid);
+    try std.testing.expect(hasDiagCode(result, "W0103"));
+    try std.testing.expect(!hasDiagCode(result, "E0503"));
+}
+
+// --- Fix: unreachable code is a warning (W0103), not a hard error (E0503) ---
+// WGSL permits statically-unreachable code; it is type-checked but does not run,
+// and does not contribute to uniformity analysis (bug/tint/1474-b). The
+// validator's reachability check handles the *richer* cases the W0210 lint
+// deliberately skips — an if/else whose branches both terminate, and a switch
+// whose every case terminates — so the check is worth keeping; batch 12 only
+// re-homes it from a hard E0503 error to a non-fatal W0103 warning, escalated
+// back to an error under Options.strict_mode for CI callers.
+
+test "fp: dead code after an if/else that both terminate is valid (W0103)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // bug/tint/2201.wgsl shape: both arms of the `if` break out of the loop, so
+    // the trailing statement is unreachable but valid. The W0210 lint's simpler
+    // terminator scan would miss this (an `if` is not a terminator to it); the
+    // validator's stmtTerminates sees both arms break.
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  loop {
+        \\    if true { break; } else { break; }
+        \\    let dead = 1;
+        \\  }
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(hasDiagCode(result, "W0103"));
+    try std.testing.expect(!hasDiagCode(result, "E0503"));
+}
+
+test "fp: dead code after an all-cases-terminating switch is valid (W0103)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Every case (including default) returns, so the switch terminates and the
+    // trailing statement is unreachable but valid (switch/switch_nested.wgsl
+    // shape). Another richer case the W0210 lint skips.
+    const result = try runValidation(arena.allocator(),
+        \\@compute @workgroup_size(1)
+        \\fn main() {
+        \\  var x = 0;
+        \\  switch x {
+        \\    case 0: { return; }
+        \\    default: { return; }
+        \\  }
+        \\  let dead = 1;
+        \\}
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(hasDiagCode(result, "W0103"));
+    try std.testing.expect(!hasDiagCode(result, "E0503"));
+}
+
+test "guard: strict_mode escalates unreachable code back to a hard error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Under Options.strict_mode the W0103 warning becomes an error, so a strict
+    // CI caller still rejects unreachable code — the downgrade is opt-out.
+    const result = try wgslender.validateWithOptions(arena.allocator(),
+        \\fn f() -> i32 {
+        \\  return 1;
+        \\  let dead = 2;
+        \\  return dead;
+        \\}
+    , .{ .strict_mode = true });
+    try std.testing.expect(!result.valid);
+    try std.testing.expect(hasDiagCode(result, "W0103"));
 }
 
 // --- Fix: an un-annotated override materializes its abstract initializer ---
@@ -2758,12 +2831,11 @@ test "fp: nested switches with mixed default selectors clear E0307" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     // switch/switch_nested.wgsl verbatim (Tint accepts). Every nested switch
-    // now sees its default via a mixed selector list, so E0307 is cleared. The
-    // file still stays rejected via E0503 "code is unreachable" (the trailing
-    // `return`/`break` after a now-correctly-terminating inner switch) — a
-    // SEPARATE, deferred dead-code-taxonomy false positive (batch 6 already
-    // listed switch_nested among the E0503 fps). So assert E0307 is gone, not
-    // full validity, which the orthogonal E0503 sub-bug still blocks.
+    // now sees its default via a mixed selector list, so E0307 is cleared.
+    // Batch 12 then downgraded the trailing-unreachable-code diagnostic from a
+    // hard E0503 error to a non-fatal W0103 warning, so the file now validates
+    // fully — assert full validity (E0307-gone was batch 11's partial result,
+    // which the then-orthogonal E0503 sub-bug had blocked from being complete).
     const result = try wgslender.validateWithOptions(arena.allocator(),
         \\@compute @workgroup_size(1)
         \\fn a() {
@@ -2796,7 +2868,7 @@ test "fp: nested switches with mixed default selectors clear E0307" {
         \\    }
         \\}
     , .{});
-    try std.testing.expect(!hasDiagCode(result, "E0307"));
+    try std.testing.expect(result.valid);
 }
 
 test "fp guard: switch with no default clause is still rejected" {
