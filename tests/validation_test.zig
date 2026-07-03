@@ -2276,6 +2276,56 @@ test "validate: uniform array<mat3x2<f32>> stays rejected (stride 24, not a mult
     try std.testing.expect(hasDiagCode(result, "E0802"));
 }
 
+// --- Fix: struct member @align/@size honored in uniform layout (WGSL §13.4) ---
+// Struct layout must use the @align(n)/@size(n) member attributes, not just the
+// natural type alignment/size, when computing array element stride for the
+// uniform-address-space check (§13.4.4). Both accepted cases come straight from
+// the tint corpus (buffer/uniform/static_index + std140/struct/mat3x2_f32),
+// which Tint accepts but wgslender wrongly flagged E0802 while ignoring the
+// attributes. The control keeps a targeted, non-blanket fix honest.
+
+test "fp: @align/@size grow struct so array<Inner> stride is a multiple of 16" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Inner: a@0 (i32), b @align(16) @size(16) -> Inner align 16, size 32, so
+    // array<Inner,4> stride 32 (valid). Ignoring the attrs gives size 8 -> stride 8.
+    const result = try runValidation(arena.allocator(),
+        \\struct Inner { a : i32, @align(16) @size(16) b : f32 }
+        \\@group(0) @binding(0) var<uniform> u : array<Inner, 4>;
+        \\@compute @workgroup_size(1) fn main() { _ = u[0].a; }
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0802"));
+}
+
+test "fp: @align(64)/@size honored so array<S> with a mat3x2 has stride 128" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // S: before@0, m:mat3x2<f32>@8 (size 24), after @align(64) @size(16) @64 ->
+    // S align 64, size 128, so array<S,4> stride 128 (valid). Ignoring the attrs
+    // gives size 40 -> stride 40 -> wrongly flagged.
+    const result = try runValidation(arena.allocator(),
+        \\struct S { before : i32, m : mat3x2<f32>, @align(64) @size(16) after : i32 }
+        \\@group(0) @binding(0) var<uniform> u : array<S, 4>;
+        \\@compute @workgroup_size(1) fn main() { _ = u[0].before; }
+    );
+    try std.testing.expect(result.valid);
+    try std.testing.expect(!hasDiagCode(result, "E0802"));
+}
+
+test "validate: array<S> with a mat3x2 and no layout attrs stays rejected (stride 24)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Control: without @align/@size, S is align 8 / size 24, so array<S,4>
+    // stride 24 (not a multiple of 16) — the fix must stay targeted, not blanket.
+    const result = try runValidation(arena.allocator(),
+        \\struct S { m : mat3x2<f32> }
+        \\@group(0) @binding(0) var<uniform> u : array<S, 4>;
+        \\@compute @workgroup_size(1) fn main() { _ = u[0].m[0].x; }
+    );
+    try std.testing.expect(hasDiagCode(result, "E0802"));
+}
+
 // --- Fix: `discard` is not a control-flow terminator ---
 // Per WGSL, executing `discard` demotes the invocation to a helper but control
 // flow *continues* to the next statement (unlike return/break/continue). Tint

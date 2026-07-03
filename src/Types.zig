@@ -428,6 +428,14 @@ pub const StructField = struct {
     name: []const u8,
     typ: Type,
     offset: u32, // Computed during layout
+    /// `@align(n)` override from a member attribute (validated positive power
+    /// of two). `null` ⇒ use the member type's natural alignment. Honored by
+    /// `Struct.computeLayout` so struct size/alignment — and thus array element
+    /// stride in the uniform check (WGSL §13.4.4) — match the laid-out bytes.
+    align_override: ?u32 = null,
+    /// `@size(n)` override from a member attribute (validated ≥ the type's
+    /// natural size). `null` ⇒ use the natural size.
+    size_override: ?u32 = null,
 };
 
 /// Represents a user-defined struct type.
@@ -446,7 +454,13 @@ pub const Struct = struct {
         var max_align: u32 = 1;
 
         for (self.fields) |*f| {
-            const field_align = f.typ.alignment();
+            // `@align(n)` raises the member alignment; `@size(n)` grows its
+            // footprint (both validated in the validator). Honor them so the
+            // laid-out size/alignment — and array element stride in the uniform
+            // check (WGSL §13.4) — match what an implementation produces. Both
+            // overrides only ever raise (@max), mirroring the reflect layout path.
+            const natural_align = f.typ.alignment();
+            const field_align = if (f.align_override) |a| @max(a, natural_align) else natural_align;
             if (field_align > max_align) {
                 max_align = field_align;
             }
@@ -464,7 +478,8 @@ pub const Struct = struct {
                 }
             }
 
-            offset += f.typ.size();
+            const natural_size = f.typ.size();
+            offset += if (f.size_override) |s| @max(s, natural_size) else natural_size;
         }
 
         // Struct size is rounded up to alignment.

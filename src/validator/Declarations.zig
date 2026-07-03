@@ -310,9 +310,21 @@ pub fn validateStructMember(v: *Validator, struct_name: []const u8, member: anyt
             v.addErrorR(member_range, v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
         return;
     };
-    // Validate @align and @size attributes
+    // Validate @align/@size and capture their (validated) values so struct
+    // layout honors them — array element stride in the uniform check
+    // (WGSL §13.4.4) depends on the laid-out size/alignment, not the natural ones.
+    var align_override: ?u32 = null;
+    var size_override: ?u32 = null;
     for (member.attributes.items) |attr| {
         validateStructMemberAttr(v, attr, member_type);
+        if (attr.args.items.len == 0) continue;
+        if (v.tryExtractIntValue(attr.args.items[0])) |val| {
+            if (val > 0) {
+                const uval: u32 = @intCast(val);
+                if (std.mem.eql(u8, attr.name, "align")) align_override = uval;
+                if (std.mem.eql(u8, attr.name, "size")) size_override = uval;
+            }
+        }
     }
     // Opaque types (texture, sampler) cannot appear in structs (WGSL spec section 6.2.10).
     if (member_type == .texture or member_type == .sampler) {
@@ -340,6 +352,8 @@ pub fn validateStructMember(v: *Validator, struct_name: []const u8, member: anyt
         .name = member_name,
         .typ = member_type,
         .offset = 0,
+        .align_override = align_override,
+        .size_override = size_override,
     });
 }
 
