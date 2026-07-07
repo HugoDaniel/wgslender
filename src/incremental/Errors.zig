@@ -1,20 +1,21 @@
 //! Error-list plumbing for the incremental hot path.
 //!
-//! Three helpers cooperate around the splice boundary:
+//! Four helpers cooperate around the splice boundary:
 //!
 //!   - `fixupErrors` reshapes a previous parse's error list across an
 //!     anchor edit: drops entries that belonged to the old subtree and
 //!     shifts every entry strictly after the anchor by `delta`.
-//!   - `filterNonVisitErrors` strips the parser's own Pass-2 (visit)
-//!     entries before merging with `CstLower`'s canonical visit-pass
-//!     output, so E0102 isn't reported twice.
+//!   - `filterNonVisitErrors` / `filterVisitErrors` split a
+//!     Parser-collected list into its two internally-sorted runs — the
+//!     Pass-1 grammar errors and the Pass-2 visit errors (E0102) — which
+//!     `parseFull` then re-joins by position.
 //!   - `mergeErrorsByPos` is a two-pointer merge that joins two
 //!     source-ordered ParseError slices into a single fresh slice.
 //!
-//! All three allocate from the caller-provided arena and never mutate
-//! their inputs. The fixup/merge pair is the canonical way to assemble
+//! All allocate from the caller-provided arena and never mutate their
+//! inputs. The fixup/merge pair is the canonical way to assemble
 //! `ReparseResult.errors` after every successful in-place splice; the
-//! filter/merge pair is the equivalent for `parseFull`.
+//! filter-pair/merge is the equivalent for `parseFull`.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -76,12 +77,13 @@ pub fn fixupErrors(
     return out.toOwnedSlice(arena);
 }
 
-/// Drop visit-pass errors (E0102) from a Parser-collected error list.
-/// `parseFull` calls this on `parser.errors.items` before merging with
-/// `CstLower.lowerTreeWithErrors`'s output: Parser.parse runs its own
-/// Pass 2 on the AST it builds (which we discard in favor of the CST
-/// lowering), so its E0102 entries duplicate the CstLower output. Pure
-/// grammar/redeclaration codes (E0001/E0004/E0101/E0401) are kept.
+/// Keep the parser's Pass-1 grammar/redeclaration errors
+/// (E0001/E0004/E0101/E0401, plus codeless recovery entries), dropping
+/// its Pass-2 visit errors (E0102). Paired with `filterVisitErrors`:
+/// `Parser.parse` appends every Pass-2 (E0102) entry after all Pass-1
+/// entries, so its raw `errors` list is two internally source-ordered
+/// runs. Splitting on E0102 recovers those runs; `mergeErrorsByPos`
+/// then joins them into one position-ordered list for `parseFull`.
 pub fn filterNonVisitErrors(
     arena: Allocator,
     in: []const Parser.ParseError,
@@ -95,9 +97,24 @@ pub fn filterNonVisitErrors(
     return out.toOwnedSlice(arena);
 }
 
+/// The complement of `filterNonVisitErrors`: keep only the parser's
+/// Pass-2 visit errors (E0102), dropping every Pass-1 grammar entry.
+/// See `filterNonVisitErrors` for why `parseFull` splits the list.
+pub fn filterVisitErrors(
+    arena: Allocator,
+    in: []const Parser.ParseError,
+) Allocator.Error![]Parser.ParseError {
+    var out: std.ArrayList(Parser.ParseError) = .empty;
+    try out.ensureTotalCapacity(arena, in.len);
+    for (in) |e| {
+        if (std.mem.eql(u8, e.code, "E0102")) out.appendAssumeCapacity(e);
+    }
+    return out.toOwnedSlice(arena);
+}
+
 /// Two-pointer merge of two source-ordered ParseError lists into a
 /// freshly arena-allocated slice, also in source order. Used to combine
-/// (a) prev's parser errors with CstLower's visit-pass errors after a
+/// (a) the parser's Pass-1 grammar run with its Pass-2 visit run after a
 /// full parse, and (b) prev's spliced-through errors with the hot path's
 /// add-walk output. Both inputs may be empty.
 pub fn mergeErrorsByPos(

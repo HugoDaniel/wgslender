@@ -26,7 +26,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Cst = @import("Cst.zig");
-const CstLower = @import("CstLower.zig");
 const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 const AstVisit = @import("AstVisit.zig");
@@ -233,23 +232,25 @@ pub fn parseFull(gpa: Allocator, source: []const u8) !ReparseResult {
     defer builder.deinit();
 
     var parser = try Parser.initWithCst(arena, owned_source, stream, &builder);
-    _ = try parser.parse(); // drive the CST builder; discard Parser's AST
+    // Keep the Parser's own AST. Since Block 1.2 the Parser stamps a
+    // populated `span` on every `Ast.Expr` (identical to what CstLower's
+    // `nonTriviaSpan` produced), so the incremental add/sub hot path can
+    // still locate the AST slot for a CST anchor from `Expr.span()`.
+    // Re-lowering the CST through CstLower would rebuild a structurally
+    // identical module (pinned by `tests/cst_lower_test.zig`) and re-run
+    // Pass 2 a second time — pure duplicate work, now dropped.
+    const module = try parser.parse();
     const tree = try builder.finish(arena, all_tokens, owned_source);
 
-    // Lower the AST from the CST. Using CstLower (not Parser.parse's
-    // direct AST) means every `Ast.Expr` gains a populated `span`, which
-    // the incremental add/sub hot path relies on to locate the AST slot
-    // corresponding to a CST anchor.
-    var visit_errors: std.ArrayList(Parser.ParseError) = .empty;
-    const module = try CstLower.lowerTreeWithErrors(gpa, arena, &tree, &visit_errors);
-
-    // Merge parser-grammar errors (E0001/E0004/E0101/E0401) with
-    // CstLower's visit-pass errors (E0102). Skip parser's own visit-pass
-    // entries — Parser.parse runs its own Pass 2 over the discarded
-    // Parser AST and would double-report E0102; CstLower's pass over the
-    // canonical CST-lowered AST is the source of truth.
-    const parser_grammar = try Errors.filterNonVisitErrors(arena, parser.errors.items);
-    const errors_slice = try Errors.mergeErrorsByPos(arena, parser_grammar, visit_errors.items);
+    // Assemble the error list. `Parser.parse` appends its Pass-2 visit
+    // errors (E0102) after all Pass-1 grammar errors, so `parser.errors`
+    // is two internally source-ordered runs rather than one sorted list.
+    // Split them apart and merge by position so the returned slice is
+    // globally source-ordered — the order the LSP's `mergeErrorsInto`
+    // appends verbatim into diagnostics.
+    const grammar = try Errors.filterNonVisitErrors(arena, parser.errors.items);
+    const visit = try Errors.filterVisitErrors(arena, parser.errors.items);
+    const errors_slice = try Errors.mergeErrorsByPos(arena, grammar, visit);
 
     // Pair CST scope-opener nodes with the AST scopes produced in the
     // same DFS order, so `scopeAtCstNode` resolves in O(CST depth).
@@ -579,6 +580,31 @@ test "Incremental.parseFull builds AST + CST from source" {
     try testing.expectEqual(@as(usize, 1), result.module.declarations.items.len);
     try testing.expectEqual(Cst.Kind.module, result.cst.rootCursor().kind());
     try testing.expectEqualStrings("const x = 1;", result.source);
+}
+
+test "Incremental.parseFull: grammar + visit errors merge in position order" {
+    // Regression guard for the parseFull error-list contract. The parser
+    // produces grammar errors in Pass 1 and visit errors (E0102) in Pass 2,
+    // so its raw `errors` list is [all grammar] ++ [all visit] — NOT sorted
+    // by position. parseFull must merge the two runs into a single
+    // position-ordered list before returning.
+    //
+    // Here the visit error (`y` used before its `let` at pos 17) precedes
+    // two later grammar errors (the `@@` at pos 31/32). A naive path that
+    // returned the parser's raw error list would surface E0102 *last*;
+    // this pins the merged, position-sorted order the LSP relies on
+    // (`mergeErrorsInto` appends verbatim — it does not re-sort).
+    var result = try Incremental.parseFull(testing.allocator, "fn f() { let x = y; let y = 1; @@ }");
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 3), result.errors.len);
+    try testing.expectEqualStrings("E0102", result.errors[0].code);
+    try testing.expectEqual(@as(u32, 17), result.errors[0].pos);
+    try testing.expectEqual(@as(u32, 31), result.errors[1].pos);
+    try testing.expectEqual(@as(u32, 32), result.errors[2].pos);
+    // The two trailing entries are grammar errors (no code stamped).
+    try testing.expectEqualStrings("", result.errors[1].code);
+    try testing.expectEqualStrings("", result.errors[2].code);
 }
 
 test "Incremental.reparse: insert at end" {
