@@ -517,6 +517,27 @@ pub fn build(b: *std.Build) void {
     // The tool's pure-fn tests (arg parsing, TSV escaping) run corpus-free in CI.
     _ = addTestStep(b, test_step, "tools/tint_triage.zig", target, optimize, &.{ w, tint_oracle_import });
 
+    // gen-xid: regenerate src/unicode_xid_data.zig from a UCD
+    // DerivedCoreProperties.txt (fetched by scripts/fetch-ucd.sh). setCwd(.) so
+    // the default input/output paths resolve against the repo root; the tool
+    // writes the data file in place (a side-effecting step, always re-runs).
+    // Pure std — no wgslender import.
+    const gen_xid_exe = b.addExecutable(.{
+        .name = "gen-xid",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gen_xid.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_gen_xid = b.addRunArtifact(gen_xid_exe);
+    run_gen_xid.setCwd(b.path("."));
+    if (b.args) |gen_args| run_gen_xid.addArgs(gen_args);
+    const gen_xid_step = b.step("gen-xid", "Regenerate src/unicode_xid_data.zig from the pinned UCD");
+    gen_xid_step.dependOn(&run_gen_xid.step);
+    // The generator's parse/merge/emit logic is tested corpus-free.
+    _ = addTestStep(b, test_step, "tools/gen_xid.zig", target, optimize, &.{});
+
     // LSP Handler tests
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
     // LSP URI helper tests (no imports needed beyond stdlib)

@@ -115,7 +115,8 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/api_json.zig` | Shared JSON layer between the C-ABI (`lib.zig`) and WASM (`wasm.zig`) shells |
 | `src/root.zig` | Public API |
 | `src/constants.zig` | Compile-time tunable limits shared across the pipeline |
-| `src/unicode_xid.zig` | Unicode XID_Start / XID_Continue property tables (WGSL identifiers) |
+| `src/unicode_xid.zig` | Unicode XID_Start / XID_Continue identifier lookups + table-integrity invariants (WGSL identifiers) |
+| `src/unicode_xid_data.zig` | Generated XID range tables (rebuilt by `zig build gen-xid`; see `tools/gen_xid.zig`) |
 | `cli/main.zig` | CLI |
 | `lsp/main.zig` | LSP server entry point (native, stdio transport) |
 | `lsp/wasm.zig` | LSP server WASM entry point |

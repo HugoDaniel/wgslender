@@ -200,7 +200,8 @@ Legend: `H` = `//!` header. `AL` = ArrayListUnmanaged absent. `LB` = loops bound
 | `StableId.zig` | ✓ | ✗ | ✓ | ✓ | ✗ | 0/26 asserts |
 | `Suggest.zig` | ✓ | ✓ | ✓ | ✓ | ✓ | clean |
 | `Types.zig` | ✓ | ✓ | ✓ | ✓ | ✗ | 0.05 density |
-| `unicode_xid.zig` | ✓ | ✓ | ✓ | ✓ | — | tables only |
+| `unicode_xid.zig` | ✓ | ✓ | ✓ | ✓ | — | lookups + table-integrity invariants |
+| `unicode_xid_data.zig` | ✓ | — | — | — | — | generated (`zig build gen-xid`) |
 | `UseCounts.zig` | ✓ | ✓ | ✓ | ✓ | ✓ | clean |
 | `Validator.zig` | ✓ | ✗ | ✓ | ✓ | ⚠ | 0.13 density (62 fns) |
 | `validator/Declarations.zig` | ✓ | ✗ | ✓ | ✓ | ✗ | 0.01 density (73 fns) |
