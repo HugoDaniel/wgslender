@@ -87,7 +87,7 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/validator/Declarations.zig` | Top-level decls: directives, structs, vars, fn signatures, recursion, entry-point IO |
 | `src/validator/Expressions.zig` | Expression type-checking + inference (`checkExpr` family, type constructors) |
 | `src/validator/Statements.zig` | Statement validation + control-flow analysis |
-| `src/validator/Uniformity.zig` | Phase 5 uniformity analysis (WGSL §15; E08xx) |
+| `src/validator/Uniformity.zig` | Phase 5 uniformity analysis (WGSL §15; E0700–E0703) |
 | `src/Incremental.zig` | Incremental reparse driver (LSP fast path) |
 | `src/incremental/Splice.zig` | In-place AST/CST splice paths for the incremental hot path |
 | `src/incremental/Anchor.zig` | Anchor classification + edit shape for the incremental driver |

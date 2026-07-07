@@ -3,12 +3,24 @@
 //! Performs type checking, symbol resolution validation, control flow analysis,
 //! and uniformity analysis to ensure shaders conform to the WGSL specification.
 //!
-//! Validation runs in five phases:
-//!   1. collectTypeDeclarations — gather struct and alias names
-//!   2. resolveStructLayouts  — resolve struct fields and compute layouts
-//!   3. validateDeclarations  — validate const/override/var/let decls
-//!   4. validateFunctions     — validate functions, statements, expressions
-//!   5. analyzeUniformity     — detect non-uniform control flow violations
+//! Validation runs a fixed, ordered phase sequence, extracted into
+//! `runPhases` so `validate` (diagnostics only) and `analyze` (retains
+//! semantic state for the LSP) cannot drift:
+//!   0.   processDirectives          — enable / diagnostic directives
+//!   0.5  checkReservedIdentifiers    — reject `_` alone, `__`-prefixed
+//!   1.   collectTypeDeclarations     — gather struct and alias names
+//!   1.5  resolveAliasTypes           — order-independent alias forward refs
+//!   2.   resolveStructLayouts        — resolve fields, compute layouts
+//!   2.5  checkRecursiveStructs        — reject recursive struct definitions
+//!   3.   validateDeclarations        — const/override/var/let decls
+//!   3.5  registerFunctionSignatures   — enable forward references
+//!   3.75 checkRecursiveFunctions      — reject recursion (WGSL forbids it)
+//!   4.   validateFunctions           — functions, statements, expressions
+//!   4.5  validatePerEntryPointBindings + checkSuspiciousBindingPatterns
+//!   5.   analyzeUniformity           — non-uniform control flow (E0700–E0703)
+//!   6.   detectShadowing             — scope-tree shadow detection (W0100)
+//!   7.   checkOperatorPrecedence     — ambiguous precedence combos (E0213)
+//! then `diags.deduplicate()` collapses overlaps.
 //!
 //! Invariants:
 //!   - The input `Module` is a parsed root: `module.scope.parent == null`,
@@ -19,9 +31,9 @@
 //!     deeply nested check path surfaces immediately.
 //!   - Diagnostic byte offsets index into the same `module.source` the
 //!     parser used; the validator never re-tokenizes.
-//!   - Phases run in order: `analyze` and `validate` orchestrate exactly
-//!     the same sequence — `analyze` retains semantic state for the LSP,
-//!     `validate` returns only diagnostics.
+//!   - Both entry points call `runPhases` — the single orchestrator — so the
+//!     sequence is identical by construction, not by convention. `analyze`
+//!     retains semantic state for the LSP; `validate` returns only diagnostics.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -344,8 +356,23 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
         .options = options,
     };
 
+    try runPhases(&v);
+
+    return .{
+        .valid = !diags.hasErrors(),
+        .diagnostics = diags,
+    };
+}
+
+/// The fixed validation phase sequence, run by both `validate` and `analyze`
+/// so a newly added phase can never land on only one entry point (CLI vs
+/// LSP). Order is load-bearing — later phases read state seeded by earlier
+/// ones — so this is a deliberate straight-line sequence, not a data-driven
+/// `Pipeline.Pass` table: the phases are fixed and non-composable, and a
+/// list would add machinery for zero flexibility.
+fn runPhases(v: *Validator) !void {
     // Pre-scan: detect multiple entry points for per-entry-point binding validation
-    v.multi_entry_point = countEntryPoints(module) >= 2;
+    v.multi_entry_point = countEntryPoints(v.module) >= 2;
 
     // Phase 0: Process directives (enable, diagnostic)
     try v.processDirectives();
@@ -391,18 +418,13 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
     v.checkOperatorPrecedence();
 
     // Remove duplicate diagnostics produced by overlapping phases
-    diags.deduplicate();
+    v.diags.deduplicate();
 
     // Post: every depth-tracked walk inside the validator must return to
     // baseline. Stale state would silently lower the effective limit on
     // the next call against a reused Validator instance.
     std.debug.assert(v.expr_depth == 0);
     std.debug.assert(v.stmt_depth == 0);
-
-    return .{
-        .valid = !diags.hasErrors(),
-        .diagnostics = diags,
-    };
 }
 
 /// Analyze a parsed WGSL module, retaining semantic state.
@@ -429,28 +451,7 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
         .options = options,
     };
 
-    // Pre-scan: detect multiple entry points for per-entry-point binding validation
-    v.multi_entry_point = countEntryPoints(module) >= 2;
-
-    try v.processDirectives();
-    v.checkReservedIdentifiers();
-    try v.collectTypeDeclarations();
-    try v.resolveAliasTypes();
-    try v.resolveStructLayouts();
-    try v.checkRecursiveStructs();
-    try v.validateDeclarations();
-    try v.registerFunctionSignatures();
-    try v.checkRecursiveFunctions();
-    try v.validateFunctions();
-    try v.validatePerEntryPointBindings();
-    v.checkSuspiciousBindingPatterns();
-    try v.analyzeUniformity();
-    v.detectShadowing();
-    v.checkOperatorPrecedence();
-    diags.deduplicate();
-
-    std.debug.assert(v.expr_depth == 0);
-    std.debug.assert(v.stmt_depth == 0);
+    try runPhases(&v);
 
     // B.M5: `Symbol.use_count` is gone — the canonical use counts live
     // on `module.use_counts`, populated by AstVisit Pass 2. The
