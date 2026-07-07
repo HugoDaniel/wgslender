@@ -400,6 +400,10 @@ pub fn build(b: *std.Build) void {
     // array<T, ...> template args) — guards against the regression where
     // `parseTemplatePrimaryExprInner` silently dropped postfix suffixes.
     _ = addTestStep(b, test_step, "tests/parser_template_postfix_test.zig", target, optimize, &.{w});
+    // Structural precedence pins — assert AST tree shape (printer-independent),
+    // so a swapped precedence level is caught even though the flat printer would
+    // emit identical text (Block 1.1 precedence-table collapse).
+    _ = addTestStep(b, test_step, "tests/parser_precedence_test.zig", target, optimize, &.{w});
     // Numeric-literal text fidelity — AST literal value must equal the lexer's
     // byte-exact `source[token.start..token.end]` (no hand-rolled re-scanner).
     _ = addTestStep(b, test_step, "tests/parser_token_text_test.zig", target, optimize, &.{w});
