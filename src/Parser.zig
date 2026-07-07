@@ -1310,7 +1310,7 @@ fn parseBinaryLevel(self: *Parser, comptime level: usize, comptime leaf: anytype
         self.advance();
         const right = (try self.parseBinaryOperand(level, leaf)) orelse return null;
         const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
+        node.* = .{ .loc = loc, .op = op, .left = left, .right = right, .span = .{ .start = left.span().start, .end = right.span().end } };
         left = .{ .binary = node };
         if (self.cstOpenBefore(left_marker)) |wrap| {
             try self.cstClose(wrap, .binary_expr);
@@ -1368,7 +1368,7 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
         i -= 1;
         const entry = ops_buf[i];
         const node = try self.arena.create(Ast.UnaryExpr);
-        node.* = .{ .loc = entry.loc, .op = entry.op, .operand = operand };
+        node.* = .{ .loc = entry.loc, .op = entry.op, .operand = operand, .span = .{ .start = entry.loc, .end = operand.span().end } };
         operand = .{ .unary = node };
         try self.cstClose(cst_markers_buf[i], .unary_expr);
         self.cst_last_closed_expr = cst_markers_buf[i];
@@ -1405,7 +1405,7 @@ fn applyPostfixSuffixes(self: *Parser, left_in: Ast.Expr, left_marker_in: ?Cst.M
                     const member = self.currentText();
                     self.advance();
                     const node = try self.arena.create(Ast.MemberExpr);
-                    node.* = .{ .loc = dot_loc, .base = left, .member_name = member };
+                    node.* = .{ .loc = dot_loc, .base = left, .member_name = member, .span = .{ .start = left.span().start, .end = self.prevTokenEnd() } };
                     left = .{ .member = node };
                     const wrap = self.cstOpenBefore(saved);
                     try self.cstClose(wrap, .member_expr);
@@ -1424,7 +1424,7 @@ fn applyPostfixSuffixes(self: *Parser, left_in: Ast.Expr, left_marker_in: ?Cst.M
                 const end_loc = self.currentStart() +| 1; // past the closing ']'
                 _ = try self.expect(.r_bracket);
                 const node = try self.arena.create(Ast.IndexExpr);
-                node.* = .{ .loc = bracket_loc, .end_loc = end_loc, .base = left, .idx = idx };
+                node.* = .{ .loc = bracket_loc, .end_loc = end_loc, .base = left, .idx = idx, .span = .{ .start = left.span().start, .end = self.prevTokenEnd() } };
                 left = .{ .index = node };
                 const wrap = self.cstOpenBefore(saved);
                 try self.cstClose(wrap, .index_expr);
@@ -1439,7 +1439,7 @@ fn applyPostfixSuffixes(self: *Parser, left_in: Ast.Expr, left_marker_in: ?Cst.M
                 const end_loc = self.currentStart() +| 1;
                 _ = try self.expect(.r_paren);
                 const node = try self.arena.create(Ast.CallExpr);
-                node.* = .{ .loc = paren_loc, .end_loc = end_loc, .func = left, .args = args };
+                node.* = .{ .loc = paren_loc, .end_loc = end_loc, .func = left, .args = args, .span = .{ .start = left.span().start, .end = self.prevTokenEnd() } };
                 left = .{ .call = node };
                 const wrap = self.cstOpenBefore(saved);
                 try self.cstClose(wrap, .call_expr);
@@ -1478,7 +1478,7 @@ fn parsePrimaryExprInner(self: *Parser) !?Ast.Expr {
             const loc = self.currentStart();
             self.advance();
             const node = try self.arena.create(Ast.LiteralExpr);
-            node.* = .{ .loc = loc, .kind = kind, .value = text };
+            node.* = .{ .loc = loc, .kind = kind, .value = text, .span = .{ .start = loc, .end = self.prevTokenEnd() } };
             return .{ .literal = node };
         },
         .true_literal, .false_literal => {
@@ -1487,7 +1487,7 @@ fn parsePrimaryExprInner(self: *Parser) !?Ast.Expr {
             const loc = self.currentStart();
             self.advance();
             const node = try self.arena.create(Ast.LiteralExpr);
-            node.* = .{ .loc = loc, .kind = kind, .value = text };
+            node.* = .{ .loc = loc, .kind = kind, .value = text, .span = .{ .start = loc, .end = self.prevTokenEnd() } };
             return .{ .literal = node };
         },
         .ident, .reserved_ident => {
@@ -1509,16 +1509,17 @@ fn parsePrimaryExprInner(self: *Parser) !?Ast.Expr {
             }
 
             const node = try self.arena.create(Ast.IdentExpr);
-            node.* = .{ .loc = loc, .name = text, .ref = .none };
+            node.* = .{ .loc = loc, .name = text, .ref = .none, .span = .{ .start = loc, .end = self.prevTokenEnd() } };
             return .{ .ident = node };
         },
         .l_paren => {
+            const lparen_start = self.currentStart();
             self.advance();
             self.expr_context = "after '('";
             const expr = (try self.parseExpression()) orelse return null;
             _ = try self.expect(.r_paren);
             const node = try self.arena.create(Ast.ParenExpr);
-            node.* = .{ .expr = expr };
+            node.* = .{ .expr = expr, .span = .{ .start = lparen_start, .end = self.prevTokenEnd() } };
             return .{ .paren = node };
         },
         else => {
@@ -1542,7 +1543,7 @@ fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?A
         // template_args node stays as a child of that ident_expr — a
         // structural oddity we accept in exchange for AST compatibility.
         const node = try self.arena.create(Ast.IdentExpr);
-        node.* = .{ .name = name, .ref = .none };
+        node.* = .{ .name = name, .ref = .none, .span = .{ .start = name_loc, .end = self.prevTokenEnd() } };
         return .{ .ident = node };
     }
     const paren_loc = self.currentStart();
@@ -1551,7 +1552,7 @@ fn parseTemplatedConstructor(self: *Parser, name: []const u8, name_loc: u32) !?A
     const end_loc = self.currentStart() +| 1;
     _ = try self.expect(.r_paren);
     const node = try self.arena.create(Ast.CallExpr);
-    node.* = .{ .loc = paren_loc, .end_loc = end_loc, .template_type = template_type, .args = args };
+    node.* = .{ .loc = paren_loc, .end_loc = end_loc, .template_type = template_type, .args = args, .span = .{ .start = name_loc, .end = self.prevTokenEnd() } };
     return .{ .call = node };
 }
 
@@ -1575,7 +1576,7 @@ fn parseBitcastExpr(self: *Parser, name: []const u8, name_loc: u32) !?Ast.Expr {
     const func_node = try self.arena.create(Ast.IdentExpr);
     func_node.* = .{ .name = name, .ref = .none, .loc = name_loc };
     const node = try self.arena.create(Ast.CallExpr);
-    node.* = .{ .loc = paren_loc, .end_loc = end_loc, .func = .{ .ident = func_node }, .template_type = dest_type, .args = args };
+    node.* = .{ .loc = paren_loc, .end_loc = end_loc, .func = .{ .ident = func_node }, .template_type = dest_type, .args = args, .span = .{ .start = name_loc, .end = self.prevTokenEnd() } };
     return .{ .call = node };
 }
 
@@ -1619,7 +1620,7 @@ fn parseTemplateUnaryExpr(self: *Parser) !?Ast.Expr {
             return null;
         };
         const node = try self.arena.create(Ast.UnaryExpr);
-        node.* = .{ .loc = loc, .op = unary_op, .operand = operand };
+        node.* = .{ .loc = loc, .op = unary_op, .operand = operand, .span = .{ .start = loc, .end = operand.span().end } };
         try self.cstClose(outer_marker, .unary_expr);
         self.cst_last_closed_expr = outer_marker;
         return .{ .unary = node };
@@ -1652,7 +1653,7 @@ fn parseTemplatePrimaryExprInner(self: *Parser) !?Ast.Expr {
             const loc = self.currentStart();
             self.advance();
             const node = try self.arena.create(Ast.LiteralExpr);
-            node.* = .{ .loc = loc, .kind = kind, .value = text };
+            node.* = .{ .loc = loc, .kind = kind, .value = text, .span = .{ .start = loc, .end = self.prevTokenEnd() } };
             return .{ .literal = node };
         },
         .ident, .reserved_ident => {
@@ -1663,16 +1664,17 @@ fn parseTemplatePrimaryExprInner(self: *Parser) !?Ast.Expr {
             const loc = self.currentStart();
             self.advance();
             const node = try self.arena.create(Ast.IdentExpr);
-            node.* = .{ .loc = loc, .name = text, .ref = .none };
+            node.* = .{ .loc = loc, .name = text, .ref = .none, .span = .{ .start = loc, .end = self.prevTokenEnd() } };
             return .{ .ident = node };
         },
         .l_paren => {
+            const lparen_start = self.currentStart();
             self.advance();
             self.expr_context = "after '('";
             const expr = (try self.parseTemplateArgExpr()) orelse return null;
             _ = try self.expect(.r_paren);
             const node = try self.arena.create(Ast.ParenExpr);
-            node.* = .{ .expr = expr };
+            node.* = .{ .expr = expr, .span = .{ .start = lparen_start, .end = self.prevTokenEnd() } };
             return .{ .paren = node };
         },
         else => {

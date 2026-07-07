@@ -2065,6 +2065,28 @@ test "reflect: collects @id-tagged overrides" {
     try std.testing.expectEqualStrings("", result.overrides.items[2].default);
 }
 
+test "reflect: compound override default is the verbatim source slice" {
+    // Guards the Block 1.2 outcome: the Parser now stamps expression spans,
+    // so `Reflect` slices the override initializer straight from source
+    // rather than re-rendering it. A compound (non-literal) initializer
+    // distinguishes the two: the source slice keeps the author's spacing
+    // (`1.0+2.0*3.0`), whereas the legacy `renderExprText` fallback would
+    // normalize it to `1.0 + 2.0 * 3.0`. This also aligns the CLI/Parser
+    // path with the LSP/CstLower path, which already sliced from source.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\override K: f32 = 1.0+2.0*3.0;
+        \\@compute @workgroup_size(1) fn main() {}
+    );
+    try std.testing.expectEqual(@as(usize, 0), result.errors.items.len);
+    try std.testing.expectEqual(@as(usize, 1), result.overrides.items.len);
+    try std.testing.expectEqualStrings("K", result.overrides.items[0].name);
+    try std.testing.expectEqualStrings("1.0+2.0*3.0", result.overrides.items[0].default);
+}
+
 test "reflect: workgroup_size with override identifiers" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

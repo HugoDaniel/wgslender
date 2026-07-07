@@ -877,9 +877,11 @@ pub const Expr = union(enum) {
     member: *MemberExpr,
     paren: *ParenExpr,
 
-    /// Byte range covering the full expression as written in source.
-    /// Populated by `CstLower`; `.empty` on nodes produced by the legacy
-    /// `Parser` path that does not yet stamp expression spans.
+    /// Byte range covering the full expression as written in source
+    /// (`[first-non-trivia-token.start, last-non-trivia-token.end)`).
+    /// Stamped by both front ends: the `Parser` via `currentStart()` /
+    /// `prevTokenEnd()`, and `CstLower` via `nonTriviaSpan`. Stays `.empty`
+    /// only on error-recovery synthetic nodes.
     pub fn span(self: Expr) Span {
         return switch (self) {
             inline else => |ptr| ptr.span,

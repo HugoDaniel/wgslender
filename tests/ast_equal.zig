@@ -72,6 +72,7 @@ pub const Err = error{
     TextureFormatMismatch,
     OptExprPresenceMismatch,
     ExprTagMismatch,
+    ExprSpanMismatch,
     IdentExprNameMismatch,
     IdentExprRefMismatch,
     IdentExprLocMismatch,
@@ -397,6 +398,10 @@ fn expectExprEqual(e: Ast.Expr, a: Ast.Expr) Err!void {
     if (@intFromEnum(std.meta.activeTag(e)) != @intFromEnum(std.meta.activeTag(a))) {
         std.debug.print("expr tag mismatch: {s} vs {s}\n", .{ @tagName(std.meta.activeTag(e)), @tagName(std.meta.activeTag(a)) });
         return error.ExprTagMismatch;
+    }
+    if (e.span().start != a.span().start or e.span().end != a.span().end) {
+        std.debug.print("expr span mismatch ({s}): {d}..{d} vs {d}..{d}\n", .{ @tagName(std.meta.activeTag(e)), e.span().start, e.span().end, a.span().start, a.span().end });
+        return error.ExprSpanMismatch;
     }
     switch (e) {
         .ident => |ex| {
