@@ -10,11 +10,58 @@ const Allocator = std.mem.Allocator;
 
 pub const version = "1.1.0";
 
-pub const Ast = @import("Ast.zig");
-pub const AstVisit = @import("AstVisit.zig");
+// Re-exported modules, grouped by stability tier:
+//
+//   * Stable — the surface the `minify` / `validate` / `analyze` / `lint` /
+//     `reflect` / `compile` entry points below return and consume. Treated
+//     as the committed public API.
+//   * Experimental — public and supported, but the shape may still shift
+//     between versions: the Pipeline extension points, the LSP / incremental
+//     front-end, and the minify-mode knobs.
+//   * Internal — exposed only so the in-repo CLI / LSP / tests (separate
+//     compilation units) and adventurous tooling can reach compiler
+//     internals. No compatibility promise; these change freely (e.g.
+//     `CstLower` is slated for removal). `WasmBinary` is deliberately not
+//     re-exported — it is a Compiler implementation detail with no external
+//     users; its tests are still pulled into the test build below.
+
+// --- Stable ---
+pub const Minifier = @import("Minifier.zig");
+pub const Validator = @import("Validator.zig");
+pub const Reflect = @import("Reflect.zig");
+pub const Compiler = @import("Compiler.zig");
+pub const Linter = @import("lint/Linter.zig");
+pub const Config = @import("Config.zig");
+pub const Diagnostic = @import("Diagnostic.zig");
+pub const Types = @import("Types.zig");
+pub const SourceMap = @import("SourceMap.zig");
+pub const Edits = @import("Edits.zig");
+
+// --- Experimental ---
+/// Composable pipeline. `Pipeline.Pass` is the public sequence-of-steps
+/// API used internally by `Minifier` and `Compiler`; downstream tooling
+/// can build custom pass lists or inject `Pass.custom` callbacks that
+/// read/write `Pipeline.State`. The side-table types `UseCounts`,
+/// `RenamePolicy`, and `Liveness` (below) are the data contracts
+/// exchanged between bundled passes and user code. See the
+/// `Pipeline.zig` module doc for the stability guarantees and standard
+/// pass order.
+pub const Pipeline = @import("Pipeline.zig");
 pub const UseCounts = @import("UseCounts.zig");
 pub const RenamePolicy = @import("RenamePolicy.zig");
 pub const Liveness = @import("Liveness.zig");
+pub const Cst = @import("Cst.zig");
+pub const Incremental = @import("Incremental.zig");
+pub const StableId = @import("StableId.zig");
+pub const MagicComment = @import("MagicComment.zig");
+pub const MinifySettings = @import("MinifySettings.zig");
+pub const MinifyEstimator = @import("MinifyEstimator.zig");
+pub const MultiVisitor = @import("lint/MultiVisitor.zig");
+pub const OptionsSpec = @import("options.zig");
+
+// --- Internal (no compatibility promise) ---
+pub const Ast = @import("Ast.zig");
+pub const AstVisit = @import("AstVisit.zig");
 pub const Lexer = @import("Lexer.zig");
 pub const Parser = @import("Parser.zig");
 pub const Printer = @import("Printer.zig");
@@ -22,38 +69,10 @@ pub const Renamer = @import("Renamer.zig");
 pub const Dce = @import("Dce.zig");
 pub const Builtins = @import("Builtins.zig");
 pub const Overload = @import("Overload.zig");
-pub const Diagnostic = @import("Diagnostic.zig");
-pub const Types = @import("Types.zig");
-pub const Validator = @import("Validator.zig");
-pub const Minifier = @import("Minifier.zig");
-/// Composable pipeline. `Pipeline.Pass` is the public sequence-of-steps
-/// API used internally by `Minifier` and `Compiler`; downstream tooling
-/// can build custom pass lists or inject `Pass.custom` callbacks that
-/// read/write `Pipeline.State`. The side-table types `UseCounts`,
-/// `RenamePolicy`, and `Liveness` (above) are the data contracts
-/// exchanged between bundled passes and user code. See the
-/// `Pipeline.zig` module doc for the stability guarantees and standard
-/// pass order.
-pub const Pipeline = @import("Pipeline.zig");
-pub const Config = @import("Config.zig");
-pub const Reflect = @import("Reflect.zig");
-pub const SourceMap = @import("SourceMap.zig");
-pub const Compiler = @import("Compiler.zig");
-pub const WasmBinary = @import("WasmBinary.zig");
-pub const Edits = @import("Edits.zig");
-pub const StableId = @import("StableId.zig");
-pub const Cst = @import("Cst.zig");
-pub const CstLower = @import("CstLower.zig");
 pub const Predeclared = @import("Predeclared.zig");
-pub const Incremental = @import("Incremental.zig");
-pub const Linter = @import("lint/Linter.zig");
-pub const MultiVisitor = @import("lint/MultiVisitor.zig");
-pub const MinifySettings = @import("MinifySettings.zig");
-pub const MagicComment = @import("MagicComment.zig");
-pub const MinifyEstimator = @import("MinifyEstimator.zig");
+pub const CstLower = @import("CstLower.zig");
 pub const api_json = @import("api_json.zig");
 pub const ffi = @import("ffi.zig");
-pub const OptionsSpec = @import("options.zig");
 
 test {
     // Belt-and-suspenders: these modules are re-exported above but not called
@@ -477,7 +496,7 @@ comptime {
     _ = Dce;
     _ = Compiler;
     _ = Pipeline;
-    _ = WasmBinary;
+    _ = @import("WasmBinary.zig");
     _ = Edits;
     _ = StableId;
     _ = Linter;
