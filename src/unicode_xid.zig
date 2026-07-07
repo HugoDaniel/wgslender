@@ -1579,3 +1579,59 @@ test "isXidContinue: combining marks accepted, emoji rejected" {
     try std.testing.expect(isXidContinue(0x20000)); // 𠀀
     try std.testing.expect(!isXidContinue(0x1F389)); // 🎉
 }
+
+// -------------------------------------------------------------------------
+// Table integrity invariants.
+//
+// `rangeContains` is a binary search: it is correct ONLY if every table is
+// sorted and non-overlapping, and it is only ever reached for cp >= 0x80 (the
+// lookups short-circuit ASCII first), so the tables must exclude ASCII too.
+// These properties were previously unchecked — the tables came from a
+// throwaway script that no longer exists. The tests below pin every property
+// the search and the generator (`tools/gen_xid.zig`) rely on, so a bad
+// regeneration fails the build instead of silently corrupting identifier
+// lexing. Kept green by construction; `zig build gen-xid` reproduces the data.
+
+test "xid tables: pinned cardinality and Unicode version" {
+    try std.testing.expectEqual(@as(usize, 682), xid_start_ranges.len);
+    try std.testing.expectEqual(@as(usize, 796), xid_continue_ranges.len);
+    try std.testing.expectEqualStrings("16.0.0", unicode_version);
+}
+
+test "xid tables: well-formed, sorted, non-overlapping, merged, ASCII-free" {
+    const Table = struct { name: []const u8, ranges: []const [2]u32 };
+    for ([_]Table{
+        .{ .name = "xid_start_ranges", .ranges = &xid_start_ranges },
+        .{ .name = "xid_continue_ranges", .ranges = &xid_continue_ranges },
+    }) |tbl| {
+        try std.testing.expect(tbl.ranges.len > 0);
+        var prev_hi: ?u32 = null;
+        for (tbl.ranges) |r| {
+            const lo = r[0];
+            const hi = r[1];
+            try std.testing.expect(lo <= hi); // well-formed range
+            try std.testing.expect(lo >= 0x80); // ASCII handled before the table
+            try std.testing.expect(hi <= 0x10FFFF); // within Unicode scalar space
+            if (prev_hi) |ph| {
+                // Strictly increasing AND fully merged: a correct generator
+                // coalesces adjacent ranges, so consecutive ranges leave a gap
+                // of >= 1 codepoint. This is stronger than binary search needs
+                // (it only needs lo > ph) and also pins the generator's merge.
+                try std.testing.expect(lo > ph + 1);
+            }
+            prev_hi = hi;
+        }
+    }
+}
+
+test "xid invariant: XID_Start is a subset of XID_Continue" {
+    // Unicode guarantees XID_Start ⊆ XID_Continue; a generator that swapped or
+    // mis-parsed the two property lists would break this. ~141k codepoints, all
+    // >= 0x80, so every probe exercises the continue table (not the ASCII path).
+    for (xid_start_ranges) |r| {
+        var cp: u32 = r[0];
+        while (cp <= r[1]) : (cp += 1) {
+            try std.testing.expect(isXidContinue(@intCast(cp)));
+        }
+    }
+}
