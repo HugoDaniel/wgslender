@@ -20,7 +20,6 @@ pub const Err = error{
     SymbolNameMismatch,
     SymbolKindMismatch,
     SymbolFlagsMismatch,
-    SymbolSlotMismatch,
     SymbolUseCountMismatch,
     UseCountsLenMismatch,
     SymbolLocMismatch,
@@ -186,7 +185,6 @@ fn expectSymbolEqual(e: Ast.Symbol, a: Ast.Symbol, i: usize) Err!void {
         std.debug.print("symbol[{d}] '{s}' .flags mismatch\n", .{ i, e.original_name });
         return error.SymbolFlagsMismatch;
     }
-    if (e.nested_scope_slot != a.nested_scope_slot) return error.SymbolSlotMismatch;
     if (e.loc != a.loc) {
         std.debug.print("symbol[{d}] '{s}' .loc mismatch: {d} vs {d}\n", .{ i, e.original_name, e.loc, a.loc });
         return error.SymbolLocMismatch;

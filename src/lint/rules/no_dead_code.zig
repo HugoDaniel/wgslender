@@ -92,9 +92,8 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
 /// Map every symbol declared inside a top-level function's body (or
 /// parameter list) to that function's symbol index. We rely on byte-
 /// offset containment rather than a scope back-pointer because the AST
-/// doesn't carry one — see `Ast.Symbol.nested_scope_slot`, which is
-/// declared but currently unwritten. Functions can't nest in WGSL, so
-/// flat iteration is sufficient.
+/// carries no such pointer. Functions can't nest in WGSL, so flat
+/// iteration is sufficient.
 fn buildEnclosingFnMap(
     arena: Allocator,
     module: *const Ast.Module,

@@ -112,10 +112,6 @@ pub const Symbol = struct {
     /// per-call `RenamePolicy`) so the symbol record stays immutable past
     /// Pass 1.
     flags: Flags,
-    /// For function and struct symbols: index of the scope they introduce
-    /// in the parent scope's `children`. Null for symbols that open no
-    /// nested scope. Used by `StableId` to stabilize paths across reparses.
-    nested_scope_slot: ?u32 = null,
     /// Byte offset in source where this symbol is declared.
     loc: u32 = 0,
 
@@ -1730,10 +1726,9 @@ comptime {
     std.debug.assert(@sizeOf(Symbol.Kind) == 1);
 
     // Total Symbol size on 64-bit targets — locked to make growth visible.
-    // Layout: original_name (16) + kind (1) + flags (1) + 2 pad +
-    //         nested_scope_slot (8) + loc (4) = 32 bytes.
+    // Layout: original_name (16) + kind (1) + flags (1) + 2 pad + loc (4) = 24 bytes.
     if (@sizeOf(usize) == 8) {
-        std.debug.assert(@sizeOf(Symbol) == 32);
+        std.debug.assert(@sizeOf(Symbol) == 24);
     }
 }
 
