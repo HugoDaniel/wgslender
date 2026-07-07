@@ -1263,116 +1263,52 @@ fn parseExpression(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Expr {
     }
     self.expr_depth += 1;
     defer self.expr_depth -= 1;
-    return self.parseLogicalOrExpr();
+    return self.parseBinaryLevel(0, parseUnaryExpr);
 }
 
-fn parseLogicalOrExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseLogicalAndExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    while (self.currentTag() == .pipe_pipe) {
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseLogicalAndExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = .logical_or, .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
+const OpMap = struct { tag: Tag, op: Ast.BinaryOp };
+
+// Binary operators by precedence level, lowest (0) to highest (9). Every level
+// runs the identical loop (see parseBinaryLevel) — only this token→op map
+// differs — so what were ten copy-paste precedence functions collapse to one.
+const bin_levels = [_][]const OpMap{
+    &.{.{ .tag = .pipe_pipe, .op = .logical_or }}, // 0  ||
+    &.{.{ .tag = .amp_amp, .op = .logical_and }}, // 1  &&
+    &.{.{ .tag = .pipe, .op = .@"or" }}, // 2  |
+    &.{.{ .tag = .caret, .op = .xor }}, // 3  ^
+    &.{.{ .tag = .amp, .op = .@"and" }}, // 4  &
+    &.{ .{ .tag = .eq_eq, .op = .eq }, .{ .tag = .bang_eq, .op = .ne } }, // 5  == !=
+    &.{ .{ .tag = .lt, .op = .lt }, .{ .tag = .lt_eq, .op = .le }, .{ .tag = .gt, .op = .gt }, .{ .tag = .gt_eq, .op = .ge } }, // 6  < <= > >=
+    &.{ .{ .tag = .lt_lt, .op = .shl }, .{ .tag = .gt_gt, .op = .shr } }, // 7  << >>
+    &.{ .{ .tag = .plus, .op = .add }, .{ .tag = .minus, .op = .sub } }, // 8  + -
+    &.{ .{ .tag = .star, .op = .mul }, .{ .tag = .slash, .op = .div }, .{ .tag = .percent, .op = .mod } }, // 9  * / %
+};
+
+// Template arguments enter the ladder at additive (level 8): the relational and
+// shift operators (`<` `>` `<<` `>>`) would collide with the template's own
+// angle brackets, so the restricted grammar admits only additive/multiplicative.
+const template_bin_entry_level = 8;
+
+fn matchBinOp(comptime ops: []const OpMap, tag: Tag) ?Ast.BinaryOp {
+    inline for (ops) |m| {
+        if (tag == m.tag) return m.op;
     }
-    return left;
+    return null;
 }
 
-fn parseLogicalAndExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseBitwiseOrExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    while (self.currentTag() == .amp_amp) {
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseBitwiseOrExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = .logical_and, .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    }
-    return left;
-}
-
-fn parseBitwiseOrExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseBitwiseXorExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    while (self.currentTag() == .pipe) {
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseBitwiseXorExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = .@"or", .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    }
-    return left;
-}
-
-fn parseBitwiseXorExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseBitwiseAndExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    while (self.currentTag() == .caret) {
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseBitwiseAndExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = .xor, .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    }
-    return left;
-}
-
-fn parseBitwiseAndExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseEqualityExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    while (self.currentTag() == .amp) {
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseEqualityExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = .@"and", .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    }
-    return left;
-}
-
-fn parseEqualityExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseRelationalExpr()) orelse return null;
+// One generic precedence level: parse the operand one level up (or the unary
+// `leaf` at the top of the ladder), then left-fold this level's binary
+// operators. The CST wrap dance and the safety-budget loop are identical to the
+// hand-written copies this replaces; `leaf` selects the full vs. template unary.
+fn parseBinaryLevel(self: *Parser, comptime level: usize, comptime leaf: anytype) !?Ast.Expr {
+    const ops = bin_levels[level];
+    var left = (try self.parseBinaryOperand(level, leaf)) orelse return null;
     var left_marker = self.cst_last_closed_expr;
     for (0..self.token_tags.len) |_| {
-        const op: Ast.BinaryOp = switch (self.currentTag()) {
-            .eq_eq => .eq,
-            .bang_eq => .ne,
-            else => return left,
-        };
+        const op = matchBinOp(ops, self.currentTag()) orelse return left;
         const loc = self.currentStart();
         self.advance();
-        const right = (try self.parseRelationalExpr()) orelse return null;
+        const right = (try self.parseBinaryOperand(level, leaf)) orelse return null;
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
         left = .{ .binary = node };
@@ -1384,99 +1320,11 @@ fn parseEqualityExpr(self: *Parser) !?Ast.Expr {
     } else unreachable;
 }
 
-fn parseRelationalExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseShiftExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    for (0..self.token_tags.len) |_| {
-        const op: Ast.BinaryOp = switch (self.currentTag()) {
-            .lt => .lt,
-            .lt_eq => .le,
-            .gt => .gt,
-            .gt_eq => .ge,
-            else => return left,
-        };
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseShiftExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    } else unreachable;
-}
-
-fn parseShiftExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseAdditiveExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    for (0..self.token_tags.len) |_| {
-        const op: Ast.BinaryOp = switch (self.currentTag()) {
-            .lt_lt => .shl,
-            .gt_gt => .shr,
-            else => return left,
-        };
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseAdditiveExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    } else unreachable;
-}
-
-fn parseAdditiveExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseMultiplicativeExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    for (0..self.token_tags.len) |_| {
-        const op: Ast.BinaryOp = switch (self.currentTag()) {
-            .plus => .add,
-            .minus => .sub,
-            else => return left,
-        };
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseMultiplicativeExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    } else unreachable;
-}
-
-fn parseMultiplicativeExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseUnaryExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    for (0..self.token_tags.len) |_| {
-        const op: Ast.BinaryOp = switch (self.currentTag()) {
-            .star => .mul,
-            .slash => .div,
-            .percent => .mod,
-            else => return left,
-        };
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseUnaryExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    } else unreachable;
+// Operand of a binary level: the next-tighter level, or the unary `leaf` once
+// the top of the ladder is reached.
+inline fn parseBinaryOperand(self: *Parser, comptime level: usize, comptime leaf: anytype) !?Ast.Expr {
+    if (level + 1 < bin_levels.len) return self.parseBinaryLevel(level + 1, leaf);
+    return leaf(self);
 }
 
 fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
@@ -1747,56 +1595,12 @@ fn parseExpressionList(self: *Parser) !std.ArrayList(Ast.Expr) {
     return exprs;
 }
 
-// Template argument expression (restricted: no > or >= operators)
+// Template argument expression (restricted: no relational/shift/bitwise/logical
+// operators — those would collide with the template's own `>` delimiter). Enters
+// the shared precedence ladder at additive with the template unary leaf, so the
+// admitted operators are exactly additive and multiplicative.
 fn parseTemplateArgExpr(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Expr {
-    return self.parseTemplateAdditiveExpr();
-}
-
-fn parseTemplateAdditiveExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseTemplateMultiplicativeExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    for (0..self.token_tags.len) |_| {
-        const op: Ast.BinaryOp = switch (self.currentTag()) {
-            .plus => .add,
-            .minus => .sub,
-            else => return left,
-        };
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseTemplateMultiplicativeExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    } else unreachable;
-}
-
-fn parseTemplateMultiplicativeExpr(self: *Parser) !?Ast.Expr {
-    var left = (try self.parseTemplateUnaryExpr()) orelse return null;
-    var left_marker = self.cst_last_closed_expr;
-    for (0..self.token_tags.len) |_| {
-        const op: Ast.BinaryOp = switch (self.currentTag()) {
-            .star => .mul,
-            .slash => .div,
-            .percent => .mod,
-            else => return left,
-        };
-        const loc = self.currentStart();
-        self.advance();
-        const right = (try self.parseTemplateUnaryExpr()) orelse return null;
-        const node = try self.arena.create(Ast.BinaryExpr);
-        node.* = .{ .loc = loc, .op = op, .left = left, .right = right };
-        left = .{ .binary = node };
-        if (self.cstOpenBefore(left_marker)) |wrap| {
-            try self.cstClose(wrap, .binary_expr);
-            self.cst_last_closed_expr = wrap;
-            left_marker = wrap;
-        }
-    } else unreachable;
+    return self.parseBinaryLevel(template_bin_entry_level, parseTemplateUnaryExpr);
 }
 
 fn parseTemplateUnaryExpr(self: *Parser) !?Ast.Expr {
