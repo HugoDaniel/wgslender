@@ -51,6 +51,7 @@ pub const Err = error{
     AttributesLenMismatch,
     AttrNameMismatch,
     AttrLocMismatch,
+    AttrSpanMismatch,
     AttrArgCountMismatch,
     OptTypePresenceMismatch,
     TypeTagMismatch,
@@ -323,6 +324,10 @@ fn expectAttributesEqual(e: std.ArrayListUnmanaged(Ast.Attribute), a: std.ArrayL
     for (e.items, a.items) |ea, aa| {
         if (!std.mem.eql(u8, ea.name, aa.name)) return error.AttrNameMismatch;
         if (ea.loc != aa.loc) return error.AttrLocMismatch;
+        if (ea.span.start != aa.span.start or ea.span.end != aa.span.end) {
+            std.debug.print("attr span mismatch (@{s}): {d}..{d} vs {d}..{d}\n", .{ ea.name, ea.span.start, ea.span.end, aa.span.start, aa.span.end });
+            return error.AttrSpanMismatch;
+        }
         if (ea.args.items.len != aa.args.items.len) return error.AttrArgCountMismatch;
         for (ea.args.items, aa.args.items) |ex, ax| try expectExprEqual(ex, ax);
     }

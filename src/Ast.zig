@@ -743,7 +743,10 @@ pub const Attribute = struct {
     args: std.ArrayList(Expr),
     loc: u32 = 0,
     /// Byte span from the `@` through the closing `)` (or the identifier
-    /// end for argument-less attributes). Populated by `CstLower`.
+    /// end for argument-less attributes). Stamped by both front ends:
+    /// the Parser via `attr_loc`/`prevTokenEnd()`, and CstLower via
+    /// `nonTriviaSpan`. The incremental hot path's `findSlotInAttribute`
+    /// gates on it, so the two must agree (pinned by `tests/ast_equal.zig`).
     span: Span = .empty,
 };
 

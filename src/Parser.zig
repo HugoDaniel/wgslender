@@ -808,6 +808,12 @@ fn parseAttributes(self: *Parser) !std.ArrayList(Ast.Attribute) {
                 }
             }
         }
+        // Span from the `@` through the last consumed token (the closing
+        // `)` when args are present, else the attribute name). Mirrors
+        // CstLower's `nonTriviaSpan` of the `attribute` node so both
+        // front-ends agree — the incremental hot path's
+        // `findSlotInAttribute` gates on this span (see Ast.Attribute.span).
+        attr.span = .{ .start = attr_loc, .end = self.prevTokenEnd() };
         try attrs.append(self.arena, attr);
         try self.cstClose(attr_marker, .attribute);
     }
