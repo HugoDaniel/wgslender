@@ -257,6 +257,7 @@ pub fn entryToJson(buf: *std.ArrayList(u8), allocator: Allocator, entry: *const 
 }
 
 pub fn appendJsonEscaped(buf: *std.ArrayList(u8), allocator: Allocator, s: []const u8) Allocator.Error!void {
+    const hex = "0123456789abcdef";
     for (s) |c| {
         switch (c) {
             '"' => try buf.appendSlice(allocator, "\\\""),
@@ -264,6 +265,15 @@ pub fn appendJsonEscaped(buf: *std.ArrayList(u8), allocator: Allocator, s: []con
             '\n' => try buf.appendSlice(allocator, "\\n"),
             '\r' => try buf.appendSlice(allocator, "\\r"),
             '\t' => try buf.appendSlice(allocator, "\\t"),
+            // JSON forbids raw control characters (U+0000–U+001F) inside a
+            // string; the ones without a shorthand above must use \u00XX or
+            // the payload fails to parse. Bytes >= 0x20 (incl. UTF-8
+            // multibyte sequences) are valid as-is.
+            0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f => {
+                try buf.appendSlice(allocator, "\\u00");
+                try buf.append(allocator, hex[(c >> 4) & 0xf]);
+                try buf.append(allocator, hex[c & 0xf]);
+            },
             else => try buf.append(allocator, c),
         }
     }

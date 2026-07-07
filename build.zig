@@ -403,6 +403,9 @@ pub fn build(b: *std.Build) void {
     // Numeric-literal text fidelity — AST literal value must equal the lexer's
     // byte-exact `source[token.start..token.end]` (no hand-rolled re-scanner).
     _ = addTestStep(b, test_step, "tests/parser_token_text_test.zig", target, optimize, &.{w});
+    // Diagnostic JSON escaping — serialized entries must parse under std.json
+    // even when a message carries a control byte (< 0x20).
+    _ = addTestStep(b, test_step, "tests/diagnostic_json_test.zig", target, optimize, &.{w});
     // Reflect tests
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/reflect_wgslreflect_test.zig", target, optimize, &.{w});
