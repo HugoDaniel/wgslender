@@ -34,6 +34,9 @@ const Dce = @import("Dce.zig");
 const RenamePolicy = @import("RenamePolicy.zig");
 const SourceMap = @import("SourceMap.zig");
 const Pipeline = @import("Pipeline.zig");
+// Aliased to avoid shadowing the `options` parameter carried by `minify`,
+// `minifyAndReflect`, and `minifyCore`.
+const options_spec = @import("options.zig");
 
 const Reflect = @import("Reflect.zig");
 
@@ -64,6 +67,17 @@ pub const Options = struct {
     /// produce near-identical text, improving DEFLATE compression.
     scope_local_rename: bool = false,
 };
+
+comptime {
+    // Drift guard: every `minifier_options_specs` entry must name a real
+    // `Options` field — the spec table and this struct are two views of the
+    // same knobs (options.zig documents both as targets), and renaming one
+    // without the other silently drops a JSON/CLI option. The source-map and
+    // lint specs target `Config`, not `Options`, so only the minifier subset
+    // applies here. This is the install `options.zig` documents as intended
+    // but was never wired for `Options` (Config already installs its own).
+    options_spec.assertSpecFieldsExist(Options, &options_spec.minifier_options_specs);
+}
 
 pub const Result = struct {
     code: []const u8,
