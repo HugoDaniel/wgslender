@@ -44,6 +44,7 @@ pub const Edits = @import("Edits.zig");
 pub const StableId = @import("StableId.zig");
 pub const Cst = @import("Cst.zig");
 pub const CstLower = @import("CstLower.zig");
+pub const Predeclared = @import("Predeclared.zig");
 pub const Incremental = @import("Incremental.zig");
 pub const Linter = @import("lint/Linter.zig");
 pub const MultiVisitor = @import("lint/MultiVisitor.zig");

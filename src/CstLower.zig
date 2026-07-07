@@ -23,6 +23,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
+const Predeclared = @import("Predeclared.zig");
 const AstVisit = @import("AstVisit.zig");
 const UseCounts = @import("UseCounts.zig");
 const Cst = @import("Cst.zig");
@@ -598,9 +599,9 @@ const LowerCtx = struct {
         if (w.eatNodeKind(.attribute_list)) |n| decl.attributes = try self.lowerAttributeList(self.nodeCursor(n));
         _ = w.eatToken(.keyword_var);
         if (w.eatToken(.lt) != null) {
-            if (w.eatToken(.ident)) |token| decl.address_space = addressSpaceFromText(self.tokenText(token));
+            if (w.eatToken(.ident)) |token| decl.address_space = (Predeclared.addressSpace(self.tokenText(token)) orelse .none);
             if (w.eatToken(.comma) != null) {
-                if (w.eatToken(.ident)) |token| decl.access_mode = accessModeFromText(self.tokenText(token));
+                if (w.eatToken(.ident)) |token| decl.access_mode = (Predeclared.accessMode(self.tokenText(token)) orelse .none);
             }
             _ = w.eatToken(.gt);
         }
@@ -1010,11 +1011,11 @@ const LowerCtx = struct {
         if (w.eatNodeKind(.template_args)) |tn| {
             var tw = self.walker(self.nodeCursor(tn));
             _ = tw.eatToken(.lt);
-            if (tw.eatToken(.ident)) |token| addr = addressSpaceFromText(self.tokenText(token));
+            if (tw.eatToken(.ident)) |token| addr = (Predeclared.addressSpace(self.tokenText(token)) orelse .none);
             _ = tw.eatToken(.comma);
             if (tw.eatAnyNode()) |en| elem = try self.lowerType(en);
             if (tw.eatToken(.comma) != null) {
-                if (tw.eatToken(.ident)) |token| access = accessModeFromText(self.tokenText(token));
+                if (tw.eatToken(.ident)) |token| access = (Predeclared.accessMode(self.tokenText(token)) orelse .none);
             }
             _ = tw.eatToken(.gt);
         }
@@ -1077,7 +1078,7 @@ const LowerCtx = struct {
         if (w.eatToken(.ident) orelse w.eatToken(.reserved_ident)) |token| {
             name = self.tokenText(token);
         }
-        const info = textureInfoFromName(name) orelse {
+        const info = Predeclared.textureInfo(name) orelse {
             const t = try self.arena.create(Ast.TextureType);
             t.* = .{ .kind = .sampled, .dimension = .@"2d", .span = span };
             return .{ .texture = t };
@@ -1095,7 +1096,7 @@ const LowerCtx = struct {
                 .storage => {
                     if (tw.eatToken(.ident)) |token| texel_format = self.tokenText(token);
                     _ = tw.eatToken(.comma);
-                    if (tw.eatToken(.ident)) |token| access = accessModeFromText(self.tokenText(token));
+                    if (tw.eatToken(.ident)) |token| access = (Predeclared.accessMode(self.tokenText(token)) orelse .none);
                 },
                 .depth, .depth_multisampled, .external => {},
             }
@@ -1377,7 +1378,7 @@ const LowerCtx = struct {
         var tw = self.walker(self.nodeCursor(tn));
         _ = tw.eatToken(.lt);
 
-        if (isVecName(name)) {
+        if (Predeclared.isVecName(name)) {
             const size = name[3] - '0';
             var elem: ?Ast.Type = null;
             if (tw.eatAnyNode()) |en| elem = try self.lowerType(en);
@@ -1385,7 +1386,7 @@ const LowerCtx = struct {
             t.* = .{ .size = size, .elem_type = elem, .loc = name_loc, .span = type_span };
             return .{ .vec = t };
         }
-        if (isMatName(name)) {
+        if (Predeclared.isMatName(name)) {
             const cols = name[3] - '0';
             const rows = name[5] - '0';
             var elem: ?Ast.Type = null;
@@ -2018,58 +2019,8 @@ fn assignOpFromTag(t: Tag) ?Ast.AssignOp {
     };
 }
 
-fn addressSpaceFromText(text: []const u8) Ast.AddressSpace {
-    const map = std.StaticStringMap(Ast.AddressSpace).initComptime(.{
-        .{ "function", .function },
-        .{ "private", .private },
-        .{ "workgroup", .workgroup },
-        .{ "uniform", .uniform },
-        .{ "storage", .storage },
-    });
-    return map.get(text) orelse .none;
-}
-
-fn accessModeFromText(text: []const u8) Ast.AccessMode {
-    const map = std.StaticStringMap(Ast.AccessMode).initComptime(.{
-        .{ "read", .read },
-        .{ "write", .write },
-        .{ "read_write", .read_write },
-    });
-    return map.get(text) orelse .none;
-}
-
-const TextureInfo = struct { kind: Ast.TextureKind, dim: Ast.TextureDimension };
-
-fn isVecName(name: []const u8) bool {
-    return name.len == 4 and std.mem.eql(u8, name[0..3], "vec") and name[3] >= '2' and name[3] <= '4';
-}
-
-fn isMatName(name: []const u8) bool {
-    return name.len == 6 and std.mem.eql(u8, name[0..3], "mat") and name[4] == 'x';
-}
-
-fn textureInfoFromName(name: []const u8) ?TextureInfo {
-    const map = std.StaticStringMap(TextureInfo).initComptime(.{
-        .{ "texture_1d", TextureInfo{ .kind = .sampled, .dim = .@"1d" } },
-        .{ "texture_2d", TextureInfo{ .kind = .sampled, .dim = .@"2d" } },
-        .{ "texture_2d_array", TextureInfo{ .kind = .sampled, .dim = .@"2d_array" } },
-        .{ "texture_3d", TextureInfo{ .kind = .sampled, .dim = .@"3d" } },
-        .{ "texture_cube", TextureInfo{ .kind = .sampled, .dim = .cube } },
-        .{ "texture_cube_array", TextureInfo{ .kind = .sampled, .dim = .cube_array } },
-        .{ "texture_multisampled_2d", TextureInfo{ .kind = .multisampled, .dim = .@"2d" } },
-        .{ "texture_external", TextureInfo{ .kind = .external, .dim = .@"2d" } },
-        .{ "texture_storage_1d", TextureInfo{ .kind = .storage, .dim = .@"1d" } },
-        .{ "texture_storage_2d", TextureInfo{ .kind = .storage, .dim = .@"2d" } },
-        .{ "texture_storage_2d_array", TextureInfo{ .kind = .storage, .dim = .@"2d_array" } },
-        .{ "texture_storage_3d", TextureInfo{ .kind = .storage, .dim = .@"3d" } },
-        .{ "texture_depth_2d", TextureInfo{ .kind = .depth, .dim = .@"2d" } },
-        .{ "texture_depth_2d_array", TextureInfo{ .kind = .depth, .dim = .@"2d_array" } },
-        .{ "texture_depth_cube", TextureInfo{ .kind = .depth, .dim = .cube } },
-        .{ "texture_depth_cube_array", TextureInfo{ .kind = .depth, .dim = .cube_array } },
-        .{ "texture_depth_multisampled_2d", TextureInfo{ .kind = .depth_multisampled, .dim = .@"2d" } },
-    });
-    return map.get(name);
-}
+// Address spaces, access modes, vec/mat-name predicates, and the texture
+// table now live in `Predeclared.zig` (the single predeclared-name inventory).
 
 // =========================================================================
 // Tests

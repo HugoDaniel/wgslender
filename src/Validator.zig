@@ -31,6 +31,7 @@ const Builtins = @import("Builtins.zig");
 const Overload = @import("Overload.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const Suggest = @import("Suggest.zig");
+const Predeclared = @import("Predeclared.zig");
 const Dce = @import("Dce.zig");
 const Liveness = @import("Liveness.zig");
 const UseCounts = @import("UseCounts.zig");
@@ -801,35 +802,25 @@ pub fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
         return v.parseMatrixShorthand(name);
     }
 
-    // Depth texture types (no template args)
-    if (std.mem.startsWith(u8, name, "texture_depth")) {
-        const dim: Types.TextureDimension = if (std.mem.eql(u8, name, "texture_depth_2d"))
-            .@"2d"
-        else if (std.mem.eql(u8, name, "texture_depth_2d_array"))
-            .@"2d_array"
-        else if (std.mem.eql(u8, name, "texture_depth_cube"))
-            .cube
-        else if (std.mem.eql(u8, name, "texture_depth_cube_array"))
-            .cube_array
-        else if (std.mem.eql(u8, name, "texture_depth_multisampled_2d"))
-            .@"2d"
-        else
-            return null;
-        const kind: Types.TextureKind = if (std.mem.eql(u8, name, "texture_depth_multisampled_2d"))
-            .depth_multisampled
-        else
-            .depth;
-        const t = v.arena.create(Types.Texture) catch return null;
-        t.* = .{ .kind = kind, .dimension = dim, .sampled_type = null, .texel_format = "", .access_mode = .read };
-        return .{ .texture = t };
-    }
-
-    // External texture type
-    if (std.mem.eql(u8, name, "texture_external")) {
-        const t = v.arena.create(Types.Texture) catch return null;
-        t.* = .{ .kind = .external, .dimension = .@"2d", .sampled_type = null, .texel_format = "", .access_mode = .read };
-        return .{ .texture = t };
-    }
+    // Texture types spelled without template arguments: depth textures and
+    // `texture_external`. Sampled/storage/multisampled textures require
+    // template args and are parsed into AST texture nodes by the Parser, so
+    // they never reach `lookupType` by name (a bare `texture_2d` stays
+    // "unknown type").
+    if (Predeclared.textureInfo(name)) |info| switch (info.kind) {
+        .depth, .depth_multisampled, .external => {
+            const t = v.arena.create(Types.Texture) catch return null;
+            t.* = .{
+                .kind = astTextureKindToType(info.kind),
+                .dimension = astTextureDimToType(info.dim),
+                .sampled_type = null,
+                .texel_format = "",
+                .access_mode = .read,
+            };
+            return .{ .texture = t };
+        },
+        .sampled, .multisampled, .storage => {},
+    };
 
     // Bare array constructor
     if (std.mem.eql(u8, name, "array")) {
@@ -877,7 +868,7 @@ pub fn suggestType(v: *Validator, name: []const u8, arg_count: ?usize) ?[]const 
         // Use best_dist + 1 as the bound so that exact ties are distinguishable
         // from "capped at max" returns from levenshteinBounded.
         const d = levenshteinBounded(name, candidate, best_dist + 1);
-        const arity_match = if (arg_count) |ac| arityOfTypeConstructor(candidate) == ac else false;
+        const arity_match = if (arg_count) |ac| Predeclared.arityOfTypeConstructor(candidate) == ac else false;
         if (d < best_dist or (d == best_dist and arity_match)) {
             best = candidate;
             best_dist = d;
@@ -967,85 +958,31 @@ pub fn suggestCallable(v: *Validator, name: []const u8, arg_count: ?usize) ?[]co
 }
 
 /// Extract the natural argument count from a type constructor name.
-/// For vector shorthands (vec2f, vec3i, vec4, ...) returns the width (2, 3, 4).
-/// For matrix shorthands (mat2x3f, ...) returns the column count.
-/// Returns null for types that don't encode arity in their name.
-pub fn arityOfTypeConstructor(name: []const u8) ?usize {
-    if (name.len == 0) return null;
-    assert(name.len < std.math.maxInt(u16));
-    if (name.len >= 4 and name.len <= 5 and std.mem.startsWith(u8, name, "vec")) {
-        return switch (name[3]) {
-            '2' => 2,
-            '3' => 3,
-            '4' => 4,
-            else => null,
-        };
-    }
-    if (name.len >= 6 and name.len <= 7 and std.mem.startsWith(u8, name, "mat") and name[4] == 'x') {
-        return switch (name[3]) {
-            '2' => 2,
-            '3' => 3,
-            '4' => 4,
-            else => null,
-        };
-    }
-    return null;
+/// See `Predeclared.arityOfTypeConstructor` — the canonical implementation.
+pub const arityOfTypeConstructor = Predeclared.arityOfTypeConstructor;
+
+/// Map a shorthand suffix (or the bare default) to its concrete scalar. The
+/// bare vec/mat form (no suffix) defaults to f32.
+fn suffixScalarPtr(elem: ?Predeclared.SuffixScalar) *const Types.Scalar {
+    return switch (elem orelse .f32) {
+        .i32 => Types.scalar_i32_ptr,
+        .u32 => Types.scalar_u32_ptr,
+        .f32 => Types.scalar_f32_ptr,
+        .f16 => Types.scalar_f16_ptr,
+    };
 }
 
 pub fn parseVectorShorthand(v: *Validator, name: []const u8) ?Types.Type {
-    if (name.len < 4) return null;
-    assert(std.mem.startsWith(u8, name, "vec"));
-    // Accept any "vec*" prefix length — `lookupType` passes through
-    // unrecognised names; bare-len-or-suffix mismatch returns null below.
-    if (name.len > 5) return null;
-
-    const size: u8 = switch (name[3]) {
-        '2' => 2,
-        '3' => 3,
-        '4' => 4,
-        else => return null,
-    };
-
-    var elem: *const Types.Scalar = Types.scalar_f32_ptr;
-    if (name.len == 5) {
-        elem = switch (name[4]) {
-            'i' => Types.scalar_i32_ptr,
-            'u' => Types.scalar_u32_ptr,
-            'f' => Types.scalar_f32_ptr,
-            'h' => Types.scalar_f16_ptr,
-            else => return null,
-        };
-    } else if (name.len == 4) {
-        elem = Types.scalar_f32_ptr; // Default to f32
-    } else {
-        return null;
-    }
-
+    const sh = Predeclared.parseVecShorthand(name) orelse return null;
     const result = v.arena.create(Types.Vector) catch return null;
-    result.* = .{ .width = size, .element = elem };
+    result.* = .{ .width = sh.width, .element = suffixScalarPtr(sh.elem) };
     return .{ .vector = result };
 }
 
 pub fn parseMatrixShorthand(v: *Validator, name: []const u8) ?Types.Type {
-    if (name.len < 6) return null;
-
-    const cols = name[3] -| '0';
-    if (name[4] != 'x') return null;
-    const rows = name[5] -| '0';
-
-    if (cols < 2 or cols > 4 or rows < 2 or rows > 4) return null;
-
-    var elem: *const Types.Scalar = Types.scalar_f32_ptr;
-    if (name.len > 6) {
-        elem = switch (name[6]) {
-            'f' => Types.scalar_f32_ptr,
-            'h' => Types.scalar_f16_ptr,
-            else => return null,
-        };
-    }
-
+    const sh = Predeclared.parseMatShorthand(name) orelse return null;
     const result = v.arena.create(Types.Matrix) catch return null;
-    result.* = .{ .cols = @intCast(cols), .rows = @intCast(rows), .element = elem };
+    result.* = .{ .cols = sh.cols, .rows = sh.rows, .element = suffixScalarPtr(sh.elem) };
     return .{ .matrix = result };
 }
 

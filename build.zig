@@ -478,6 +478,7 @@ pub fn build(b: *std.Build) void {
     // test shader. Proves Stage 4's lowering path produces an identical
     // Ast.Module (including use_count parity from shared Pass 2).
     _ = addTestStep(b, test_step, "tests/cst_lower_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/predeclared_test.zig", target, optimize, &.{w});
     // Semantic tests
     const sd: std.Build.Module.Import = .{ .name = "semantic_data", .module = semantic_data_mod };
     _ = addTestStep(b, test_step, "tests/compute_toys_test.zig", target, optimize, &.{ w, sd });

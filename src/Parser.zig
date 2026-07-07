@@ -11,6 +11,7 @@ const Cst = @import("Cst.zig");
 const AstVisit = @import("AstVisit.zig");
 const UseCounts = @import("UseCounts.zig");
 const Suggest = @import("Suggest.zig");
+const Predeclared = @import("Predeclared.zig");
 const Diagnostic = @import("Diagnostic.zig");
 const constants = @import("constants.zig");
 
@@ -1183,12 +1184,12 @@ fn parseTemplatedType(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type 
 }
 
 fn parseTemplatedTypeInner(self: *Parser, name: []const u8, name_loc: u32) !Ast.Type {
-    if (isVecName(name)) return try self.parseTemplatedVec(name, name_loc);
-    if (isMatName(name)) return try self.parseTemplatedMat(name, name_loc);
+    if (Predeclared.isVecName(name)) return try self.parseTemplatedVec(name, name_loc);
+    if (Predeclared.isMatName(name)) return try self.parseTemplatedMat(name, name_loc);
     if (std.mem.eql(u8, name, "array")) return try self.parseTemplatedArray(name_loc);
     if (std.mem.eql(u8, name, "ptr")) return try self.parseTemplatedPtr(name_loc);
     if (std.mem.eql(u8, name, "atomic")) return try self.parseTemplatedAtomic(name_loc);
-    if (parseTextureTypeInfo(name)) |info| return try self.parseTemplatedTexture(info, name_loc);
+    if (Predeclared.textureInfo(name)) |info| return try self.parseTemplatedTexture(info, name_loc);
     return try self.parseTemplatedGeneric(name, name_loc);
 }
 
@@ -1268,7 +1269,7 @@ fn parseTemplatedAtomic(self: *Parser, name_loc: u32) !Ast.Type {
     return .{ .atomic = typ };
 }
 
-fn parseTemplatedTexture(self: *Parser, info: TextureInfo, name_loc: u32) !Ast.Type {
+fn parseTemplatedTexture(self: *Parser, info: Predeclared.TextureInfo, name_loc: u32) !Ast.Type {
     const typ = try self.arena.create(Ast.TextureType);
     typ.* = .{ .kind = info.kind, .dimension = info.dim };
     if (info.kind == .storage) {
@@ -1299,43 +1300,12 @@ fn parseTemplatedGeneric(self: *Parser, name: []const u8, name_loc: u32) !Ast.Ty
     return .{ .ident = typ };
 }
 
-const TextureInfo = struct { kind: Ast.TextureKind, dim: Ast.TextureDimension };
-
-fn parseTextureTypeInfo(name: []const u8) ?TextureInfo {
-    const map = std.StaticStringMap(TextureInfo).initComptime(.{
-        .{ "texture_1d", TextureInfo{ .kind = .sampled, .dim = .@"1d" } },
-        .{ "texture_2d", TextureInfo{ .kind = .sampled, .dim = .@"2d" } },
-        .{ "texture_2d_array", TextureInfo{ .kind = .sampled, .dim = .@"2d_array" } },
-        .{ "texture_3d", TextureInfo{ .kind = .sampled, .dim = .@"3d" } },
-        .{ "texture_cube", TextureInfo{ .kind = .sampled, .dim = .cube } },
-        .{ "texture_cube_array", TextureInfo{ .kind = .sampled, .dim = .cube_array } },
-        .{ "texture_multisampled_2d", TextureInfo{ .kind = .multisampled, .dim = .@"2d" } },
-        .{ "texture_storage_1d", TextureInfo{ .kind = .storage, .dim = .@"1d" } },
-        .{ "texture_storage_2d", TextureInfo{ .kind = .storage, .dim = .@"2d" } },
-        .{ "texture_storage_2d_array", TextureInfo{ .kind = .storage, .dim = .@"2d_array" } },
-        .{ "texture_storage_3d", TextureInfo{ .kind = .storage, .dim = .@"3d" } },
-        .{ "texture_depth_2d", TextureInfo{ .kind = .depth, .dim = .@"2d" } },
-        .{ "texture_depth_2d_array", TextureInfo{ .kind = .depth, .dim = .@"2d_array" } },
-        .{ "texture_depth_cube", TextureInfo{ .kind = .depth, .dim = .cube } },
-        .{ "texture_depth_cube_array", TextureInfo{ .kind = .depth, .dim = .cube_array } },
-        .{ "texture_depth_multisampled_2d", TextureInfo{ .kind = .depth_multisampled, .dim = .@"2d" } },
-    });
-    return map.get(name);
-}
-
 fn parseAddressSpace(self: *Parser) Allocator.Error!Ast.AddressSpace {
-    const map = std.StaticStringMap(Ast.AddressSpace).initComptime(.{
-        .{ "function", .function },
-        .{ "private", .private },
-        .{ "workgroup", .workgroup },
-        .{ "uniform", .uniform },
-        .{ "storage", .storage },
-    });
     if (self.currentTag() == .ident) {
         const text = self.currentText();
         const pos = self.currentStart();
         self.advance();
-        if (map.get(text)) |as| return as;
+        if (Predeclared.addressSpace(text)) |as| return as;
         // Only flag a typo when the token is close to a known address space;
         // leave unknown-but-distant identifiers (e.g. extension address spaces
         // like `pixel_local`) silently accepted as `.none` to preserve
@@ -1351,16 +1321,11 @@ fn parseAddressSpace(self: *Parser) Allocator.Error!Ast.AddressSpace {
 }
 
 fn parseAccessMode(self: *Parser) Allocator.Error!Ast.AccessMode {
-    const map = std.StaticStringMap(Ast.AccessMode).initComptime(.{
-        .{ "read", .read },
-        .{ "write", .write },
-        .{ "read_write", .read_write },
-    });
     if (self.currentTag() == .ident) {
         const text = self.currentText();
         const pos = self.currentStart();
         self.advance();
-        if (map.get(text)) |am| return am;
+        if (Predeclared.accessMode(text)) |am| return am;
         if (Suggest.suggestName(text, &Suggest.access_modes, 3)) |s| {
             const end = pos +| @as(u32, @intCast(text.len));
             const msg = std.fmt.allocPrint(self.arena, "unknown access mode '{s}'; did you mean '{s}'?", .{ text, s }) catch "unknown access mode";
@@ -2509,14 +2474,6 @@ fn parseAssignOp(self: *const Parser) ?Ast.AssignOp {
 // =========================================================================
 // Helpers
 // =========================================================================
-
-fn isVecName(name: []const u8) bool {
-    return name.len == 4 and std.mem.eql(u8, name[0..3], "vec") and name[3] >= '2' and name[3] <= '4';
-}
-
-fn isMatName(name: []const u8) bool {
-    return name.len == 6 and std.mem.eql(u8, name[0..3], "mat") and name[4] == 'x';
-}
 
 fn isTemplatedTypeName(name: []const u8) bool {
     const map = std.StaticStringMap(void).initComptime(.{
