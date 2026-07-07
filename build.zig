@@ -400,6 +400,9 @@ pub fn build(b: *std.Build) void {
     // array<T, ...> template args) — guards against the regression where
     // `parseTemplatePrimaryExprInner` silently dropped postfix suffixes.
     _ = addTestStep(b, test_step, "tests/parser_template_postfix_test.zig", target, optimize, &.{w});
+    // Numeric-literal text fidelity — AST literal value must equal the lexer's
+    // byte-exact `source[token.start..token.end]` (no hand-rolled re-scanner).
+    _ = addTestStep(b, test_step, "tests/parser_token_text_test.zig", target, optimize, &.{w});
     // Reflect tests
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/reflect_wgslreflect_test.zig", target, optimize, &.{w});

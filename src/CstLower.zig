@@ -1143,62 +1143,17 @@ const LowerCtx = struct {
         var w = self.walker(cur);
         const token = w.eatAnyToken() orelse return error.InvalidCst;
         const tag = self.tokenTag(token);
-        const loc = self.tokenStart(token);
-        // Parser derives numeric literal text via its own `scanNumberText`
-        // which stops at a different boundary than `Lexer.Token.end` in some
-        // edge cases (e.g. `2.f` — Lexer says 3 chars, Parser says 1). To
-        // stay byte-identical with the reference `Ast.LiteralExpr.value`,
-        // mirror that logic for int/float literals.
-        const value: []const u8 = switch (tag) {
-            .int_literal, .float_literal => self.scanNumberText(loc),
-            else => self.tokenText(token),
-        };
+        // `tokenText` slices by the lexer's stored `[start, end)`, so numeric
+        // literals (`1.e5`, `2.f`, hex floats) are byte-identical with the
+        // reference `Ast.LiteralExpr.value` without any re-scan.
         const node = try self.arena.create(Ast.LiteralExpr);
-        node.* = .{ .loc = loc, .kind = tag, .value = value, .span = self.nonTriviaSpan(cur.node) };
+        node.* = .{
+            .loc = self.tokenStart(token),
+            .kind = tag,
+            .value = self.tokenText(token),
+            .span = self.nonTriviaSpan(cur.node),
+        };
         return .{ .literal = node };
-    }
-
-    /// Mirror of `Parser.scanNumberText` — same string both front-ends hand
-    /// to `Ast.LiteralExpr.value`.
-    fn scanNumberText(self: *const LowerCtx, start: u32) []const u8 {
-        var pos = start;
-        const src = self.cst.source;
-        if (pos + 1 < src.len and src[pos] == '0' and (src[pos + 1] == 'x' or src[pos + 1] == 'X')) {
-            pos += 2;
-            while (pos < src.len and Lexer.isHexDigit(src[pos])) pos += 1;
-            if (pos < src.len and src[pos] == '.') {
-                pos += 1;
-                while (pos < src.len and Lexer.isHexDigit(src[pos])) pos += 1;
-            }
-            if (pos < src.len and (src[pos] == 'p' or src[pos] == 'P')) {
-                pos += 1;
-                if (pos < src.len and (src[pos] == '+' or src[pos] == '-')) pos += 1;
-                while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
-            }
-        } else {
-            while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
-            if (pos < src.len and src[pos] == '.') {
-                const nid = pos + 1 < src.len and Lexer.isDigit(src[pos + 1]);
-                const nie = Lexer.peekIdentStart(src, pos + 1);
-                const ae = pos + 1 >= src.len;
-                // `1.f` / `1.h` — digit, dot, float-suffix, no trailing ident
-                // chars — is a complete float literal (matches the lexer).
-                const nfs = pos + 1 < src.len and
-                    (src[pos + 1] == 'f' or src[pos + 1] == 'h') and
-                    !Lexer.peekIdentContinue(src, pos + 2);
-                if (nid or ae or !nie or nfs) {
-                    pos += 1;
-                    while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
-                }
-            }
-            if (pos < src.len and (src[pos] == 'e' or src[pos] == 'E')) {
-                pos += 1;
-                if (pos < src.len and (src[pos] == '+' or src[pos] == '-')) pos += 1;
-                while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
-            }
-        }
-        if (pos < src.len and (src[pos] == 'i' or src[pos] == 'u' or src[pos] == 'f' or src[pos] == 'h')) pos += 1;
-        return src[start..pos];
     }
 
     fn lowerIdentExpr(self: *LowerCtx, cur: Cst.Cursor) !Ast.Expr {

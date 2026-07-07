@@ -74,6 +74,17 @@ test "cst_lower: const_decl with type and float" {
     try assertEquivalent(std.testing.allocator, "const pi: f32 = 3.14;");
 }
 
+test "cst_lower: numeric literal edge cases (lexer-boundary parity)" {
+    // Both front-ends must record the literal's `value` as the lexer's own
+    // byte-exact slice. `1.e5` (dot-then-exponent, §6.1.2) and `2.f` (dot then
+    // float suffix) are the edge cases where a hand-rolled re-scanner drifted
+    // from `Lexer.Token.end`.
+    try assertEquivalent(std.testing.allocator, "const a = 1.e5;");
+    try assertEquivalent(std.testing.allocator, "const b = 2.f;");
+    try assertEquivalent(std.testing.allocator, "const c = 0x1.8p2;");
+    try assertEquivalent(std.testing.allocator, "const d = 1e5f;");
+}
+
 test "cst_lower: override_decl" {
     try assertEquivalent(std.testing.allocator, "@id(0) override workgroup_x: u32 = 16;");
 }

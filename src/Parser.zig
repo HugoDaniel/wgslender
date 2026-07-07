@@ -27,6 +27,12 @@ source: [:0]const u8,
 // `MultiArrayList` items, both of which permit write-through).
 token_tags: []Tag,
 token_starts: []u32,
+/// One-past-the-end byte offset of each token, straight from the lexer
+/// (`Lexer.Token.end`). Never mutated — `expectTemplateClose` bumps only
+/// `start`, and the stored end already bounds the split token correctly.
+/// Lets `tokenText`/`prevTokenEnd` slice the source directly instead of
+/// re-scanning, which is where hand-rolled number scanners used to drift.
+token_ends: []const u32,
 pos: u32,
 
 // Symbol table
@@ -122,6 +128,7 @@ pub fn init(arena: Allocator, source: [:0]const u8, tokens: std.MultiArrayList(L
         .source = source,
         .token_tags = tokens.items(.tag),
         .token_starts = tokens.items(.start),
+        .token_ends = tokens.items(.end),
         .pos = 0,
         .symbols = .empty,
         .scope = scope,
@@ -140,11 +147,13 @@ pub const TokenStream = struct {
 
     non_trivia_tags: []Tag,
     non_trivia_starts: []u32,
+    non_trivia_ends: []u32,
     nt_to_all: []u32,
 
     /// Build a stream from the output of `Lexer.tokenizeAll`. Allocates
-    /// `non_trivia_tags`, `non_trivia_starts`, and `nt_to_all` from `arena`;
-    /// `all_*` slices alias the caller's token storage.
+    /// `non_trivia_tags`, `non_trivia_starts`, `non_trivia_ends`, and
+    /// `nt_to_all` from `arena`; `all_*` slices alias the caller's token
+    /// storage.
     pub fn init(arena: Allocator, all: *const std.MultiArrayList(Lexer.Token)) !TokenStream {
         const tags = all.items(.tag);
         const starts = all.items(.start);
@@ -158,12 +167,14 @@ pub const TokenStream = struct {
 
         const nt_tags = try arena.alloc(Tag, n);
         const nt_starts = try arena.alloc(u32, n);
+        const nt_ends = try arena.alloc(u32, n);
         const nt_map = try arena.alloc(u32, n);
         var j: u32 = 0;
         for (tags, 0..) |t, i| {
             if (t.isTrivia()) continue;
             nt_tags[j] = t;
             nt_starts[j] = starts[i];
+            nt_ends[j] = ends[i];
             nt_map[j] = @intCast(i);
             j += 1;
         }
@@ -174,6 +185,7 @@ pub const TokenStream = struct {
             .all_ends = ends,
             .non_trivia_tags = nt_tags,
             .non_trivia_starts = nt_starts,
+            .non_trivia_ends = nt_ends,
             .nt_to_all = nt_map,
         };
     }
@@ -199,6 +211,7 @@ pub fn initWithCst(
         .source = source,
         .token_tags = stream.non_trivia_tags,
         .token_starts = stream.non_trivia_starts,
+        .token_ends = stream.non_trivia_ends,
         .pos = 0,
         .symbols = .empty,
         .scope = scope,
@@ -459,109 +472,15 @@ fn expectTemplateClose(self: *Parser) Allocator.Error!bool {
     }
 }
 
+/// Exact source text of the token at `pos`, sliced by the lexer's own
+/// `[start, end)`. The lexer already computed the precise end (WGSL's
+/// number grammar is subtle — `1.e5`, `2.f`, hex floats — and the lexer is
+/// the single authority on where a lexeme stops); re-deriving it here only
+/// invited drift. `expectTemplateClose` may bump `start` past a split `>>`,
+/// but the stored end still bounds the token correctly.
 fn tokenText(self: *const Parser, pos: u32) []const u8 {
     if (pos >= self.token_tags.len) return "";
-    const start = self.token_starts[pos];
-    const tag = self.token_tags[pos];
-    _ = tag;
-    // Scan to find end of this token's text
-    var end = start;
-    const src = self.source;
-    if (end >= src.len) return "";
-    const ch = src[end];
-    if (Lexer.peekIdentStart(src, end)) {
-        end = Lexer.scanIdentEnd(src, end);
-    } else if (Lexer.isDigit(ch) or (ch == '.' and end + 1 < src.len and Lexer.isDigit(src[end + 1]))) {
-        return self.scanNumberText(start);
-    } else {
-        // operator - advance 1-3 chars
-        end += 1;
-        if (end < src.len) {
-            const nc = src[end];
-            switch (ch) {
-                '+' => if (nc == '+' or nc == '=') {
-                    end += 1;
-                },
-                '-' => if (nc == '-' or nc == '=' or nc == '>') {
-                    end += 1;
-                },
-                '*', '/', '%' => if (nc == '=') {
-                    end += 1;
-                },
-                '&' => if (nc == '&' or nc == '=') {
-                    end += 1;
-                },
-                '|' => if (nc == '|' or nc == '=') {
-                    end += 1;
-                },
-                '^' => if (nc == '=') {
-                    end += 1;
-                },
-                '<' => {
-                    if (nc == '<') {
-                        end += 1;
-                        if (end < src.len and src[end] == '=') end += 1;
-                    } else if (nc == '=') end += 1;
-                },
-                '>' => {
-                    if (nc == '>') {
-                        end += 1;
-                        if (end < src.len and src[end] == '=') end += 1;
-                    } else if (nc == '=') end += 1;
-                },
-                '=', '!' => if (nc == '=') {
-                    end += 1;
-                },
-                else => {},
-            }
-        }
-    }
-    return src[start..end];
-}
-
-fn scanNumberText(self: *const Parser, start: u32) []const u8 {
-    var pos = start;
-    const src = self.source;
-    // Hex
-    if (pos + 1 < src.len and src[pos] == '0' and (src[pos + 1] == 'x' or src[pos + 1] == 'X')) {
-        pos += 2;
-        while (pos < src.len and Lexer.isHexDigit(src[pos])) pos += 1;
-        if (pos < src.len and src[pos] == '.') {
-            pos += 1;
-            while (pos < src.len and Lexer.isHexDigit(src[pos])) pos += 1;
-        }
-        if (pos < src.len and (src[pos] == 'p' or src[pos] == 'P')) {
-            pos += 1;
-            if (pos < src.len and (src[pos] == '+' or src[pos] == '-')) pos += 1;
-            while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
-        }
-    } else {
-        while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
-        if (pos < src.len and src[pos] == '.') {
-            const nid = pos + 1 < src.len and Lexer.isDigit(src[pos + 1]);
-            const nie = Lexer.peekIdentStart(src, pos + 1);
-            const ae = pos + 1 >= src.len;
-            // `1.f` / `1.h` — digit, dot, float-suffix, no trailing ident
-            // chars — is a complete float literal (matches the lexer).
-            const nfs = pos + 1 < src.len and
-                (src[pos + 1] == 'f' or src[pos + 1] == 'h') and
-                !Lexer.peekIdentContinue(src, pos + 2);
-            // `1.e…` — dot followed directly by an exponent is a float too
-            // (WGSL §6.1.2 rule 4 — fractional digits optional).
-            const nex = pos + 1 < src.len and (src[pos + 1] == 'e' or src[pos + 1] == 'E');
-            if (nid or ae or !nie or nfs or nex) {
-                pos += 1;
-                while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
-            }
-        }
-        if (pos < src.len and (src[pos] == 'e' or src[pos] == 'E')) {
-            pos += 1;
-            if (pos < src.len and (src[pos] == '+' or src[pos] == '-')) pos += 1;
-            while (pos < src.len and Lexer.isDigit(src[pos])) pos += 1;
-        }
-    }
-    if (pos < src.len and (src[pos] == 'i' or src[pos] == 'u' or src[pos] == 'f' or src[pos] == 'h')) pos += 1;
-    return src[start..pos];
+    return self.source[self.token_starts[pos]..self.token_ends[pos]];
 }
 
 fn currentText(self: *const Parser) []const u8 {
@@ -579,10 +498,7 @@ fn currentStart(self: *const Parser) u32 {
 /// yet (not reachable during declaration parsing).
 fn prevTokenEnd(self: *const Parser) u32 {
     if (self.pos == 0) return 0;
-    const prev_pos = self.pos - 1;
-    const start = self.token_starts[prev_pos];
-    const text = self.tokenText(prev_pos);
-    return start + @as(u32, @intCast(text.len));
+    return self.token_ends[self.pos - 1];
 }
 
 fn addError(self: *Parser, message: []const u8) Allocator.Error!void {
@@ -2491,12 +2407,6 @@ fn isTemplatedTypeName(name: []const u8) bool {
     });
     return map.has(name);
 }
-
-// Public access for Lexer helpers used in tokenText
-pub const isIdentStart = Lexer.isIdentStart;
-pub const isIdentContinue = Lexer.isIdentContinue;
-pub const isDigit = Lexer.isDigit;
-pub const isHexDigit = Lexer.isHexDigit;
 
 // Expose these for other modules
 /// Re-exports Lexer.isIdentStart for use by other modules.
