@@ -160,6 +160,77 @@ test "snapshot: comparison" {
     );
 }
 
+// -------------------------------------------------------------------------
+// Precedence torture (pins Parser precedence/associativity — Block 1.1).
+// The printer parenthesizes from its OWN precedence table, so any parser
+// mis-precedence or mis-association changes the golden text here.
+// -------------------------------------------------------------------------
+
+test "snapshot: precedence all levels, no parens needed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Every operator to the right binds tighter than the one to its left, so
+    // the natural right-leaning parse needs no parentheses when printed. A
+    // swapped level would force the printer to add parens.
+    try std.testing.expectEqualStrings(
+        "const x=a||b&&c|d^e&f==g<h<<i+j*k;",
+        try ws(arena.allocator(), "const x = a || b && c | d ^ e & f == g < h << i + j * k;\n"),
+    );
+}
+
+test "snapshot: precedence all levels descending, no parens needed" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Reverse order: each operator binds looser than the one before it, giving
+    // a left-leaning tree that is still the natural precedence grouping — bare.
+    try std.testing.expectEqualStrings(
+        "const x=a*b+c<<d<e==f&g^h|i&&j||k;",
+        try ws(arena.allocator(), "const x = a*b+c<<d<e==f&g^h|i&&j||k;\n"),
+    );
+}
+
+test "snapshot: parens preserved when source fights precedence" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Each grouping fights the natural precedence/associativity, so the printer
+    // must keep the parentheses; a mis-precedence would drop or move them.
+    try std.testing.expectEqualStrings(
+        "const a=a-(b-c);const b=(a||b)&&c;const c=a*(b+c);const d=(a|b)==(c&d);",
+        try ws(arena.allocator(),
+            "const a = a - (b - c);\nconst b = (a || b) && c;\nconst c = a * (b + c);\nconst d = (a | b) == (c & d);\n"),
+    );
+}
+
+test "snapshot: left-associativity of same-level operators" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Left-assoc: (a-b)-c prints bare; a-(b-c) would keep the parens.
+    try std.testing.expectEqualStrings(
+        "const a=a-b-c;const b=p/q/r;const c=x<<y<<z;",
+        try ws(arena.allocator(), "const a = a - b - c;\nconst b = p / q / r;\nconst c = x << y << z;\n"),
+    );
+}
+
+test "snapshot: precedence mixing needs some parens" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectEqualStrings(
+        "const a=a+b*c;const b=(a+b)*c;const c=a*b+c*d;",
+        try ws(arena.allocator(), "const a = a + b * c;\nconst b = (a + b) * c;\nconst c = a * b + c * d;\n"),
+    );
+}
+
+test "snapshot: template-arg restricted precedence" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    // Inside template args the restricted grammar still climbs additive over
+    // multiplicative: N+1*2 must group as N+(1*2), not (N+1)*2.
+    try std.testing.expectEqualStrings(
+        "const N=3;var<private> x:array<f32,N+1*2>;",
+        try ws(arena.allocator(), "const N = 3;\nvar<private> x: array<f32, N + 1 * 2>;\n"),
+    );
+}
+
 test "snapshot: member access" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

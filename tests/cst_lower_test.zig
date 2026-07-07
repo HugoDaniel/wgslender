@@ -133,6 +133,34 @@ test "cst_lower: nested expressions" {
     );
 }
 
+test "cst_lower: precedence torture — every binary level and associativity" {
+    // Block 1.1 pin: Parser and CstLower must agree on the full precedence
+    // ladder, left-associativity, and parenthesization that fights precedence.
+    try assertEquivalent(std.testing.allocator,
+        \\fn f() {
+        \\    let r1 = a || b && c | d ^ e & f == g < h << i + j * k;
+        \\    let r2 = a - b - c;
+        \\    let r3 = p / q / r;
+        \\    let r4 = a - (b - c);
+        \\    let r5 = (a || b) && c;
+        \\    let r6 = a * (b + c);
+        \\    let r7 = -~!a + *&b;
+        \\}
+        \\
+    );
+}
+
+test "cst_lower: precedence torture — restricted template-arg grammar" {
+    // The template-argument grammar climbs additive over multiplicative too:
+    // N+1*2 groups as N+(1*2). Parser and CstLower must lower it identically.
+    try assertEquivalent(std.testing.allocator,
+        \\const N = 3;
+        \\var<private> x: array<f32, N + 1 * 2>;
+        \\var<private> y: array<f32, (N + 1) * 2>;
+        \\
+    );
+}
+
 test "cst_lower: control flow — if/else" {
     try assertEquivalent(std.testing.allocator,
         \\fn f(x: i32) -> i32 {
