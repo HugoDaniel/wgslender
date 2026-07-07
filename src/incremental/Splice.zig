@@ -81,6 +81,54 @@ pub fn collectScopeSubtreeDfs(
     }
 }
 
+/// Shared commit epilogue for every in-place splice path.
+///
+/// Points the reused module at `new_source`, splices `prev`'s parse errors
+/// across the anchor edit and merges them with the add-walk's freshly
+/// emitted entries (so `result.errors` matches a fresh full parse — the F-*
+/// families in tests/incremental_error_fixup_test.zig gate this against a
+/// parseFull oracle), then builds the `ReparseResult` that takes ownership
+/// of `prev`'s arena / errors / retained_arenas and neutralizes `prev` so
+/// its `deinit()` is a safe no-op. No append to `retained_arenas` — reusing
+/// the arena in place is the whole point of this path. Callers must not
+/// touch `prev` after this returns.
+fn commitInPlace(
+    gpa: Allocator,
+    prev: *Incremental.ReparseResult,
+    prev_arena: Allocator,
+    new_source: [:0]const u8,
+    new_tree: Cst.Tree,
+    scope_for_cst_node: std.AutoHashMapUnmanaged(u32, *Ast.Scope),
+    old_anchor_span: Ast.Span,
+    delta: i64,
+    add_errors: []const Parser.ParseError,
+) Allocator.Error!Incremental.ReparseResult {
+    prev.module.source = new_source;
+    const fixed = try Errors.fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
+    const merged = try Errors.mergeErrorsByPos(prev_arena, fixed, add_errors);
+
+    const result = Incremental.ReparseResult{
+        .gpa = gpa,
+        .arena = prev.arena,
+        .source = new_source,
+        .module = prev.module,
+        .cst = new_tree,
+        .reused = true,
+        .scope_for_cst_node = scope_for_cst_node,
+        .retained_arenas = prev.retained_arenas,
+        .errors = merged,
+        .hot_edits_since_full = prev.hot_edits_since_full + 1,
+        .module_version = prev.module_version +% 1,
+    };
+
+    prev.arena = &Incremental.sentinel_stub;
+    prev.retained_arenas = .empty;
+    prev.errors = &.{};
+    prev.moved = true;
+
+    return result;
+}
+
 /// In-place add/sub splice for symbol-free anchors.
 ///
 /// Locates the AST `*Stmt` / `*Expr` slot whose span matches the old
@@ -195,39 +243,9 @@ pub fn tryAddSubSpliceInPlace(
     // identifier is a normal editing state. They get merged into the
     // result's error list below alongside prev's spliced-through errors.
 
-    // 8. Commit: hand prev.arena (and prev.retained_arenas unchanged) to
-    //    the result. Install an empty stub on prev. No append to
-    //    retained_arenas — this is the whole point of the in-place path.
-    prev.module.source = new_source;
-
-    // Splice prev's parse errors across the anchor edit and merge with
-    // the add-walk's freshly emitted entries. After this, `result.errors`
-    // matches what a fresh full parse of the new source would produce
-    // (the F-* test families in tests/incremental_error_fixup_test.zig
-    // verify this against a parseFull oracle).
-    const fixed = try Errors.fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
-    const merged = try Errors.mergeErrorsByPos(prev_arena, fixed, add_errors.items);
-
-    const result = Incremental.ReparseResult{
-        .gpa = gpa,
-        .arena = prev.arena,
-        .source = new_source,
-        .module = prev.module,
-        .cst = new_tree,
-        .reused = true,
-        .scope_for_cst_node = tmp_result.scope_for_cst_node,
-        .retained_arenas = prev.retained_arenas,
-        .errors = merged,
-        .hot_edits_since_full = prev.hot_edits_since_full + 1,
-        .module_version = prev.module_version +% 1,
-    };
-
-    prev.arena = &Incremental.sentinel_stub;
-    prev.retained_arenas = .empty;
-    prev.errors = &.{};
-    prev.moved = true;
-
-    return result;
+    // 8. Commit — see commitInPlace: hands prev's arena / errors /
+    //    retained_arenas to the result and neutralizes prev.
+    return commitInPlace(gpa, prev, prev_arena, new_source, new_tree, tmp_result.scope_for_cst_node, old_anchor_span, delta, add_errors.items);
 }
 
 /// In-place splice for `compound_stmt` anchors.
@@ -388,32 +406,8 @@ pub fn tryCompoundSpliceInPlace(
     };
     try AstVisit.visitSubtreeStmt(&add_ctx, .{ .compound = old_compound });
 
-    // 10. Commit.
-    prev.module.source = new_source;
-
-    const fixed = try Errors.fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
-    const merged = try Errors.mergeErrorsByPos(prev_arena, fixed, add_errors.items);
-
-    const result = Incremental.ReparseResult{
-        .gpa = gpa,
-        .arena = prev.arena,
-        .source = new_source,
-        .module = prev.module,
-        .cst = new_tree,
-        .reused = true,
-        .scope_for_cst_node = tmp_result.scope_for_cst_node,
-        .retained_arenas = prev.retained_arenas,
-        .errors = merged,
-        .hot_edits_since_full = prev.hot_edits_since_full + 1,
-        .module_version = prev.module_version +% 1,
-    };
-
-    prev.arena = &Incremental.sentinel_stub;
-    prev.retained_arenas = .empty;
-    prev.errors = &.{};
-    prev.moved = true;
-
-    return result;
+    // 10. Commit — see commitInPlace.
+    return commitInPlace(gpa, prev, prev_arena, new_source, new_tree, tmp_result.scope_for_cst_node, old_anchor_span, delta, add_errors.items);
 }
 
 /// In-place splice for `decl_stmt` anchors.
@@ -589,32 +583,8 @@ pub fn tryDeclStmtSpliceInPlace(
     };
     try AstVisit.visitSubtreeStmt(&add_ctx, .{ .compound = parent_compound });
 
-    // 10. Commit.
-    prev.module.source = new_source;
-
-    const fixed = try Errors.fixupErrors(prev_arena, prev.errors, old_anchor_span, delta);
-    const merged = try Errors.mergeErrorsByPos(prev_arena, fixed, add_errors.items);
-
-    const result = Incremental.ReparseResult{
-        .gpa = gpa,
-        .arena = prev.arena,
-        .source = new_source,
-        .module = prev.module,
-        .cst = new_tree,
-        .reused = true,
-        .scope_for_cst_node = tmp_result.scope_for_cst_node,
-        .retained_arenas = prev.retained_arenas,
-        .errors = merged,
-        .hot_edits_since_full = prev.hot_edits_since_full + 1,
-        .module_version = prev.module_version +% 1,
-    };
-
-    prev.arena = &Incremental.sentinel_stub;
-    prev.retained_arenas = .empty;
-    prev.errors = &.{};
-    prev.moved = true;
-
-    return result;
+    // 10. Commit — see commitInPlace.
+    return commitInPlace(gpa, prev, prev_arena, new_source, new_tree, tmp_result.scope_for_cst_node, old_anchor_span, delta, add_errors.items);
 }
 
 // =========================================================================
