@@ -172,12 +172,31 @@ Constructor validation (`f32(x)`, `vec3<f32>(...)`, `mat2x2f(...)`, `S(...)`, `a
 
 ### Adding a New CLI Flag
 
-1. Add flag parsing in `cli/main.zig` (string matching in `parseArgs`)
-2. Add to `src/Config.zig` if it should be in config files (optional field + JSON key)
-3. Add to `src/Minifier.zig` Options struct
-4. Wire through the pipeline
-5. Update `usage_text` in `cli/main.zig`
-6. Update README.md
+A flag is one `OptionSpec` row in `src/options.zig` plus a matching field on
+each target struct — the spec table is the single source of truth that
+derives the JSON key, the CLI flag, and the help line. Hand-rolled arg
+matching and `usage_text` edits are only for outliers.
+
+1. Add the field to the target struct(s): `Minifier.Options` (snake_case),
+   and `src/Config.zig` as `?T` if it belongs in `wgslender.json`.
+2. Add one row to the matching table in `src/options.zig`
+   (`minifier_options_specs` / `source_map_specs` / `lint_specs` /
+   `lsp_toggle_specs`). The row derives the camelCase JSON key, the
+   `--kebab` CLI flag (via `dispatchSpecFlag` in `cli/main.zig`), and — from
+   a non-empty `summary` — the `--help` line (via `printHelp`). Scope it with
+   `.subcommands`.
+3. `zig build` — the `assertSpecFieldsExist` comptime guards in `Config.zig`
+   and `Minifier.zig` fail the build if the spec row and the struct field
+   disagree in name or type.
+4. Read the field where it takes effect (the relevant `Minifier` / pipeline
+   pass).
+5. CLI outliers only: a flag that doesn't fit the derived `--flag` /
+   `--no-flag` shape (e.g. the tri-state `--minify*` cluster) still needs
+   hand-rolled parsing in `cli/main.zig` and a help line in
+   `usage_minify_outliers`; mark its spec `.cli_simple = false` (an empty
+   `summary` also opts it out of `printHelp`).
+6. Update tests and README.md; if the npm API exposes the option, mirror it
+   in the package's TypeScript types (`npm/wgslender/*.d.ts`).
 
 ### Debugging Type Renaming Issues
 
