@@ -20,10 +20,10 @@ pub const version = "1.1.0";
 //     front-end, and the minify-mode knobs.
 //   * Internal — exposed only so the in-repo CLI / LSP / tests (separate
 //     compilation units) and adventurous tooling can reach compiler
-//     internals. No compatibility promise; these change freely (e.g.
-//     `CstLower` is slated for removal). `WasmBinary` is deliberately not
-//     re-exported — it is a Compiler implementation detail with no external
-//     users; its tests are still pulled into the test build below.
+//     internals. No compatibility promise; these change freely.
+//     `WasmBinary` is deliberately not re-exported — it is a Compiler
+//     implementation detail with no external users; its tests are still
+//     pulled into the test build below.
 
 // --- Stable ---
 pub const Minifier = @import("Minifier.zig");
@@ -70,7 +70,6 @@ pub const Dce = @import("Dce.zig");
 pub const Builtins = @import("Builtins.zig");
 pub const Overload = @import("Overload.zig");
 pub const Predeclared = @import("Predeclared.zig");
-pub const CstLower = @import("CstLower.zig");
 pub const api_json = @import("api_json.zig");
 pub const ffi = @import("ffi.zig");
 
@@ -482,7 +481,6 @@ comptime {
     _ = UseCounts;
     _ = RenamePolicy;
     _ = Liveness;
-    _ = CstLower;
     _ = Lexer;
     _ = Parser;
     _ = Renamer;

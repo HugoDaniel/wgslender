@@ -484,10 +484,6 @@ pub fn build(b: *std.Build) void {
     // Property-based fuzz for Incremental.reparse — random edits must
     // produce the same AST / source as parseFull on the spliced source.
     _ = addTestStep(b, test_step, "tests/incremental_fuzz_test.zig", target, optimize, &.{w});
-    // CstLower equivalence — Parser.parse vs CstLower.lowerTree on every
-    // test shader. Proves Stage 4's lowering path produces an identical
-    // Ast.Module (including use_count parity from shared Pass 2).
-    _ = addTestStep(b, test_step, "tests/cst_lower_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/predeclared_test.zig", target, optimize, &.{w});
     // Semantic tests
     const sd: std.Build.Module.Import = .{ .name = "semantic_data", .module = semantic_data_mod };
