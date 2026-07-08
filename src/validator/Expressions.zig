@@ -12,6 +12,7 @@ const Ast = @import("../Ast.zig");
 const Types = @import("../Types.zig");
 const Builtins = @import("../Builtins.zig");
 const Overload = @import("../Overload.zig");
+const Operators = @import("../Operators.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const Suggest = @import("../Suggest.zig");
 const Validator = @import("../Validator.zig");
@@ -353,24 +354,62 @@ pub fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocat
     const er = exprRange(.{ .binary = e }); // operator range
     const op_str = e.op.string();
     return switch (e.op) {
-        .logical_and, .logical_or => checkLogicalBinary(v, e, left_type, right_type, stage, op_str),
+        .logical_and, .logical_or, .@"and", .@"or", .xor => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .eq, .ne => checkEqualityBinary(v, e, left_type, right_type, stage, er, op_str),
         .lt, .le, .gt, .ge => checkComparisonBinary(v, e, left_type, right_type, stage, er, op_str),
         .add, .sub => checkAdditiveBinary(v, e, left_type, right_type, stage, er, op_str),
         .mul => checkMulBinary(v, e, left_type, right_type, stage, er),
         .div => checkDivBinary(v, e, left_type, right_type, stage, er),
         .mod => checkModBinary(v, e, left_type, right_type, stage, er),
-        .@"and", .@"or", .xor => checkBitwiseBinary(v, e, left_type, right_type, stage, er, op_str),
         .shl, .shr => checkShiftBinary(v, e, left_type, right_type, stage, er, op_str),
     };
 }
 
-pub fn checkLogicalBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, op_str: []const u8) InferResult {
-    if (!left_type.eql(Types.Bool) or !right_type.eql(Types.Bool)) {
-        v.addErrorWithCodeR(exprRange(.{ .binary = e }), Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires 'bool' operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-        return InferResult.fail;
+/// Shared binary-operator validation on the overload engine — the operator
+/// analogue of `ctorViaEngine`. Resolves against `Operators.binarySigs(op)`,
+/// materializes the winning result rule, and on no-match emits the family's
+/// diagnostic. Only migrated operators (whose `binarySigs` is non-empty) route
+/// here; the rest still use their hand-rolled checker. Value-dependent
+/// post-checks (div-by-zero, shift range) stay at the outer call site and
+/// migrate with their families.
+fn binaryViaEngine(
+    v: *Validator,
+    op: Ast.BinaryOp,
+    left_type: Types.Type,
+    right_type: Types.Type,
+    stage: ExprStage,
+    er: LocRange,
+    op_str: []const u8,
+) Allocator.Error!InferResult {
+    const sigs = Operators.binarySigs(op);
+    const arg_types = [_]?Types.Type{ left_type, right_type };
+    switch (Overload.resolve(sigs, &arg_types)) {
+        .ok => |ok| {
+            const sig = sigs[ok.sig_index];
+            var args8: [8]?Types.Type = @splat(null);
+            args8[0] = left_type;
+            args8[1] = right_type;
+            const ret = (try buildOverloadResult(v, sig.result, &ok.bindings, args8)) orelse
+                return InferResult.fail;
+            return InferResult.some(ret, stage);
+        },
+        .err => {
+            v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, binaryFailureMessage(v, op, op_str, left_type, right_type));
+            return InferResult.fail;
+        },
     }
-    return InferResult.some(Types.Bool, stage);
+}
+
+/// The per-family "no matching overload" message, reproducing the wording the
+/// hand-rolled checkers emitted — now also covering the shapes they used to
+/// reject *silently* (mixed-sign / width-mismatched / scalar↔vector integer
+/// pairs), which now surface this diagnostic instead of a typeless success.
+fn binaryFailureMessage(v: *Validator, op: Ast.BinaryOp, op_str: []const u8, left_type: Types.Type, right_type: Types.Type) []const u8 {
+    return switch (op) {
+        .logical_and, .logical_or => v.fmtError("operator '{s}' requires 'bool' operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
+        .@"and", .@"or", .xor => v.fmtError("operator '{s}' requires integer or bool, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
+        else => unreachable,
+    };
 }
 
 pub fn checkEqualityBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
@@ -464,19 +503,6 @@ pub fn checkModBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, 
     }
     const common = Types.commonType(left_type, right_type) orelse return InferResult.fail;
     return InferResult.some(common, stage);
-}
-
-pub fn checkBitwiseBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
-    _ = e;
-    if (left_type.eql(Types.Bool) and right_type.eql(Types.Bool)) {
-        return InferResult.some(Types.Bool, stage);
-    }
-    if (Types.isInteger(left_type) and Types.isInteger(right_type)) {
-        const common = Types.commonType(left_type, right_type) orelse return InferResult.fail;
-        return InferResult.some(common, stage);
-    }
-    v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer or bool, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-    return InferResult.fail;
 }
 
 pub fn checkShiftBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {

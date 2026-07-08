@@ -69,6 +69,7 @@ pub const Renamer = @import("Renamer.zig");
 pub const Dce = @import("Dce.zig");
 pub const Builtins = @import("Builtins.zig");
 pub const Overload = @import("Overload.zig");
+pub const Operators = @import("Operators.zig");
 pub const Predeclared = @import("Predeclared.zig");
 pub const api_json = @import("api_json.zig");
 pub const ffi = @import("ffi.zig");
@@ -486,6 +487,7 @@ comptime {
     _ = Renamer;
     _ = Builtins;
     _ = Overload;
+    _ = Operators;
     _ = Diagnostic;
     _ = Types;
     _ = Validator;

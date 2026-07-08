@@ -3,6 +3,17 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Bitwise operators** (`&` `|` `^`): invalid integer operand pairs that the
+  validator previously accepted *silently* — mixed-sign (`1i & 1u`),
+  width-mismatched (`vec3<i32> & vec2<i32>`), and scalar↔vector combinations —
+  now report `E0201` instead of producing a typeless result with no diagnostic.
+  Every valid pair keeps its exact result type. Part of routing operator
+  type-checking through the shared overload engine.
+
 ## [1.1.0] — 2026-05-06
 
 This release synchronizes versions across all artifacts (`build.zig.zon`,
