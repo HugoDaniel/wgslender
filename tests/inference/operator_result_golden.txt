@@ -1,0 +1,5253 @@
+1 && 1 => err=E0201
+1 && 1.0 => err=E0201
+1 && 1i => err=E0201
+1 && 1u => err=E0201
+1 && 1f => err=E0201
+1 && true => err=E0201
+1 && vec2f() => err=E0201
+1 && vec3f() => err=E0201
+1 && vec2i() => err=E0201
+1 && vec3i() => err=E0201
+1 && vec2u() => err=E0201
+1 && vec3u() => err=E0201
+1 && vec3<bool>(true, true, true) => err=E0201
+1 && mat2x2f() => err=E0201
+1 && mat2x3f() => err=E0201
+1 && mat3x2f() => err=E0201
+1 && mat3x3f() => err=E0201
+1.0 && 1 => err=E0201
+1.0 && 1.0 => err=E0201
+1.0 && 1i => err=E0201
+1.0 && 1u => err=E0201
+1.0 && 1f => err=E0201
+1.0 && true => err=E0201
+1.0 && vec2f() => err=E0201
+1.0 && vec3f() => err=E0201
+1.0 && vec2i() => err=E0201
+1.0 && vec3i() => err=E0201
+1.0 && vec2u() => err=E0201
+1.0 && vec3u() => err=E0201
+1.0 && vec3<bool>(true, true, true) => err=E0201
+1.0 && mat2x2f() => err=E0201
+1.0 && mat2x3f() => err=E0201
+1.0 && mat3x2f() => err=E0201
+1.0 && mat3x3f() => err=E0201
+1i && 1 => err=E0201
+1i && 1.0 => err=E0201
+1i && 1i => err=E0201
+1i && 1u => err=E0201
+1i && 1f => err=E0201
+1i && true => err=E0201
+1i && vec2f() => err=E0201
+1i && vec3f() => err=E0201
+1i && vec2i() => err=E0201
+1i && vec3i() => err=E0201
+1i && vec2u() => err=E0201
+1i && vec3u() => err=E0201
+1i && vec3<bool>(true, true, true) => err=E0201
+1i && mat2x2f() => err=E0201
+1i && mat2x3f() => err=E0201
+1i && mat3x2f() => err=E0201
+1i && mat3x3f() => err=E0201
+1u && 1 => err=E0201
+1u && 1.0 => err=E0201
+1u && 1i => err=E0201
+1u && 1u => err=E0201
+1u && 1f => err=E0201
+1u && true => err=E0201
+1u && vec2f() => err=E0201
+1u && vec3f() => err=E0201
+1u && vec2i() => err=E0201
+1u && vec3i() => err=E0201
+1u && vec2u() => err=E0201
+1u && vec3u() => err=E0201
+1u && vec3<bool>(true, true, true) => err=E0201
+1u && mat2x2f() => err=E0201
+1u && mat2x3f() => err=E0201
+1u && mat3x2f() => err=E0201
+1u && mat3x3f() => err=E0201
+1f && 1 => err=E0201
+1f && 1.0 => err=E0201
+1f && 1i => err=E0201
+1f && 1u => err=E0201
+1f && 1f => err=E0201
+1f && true => err=E0201
+1f && vec2f() => err=E0201
+1f && vec3f() => err=E0201
+1f && vec2i() => err=E0201
+1f && vec3i() => err=E0201
+1f && vec2u() => err=E0201
+1f && vec3u() => err=E0201
+1f && vec3<bool>(true, true, true) => err=E0201
+1f && mat2x2f() => err=E0201
+1f && mat2x3f() => err=E0201
+1f && mat3x2f() => err=E0201
+1f && mat3x3f() => err=E0201
+true && 1 => err=E0201
+true && 1.0 => err=E0201
+true && 1i => err=E0201
+true && 1u => err=E0201
+true && 1f => err=E0201
+true && true => type=bool
+true && vec2f() => err=E0201
+true && vec3f() => err=E0201
+true && vec2i() => err=E0201
+true && vec3i() => err=E0201
+true && vec2u() => err=E0201
+true && vec3u() => err=E0201
+true && vec3<bool>(true, true, true) => err=E0201
+true && mat2x2f() => err=E0201
+true && mat2x3f() => err=E0201
+true && mat3x2f() => err=E0201
+true && mat3x3f() => err=E0201
+vec2f() && 1 => err=E0201
+vec2f() && 1.0 => err=E0201
+vec2f() && 1i => err=E0201
+vec2f() && 1u => err=E0201
+vec2f() && 1f => err=E0201
+vec2f() && true => err=E0201
+vec2f() && vec2f() => err=E0201
+vec2f() && vec3f() => err=E0201
+vec2f() && vec2i() => err=E0201
+vec2f() && vec3i() => err=E0201
+vec2f() && vec2u() => err=E0201
+vec2f() && vec3u() => err=E0201
+vec2f() && vec3<bool>(true, true, true) => err=E0201
+vec2f() && mat2x2f() => err=E0201
+vec2f() && mat2x3f() => err=E0201
+vec2f() && mat3x2f() => err=E0201
+vec2f() && mat3x3f() => err=E0201
+vec3f() && 1 => err=E0201
+vec3f() && 1.0 => err=E0201
+vec3f() && 1i => err=E0201
+vec3f() && 1u => err=E0201
+vec3f() && 1f => err=E0201
+vec3f() && true => err=E0201
+vec3f() && vec2f() => err=E0201
+vec3f() && vec3f() => err=E0201
+vec3f() && vec2i() => err=E0201
+vec3f() && vec3i() => err=E0201
+vec3f() && vec2u() => err=E0201
+vec3f() && vec3u() => err=E0201
+vec3f() && vec3<bool>(true, true, true) => err=E0201
+vec3f() && mat2x2f() => err=E0201
+vec3f() && mat2x3f() => err=E0201
+vec3f() && mat3x2f() => err=E0201
+vec3f() && mat3x3f() => err=E0201
+vec2i() && 1 => err=E0201
+vec2i() && 1.0 => err=E0201
+vec2i() && 1i => err=E0201
+vec2i() && 1u => err=E0201
+vec2i() && 1f => err=E0201
+vec2i() && true => err=E0201
+vec2i() && vec2f() => err=E0201
+vec2i() && vec3f() => err=E0201
+vec2i() && vec2i() => err=E0201
+vec2i() && vec3i() => err=E0201
+vec2i() && vec2u() => err=E0201
+vec2i() && vec3u() => err=E0201
+vec2i() && vec3<bool>(true, true, true) => err=E0201
+vec2i() && mat2x2f() => err=E0201
+vec2i() && mat2x3f() => err=E0201
+vec2i() && mat3x2f() => err=E0201
+vec2i() && mat3x3f() => err=E0201
+vec3i() && 1 => err=E0201
+vec3i() && 1.0 => err=E0201
+vec3i() && 1i => err=E0201
+vec3i() && 1u => err=E0201
+vec3i() && 1f => err=E0201
+vec3i() && true => err=E0201
+vec3i() && vec2f() => err=E0201
+vec3i() && vec3f() => err=E0201
+vec3i() && vec2i() => err=E0201
+vec3i() && vec3i() => err=E0201
+vec3i() && vec2u() => err=E0201
+vec3i() && vec3u() => err=E0201
+vec3i() && vec3<bool>(true, true, true) => err=E0201
+vec3i() && mat2x2f() => err=E0201
+vec3i() && mat2x3f() => err=E0201
+vec3i() && mat3x2f() => err=E0201
+vec3i() && mat3x3f() => err=E0201
+vec2u() && 1 => err=E0201
+vec2u() && 1.0 => err=E0201
+vec2u() && 1i => err=E0201
+vec2u() && 1u => err=E0201
+vec2u() && 1f => err=E0201
+vec2u() && true => err=E0201
+vec2u() && vec2f() => err=E0201
+vec2u() && vec3f() => err=E0201
+vec2u() && vec2i() => err=E0201
+vec2u() && vec3i() => err=E0201
+vec2u() && vec2u() => err=E0201
+vec2u() && vec3u() => err=E0201
+vec2u() && vec3<bool>(true, true, true) => err=E0201
+vec2u() && mat2x2f() => err=E0201
+vec2u() && mat2x3f() => err=E0201
+vec2u() && mat3x2f() => err=E0201
+vec2u() && mat3x3f() => err=E0201
+vec3u() && 1 => err=E0201
+vec3u() && 1.0 => err=E0201
+vec3u() && 1i => err=E0201
+vec3u() && 1u => err=E0201
+vec3u() && 1f => err=E0201
+vec3u() && true => err=E0201
+vec3u() && vec2f() => err=E0201
+vec3u() && vec3f() => err=E0201
+vec3u() && vec2i() => err=E0201
+vec3u() && vec3i() => err=E0201
+vec3u() && vec2u() => err=E0201
+vec3u() && vec3u() => err=E0201
+vec3u() && vec3<bool>(true, true, true) => err=E0201
+vec3u() && mat2x2f() => err=E0201
+vec3u() && mat2x3f() => err=E0201
+vec3u() && mat3x2f() => err=E0201
+vec3u() && mat3x3f() => err=E0201
+vec3<bool>(true, true, true) && 1 => err=E0201
+vec3<bool>(true, true, true) && 1.0 => err=E0201
+vec3<bool>(true, true, true) && 1i => err=E0201
+vec3<bool>(true, true, true) && 1u => err=E0201
+vec3<bool>(true, true, true) && 1f => err=E0201
+vec3<bool>(true, true, true) && true => err=E0201
+vec3<bool>(true, true, true) && vec2f() => err=E0201
+vec3<bool>(true, true, true) && vec3f() => err=E0201
+vec3<bool>(true, true, true) && vec2i() => err=E0201
+vec3<bool>(true, true, true) && vec3i() => err=E0201
+vec3<bool>(true, true, true) && vec2u() => err=E0201
+vec3<bool>(true, true, true) && vec3u() => err=E0201
+vec3<bool>(true, true, true) && vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) && mat2x2f() => err=E0201
+vec3<bool>(true, true, true) && mat2x3f() => err=E0201
+vec3<bool>(true, true, true) && mat3x2f() => err=E0201
+vec3<bool>(true, true, true) && mat3x3f() => err=E0201
+mat2x2f() && 1 => err=E0201
+mat2x2f() && 1.0 => err=E0201
+mat2x2f() && 1i => err=E0201
+mat2x2f() && 1u => err=E0201
+mat2x2f() && 1f => err=E0201
+mat2x2f() && true => err=E0201
+mat2x2f() && vec2f() => err=E0201
+mat2x2f() && vec3f() => err=E0201
+mat2x2f() && vec2i() => err=E0201
+mat2x2f() && vec3i() => err=E0201
+mat2x2f() && vec2u() => err=E0201
+mat2x2f() && vec3u() => err=E0201
+mat2x2f() && vec3<bool>(true, true, true) => err=E0201
+mat2x2f() && mat2x2f() => err=E0201
+mat2x2f() && mat2x3f() => err=E0201
+mat2x2f() && mat3x2f() => err=E0201
+mat2x2f() && mat3x3f() => err=E0201
+mat2x3f() && 1 => err=E0201
+mat2x3f() && 1.0 => err=E0201
+mat2x3f() && 1i => err=E0201
+mat2x3f() && 1u => err=E0201
+mat2x3f() && 1f => err=E0201
+mat2x3f() && true => err=E0201
+mat2x3f() && vec2f() => err=E0201
+mat2x3f() && vec3f() => err=E0201
+mat2x3f() && vec2i() => err=E0201
+mat2x3f() && vec3i() => err=E0201
+mat2x3f() && vec2u() => err=E0201
+mat2x3f() && vec3u() => err=E0201
+mat2x3f() && vec3<bool>(true, true, true) => err=E0201
+mat2x3f() && mat2x2f() => err=E0201
+mat2x3f() && mat2x3f() => err=E0201
+mat2x3f() && mat3x2f() => err=E0201
+mat2x3f() && mat3x3f() => err=E0201
+mat3x2f() && 1 => err=E0201
+mat3x2f() && 1.0 => err=E0201
+mat3x2f() && 1i => err=E0201
+mat3x2f() && 1u => err=E0201
+mat3x2f() && 1f => err=E0201
+mat3x2f() && true => err=E0201
+mat3x2f() && vec2f() => err=E0201
+mat3x2f() && vec3f() => err=E0201
+mat3x2f() && vec2i() => err=E0201
+mat3x2f() && vec3i() => err=E0201
+mat3x2f() && vec2u() => err=E0201
+mat3x2f() && vec3u() => err=E0201
+mat3x2f() && vec3<bool>(true, true, true) => err=E0201
+mat3x2f() && mat2x2f() => err=E0201
+mat3x2f() && mat2x3f() => err=E0201
+mat3x2f() && mat3x2f() => err=E0201
+mat3x2f() && mat3x3f() => err=E0201
+mat3x3f() && 1 => err=E0201
+mat3x3f() && 1.0 => err=E0201
+mat3x3f() && 1i => err=E0201
+mat3x3f() && 1u => err=E0201
+mat3x3f() && 1f => err=E0201
+mat3x3f() && true => err=E0201
+mat3x3f() && vec2f() => err=E0201
+mat3x3f() && vec3f() => err=E0201
+mat3x3f() && vec2i() => err=E0201
+mat3x3f() && vec3i() => err=E0201
+mat3x3f() && vec2u() => err=E0201
+mat3x3f() && vec3u() => err=E0201
+mat3x3f() && vec3<bool>(true, true, true) => err=E0201
+mat3x3f() && mat2x2f() => err=E0201
+mat3x3f() && mat2x3f() => err=E0201
+mat3x3f() && mat3x2f() => err=E0201
+mat3x3f() && mat3x3f() => err=E0201
+1 || 1 => err=E0201
+1 || 1.0 => err=E0201
+1 || 1i => err=E0201
+1 || 1u => err=E0201
+1 || 1f => err=E0201
+1 || true => err=E0201
+1 || vec2f() => err=E0201
+1 || vec3f() => err=E0201
+1 || vec2i() => err=E0201
+1 || vec3i() => err=E0201
+1 || vec2u() => err=E0201
+1 || vec3u() => err=E0201
+1 || vec3<bool>(true, true, true) => err=E0201
+1 || mat2x2f() => err=E0201
+1 || mat2x3f() => err=E0201
+1 || mat3x2f() => err=E0201
+1 || mat3x3f() => err=E0201
+1.0 || 1 => err=E0201
+1.0 || 1.0 => err=E0201
+1.0 || 1i => err=E0201
+1.0 || 1u => err=E0201
+1.0 || 1f => err=E0201
+1.0 || true => err=E0201
+1.0 || vec2f() => err=E0201
+1.0 || vec3f() => err=E0201
+1.0 || vec2i() => err=E0201
+1.0 || vec3i() => err=E0201
+1.0 || vec2u() => err=E0201
+1.0 || vec3u() => err=E0201
+1.0 || vec3<bool>(true, true, true) => err=E0201
+1.0 || mat2x2f() => err=E0201
+1.0 || mat2x3f() => err=E0201
+1.0 || mat3x2f() => err=E0201
+1.0 || mat3x3f() => err=E0201
+1i || 1 => err=E0201
+1i || 1.0 => err=E0201
+1i || 1i => err=E0201
+1i || 1u => err=E0201
+1i || 1f => err=E0201
+1i || true => err=E0201
+1i || vec2f() => err=E0201
+1i || vec3f() => err=E0201
+1i || vec2i() => err=E0201
+1i || vec3i() => err=E0201
+1i || vec2u() => err=E0201
+1i || vec3u() => err=E0201
+1i || vec3<bool>(true, true, true) => err=E0201
+1i || mat2x2f() => err=E0201
+1i || mat2x3f() => err=E0201
+1i || mat3x2f() => err=E0201
+1i || mat3x3f() => err=E0201
+1u || 1 => err=E0201
+1u || 1.0 => err=E0201
+1u || 1i => err=E0201
+1u || 1u => err=E0201
+1u || 1f => err=E0201
+1u || true => err=E0201
+1u || vec2f() => err=E0201
+1u || vec3f() => err=E0201
+1u || vec2i() => err=E0201
+1u || vec3i() => err=E0201
+1u || vec2u() => err=E0201
+1u || vec3u() => err=E0201
+1u || vec3<bool>(true, true, true) => err=E0201
+1u || mat2x2f() => err=E0201
+1u || mat2x3f() => err=E0201
+1u || mat3x2f() => err=E0201
+1u || mat3x3f() => err=E0201
+1f || 1 => err=E0201
+1f || 1.0 => err=E0201
+1f || 1i => err=E0201
+1f || 1u => err=E0201
+1f || 1f => err=E0201
+1f || true => err=E0201
+1f || vec2f() => err=E0201
+1f || vec3f() => err=E0201
+1f || vec2i() => err=E0201
+1f || vec3i() => err=E0201
+1f || vec2u() => err=E0201
+1f || vec3u() => err=E0201
+1f || vec3<bool>(true, true, true) => err=E0201
+1f || mat2x2f() => err=E0201
+1f || mat2x3f() => err=E0201
+1f || mat3x2f() => err=E0201
+1f || mat3x3f() => err=E0201
+true || 1 => err=E0201
+true || 1.0 => err=E0201
+true || 1i => err=E0201
+true || 1u => err=E0201
+true || 1f => err=E0201
+true || true => type=bool
+true || vec2f() => err=E0201
+true || vec3f() => err=E0201
+true || vec2i() => err=E0201
+true || vec3i() => err=E0201
+true || vec2u() => err=E0201
+true || vec3u() => err=E0201
+true || vec3<bool>(true, true, true) => err=E0201
+true || mat2x2f() => err=E0201
+true || mat2x3f() => err=E0201
+true || mat3x2f() => err=E0201
+true || mat3x3f() => err=E0201
+vec2f() || 1 => err=E0201
+vec2f() || 1.0 => err=E0201
+vec2f() || 1i => err=E0201
+vec2f() || 1u => err=E0201
+vec2f() || 1f => err=E0201
+vec2f() || true => err=E0201
+vec2f() || vec2f() => err=E0201
+vec2f() || vec3f() => err=E0201
+vec2f() || vec2i() => err=E0201
+vec2f() || vec3i() => err=E0201
+vec2f() || vec2u() => err=E0201
+vec2f() || vec3u() => err=E0201
+vec2f() || vec3<bool>(true, true, true) => err=E0201
+vec2f() || mat2x2f() => err=E0201
+vec2f() || mat2x3f() => err=E0201
+vec2f() || mat3x2f() => err=E0201
+vec2f() || mat3x3f() => err=E0201
+vec3f() || 1 => err=E0201
+vec3f() || 1.0 => err=E0201
+vec3f() || 1i => err=E0201
+vec3f() || 1u => err=E0201
+vec3f() || 1f => err=E0201
+vec3f() || true => err=E0201
+vec3f() || vec2f() => err=E0201
+vec3f() || vec3f() => err=E0201
+vec3f() || vec2i() => err=E0201
+vec3f() || vec3i() => err=E0201
+vec3f() || vec2u() => err=E0201
+vec3f() || vec3u() => err=E0201
+vec3f() || vec3<bool>(true, true, true) => err=E0201
+vec3f() || mat2x2f() => err=E0201
+vec3f() || mat2x3f() => err=E0201
+vec3f() || mat3x2f() => err=E0201
+vec3f() || mat3x3f() => err=E0201
+vec2i() || 1 => err=E0201
+vec2i() || 1.0 => err=E0201
+vec2i() || 1i => err=E0201
+vec2i() || 1u => err=E0201
+vec2i() || 1f => err=E0201
+vec2i() || true => err=E0201
+vec2i() || vec2f() => err=E0201
+vec2i() || vec3f() => err=E0201
+vec2i() || vec2i() => err=E0201
+vec2i() || vec3i() => err=E0201
+vec2i() || vec2u() => err=E0201
+vec2i() || vec3u() => err=E0201
+vec2i() || vec3<bool>(true, true, true) => err=E0201
+vec2i() || mat2x2f() => err=E0201
+vec2i() || mat2x3f() => err=E0201
+vec2i() || mat3x2f() => err=E0201
+vec2i() || mat3x3f() => err=E0201
+vec3i() || 1 => err=E0201
+vec3i() || 1.0 => err=E0201
+vec3i() || 1i => err=E0201
+vec3i() || 1u => err=E0201
+vec3i() || 1f => err=E0201
+vec3i() || true => err=E0201
+vec3i() || vec2f() => err=E0201
+vec3i() || vec3f() => err=E0201
+vec3i() || vec2i() => err=E0201
+vec3i() || vec3i() => err=E0201
+vec3i() || vec2u() => err=E0201
+vec3i() || vec3u() => err=E0201
+vec3i() || vec3<bool>(true, true, true) => err=E0201
+vec3i() || mat2x2f() => err=E0201
+vec3i() || mat2x3f() => err=E0201
+vec3i() || mat3x2f() => err=E0201
+vec3i() || mat3x3f() => err=E0201
+vec2u() || 1 => err=E0201
+vec2u() || 1.0 => err=E0201
+vec2u() || 1i => err=E0201
+vec2u() || 1u => err=E0201
+vec2u() || 1f => err=E0201
+vec2u() || true => err=E0201
+vec2u() || vec2f() => err=E0201
+vec2u() || vec3f() => err=E0201
+vec2u() || vec2i() => err=E0201
+vec2u() || vec3i() => err=E0201
+vec2u() || vec2u() => err=E0201
+vec2u() || vec3u() => err=E0201
+vec2u() || vec3<bool>(true, true, true) => err=E0201
+vec2u() || mat2x2f() => err=E0201
+vec2u() || mat2x3f() => err=E0201
+vec2u() || mat3x2f() => err=E0201
+vec2u() || mat3x3f() => err=E0201
+vec3u() || 1 => err=E0201
+vec3u() || 1.0 => err=E0201
+vec3u() || 1i => err=E0201
+vec3u() || 1u => err=E0201
+vec3u() || 1f => err=E0201
+vec3u() || true => err=E0201
+vec3u() || vec2f() => err=E0201
+vec3u() || vec3f() => err=E0201
+vec3u() || vec2i() => err=E0201
+vec3u() || vec3i() => err=E0201
+vec3u() || vec2u() => err=E0201
+vec3u() || vec3u() => err=E0201
+vec3u() || vec3<bool>(true, true, true) => err=E0201
+vec3u() || mat2x2f() => err=E0201
+vec3u() || mat2x3f() => err=E0201
+vec3u() || mat3x2f() => err=E0201
+vec3u() || mat3x3f() => err=E0201
+vec3<bool>(true, true, true) || 1 => err=E0201
+vec3<bool>(true, true, true) || 1.0 => err=E0201
+vec3<bool>(true, true, true) || 1i => err=E0201
+vec3<bool>(true, true, true) || 1u => err=E0201
+vec3<bool>(true, true, true) || 1f => err=E0201
+vec3<bool>(true, true, true) || true => err=E0201
+vec3<bool>(true, true, true) || vec2f() => err=E0201
+vec3<bool>(true, true, true) || vec3f() => err=E0201
+vec3<bool>(true, true, true) || vec2i() => err=E0201
+vec3<bool>(true, true, true) || vec3i() => err=E0201
+vec3<bool>(true, true, true) || vec2u() => err=E0201
+vec3<bool>(true, true, true) || vec3u() => err=E0201
+vec3<bool>(true, true, true) || vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) || mat2x2f() => err=E0201
+vec3<bool>(true, true, true) || mat2x3f() => err=E0201
+vec3<bool>(true, true, true) || mat3x2f() => err=E0201
+vec3<bool>(true, true, true) || mat3x3f() => err=E0201
+mat2x2f() || 1 => err=E0201
+mat2x2f() || 1.0 => err=E0201
+mat2x2f() || 1i => err=E0201
+mat2x2f() || 1u => err=E0201
+mat2x2f() || 1f => err=E0201
+mat2x2f() || true => err=E0201
+mat2x2f() || vec2f() => err=E0201
+mat2x2f() || vec3f() => err=E0201
+mat2x2f() || vec2i() => err=E0201
+mat2x2f() || vec3i() => err=E0201
+mat2x2f() || vec2u() => err=E0201
+mat2x2f() || vec3u() => err=E0201
+mat2x2f() || vec3<bool>(true, true, true) => err=E0201
+mat2x2f() || mat2x2f() => err=E0201
+mat2x2f() || mat2x3f() => err=E0201
+mat2x2f() || mat3x2f() => err=E0201
+mat2x2f() || mat3x3f() => err=E0201
+mat2x3f() || 1 => err=E0201
+mat2x3f() || 1.0 => err=E0201
+mat2x3f() || 1i => err=E0201
+mat2x3f() || 1u => err=E0201
+mat2x3f() || 1f => err=E0201
+mat2x3f() || true => err=E0201
+mat2x3f() || vec2f() => err=E0201
+mat2x3f() || vec3f() => err=E0201
+mat2x3f() || vec2i() => err=E0201
+mat2x3f() || vec3i() => err=E0201
+mat2x3f() || vec2u() => err=E0201
+mat2x3f() || vec3u() => err=E0201
+mat2x3f() || vec3<bool>(true, true, true) => err=E0201
+mat2x3f() || mat2x2f() => err=E0201
+mat2x3f() || mat2x3f() => err=E0201
+mat2x3f() || mat3x2f() => err=E0201
+mat2x3f() || mat3x3f() => err=E0201
+mat3x2f() || 1 => err=E0201
+mat3x2f() || 1.0 => err=E0201
+mat3x2f() || 1i => err=E0201
+mat3x2f() || 1u => err=E0201
+mat3x2f() || 1f => err=E0201
+mat3x2f() || true => err=E0201
+mat3x2f() || vec2f() => err=E0201
+mat3x2f() || vec3f() => err=E0201
+mat3x2f() || vec2i() => err=E0201
+mat3x2f() || vec3i() => err=E0201
+mat3x2f() || vec2u() => err=E0201
+mat3x2f() || vec3u() => err=E0201
+mat3x2f() || vec3<bool>(true, true, true) => err=E0201
+mat3x2f() || mat2x2f() => err=E0201
+mat3x2f() || mat2x3f() => err=E0201
+mat3x2f() || mat3x2f() => err=E0201
+mat3x2f() || mat3x3f() => err=E0201
+mat3x3f() || 1 => err=E0201
+mat3x3f() || 1.0 => err=E0201
+mat3x3f() || 1i => err=E0201
+mat3x3f() || 1u => err=E0201
+mat3x3f() || 1f => err=E0201
+mat3x3f() || true => err=E0201
+mat3x3f() || vec2f() => err=E0201
+mat3x3f() || vec3f() => err=E0201
+mat3x3f() || vec2i() => err=E0201
+mat3x3f() || vec3i() => err=E0201
+mat3x3f() || vec2u() => err=E0201
+mat3x3f() || vec3u() => err=E0201
+mat3x3f() || vec3<bool>(true, true, true) => err=E0201
+mat3x3f() || mat2x2f() => err=E0201
+mat3x3f() || mat2x3f() => err=E0201
+mat3x3f() || mat3x2f() => err=E0201
+mat3x3f() || mat3x3f() => err=E0201
+1 & 1 => type=i32
+1 & 1.0 => err=E0201
+1 & 1i => type=i32
+1 & 1u => type=u32
+1 & 1f => err=E0201
+1 & true => err=E0201
+1 & vec2f() => err=E0201
+1 & vec3f() => err=E0201
+1 & vec2i() => none
+1 & vec3i() => none
+1 & vec2u() => none
+1 & vec3u() => none
+1 & vec3<bool>(true, true, true) => err=E0201
+1 & mat2x2f() => err=E0201
+1 & mat2x3f() => err=E0201
+1 & mat3x2f() => err=E0201
+1 & mat3x3f() => err=E0201
+1.0 & 1 => err=E0201
+1.0 & 1.0 => err=E0201
+1.0 & 1i => err=E0201
+1.0 & 1u => err=E0201
+1.0 & 1f => err=E0201
+1.0 & true => err=E0201
+1.0 & vec2f() => err=E0201
+1.0 & vec3f() => err=E0201
+1.0 & vec2i() => err=E0201
+1.0 & vec3i() => err=E0201
+1.0 & vec2u() => err=E0201
+1.0 & vec3u() => err=E0201
+1.0 & vec3<bool>(true, true, true) => err=E0201
+1.0 & mat2x2f() => err=E0201
+1.0 & mat2x3f() => err=E0201
+1.0 & mat3x2f() => err=E0201
+1.0 & mat3x3f() => err=E0201
+1i & 1 => type=i32
+1i & 1.0 => err=E0201
+1i & 1i => type=i32
+1i & 1u => none
+1i & 1f => err=E0201
+1i & true => err=E0201
+1i & vec2f() => err=E0201
+1i & vec3f() => err=E0201
+1i & vec2i() => none
+1i & vec3i() => none
+1i & vec2u() => none
+1i & vec3u() => none
+1i & vec3<bool>(true, true, true) => err=E0201
+1i & mat2x2f() => err=E0201
+1i & mat2x3f() => err=E0201
+1i & mat3x2f() => err=E0201
+1i & mat3x3f() => err=E0201
+1u & 1 => type=u32
+1u & 1.0 => err=E0201
+1u & 1i => none
+1u & 1u => type=u32
+1u & 1f => err=E0201
+1u & true => err=E0201
+1u & vec2f() => err=E0201
+1u & vec3f() => err=E0201
+1u & vec2i() => none
+1u & vec3i() => none
+1u & vec2u() => none
+1u & vec3u() => none
+1u & vec3<bool>(true, true, true) => err=E0201
+1u & mat2x2f() => err=E0201
+1u & mat2x3f() => err=E0201
+1u & mat3x2f() => err=E0201
+1u & mat3x3f() => err=E0201
+1f & 1 => err=E0201
+1f & 1.0 => err=E0201
+1f & 1i => err=E0201
+1f & 1u => err=E0201
+1f & 1f => err=E0201
+1f & true => err=E0201
+1f & vec2f() => err=E0201
+1f & vec3f() => err=E0201
+1f & vec2i() => err=E0201
+1f & vec3i() => err=E0201
+1f & vec2u() => err=E0201
+1f & vec3u() => err=E0201
+1f & vec3<bool>(true, true, true) => err=E0201
+1f & mat2x2f() => err=E0201
+1f & mat2x3f() => err=E0201
+1f & mat3x2f() => err=E0201
+1f & mat3x3f() => err=E0201
+true & 1 => err=E0201
+true & 1.0 => err=E0201
+true & 1i => err=E0201
+true & 1u => err=E0201
+true & 1f => err=E0201
+true & true => type=bool
+true & vec2f() => err=E0201
+true & vec3f() => err=E0201
+true & vec2i() => err=E0201
+true & vec3i() => err=E0201
+true & vec2u() => err=E0201
+true & vec3u() => err=E0201
+true & vec3<bool>(true, true, true) => err=E0201
+true & mat2x2f() => err=E0201
+true & mat2x3f() => err=E0201
+true & mat3x2f() => err=E0201
+true & mat3x3f() => err=E0201
+vec2f() & 1 => err=E0201
+vec2f() & 1.0 => err=E0201
+vec2f() & 1i => err=E0201
+vec2f() & 1u => err=E0201
+vec2f() & 1f => err=E0201
+vec2f() & true => err=E0201
+vec2f() & vec2f() => err=E0201
+vec2f() & vec3f() => err=E0201
+vec2f() & vec2i() => err=E0201
+vec2f() & vec3i() => err=E0201
+vec2f() & vec2u() => err=E0201
+vec2f() & vec3u() => err=E0201
+vec2f() & vec3<bool>(true, true, true) => err=E0201
+vec2f() & mat2x2f() => err=E0201
+vec2f() & mat2x3f() => err=E0201
+vec2f() & mat3x2f() => err=E0201
+vec2f() & mat3x3f() => err=E0201
+vec3f() & 1 => err=E0201
+vec3f() & 1.0 => err=E0201
+vec3f() & 1i => err=E0201
+vec3f() & 1u => err=E0201
+vec3f() & 1f => err=E0201
+vec3f() & true => err=E0201
+vec3f() & vec2f() => err=E0201
+vec3f() & vec3f() => err=E0201
+vec3f() & vec2i() => err=E0201
+vec3f() & vec3i() => err=E0201
+vec3f() & vec2u() => err=E0201
+vec3f() & vec3u() => err=E0201
+vec3f() & vec3<bool>(true, true, true) => err=E0201
+vec3f() & mat2x2f() => err=E0201
+vec3f() & mat2x3f() => err=E0201
+vec3f() & mat3x2f() => err=E0201
+vec3f() & mat3x3f() => err=E0201
+vec2i() & 1 => none
+vec2i() & 1.0 => err=E0201
+vec2i() & 1i => none
+vec2i() & 1u => none
+vec2i() & 1f => err=E0201
+vec2i() & true => err=E0201
+vec2i() & vec2f() => err=E0201
+vec2i() & vec3f() => err=E0201
+vec2i() & vec2i() => type=vec2<i32>
+vec2i() & vec3i() => none
+vec2i() & vec2u() => none
+vec2i() & vec3u() => none
+vec2i() & vec3<bool>(true, true, true) => err=E0201
+vec2i() & mat2x2f() => err=E0201
+vec2i() & mat2x3f() => err=E0201
+vec2i() & mat3x2f() => err=E0201
+vec2i() & mat3x3f() => err=E0201
+vec3i() & 1 => none
+vec3i() & 1.0 => err=E0201
+vec3i() & 1i => none
+vec3i() & 1u => none
+vec3i() & 1f => err=E0201
+vec3i() & true => err=E0201
+vec3i() & vec2f() => err=E0201
+vec3i() & vec3f() => err=E0201
+vec3i() & vec2i() => none
+vec3i() & vec3i() => type=vec3<i32>
+vec3i() & vec2u() => none
+vec3i() & vec3u() => none
+vec3i() & vec3<bool>(true, true, true) => err=E0201
+vec3i() & mat2x2f() => err=E0201
+vec3i() & mat2x3f() => err=E0201
+vec3i() & mat3x2f() => err=E0201
+vec3i() & mat3x3f() => err=E0201
+vec2u() & 1 => none
+vec2u() & 1.0 => err=E0201
+vec2u() & 1i => none
+vec2u() & 1u => none
+vec2u() & 1f => err=E0201
+vec2u() & true => err=E0201
+vec2u() & vec2f() => err=E0201
+vec2u() & vec3f() => err=E0201
+vec2u() & vec2i() => none
+vec2u() & vec3i() => none
+vec2u() & vec2u() => type=vec2<u32>
+vec2u() & vec3u() => none
+vec2u() & vec3<bool>(true, true, true) => err=E0201
+vec2u() & mat2x2f() => err=E0201
+vec2u() & mat2x3f() => err=E0201
+vec2u() & mat3x2f() => err=E0201
+vec2u() & mat3x3f() => err=E0201
+vec3u() & 1 => none
+vec3u() & 1.0 => err=E0201
+vec3u() & 1i => none
+vec3u() & 1u => none
+vec3u() & 1f => err=E0201
+vec3u() & true => err=E0201
+vec3u() & vec2f() => err=E0201
+vec3u() & vec3f() => err=E0201
+vec3u() & vec2i() => none
+vec3u() & vec3i() => none
+vec3u() & vec2u() => none
+vec3u() & vec3u() => type=vec3<u32>
+vec3u() & vec3<bool>(true, true, true) => err=E0201
+vec3u() & mat2x2f() => err=E0201
+vec3u() & mat2x3f() => err=E0201
+vec3u() & mat3x2f() => err=E0201
+vec3u() & mat3x3f() => err=E0201
+vec3<bool>(true, true, true) & 1 => err=E0201
+vec3<bool>(true, true, true) & 1.0 => err=E0201
+vec3<bool>(true, true, true) & 1i => err=E0201
+vec3<bool>(true, true, true) & 1u => err=E0201
+vec3<bool>(true, true, true) & 1f => err=E0201
+vec3<bool>(true, true, true) & true => err=E0201
+vec3<bool>(true, true, true) & vec2f() => err=E0201
+vec3<bool>(true, true, true) & vec3f() => err=E0201
+vec3<bool>(true, true, true) & vec2i() => err=E0201
+vec3<bool>(true, true, true) & vec3i() => err=E0201
+vec3<bool>(true, true, true) & vec2u() => err=E0201
+vec3<bool>(true, true, true) & vec3u() => err=E0201
+vec3<bool>(true, true, true) & vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) & mat2x2f() => err=E0201
+vec3<bool>(true, true, true) & mat2x3f() => err=E0201
+vec3<bool>(true, true, true) & mat3x2f() => err=E0201
+vec3<bool>(true, true, true) & mat3x3f() => err=E0201
+mat2x2f() & 1 => err=E0201
+mat2x2f() & 1.0 => err=E0201
+mat2x2f() & 1i => err=E0201
+mat2x2f() & 1u => err=E0201
+mat2x2f() & 1f => err=E0201
+mat2x2f() & true => err=E0201
+mat2x2f() & vec2f() => err=E0201
+mat2x2f() & vec3f() => err=E0201
+mat2x2f() & vec2i() => err=E0201
+mat2x2f() & vec3i() => err=E0201
+mat2x2f() & vec2u() => err=E0201
+mat2x2f() & vec3u() => err=E0201
+mat2x2f() & vec3<bool>(true, true, true) => err=E0201
+mat2x2f() & mat2x2f() => err=E0201
+mat2x2f() & mat2x3f() => err=E0201
+mat2x2f() & mat3x2f() => err=E0201
+mat2x2f() & mat3x3f() => err=E0201
+mat2x3f() & 1 => err=E0201
+mat2x3f() & 1.0 => err=E0201
+mat2x3f() & 1i => err=E0201
+mat2x3f() & 1u => err=E0201
+mat2x3f() & 1f => err=E0201
+mat2x3f() & true => err=E0201
+mat2x3f() & vec2f() => err=E0201
+mat2x3f() & vec3f() => err=E0201
+mat2x3f() & vec2i() => err=E0201
+mat2x3f() & vec3i() => err=E0201
+mat2x3f() & vec2u() => err=E0201
+mat2x3f() & vec3u() => err=E0201
+mat2x3f() & vec3<bool>(true, true, true) => err=E0201
+mat2x3f() & mat2x2f() => err=E0201
+mat2x3f() & mat2x3f() => err=E0201
+mat2x3f() & mat3x2f() => err=E0201
+mat2x3f() & mat3x3f() => err=E0201
+mat3x2f() & 1 => err=E0201
+mat3x2f() & 1.0 => err=E0201
+mat3x2f() & 1i => err=E0201
+mat3x2f() & 1u => err=E0201
+mat3x2f() & 1f => err=E0201
+mat3x2f() & true => err=E0201
+mat3x2f() & vec2f() => err=E0201
+mat3x2f() & vec3f() => err=E0201
+mat3x2f() & vec2i() => err=E0201
+mat3x2f() & vec3i() => err=E0201
+mat3x2f() & vec2u() => err=E0201
+mat3x2f() & vec3u() => err=E0201
+mat3x2f() & vec3<bool>(true, true, true) => err=E0201
+mat3x2f() & mat2x2f() => err=E0201
+mat3x2f() & mat2x3f() => err=E0201
+mat3x2f() & mat3x2f() => err=E0201
+mat3x2f() & mat3x3f() => err=E0201
+mat3x3f() & 1 => err=E0201
+mat3x3f() & 1.0 => err=E0201
+mat3x3f() & 1i => err=E0201
+mat3x3f() & 1u => err=E0201
+mat3x3f() & 1f => err=E0201
+mat3x3f() & true => err=E0201
+mat3x3f() & vec2f() => err=E0201
+mat3x3f() & vec3f() => err=E0201
+mat3x3f() & vec2i() => err=E0201
+mat3x3f() & vec3i() => err=E0201
+mat3x3f() & vec2u() => err=E0201
+mat3x3f() & vec3u() => err=E0201
+mat3x3f() & vec3<bool>(true, true, true) => err=E0201
+mat3x3f() & mat2x2f() => err=E0201
+mat3x3f() & mat2x3f() => err=E0201
+mat3x3f() & mat3x2f() => err=E0201
+mat3x3f() & mat3x3f() => err=E0201
+1 | 1 => type=i32
+1 | 1.0 => err=E0201
+1 | 1i => type=i32
+1 | 1u => type=u32
+1 | 1f => err=E0201
+1 | true => err=E0201
+1 | vec2f() => err=E0201
+1 | vec3f() => err=E0201
+1 | vec2i() => none
+1 | vec3i() => none
+1 | vec2u() => none
+1 | vec3u() => none
+1 | vec3<bool>(true, true, true) => err=E0201
+1 | mat2x2f() => err=E0201
+1 | mat2x3f() => err=E0201
+1 | mat3x2f() => err=E0201
+1 | mat3x3f() => err=E0201
+1.0 | 1 => err=E0201
+1.0 | 1.0 => err=E0201
+1.0 | 1i => err=E0201
+1.0 | 1u => err=E0201
+1.0 | 1f => err=E0201
+1.0 | true => err=E0201
+1.0 | vec2f() => err=E0201
+1.0 | vec3f() => err=E0201
+1.0 | vec2i() => err=E0201
+1.0 | vec3i() => err=E0201
+1.0 | vec2u() => err=E0201
+1.0 | vec3u() => err=E0201
+1.0 | vec3<bool>(true, true, true) => err=E0201
+1.0 | mat2x2f() => err=E0201
+1.0 | mat2x3f() => err=E0201
+1.0 | mat3x2f() => err=E0201
+1.0 | mat3x3f() => err=E0201
+1i | 1 => type=i32
+1i | 1.0 => err=E0201
+1i | 1i => type=i32
+1i | 1u => none
+1i | 1f => err=E0201
+1i | true => err=E0201
+1i | vec2f() => err=E0201
+1i | vec3f() => err=E0201
+1i | vec2i() => none
+1i | vec3i() => none
+1i | vec2u() => none
+1i | vec3u() => none
+1i | vec3<bool>(true, true, true) => err=E0201
+1i | mat2x2f() => err=E0201
+1i | mat2x3f() => err=E0201
+1i | mat3x2f() => err=E0201
+1i | mat3x3f() => err=E0201
+1u | 1 => type=u32
+1u | 1.0 => err=E0201
+1u | 1i => none
+1u | 1u => type=u32
+1u | 1f => err=E0201
+1u | true => err=E0201
+1u | vec2f() => err=E0201
+1u | vec3f() => err=E0201
+1u | vec2i() => none
+1u | vec3i() => none
+1u | vec2u() => none
+1u | vec3u() => none
+1u | vec3<bool>(true, true, true) => err=E0201
+1u | mat2x2f() => err=E0201
+1u | mat2x3f() => err=E0201
+1u | mat3x2f() => err=E0201
+1u | mat3x3f() => err=E0201
+1f | 1 => err=E0201
+1f | 1.0 => err=E0201
+1f | 1i => err=E0201
+1f | 1u => err=E0201
+1f | 1f => err=E0201
+1f | true => err=E0201
+1f | vec2f() => err=E0201
+1f | vec3f() => err=E0201
+1f | vec2i() => err=E0201
+1f | vec3i() => err=E0201
+1f | vec2u() => err=E0201
+1f | vec3u() => err=E0201
+1f | vec3<bool>(true, true, true) => err=E0201
+1f | mat2x2f() => err=E0201
+1f | mat2x3f() => err=E0201
+1f | mat3x2f() => err=E0201
+1f | mat3x3f() => err=E0201
+true | 1 => err=E0201
+true | 1.0 => err=E0201
+true | 1i => err=E0201
+true | 1u => err=E0201
+true | 1f => err=E0201
+true | true => type=bool
+true | vec2f() => err=E0201
+true | vec3f() => err=E0201
+true | vec2i() => err=E0201
+true | vec3i() => err=E0201
+true | vec2u() => err=E0201
+true | vec3u() => err=E0201
+true | vec3<bool>(true, true, true) => err=E0201
+true | mat2x2f() => err=E0201
+true | mat2x3f() => err=E0201
+true | mat3x2f() => err=E0201
+true | mat3x3f() => err=E0201
+vec2f() | 1 => err=E0201
+vec2f() | 1.0 => err=E0201
+vec2f() | 1i => err=E0201
+vec2f() | 1u => err=E0201
+vec2f() | 1f => err=E0201
+vec2f() | true => err=E0201
+vec2f() | vec2f() => err=E0201
+vec2f() | vec3f() => err=E0201
+vec2f() | vec2i() => err=E0201
+vec2f() | vec3i() => err=E0201
+vec2f() | vec2u() => err=E0201
+vec2f() | vec3u() => err=E0201
+vec2f() | vec3<bool>(true, true, true) => err=E0201
+vec2f() | mat2x2f() => err=E0201
+vec2f() | mat2x3f() => err=E0201
+vec2f() | mat3x2f() => err=E0201
+vec2f() | mat3x3f() => err=E0201
+vec3f() | 1 => err=E0201
+vec3f() | 1.0 => err=E0201
+vec3f() | 1i => err=E0201
+vec3f() | 1u => err=E0201
+vec3f() | 1f => err=E0201
+vec3f() | true => err=E0201
+vec3f() | vec2f() => err=E0201
+vec3f() | vec3f() => err=E0201
+vec3f() | vec2i() => err=E0201
+vec3f() | vec3i() => err=E0201
+vec3f() | vec2u() => err=E0201
+vec3f() | vec3u() => err=E0201
+vec3f() | vec3<bool>(true, true, true) => err=E0201
+vec3f() | mat2x2f() => err=E0201
+vec3f() | mat2x3f() => err=E0201
+vec3f() | mat3x2f() => err=E0201
+vec3f() | mat3x3f() => err=E0201
+vec2i() | 1 => none
+vec2i() | 1.0 => err=E0201
+vec2i() | 1i => none
+vec2i() | 1u => none
+vec2i() | 1f => err=E0201
+vec2i() | true => err=E0201
+vec2i() | vec2f() => err=E0201
+vec2i() | vec3f() => err=E0201
+vec2i() | vec2i() => type=vec2<i32>
+vec2i() | vec3i() => none
+vec2i() | vec2u() => none
+vec2i() | vec3u() => none
+vec2i() | vec3<bool>(true, true, true) => err=E0201
+vec2i() | mat2x2f() => err=E0201
+vec2i() | mat2x3f() => err=E0201
+vec2i() | mat3x2f() => err=E0201
+vec2i() | mat3x3f() => err=E0201
+vec3i() | 1 => none
+vec3i() | 1.0 => err=E0201
+vec3i() | 1i => none
+vec3i() | 1u => none
+vec3i() | 1f => err=E0201
+vec3i() | true => err=E0201
+vec3i() | vec2f() => err=E0201
+vec3i() | vec3f() => err=E0201
+vec3i() | vec2i() => none
+vec3i() | vec3i() => type=vec3<i32>
+vec3i() | vec2u() => none
+vec3i() | vec3u() => none
+vec3i() | vec3<bool>(true, true, true) => err=E0201
+vec3i() | mat2x2f() => err=E0201
+vec3i() | mat2x3f() => err=E0201
+vec3i() | mat3x2f() => err=E0201
+vec3i() | mat3x3f() => err=E0201
+vec2u() | 1 => none
+vec2u() | 1.0 => err=E0201
+vec2u() | 1i => none
+vec2u() | 1u => none
+vec2u() | 1f => err=E0201
+vec2u() | true => err=E0201
+vec2u() | vec2f() => err=E0201
+vec2u() | vec3f() => err=E0201
+vec2u() | vec2i() => none
+vec2u() | vec3i() => none
+vec2u() | vec2u() => type=vec2<u32>
+vec2u() | vec3u() => none
+vec2u() | vec3<bool>(true, true, true) => err=E0201
+vec2u() | mat2x2f() => err=E0201
+vec2u() | mat2x3f() => err=E0201
+vec2u() | mat3x2f() => err=E0201
+vec2u() | mat3x3f() => err=E0201
+vec3u() | 1 => none
+vec3u() | 1.0 => err=E0201
+vec3u() | 1i => none
+vec3u() | 1u => none
+vec3u() | 1f => err=E0201
+vec3u() | true => err=E0201
+vec3u() | vec2f() => err=E0201
+vec3u() | vec3f() => err=E0201
+vec3u() | vec2i() => none
+vec3u() | vec3i() => none
+vec3u() | vec2u() => none
+vec3u() | vec3u() => type=vec3<u32>
+vec3u() | vec3<bool>(true, true, true) => err=E0201
+vec3u() | mat2x2f() => err=E0201
+vec3u() | mat2x3f() => err=E0201
+vec3u() | mat3x2f() => err=E0201
+vec3u() | mat3x3f() => err=E0201
+vec3<bool>(true, true, true) | 1 => err=E0201
+vec3<bool>(true, true, true) | 1.0 => err=E0201
+vec3<bool>(true, true, true) | 1i => err=E0201
+vec3<bool>(true, true, true) | 1u => err=E0201
+vec3<bool>(true, true, true) | 1f => err=E0201
+vec3<bool>(true, true, true) | true => err=E0201
+vec3<bool>(true, true, true) | vec2f() => err=E0201
+vec3<bool>(true, true, true) | vec3f() => err=E0201
+vec3<bool>(true, true, true) | vec2i() => err=E0201
+vec3<bool>(true, true, true) | vec3i() => err=E0201
+vec3<bool>(true, true, true) | vec2u() => err=E0201
+vec3<bool>(true, true, true) | vec3u() => err=E0201
+vec3<bool>(true, true, true) | vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) | mat2x2f() => err=E0201
+vec3<bool>(true, true, true) | mat2x3f() => err=E0201
+vec3<bool>(true, true, true) | mat3x2f() => err=E0201
+vec3<bool>(true, true, true) | mat3x3f() => err=E0201
+mat2x2f() | 1 => err=E0201
+mat2x2f() | 1.0 => err=E0201
+mat2x2f() | 1i => err=E0201
+mat2x2f() | 1u => err=E0201
+mat2x2f() | 1f => err=E0201
+mat2x2f() | true => err=E0201
+mat2x2f() | vec2f() => err=E0201
+mat2x2f() | vec3f() => err=E0201
+mat2x2f() | vec2i() => err=E0201
+mat2x2f() | vec3i() => err=E0201
+mat2x2f() | vec2u() => err=E0201
+mat2x2f() | vec3u() => err=E0201
+mat2x2f() | vec3<bool>(true, true, true) => err=E0201
+mat2x2f() | mat2x2f() => err=E0201
+mat2x2f() | mat2x3f() => err=E0201
+mat2x2f() | mat3x2f() => err=E0201
+mat2x2f() | mat3x3f() => err=E0201
+mat2x3f() | 1 => err=E0201
+mat2x3f() | 1.0 => err=E0201
+mat2x3f() | 1i => err=E0201
+mat2x3f() | 1u => err=E0201
+mat2x3f() | 1f => err=E0201
+mat2x3f() | true => err=E0201
+mat2x3f() | vec2f() => err=E0201
+mat2x3f() | vec3f() => err=E0201
+mat2x3f() | vec2i() => err=E0201
+mat2x3f() | vec3i() => err=E0201
+mat2x3f() | vec2u() => err=E0201
+mat2x3f() | vec3u() => err=E0201
+mat2x3f() | vec3<bool>(true, true, true) => err=E0201
+mat2x3f() | mat2x2f() => err=E0201
+mat2x3f() | mat2x3f() => err=E0201
+mat2x3f() | mat3x2f() => err=E0201
+mat2x3f() | mat3x3f() => err=E0201
+mat3x2f() | 1 => err=E0201
+mat3x2f() | 1.0 => err=E0201
+mat3x2f() | 1i => err=E0201
+mat3x2f() | 1u => err=E0201
+mat3x2f() | 1f => err=E0201
+mat3x2f() | true => err=E0201
+mat3x2f() | vec2f() => err=E0201
+mat3x2f() | vec3f() => err=E0201
+mat3x2f() | vec2i() => err=E0201
+mat3x2f() | vec3i() => err=E0201
+mat3x2f() | vec2u() => err=E0201
+mat3x2f() | vec3u() => err=E0201
+mat3x2f() | vec3<bool>(true, true, true) => err=E0201
+mat3x2f() | mat2x2f() => err=E0201
+mat3x2f() | mat2x3f() => err=E0201
+mat3x2f() | mat3x2f() => err=E0201
+mat3x2f() | mat3x3f() => err=E0201
+mat3x3f() | 1 => err=E0201
+mat3x3f() | 1.0 => err=E0201
+mat3x3f() | 1i => err=E0201
+mat3x3f() | 1u => err=E0201
+mat3x3f() | 1f => err=E0201
+mat3x3f() | true => err=E0201
+mat3x3f() | vec2f() => err=E0201
+mat3x3f() | vec3f() => err=E0201
+mat3x3f() | vec2i() => err=E0201
+mat3x3f() | vec3i() => err=E0201
+mat3x3f() | vec2u() => err=E0201
+mat3x3f() | vec3u() => err=E0201
+mat3x3f() | vec3<bool>(true, true, true) => err=E0201
+mat3x3f() | mat2x2f() => err=E0201
+mat3x3f() | mat2x3f() => err=E0201
+mat3x3f() | mat3x2f() => err=E0201
+mat3x3f() | mat3x3f() => err=E0201
+1 ^ 1 => type=i32
+1 ^ 1.0 => err=E0201
+1 ^ 1i => type=i32
+1 ^ 1u => type=u32
+1 ^ 1f => err=E0201
+1 ^ true => err=E0201
+1 ^ vec2f() => err=E0201
+1 ^ vec3f() => err=E0201
+1 ^ vec2i() => none
+1 ^ vec3i() => none
+1 ^ vec2u() => none
+1 ^ vec3u() => none
+1 ^ vec3<bool>(true, true, true) => err=E0201
+1 ^ mat2x2f() => err=E0201
+1 ^ mat2x3f() => err=E0201
+1 ^ mat3x2f() => err=E0201
+1 ^ mat3x3f() => err=E0201
+1.0 ^ 1 => err=E0201
+1.0 ^ 1.0 => err=E0201
+1.0 ^ 1i => err=E0201
+1.0 ^ 1u => err=E0201
+1.0 ^ 1f => err=E0201
+1.0 ^ true => err=E0201
+1.0 ^ vec2f() => err=E0201
+1.0 ^ vec3f() => err=E0201
+1.0 ^ vec2i() => err=E0201
+1.0 ^ vec3i() => err=E0201
+1.0 ^ vec2u() => err=E0201
+1.0 ^ vec3u() => err=E0201
+1.0 ^ vec3<bool>(true, true, true) => err=E0201
+1.0 ^ mat2x2f() => err=E0201
+1.0 ^ mat2x3f() => err=E0201
+1.0 ^ mat3x2f() => err=E0201
+1.0 ^ mat3x3f() => err=E0201
+1i ^ 1 => type=i32
+1i ^ 1.0 => err=E0201
+1i ^ 1i => type=i32
+1i ^ 1u => none
+1i ^ 1f => err=E0201
+1i ^ true => err=E0201
+1i ^ vec2f() => err=E0201
+1i ^ vec3f() => err=E0201
+1i ^ vec2i() => none
+1i ^ vec3i() => none
+1i ^ vec2u() => none
+1i ^ vec3u() => none
+1i ^ vec3<bool>(true, true, true) => err=E0201
+1i ^ mat2x2f() => err=E0201
+1i ^ mat2x3f() => err=E0201
+1i ^ mat3x2f() => err=E0201
+1i ^ mat3x3f() => err=E0201
+1u ^ 1 => type=u32
+1u ^ 1.0 => err=E0201
+1u ^ 1i => none
+1u ^ 1u => type=u32
+1u ^ 1f => err=E0201
+1u ^ true => err=E0201
+1u ^ vec2f() => err=E0201
+1u ^ vec3f() => err=E0201
+1u ^ vec2i() => none
+1u ^ vec3i() => none
+1u ^ vec2u() => none
+1u ^ vec3u() => none
+1u ^ vec3<bool>(true, true, true) => err=E0201
+1u ^ mat2x2f() => err=E0201
+1u ^ mat2x3f() => err=E0201
+1u ^ mat3x2f() => err=E0201
+1u ^ mat3x3f() => err=E0201
+1f ^ 1 => err=E0201
+1f ^ 1.0 => err=E0201
+1f ^ 1i => err=E0201
+1f ^ 1u => err=E0201
+1f ^ 1f => err=E0201
+1f ^ true => err=E0201
+1f ^ vec2f() => err=E0201
+1f ^ vec3f() => err=E0201
+1f ^ vec2i() => err=E0201
+1f ^ vec3i() => err=E0201
+1f ^ vec2u() => err=E0201
+1f ^ vec3u() => err=E0201
+1f ^ vec3<bool>(true, true, true) => err=E0201
+1f ^ mat2x2f() => err=E0201
+1f ^ mat2x3f() => err=E0201
+1f ^ mat3x2f() => err=E0201
+1f ^ mat3x3f() => err=E0201
+true ^ 1 => err=E0201
+true ^ 1.0 => err=E0201
+true ^ 1i => err=E0201
+true ^ 1u => err=E0201
+true ^ 1f => err=E0201
+true ^ true => type=bool
+true ^ vec2f() => err=E0201
+true ^ vec3f() => err=E0201
+true ^ vec2i() => err=E0201
+true ^ vec3i() => err=E0201
+true ^ vec2u() => err=E0201
+true ^ vec3u() => err=E0201
+true ^ vec3<bool>(true, true, true) => err=E0201
+true ^ mat2x2f() => err=E0201
+true ^ mat2x3f() => err=E0201
+true ^ mat3x2f() => err=E0201
+true ^ mat3x3f() => err=E0201
+vec2f() ^ 1 => err=E0201
+vec2f() ^ 1.0 => err=E0201
+vec2f() ^ 1i => err=E0201
+vec2f() ^ 1u => err=E0201
+vec2f() ^ 1f => err=E0201
+vec2f() ^ true => err=E0201
+vec2f() ^ vec2f() => err=E0201
+vec2f() ^ vec3f() => err=E0201
+vec2f() ^ vec2i() => err=E0201
+vec2f() ^ vec3i() => err=E0201
+vec2f() ^ vec2u() => err=E0201
+vec2f() ^ vec3u() => err=E0201
+vec2f() ^ vec3<bool>(true, true, true) => err=E0201
+vec2f() ^ mat2x2f() => err=E0201
+vec2f() ^ mat2x3f() => err=E0201
+vec2f() ^ mat3x2f() => err=E0201
+vec2f() ^ mat3x3f() => err=E0201
+vec3f() ^ 1 => err=E0201
+vec3f() ^ 1.0 => err=E0201
+vec3f() ^ 1i => err=E0201
+vec3f() ^ 1u => err=E0201
+vec3f() ^ 1f => err=E0201
+vec3f() ^ true => err=E0201
+vec3f() ^ vec2f() => err=E0201
+vec3f() ^ vec3f() => err=E0201
+vec3f() ^ vec2i() => err=E0201
+vec3f() ^ vec3i() => err=E0201
+vec3f() ^ vec2u() => err=E0201
+vec3f() ^ vec3u() => err=E0201
+vec3f() ^ vec3<bool>(true, true, true) => err=E0201
+vec3f() ^ mat2x2f() => err=E0201
+vec3f() ^ mat2x3f() => err=E0201
+vec3f() ^ mat3x2f() => err=E0201
+vec3f() ^ mat3x3f() => err=E0201
+vec2i() ^ 1 => none
+vec2i() ^ 1.0 => err=E0201
+vec2i() ^ 1i => none
+vec2i() ^ 1u => none
+vec2i() ^ 1f => err=E0201
+vec2i() ^ true => err=E0201
+vec2i() ^ vec2f() => err=E0201
+vec2i() ^ vec3f() => err=E0201
+vec2i() ^ vec2i() => type=vec2<i32>
+vec2i() ^ vec3i() => none
+vec2i() ^ vec2u() => none
+vec2i() ^ vec3u() => none
+vec2i() ^ vec3<bool>(true, true, true) => err=E0201
+vec2i() ^ mat2x2f() => err=E0201
+vec2i() ^ mat2x3f() => err=E0201
+vec2i() ^ mat3x2f() => err=E0201
+vec2i() ^ mat3x3f() => err=E0201
+vec3i() ^ 1 => none
+vec3i() ^ 1.0 => err=E0201
+vec3i() ^ 1i => none
+vec3i() ^ 1u => none
+vec3i() ^ 1f => err=E0201
+vec3i() ^ true => err=E0201
+vec3i() ^ vec2f() => err=E0201
+vec3i() ^ vec3f() => err=E0201
+vec3i() ^ vec2i() => none
+vec3i() ^ vec3i() => type=vec3<i32>
+vec3i() ^ vec2u() => none
+vec3i() ^ vec3u() => none
+vec3i() ^ vec3<bool>(true, true, true) => err=E0201
+vec3i() ^ mat2x2f() => err=E0201
+vec3i() ^ mat2x3f() => err=E0201
+vec3i() ^ mat3x2f() => err=E0201
+vec3i() ^ mat3x3f() => err=E0201
+vec2u() ^ 1 => none
+vec2u() ^ 1.0 => err=E0201
+vec2u() ^ 1i => none
+vec2u() ^ 1u => none
+vec2u() ^ 1f => err=E0201
+vec2u() ^ true => err=E0201
+vec2u() ^ vec2f() => err=E0201
+vec2u() ^ vec3f() => err=E0201
+vec2u() ^ vec2i() => none
+vec2u() ^ vec3i() => none
+vec2u() ^ vec2u() => type=vec2<u32>
+vec2u() ^ vec3u() => none
+vec2u() ^ vec3<bool>(true, true, true) => err=E0201
+vec2u() ^ mat2x2f() => err=E0201
+vec2u() ^ mat2x3f() => err=E0201
+vec2u() ^ mat3x2f() => err=E0201
+vec2u() ^ mat3x3f() => err=E0201
+vec3u() ^ 1 => none
+vec3u() ^ 1.0 => err=E0201
+vec3u() ^ 1i => none
+vec3u() ^ 1u => none
+vec3u() ^ 1f => err=E0201
+vec3u() ^ true => err=E0201
+vec3u() ^ vec2f() => err=E0201
+vec3u() ^ vec3f() => err=E0201
+vec3u() ^ vec2i() => none
+vec3u() ^ vec3i() => none
+vec3u() ^ vec2u() => none
+vec3u() ^ vec3u() => type=vec3<u32>
+vec3u() ^ vec3<bool>(true, true, true) => err=E0201
+vec3u() ^ mat2x2f() => err=E0201
+vec3u() ^ mat2x3f() => err=E0201
+vec3u() ^ mat3x2f() => err=E0201
+vec3u() ^ mat3x3f() => err=E0201
+vec3<bool>(true, true, true) ^ 1 => err=E0201
+vec3<bool>(true, true, true) ^ 1.0 => err=E0201
+vec3<bool>(true, true, true) ^ 1i => err=E0201
+vec3<bool>(true, true, true) ^ 1u => err=E0201
+vec3<bool>(true, true, true) ^ 1f => err=E0201
+vec3<bool>(true, true, true) ^ true => err=E0201
+vec3<bool>(true, true, true) ^ vec2f() => err=E0201
+vec3<bool>(true, true, true) ^ vec3f() => err=E0201
+vec3<bool>(true, true, true) ^ vec2i() => err=E0201
+vec3<bool>(true, true, true) ^ vec3i() => err=E0201
+vec3<bool>(true, true, true) ^ vec2u() => err=E0201
+vec3<bool>(true, true, true) ^ vec3u() => err=E0201
+vec3<bool>(true, true, true) ^ vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) ^ mat2x2f() => err=E0201
+vec3<bool>(true, true, true) ^ mat2x3f() => err=E0201
+vec3<bool>(true, true, true) ^ mat3x2f() => err=E0201
+vec3<bool>(true, true, true) ^ mat3x3f() => err=E0201
+mat2x2f() ^ 1 => err=E0201
+mat2x2f() ^ 1.0 => err=E0201
+mat2x2f() ^ 1i => err=E0201
+mat2x2f() ^ 1u => err=E0201
+mat2x2f() ^ 1f => err=E0201
+mat2x2f() ^ true => err=E0201
+mat2x2f() ^ vec2f() => err=E0201
+mat2x2f() ^ vec3f() => err=E0201
+mat2x2f() ^ vec2i() => err=E0201
+mat2x2f() ^ vec3i() => err=E0201
+mat2x2f() ^ vec2u() => err=E0201
+mat2x2f() ^ vec3u() => err=E0201
+mat2x2f() ^ vec3<bool>(true, true, true) => err=E0201
+mat2x2f() ^ mat2x2f() => err=E0201
+mat2x2f() ^ mat2x3f() => err=E0201
+mat2x2f() ^ mat3x2f() => err=E0201
+mat2x2f() ^ mat3x3f() => err=E0201
+mat2x3f() ^ 1 => err=E0201
+mat2x3f() ^ 1.0 => err=E0201
+mat2x3f() ^ 1i => err=E0201
+mat2x3f() ^ 1u => err=E0201
+mat2x3f() ^ 1f => err=E0201
+mat2x3f() ^ true => err=E0201
+mat2x3f() ^ vec2f() => err=E0201
+mat2x3f() ^ vec3f() => err=E0201
+mat2x3f() ^ vec2i() => err=E0201
+mat2x3f() ^ vec3i() => err=E0201
+mat2x3f() ^ vec2u() => err=E0201
+mat2x3f() ^ vec3u() => err=E0201
+mat2x3f() ^ vec3<bool>(true, true, true) => err=E0201
+mat2x3f() ^ mat2x2f() => err=E0201
+mat2x3f() ^ mat2x3f() => err=E0201
+mat2x3f() ^ mat3x2f() => err=E0201
+mat2x3f() ^ mat3x3f() => err=E0201
+mat3x2f() ^ 1 => err=E0201
+mat3x2f() ^ 1.0 => err=E0201
+mat3x2f() ^ 1i => err=E0201
+mat3x2f() ^ 1u => err=E0201
+mat3x2f() ^ 1f => err=E0201
+mat3x2f() ^ true => err=E0201
+mat3x2f() ^ vec2f() => err=E0201
+mat3x2f() ^ vec3f() => err=E0201
+mat3x2f() ^ vec2i() => err=E0201
+mat3x2f() ^ vec3i() => err=E0201
+mat3x2f() ^ vec2u() => err=E0201
+mat3x2f() ^ vec3u() => err=E0201
+mat3x2f() ^ vec3<bool>(true, true, true) => err=E0201
+mat3x2f() ^ mat2x2f() => err=E0201
+mat3x2f() ^ mat2x3f() => err=E0201
+mat3x2f() ^ mat3x2f() => err=E0201
+mat3x2f() ^ mat3x3f() => err=E0201
+mat3x3f() ^ 1 => err=E0201
+mat3x3f() ^ 1.0 => err=E0201
+mat3x3f() ^ 1i => err=E0201
+mat3x3f() ^ 1u => err=E0201
+mat3x3f() ^ 1f => err=E0201
+mat3x3f() ^ true => err=E0201
+mat3x3f() ^ vec2f() => err=E0201
+mat3x3f() ^ vec3f() => err=E0201
+mat3x3f() ^ vec2i() => err=E0201
+mat3x3f() ^ vec3i() => err=E0201
+mat3x3f() ^ vec2u() => err=E0201
+mat3x3f() ^ vec3u() => err=E0201
+mat3x3f() ^ vec3<bool>(true, true, true) => err=E0201
+mat3x3f() ^ mat2x2f() => err=E0201
+mat3x3f() ^ mat2x3f() => err=E0201
+mat3x3f() ^ mat3x2f() => err=E0201
+mat3x3f() ^ mat3x3f() => err=E0201
+1 == 1 => type=bool
+1 == 1.0 => type=bool
+1 == 1i => type=bool
+1 == 1u => type=bool
+1 == 1f => type=bool
+1 == true => err=E0201
+1 == vec2f() => err=E0201
+1 == vec3f() => err=E0201
+1 == vec2i() => err=E0201
+1 == vec3i() => err=E0201
+1 == vec2u() => err=E0201
+1 == vec3u() => err=E0201
+1 == vec3<bool>(true, true, true) => err=E0201
+1 == mat2x2f() => err=E0201
+1 == mat2x3f() => err=E0201
+1 == mat3x2f() => err=E0201
+1 == mat3x3f() => err=E0201
+1.0 == 1 => type=bool
+1.0 == 1.0 => type=bool
+1.0 == 1i => err=E0201
+1.0 == 1u => err=E0201
+1.0 == 1f => type=bool
+1.0 == true => err=E0201
+1.0 == vec2f() => err=E0201
+1.0 == vec3f() => err=E0201
+1.0 == vec2i() => err=E0201
+1.0 == vec3i() => err=E0201
+1.0 == vec2u() => err=E0201
+1.0 == vec3u() => err=E0201
+1.0 == vec3<bool>(true, true, true) => err=E0201
+1.0 == mat2x2f() => err=E0201
+1.0 == mat2x3f() => err=E0201
+1.0 == mat3x2f() => err=E0201
+1.0 == mat3x3f() => err=E0201
+1i == 1 => type=bool
+1i == 1.0 => err=E0201
+1i == 1i => type=bool
+1i == 1u => err=E0201
+1i == 1f => err=E0201
+1i == true => err=E0201
+1i == vec2f() => err=E0201
+1i == vec3f() => err=E0201
+1i == vec2i() => err=E0201
+1i == vec3i() => err=E0201
+1i == vec2u() => err=E0201
+1i == vec3u() => err=E0201
+1i == vec3<bool>(true, true, true) => err=E0201
+1i == mat2x2f() => err=E0201
+1i == mat2x3f() => err=E0201
+1i == mat3x2f() => err=E0201
+1i == mat3x3f() => err=E0201
+1u == 1 => type=bool
+1u == 1.0 => err=E0201
+1u == 1i => err=E0201
+1u == 1u => type=bool
+1u == 1f => err=E0201
+1u == true => err=E0201
+1u == vec2f() => err=E0201
+1u == vec3f() => err=E0201
+1u == vec2i() => err=E0201
+1u == vec3i() => err=E0201
+1u == vec2u() => err=E0201
+1u == vec3u() => err=E0201
+1u == vec3<bool>(true, true, true) => err=E0201
+1u == mat2x2f() => err=E0201
+1u == mat2x3f() => err=E0201
+1u == mat3x2f() => err=E0201
+1u == mat3x3f() => err=E0201
+1f == 1 => type=bool
+1f == 1.0 => type=bool
+1f == 1i => err=E0201
+1f == 1u => err=E0201
+1f == 1f => type=bool
+1f == true => err=E0201
+1f == vec2f() => err=E0201
+1f == vec3f() => err=E0201
+1f == vec2i() => err=E0201
+1f == vec3i() => err=E0201
+1f == vec2u() => err=E0201
+1f == vec3u() => err=E0201
+1f == vec3<bool>(true, true, true) => err=E0201
+1f == mat2x2f() => err=E0201
+1f == mat2x3f() => err=E0201
+1f == mat3x2f() => err=E0201
+1f == mat3x3f() => err=E0201
+true == 1 => err=E0201
+true == 1.0 => err=E0201
+true == 1i => err=E0201
+true == 1u => err=E0201
+true == 1f => err=E0201
+true == true => type=bool
+true == vec2f() => err=E0201
+true == vec3f() => err=E0201
+true == vec2i() => err=E0201
+true == vec3i() => err=E0201
+true == vec2u() => err=E0201
+true == vec3u() => err=E0201
+true == vec3<bool>(true, true, true) => err=E0201
+true == mat2x2f() => err=E0201
+true == mat2x3f() => err=E0201
+true == mat3x2f() => err=E0201
+true == mat3x3f() => err=E0201
+vec2f() == 1 => err=E0201
+vec2f() == 1.0 => err=E0201
+vec2f() == 1i => err=E0201
+vec2f() == 1u => err=E0201
+vec2f() == 1f => err=E0201
+vec2f() == true => err=E0201
+vec2f() == vec2f() => type=vec2<bool>
+vec2f() == vec3f() => err=E0201
+vec2f() == vec2i() => err=E0201
+vec2f() == vec3i() => err=E0201
+vec2f() == vec2u() => err=E0201
+vec2f() == vec3u() => err=E0201
+vec2f() == vec3<bool>(true, true, true) => err=E0201
+vec2f() == mat2x2f() => err=E0201
+vec2f() == mat2x3f() => err=E0201
+vec2f() == mat3x2f() => err=E0201
+vec2f() == mat3x3f() => err=E0201
+vec3f() == 1 => err=E0201
+vec3f() == 1.0 => err=E0201
+vec3f() == 1i => err=E0201
+vec3f() == 1u => err=E0201
+vec3f() == 1f => err=E0201
+vec3f() == true => err=E0201
+vec3f() == vec2f() => err=E0201
+vec3f() == vec3f() => type=vec3<bool>
+vec3f() == vec2i() => err=E0201
+vec3f() == vec3i() => err=E0201
+vec3f() == vec2u() => err=E0201
+vec3f() == vec3u() => err=E0201
+vec3f() == vec3<bool>(true, true, true) => err=E0201
+vec3f() == mat2x2f() => err=E0201
+vec3f() == mat2x3f() => err=E0201
+vec3f() == mat3x2f() => err=E0201
+vec3f() == mat3x3f() => err=E0201
+vec2i() == 1 => err=E0201
+vec2i() == 1.0 => err=E0201
+vec2i() == 1i => err=E0201
+vec2i() == 1u => err=E0201
+vec2i() == 1f => err=E0201
+vec2i() == true => err=E0201
+vec2i() == vec2f() => err=E0201
+vec2i() == vec3f() => err=E0201
+vec2i() == vec2i() => type=vec2<bool>
+vec2i() == vec3i() => err=E0201
+vec2i() == vec2u() => err=E0201
+vec2i() == vec3u() => err=E0201
+vec2i() == vec3<bool>(true, true, true) => err=E0201
+vec2i() == mat2x2f() => err=E0201
+vec2i() == mat2x3f() => err=E0201
+vec2i() == mat3x2f() => err=E0201
+vec2i() == mat3x3f() => err=E0201
+vec3i() == 1 => err=E0201
+vec3i() == 1.0 => err=E0201
+vec3i() == 1i => err=E0201
+vec3i() == 1u => err=E0201
+vec3i() == 1f => err=E0201
+vec3i() == true => err=E0201
+vec3i() == vec2f() => err=E0201
+vec3i() == vec3f() => err=E0201
+vec3i() == vec2i() => err=E0201
+vec3i() == vec3i() => type=vec3<bool>
+vec3i() == vec2u() => err=E0201
+vec3i() == vec3u() => err=E0201
+vec3i() == vec3<bool>(true, true, true) => err=E0201
+vec3i() == mat2x2f() => err=E0201
+vec3i() == mat2x3f() => err=E0201
+vec3i() == mat3x2f() => err=E0201
+vec3i() == mat3x3f() => err=E0201
+vec2u() == 1 => err=E0201
+vec2u() == 1.0 => err=E0201
+vec2u() == 1i => err=E0201
+vec2u() == 1u => err=E0201
+vec2u() == 1f => err=E0201
+vec2u() == true => err=E0201
+vec2u() == vec2f() => err=E0201
+vec2u() == vec3f() => err=E0201
+vec2u() == vec2i() => err=E0201
+vec2u() == vec3i() => err=E0201
+vec2u() == vec2u() => type=vec2<bool>
+vec2u() == vec3u() => err=E0201
+vec2u() == vec3<bool>(true, true, true) => err=E0201
+vec2u() == mat2x2f() => err=E0201
+vec2u() == mat2x3f() => err=E0201
+vec2u() == mat3x2f() => err=E0201
+vec2u() == mat3x3f() => err=E0201
+vec3u() == 1 => err=E0201
+vec3u() == 1.0 => err=E0201
+vec3u() == 1i => err=E0201
+vec3u() == 1u => err=E0201
+vec3u() == 1f => err=E0201
+vec3u() == true => err=E0201
+vec3u() == vec2f() => err=E0201
+vec3u() == vec3f() => err=E0201
+vec3u() == vec2i() => err=E0201
+vec3u() == vec3i() => err=E0201
+vec3u() == vec2u() => err=E0201
+vec3u() == vec3u() => type=vec3<bool>
+vec3u() == vec3<bool>(true, true, true) => err=E0201
+vec3u() == mat2x2f() => err=E0201
+vec3u() == mat2x3f() => err=E0201
+vec3u() == mat3x2f() => err=E0201
+vec3u() == mat3x3f() => err=E0201
+vec3<bool>(true, true, true) == 1 => err=E0201
+vec3<bool>(true, true, true) == 1.0 => err=E0201
+vec3<bool>(true, true, true) == 1i => err=E0201
+vec3<bool>(true, true, true) == 1u => err=E0201
+vec3<bool>(true, true, true) == 1f => err=E0201
+vec3<bool>(true, true, true) == true => err=E0201
+vec3<bool>(true, true, true) == vec2f() => err=E0201
+vec3<bool>(true, true, true) == vec3f() => err=E0201
+vec3<bool>(true, true, true) == vec2i() => err=E0201
+vec3<bool>(true, true, true) == vec3i() => err=E0201
+vec3<bool>(true, true, true) == vec2u() => err=E0201
+vec3<bool>(true, true, true) == vec3u() => err=E0201
+vec3<bool>(true, true, true) == vec3<bool>(true, true, true) => type=vec3<bool>
+vec3<bool>(true, true, true) == mat2x2f() => err=E0201
+vec3<bool>(true, true, true) == mat2x3f() => err=E0201
+vec3<bool>(true, true, true) == mat3x2f() => err=E0201
+vec3<bool>(true, true, true) == mat3x3f() => err=E0201
+mat2x2f() == 1 => err=E0201
+mat2x2f() == 1.0 => err=E0201
+mat2x2f() == 1i => err=E0201
+mat2x2f() == 1u => err=E0201
+mat2x2f() == 1f => err=E0201
+mat2x2f() == true => err=E0201
+mat2x2f() == vec2f() => err=E0201
+mat2x2f() == vec3f() => err=E0201
+mat2x2f() == vec2i() => err=E0201
+mat2x2f() == vec3i() => err=E0201
+mat2x2f() == vec2u() => err=E0201
+mat2x2f() == vec3u() => err=E0201
+mat2x2f() == vec3<bool>(true, true, true) => err=E0201
+mat2x2f() == mat2x2f() => type=bool
+mat2x2f() == mat2x3f() => err=E0201
+mat2x2f() == mat3x2f() => err=E0201
+mat2x2f() == mat3x3f() => err=E0201
+mat2x3f() == 1 => err=E0201
+mat2x3f() == 1.0 => err=E0201
+mat2x3f() == 1i => err=E0201
+mat2x3f() == 1u => err=E0201
+mat2x3f() == 1f => err=E0201
+mat2x3f() == true => err=E0201
+mat2x3f() == vec2f() => err=E0201
+mat2x3f() == vec3f() => err=E0201
+mat2x3f() == vec2i() => err=E0201
+mat2x3f() == vec3i() => err=E0201
+mat2x3f() == vec2u() => err=E0201
+mat2x3f() == vec3u() => err=E0201
+mat2x3f() == vec3<bool>(true, true, true) => err=E0201
+mat2x3f() == mat2x2f() => err=E0201
+mat2x3f() == mat2x3f() => type=bool
+mat2x3f() == mat3x2f() => err=E0201
+mat2x3f() == mat3x3f() => err=E0201
+mat3x2f() == 1 => err=E0201
+mat3x2f() == 1.0 => err=E0201
+mat3x2f() == 1i => err=E0201
+mat3x2f() == 1u => err=E0201
+mat3x2f() == 1f => err=E0201
+mat3x2f() == true => err=E0201
+mat3x2f() == vec2f() => err=E0201
+mat3x2f() == vec3f() => err=E0201
+mat3x2f() == vec2i() => err=E0201
+mat3x2f() == vec3i() => err=E0201
+mat3x2f() == vec2u() => err=E0201
+mat3x2f() == vec3u() => err=E0201
+mat3x2f() == vec3<bool>(true, true, true) => err=E0201
+mat3x2f() == mat2x2f() => err=E0201
+mat3x2f() == mat2x3f() => err=E0201
+mat3x2f() == mat3x2f() => type=bool
+mat3x2f() == mat3x3f() => err=E0201
+mat3x3f() == 1 => err=E0201
+mat3x3f() == 1.0 => err=E0201
+mat3x3f() == 1i => err=E0201
+mat3x3f() == 1u => err=E0201
+mat3x3f() == 1f => err=E0201
+mat3x3f() == true => err=E0201
+mat3x3f() == vec2f() => err=E0201
+mat3x3f() == vec3f() => err=E0201
+mat3x3f() == vec2i() => err=E0201
+mat3x3f() == vec3i() => err=E0201
+mat3x3f() == vec2u() => err=E0201
+mat3x3f() == vec3u() => err=E0201
+mat3x3f() == vec3<bool>(true, true, true) => err=E0201
+mat3x3f() == mat2x2f() => err=E0201
+mat3x3f() == mat2x3f() => err=E0201
+mat3x3f() == mat3x2f() => err=E0201
+mat3x3f() == mat3x3f() => type=bool
+1 != 1 => type=bool
+1 != 1.0 => type=bool
+1 != 1i => type=bool
+1 != 1u => type=bool
+1 != 1f => type=bool
+1 != true => err=E0201
+1 != vec2f() => err=E0201
+1 != vec3f() => err=E0201
+1 != vec2i() => err=E0201
+1 != vec3i() => err=E0201
+1 != vec2u() => err=E0201
+1 != vec3u() => err=E0201
+1 != vec3<bool>(true, true, true) => err=E0201
+1 != mat2x2f() => err=E0201
+1 != mat2x3f() => err=E0201
+1 != mat3x2f() => err=E0201
+1 != mat3x3f() => err=E0201
+1.0 != 1 => type=bool
+1.0 != 1.0 => type=bool
+1.0 != 1i => err=E0201
+1.0 != 1u => err=E0201
+1.0 != 1f => type=bool
+1.0 != true => err=E0201
+1.0 != vec2f() => err=E0201
+1.0 != vec3f() => err=E0201
+1.0 != vec2i() => err=E0201
+1.0 != vec3i() => err=E0201
+1.0 != vec2u() => err=E0201
+1.0 != vec3u() => err=E0201
+1.0 != vec3<bool>(true, true, true) => err=E0201
+1.0 != mat2x2f() => err=E0201
+1.0 != mat2x3f() => err=E0201
+1.0 != mat3x2f() => err=E0201
+1.0 != mat3x3f() => err=E0201
+1i != 1 => type=bool
+1i != 1.0 => err=E0201
+1i != 1i => type=bool
+1i != 1u => err=E0201
+1i != 1f => err=E0201
+1i != true => err=E0201
+1i != vec2f() => err=E0201
+1i != vec3f() => err=E0201
+1i != vec2i() => err=E0201
+1i != vec3i() => err=E0201
+1i != vec2u() => err=E0201
+1i != vec3u() => err=E0201
+1i != vec3<bool>(true, true, true) => err=E0201
+1i != mat2x2f() => err=E0201
+1i != mat2x3f() => err=E0201
+1i != mat3x2f() => err=E0201
+1i != mat3x3f() => err=E0201
+1u != 1 => type=bool
+1u != 1.0 => err=E0201
+1u != 1i => err=E0201
+1u != 1u => type=bool
+1u != 1f => err=E0201
+1u != true => err=E0201
+1u != vec2f() => err=E0201
+1u != vec3f() => err=E0201
+1u != vec2i() => err=E0201
+1u != vec3i() => err=E0201
+1u != vec2u() => err=E0201
+1u != vec3u() => err=E0201
+1u != vec3<bool>(true, true, true) => err=E0201
+1u != mat2x2f() => err=E0201
+1u != mat2x3f() => err=E0201
+1u != mat3x2f() => err=E0201
+1u != mat3x3f() => err=E0201
+1f != 1 => type=bool
+1f != 1.0 => type=bool
+1f != 1i => err=E0201
+1f != 1u => err=E0201
+1f != 1f => type=bool
+1f != true => err=E0201
+1f != vec2f() => err=E0201
+1f != vec3f() => err=E0201
+1f != vec2i() => err=E0201
+1f != vec3i() => err=E0201
+1f != vec2u() => err=E0201
+1f != vec3u() => err=E0201
+1f != vec3<bool>(true, true, true) => err=E0201
+1f != mat2x2f() => err=E0201
+1f != mat2x3f() => err=E0201
+1f != mat3x2f() => err=E0201
+1f != mat3x3f() => err=E0201
+true != 1 => err=E0201
+true != 1.0 => err=E0201
+true != 1i => err=E0201
+true != 1u => err=E0201
+true != 1f => err=E0201
+true != true => type=bool
+true != vec2f() => err=E0201
+true != vec3f() => err=E0201
+true != vec2i() => err=E0201
+true != vec3i() => err=E0201
+true != vec2u() => err=E0201
+true != vec3u() => err=E0201
+true != vec3<bool>(true, true, true) => err=E0201
+true != mat2x2f() => err=E0201
+true != mat2x3f() => err=E0201
+true != mat3x2f() => err=E0201
+true != mat3x3f() => err=E0201
+vec2f() != 1 => err=E0201
+vec2f() != 1.0 => err=E0201
+vec2f() != 1i => err=E0201
+vec2f() != 1u => err=E0201
+vec2f() != 1f => err=E0201
+vec2f() != true => err=E0201
+vec2f() != vec2f() => type=vec2<bool>
+vec2f() != vec3f() => err=E0201
+vec2f() != vec2i() => err=E0201
+vec2f() != vec3i() => err=E0201
+vec2f() != vec2u() => err=E0201
+vec2f() != vec3u() => err=E0201
+vec2f() != vec3<bool>(true, true, true) => err=E0201
+vec2f() != mat2x2f() => err=E0201
+vec2f() != mat2x3f() => err=E0201
+vec2f() != mat3x2f() => err=E0201
+vec2f() != mat3x3f() => err=E0201
+vec3f() != 1 => err=E0201
+vec3f() != 1.0 => err=E0201
+vec3f() != 1i => err=E0201
+vec3f() != 1u => err=E0201
+vec3f() != 1f => err=E0201
+vec3f() != true => err=E0201
+vec3f() != vec2f() => err=E0201
+vec3f() != vec3f() => type=vec3<bool>
+vec3f() != vec2i() => err=E0201
+vec3f() != vec3i() => err=E0201
+vec3f() != vec2u() => err=E0201
+vec3f() != vec3u() => err=E0201
+vec3f() != vec3<bool>(true, true, true) => err=E0201
+vec3f() != mat2x2f() => err=E0201
+vec3f() != mat2x3f() => err=E0201
+vec3f() != mat3x2f() => err=E0201
+vec3f() != mat3x3f() => err=E0201
+vec2i() != 1 => err=E0201
+vec2i() != 1.0 => err=E0201
+vec2i() != 1i => err=E0201
+vec2i() != 1u => err=E0201
+vec2i() != 1f => err=E0201
+vec2i() != true => err=E0201
+vec2i() != vec2f() => err=E0201
+vec2i() != vec3f() => err=E0201
+vec2i() != vec2i() => type=vec2<bool>
+vec2i() != vec3i() => err=E0201
+vec2i() != vec2u() => err=E0201
+vec2i() != vec3u() => err=E0201
+vec2i() != vec3<bool>(true, true, true) => err=E0201
+vec2i() != mat2x2f() => err=E0201
+vec2i() != mat2x3f() => err=E0201
+vec2i() != mat3x2f() => err=E0201
+vec2i() != mat3x3f() => err=E0201
+vec3i() != 1 => err=E0201
+vec3i() != 1.0 => err=E0201
+vec3i() != 1i => err=E0201
+vec3i() != 1u => err=E0201
+vec3i() != 1f => err=E0201
+vec3i() != true => err=E0201
+vec3i() != vec2f() => err=E0201
+vec3i() != vec3f() => err=E0201
+vec3i() != vec2i() => err=E0201
+vec3i() != vec3i() => type=vec3<bool>
+vec3i() != vec2u() => err=E0201
+vec3i() != vec3u() => err=E0201
+vec3i() != vec3<bool>(true, true, true) => err=E0201
+vec3i() != mat2x2f() => err=E0201
+vec3i() != mat2x3f() => err=E0201
+vec3i() != mat3x2f() => err=E0201
+vec3i() != mat3x3f() => err=E0201
+vec2u() != 1 => err=E0201
+vec2u() != 1.0 => err=E0201
+vec2u() != 1i => err=E0201
+vec2u() != 1u => err=E0201
+vec2u() != 1f => err=E0201
+vec2u() != true => err=E0201
+vec2u() != vec2f() => err=E0201
+vec2u() != vec3f() => err=E0201
+vec2u() != vec2i() => err=E0201
+vec2u() != vec3i() => err=E0201
+vec2u() != vec2u() => type=vec2<bool>
+vec2u() != vec3u() => err=E0201
+vec2u() != vec3<bool>(true, true, true) => err=E0201
+vec2u() != mat2x2f() => err=E0201
+vec2u() != mat2x3f() => err=E0201
+vec2u() != mat3x2f() => err=E0201
+vec2u() != mat3x3f() => err=E0201
+vec3u() != 1 => err=E0201
+vec3u() != 1.0 => err=E0201
+vec3u() != 1i => err=E0201
+vec3u() != 1u => err=E0201
+vec3u() != 1f => err=E0201
+vec3u() != true => err=E0201
+vec3u() != vec2f() => err=E0201
+vec3u() != vec3f() => err=E0201
+vec3u() != vec2i() => err=E0201
+vec3u() != vec3i() => err=E0201
+vec3u() != vec2u() => err=E0201
+vec3u() != vec3u() => type=vec3<bool>
+vec3u() != vec3<bool>(true, true, true) => err=E0201
+vec3u() != mat2x2f() => err=E0201
+vec3u() != mat2x3f() => err=E0201
+vec3u() != mat3x2f() => err=E0201
+vec3u() != mat3x3f() => err=E0201
+vec3<bool>(true, true, true) != 1 => err=E0201
+vec3<bool>(true, true, true) != 1.0 => err=E0201
+vec3<bool>(true, true, true) != 1i => err=E0201
+vec3<bool>(true, true, true) != 1u => err=E0201
+vec3<bool>(true, true, true) != 1f => err=E0201
+vec3<bool>(true, true, true) != true => err=E0201
+vec3<bool>(true, true, true) != vec2f() => err=E0201
+vec3<bool>(true, true, true) != vec3f() => err=E0201
+vec3<bool>(true, true, true) != vec2i() => err=E0201
+vec3<bool>(true, true, true) != vec3i() => err=E0201
+vec3<bool>(true, true, true) != vec2u() => err=E0201
+vec3<bool>(true, true, true) != vec3u() => err=E0201
+vec3<bool>(true, true, true) != vec3<bool>(true, true, true) => type=vec3<bool>
+vec3<bool>(true, true, true) != mat2x2f() => err=E0201
+vec3<bool>(true, true, true) != mat2x3f() => err=E0201
+vec3<bool>(true, true, true) != mat3x2f() => err=E0201
+vec3<bool>(true, true, true) != mat3x3f() => err=E0201
+mat2x2f() != 1 => err=E0201
+mat2x2f() != 1.0 => err=E0201
+mat2x2f() != 1i => err=E0201
+mat2x2f() != 1u => err=E0201
+mat2x2f() != 1f => err=E0201
+mat2x2f() != true => err=E0201
+mat2x2f() != vec2f() => err=E0201
+mat2x2f() != vec3f() => err=E0201
+mat2x2f() != vec2i() => err=E0201
+mat2x2f() != vec3i() => err=E0201
+mat2x2f() != vec2u() => err=E0201
+mat2x2f() != vec3u() => err=E0201
+mat2x2f() != vec3<bool>(true, true, true) => err=E0201
+mat2x2f() != mat2x2f() => type=bool
+mat2x2f() != mat2x3f() => err=E0201
+mat2x2f() != mat3x2f() => err=E0201
+mat2x2f() != mat3x3f() => err=E0201
+mat2x3f() != 1 => err=E0201
+mat2x3f() != 1.0 => err=E0201
+mat2x3f() != 1i => err=E0201
+mat2x3f() != 1u => err=E0201
+mat2x3f() != 1f => err=E0201
+mat2x3f() != true => err=E0201
+mat2x3f() != vec2f() => err=E0201
+mat2x3f() != vec3f() => err=E0201
+mat2x3f() != vec2i() => err=E0201
+mat2x3f() != vec3i() => err=E0201
+mat2x3f() != vec2u() => err=E0201
+mat2x3f() != vec3u() => err=E0201
+mat2x3f() != vec3<bool>(true, true, true) => err=E0201
+mat2x3f() != mat2x2f() => err=E0201
+mat2x3f() != mat2x3f() => type=bool
+mat2x3f() != mat3x2f() => err=E0201
+mat2x3f() != mat3x3f() => err=E0201
+mat3x2f() != 1 => err=E0201
+mat3x2f() != 1.0 => err=E0201
+mat3x2f() != 1i => err=E0201
+mat3x2f() != 1u => err=E0201
+mat3x2f() != 1f => err=E0201
+mat3x2f() != true => err=E0201
+mat3x2f() != vec2f() => err=E0201
+mat3x2f() != vec3f() => err=E0201
+mat3x2f() != vec2i() => err=E0201
+mat3x2f() != vec3i() => err=E0201
+mat3x2f() != vec2u() => err=E0201
+mat3x2f() != vec3u() => err=E0201
+mat3x2f() != vec3<bool>(true, true, true) => err=E0201
+mat3x2f() != mat2x2f() => err=E0201
+mat3x2f() != mat2x3f() => err=E0201
+mat3x2f() != mat3x2f() => type=bool
+mat3x2f() != mat3x3f() => err=E0201
+mat3x3f() != 1 => err=E0201
+mat3x3f() != 1.0 => err=E0201
+mat3x3f() != 1i => err=E0201
+mat3x3f() != 1u => err=E0201
+mat3x3f() != 1f => err=E0201
+mat3x3f() != true => err=E0201
+mat3x3f() != vec2f() => err=E0201
+mat3x3f() != vec3f() => err=E0201
+mat3x3f() != vec2i() => err=E0201
+mat3x3f() != vec3i() => err=E0201
+mat3x3f() != vec2u() => err=E0201
+mat3x3f() != vec3u() => err=E0201
+mat3x3f() != vec3<bool>(true, true, true) => err=E0201
+mat3x3f() != mat2x2f() => err=E0201
+mat3x3f() != mat2x3f() => err=E0201
+mat3x3f() != mat3x2f() => err=E0201
+mat3x3f() != mat3x3f() => type=bool
+1 < 1 => type=bool
+1 < 1.0 => type=bool
+1 < 1i => type=bool
+1 < 1u => type=bool
+1 < 1f => type=bool
+1 < true => err=E0201
+1 < vec2f() => err=E0201
+1 < vec3f() => err=E0201
+1 < vec2i() => err=E0201
+1 < vec3i() => err=E0201
+1 < vec2u() => err=E0201
+1 < vec3u() => err=E0201
+1 < vec3<bool>(true, true, true) => err=E0201
+1 < mat2x2f() => err=E0201
+1 < mat2x3f() => err=E0201
+1 < mat3x2f() => err=E0201
+1 < mat3x3f() => err=E0201
+1.0 < 1 => type=bool
+1.0 < 1.0 => type=bool
+1.0 < 1i => err=E0201
+1.0 < 1u => err=E0201
+1.0 < 1f => type=bool
+1.0 < true => err=E0201
+1.0 < vec2f() => err=E0201
+1.0 < vec3f() => err=E0201
+1.0 < vec2i() => err=E0201
+1.0 < vec3i() => err=E0201
+1.0 < vec2u() => err=E0201
+1.0 < vec3u() => err=E0201
+1.0 < vec3<bool>(true, true, true) => err=E0201
+1.0 < mat2x2f() => err=E0201
+1.0 < mat2x3f() => err=E0201
+1.0 < mat3x2f() => err=E0201
+1.0 < mat3x3f() => err=E0201
+1i < 1 => type=bool
+1i < 1.0 => err=E0201
+1i < 1i => type=bool
+1i < 1u => err=E0201
+1i < 1f => err=E0201
+1i < true => err=E0201
+1i < vec2f() => err=E0201
+1i < vec3f() => err=E0201
+1i < vec2i() => err=E0201
+1i < vec3i() => err=E0201
+1i < vec2u() => err=E0201
+1i < vec3u() => err=E0201
+1i < vec3<bool>(true, true, true) => err=E0201
+1i < mat2x2f() => err=E0201
+1i < mat2x3f() => err=E0201
+1i < mat3x2f() => err=E0201
+1i < mat3x3f() => err=E0201
+1u < 1 => type=bool
+1u < 1.0 => err=E0201
+1u < 1i => err=E0201
+1u < 1u => type=bool
+1u < 1f => err=E0201
+1u < true => err=E0201
+1u < vec2f() => err=E0201
+1u < vec3f() => err=E0201
+1u < vec2i() => err=E0201
+1u < vec3i() => err=E0201
+1u < vec2u() => err=E0201
+1u < vec3u() => err=E0201
+1u < vec3<bool>(true, true, true) => err=E0201
+1u < mat2x2f() => err=E0201
+1u < mat2x3f() => err=E0201
+1u < mat3x2f() => err=E0201
+1u < mat3x3f() => err=E0201
+1f < 1 => type=bool
+1f < 1.0 => type=bool
+1f < 1i => err=E0201
+1f < 1u => err=E0201
+1f < 1f => type=bool
+1f < true => err=E0201
+1f < vec2f() => err=E0201
+1f < vec3f() => err=E0201
+1f < vec2i() => err=E0201
+1f < vec3i() => err=E0201
+1f < vec2u() => err=E0201
+1f < vec3u() => err=E0201
+1f < vec3<bool>(true, true, true) => err=E0201
+1f < mat2x2f() => err=E0201
+1f < mat2x3f() => err=E0201
+1f < mat3x2f() => err=E0201
+1f < mat3x3f() => err=E0201
+true < 1 => err=E0201
+true < 1.0 => err=E0201
+true < 1i => err=E0201
+true < 1u => err=E0201
+true < 1f => err=E0201
+true < true => err=E0201
+true < vec2f() => err=E0201
+true < vec3f() => err=E0201
+true < vec2i() => err=E0201
+true < vec3i() => err=E0201
+true < vec2u() => err=E0201
+true < vec3u() => err=E0201
+true < vec3<bool>(true, true, true) => err=E0201
+true < mat2x2f() => err=E0201
+true < mat2x3f() => err=E0201
+true < mat3x2f() => err=E0201
+true < mat3x3f() => err=E0201
+vec2f() < 1 => err=E0201
+vec2f() < 1.0 => err=E0201
+vec2f() < 1i => err=E0201
+vec2f() < 1u => err=E0201
+vec2f() < 1f => err=E0201
+vec2f() < true => err=E0201
+vec2f() < vec2f() => type=vec2<bool>
+vec2f() < vec3f() => err=E0201
+vec2f() < vec2i() => err=E0201
+vec2f() < vec3i() => err=E0201
+vec2f() < vec2u() => err=E0201
+vec2f() < vec3u() => err=E0201
+vec2f() < vec3<bool>(true, true, true) => err=E0201
+vec2f() < mat2x2f() => err=E0201
+vec2f() < mat2x3f() => err=E0201
+vec2f() < mat3x2f() => err=E0201
+vec2f() < mat3x3f() => err=E0201
+vec3f() < 1 => err=E0201
+vec3f() < 1.0 => err=E0201
+vec3f() < 1i => err=E0201
+vec3f() < 1u => err=E0201
+vec3f() < 1f => err=E0201
+vec3f() < true => err=E0201
+vec3f() < vec2f() => err=E0201
+vec3f() < vec3f() => type=vec3<bool>
+vec3f() < vec2i() => err=E0201
+vec3f() < vec3i() => err=E0201
+vec3f() < vec2u() => err=E0201
+vec3f() < vec3u() => err=E0201
+vec3f() < vec3<bool>(true, true, true) => err=E0201
+vec3f() < mat2x2f() => err=E0201
+vec3f() < mat2x3f() => err=E0201
+vec3f() < mat3x2f() => err=E0201
+vec3f() < mat3x3f() => err=E0201
+vec2i() < 1 => err=E0201
+vec2i() < 1.0 => err=E0201
+vec2i() < 1i => err=E0201
+vec2i() < 1u => err=E0201
+vec2i() < 1f => err=E0201
+vec2i() < true => err=E0201
+vec2i() < vec2f() => err=E0201
+vec2i() < vec3f() => err=E0201
+vec2i() < vec2i() => type=vec2<bool>
+vec2i() < vec3i() => err=E0201
+vec2i() < vec2u() => err=E0201
+vec2i() < vec3u() => err=E0201
+vec2i() < vec3<bool>(true, true, true) => err=E0201
+vec2i() < mat2x2f() => err=E0201
+vec2i() < mat2x3f() => err=E0201
+vec2i() < mat3x2f() => err=E0201
+vec2i() < mat3x3f() => err=E0201
+vec3i() < 1 => err=E0201
+vec3i() < 1.0 => err=E0201
+vec3i() < 1i => err=E0201
+vec3i() < 1u => err=E0201
+vec3i() < 1f => err=E0201
+vec3i() < true => err=E0201
+vec3i() < vec2f() => err=E0201
+vec3i() < vec3f() => err=E0201
+vec3i() < vec2i() => err=E0201
+vec3i() < vec3i() => type=vec3<bool>
+vec3i() < vec2u() => err=E0201
+vec3i() < vec3u() => err=E0201
+vec3i() < vec3<bool>(true, true, true) => err=E0201
+vec3i() < mat2x2f() => err=E0201
+vec3i() < mat2x3f() => err=E0201
+vec3i() < mat3x2f() => err=E0201
+vec3i() < mat3x3f() => err=E0201
+vec2u() < 1 => err=E0201
+vec2u() < 1.0 => err=E0201
+vec2u() < 1i => err=E0201
+vec2u() < 1u => err=E0201
+vec2u() < 1f => err=E0201
+vec2u() < true => err=E0201
+vec2u() < vec2f() => err=E0201
+vec2u() < vec3f() => err=E0201
+vec2u() < vec2i() => err=E0201
+vec2u() < vec3i() => err=E0201
+vec2u() < vec2u() => type=vec2<bool>
+vec2u() < vec3u() => err=E0201
+vec2u() < vec3<bool>(true, true, true) => err=E0201
+vec2u() < mat2x2f() => err=E0201
+vec2u() < mat2x3f() => err=E0201
+vec2u() < mat3x2f() => err=E0201
+vec2u() < mat3x3f() => err=E0201
+vec3u() < 1 => err=E0201
+vec3u() < 1.0 => err=E0201
+vec3u() < 1i => err=E0201
+vec3u() < 1u => err=E0201
+vec3u() < 1f => err=E0201
+vec3u() < true => err=E0201
+vec3u() < vec2f() => err=E0201
+vec3u() < vec3f() => err=E0201
+vec3u() < vec2i() => err=E0201
+vec3u() < vec3i() => err=E0201
+vec3u() < vec2u() => err=E0201
+vec3u() < vec3u() => type=vec3<bool>
+vec3u() < vec3<bool>(true, true, true) => err=E0201
+vec3u() < mat2x2f() => err=E0201
+vec3u() < mat2x3f() => err=E0201
+vec3u() < mat3x2f() => err=E0201
+vec3u() < mat3x3f() => err=E0201
+vec3<bool>(true, true, true) < 1 => err=E0201
+vec3<bool>(true, true, true) < 1.0 => err=E0201
+vec3<bool>(true, true, true) < 1i => err=E0201
+vec3<bool>(true, true, true) < 1u => err=E0201
+vec3<bool>(true, true, true) < 1f => err=E0201
+vec3<bool>(true, true, true) < true => err=E0201
+vec3<bool>(true, true, true) < vec2f() => err=E0201
+vec3<bool>(true, true, true) < vec3f() => err=E0201
+vec3<bool>(true, true, true) < vec2i() => err=E0201
+vec3<bool>(true, true, true) < vec3i() => err=E0201
+vec3<bool>(true, true, true) < vec2u() => err=E0201
+vec3<bool>(true, true, true) < vec3u() => err=E0201
+vec3<bool>(true, true, true) < vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) < mat2x2f() => err=E0201
+vec3<bool>(true, true, true) < mat2x3f() => err=E0201
+vec3<bool>(true, true, true) < mat3x2f() => err=E0201
+vec3<bool>(true, true, true) < mat3x3f() => err=E0201
+mat2x2f() < 1 => err=E0201
+mat2x2f() < 1.0 => err=E0201
+mat2x2f() < 1i => err=E0201
+mat2x2f() < 1u => err=E0201
+mat2x2f() < 1f => err=E0201
+mat2x2f() < true => err=E0201
+mat2x2f() < vec2f() => err=E0201
+mat2x2f() < vec3f() => err=E0201
+mat2x2f() < vec2i() => err=E0201
+mat2x2f() < vec3i() => err=E0201
+mat2x2f() < vec2u() => err=E0201
+mat2x2f() < vec3u() => err=E0201
+mat2x2f() < vec3<bool>(true, true, true) => err=E0201
+mat2x2f() < mat2x2f() => err=E0201
+mat2x2f() < mat2x3f() => err=E0201
+mat2x2f() < mat3x2f() => err=E0201
+mat2x2f() < mat3x3f() => err=E0201
+mat2x3f() < 1 => err=E0201
+mat2x3f() < 1.0 => err=E0201
+mat2x3f() < 1i => err=E0201
+mat2x3f() < 1u => err=E0201
+mat2x3f() < 1f => err=E0201
+mat2x3f() < true => err=E0201
+mat2x3f() < vec2f() => err=E0201
+mat2x3f() < vec3f() => err=E0201
+mat2x3f() < vec2i() => err=E0201
+mat2x3f() < vec3i() => err=E0201
+mat2x3f() < vec2u() => err=E0201
+mat2x3f() < vec3u() => err=E0201
+mat2x3f() < vec3<bool>(true, true, true) => err=E0201
+mat2x3f() < mat2x2f() => err=E0201
+mat2x3f() < mat2x3f() => err=E0201
+mat2x3f() < mat3x2f() => err=E0201
+mat2x3f() < mat3x3f() => err=E0201
+mat3x2f() < 1 => err=E0201
+mat3x2f() < 1.0 => err=E0201
+mat3x2f() < 1i => err=E0201
+mat3x2f() < 1u => err=E0201
+mat3x2f() < 1f => err=E0201
+mat3x2f() < true => err=E0201
+mat3x2f() < vec2f() => err=E0201
+mat3x2f() < vec3f() => err=E0201
+mat3x2f() < vec2i() => err=E0201
+mat3x2f() < vec3i() => err=E0201
+mat3x2f() < vec2u() => err=E0201
+mat3x2f() < vec3u() => err=E0201
+mat3x2f() < vec3<bool>(true, true, true) => err=E0201
+mat3x2f() < mat2x2f() => err=E0201
+mat3x2f() < mat2x3f() => err=E0201
+mat3x2f() < mat3x2f() => err=E0201
+mat3x2f() < mat3x3f() => err=E0201
+mat3x3f() < 1 => err=E0201
+mat3x3f() < 1.0 => err=E0201
+mat3x3f() < 1i => err=E0201
+mat3x3f() < 1u => err=E0201
+mat3x3f() < 1f => err=E0201
+mat3x3f() < true => err=E0201
+mat3x3f() < vec2f() => err=E0201
+mat3x3f() < vec3f() => err=E0201
+mat3x3f() < vec2i() => err=E0201
+mat3x3f() < vec3i() => err=E0201
+mat3x3f() < vec2u() => err=E0201
+mat3x3f() < vec3u() => err=E0201
+mat3x3f() < vec3<bool>(true, true, true) => err=E0201
+mat3x3f() < mat2x2f() => err=E0201
+mat3x3f() < mat2x3f() => err=E0201
+mat3x3f() < mat3x2f() => err=E0201
+mat3x3f() < mat3x3f() => err=E0201
+1 <= 1 => type=bool
+1 <= 1.0 => type=bool
+1 <= 1i => type=bool
+1 <= 1u => type=bool
+1 <= 1f => type=bool
+1 <= true => err=E0201
+1 <= vec2f() => err=E0201
+1 <= vec3f() => err=E0201
+1 <= vec2i() => err=E0201
+1 <= vec3i() => err=E0201
+1 <= vec2u() => err=E0201
+1 <= vec3u() => err=E0201
+1 <= vec3<bool>(true, true, true) => err=E0201
+1 <= mat2x2f() => err=E0201
+1 <= mat2x3f() => err=E0201
+1 <= mat3x2f() => err=E0201
+1 <= mat3x3f() => err=E0201
+1.0 <= 1 => type=bool
+1.0 <= 1.0 => type=bool
+1.0 <= 1i => err=E0201
+1.0 <= 1u => err=E0201
+1.0 <= 1f => type=bool
+1.0 <= true => err=E0201
+1.0 <= vec2f() => err=E0201
+1.0 <= vec3f() => err=E0201
+1.0 <= vec2i() => err=E0201
+1.0 <= vec3i() => err=E0201
+1.0 <= vec2u() => err=E0201
+1.0 <= vec3u() => err=E0201
+1.0 <= vec3<bool>(true, true, true) => err=E0201
+1.0 <= mat2x2f() => err=E0201
+1.0 <= mat2x3f() => err=E0201
+1.0 <= mat3x2f() => err=E0201
+1.0 <= mat3x3f() => err=E0201
+1i <= 1 => type=bool
+1i <= 1.0 => err=E0201
+1i <= 1i => type=bool
+1i <= 1u => err=E0201
+1i <= 1f => err=E0201
+1i <= true => err=E0201
+1i <= vec2f() => err=E0201
+1i <= vec3f() => err=E0201
+1i <= vec2i() => err=E0201
+1i <= vec3i() => err=E0201
+1i <= vec2u() => err=E0201
+1i <= vec3u() => err=E0201
+1i <= vec3<bool>(true, true, true) => err=E0201
+1i <= mat2x2f() => err=E0201
+1i <= mat2x3f() => err=E0201
+1i <= mat3x2f() => err=E0201
+1i <= mat3x3f() => err=E0201
+1u <= 1 => type=bool
+1u <= 1.0 => err=E0201
+1u <= 1i => err=E0201
+1u <= 1u => type=bool
+1u <= 1f => err=E0201
+1u <= true => err=E0201
+1u <= vec2f() => err=E0201
+1u <= vec3f() => err=E0201
+1u <= vec2i() => err=E0201
+1u <= vec3i() => err=E0201
+1u <= vec2u() => err=E0201
+1u <= vec3u() => err=E0201
+1u <= vec3<bool>(true, true, true) => err=E0201
+1u <= mat2x2f() => err=E0201
+1u <= mat2x3f() => err=E0201
+1u <= mat3x2f() => err=E0201
+1u <= mat3x3f() => err=E0201
+1f <= 1 => type=bool
+1f <= 1.0 => type=bool
+1f <= 1i => err=E0201
+1f <= 1u => err=E0201
+1f <= 1f => type=bool
+1f <= true => err=E0201
+1f <= vec2f() => err=E0201
+1f <= vec3f() => err=E0201
+1f <= vec2i() => err=E0201
+1f <= vec3i() => err=E0201
+1f <= vec2u() => err=E0201
+1f <= vec3u() => err=E0201
+1f <= vec3<bool>(true, true, true) => err=E0201
+1f <= mat2x2f() => err=E0201
+1f <= mat2x3f() => err=E0201
+1f <= mat3x2f() => err=E0201
+1f <= mat3x3f() => err=E0201
+true <= 1 => err=E0201
+true <= 1.0 => err=E0201
+true <= 1i => err=E0201
+true <= 1u => err=E0201
+true <= 1f => err=E0201
+true <= true => err=E0201
+true <= vec2f() => err=E0201
+true <= vec3f() => err=E0201
+true <= vec2i() => err=E0201
+true <= vec3i() => err=E0201
+true <= vec2u() => err=E0201
+true <= vec3u() => err=E0201
+true <= vec3<bool>(true, true, true) => err=E0201
+true <= mat2x2f() => err=E0201
+true <= mat2x3f() => err=E0201
+true <= mat3x2f() => err=E0201
+true <= mat3x3f() => err=E0201
+vec2f() <= 1 => err=E0201
+vec2f() <= 1.0 => err=E0201
+vec2f() <= 1i => err=E0201
+vec2f() <= 1u => err=E0201
+vec2f() <= 1f => err=E0201
+vec2f() <= true => err=E0201
+vec2f() <= vec2f() => type=vec2<bool>
+vec2f() <= vec3f() => err=E0201
+vec2f() <= vec2i() => err=E0201
+vec2f() <= vec3i() => err=E0201
+vec2f() <= vec2u() => err=E0201
+vec2f() <= vec3u() => err=E0201
+vec2f() <= vec3<bool>(true, true, true) => err=E0201
+vec2f() <= mat2x2f() => err=E0201
+vec2f() <= mat2x3f() => err=E0201
+vec2f() <= mat3x2f() => err=E0201
+vec2f() <= mat3x3f() => err=E0201
+vec3f() <= 1 => err=E0201
+vec3f() <= 1.0 => err=E0201
+vec3f() <= 1i => err=E0201
+vec3f() <= 1u => err=E0201
+vec3f() <= 1f => err=E0201
+vec3f() <= true => err=E0201
+vec3f() <= vec2f() => err=E0201
+vec3f() <= vec3f() => type=vec3<bool>
+vec3f() <= vec2i() => err=E0201
+vec3f() <= vec3i() => err=E0201
+vec3f() <= vec2u() => err=E0201
+vec3f() <= vec3u() => err=E0201
+vec3f() <= vec3<bool>(true, true, true) => err=E0201
+vec3f() <= mat2x2f() => err=E0201
+vec3f() <= mat2x3f() => err=E0201
+vec3f() <= mat3x2f() => err=E0201
+vec3f() <= mat3x3f() => err=E0201
+vec2i() <= 1 => err=E0201
+vec2i() <= 1.0 => err=E0201
+vec2i() <= 1i => err=E0201
+vec2i() <= 1u => err=E0201
+vec2i() <= 1f => err=E0201
+vec2i() <= true => err=E0201
+vec2i() <= vec2f() => err=E0201
+vec2i() <= vec3f() => err=E0201
+vec2i() <= vec2i() => type=vec2<bool>
+vec2i() <= vec3i() => err=E0201
+vec2i() <= vec2u() => err=E0201
+vec2i() <= vec3u() => err=E0201
+vec2i() <= vec3<bool>(true, true, true) => err=E0201
+vec2i() <= mat2x2f() => err=E0201
+vec2i() <= mat2x3f() => err=E0201
+vec2i() <= mat3x2f() => err=E0201
+vec2i() <= mat3x3f() => err=E0201
+vec3i() <= 1 => err=E0201
+vec3i() <= 1.0 => err=E0201
+vec3i() <= 1i => err=E0201
+vec3i() <= 1u => err=E0201
+vec3i() <= 1f => err=E0201
+vec3i() <= true => err=E0201
+vec3i() <= vec2f() => err=E0201
+vec3i() <= vec3f() => err=E0201
+vec3i() <= vec2i() => err=E0201
+vec3i() <= vec3i() => type=vec3<bool>
+vec3i() <= vec2u() => err=E0201
+vec3i() <= vec3u() => err=E0201
+vec3i() <= vec3<bool>(true, true, true) => err=E0201
+vec3i() <= mat2x2f() => err=E0201
+vec3i() <= mat2x3f() => err=E0201
+vec3i() <= mat3x2f() => err=E0201
+vec3i() <= mat3x3f() => err=E0201
+vec2u() <= 1 => err=E0201
+vec2u() <= 1.0 => err=E0201
+vec2u() <= 1i => err=E0201
+vec2u() <= 1u => err=E0201
+vec2u() <= 1f => err=E0201
+vec2u() <= true => err=E0201
+vec2u() <= vec2f() => err=E0201
+vec2u() <= vec3f() => err=E0201
+vec2u() <= vec2i() => err=E0201
+vec2u() <= vec3i() => err=E0201
+vec2u() <= vec2u() => type=vec2<bool>
+vec2u() <= vec3u() => err=E0201
+vec2u() <= vec3<bool>(true, true, true) => err=E0201
+vec2u() <= mat2x2f() => err=E0201
+vec2u() <= mat2x3f() => err=E0201
+vec2u() <= mat3x2f() => err=E0201
+vec2u() <= mat3x3f() => err=E0201
+vec3u() <= 1 => err=E0201
+vec3u() <= 1.0 => err=E0201
+vec3u() <= 1i => err=E0201
+vec3u() <= 1u => err=E0201
+vec3u() <= 1f => err=E0201
+vec3u() <= true => err=E0201
+vec3u() <= vec2f() => err=E0201
+vec3u() <= vec3f() => err=E0201
+vec3u() <= vec2i() => err=E0201
+vec3u() <= vec3i() => err=E0201
+vec3u() <= vec2u() => err=E0201
+vec3u() <= vec3u() => type=vec3<bool>
+vec3u() <= vec3<bool>(true, true, true) => err=E0201
+vec3u() <= mat2x2f() => err=E0201
+vec3u() <= mat2x3f() => err=E0201
+vec3u() <= mat3x2f() => err=E0201
+vec3u() <= mat3x3f() => err=E0201
+vec3<bool>(true, true, true) <= 1 => err=E0201
+vec3<bool>(true, true, true) <= 1.0 => err=E0201
+vec3<bool>(true, true, true) <= 1i => err=E0201
+vec3<bool>(true, true, true) <= 1u => err=E0201
+vec3<bool>(true, true, true) <= 1f => err=E0201
+vec3<bool>(true, true, true) <= true => err=E0201
+vec3<bool>(true, true, true) <= vec2f() => err=E0201
+vec3<bool>(true, true, true) <= vec3f() => err=E0201
+vec3<bool>(true, true, true) <= vec2i() => err=E0201
+vec3<bool>(true, true, true) <= vec3i() => err=E0201
+vec3<bool>(true, true, true) <= vec2u() => err=E0201
+vec3<bool>(true, true, true) <= vec3u() => err=E0201
+vec3<bool>(true, true, true) <= vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) <= mat2x2f() => err=E0201
+vec3<bool>(true, true, true) <= mat2x3f() => err=E0201
+vec3<bool>(true, true, true) <= mat3x2f() => err=E0201
+vec3<bool>(true, true, true) <= mat3x3f() => err=E0201
+mat2x2f() <= 1 => err=E0201
+mat2x2f() <= 1.0 => err=E0201
+mat2x2f() <= 1i => err=E0201
+mat2x2f() <= 1u => err=E0201
+mat2x2f() <= 1f => err=E0201
+mat2x2f() <= true => err=E0201
+mat2x2f() <= vec2f() => err=E0201
+mat2x2f() <= vec3f() => err=E0201
+mat2x2f() <= vec2i() => err=E0201
+mat2x2f() <= vec3i() => err=E0201
+mat2x2f() <= vec2u() => err=E0201
+mat2x2f() <= vec3u() => err=E0201
+mat2x2f() <= vec3<bool>(true, true, true) => err=E0201
+mat2x2f() <= mat2x2f() => err=E0201
+mat2x2f() <= mat2x3f() => err=E0201
+mat2x2f() <= mat3x2f() => err=E0201
+mat2x2f() <= mat3x3f() => err=E0201
+mat2x3f() <= 1 => err=E0201
+mat2x3f() <= 1.0 => err=E0201
+mat2x3f() <= 1i => err=E0201
+mat2x3f() <= 1u => err=E0201
+mat2x3f() <= 1f => err=E0201
+mat2x3f() <= true => err=E0201
+mat2x3f() <= vec2f() => err=E0201
+mat2x3f() <= vec3f() => err=E0201
+mat2x3f() <= vec2i() => err=E0201
+mat2x3f() <= vec3i() => err=E0201
+mat2x3f() <= vec2u() => err=E0201
+mat2x3f() <= vec3u() => err=E0201
+mat2x3f() <= vec3<bool>(true, true, true) => err=E0201
+mat2x3f() <= mat2x2f() => err=E0201
+mat2x3f() <= mat2x3f() => err=E0201
+mat2x3f() <= mat3x2f() => err=E0201
+mat2x3f() <= mat3x3f() => err=E0201
+mat3x2f() <= 1 => err=E0201
+mat3x2f() <= 1.0 => err=E0201
+mat3x2f() <= 1i => err=E0201
+mat3x2f() <= 1u => err=E0201
+mat3x2f() <= 1f => err=E0201
+mat3x2f() <= true => err=E0201
+mat3x2f() <= vec2f() => err=E0201
+mat3x2f() <= vec3f() => err=E0201
+mat3x2f() <= vec2i() => err=E0201
+mat3x2f() <= vec3i() => err=E0201
+mat3x2f() <= vec2u() => err=E0201
+mat3x2f() <= vec3u() => err=E0201
+mat3x2f() <= vec3<bool>(true, true, true) => err=E0201
+mat3x2f() <= mat2x2f() => err=E0201
+mat3x2f() <= mat2x3f() => err=E0201
+mat3x2f() <= mat3x2f() => err=E0201
+mat3x2f() <= mat3x3f() => err=E0201
+mat3x3f() <= 1 => err=E0201
+mat3x3f() <= 1.0 => err=E0201
+mat3x3f() <= 1i => err=E0201
+mat3x3f() <= 1u => err=E0201
+mat3x3f() <= 1f => err=E0201
+mat3x3f() <= true => err=E0201
+mat3x3f() <= vec2f() => err=E0201
+mat3x3f() <= vec3f() => err=E0201
+mat3x3f() <= vec2i() => err=E0201
+mat3x3f() <= vec3i() => err=E0201
+mat3x3f() <= vec2u() => err=E0201
+mat3x3f() <= vec3u() => err=E0201
+mat3x3f() <= vec3<bool>(true, true, true) => err=E0201
+mat3x3f() <= mat2x2f() => err=E0201
+mat3x3f() <= mat2x3f() => err=E0201
+mat3x3f() <= mat3x2f() => err=E0201
+mat3x3f() <= mat3x3f() => err=E0201
+1 > 1 => type=bool
+1 > 1.0 => type=bool
+1 > 1i => type=bool
+1 > 1u => type=bool
+1 > 1f => type=bool
+1 > true => err=E0201
+1 > vec2f() => err=E0201
+1 > vec3f() => err=E0201
+1 > vec2i() => err=E0201
+1 > vec3i() => err=E0201
+1 > vec2u() => err=E0201
+1 > vec3u() => err=E0201
+1 > vec3<bool>(true, true, true) => err=E0201
+1 > mat2x2f() => err=E0201
+1 > mat2x3f() => err=E0201
+1 > mat3x2f() => err=E0201
+1 > mat3x3f() => err=E0201
+1.0 > 1 => type=bool
+1.0 > 1.0 => type=bool
+1.0 > 1i => err=E0201
+1.0 > 1u => err=E0201
+1.0 > 1f => type=bool
+1.0 > true => err=E0201
+1.0 > vec2f() => err=E0201
+1.0 > vec3f() => err=E0201
+1.0 > vec2i() => err=E0201
+1.0 > vec3i() => err=E0201
+1.0 > vec2u() => err=E0201
+1.0 > vec3u() => err=E0201
+1.0 > vec3<bool>(true, true, true) => err=E0201
+1.0 > mat2x2f() => err=E0201
+1.0 > mat2x3f() => err=E0201
+1.0 > mat3x2f() => err=E0201
+1.0 > mat3x3f() => err=E0201
+1i > 1 => type=bool
+1i > 1.0 => err=E0201
+1i > 1i => type=bool
+1i > 1u => err=E0201
+1i > 1f => err=E0201
+1i > true => err=E0201
+1i > vec2f() => err=E0201
+1i > vec3f() => err=E0201
+1i > vec2i() => err=E0201
+1i > vec3i() => err=E0201
+1i > vec2u() => err=E0201
+1i > vec3u() => err=E0201
+1i > vec3<bool>(true, true, true) => err=E0201
+1i > mat2x2f() => err=E0201
+1i > mat2x3f() => err=E0201
+1i > mat3x2f() => err=E0201
+1i > mat3x3f() => err=E0201
+1u > 1 => type=bool
+1u > 1.0 => err=E0201
+1u > 1i => err=E0201
+1u > 1u => type=bool
+1u > 1f => err=E0201
+1u > true => err=E0201
+1u > vec2f() => err=E0201
+1u > vec3f() => err=E0201
+1u > vec2i() => err=E0201
+1u > vec3i() => err=E0201
+1u > vec2u() => err=E0201
+1u > vec3u() => err=E0201
+1u > vec3<bool>(true, true, true) => err=E0201
+1u > mat2x2f() => err=E0201
+1u > mat2x3f() => err=E0201
+1u > mat3x2f() => err=E0201
+1u > mat3x3f() => err=E0201
+1f > 1 => type=bool
+1f > 1.0 => type=bool
+1f > 1i => err=E0201
+1f > 1u => err=E0201
+1f > 1f => type=bool
+1f > true => err=E0201
+1f > vec2f() => err=E0201
+1f > vec3f() => err=E0201
+1f > vec2i() => err=E0201
+1f > vec3i() => err=E0201
+1f > vec2u() => err=E0201
+1f > vec3u() => err=E0201
+1f > vec3<bool>(true, true, true) => err=E0201
+1f > mat2x2f() => err=E0201
+1f > mat2x3f() => err=E0201
+1f > mat3x2f() => err=E0201
+1f > mat3x3f() => err=E0201
+true > 1 => err=E0201
+true > 1.0 => err=E0201
+true > 1i => err=E0201
+true > 1u => err=E0201
+true > 1f => err=E0201
+true > true => err=E0201
+true > vec2f() => err=E0201
+true > vec3f() => err=E0201
+true > vec2i() => err=E0201
+true > vec3i() => err=E0201
+true > vec2u() => err=E0201
+true > vec3u() => err=E0201
+true > vec3<bool>(true, true, true) => err=E0201
+true > mat2x2f() => err=E0201
+true > mat2x3f() => err=E0201
+true > mat3x2f() => err=E0201
+true > mat3x3f() => err=E0201
+vec2f() > 1 => err=E0201
+vec2f() > 1.0 => err=E0201
+vec2f() > 1i => err=E0201
+vec2f() > 1u => err=E0201
+vec2f() > 1f => err=E0201
+vec2f() > true => err=E0201
+vec2f() > vec2f() => type=vec2<bool>
+vec2f() > vec3f() => err=E0201
+vec2f() > vec2i() => err=E0201
+vec2f() > vec3i() => err=E0201
+vec2f() > vec2u() => err=E0201
+vec2f() > vec3u() => err=E0201
+vec2f() > vec3<bool>(true, true, true) => err=E0201
+vec2f() > mat2x2f() => err=E0201
+vec2f() > mat2x3f() => err=E0201
+vec2f() > mat3x2f() => err=E0201
+vec2f() > mat3x3f() => err=E0201
+vec3f() > 1 => err=E0201
+vec3f() > 1.0 => err=E0201
+vec3f() > 1i => err=E0201
+vec3f() > 1u => err=E0201
+vec3f() > 1f => err=E0201
+vec3f() > true => err=E0201
+vec3f() > vec2f() => err=E0201
+vec3f() > vec3f() => type=vec3<bool>
+vec3f() > vec2i() => err=E0201
+vec3f() > vec3i() => err=E0201
+vec3f() > vec2u() => err=E0201
+vec3f() > vec3u() => err=E0201
+vec3f() > vec3<bool>(true, true, true) => err=E0201
+vec3f() > mat2x2f() => err=E0201
+vec3f() > mat2x3f() => err=E0201
+vec3f() > mat3x2f() => err=E0201
+vec3f() > mat3x3f() => err=E0201
+vec2i() > 1 => err=E0201
+vec2i() > 1.0 => err=E0201
+vec2i() > 1i => err=E0201
+vec2i() > 1u => err=E0201
+vec2i() > 1f => err=E0201
+vec2i() > true => err=E0201
+vec2i() > vec2f() => err=E0201
+vec2i() > vec3f() => err=E0201
+vec2i() > vec2i() => type=vec2<bool>
+vec2i() > vec3i() => err=E0201
+vec2i() > vec2u() => err=E0201
+vec2i() > vec3u() => err=E0201
+vec2i() > vec3<bool>(true, true, true) => err=E0201
+vec2i() > mat2x2f() => err=E0201
+vec2i() > mat2x3f() => err=E0201
+vec2i() > mat3x2f() => err=E0201
+vec2i() > mat3x3f() => err=E0201
+vec3i() > 1 => err=E0201
+vec3i() > 1.0 => err=E0201
+vec3i() > 1i => err=E0201
+vec3i() > 1u => err=E0201
+vec3i() > 1f => err=E0201
+vec3i() > true => err=E0201
+vec3i() > vec2f() => err=E0201
+vec3i() > vec3f() => err=E0201
+vec3i() > vec2i() => err=E0201
+vec3i() > vec3i() => type=vec3<bool>
+vec3i() > vec2u() => err=E0201
+vec3i() > vec3u() => err=E0201
+vec3i() > vec3<bool>(true, true, true) => err=E0201
+vec3i() > mat2x2f() => err=E0201
+vec3i() > mat2x3f() => err=E0201
+vec3i() > mat3x2f() => err=E0201
+vec3i() > mat3x3f() => err=E0201
+vec2u() > 1 => err=E0201
+vec2u() > 1.0 => err=E0201
+vec2u() > 1i => err=E0201
+vec2u() > 1u => err=E0201
+vec2u() > 1f => err=E0201
+vec2u() > true => err=E0201
+vec2u() > vec2f() => err=E0201
+vec2u() > vec3f() => err=E0201
+vec2u() > vec2i() => err=E0201
+vec2u() > vec3i() => err=E0201
+vec2u() > vec2u() => type=vec2<bool>
+vec2u() > vec3u() => err=E0201
+vec2u() > vec3<bool>(true, true, true) => err=E0201
+vec2u() > mat2x2f() => err=E0201
+vec2u() > mat2x3f() => err=E0201
+vec2u() > mat3x2f() => err=E0201
+vec2u() > mat3x3f() => err=E0201
+vec3u() > 1 => err=E0201
+vec3u() > 1.0 => err=E0201
+vec3u() > 1i => err=E0201
+vec3u() > 1u => err=E0201
+vec3u() > 1f => err=E0201
+vec3u() > true => err=E0201
+vec3u() > vec2f() => err=E0201
+vec3u() > vec3f() => err=E0201
+vec3u() > vec2i() => err=E0201
+vec3u() > vec3i() => err=E0201
+vec3u() > vec2u() => err=E0201
+vec3u() > vec3u() => type=vec3<bool>
+vec3u() > vec3<bool>(true, true, true) => err=E0201
+vec3u() > mat2x2f() => err=E0201
+vec3u() > mat2x3f() => err=E0201
+vec3u() > mat3x2f() => err=E0201
+vec3u() > mat3x3f() => err=E0201
+vec3<bool>(true, true, true) > 1 => err=E0201
+vec3<bool>(true, true, true) > 1.0 => err=E0201
+vec3<bool>(true, true, true) > 1i => err=E0201
+vec3<bool>(true, true, true) > 1u => err=E0201
+vec3<bool>(true, true, true) > 1f => err=E0201
+vec3<bool>(true, true, true) > true => err=E0201
+vec3<bool>(true, true, true) > vec2f() => err=E0201
+vec3<bool>(true, true, true) > vec3f() => err=E0201
+vec3<bool>(true, true, true) > vec2i() => err=E0201
+vec3<bool>(true, true, true) > vec3i() => err=E0201
+vec3<bool>(true, true, true) > vec2u() => err=E0201
+vec3<bool>(true, true, true) > vec3u() => err=E0201
+vec3<bool>(true, true, true) > vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) > mat2x2f() => err=E0201
+vec3<bool>(true, true, true) > mat2x3f() => err=E0201
+vec3<bool>(true, true, true) > mat3x2f() => err=E0201
+vec3<bool>(true, true, true) > mat3x3f() => err=E0201
+mat2x2f() > 1 => err=E0201
+mat2x2f() > 1.0 => err=E0201
+mat2x2f() > 1i => err=E0201
+mat2x2f() > 1u => err=E0201
+mat2x2f() > 1f => err=E0201
+mat2x2f() > true => err=E0201
+mat2x2f() > vec2f() => err=E0201
+mat2x2f() > vec3f() => err=E0201
+mat2x2f() > vec2i() => err=E0201
+mat2x2f() > vec3i() => err=E0201
+mat2x2f() > vec2u() => err=E0201
+mat2x2f() > vec3u() => err=E0201
+mat2x2f() > vec3<bool>(true, true, true) => err=E0201
+mat2x2f() > mat2x2f() => err=E0201
+mat2x2f() > mat2x3f() => err=E0201
+mat2x2f() > mat3x2f() => err=E0201
+mat2x2f() > mat3x3f() => err=E0201
+mat2x3f() > 1 => err=E0201
+mat2x3f() > 1.0 => err=E0201
+mat2x3f() > 1i => err=E0201
+mat2x3f() > 1u => err=E0201
+mat2x3f() > 1f => err=E0201
+mat2x3f() > true => err=E0201
+mat2x3f() > vec2f() => err=E0201
+mat2x3f() > vec3f() => err=E0201
+mat2x3f() > vec2i() => err=E0201
+mat2x3f() > vec3i() => err=E0201
+mat2x3f() > vec2u() => err=E0201
+mat2x3f() > vec3u() => err=E0201
+mat2x3f() > vec3<bool>(true, true, true) => err=E0201
+mat2x3f() > mat2x2f() => err=E0201
+mat2x3f() > mat2x3f() => err=E0201
+mat2x3f() > mat3x2f() => err=E0201
+mat2x3f() > mat3x3f() => err=E0201
+mat3x2f() > 1 => err=E0201
+mat3x2f() > 1.0 => err=E0201
+mat3x2f() > 1i => err=E0201
+mat3x2f() > 1u => err=E0201
+mat3x2f() > 1f => err=E0201
+mat3x2f() > true => err=E0201
+mat3x2f() > vec2f() => err=E0201
+mat3x2f() > vec3f() => err=E0201
+mat3x2f() > vec2i() => err=E0201
+mat3x2f() > vec3i() => err=E0201
+mat3x2f() > vec2u() => err=E0201
+mat3x2f() > vec3u() => err=E0201
+mat3x2f() > vec3<bool>(true, true, true) => err=E0201
+mat3x2f() > mat2x2f() => err=E0201
+mat3x2f() > mat2x3f() => err=E0201
+mat3x2f() > mat3x2f() => err=E0201
+mat3x2f() > mat3x3f() => err=E0201
+mat3x3f() > 1 => err=E0201
+mat3x3f() > 1.0 => err=E0201
+mat3x3f() > 1i => err=E0201
+mat3x3f() > 1u => err=E0201
+mat3x3f() > 1f => err=E0201
+mat3x3f() > true => err=E0201
+mat3x3f() > vec2f() => err=E0201
+mat3x3f() > vec3f() => err=E0201
+mat3x3f() > vec2i() => err=E0201
+mat3x3f() > vec3i() => err=E0201
+mat3x3f() > vec2u() => err=E0201
+mat3x3f() > vec3u() => err=E0201
+mat3x3f() > vec3<bool>(true, true, true) => err=E0201
+mat3x3f() > mat2x2f() => err=E0201
+mat3x3f() > mat2x3f() => err=E0201
+mat3x3f() > mat3x2f() => err=E0201
+mat3x3f() > mat3x3f() => err=E0201
+1 >= 1 => type=bool
+1 >= 1.0 => type=bool
+1 >= 1i => type=bool
+1 >= 1u => type=bool
+1 >= 1f => type=bool
+1 >= true => err=E0201
+1 >= vec2f() => err=E0201
+1 >= vec3f() => err=E0201
+1 >= vec2i() => err=E0201
+1 >= vec3i() => err=E0201
+1 >= vec2u() => err=E0201
+1 >= vec3u() => err=E0201
+1 >= vec3<bool>(true, true, true) => err=E0201
+1 >= mat2x2f() => err=E0201
+1 >= mat2x3f() => err=E0201
+1 >= mat3x2f() => err=E0201
+1 >= mat3x3f() => err=E0201
+1.0 >= 1 => type=bool
+1.0 >= 1.0 => type=bool
+1.0 >= 1i => err=E0201
+1.0 >= 1u => err=E0201
+1.0 >= 1f => type=bool
+1.0 >= true => err=E0201
+1.0 >= vec2f() => err=E0201
+1.0 >= vec3f() => err=E0201
+1.0 >= vec2i() => err=E0201
+1.0 >= vec3i() => err=E0201
+1.0 >= vec2u() => err=E0201
+1.0 >= vec3u() => err=E0201
+1.0 >= vec3<bool>(true, true, true) => err=E0201
+1.0 >= mat2x2f() => err=E0201
+1.0 >= mat2x3f() => err=E0201
+1.0 >= mat3x2f() => err=E0201
+1.0 >= mat3x3f() => err=E0201
+1i >= 1 => type=bool
+1i >= 1.0 => err=E0201
+1i >= 1i => type=bool
+1i >= 1u => err=E0201
+1i >= 1f => err=E0201
+1i >= true => err=E0201
+1i >= vec2f() => err=E0201
+1i >= vec3f() => err=E0201
+1i >= vec2i() => err=E0201
+1i >= vec3i() => err=E0201
+1i >= vec2u() => err=E0201
+1i >= vec3u() => err=E0201
+1i >= vec3<bool>(true, true, true) => err=E0201
+1i >= mat2x2f() => err=E0201
+1i >= mat2x3f() => err=E0201
+1i >= mat3x2f() => err=E0201
+1i >= mat3x3f() => err=E0201
+1u >= 1 => type=bool
+1u >= 1.0 => err=E0201
+1u >= 1i => err=E0201
+1u >= 1u => type=bool
+1u >= 1f => err=E0201
+1u >= true => err=E0201
+1u >= vec2f() => err=E0201
+1u >= vec3f() => err=E0201
+1u >= vec2i() => err=E0201
+1u >= vec3i() => err=E0201
+1u >= vec2u() => err=E0201
+1u >= vec3u() => err=E0201
+1u >= vec3<bool>(true, true, true) => err=E0201
+1u >= mat2x2f() => err=E0201
+1u >= mat2x3f() => err=E0201
+1u >= mat3x2f() => err=E0201
+1u >= mat3x3f() => err=E0201
+1f >= 1 => type=bool
+1f >= 1.0 => type=bool
+1f >= 1i => err=E0201
+1f >= 1u => err=E0201
+1f >= 1f => type=bool
+1f >= true => err=E0201
+1f >= vec2f() => err=E0201
+1f >= vec3f() => err=E0201
+1f >= vec2i() => err=E0201
+1f >= vec3i() => err=E0201
+1f >= vec2u() => err=E0201
+1f >= vec3u() => err=E0201
+1f >= vec3<bool>(true, true, true) => err=E0201
+1f >= mat2x2f() => err=E0201
+1f >= mat2x3f() => err=E0201
+1f >= mat3x2f() => err=E0201
+1f >= mat3x3f() => err=E0201
+true >= 1 => err=E0201
+true >= 1.0 => err=E0201
+true >= 1i => err=E0201
+true >= 1u => err=E0201
+true >= 1f => err=E0201
+true >= true => err=E0201
+true >= vec2f() => err=E0201
+true >= vec3f() => err=E0201
+true >= vec2i() => err=E0201
+true >= vec3i() => err=E0201
+true >= vec2u() => err=E0201
+true >= vec3u() => err=E0201
+true >= vec3<bool>(true, true, true) => err=E0201
+true >= mat2x2f() => err=E0201
+true >= mat2x3f() => err=E0201
+true >= mat3x2f() => err=E0201
+true >= mat3x3f() => err=E0201
+vec2f() >= 1 => err=E0201
+vec2f() >= 1.0 => err=E0201
+vec2f() >= 1i => err=E0201
+vec2f() >= 1u => err=E0201
+vec2f() >= 1f => err=E0201
+vec2f() >= true => err=E0201
+vec2f() >= vec2f() => type=vec2<bool>
+vec2f() >= vec3f() => err=E0201
+vec2f() >= vec2i() => err=E0201
+vec2f() >= vec3i() => err=E0201
+vec2f() >= vec2u() => err=E0201
+vec2f() >= vec3u() => err=E0201
+vec2f() >= vec3<bool>(true, true, true) => err=E0201
+vec2f() >= mat2x2f() => err=E0201
+vec2f() >= mat2x3f() => err=E0201
+vec2f() >= mat3x2f() => err=E0201
+vec2f() >= mat3x3f() => err=E0201
+vec3f() >= 1 => err=E0201
+vec3f() >= 1.0 => err=E0201
+vec3f() >= 1i => err=E0201
+vec3f() >= 1u => err=E0201
+vec3f() >= 1f => err=E0201
+vec3f() >= true => err=E0201
+vec3f() >= vec2f() => err=E0201
+vec3f() >= vec3f() => type=vec3<bool>
+vec3f() >= vec2i() => err=E0201
+vec3f() >= vec3i() => err=E0201
+vec3f() >= vec2u() => err=E0201
+vec3f() >= vec3u() => err=E0201
+vec3f() >= vec3<bool>(true, true, true) => err=E0201
+vec3f() >= mat2x2f() => err=E0201
+vec3f() >= mat2x3f() => err=E0201
+vec3f() >= mat3x2f() => err=E0201
+vec3f() >= mat3x3f() => err=E0201
+vec2i() >= 1 => err=E0201
+vec2i() >= 1.0 => err=E0201
+vec2i() >= 1i => err=E0201
+vec2i() >= 1u => err=E0201
+vec2i() >= 1f => err=E0201
+vec2i() >= true => err=E0201
+vec2i() >= vec2f() => err=E0201
+vec2i() >= vec3f() => err=E0201
+vec2i() >= vec2i() => type=vec2<bool>
+vec2i() >= vec3i() => err=E0201
+vec2i() >= vec2u() => err=E0201
+vec2i() >= vec3u() => err=E0201
+vec2i() >= vec3<bool>(true, true, true) => err=E0201
+vec2i() >= mat2x2f() => err=E0201
+vec2i() >= mat2x3f() => err=E0201
+vec2i() >= mat3x2f() => err=E0201
+vec2i() >= mat3x3f() => err=E0201
+vec3i() >= 1 => err=E0201
+vec3i() >= 1.0 => err=E0201
+vec3i() >= 1i => err=E0201
+vec3i() >= 1u => err=E0201
+vec3i() >= 1f => err=E0201
+vec3i() >= true => err=E0201
+vec3i() >= vec2f() => err=E0201
+vec3i() >= vec3f() => err=E0201
+vec3i() >= vec2i() => err=E0201
+vec3i() >= vec3i() => type=vec3<bool>
+vec3i() >= vec2u() => err=E0201
+vec3i() >= vec3u() => err=E0201
+vec3i() >= vec3<bool>(true, true, true) => err=E0201
+vec3i() >= mat2x2f() => err=E0201
+vec3i() >= mat2x3f() => err=E0201
+vec3i() >= mat3x2f() => err=E0201
+vec3i() >= mat3x3f() => err=E0201
+vec2u() >= 1 => err=E0201
+vec2u() >= 1.0 => err=E0201
+vec2u() >= 1i => err=E0201
+vec2u() >= 1u => err=E0201
+vec2u() >= 1f => err=E0201
+vec2u() >= true => err=E0201
+vec2u() >= vec2f() => err=E0201
+vec2u() >= vec3f() => err=E0201
+vec2u() >= vec2i() => err=E0201
+vec2u() >= vec3i() => err=E0201
+vec2u() >= vec2u() => type=vec2<bool>
+vec2u() >= vec3u() => err=E0201
+vec2u() >= vec3<bool>(true, true, true) => err=E0201
+vec2u() >= mat2x2f() => err=E0201
+vec2u() >= mat2x3f() => err=E0201
+vec2u() >= mat3x2f() => err=E0201
+vec2u() >= mat3x3f() => err=E0201
+vec3u() >= 1 => err=E0201
+vec3u() >= 1.0 => err=E0201
+vec3u() >= 1i => err=E0201
+vec3u() >= 1u => err=E0201
+vec3u() >= 1f => err=E0201
+vec3u() >= true => err=E0201
+vec3u() >= vec2f() => err=E0201
+vec3u() >= vec3f() => err=E0201
+vec3u() >= vec2i() => err=E0201
+vec3u() >= vec3i() => err=E0201
+vec3u() >= vec2u() => err=E0201
+vec3u() >= vec3u() => type=vec3<bool>
+vec3u() >= vec3<bool>(true, true, true) => err=E0201
+vec3u() >= mat2x2f() => err=E0201
+vec3u() >= mat2x3f() => err=E0201
+vec3u() >= mat3x2f() => err=E0201
+vec3u() >= mat3x3f() => err=E0201
+vec3<bool>(true, true, true) >= 1 => err=E0201
+vec3<bool>(true, true, true) >= 1.0 => err=E0201
+vec3<bool>(true, true, true) >= 1i => err=E0201
+vec3<bool>(true, true, true) >= 1u => err=E0201
+vec3<bool>(true, true, true) >= 1f => err=E0201
+vec3<bool>(true, true, true) >= true => err=E0201
+vec3<bool>(true, true, true) >= vec2f() => err=E0201
+vec3<bool>(true, true, true) >= vec3f() => err=E0201
+vec3<bool>(true, true, true) >= vec2i() => err=E0201
+vec3<bool>(true, true, true) >= vec3i() => err=E0201
+vec3<bool>(true, true, true) >= vec2u() => err=E0201
+vec3<bool>(true, true, true) >= vec3u() => err=E0201
+vec3<bool>(true, true, true) >= vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) >= mat2x2f() => err=E0201
+vec3<bool>(true, true, true) >= mat2x3f() => err=E0201
+vec3<bool>(true, true, true) >= mat3x2f() => err=E0201
+vec3<bool>(true, true, true) >= mat3x3f() => err=E0201
+mat2x2f() >= 1 => err=E0201
+mat2x2f() >= 1.0 => err=E0201
+mat2x2f() >= 1i => err=E0201
+mat2x2f() >= 1u => err=E0201
+mat2x2f() >= 1f => err=E0201
+mat2x2f() >= true => err=E0201
+mat2x2f() >= vec2f() => err=E0201
+mat2x2f() >= vec3f() => err=E0201
+mat2x2f() >= vec2i() => err=E0201
+mat2x2f() >= vec3i() => err=E0201
+mat2x2f() >= vec2u() => err=E0201
+mat2x2f() >= vec3u() => err=E0201
+mat2x2f() >= vec3<bool>(true, true, true) => err=E0201
+mat2x2f() >= mat2x2f() => err=E0201
+mat2x2f() >= mat2x3f() => err=E0201
+mat2x2f() >= mat3x2f() => err=E0201
+mat2x2f() >= mat3x3f() => err=E0201
+mat2x3f() >= 1 => err=E0201
+mat2x3f() >= 1.0 => err=E0201
+mat2x3f() >= 1i => err=E0201
+mat2x3f() >= 1u => err=E0201
+mat2x3f() >= 1f => err=E0201
+mat2x3f() >= true => err=E0201
+mat2x3f() >= vec2f() => err=E0201
+mat2x3f() >= vec3f() => err=E0201
+mat2x3f() >= vec2i() => err=E0201
+mat2x3f() >= vec3i() => err=E0201
+mat2x3f() >= vec2u() => err=E0201
+mat2x3f() >= vec3u() => err=E0201
+mat2x3f() >= vec3<bool>(true, true, true) => err=E0201
+mat2x3f() >= mat2x2f() => err=E0201
+mat2x3f() >= mat2x3f() => err=E0201
+mat2x3f() >= mat3x2f() => err=E0201
+mat2x3f() >= mat3x3f() => err=E0201
+mat3x2f() >= 1 => err=E0201
+mat3x2f() >= 1.0 => err=E0201
+mat3x2f() >= 1i => err=E0201
+mat3x2f() >= 1u => err=E0201
+mat3x2f() >= 1f => err=E0201
+mat3x2f() >= true => err=E0201
+mat3x2f() >= vec2f() => err=E0201
+mat3x2f() >= vec3f() => err=E0201
+mat3x2f() >= vec2i() => err=E0201
+mat3x2f() >= vec3i() => err=E0201
+mat3x2f() >= vec2u() => err=E0201
+mat3x2f() >= vec3u() => err=E0201
+mat3x2f() >= vec3<bool>(true, true, true) => err=E0201
+mat3x2f() >= mat2x2f() => err=E0201
+mat3x2f() >= mat2x3f() => err=E0201
+mat3x2f() >= mat3x2f() => err=E0201
+mat3x2f() >= mat3x3f() => err=E0201
+mat3x3f() >= 1 => err=E0201
+mat3x3f() >= 1.0 => err=E0201
+mat3x3f() >= 1i => err=E0201
+mat3x3f() >= 1u => err=E0201
+mat3x3f() >= 1f => err=E0201
+mat3x3f() >= true => err=E0201
+mat3x3f() >= vec2f() => err=E0201
+mat3x3f() >= vec3f() => err=E0201
+mat3x3f() >= vec2i() => err=E0201
+mat3x3f() >= vec3i() => err=E0201
+mat3x3f() >= vec2u() => err=E0201
+mat3x3f() >= vec3u() => err=E0201
+mat3x3f() >= vec3<bool>(true, true, true) => err=E0201
+mat3x3f() >= mat2x2f() => err=E0201
+mat3x3f() >= mat2x3f() => err=E0201
+mat3x3f() >= mat3x2f() => err=E0201
+mat3x3f() >= mat3x3f() => err=E0201
+1 + 1 => type=i32
+1 + 1.0 => type=f32
+1 + 1i => type=i32
+1 + 1u => type=u32
+1 + 1f => type=f32
+1 + true => err=E0201
+1 + vec2f() => err=E0201
+1 + vec3f() => err=E0201
+1 + vec2i() => type=vec2<i32>
+1 + vec3i() => type=vec3<i32>
+1 + vec2u() => err=E0201
+1 + vec3u() => err=E0201
+1 + vec3<bool>(true, true, true) => err=E0201
+1 + mat2x2f() => err=E0201
+1 + mat2x3f() => err=E0201
+1 + mat3x2f() => err=E0201
+1 + mat3x3f() => err=E0201
+1.0 + 1 => type=f32
+1.0 + 1.0 => type=f32
+1.0 + 1i => err=E0201
+1.0 + 1u => err=E0201
+1.0 + 1f => type=f32
+1.0 + true => err=E0201
+1.0 + vec2f() => type=vec2<f32>
+1.0 + vec3f() => type=vec3<f32>
+1.0 + vec2i() => err=E0201
+1.0 + vec3i() => err=E0201
+1.0 + vec2u() => err=E0201
+1.0 + vec3u() => err=E0201
+1.0 + vec3<bool>(true, true, true) => err=E0201
+1.0 + mat2x2f() => err=E0201
+1.0 + mat2x3f() => err=E0201
+1.0 + mat3x2f() => err=E0201
+1.0 + mat3x3f() => err=E0201
+1i + 1 => type=i32
+1i + 1.0 => err=E0201
+1i + 1i => type=i32
+1i + 1u => err=E0201
+1i + 1f => err=E0201
+1i + true => err=E0201
+1i + vec2f() => err=E0201
+1i + vec3f() => err=E0201
+1i + vec2i() => type=vec2<i32>
+1i + vec3i() => type=vec3<i32>
+1i + vec2u() => err=E0201
+1i + vec3u() => err=E0201
+1i + vec3<bool>(true, true, true) => err=E0201
+1i + mat2x2f() => err=E0201
+1i + mat2x3f() => err=E0201
+1i + mat3x2f() => err=E0201
+1i + mat3x3f() => err=E0201
+1u + 1 => type=u32
+1u + 1.0 => err=E0201
+1u + 1i => err=E0201
+1u + 1u => type=u32
+1u + 1f => err=E0201
+1u + true => err=E0201
+1u + vec2f() => err=E0201
+1u + vec3f() => err=E0201
+1u + vec2i() => err=E0201
+1u + vec3i() => err=E0201
+1u + vec2u() => type=vec2<u32>
+1u + vec3u() => type=vec3<u32>
+1u + vec3<bool>(true, true, true) => err=E0201
+1u + mat2x2f() => err=E0201
+1u + mat2x3f() => err=E0201
+1u + mat3x2f() => err=E0201
+1u + mat3x3f() => err=E0201
+1f + 1 => type=f32
+1f + 1.0 => type=f32
+1f + 1i => err=E0201
+1f + 1u => err=E0201
+1f + 1f => type=f32
+1f + true => err=E0201
+1f + vec2f() => type=vec2<f32>
+1f + vec3f() => type=vec3<f32>
+1f + vec2i() => err=E0201
+1f + vec3i() => err=E0201
+1f + vec2u() => err=E0201
+1f + vec3u() => err=E0201
+1f + vec3<bool>(true, true, true) => err=E0201
+1f + mat2x2f() => err=E0201
+1f + mat2x3f() => err=E0201
+1f + mat3x2f() => err=E0201
+1f + mat3x3f() => err=E0201
+true + 1 => err=E0201
+true + 1.0 => err=E0201
+true + 1i => err=E0201
+true + 1u => err=E0201
+true + 1f => err=E0201
+true + true => type=bool
+true + vec2f() => err=E0201
+true + vec3f() => err=E0201
+true + vec2i() => err=E0201
+true + vec3i() => err=E0201
+true + vec2u() => err=E0201
+true + vec3u() => err=E0201
+true + vec3<bool>(true, true, true) => type=vec3<bool>
+true + mat2x2f() => err=E0201
+true + mat2x3f() => err=E0201
+true + mat3x2f() => err=E0201
+true + mat3x3f() => err=E0201
+vec2f() + 1 => err=E0201
+vec2f() + 1.0 => type=vec2<f32>
+vec2f() + 1i => err=E0201
+vec2f() + 1u => err=E0201
+vec2f() + 1f => type=vec2<f32>
+vec2f() + true => err=E0201
+vec2f() + vec2f() => type=vec2<f32>
+vec2f() + vec3f() => err=E0201
+vec2f() + vec2i() => err=E0201
+vec2f() + vec3i() => err=E0201
+vec2f() + vec2u() => err=E0201
+vec2f() + vec3u() => err=E0201
+vec2f() + vec3<bool>(true, true, true) => err=E0201
+vec2f() + mat2x2f() => err=E0201
+vec2f() + mat2x3f() => err=E0201
+vec2f() + mat3x2f() => err=E0201
+vec2f() + mat3x3f() => err=E0201
+vec3f() + 1 => err=E0201
+vec3f() + 1.0 => type=vec3<f32>
+vec3f() + 1i => err=E0201
+vec3f() + 1u => err=E0201
+vec3f() + 1f => type=vec3<f32>
+vec3f() + true => err=E0201
+vec3f() + vec2f() => err=E0201
+vec3f() + vec3f() => type=vec3<f32>
+vec3f() + vec2i() => err=E0201
+vec3f() + vec3i() => err=E0201
+vec3f() + vec2u() => err=E0201
+vec3f() + vec3u() => err=E0201
+vec3f() + vec3<bool>(true, true, true) => err=E0201
+vec3f() + mat2x2f() => err=E0201
+vec3f() + mat2x3f() => err=E0201
+vec3f() + mat3x2f() => err=E0201
+vec3f() + mat3x3f() => err=E0201
+vec2i() + 1 => type=vec2<i32>
+vec2i() + 1.0 => err=E0201
+vec2i() + 1i => type=vec2<i32>
+vec2i() + 1u => err=E0201
+vec2i() + 1f => err=E0201
+vec2i() + true => err=E0201
+vec2i() + vec2f() => err=E0201
+vec2i() + vec3f() => err=E0201
+vec2i() + vec2i() => type=vec2<i32>
+vec2i() + vec3i() => err=E0201
+vec2i() + vec2u() => err=E0201
+vec2i() + vec3u() => err=E0201
+vec2i() + vec3<bool>(true, true, true) => err=E0201
+vec2i() + mat2x2f() => err=E0201
+vec2i() + mat2x3f() => err=E0201
+vec2i() + mat3x2f() => err=E0201
+vec2i() + mat3x3f() => err=E0201
+vec3i() + 1 => type=vec3<i32>
+vec3i() + 1.0 => err=E0201
+vec3i() + 1i => type=vec3<i32>
+vec3i() + 1u => err=E0201
+vec3i() + 1f => err=E0201
+vec3i() + true => err=E0201
+vec3i() + vec2f() => err=E0201
+vec3i() + vec3f() => err=E0201
+vec3i() + vec2i() => err=E0201
+vec3i() + vec3i() => type=vec3<i32>
+vec3i() + vec2u() => err=E0201
+vec3i() + vec3u() => err=E0201
+vec3i() + vec3<bool>(true, true, true) => err=E0201
+vec3i() + mat2x2f() => err=E0201
+vec3i() + mat2x3f() => err=E0201
+vec3i() + mat3x2f() => err=E0201
+vec3i() + mat3x3f() => err=E0201
+vec2u() + 1 => err=E0201
+vec2u() + 1.0 => err=E0201
+vec2u() + 1i => err=E0201
+vec2u() + 1u => type=vec2<u32>
+vec2u() + 1f => err=E0201
+vec2u() + true => err=E0201
+vec2u() + vec2f() => err=E0201
+vec2u() + vec3f() => err=E0201
+vec2u() + vec2i() => err=E0201
+vec2u() + vec3i() => err=E0201
+vec2u() + vec2u() => type=vec2<u32>
+vec2u() + vec3u() => err=E0201
+vec2u() + vec3<bool>(true, true, true) => err=E0201
+vec2u() + mat2x2f() => err=E0201
+vec2u() + mat2x3f() => err=E0201
+vec2u() + mat3x2f() => err=E0201
+vec2u() + mat3x3f() => err=E0201
+vec3u() + 1 => err=E0201
+vec3u() + 1.0 => err=E0201
+vec3u() + 1i => err=E0201
+vec3u() + 1u => type=vec3<u32>
+vec3u() + 1f => err=E0201
+vec3u() + true => err=E0201
+vec3u() + vec2f() => err=E0201
+vec3u() + vec3f() => err=E0201
+vec3u() + vec2i() => err=E0201
+vec3u() + vec3i() => err=E0201
+vec3u() + vec2u() => err=E0201
+vec3u() + vec3u() => type=vec3<u32>
+vec3u() + vec3<bool>(true, true, true) => err=E0201
+vec3u() + mat2x2f() => err=E0201
+vec3u() + mat2x3f() => err=E0201
+vec3u() + mat3x2f() => err=E0201
+vec3u() + mat3x3f() => err=E0201
+vec3<bool>(true, true, true) + 1 => err=E0201
+vec3<bool>(true, true, true) + 1.0 => err=E0201
+vec3<bool>(true, true, true) + 1i => err=E0201
+vec3<bool>(true, true, true) + 1u => err=E0201
+vec3<bool>(true, true, true) + 1f => err=E0201
+vec3<bool>(true, true, true) + true => type=vec3<bool>
+vec3<bool>(true, true, true) + vec2f() => err=E0201
+vec3<bool>(true, true, true) + vec3f() => err=E0201
+vec3<bool>(true, true, true) + vec2i() => err=E0201
+vec3<bool>(true, true, true) + vec3i() => err=E0201
+vec3<bool>(true, true, true) + vec2u() => err=E0201
+vec3<bool>(true, true, true) + vec3u() => err=E0201
+vec3<bool>(true, true, true) + vec3<bool>(true, true, true) => type=vec3<bool>
+vec3<bool>(true, true, true) + mat2x2f() => err=E0201
+vec3<bool>(true, true, true) + mat2x3f() => err=E0201
+vec3<bool>(true, true, true) + mat3x2f() => err=E0201
+vec3<bool>(true, true, true) + mat3x3f() => err=E0201
+mat2x2f() + 1 => err=E0201
+mat2x2f() + 1.0 => err=E0201
+mat2x2f() + 1i => err=E0201
+mat2x2f() + 1u => err=E0201
+mat2x2f() + 1f => err=E0201
+mat2x2f() + true => err=E0201
+mat2x2f() + vec2f() => err=E0201
+mat2x2f() + vec3f() => err=E0201
+mat2x2f() + vec2i() => err=E0201
+mat2x2f() + vec3i() => err=E0201
+mat2x2f() + vec2u() => err=E0201
+mat2x2f() + vec3u() => err=E0201
+mat2x2f() + vec3<bool>(true, true, true) => err=E0201
+mat2x2f() + mat2x2f() => type=mat2x2<f32>
+mat2x2f() + mat2x3f() => err=E0201
+mat2x2f() + mat3x2f() => err=E0201
+mat2x2f() + mat3x3f() => err=E0201
+mat2x3f() + 1 => err=E0201
+mat2x3f() + 1.0 => err=E0201
+mat2x3f() + 1i => err=E0201
+mat2x3f() + 1u => err=E0201
+mat2x3f() + 1f => err=E0201
+mat2x3f() + true => err=E0201
+mat2x3f() + vec2f() => err=E0201
+mat2x3f() + vec3f() => err=E0201
+mat2x3f() + vec2i() => err=E0201
+mat2x3f() + vec3i() => err=E0201
+mat2x3f() + vec2u() => err=E0201
+mat2x3f() + vec3u() => err=E0201
+mat2x3f() + vec3<bool>(true, true, true) => err=E0201
+mat2x3f() + mat2x2f() => err=E0201
+mat2x3f() + mat2x3f() => type=mat2x3<f32>
+mat2x3f() + mat3x2f() => err=E0201
+mat2x3f() + mat3x3f() => err=E0201
+mat3x2f() + 1 => err=E0201
+mat3x2f() + 1.0 => err=E0201
+mat3x2f() + 1i => err=E0201
+mat3x2f() + 1u => err=E0201
+mat3x2f() + 1f => err=E0201
+mat3x2f() + true => err=E0201
+mat3x2f() + vec2f() => err=E0201
+mat3x2f() + vec3f() => err=E0201
+mat3x2f() + vec2i() => err=E0201
+mat3x2f() + vec3i() => err=E0201
+mat3x2f() + vec2u() => err=E0201
+mat3x2f() + vec3u() => err=E0201
+mat3x2f() + vec3<bool>(true, true, true) => err=E0201
+mat3x2f() + mat2x2f() => err=E0201
+mat3x2f() + mat2x3f() => err=E0201
+mat3x2f() + mat3x2f() => type=mat3x2<f32>
+mat3x2f() + mat3x3f() => err=E0201
+mat3x3f() + 1 => err=E0201
+mat3x3f() + 1.0 => err=E0201
+mat3x3f() + 1i => err=E0201
+mat3x3f() + 1u => err=E0201
+mat3x3f() + 1f => err=E0201
+mat3x3f() + true => err=E0201
+mat3x3f() + vec2f() => err=E0201
+mat3x3f() + vec3f() => err=E0201
+mat3x3f() + vec2i() => err=E0201
+mat3x3f() + vec3i() => err=E0201
+mat3x3f() + vec2u() => err=E0201
+mat3x3f() + vec3u() => err=E0201
+mat3x3f() + vec3<bool>(true, true, true) => err=E0201
+mat3x3f() + mat2x2f() => err=E0201
+mat3x3f() + mat2x3f() => err=E0201
+mat3x3f() + mat3x2f() => err=E0201
+mat3x3f() + mat3x3f() => type=mat3x3<f32>
+1 - 1 => type=i32
+1 - 1.0 => type=f32
+1 - 1i => type=i32
+1 - 1u => type=u32
+1 - 1f => type=f32
+1 - true => err=E0201
+1 - vec2f() => err=E0201
+1 - vec3f() => err=E0201
+1 - vec2i() => type=vec2<i32>
+1 - vec3i() => type=vec3<i32>
+1 - vec2u() => err=E0201
+1 - vec3u() => err=E0201
+1 - vec3<bool>(true, true, true) => err=E0201
+1 - mat2x2f() => err=E0201
+1 - mat2x3f() => err=E0201
+1 - mat3x2f() => err=E0201
+1 - mat3x3f() => err=E0201
+1.0 - 1 => type=f32
+1.0 - 1.0 => type=f32
+1.0 - 1i => err=E0201
+1.0 - 1u => err=E0201
+1.0 - 1f => type=f32
+1.0 - true => err=E0201
+1.0 - vec2f() => type=vec2<f32>
+1.0 - vec3f() => type=vec3<f32>
+1.0 - vec2i() => err=E0201
+1.0 - vec3i() => err=E0201
+1.0 - vec2u() => err=E0201
+1.0 - vec3u() => err=E0201
+1.0 - vec3<bool>(true, true, true) => err=E0201
+1.0 - mat2x2f() => err=E0201
+1.0 - mat2x3f() => err=E0201
+1.0 - mat3x2f() => err=E0201
+1.0 - mat3x3f() => err=E0201
+1i - 1 => type=i32
+1i - 1.0 => err=E0201
+1i - 1i => type=i32
+1i - 1u => err=E0201
+1i - 1f => err=E0201
+1i - true => err=E0201
+1i - vec2f() => err=E0201
+1i - vec3f() => err=E0201
+1i - vec2i() => type=vec2<i32>
+1i - vec3i() => type=vec3<i32>
+1i - vec2u() => err=E0201
+1i - vec3u() => err=E0201
+1i - vec3<bool>(true, true, true) => err=E0201
+1i - mat2x2f() => err=E0201
+1i - mat2x3f() => err=E0201
+1i - mat3x2f() => err=E0201
+1i - mat3x3f() => err=E0201
+1u - 1 => type=u32
+1u - 1.0 => err=E0201
+1u - 1i => err=E0201
+1u - 1u => type=u32
+1u - 1f => err=E0201
+1u - true => err=E0201
+1u - vec2f() => err=E0201
+1u - vec3f() => err=E0201
+1u - vec2i() => err=E0201
+1u - vec3i() => err=E0201
+1u - vec2u() => type=vec2<u32>
+1u - vec3u() => type=vec3<u32>
+1u - vec3<bool>(true, true, true) => err=E0201
+1u - mat2x2f() => err=E0201
+1u - mat2x3f() => err=E0201
+1u - mat3x2f() => err=E0201
+1u - mat3x3f() => err=E0201
+1f - 1 => type=f32
+1f - 1.0 => type=f32
+1f - 1i => err=E0201
+1f - 1u => err=E0201
+1f - 1f => type=f32
+1f - true => err=E0201
+1f - vec2f() => type=vec2<f32>
+1f - vec3f() => type=vec3<f32>
+1f - vec2i() => err=E0201
+1f - vec3i() => err=E0201
+1f - vec2u() => err=E0201
+1f - vec3u() => err=E0201
+1f - vec3<bool>(true, true, true) => err=E0201
+1f - mat2x2f() => err=E0201
+1f - mat2x3f() => err=E0201
+1f - mat3x2f() => err=E0201
+1f - mat3x3f() => err=E0201
+true - 1 => err=E0201
+true - 1.0 => err=E0201
+true - 1i => err=E0201
+true - 1u => err=E0201
+true - 1f => err=E0201
+true - true => type=bool
+true - vec2f() => err=E0201
+true - vec3f() => err=E0201
+true - vec2i() => err=E0201
+true - vec3i() => err=E0201
+true - vec2u() => err=E0201
+true - vec3u() => err=E0201
+true - vec3<bool>(true, true, true) => type=vec3<bool>
+true - mat2x2f() => err=E0201
+true - mat2x3f() => err=E0201
+true - mat3x2f() => err=E0201
+true - mat3x3f() => err=E0201
+vec2f() - 1 => err=E0201
+vec2f() - 1.0 => type=vec2<f32>
+vec2f() - 1i => err=E0201
+vec2f() - 1u => err=E0201
+vec2f() - 1f => type=vec2<f32>
+vec2f() - true => err=E0201
+vec2f() - vec2f() => type=vec2<f32>
+vec2f() - vec3f() => err=E0201
+vec2f() - vec2i() => err=E0201
+vec2f() - vec3i() => err=E0201
+vec2f() - vec2u() => err=E0201
+vec2f() - vec3u() => err=E0201
+vec2f() - vec3<bool>(true, true, true) => err=E0201
+vec2f() - mat2x2f() => err=E0201
+vec2f() - mat2x3f() => err=E0201
+vec2f() - mat3x2f() => err=E0201
+vec2f() - mat3x3f() => err=E0201
+vec3f() - 1 => err=E0201
+vec3f() - 1.0 => type=vec3<f32>
+vec3f() - 1i => err=E0201
+vec3f() - 1u => err=E0201
+vec3f() - 1f => type=vec3<f32>
+vec3f() - true => err=E0201
+vec3f() - vec2f() => err=E0201
+vec3f() - vec3f() => type=vec3<f32>
+vec3f() - vec2i() => err=E0201
+vec3f() - vec3i() => err=E0201
+vec3f() - vec2u() => err=E0201
+vec3f() - vec3u() => err=E0201
+vec3f() - vec3<bool>(true, true, true) => err=E0201
+vec3f() - mat2x2f() => err=E0201
+vec3f() - mat2x3f() => err=E0201
+vec3f() - mat3x2f() => err=E0201
+vec3f() - mat3x3f() => err=E0201
+vec2i() - 1 => type=vec2<i32>
+vec2i() - 1.0 => err=E0201
+vec2i() - 1i => type=vec2<i32>
+vec2i() - 1u => err=E0201
+vec2i() - 1f => err=E0201
+vec2i() - true => err=E0201
+vec2i() - vec2f() => err=E0201
+vec2i() - vec3f() => err=E0201
+vec2i() - vec2i() => type=vec2<i32>
+vec2i() - vec3i() => err=E0201
+vec2i() - vec2u() => err=E0201
+vec2i() - vec3u() => err=E0201
+vec2i() - vec3<bool>(true, true, true) => err=E0201
+vec2i() - mat2x2f() => err=E0201
+vec2i() - mat2x3f() => err=E0201
+vec2i() - mat3x2f() => err=E0201
+vec2i() - mat3x3f() => err=E0201
+vec3i() - 1 => type=vec3<i32>
+vec3i() - 1.0 => err=E0201
+vec3i() - 1i => type=vec3<i32>
+vec3i() - 1u => err=E0201
+vec3i() - 1f => err=E0201
+vec3i() - true => err=E0201
+vec3i() - vec2f() => err=E0201
+vec3i() - vec3f() => err=E0201
+vec3i() - vec2i() => err=E0201
+vec3i() - vec3i() => type=vec3<i32>
+vec3i() - vec2u() => err=E0201
+vec3i() - vec3u() => err=E0201
+vec3i() - vec3<bool>(true, true, true) => err=E0201
+vec3i() - mat2x2f() => err=E0201
+vec3i() - mat2x3f() => err=E0201
+vec3i() - mat3x2f() => err=E0201
+vec3i() - mat3x3f() => err=E0201
+vec2u() - 1 => err=E0201
+vec2u() - 1.0 => err=E0201
+vec2u() - 1i => err=E0201
+vec2u() - 1u => type=vec2<u32>
+vec2u() - 1f => err=E0201
+vec2u() - true => err=E0201
+vec2u() - vec2f() => err=E0201
+vec2u() - vec3f() => err=E0201
+vec2u() - vec2i() => err=E0201
+vec2u() - vec3i() => err=E0201
+vec2u() - vec2u() => type=vec2<u32>
+vec2u() - vec3u() => err=E0201
+vec2u() - vec3<bool>(true, true, true) => err=E0201
+vec2u() - mat2x2f() => err=E0201
+vec2u() - mat2x3f() => err=E0201
+vec2u() - mat3x2f() => err=E0201
+vec2u() - mat3x3f() => err=E0201
+vec3u() - 1 => err=E0201
+vec3u() - 1.0 => err=E0201
+vec3u() - 1i => err=E0201
+vec3u() - 1u => type=vec3<u32>
+vec3u() - 1f => err=E0201
+vec3u() - true => err=E0201
+vec3u() - vec2f() => err=E0201
+vec3u() - vec3f() => err=E0201
+vec3u() - vec2i() => err=E0201
+vec3u() - vec3i() => err=E0201
+vec3u() - vec2u() => err=E0201
+vec3u() - vec3u() => type=vec3<u32>
+vec3u() - vec3<bool>(true, true, true) => err=E0201
+vec3u() - mat2x2f() => err=E0201
+vec3u() - mat2x3f() => err=E0201
+vec3u() - mat3x2f() => err=E0201
+vec3u() - mat3x3f() => err=E0201
+vec3<bool>(true, true, true) - 1 => err=E0201
+vec3<bool>(true, true, true) - 1.0 => err=E0201
+vec3<bool>(true, true, true) - 1i => err=E0201
+vec3<bool>(true, true, true) - 1u => err=E0201
+vec3<bool>(true, true, true) - 1f => err=E0201
+vec3<bool>(true, true, true) - true => type=vec3<bool>
+vec3<bool>(true, true, true) - vec2f() => err=E0201
+vec3<bool>(true, true, true) - vec3f() => err=E0201
+vec3<bool>(true, true, true) - vec2i() => err=E0201
+vec3<bool>(true, true, true) - vec3i() => err=E0201
+vec3<bool>(true, true, true) - vec2u() => err=E0201
+vec3<bool>(true, true, true) - vec3u() => err=E0201
+vec3<bool>(true, true, true) - vec3<bool>(true, true, true) => type=vec3<bool>
+vec3<bool>(true, true, true) - mat2x2f() => err=E0201
+vec3<bool>(true, true, true) - mat2x3f() => err=E0201
+vec3<bool>(true, true, true) - mat3x2f() => err=E0201
+vec3<bool>(true, true, true) - mat3x3f() => err=E0201
+mat2x2f() - 1 => err=E0201
+mat2x2f() - 1.0 => err=E0201
+mat2x2f() - 1i => err=E0201
+mat2x2f() - 1u => err=E0201
+mat2x2f() - 1f => err=E0201
+mat2x2f() - true => err=E0201
+mat2x2f() - vec2f() => err=E0201
+mat2x2f() - vec3f() => err=E0201
+mat2x2f() - vec2i() => err=E0201
+mat2x2f() - vec3i() => err=E0201
+mat2x2f() - vec2u() => err=E0201
+mat2x2f() - vec3u() => err=E0201
+mat2x2f() - vec3<bool>(true, true, true) => err=E0201
+mat2x2f() - mat2x2f() => type=mat2x2<f32>
+mat2x2f() - mat2x3f() => err=E0201
+mat2x2f() - mat3x2f() => err=E0201
+mat2x2f() - mat3x3f() => err=E0201
+mat2x3f() - 1 => err=E0201
+mat2x3f() - 1.0 => err=E0201
+mat2x3f() - 1i => err=E0201
+mat2x3f() - 1u => err=E0201
+mat2x3f() - 1f => err=E0201
+mat2x3f() - true => err=E0201
+mat2x3f() - vec2f() => err=E0201
+mat2x3f() - vec3f() => err=E0201
+mat2x3f() - vec2i() => err=E0201
+mat2x3f() - vec3i() => err=E0201
+mat2x3f() - vec2u() => err=E0201
+mat2x3f() - vec3u() => err=E0201
+mat2x3f() - vec3<bool>(true, true, true) => err=E0201
+mat2x3f() - mat2x2f() => err=E0201
+mat2x3f() - mat2x3f() => type=mat2x3<f32>
+mat2x3f() - mat3x2f() => err=E0201
+mat2x3f() - mat3x3f() => err=E0201
+mat3x2f() - 1 => err=E0201
+mat3x2f() - 1.0 => err=E0201
+mat3x2f() - 1i => err=E0201
+mat3x2f() - 1u => err=E0201
+mat3x2f() - 1f => err=E0201
+mat3x2f() - true => err=E0201
+mat3x2f() - vec2f() => err=E0201
+mat3x2f() - vec3f() => err=E0201
+mat3x2f() - vec2i() => err=E0201
+mat3x2f() - vec3i() => err=E0201
+mat3x2f() - vec2u() => err=E0201
+mat3x2f() - vec3u() => err=E0201
+mat3x2f() - vec3<bool>(true, true, true) => err=E0201
+mat3x2f() - mat2x2f() => err=E0201
+mat3x2f() - mat2x3f() => err=E0201
+mat3x2f() - mat3x2f() => type=mat3x2<f32>
+mat3x2f() - mat3x3f() => err=E0201
+mat3x3f() - 1 => err=E0201
+mat3x3f() - 1.0 => err=E0201
+mat3x3f() - 1i => err=E0201
+mat3x3f() - 1u => err=E0201
+mat3x3f() - 1f => err=E0201
+mat3x3f() - true => err=E0201
+mat3x3f() - vec2f() => err=E0201
+mat3x3f() - vec3f() => err=E0201
+mat3x3f() - vec2i() => err=E0201
+mat3x3f() - vec3i() => err=E0201
+mat3x3f() - vec2u() => err=E0201
+mat3x3f() - vec3u() => err=E0201
+mat3x3f() - vec3<bool>(true, true, true) => err=E0201
+mat3x3f() - mat2x2f() => err=E0201
+mat3x3f() - mat2x3f() => err=E0201
+mat3x3f() - mat3x2f() => err=E0201
+mat3x3f() - mat3x3f() => type=mat3x3<f32>
+1 * 1 => type=i32
+1 * 1.0 => type=f32
+1 * 1i => type=i32
+1 * 1u => type=u32
+1 * 1f => type=f32
+1 * true => err=E0201
+1 * vec2f() => err=E0201
+1 * vec3f() => err=E0201
+1 * vec2i() => type=vec2<i32>
+1 * vec3i() => type=vec3<i32>
+1 * vec2u() => err=E0201
+1 * vec3u() => err=E0201
+1 * vec3<bool>(true, true, true) => err=E0201
+1 * mat2x2f() => err=E0201
+1 * mat2x3f() => err=E0201
+1 * mat3x2f() => err=E0201
+1 * mat3x3f() => err=E0201
+1.0 * 1 => type=f32
+1.0 * 1.0 => type=f32
+1.0 * 1i => err=E0201
+1.0 * 1u => err=E0201
+1.0 * 1f => type=f32
+1.0 * true => err=E0201
+1.0 * vec2f() => type=vec2<f32>
+1.0 * vec3f() => type=vec3<f32>
+1.0 * vec2i() => err=E0201
+1.0 * vec3i() => err=E0201
+1.0 * vec2u() => err=E0201
+1.0 * vec3u() => err=E0201
+1.0 * vec3<bool>(true, true, true) => err=E0201
+1.0 * mat2x2f() => type=mat2x2<f32>
+1.0 * mat2x3f() => type=mat2x3<f32>
+1.0 * mat3x2f() => type=mat3x2<f32>
+1.0 * mat3x3f() => type=mat3x3<f32>
+1i * 1 => type=i32
+1i * 1.0 => err=E0201
+1i * 1i => type=i32
+1i * 1u => err=E0201
+1i * 1f => err=E0201
+1i * true => err=E0201
+1i * vec2f() => err=E0201
+1i * vec3f() => err=E0201
+1i * vec2i() => type=vec2<i32>
+1i * vec3i() => type=vec3<i32>
+1i * vec2u() => err=E0201
+1i * vec3u() => err=E0201
+1i * vec3<bool>(true, true, true) => err=E0201
+1i * mat2x2f() => err=E0201
+1i * mat2x3f() => err=E0201
+1i * mat3x2f() => err=E0201
+1i * mat3x3f() => err=E0201
+1u * 1 => type=u32
+1u * 1.0 => err=E0201
+1u * 1i => err=E0201
+1u * 1u => type=u32
+1u * 1f => err=E0201
+1u * true => err=E0201
+1u * vec2f() => err=E0201
+1u * vec3f() => err=E0201
+1u * vec2i() => err=E0201
+1u * vec3i() => err=E0201
+1u * vec2u() => type=vec2<u32>
+1u * vec3u() => type=vec3<u32>
+1u * vec3<bool>(true, true, true) => err=E0201
+1u * mat2x2f() => err=E0201
+1u * mat2x3f() => err=E0201
+1u * mat3x2f() => err=E0201
+1u * mat3x3f() => err=E0201
+1f * 1 => type=f32
+1f * 1.0 => type=f32
+1f * 1i => err=E0201
+1f * 1u => err=E0201
+1f * 1f => type=f32
+1f * true => err=E0201
+1f * vec2f() => type=vec2<f32>
+1f * vec3f() => type=vec3<f32>
+1f * vec2i() => err=E0201
+1f * vec3i() => err=E0201
+1f * vec2u() => err=E0201
+1f * vec3u() => err=E0201
+1f * vec3<bool>(true, true, true) => err=E0201
+1f * mat2x2f() => type=mat2x2<f32>
+1f * mat2x3f() => type=mat2x3<f32>
+1f * mat3x2f() => type=mat3x2<f32>
+1f * mat3x3f() => type=mat3x3<f32>
+true * 1 => err=E0201
+true * 1.0 => err=E0201
+true * 1i => err=E0201
+true * 1u => err=E0201
+true * 1f => err=E0201
+true * true => type=bool
+true * vec2f() => err=E0201
+true * vec3f() => err=E0201
+true * vec2i() => err=E0201
+true * vec3i() => err=E0201
+true * vec2u() => err=E0201
+true * vec3u() => err=E0201
+true * vec3<bool>(true, true, true) => type=vec3<bool>
+true * mat2x2f() => err=E0201
+true * mat2x3f() => err=E0201
+true * mat3x2f() => err=E0201
+true * mat3x3f() => err=E0201
+vec2f() * 1 => err=E0201
+vec2f() * 1.0 => type=vec2<f32>
+vec2f() * 1i => err=E0201
+vec2f() * 1u => err=E0201
+vec2f() * 1f => type=vec2<f32>
+vec2f() * true => err=E0201
+vec2f() * vec2f() => type=vec2<f32>
+vec2f() * vec3f() => err=E0201
+vec2f() * vec2i() => err=E0201
+vec2f() * vec3i() => err=E0201
+vec2f() * vec2u() => err=E0201
+vec2f() * vec3u() => err=E0201
+vec2f() * vec3<bool>(true, true, true) => err=E0201
+vec2f() * mat2x2f() => type=vec2<f32>
+vec2f() * mat2x3f() => err=E0201
+vec2f() * mat3x2f() => type=vec3<f32>
+vec2f() * mat3x3f() => err=E0201
+vec3f() * 1 => err=E0201
+vec3f() * 1.0 => type=vec3<f32>
+vec3f() * 1i => err=E0201
+vec3f() * 1u => err=E0201
+vec3f() * 1f => type=vec3<f32>
+vec3f() * true => err=E0201
+vec3f() * vec2f() => err=E0201
+vec3f() * vec3f() => type=vec3<f32>
+vec3f() * vec2i() => err=E0201
+vec3f() * vec3i() => err=E0201
+vec3f() * vec2u() => err=E0201
+vec3f() * vec3u() => err=E0201
+vec3f() * vec3<bool>(true, true, true) => err=E0201
+vec3f() * mat2x2f() => err=E0201
+vec3f() * mat2x3f() => type=vec2<f32>
+vec3f() * mat3x2f() => err=E0201
+vec3f() * mat3x3f() => type=vec3<f32>
+vec2i() * 1 => type=vec2<i32>
+vec2i() * 1.0 => err=E0201
+vec2i() * 1i => type=vec2<i32>
+vec2i() * 1u => err=E0201
+vec2i() * 1f => err=E0201
+vec2i() * true => err=E0201
+vec2i() * vec2f() => err=E0201
+vec2i() * vec3f() => err=E0201
+vec2i() * vec2i() => type=vec2<i32>
+vec2i() * vec3i() => err=E0201
+vec2i() * vec2u() => err=E0201
+vec2i() * vec3u() => err=E0201
+vec2i() * vec3<bool>(true, true, true) => err=E0201
+vec2i() * mat2x2f() => err=E0201
+vec2i() * mat2x3f() => err=E0201
+vec2i() * mat3x2f() => err=E0201
+vec2i() * mat3x3f() => err=E0201
+vec3i() * 1 => type=vec3<i32>
+vec3i() * 1.0 => err=E0201
+vec3i() * 1i => type=vec3<i32>
+vec3i() * 1u => err=E0201
+vec3i() * 1f => err=E0201
+vec3i() * true => err=E0201
+vec3i() * vec2f() => err=E0201
+vec3i() * vec3f() => err=E0201
+vec3i() * vec2i() => err=E0201
+vec3i() * vec3i() => type=vec3<i32>
+vec3i() * vec2u() => err=E0201
+vec3i() * vec3u() => err=E0201
+vec3i() * vec3<bool>(true, true, true) => err=E0201
+vec3i() * mat2x2f() => err=E0201
+vec3i() * mat2x3f() => err=E0201
+vec3i() * mat3x2f() => err=E0201
+vec3i() * mat3x3f() => err=E0201
+vec2u() * 1 => err=E0201
+vec2u() * 1.0 => err=E0201
+vec2u() * 1i => err=E0201
+vec2u() * 1u => type=vec2<u32>
+vec2u() * 1f => err=E0201
+vec2u() * true => err=E0201
+vec2u() * vec2f() => err=E0201
+vec2u() * vec3f() => err=E0201
+vec2u() * vec2i() => err=E0201
+vec2u() * vec3i() => err=E0201
+vec2u() * vec2u() => type=vec2<u32>
+vec2u() * vec3u() => err=E0201
+vec2u() * vec3<bool>(true, true, true) => err=E0201
+vec2u() * mat2x2f() => err=E0201
+vec2u() * mat2x3f() => err=E0201
+vec2u() * mat3x2f() => err=E0201
+vec2u() * mat3x3f() => err=E0201
+vec3u() * 1 => err=E0201
+vec3u() * 1.0 => err=E0201
+vec3u() * 1i => err=E0201
+vec3u() * 1u => type=vec3<u32>
+vec3u() * 1f => err=E0201
+vec3u() * true => err=E0201
+vec3u() * vec2f() => err=E0201
+vec3u() * vec3f() => err=E0201
+vec3u() * vec2i() => err=E0201
+vec3u() * vec3i() => err=E0201
+vec3u() * vec2u() => err=E0201
+vec3u() * vec3u() => type=vec3<u32>
+vec3u() * vec3<bool>(true, true, true) => err=E0201
+vec3u() * mat2x2f() => err=E0201
+vec3u() * mat2x3f() => err=E0201
+vec3u() * mat3x2f() => err=E0201
+vec3u() * mat3x3f() => err=E0201
+vec3<bool>(true, true, true) * 1 => err=E0201
+vec3<bool>(true, true, true) * 1.0 => err=E0201
+vec3<bool>(true, true, true) * 1i => err=E0201
+vec3<bool>(true, true, true) * 1u => err=E0201
+vec3<bool>(true, true, true) * 1f => err=E0201
+vec3<bool>(true, true, true) * true => type=vec3<bool>
+vec3<bool>(true, true, true) * vec2f() => err=E0201
+vec3<bool>(true, true, true) * vec3f() => err=E0201
+vec3<bool>(true, true, true) * vec2i() => err=E0201
+vec3<bool>(true, true, true) * vec3i() => err=E0201
+vec3<bool>(true, true, true) * vec2u() => err=E0201
+vec3<bool>(true, true, true) * vec3u() => err=E0201
+vec3<bool>(true, true, true) * vec3<bool>(true, true, true) => type=vec3<bool>
+vec3<bool>(true, true, true) * mat2x2f() => err=E0201
+vec3<bool>(true, true, true) * mat2x3f() => err=E0201
+vec3<bool>(true, true, true) * mat3x2f() => err=E0201
+vec3<bool>(true, true, true) * mat3x3f() => err=E0201
+mat2x2f() * 1 => err=E0201
+mat2x2f() * 1.0 => type=mat2x2<f32>
+mat2x2f() * 1i => err=E0201
+mat2x2f() * 1u => err=E0201
+mat2x2f() * 1f => type=mat2x2<f32>
+mat2x2f() * true => err=E0201
+mat2x2f() * vec2f() => type=vec2<f32>
+mat2x2f() * vec3f() => err=E0201
+mat2x2f() * vec2i() => err=E0201
+mat2x2f() * vec3i() => err=E0201
+mat2x2f() * vec2u() => err=E0201
+mat2x2f() * vec3u() => err=E0201
+mat2x2f() * vec3<bool>(true, true, true) => err=E0201
+mat2x2f() * mat2x2f() => type=mat2x2<f32>
+mat2x2f() * mat2x3f() => err=E0201
+mat2x2f() * mat3x2f() => err=E0201
+mat2x2f() * mat3x3f() => err=E0201
+mat2x3f() * 1 => err=E0201
+mat2x3f() * 1.0 => type=mat2x3<f32>
+mat2x3f() * 1i => err=E0201
+mat2x3f() * 1u => err=E0201
+mat2x3f() * 1f => type=mat2x3<f32>
+mat2x3f() * true => err=E0201
+mat2x3f() * vec2f() => type=vec3<f32>
+mat2x3f() * vec3f() => err=E0201
+mat2x3f() * vec2i() => err=E0201
+mat2x3f() * vec3i() => err=E0201
+mat2x3f() * vec2u() => err=E0201
+mat2x3f() * vec3u() => err=E0201
+mat2x3f() * vec3<bool>(true, true, true) => err=E0201
+mat2x3f() * mat2x2f() => err=E0201
+mat2x3f() * mat2x3f() => type=mat2x3<f32>
+mat2x3f() * mat3x2f() => err=E0201
+mat2x3f() * mat3x3f() => err=E0201
+mat3x2f() * 1 => err=E0201
+mat3x2f() * 1.0 => type=mat3x2<f32>
+mat3x2f() * 1i => err=E0201
+mat3x2f() * 1u => err=E0201
+mat3x2f() * 1f => type=mat3x2<f32>
+mat3x2f() * true => err=E0201
+mat3x2f() * vec2f() => err=E0201
+mat3x2f() * vec3f() => type=vec2<f32>
+mat3x2f() * vec2i() => err=E0201
+mat3x2f() * vec3i() => err=E0201
+mat3x2f() * vec2u() => err=E0201
+mat3x2f() * vec3u() => err=E0201
+mat3x2f() * vec3<bool>(true, true, true) => err=E0201
+mat3x2f() * mat2x2f() => err=E0201
+mat3x2f() * mat2x3f() => err=E0201
+mat3x2f() * mat3x2f() => type=mat3x2<f32>
+mat3x2f() * mat3x3f() => err=E0201
+mat3x3f() * 1 => err=E0201
+mat3x3f() * 1.0 => type=mat3x3<f32>
+mat3x3f() * 1i => err=E0201
+mat3x3f() * 1u => err=E0201
+mat3x3f() * 1f => type=mat3x3<f32>
+mat3x3f() * true => err=E0201
+mat3x3f() * vec2f() => err=E0201
+mat3x3f() * vec3f() => type=vec3<f32>
+mat3x3f() * vec2i() => err=E0201
+mat3x3f() * vec3i() => err=E0201
+mat3x3f() * vec2u() => err=E0201
+mat3x3f() * vec3u() => err=E0201
+mat3x3f() * vec3<bool>(true, true, true) => err=E0201
+mat3x3f() * mat2x2f() => err=E0201
+mat3x3f() * mat2x3f() => err=E0201
+mat3x3f() * mat3x2f() => err=E0201
+mat3x3f() * mat3x3f() => type=mat3x3<f32>
+1 / 1 => type=i32
+1 / 1.0 => type=f32
+1 / 1i => type=i32
+1 / 1u => type=u32
+1 / 1f => type=f32
+1 / true => err=E0201
+1 / vec2f() => err=E0201
+1 / vec3f() => err=E0201
+1 / vec2i() => type=vec2<i32>
+1 / vec3i() => type=vec3<i32>
+1 / vec2u() => err=E0201
+1 / vec3u() => err=E0201
+1 / vec3<bool>(true, true, true) => err=E0201
+1 / mat2x2f() => err=E0201
+1 / mat2x3f() => err=E0201
+1 / mat3x2f() => err=E0201
+1 / mat3x3f() => err=E0201
+1.0 / 1 => type=f32
+1.0 / 1.0 => type=f32
+1.0 / 1i => err=E0201
+1.0 / 1u => err=E0201
+1.0 / 1f => type=f32
+1.0 / true => err=E0201
+1.0 / vec2f() => type=vec2<f32>
+1.0 / vec3f() => type=vec3<f32>
+1.0 / vec2i() => err=E0201
+1.0 / vec3i() => err=E0201
+1.0 / vec2u() => err=E0201
+1.0 / vec3u() => err=E0201
+1.0 / vec3<bool>(true, true, true) => err=E0201
+1.0 / mat2x2f() => err=E0201
+1.0 / mat2x3f() => err=E0201
+1.0 / mat3x2f() => err=E0201
+1.0 / mat3x3f() => err=E0201
+1i / 1 => type=i32
+1i / 1.0 => err=E0201
+1i / 1i => type=i32
+1i / 1u => err=E0201
+1i / 1f => err=E0201
+1i / true => err=E0201
+1i / vec2f() => err=E0201
+1i / vec3f() => err=E0201
+1i / vec2i() => type=vec2<i32>
+1i / vec3i() => type=vec3<i32>
+1i / vec2u() => err=E0201
+1i / vec3u() => err=E0201
+1i / vec3<bool>(true, true, true) => err=E0201
+1i / mat2x2f() => err=E0201
+1i / mat2x3f() => err=E0201
+1i / mat3x2f() => err=E0201
+1i / mat3x3f() => err=E0201
+1u / 1 => type=u32
+1u / 1.0 => err=E0201
+1u / 1i => err=E0201
+1u / 1u => type=u32
+1u / 1f => err=E0201
+1u / true => err=E0201
+1u / vec2f() => err=E0201
+1u / vec3f() => err=E0201
+1u / vec2i() => err=E0201
+1u / vec3i() => err=E0201
+1u / vec2u() => type=vec2<u32>
+1u / vec3u() => type=vec3<u32>
+1u / vec3<bool>(true, true, true) => err=E0201
+1u / mat2x2f() => err=E0201
+1u / mat2x3f() => err=E0201
+1u / mat3x2f() => err=E0201
+1u / mat3x3f() => err=E0201
+1f / 1 => type=f32
+1f / 1.0 => type=f32
+1f / 1i => err=E0201
+1f / 1u => err=E0201
+1f / 1f => type=f32
+1f / true => err=E0201
+1f / vec2f() => type=vec2<f32>
+1f / vec3f() => type=vec3<f32>
+1f / vec2i() => err=E0201
+1f / vec3i() => err=E0201
+1f / vec2u() => err=E0201
+1f / vec3u() => err=E0201
+1f / vec3<bool>(true, true, true) => err=E0201
+1f / mat2x2f() => err=E0201
+1f / mat2x3f() => err=E0201
+1f / mat3x2f() => err=E0201
+1f / mat3x3f() => err=E0201
+true / 1 => err=E0201
+true / 1.0 => err=E0201
+true / 1i => err=E0201
+true / 1u => err=E0201
+true / 1f => err=E0201
+true / true => type=bool
+true / vec2f() => err=E0201
+true / vec3f() => err=E0201
+true / vec2i() => err=E0201
+true / vec3i() => err=E0201
+true / vec2u() => err=E0201
+true / vec3u() => err=E0201
+true / vec3<bool>(true, true, true) => type=vec3<bool>
+true / mat2x2f() => err=E0201
+true / mat2x3f() => err=E0201
+true / mat3x2f() => err=E0201
+true / mat3x3f() => err=E0201
+vec2f() / 1 => err=E0201
+vec2f() / 1.0 => type=vec2<f32>
+vec2f() / 1i => err=E0201
+vec2f() / 1u => err=E0201
+vec2f() / 1f => type=vec2<f32>
+vec2f() / true => err=E0201
+vec2f() / vec2f() => type=vec2<f32>
+vec2f() / vec3f() => err=E0201
+vec2f() / vec2i() => err=E0201
+vec2f() / vec3i() => err=E0201
+vec2f() / vec2u() => err=E0201
+vec2f() / vec3u() => err=E0201
+vec2f() / vec3<bool>(true, true, true) => err=E0201
+vec2f() / mat2x2f() => err=E0201
+vec2f() / mat2x3f() => err=E0201
+vec2f() / mat3x2f() => err=E0201
+vec2f() / mat3x3f() => err=E0201
+vec3f() / 1 => err=E0201
+vec3f() / 1.0 => type=vec3<f32>
+vec3f() / 1i => err=E0201
+vec3f() / 1u => err=E0201
+vec3f() / 1f => type=vec3<f32>
+vec3f() / true => err=E0201
+vec3f() / vec2f() => err=E0201
+vec3f() / vec3f() => type=vec3<f32>
+vec3f() / vec2i() => err=E0201
+vec3f() / vec3i() => err=E0201
+vec3f() / vec2u() => err=E0201
+vec3f() / vec3u() => err=E0201
+vec3f() / vec3<bool>(true, true, true) => err=E0201
+vec3f() / mat2x2f() => err=E0201
+vec3f() / mat2x3f() => err=E0201
+vec3f() / mat3x2f() => err=E0201
+vec3f() / mat3x3f() => err=E0201
+vec2i() / 1 => type=vec2<i32>
+vec2i() / 1.0 => err=E0201
+vec2i() / 1i => type=vec2<i32>
+vec2i() / 1u => err=E0201
+vec2i() / 1f => err=E0201
+vec2i() / true => err=E0201
+vec2i() / vec2f() => err=E0201
+vec2i() / vec3f() => err=E0201
+vec2i() / vec2i() => type=vec2<i32>
+vec2i() / vec3i() => err=E0201
+vec2i() / vec2u() => err=E0201
+vec2i() / vec3u() => err=E0201
+vec2i() / vec3<bool>(true, true, true) => err=E0201
+vec2i() / mat2x2f() => err=E0201
+vec2i() / mat2x3f() => err=E0201
+vec2i() / mat3x2f() => err=E0201
+vec2i() / mat3x3f() => err=E0201
+vec3i() / 1 => type=vec3<i32>
+vec3i() / 1.0 => err=E0201
+vec3i() / 1i => type=vec3<i32>
+vec3i() / 1u => err=E0201
+vec3i() / 1f => err=E0201
+vec3i() / true => err=E0201
+vec3i() / vec2f() => err=E0201
+vec3i() / vec3f() => err=E0201
+vec3i() / vec2i() => err=E0201
+vec3i() / vec3i() => type=vec3<i32>
+vec3i() / vec2u() => err=E0201
+vec3i() / vec3u() => err=E0201
+vec3i() / vec3<bool>(true, true, true) => err=E0201
+vec3i() / mat2x2f() => err=E0201
+vec3i() / mat2x3f() => err=E0201
+vec3i() / mat3x2f() => err=E0201
+vec3i() / mat3x3f() => err=E0201
+vec2u() / 1 => err=E0201
+vec2u() / 1.0 => err=E0201
+vec2u() / 1i => err=E0201
+vec2u() / 1u => type=vec2<u32>
+vec2u() / 1f => err=E0201
+vec2u() / true => err=E0201
+vec2u() / vec2f() => err=E0201
+vec2u() / vec3f() => err=E0201
+vec2u() / vec2i() => err=E0201
+vec2u() / vec3i() => err=E0201
+vec2u() / vec2u() => type=vec2<u32>
+vec2u() / vec3u() => err=E0201
+vec2u() / vec3<bool>(true, true, true) => err=E0201
+vec2u() / mat2x2f() => err=E0201
+vec2u() / mat2x3f() => err=E0201
+vec2u() / mat3x2f() => err=E0201
+vec2u() / mat3x3f() => err=E0201
+vec3u() / 1 => err=E0201
+vec3u() / 1.0 => err=E0201
+vec3u() / 1i => err=E0201
+vec3u() / 1u => type=vec3<u32>
+vec3u() / 1f => err=E0201
+vec3u() / true => err=E0201
+vec3u() / vec2f() => err=E0201
+vec3u() / vec3f() => err=E0201
+vec3u() / vec2i() => err=E0201
+vec3u() / vec3i() => err=E0201
+vec3u() / vec2u() => err=E0201
+vec3u() / vec3u() => type=vec3<u32>
+vec3u() / vec3<bool>(true, true, true) => err=E0201
+vec3u() / mat2x2f() => err=E0201
+vec3u() / mat2x3f() => err=E0201
+vec3u() / mat3x2f() => err=E0201
+vec3u() / mat3x3f() => err=E0201
+vec3<bool>(true, true, true) / 1 => err=E0201
+vec3<bool>(true, true, true) / 1.0 => err=E0201
+vec3<bool>(true, true, true) / 1i => err=E0201
+vec3<bool>(true, true, true) / 1u => err=E0201
+vec3<bool>(true, true, true) / 1f => err=E0201
+vec3<bool>(true, true, true) / true => type=vec3<bool>
+vec3<bool>(true, true, true) / vec2f() => err=E0201
+vec3<bool>(true, true, true) / vec3f() => err=E0201
+vec3<bool>(true, true, true) / vec2i() => err=E0201
+vec3<bool>(true, true, true) / vec3i() => err=E0201
+vec3<bool>(true, true, true) / vec2u() => err=E0201
+vec3<bool>(true, true, true) / vec3u() => err=E0201
+vec3<bool>(true, true, true) / vec3<bool>(true, true, true) => type=vec3<bool>
+vec3<bool>(true, true, true) / mat2x2f() => err=E0201
+vec3<bool>(true, true, true) / mat2x3f() => err=E0201
+vec3<bool>(true, true, true) / mat3x2f() => err=E0201
+vec3<bool>(true, true, true) / mat3x3f() => err=E0201
+mat2x2f() / 1 => err=E0201
+mat2x2f() / 1.0 => err=E0201
+mat2x2f() / 1i => err=E0201
+mat2x2f() / 1u => err=E0201
+mat2x2f() / 1f => err=E0201
+mat2x2f() / true => err=E0201
+mat2x2f() / vec2f() => err=E0201
+mat2x2f() / vec3f() => err=E0201
+mat2x2f() / vec2i() => err=E0201
+mat2x2f() / vec3i() => err=E0201
+mat2x2f() / vec2u() => err=E0201
+mat2x2f() / vec3u() => err=E0201
+mat2x2f() / vec3<bool>(true, true, true) => err=E0201
+mat2x2f() / mat2x2f() => type=mat2x2<f32>
+mat2x2f() / mat2x3f() => err=E0201
+mat2x2f() / mat3x2f() => err=E0201
+mat2x2f() / mat3x3f() => err=E0201
+mat2x3f() / 1 => err=E0201
+mat2x3f() / 1.0 => err=E0201
+mat2x3f() / 1i => err=E0201
+mat2x3f() / 1u => err=E0201
+mat2x3f() / 1f => err=E0201
+mat2x3f() / true => err=E0201
+mat2x3f() / vec2f() => err=E0201
+mat2x3f() / vec3f() => err=E0201
+mat2x3f() / vec2i() => err=E0201
+mat2x3f() / vec3i() => err=E0201
+mat2x3f() / vec2u() => err=E0201
+mat2x3f() / vec3u() => err=E0201
+mat2x3f() / vec3<bool>(true, true, true) => err=E0201
+mat2x3f() / mat2x2f() => err=E0201
+mat2x3f() / mat2x3f() => type=mat2x3<f32>
+mat2x3f() / mat3x2f() => err=E0201
+mat2x3f() / mat3x3f() => err=E0201
+mat3x2f() / 1 => err=E0201
+mat3x2f() / 1.0 => err=E0201
+mat3x2f() / 1i => err=E0201
+mat3x2f() / 1u => err=E0201
+mat3x2f() / 1f => err=E0201
+mat3x2f() / true => err=E0201
+mat3x2f() / vec2f() => err=E0201
+mat3x2f() / vec3f() => err=E0201
+mat3x2f() / vec2i() => err=E0201
+mat3x2f() / vec3i() => err=E0201
+mat3x2f() / vec2u() => err=E0201
+mat3x2f() / vec3u() => err=E0201
+mat3x2f() / vec3<bool>(true, true, true) => err=E0201
+mat3x2f() / mat2x2f() => err=E0201
+mat3x2f() / mat2x3f() => err=E0201
+mat3x2f() / mat3x2f() => type=mat3x2<f32>
+mat3x2f() / mat3x3f() => err=E0201
+mat3x3f() / 1 => err=E0201
+mat3x3f() / 1.0 => err=E0201
+mat3x3f() / 1i => err=E0201
+mat3x3f() / 1u => err=E0201
+mat3x3f() / 1f => err=E0201
+mat3x3f() / true => err=E0201
+mat3x3f() / vec2f() => err=E0201
+mat3x3f() / vec3f() => err=E0201
+mat3x3f() / vec2i() => err=E0201
+mat3x3f() / vec3i() => err=E0201
+mat3x3f() / vec2u() => err=E0201
+mat3x3f() / vec3u() => err=E0201
+mat3x3f() / vec3<bool>(true, true, true) => err=E0201
+mat3x3f() / mat2x2f() => err=E0201
+mat3x3f() / mat2x3f() => err=E0201
+mat3x3f() / mat3x2f() => err=E0201
+mat3x3f() / mat3x3f() => type=mat3x3<f32>
+1 % 1 => type=i32
+1 % 1.0 => type=f32
+1 % 1i => type=i32
+1 % 1u => type=u32
+1 % 1f => type=f32
+1 % true => err=E0201
+1 % vec2f() => none
+1 % vec3f() => none
+1 % vec2i() => none
+1 % vec3i() => none
+1 % vec2u() => none
+1 % vec3u() => none
+1 % vec3<bool>(true, true, true) => err=E0201
+1 % mat2x2f() => err=E0201
+1 % mat2x3f() => err=E0201
+1 % mat3x2f() => err=E0201
+1 % mat3x3f() => err=E0201
+1.0 % 1 => type=f32
+1.0 % 1.0 => type=f32
+1.0 % 1i => none
+1.0 % 1u => none
+1.0 % 1f => type=f32
+1.0 % true => err=E0201
+1.0 % vec2f() => none
+1.0 % vec3f() => none
+1.0 % vec2i() => none
+1.0 % vec3i() => none
+1.0 % vec2u() => none
+1.0 % vec3u() => none
+1.0 % vec3<bool>(true, true, true) => err=E0201
+1.0 % mat2x2f() => err=E0201
+1.0 % mat2x3f() => err=E0201
+1.0 % mat3x2f() => err=E0201
+1.0 % mat3x3f() => err=E0201
+1i % 1 => type=i32
+1i % 1.0 => none
+1i % 1i => type=i32
+1i % 1u => none
+1i % 1f => none
+1i % true => err=E0201
+1i % vec2f() => none
+1i % vec3f() => none
+1i % vec2i() => none
+1i % vec3i() => none
+1i % vec2u() => none
+1i % vec3u() => none
+1i % vec3<bool>(true, true, true) => err=E0201
+1i % mat2x2f() => err=E0201
+1i % mat2x3f() => err=E0201
+1i % mat3x2f() => err=E0201
+1i % mat3x3f() => err=E0201
+1u % 1 => type=u32
+1u % 1.0 => none
+1u % 1i => none
+1u % 1u => type=u32
+1u % 1f => none
+1u % true => err=E0201
+1u % vec2f() => none
+1u % vec3f() => none
+1u % vec2i() => none
+1u % vec3i() => none
+1u % vec2u() => none
+1u % vec3u() => none
+1u % vec3<bool>(true, true, true) => err=E0201
+1u % mat2x2f() => err=E0201
+1u % mat2x3f() => err=E0201
+1u % mat3x2f() => err=E0201
+1u % mat3x3f() => err=E0201
+1f % 1 => type=f32
+1f % 1.0 => type=f32
+1f % 1i => none
+1f % 1u => none
+1f % 1f => type=f32
+1f % true => err=E0201
+1f % vec2f() => none
+1f % vec3f() => none
+1f % vec2i() => none
+1f % vec3i() => none
+1f % vec2u() => none
+1f % vec3u() => none
+1f % vec3<bool>(true, true, true) => err=E0201
+1f % mat2x2f() => err=E0201
+1f % mat2x3f() => err=E0201
+1f % mat3x2f() => err=E0201
+1f % mat3x3f() => err=E0201
+true % 1 => err=E0201
+true % 1.0 => err=E0201
+true % 1i => err=E0201
+true % 1u => err=E0201
+true % 1f => err=E0201
+true % true => err=E0201
+true % vec2f() => err=E0201
+true % vec3f() => err=E0201
+true % vec2i() => err=E0201
+true % vec3i() => err=E0201
+true % vec2u() => err=E0201
+true % vec3u() => err=E0201
+true % vec3<bool>(true, true, true) => err=E0201
+true % mat2x2f() => err=E0201
+true % mat2x3f() => err=E0201
+true % mat3x2f() => err=E0201
+true % mat3x3f() => err=E0201
+vec2f() % 1 => none
+vec2f() % 1.0 => none
+vec2f() % 1i => none
+vec2f() % 1u => none
+vec2f() % 1f => none
+vec2f() % true => err=E0201
+vec2f() % vec2f() => type=vec2<f32>
+vec2f() % vec3f() => none
+vec2f() % vec2i() => none
+vec2f() % vec3i() => none
+vec2f() % vec2u() => none
+vec2f() % vec3u() => none
+vec2f() % vec3<bool>(true, true, true) => err=E0201
+vec2f() % mat2x2f() => err=E0201
+vec2f() % mat2x3f() => err=E0201
+vec2f() % mat3x2f() => err=E0201
+vec2f() % mat3x3f() => err=E0201
+vec3f() % 1 => none
+vec3f() % 1.0 => none
+vec3f() % 1i => none
+vec3f() % 1u => none
+vec3f() % 1f => none
+vec3f() % true => err=E0201
+vec3f() % vec2f() => none
+vec3f() % vec3f() => type=vec3<f32>
+vec3f() % vec2i() => none
+vec3f() % vec3i() => none
+vec3f() % vec2u() => none
+vec3f() % vec3u() => none
+vec3f() % vec3<bool>(true, true, true) => err=E0201
+vec3f() % mat2x2f() => err=E0201
+vec3f() % mat2x3f() => err=E0201
+vec3f() % mat3x2f() => err=E0201
+vec3f() % mat3x3f() => err=E0201
+vec2i() % 1 => none
+vec2i() % 1.0 => none
+vec2i() % 1i => none
+vec2i() % 1u => none
+vec2i() % 1f => none
+vec2i() % true => err=E0201
+vec2i() % vec2f() => none
+vec2i() % vec3f() => none
+vec2i() % vec2i() => type=vec2<i32>
+vec2i() % vec3i() => none
+vec2i() % vec2u() => none
+vec2i() % vec3u() => none
+vec2i() % vec3<bool>(true, true, true) => err=E0201
+vec2i() % mat2x2f() => err=E0201
+vec2i() % mat2x3f() => err=E0201
+vec2i() % mat3x2f() => err=E0201
+vec2i() % mat3x3f() => err=E0201
+vec3i() % 1 => none
+vec3i() % 1.0 => none
+vec3i() % 1i => none
+vec3i() % 1u => none
+vec3i() % 1f => none
+vec3i() % true => err=E0201
+vec3i() % vec2f() => none
+vec3i() % vec3f() => none
+vec3i() % vec2i() => none
+vec3i() % vec3i() => type=vec3<i32>
+vec3i() % vec2u() => none
+vec3i() % vec3u() => none
+vec3i() % vec3<bool>(true, true, true) => err=E0201
+vec3i() % mat2x2f() => err=E0201
+vec3i() % mat2x3f() => err=E0201
+vec3i() % mat3x2f() => err=E0201
+vec3i() % mat3x3f() => err=E0201
+vec2u() % 1 => none
+vec2u() % 1.0 => none
+vec2u() % 1i => none
+vec2u() % 1u => none
+vec2u() % 1f => none
+vec2u() % true => err=E0201
+vec2u() % vec2f() => none
+vec2u() % vec3f() => none
+vec2u() % vec2i() => none
+vec2u() % vec3i() => none
+vec2u() % vec2u() => type=vec2<u32>
+vec2u() % vec3u() => none
+vec2u() % vec3<bool>(true, true, true) => err=E0201
+vec2u() % mat2x2f() => err=E0201
+vec2u() % mat2x3f() => err=E0201
+vec2u() % mat3x2f() => err=E0201
+vec2u() % mat3x3f() => err=E0201
+vec3u() % 1 => none
+vec3u() % 1.0 => none
+vec3u() % 1i => none
+vec3u() % 1u => none
+vec3u() % 1f => none
+vec3u() % true => err=E0201
+vec3u() % vec2f() => none
+vec3u() % vec3f() => none
+vec3u() % vec2i() => none
+vec3u() % vec3i() => none
+vec3u() % vec2u() => none
+vec3u() % vec3u() => type=vec3<u32>
+vec3u() % vec3<bool>(true, true, true) => err=E0201
+vec3u() % mat2x2f() => err=E0201
+vec3u() % mat2x3f() => err=E0201
+vec3u() % mat3x2f() => err=E0201
+vec3u() % mat3x3f() => err=E0201
+vec3<bool>(true, true, true) % 1 => err=E0201
+vec3<bool>(true, true, true) % 1.0 => err=E0201
+vec3<bool>(true, true, true) % 1i => err=E0201
+vec3<bool>(true, true, true) % 1u => err=E0201
+vec3<bool>(true, true, true) % 1f => err=E0201
+vec3<bool>(true, true, true) % true => err=E0201
+vec3<bool>(true, true, true) % vec2f() => err=E0201
+vec3<bool>(true, true, true) % vec3f() => err=E0201
+vec3<bool>(true, true, true) % vec2i() => err=E0201
+vec3<bool>(true, true, true) % vec3i() => err=E0201
+vec3<bool>(true, true, true) % vec2u() => err=E0201
+vec3<bool>(true, true, true) % vec3u() => err=E0201
+vec3<bool>(true, true, true) % vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) % mat2x2f() => err=E0201
+vec3<bool>(true, true, true) % mat2x3f() => err=E0201
+vec3<bool>(true, true, true) % mat3x2f() => err=E0201
+vec3<bool>(true, true, true) % mat3x3f() => err=E0201
+mat2x2f() % 1 => err=E0201
+mat2x2f() % 1.0 => err=E0201
+mat2x2f() % 1i => err=E0201
+mat2x2f() % 1u => err=E0201
+mat2x2f() % 1f => err=E0201
+mat2x2f() % true => err=E0201
+mat2x2f() % vec2f() => err=E0201
+mat2x2f() % vec3f() => err=E0201
+mat2x2f() % vec2i() => err=E0201
+mat2x2f() % vec3i() => err=E0201
+mat2x2f() % vec2u() => err=E0201
+mat2x2f() % vec3u() => err=E0201
+mat2x2f() % vec3<bool>(true, true, true) => err=E0201
+mat2x2f() % mat2x2f() => err=E0201
+mat2x2f() % mat2x3f() => err=E0201
+mat2x2f() % mat3x2f() => err=E0201
+mat2x2f() % mat3x3f() => err=E0201
+mat2x3f() % 1 => err=E0201
+mat2x3f() % 1.0 => err=E0201
+mat2x3f() % 1i => err=E0201
+mat2x3f() % 1u => err=E0201
+mat2x3f() % 1f => err=E0201
+mat2x3f() % true => err=E0201
+mat2x3f() % vec2f() => err=E0201
+mat2x3f() % vec3f() => err=E0201
+mat2x3f() % vec2i() => err=E0201
+mat2x3f() % vec3i() => err=E0201
+mat2x3f() % vec2u() => err=E0201
+mat2x3f() % vec3u() => err=E0201
+mat2x3f() % vec3<bool>(true, true, true) => err=E0201
+mat2x3f() % mat2x2f() => err=E0201
+mat2x3f() % mat2x3f() => err=E0201
+mat2x3f() % mat3x2f() => err=E0201
+mat2x3f() % mat3x3f() => err=E0201
+mat3x2f() % 1 => err=E0201
+mat3x2f() % 1.0 => err=E0201
+mat3x2f() % 1i => err=E0201
+mat3x2f() % 1u => err=E0201
+mat3x2f() % 1f => err=E0201
+mat3x2f() % true => err=E0201
+mat3x2f() % vec2f() => err=E0201
+mat3x2f() % vec3f() => err=E0201
+mat3x2f() % vec2i() => err=E0201
+mat3x2f() % vec3i() => err=E0201
+mat3x2f() % vec2u() => err=E0201
+mat3x2f() % vec3u() => err=E0201
+mat3x2f() % vec3<bool>(true, true, true) => err=E0201
+mat3x2f() % mat2x2f() => err=E0201
+mat3x2f() % mat2x3f() => err=E0201
+mat3x2f() % mat3x2f() => err=E0201
+mat3x2f() % mat3x3f() => err=E0201
+mat3x3f() % 1 => err=E0201
+mat3x3f() % 1.0 => err=E0201
+mat3x3f() % 1i => err=E0201
+mat3x3f() % 1u => err=E0201
+mat3x3f() % 1f => err=E0201
+mat3x3f() % true => err=E0201
+mat3x3f() % vec2f() => err=E0201
+mat3x3f() % vec3f() => err=E0201
+mat3x3f() % vec2i() => err=E0201
+mat3x3f() % vec3i() => err=E0201
+mat3x3f() % vec2u() => err=E0201
+mat3x3f() % vec3u() => err=E0201
+mat3x3f() % vec3<bool>(true, true, true) => err=E0201
+mat3x3f() % mat2x2f() => err=E0201
+mat3x3f() % mat2x3f() => err=E0201
+mat3x3f() % mat3x2f() => err=E0201
+mat3x3f() % mat3x3f() => err=E0201
+1 << 1 => type=i32
+1 << 1.0 => err=E0201
+1 << 1i => err=E0201
+1 << 1u => type=i32
+1 << 1f => err=E0201
+1 << true => err=E0201
+1 << vec2f() => err=E0201
+1 << vec3f() => err=E0201
+1 << vec2i() => err=E0201
+1 << vec3i() => err=E0201
+1 << vec2u() => err=E0201
+1 << vec3u() => err=E0201
+1 << vec3<bool>(true, true, true) => err=E0201
+1 << mat2x2f() => err=E0201
+1 << mat2x3f() => err=E0201
+1 << mat3x2f() => err=E0201
+1 << mat3x3f() => err=E0201
+1.0 << 1 => err=E0201
+1.0 << 1.0 => err=E0201
+1.0 << 1i => err=E0201
+1.0 << 1u => err=E0201
+1.0 << 1f => err=E0201
+1.0 << true => err=E0201
+1.0 << vec2f() => err=E0201
+1.0 << vec3f() => err=E0201
+1.0 << vec2i() => err=E0201
+1.0 << vec3i() => err=E0201
+1.0 << vec2u() => err=E0201
+1.0 << vec3u() => err=E0201
+1.0 << vec3<bool>(true, true, true) => err=E0201
+1.0 << mat2x2f() => err=E0201
+1.0 << mat2x3f() => err=E0201
+1.0 << mat3x2f() => err=E0201
+1.0 << mat3x3f() => err=E0201
+1i << 1 => type=i32
+1i << 1.0 => err=E0201
+1i << 1i => err=E0201
+1i << 1u => type=i32
+1i << 1f => err=E0201
+1i << true => err=E0201
+1i << vec2f() => err=E0201
+1i << vec3f() => err=E0201
+1i << vec2i() => err=E0201
+1i << vec3i() => err=E0201
+1i << vec2u() => err=E0201
+1i << vec3u() => err=E0201
+1i << vec3<bool>(true, true, true) => err=E0201
+1i << mat2x2f() => err=E0201
+1i << mat2x3f() => err=E0201
+1i << mat3x2f() => err=E0201
+1i << mat3x3f() => err=E0201
+1u << 1 => type=u32
+1u << 1.0 => err=E0201
+1u << 1i => err=E0201
+1u << 1u => type=u32
+1u << 1f => err=E0201
+1u << true => err=E0201
+1u << vec2f() => err=E0201
+1u << vec3f() => err=E0201
+1u << vec2i() => err=E0201
+1u << vec3i() => err=E0201
+1u << vec2u() => err=E0201
+1u << vec3u() => err=E0201
+1u << vec3<bool>(true, true, true) => err=E0201
+1u << mat2x2f() => err=E0201
+1u << mat2x3f() => err=E0201
+1u << mat3x2f() => err=E0201
+1u << mat3x3f() => err=E0201
+1f << 1 => err=E0201
+1f << 1.0 => err=E0201
+1f << 1i => err=E0201
+1f << 1u => err=E0201
+1f << 1f => err=E0201
+1f << true => err=E0201
+1f << vec2f() => err=E0201
+1f << vec3f() => err=E0201
+1f << vec2i() => err=E0201
+1f << vec3i() => err=E0201
+1f << vec2u() => err=E0201
+1f << vec3u() => err=E0201
+1f << vec3<bool>(true, true, true) => err=E0201
+1f << mat2x2f() => err=E0201
+1f << mat2x3f() => err=E0201
+1f << mat3x2f() => err=E0201
+1f << mat3x3f() => err=E0201
+true << 1 => err=E0201
+true << 1.0 => err=E0201
+true << 1i => err=E0201
+true << 1u => err=E0201
+true << 1f => err=E0201
+true << true => err=E0201
+true << vec2f() => err=E0201
+true << vec3f() => err=E0201
+true << vec2i() => err=E0201
+true << vec3i() => err=E0201
+true << vec2u() => err=E0201
+true << vec3u() => err=E0201
+true << vec3<bool>(true, true, true) => err=E0201
+true << mat2x2f() => err=E0201
+true << mat2x3f() => err=E0201
+true << mat3x2f() => err=E0201
+true << mat3x3f() => err=E0201
+vec2f() << 1 => err=E0201
+vec2f() << 1.0 => err=E0201
+vec2f() << 1i => err=E0201
+vec2f() << 1u => err=E0201
+vec2f() << 1f => err=E0201
+vec2f() << true => err=E0201
+vec2f() << vec2f() => err=E0201
+vec2f() << vec3f() => err=E0201
+vec2f() << vec2i() => err=E0201
+vec2f() << vec3i() => err=E0201
+vec2f() << vec2u() => err=E0201
+vec2f() << vec3u() => err=E0201
+vec2f() << vec3<bool>(true, true, true) => err=E0201
+vec2f() << mat2x2f() => err=E0201
+vec2f() << mat2x3f() => err=E0201
+vec2f() << mat3x2f() => err=E0201
+vec2f() << mat3x3f() => err=E0201
+vec3f() << 1 => err=E0201
+vec3f() << 1.0 => err=E0201
+vec3f() << 1i => err=E0201
+vec3f() << 1u => err=E0201
+vec3f() << 1f => err=E0201
+vec3f() << true => err=E0201
+vec3f() << vec2f() => err=E0201
+vec3f() << vec3f() => err=E0201
+vec3f() << vec2i() => err=E0201
+vec3f() << vec3i() => err=E0201
+vec3f() << vec2u() => err=E0201
+vec3f() << vec3u() => err=E0201
+vec3f() << vec3<bool>(true, true, true) => err=E0201
+vec3f() << mat2x2f() => err=E0201
+vec3f() << mat2x3f() => err=E0201
+vec3f() << mat3x2f() => err=E0201
+vec3f() << mat3x3f() => err=E0201
+vec2i() << 1 => err=E0201
+vec2i() << 1.0 => err=E0201
+vec2i() << 1i => err=E0201
+vec2i() << 1u => err=E0201
+vec2i() << 1f => err=E0201
+vec2i() << true => err=E0201
+vec2i() << vec2f() => err=E0201
+vec2i() << vec3f() => err=E0201
+vec2i() << vec2i() => err=E0201
+vec2i() << vec3i() => err=E0201
+vec2i() << vec2u() => type=vec2<i32>
+vec2i() << vec3u() => err=E0201
+vec2i() << vec3<bool>(true, true, true) => err=E0201
+vec2i() << mat2x2f() => err=E0201
+vec2i() << mat2x3f() => err=E0201
+vec2i() << mat3x2f() => err=E0201
+vec2i() << mat3x3f() => err=E0201
+vec3i() << 1 => err=E0201
+vec3i() << 1.0 => err=E0201
+vec3i() << 1i => err=E0201
+vec3i() << 1u => err=E0201
+vec3i() << 1f => err=E0201
+vec3i() << true => err=E0201
+vec3i() << vec2f() => err=E0201
+vec3i() << vec3f() => err=E0201
+vec3i() << vec2i() => err=E0201
+vec3i() << vec3i() => err=E0201
+vec3i() << vec2u() => err=E0201
+vec3i() << vec3u() => type=vec3<i32>
+vec3i() << vec3<bool>(true, true, true) => err=E0201
+vec3i() << mat2x2f() => err=E0201
+vec3i() << mat2x3f() => err=E0201
+vec3i() << mat3x2f() => err=E0201
+vec3i() << mat3x3f() => err=E0201
+vec2u() << 1 => err=E0201
+vec2u() << 1.0 => err=E0201
+vec2u() << 1i => err=E0201
+vec2u() << 1u => err=E0201
+vec2u() << 1f => err=E0201
+vec2u() << true => err=E0201
+vec2u() << vec2f() => err=E0201
+vec2u() << vec3f() => err=E0201
+vec2u() << vec2i() => err=E0201
+vec2u() << vec3i() => err=E0201
+vec2u() << vec2u() => type=vec2<u32>
+vec2u() << vec3u() => err=E0201
+vec2u() << vec3<bool>(true, true, true) => err=E0201
+vec2u() << mat2x2f() => err=E0201
+vec2u() << mat2x3f() => err=E0201
+vec2u() << mat3x2f() => err=E0201
+vec2u() << mat3x3f() => err=E0201
+vec3u() << 1 => err=E0201
+vec3u() << 1.0 => err=E0201
+vec3u() << 1i => err=E0201
+vec3u() << 1u => err=E0201
+vec3u() << 1f => err=E0201
+vec3u() << true => err=E0201
+vec3u() << vec2f() => err=E0201
+vec3u() << vec3f() => err=E0201
+vec3u() << vec2i() => err=E0201
+vec3u() << vec3i() => err=E0201
+vec3u() << vec2u() => err=E0201
+vec3u() << vec3u() => type=vec3<u32>
+vec3u() << vec3<bool>(true, true, true) => err=E0201
+vec3u() << mat2x2f() => err=E0201
+vec3u() << mat2x3f() => err=E0201
+vec3u() << mat3x2f() => err=E0201
+vec3u() << mat3x3f() => err=E0201
+vec3<bool>(true, true, true) << 1 => err=E0201
+vec3<bool>(true, true, true) << 1.0 => err=E0201
+vec3<bool>(true, true, true) << 1i => err=E0201
+vec3<bool>(true, true, true) << 1u => err=E0201
+vec3<bool>(true, true, true) << 1f => err=E0201
+vec3<bool>(true, true, true) << true => err=E0201
+vec3<bool>(true, true, true) << vec2f() => err=E0201
+vec3<bool>(true, true, true) << vec3f() => err=E0201
+vec3<bool>(true, true, true) << vec2i() => err=E0201
+vec3<bool>(true, true, true) << vec3i() => err=E0201
+vec3<bool>(true, true, true) << vec2u() => err=E0201
+vec3<bool>(true, true, true) << vec3u() => err=E0201
+vec3<bool>(true, true, true) << vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) << mat2x2f() => err=E0201
+vec3<bool>(true, true, true) << mat2x3f() => err=E0201
+vec3<bool>(true, true, true) << mat3x2f() => err=E0201
+vec3<bool>(true, true, true) << mat3x3f() => err=E0201
+mat2x2f() << 1 => err=E0201
+mat2x2f() << 1.0 => err=E0201
+mat2x2f() << 1i => err=E0201
+mat2x2f() << 1u => err=E0201
+mat2x2f() << 1f => err=E0201
+mat2x2f() << true => err=E0201
+mat2x2f() << vec2f() => err=E0201
+mat2x2f() << vec3f() => err=E0201
+mat2x2f() << vec2i() => err=E0201
+mat2x2f() << vec3i() => err=E0201
+mat2x2f() << vec2u() => err=E0201
+mat2x2f() << vec3u() => err=E0201
+mat2x2f() << vec3<bool>(true, true, true) => err=E0201
+mat2x2f() << mat2x2f() => err=E0201
+mat2x2f() << mat2x3f() => err=E0201
+mat2x2f() << mat3x2f() => err=E0201
+mat2x2f() << mat3x3f() => err=E0201
+mat2x3f() << 1 => err=E0201
+mat2x3f() << 1.0 => err=E0201
+mat2x3f() << 1i => err=E0201
+mat2x3f() << 1u => err=E0201
+mat2x3f() << 1f => err=E0201
+mat2x3f() << true => err=E0201
+mat2x3f() << vec2f() => err=E0201
+mat2x3f() << vec3f() => err=E0201
+mat2x3f() << vec2i() => err=E0201
+mat2x3f() << vec3i() => err=E0201
+mat2x3f() << vec2u() => err=E0201
+mat2x3f() << vec3u() => err=E0201
+mat2x3f() << vec3<bool>(true, true, true) => err=E0201
+mat2x3f() << mat2x2f() => err=E0201
+mat2x3f() << mat2x3f() => err=E0201
+mat2x3f() << mat3x2f() => err=E0201
+mat2x3f() << mat3x3f() => err=E0201
+mat3x2f() << 1 => err=E0201
+mat3x2f() << 1.0 => err=E0201
+mat3x2f() << 1i => err=E0201
+mat3x2f() << 1u => err=E0201
+mat3x2f() << 1f => err=E0201
+mat3x2f() << true => err=E0201
+mat3x2f() << vec2f() => err=E0201
+mat3x2f() << vec3f() => err=E0201
+mat3x2f() << vec2i() => err=E0201
+mat3x2f() << vec3i() => err=E0201
+mat3x2f() << vec2u() => err=E0201
+mat3x2f() << vec3u() => err=E0201
+mat3x2f() << vec3<bool>(true, true, true) => err=E0201
+mat3x2f() << mat2x2f() => err=E0201
+mat3x2f() << mat2x3f() => err=E0201
+mat3x2f() << mat3x2f() => err=E0201
+mat3x2f() << mat3x3f() => err=E0201
+mat3x3f() << 1 => err=E0201
+mat3x3f() << 1.0 => err=E0201
+mat3x3f() << 1i => err=E0201
+mat3x3f() << 1u => err=E0201
+mat3x3f() << 1f => err=E0201
+mat3x3f() << true => err=E0201
+mat3x3f() << vec2f() => err=E0201
+mat3x3f() << vec3f() => err=E0201
+mat3x3f() << vec2i() => err=E0201
+mat3x3f() << vec3i() => err=E0201
+mat3x3f() << vec2u() => err=E0201
+mat3x3f() << vec3u() => err=E0201
+mat3x3f() << vec3<bool>(true, true, true) => err=E0201
+mat3x3f() << mat2x2f() => err=E0201
+mat3x3f() << mat2x3f() => err=E0201
+mat3x3f() << mat3x2f() => err=E0201
+mat3x3f() << mat3x3f() => err=E0201
+1 >> 1 => type=i32
+1 >> 1.0 => err=E0201
+1 >> 1i => err=E0201
+1 >> 1u => type=i32
+1 >> 1f => err=E0201
+1 >> true => err=E0201
+1 >> vec2f() => err=E0201
+1 >> vec3f() => err=E0201
+1 >> vec2i() => err=E0201
+1 >> vec3i() => err=E0201
+1 >> vec2u() => err=E0201
+1 >> vec3u() => err=E0201
+1 >> vec3<bool>(true, true, true) => err=E0201
+1 >> mat2x2f() => err=E0201
+1 >> mat2x3f() => err=E0201
+1 >> mat3x2f() => err=E0201
+1 >> mat3x3f() => err=E0201
+1.0 >> 1 => err=E0201
+1.0 >> 1.0 => err=E0201
+1.0 >> 1i => err=E0201
+1.0 >> 1u => err=E0201
+1.0 >> 1f => err=E0201
+1.0 >> true => err=E0201
+1.0 >> vec2f() => err=E0201
+1.0 >> vec3f() => err=E0201
+1.0 >> vec2i() => err=E0201
+1.0 >> vec3i() => err=E0201
+1.0 >> vec2u() => err=E0201
+1.0 >> vec3u() => err=E0201
+1.0 >> vec3<bool>(true, true, true) => err=E0201
+1.0 >> mat2x2f() => err=E0201
+1.0 >> mat2x3f() => err=E0201
+1.0 >> mat3x2f() => err=E0201
+1.0 >> mat3x3f() => err=E0201
+1i >> 1 => type=i32
+1i >> 1.0 => err=E0201
+1i >> 1i => err=E0201
+1i >> 1u => type=i32
+1i >> 1f => err=E0201
+1i >> true => err=E0201
+1i >> vec2f() => err=E0201
+1i >> vec3f() => err=E0201
+1i >> vec2i() => err=E0201
+1i >> vec3i() => err=E0201
+1i >> vec2u() => err=E0201
+1i >> vec3u() => err=E0201
+1i >> vec3<bool>(true, true, true) => err=E0201
+1i >> mat2x2f() => err=E0201
+1i >> mat2x3f() => err=E0201
+1i >> mat3x2f() => err=E0201
+1i >> mat3x3f() => err=E0201
+1u >> 1 => type=u32
+1u >> 1.0 => err=E0201
+1u >> 1i => err=E0201
+1u >> 1u => type=u32
+1u >> 1f => err=E0201
+1u >> true => err=E0201
+1u >> vec2f() => err=E0201
+1u >> vec3f() => err=E0201
+1u >> vec2i() => err=E0201
+1u >> vec3i() => err=E0201
+1u >> vec2u() => err=E0201
+1u >> vec3u() => err=E0201
+1u >> vec3<bool>(true, true, true) => err=E0201
+1u >> mat2x2f() => err=E0201
+1u >> mat2x3f() => err=E0201
+1u >> mat3x2f() => err=E0201
+1u >> mat3x3f() => err=E0201
+1f >> 1 => err=E0201
+1f >> 1.0 => err=E0201
+1f >> 1i => err=E0201
+1f >> 1u => err=E0201
+1f >> 1f => err=E0201
+1f >> true => err=E0201
+1f >> vec2f() => err=E0201
+1f >> vec3f() => err=E0201
+1f >> vec2i() => err=E0201
+1f >> vec3i() => err=E0201
+1f >> vec2u() => err=E0201
+1f >> vec3u() => err=E0201
+1f >> vec3<bool>(true, true, true) => err=E0201
+1f >> mat2x2f() => err=E0201
+1f >> mat2x3f() => err=E0201
+1f >> mat3x2f() => err=E0201
+1f >> mat3x3f() => err=E0201
+true >> 1 => err=E0201
+true >> 1.0 => err=E0201
+true >> 1i => err=E0201
+true >> 1u => err=E0201
+true >> 1f => err=E0201
+true >> true => err=E0201
+true >> vec2f() => err=E0201
+true >> vec3f() => err=E0201
+true >> vec2i() => err=E0201
+true >> vec3i() => err=E0201
+true >> vec2u() => err=E0201
+true >> vec3u() => err=E0201
+true >> vec3<bool>(true, true, true) => err=E0201
+true >> mat2x2f() => err=E0201
+true >> mat2x3f() => err=E0201
+true >> mat3x2f() => err=E0201
+true >> mat3x3f() => err=E0201
+vec2f() >> 1 => err=E0201
+vec2f() >> 1.0 => err=E0201
+vec2f() >> 1i => err=E0201
+vec2f() >> 1u => err=E0201
+vec2f() >> 1f => err=E0201
+vec2f() >> true => err=E0201
+vec2f() >> vec2f() => err=E0201
+vec2f() >> vec3f() => err=E0201
+vec2f() >> vec2i() => err=E0201
+vec2f() >> vec3i() => err=E0201
+vec2f() >> vec2u() => err=E0201
+vec2f() >> vec3u() => err=E0201
+vec2f() >> vec3<bool>(true, true, true) => err=E0201
+vec2f() >> mat2x2f() => err=E0201
+vec2f() >> mat2x3f() => err=E0201
+vec2f() >> mat3x2f() => err=E0201
+vec2f() >> mat3x3f() => err=E0201
+vec3f() >> 1 => err=E0201
+vec3f() >> 1.0 => err=E0201
+vec3f() >> 1i => err=E0201
+vec3f() >> 1u => err=E0201
+vec3f() >> 1f => err=E0201
+vec3f() >> true => err=E0201
+vec3f() >> vec2f() => err=E0201
+vec3f() >> vec3f() => err=E0201
+vec3f() >> vec2i() => err=E0201
+vec3f() >> vec3i() => err=E0201
+vec3f() >> vec2u() => err=E0201
+vec3f() >> vec3u() => err=E0201
+vec3f() >> vec3<bool>(true, true, true) => err=E0201
+vec3f() >> mat2x2f() => err=E0201
+vec3f() >> mat2x3f() => err=E0201
+vec3f() >> mat3x2f() => err=E0201
+vec3f() >> mat3x3f() => err=E0201
+vec2i() >> 1 => err=E0201
+vec2i() >> 1.0 => err=E0201
+vec2i() >> 1i => err=E0201
+vec2i() >> 1u => err=E0201
+vec2i() >> 1f => err=E0201
+vec2i() >> true => err=E0201
+vec2i() >> vec2f() => err=E0201
+vec2i() >> vec3f() => err=E0201
+vec2i() >> vec2i() => err=E0201
+vec2i() >> vec3i() => err=E0201
+vec2i() >> vec2u() => type=vec2<i32>
+vec2i() >> vec3u() => err=E0201
+vec2i() >> vec3<bool>(true, true, true) => err=E0201
+vec2i() >> mat2x2f() => err=E0201
+vec2i() >> mat2x3f() => err=E0201
+vec2i() >> mat3x2f() => err=E0201
+vec2i() >> mat3x3f() => err=E0201
+vec3i() >> 1 => err=E0201
+vec3i() >> 1.0 => err=E0201
+vec3i() >> 1i => err=E0201
+vec3i() >> 1u => err=E0201
+vec3i() >> 1f => err=E0201
+vec3i() >> true => err=E0201
+vec3i() >> vec2f() => err=E0201
+vec3i() >> vec3f() => err=E0201
+vec3i() >> vec2i() => err=E0201
+vec3i() >> vec3i() => err=E0201
+vec3i() >> vec2u() => err=E0201
+vec3i() >> vec3u() => type=vec3<i32>
+vec3i() >> vec3<bool>(true, true, true) => err=E0201
+vec3i() >> mat2x2f() => err=E0201
+vec3i() >> mat2x3f() => err=E0201
+vec3i() >> mat3x2f() => err=E0201
+vec3i() >> mat3x3f() => err=E0201
+vec2u() >> 1 => err=E0201
+vec2u() >> 1.0 => err=E0201
+vec2u() >> 1i => err=E0201
+vec2u() >> 1u => err=E0201
+vec2u() >> 1f => err=E0201
+vec2u() >> true => err=E0201
+vec2u() >> vec2f() => err=E0201
+vec2u() >> vec3f() => err=E0201
+vec2u() >> vec2i() => err=E0201
+vec2u() >> vec3i() => err=E0201
+vec2u() >> vec2u() => type=vec2<u32>
+vec2u() >> vec3u() => err=E0201
+vec2u() >> vec3<bool>(true, true, true) => err=E0201
+vec2u() >> mat2x2f() => err=E0201
+vec2u() >> mat2x3f() => err=E0201
+vec2u() >> mat3x2f() => err=E0201
+vec2u() >> mat3x3f() => err=E0201
+vec3u() >> 1 => err=E0201
+vec3u() >> 1.0 => err=E0201
+vec3u() >> 1i => err=E0201
+vec3u() >> 1u => err=E0201
+vec3u() >> 1f => err=E0201
+vec3u() >> true => err=E0201
+vec3u() >> vec2f() => err=E0201
+vec3u() >> vec3f() => err=E0201
+vec3u() >> vec2i() => err=E0201
+vec3u() >> vec3i() => err=E0201
+vec3u() >> vec2u() => err=E0201
+vec3u() >> vec3u() => type=vec3<u32>
+vec3u() >> vec3<bool>(true, true, true) => err=E0201
+vec3u() >> mat2x2f() => err=E0201
+vec3u() >> mat2x3f() => err=E0201
+vec3u() >> mat3x2f() => err=E0201
+vec3u() >> mat3x3f() => err=E0201
+vec3<bool>(true, true, true) >> 1 => err=E0201
+vec3<bool>(true, true, true) >> 1.0 => err=E0201
+vec3<bool>(true, true, true) >> 1i => err=E0201
+vec3<bool>(true, true, true) >> 1u => err=E0201
+vec3<bool>(true, true, true) >> 1f => err=E0201
+vec3<bool>(true, true, true) >> true => err=E0201
+vec3<bool>(true, true, true) >> vec2f() => err=E0201
+vec3<bool>(true, true, true) >> vec3f() => err=E0201
+vec3<bool>(true, true, true) >> vec2i() => err=E0201
+vec3<bool>(true, true, true) >> vec3i() => err=E0201
+vec3<bool>(true, true, true) >> vec2u() => err=E0201
+vec3<bool>(true, true, true) >> vec3u() => err=E0201
+vec3<bool>(true, true, true) >> vec3<bool>(true, true, true) => err=E0201
+vec3<bool>(true, true, true) >> mat2x2f() => err=E0201
+vec3<bool>(true, true, true) >> mat2x3f() => err=E0201
+vec3<bool>(true, true, true) >> mat3x2f() => err=E0201
+vec3<bool>(true, true, true) >> mat3x3f() => err=E0201
+mat2x2f() >> 1 => err=E0201
+mat2x2f() >> 1.0 => err=E0201
+mat2x2f() >> 1i => err=E0201
+mat2x2f() >> 1u => err=E0201
+mat2x2f() >> 1f => err=E0201
+mat2x2f() >> true => err=E0201
+mat2x2f() >> vec2f() => err=E0201
+mat2x2f() >> vec3f() => err=E0201
+mat2x2f() >> vec2i() => err=E0201
+mat2x2f() >> vec3i() => err=E0201
+mat2x2f() >> vec2u() => err=E0201
+mat2x2f() >> vec3u() => err=E0201
+mat2x2f() >> vec3<bool>(true, true, true) => err=E0201
+mat2x2f() >> mat2x2f() => err=E0201
+mat2x2f() >> mat2x3f() => err=E0201
+mat2x2f() >> mat3x2f() => err=E0201
+mat2x2f() >> mat3x3f() => err=E0201
+mat2x3f() >> 1 => err=E0201
+mat2x3f() >> 1.0 => err=E0201
+mat2x3f() >> 1i => err=E0201
+mat2x3f() >> 1u => err=E0201
+mat2x3f() >> 1f => err=E0201
+mat2x3f() >> true => err=E0201
+mat2x3f() >> vec2f() => err=E0201
+mat2x3f() >> vec3f() => err=E0201
+mat2x3f() >> vec2i() => err=E0201
+mat2x3f() >> vec3i() => err=E0201
+mat2x3f() >> vec2u() => err=E0201
+mat2x3f() >> vec3u() => err=E0201
+mat2x3f() >> vec3<bool>(true, true, true) => err=E0201
+mat2x3f() >> mat2x2f() => err=E0201
+mat2x3f() >> mat2x3f() => err=E0201
+mat2x3f() >> mat3x2f() => err=E0201
+mat2x3f() >> mat3x3f() => err=E0201
+mat3x2f() >> 1 => err=E0201
+mat3x2f() >> 1.0 => err=E0201
+mat3x2f() >> 1i => err=E0201
+mat3x2f() >> 1u => err=E0201
+mat3x2f() >> 1f => err=E0201
+mat3x2f() >> true => err=E0201
+mat3x2f() >> vec2f() => err=E0201
+mat3x2f() >> vec3f() => err=E0201
+mat3x2f() >> vec2i() => err=E0201
+mat3x2f() >> vec3i() => err=E0201
+mat3x2f() >> vec2u() => err=E0201
+mat3x2f() >> vec3u() => err=E0201
+mat3x2f() >> vec3<bool>(true, true, true) => err=E0201
+mat3x2f() >> mat2x2f() => err=E0201
+mat3x2f() >> mat2x3f() => err=E0201
+mat3x2f() >> mat3x2f() => err=E0201
+mat3x2f() >> mat3x3f() => err=E0201
+mat3x3f() >> 1 => err=E0201
+mat3x3f() >> 1.0 => err=E0201
+mat3x3f() >> 1i => err=E0201
+mat3x3f() >> 1u => err=E0201
+mat3x3f() >> 1f => err=E0201
+mat3x3f() >> true => err=E0201
+mat3x3f() >> vec2f() => err=E0201
+mat3x3f() >> vec3f() => err=E0201
+mat3x3f() >> vec2i() => err=E0201
+mat3x3f() >> vec3i() => err=E0201
+mat3x3f() >> vec2u() => err=E0201
+mat3x3f() >> vec3u() => err=E0201
+mat3x3f() >> vec3<bool>(true, true, true) => err=E0201
+mat3x3f() >> mat2x2f() => err=E0201
+mat3x3f() >> mat2x3f() => err=E0201
+mat3x3f() >> mat3x2f() => err=E0201
+mat3x3f() >> mat3x3f() => err=E0201
+-1 => type=i32
+-1.0 => type=f32
+-1i => type=i32
+-1u => type=u32
+-1f => type=f32
+-true => err=E0201
+-vec2f() => type=vec2<f32>
+-vec3f() => type=vec3<f32>
+-vec2i() => type=vec2<i32>
+-vec3i() => type=vec3<i32>
+-vec2u() => type=vec2<u32>
+-vec3u() => type=vec3<u32>
+-vec3<bool>(true, true, true) => err=E0201
+-mat2x2f() => err=E0201
+-mat2x3f() => err=E0201
+-mat3x2f() => err=E0201
+-mat3x3f() => err=E0201
+!1 => err=E0201
+!1.0 => err=E0201
+!1i => err=E0201
+!1u => err=E0201
+!1f => err=E0201
+!true => type=bool
+!vec2f() => err=E0201
+!vec3f() => err=E0201
+!vec2i() => err=E0201
+!vec3i() => err=E0201
+!vec2u() => err=E0201
+!vec3u() => err=E0201
+!vec3<bool>(true, true, true) => type=vec3<bool>
+!mat2x2f() => err=E0201
+!mat2x3f() => err=E0201
+!mat3x2f() => err=E0201
+!mat3x3f() => err=E0201
+~1 => type=i32
+~1.0 => err=E0201
+~1i => type=i32
+~1u => type=u32
+~1f => err=E0201
+~true => err=E0201
+~vec2f() => err=E0201
+~vec3f() => err=E0201
+~vec2i() => type=vec2<i32>
+~vec3i() => type=vec3<i32>
+~vec2u() => type=vec2<u32>
+~vec3u() => type=vec3<u32>
+~vec3<bool>(true, true, true) => err=E0201
+~mat2x2f() => err=E0201
+~mat2x3f() => err=E0201
+~mat3x2f() => err=E0201
+~mat3x3f() => err=E0201
