@@ -12,9 +12,8 @@
 //!     nearest registered scope, falling back to `module.scope` at the
 //!     root.
 //!
-//! Both front-ends (Parser and CstLower) push scopes in the exact order
-//! the CST opens scope-bearing nodes, which is what makes the index-zip
-//! correct.
+//! The Parser pushes scopes in the exact order the CST opens scope-bearing
+//! nodes, which is what makes the index-zip correct.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -42,7 +41,7 @@ pub fn scopeAtCstNode(result: *const Incremental.ReparseResult, node: Cst.NodeIn
 }
 
 /// True when this CST kind opens an AST scope during lowering. Kept in
-/// lockstep with the `pushScope` call sites in `Parser` and `CstLower`.
+/// lockstep with the `pushScope` call sites in `Parser`.
 fn isScopeOpener(k: Cst.Kind) bool {
     return switch (k) {
         .fn_decl, .compound_stmt, .for_stmt => true,
@@ -78,9 +77,8 @@ fn collectAstScopes(
 
 /// Populate `result.scope_for_cst_node` by pairing CST scope-openers
 /// (fn_decl, compound_stmt, for_stmt) with non-root AST scopes in the same
-/// DFS-open order. Both front-ends (Parser and CstLower) push scopes in
-/// the exact order the CST nodes are opened, so index-zip yields a
-/// correct mapping.
+/// DFS-open order. The Parser pushes scopes in the exact order the CST
+/// nodes are opened, so index-zip yields a correct mapping.
 ///
 /// Idempotent: re-runs clear the existing map first. Called from
 /// `parseFull` at the end of each full parse and from the hot path after
@@ -99,7 +97,7 @@ pub fn buildScopeForCstNodeMap(
     defer ast_scopes.deinit(arena);
     try collectAstScopes(arena, result.module.scope, &ast_scopes);
 
-    // Parser/CstLower and the CST emit scope-openers in the same DFS-open
+    // The Parser and the CST emit scope-openers in the same DFS-open
     // order, so cardinalities match. If they ever diverge, fall back to
     // an empty map — `scopeAtCstNode` still returns a valid scope (the
     // module) and the hot path's correctness degrades to a full

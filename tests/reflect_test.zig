@@ -2072,7 +2072,7 @@ test "reflect: compound override default is the verbatim source slice" {
     // distinguishes the two: the source slice keeps the author's spacing
     // (`1.0+2.0*3.0`), whereas the legacy `renderExprText` fallback would
     // normalize it to `1.0 + 2.0 * 3.0`. This also aligns the CLI/Parser
-    // path with the LSP/CstLower path, which already sliced from source.
+    // path with the LSP path, which already sliced from source.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();

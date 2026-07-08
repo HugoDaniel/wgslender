@@ -55,7 +55,7 @@ fn checkFunction(ctx: *Context, fd: *Ast.FunctionDecl) error{OutOfMemory}!void {
     );
     const compute_attr = fd.attributes.items[ci];
     // Prefer the parser-populated span; fall back to the attribute's loc
-    // plus the literal length when CstLower hasn't filled span in.
+    // plus the literal length when the parser hasn't filled span in.
     const end: u32 = if (compute_attr.span.end > compute_attr.loc)
         compute_attr.span.end
     else

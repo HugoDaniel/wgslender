@@ -233,12 +233,9 @@ pub fn parseFull(gpa: Allocator, source: []const u8) !ReparseResult {
 
     var parser = try Parser.initWithCst(arena, owned_source, stream, &builder);
     // Keep the Parser's own AST. Since Block 1.2 the Parser stamps a
-    // populated `span` on every `Ast.Expr` (identical to what CstLower's
-    // `nonTriviaSpan` produced), so the incremental add/sub hot path can
-    // still locate the AST slot for a CST anchor from `Expr.span()`.
-    // Re-lowering the CST through CstLower would rebuild a structurally
-    // identical module (pinned by `tests/cst_lower_test.zig`) and re-run
-    // Pass 2 a second time — pure duplicate work, now dropped.
+    // populated `span` on every `Ast.Expr`, so the incremental add/sub hot
+    // path can locate the AST slot for a CST anchor directly from
+    // `Expr.span()` — no second lowering pass over the CST is needed.
     const module = try parser.parse();
     const tree = try builder.finish(arena, all_tokens, owned_source);
 

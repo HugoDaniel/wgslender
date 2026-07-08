@@ -99,8 +99,9 @@ fn testOne(
     //    flags, identical scope structure, and per-symbol use-count parity —
     //    tolerant only of the hot path's append-only symbol table (removed
     //    declarations leave a dead, use_count==0 symbol behind). This is the
-    //    gate that keeps the Parser-driven anchor splice honest once CstLower
-    //    is gone; a coarse decl-count/source check would not see the drift.
+    //    gate that keeps the Parser-driven anchor splice honest now that
+    //    CstLower is gone; a coarse decl-count/source check would not see
+    //    the drift.
     ast_equal.expectModulesEquivalent(gpa, oracle.module, updated.module) catch |err| {
         std.debug.print(
             "fuzz AST divergence ({s}): edit=[{d}..{d}]=<<{s}>> reused={} base=<<{s}>>\n",

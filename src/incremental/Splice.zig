@@ -915,7 +915,7 @@ fn findSlotInExprField(slot: *Ast.Expr, expr: Ast.Expr, target: Ast.Span, kind: 
 
     // If this expression's span is inside the anchor's CST range (which
     // may include leading trivia) AND the kind matches, this is our
-    // slot. Parser/CstLower emits Ast spans from non-trivia token
+    // slot. The Parser emits Ast spans from non-trivia token
     // boundaries while the CST raw range can start on trivia — use
     // containment to bridge.
     if (expr_fits_in_target and matchesExprKind(expr, kind)) {

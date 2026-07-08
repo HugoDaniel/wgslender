@@ -1,7 +1,7 @@
 //! Pass-2 AST visitor.
 //!
-//! Shared by `Parser` (after its Pass-1 parse) and `CstLower` (after its
-//! Pass-1 CST→AST lowering). Walks a fully-built `Ast.Module`, binding
+//! Run by `Parser` after its Pass-1 parse (both the full parse and the
+//! incremental seeded re-parse). Walks a fully-built `Ast.Module`, binding
 //! identifier references to symbols, incrementing the `UseCounts`
 //! side-table, and marking expression purity in post-order.
 //!
@@ -56,8 +56,7 @@ pub const Context = struct {
     /// Diagnostics bucket; `visit` appends use-before-declaration errors.
     errors: *std.ArrayList(Parser.ParseError),
     /// Upper bound on worklist iterations in stmt/expr visits. Parser
-    /// supplies `token_tags.len * 2`; CstLower supplies an equivalent
-    /// bound derived from CST node count. Purely a safety guard.
+    /// supplies `token_tags.len * 2`. Purely a safety guard.
     safety_budget: usize,
     /// Direction of the walk (see `Mode` doc comment). Default `.add`
     /// preserves every pre-existing caller's behavior byte-for-byte.
@@ -403,7 +402,7 @@ pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
 //
 // Callers take the `ParsedAnchor` union returned by
 // `Parser.reparseAnchor` and dispatch on its tag into these two entry
-// points. AstVisit deliberately avoids importing Parser/CstLower to keep
+// points. AstVisit deliberately avoids importing Parser to keep
 // the module dependency acyclic.
 // =========================================================================
 

@@ -170,8 +170,8 @@ test "S4: rename at decl site takes the decl_stmt hot path" {
 
 test "S5: add a new local stmt takes the compound_stmt hot path" {
     // A local-decl append lands on `compound_stmt`, which is a hot-path
-    // anchor; `CstLower.lowerTree` re-derives the symbol table from the
-    // spliced CST so the new `b` symbol shows up correctly.
+    // anchor; the seeded re-parse of the spliced subtree re-derives the
+    // symbol table so the new `b` symbol shows up correctly.
     try applyEditAndVerify(
         std.testing.allocator,
         "fn f() { let a = 1; }",

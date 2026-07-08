@@ -340,7 +340,7 @@ var_info: std.AutoHashMapUnmanaged(u32, VarInfo) = .{},
 
 /// Validate a parsed WGSL module.
 pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result {
-    // Pre: module came from a parse (or CstLower) — its scope tree must be
+    // Pre: module came from a parse — its scope tree must be
     // rooted, and the source slice is what diagnostics will index into.
     std.debug.assert(module.scope.parent == null);
     std.debug.assert(module.source.len < std.math.maxInt(u32));

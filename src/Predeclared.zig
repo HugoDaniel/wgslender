@@ -2,13 +2,13 @@
 //!
 //! The set of predeclared names — scalars, samplers, vector/matrix
 //! shorthands, texture types, address spaces, access modes — was previously
-//! restated across the Parser, CstLower, the Validator, `Suggest`, and the
-//! LSP completion handler, and had drifted: `texture_external` was known to
-//! CstLower's texture table but missing from the Parser's. This module holds
-//! the one canonical inventory; every front-end consults it.
+//! restated across the Parser, the Validator, `Suggest`, and the LSP
+//! completion handler, and had drifted (e.g. `texture_external` recognized
+//! in one table but missing from another). This module holds the one
+//! canonical inventory; every consumer consults it.
 //!
 //! Depends only on `Ast` (the syntactic layer) — the returned descriptors are
-//! spelled in the AST's own enums so the Parser and CstLower can consume them
+//! spelled in the AST's own enums so the Parser can consume them
 //! directly. The Validator maps these descriptors into its `Types.*`
 //! representation at the call site; the shorthand parsers here are
 //! allocation-free so they can be shared without an allocator.

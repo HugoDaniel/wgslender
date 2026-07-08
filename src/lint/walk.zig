@@ -148,7 +148,7 @@ fn walkExprTree(
 }
 
 /// Best-effort start offset for an expression. Prefers `.span` when
-/// populated (CstLower path); falls back to each node's `.loc` token.
+/// populated; falls back to each node's `.loc` token.
 pub fn exprStart(e: Ast.Expr) u32 {
     const s = e.span();
     if (s.start != s.end) return s.start;

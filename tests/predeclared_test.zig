@@ -2,10 +2,10 @@
 //! WGSL predeclared-type-name inventory (scalars, samplers, vector/matrix
 //! shorthands, texture types, address spaces, access modes).
 //!
-//! These pin the inventory that the Parser, CstLower, Validator, and the LSP
+//! These pin the inventory that the Parser, Validator, and the LSP
 //! completion handler all consult. The historically drift-prone entry is
-//! `texture_external` (known to CstLower but previously missing from the
-//! Parser's texture table); it is pinned explicitly below.
+//! `texture_external` (once recognized in one texture table but missing from
+//! another); it is pinned explicitly below.
 
 const std = @import("std");
 const wgslender = @import("wgslender");

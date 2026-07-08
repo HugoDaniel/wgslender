@@ -28,7 +28,7 @@ pub const CompletionKind = enum(u8) {
 };
 
 // The predeclared type-name inventory lives in `Predeclared.zig` (shared
-// with the Parser/CstLower/Validator). Completion offers the full set,
+// with the Parser/Validator). Completion offers the full set,
 // including `texture_external`.
 const wgsl_type_names = wgslender.Predeclared.all_type_names;
 

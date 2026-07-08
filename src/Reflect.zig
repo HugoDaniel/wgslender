@@ -671,9 +671,9 @@ pub fn reflectWithRenamer(
                 info.type_info = lc.buildTypeInfo(t);
             }
             if (o.initializer) |expr| {
-                // Prefer the source slice when CstLower has stamped a span;
-                // fall back to a small renderer for the legacy parser path
-                // that leaves `expr.span` empty for literals/idents.
+                // Prefer the source slice when the node carries a stamped
+                // span; fall back to a small renderer for literals/idents
+                // that are left with an empty `expr.span`.
                 const sp = expr.span();
                 if (sp.end > sp.start and sp.end <= module.source.len) {
                     info.default = module.source[sp.start..sp.end];

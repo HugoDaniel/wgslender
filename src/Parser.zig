@@ -886,10 +886,9 @@ fn parseAttributes(self: *Parser) !std.ArrayList(Ast.Attribute) {
             }
         }
         // Span from the `@` through the last consumed token (the closing
-        // `)` when args are present, else the attribute name). Mirrors
-        // CstLower's `nonTriviaSpan` of the `attribute` node so both
-        // front-ends agree — the incremental hot path's
-        // `findSlotInAttribute` gates on this span (see Ast.Attribute.span).
+        // `)` when args are present, else the attribute name). The
+        // incremental hot path's `findSlotInAttribute` gates on this span
+        // (see Ast.Attribute.span).
         attr.span = .{ .start = attr_loc, .end = self.prevTokenEnd() };
         try attrs.append(self.arena, attr);
         try self.cstClose(attr_marker, .attribute);
@@ -2085,8 +2084,7 @@ fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
     self.expr_context = "in for update";
     // Capture the byte offset BEFORE parsing the LHS — Parser-built
     // expression nodes carry empty spans, so we cannot recover the
-    // statement's start byte from `left.span()`. CstLower mirrors this
-    // computation in `lowerLooseExprStmt`.
+    // statement's start byte from `left.span()`.
     const stmt_start = self.currentStart();
     const left = (try self.parseExpression()) orelse return null;
 
@@ -2185,8 +2183,8 @@ fn parseLoopStmt(self: *Parser) !*Ast.LoopStmt {
 /// the loop body — a plain `parseCompoundStmt` would fall through to
 /// `parseExpressionOrAssignment` on the `continuing` keyword and emit
 /// "expected expression in statement". Emits a `.continuing_stmt` CST
-/// node around the keyword + compound so `CstLower.lowerLoopStmt` picks
-/// it up the same way as the legacy trailing form.
+/// node around the keyword + compound so the CST covers the loop body
+/// losslessly, the same way as the legacy trailing form.
 fn parseLoopBody(self: *Parser, out_continuing: *?*Ast.CompoundStmt) !*Ast.CompoundStmt {
     const span_start = self.currentStart();
     const marker = self.cstOpen();

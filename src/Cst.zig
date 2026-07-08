@@ -2,8 +2,9 @@
 //!
 //! The CST is a lossless, trivia-preserving view of the source. Every byte
 //! of the original text is reachable either as a token (real or trivia) or
-//! as an enclosing node's range. The AST is lowered from the CST in
-//! `CstLower.zig`; consumers that don't care about layout stay on the AST.
+//! as an enclosing node's range. The Parser builds it alongside the AST for
+//! the incremental hot path; consumers that don't care about layout stay on
+//! the AST.
 //!
 //! Invariants:
 //!   - Lossless: concatenating every leaf token in tree order reproduces

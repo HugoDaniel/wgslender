@@ -42,7 +42,7 @@
 //!     a non-null parent forming an acyclic tree.
 //!   - `Module.source` is sentinel-terminated and the AST's `loc` and
 //!     `span` fields index into it directly.
-//!   - Symbol fields are write-once (set by Parser/CstLower at declaration
+//!   - Symbol fields are write-once (set by the Parser at declaration
 //!     time, then read-only). Analysis state lives in `Module.use_counts`,
 //!     `Module.liveness`, and per-call `RenamePolicy`.
 
@@ -236,7 +236,7 @@ pub const Module = struct {
     /// Grow `use_counts.counts` to match `n_symbols`, preserving existing
     /// counts and zero-filling new slots. Idempotent if the side-table is
     /// already at least `n_symbols` long. Used by the incremental Splice
-    /// after `lowerSubtreeInScope` appends fresh symbols for which the
+    /// after `reparseAnchorInScope` appends fresh symbols for which the
     /// add-walk needs slots to bump.
     pub fn resizeUseCounts(self: *Module, arena: std.mem.Allocator, n_symbols: usize) !void {
         if (self.use_counts.counts.len >= n_symbols) return;
@@ -733,10 +733,9 @@ pub const Attribute = struct {
     args: std.ArrayList(Expr),
     loc: u32 = 0,
     /// Byte span from the `@` through the closing `)` (or the identifier
-    /// end for argument-less attributes). Stamped by both front ends:
-    /// the Parser via `attr_loc`/`prevTokenEnd()`, and CstLower via
-    /// `nonTriviaSpan`. The incremental hot path's `findSlotInAttribute`
-    /// gates on it, so the two must agree (pinned by `tests/ast_equal.zig`).
+    /// end for argument-less attributes). Stamped by the Parser via
+    /// `attr_loc`/`prevTokenEnd()`. The incremental hot path's
+    /// `findSlotInAttribute` gates on it (pinned by `tests/ast_equal.zig`).
     span: Span = .empty,
 };
 
@@ -872,9 +871,8 @@ pub const Expr = union(enum) {
 
     /// Byte range covering the full expression as written in source
     /// (`[first-non-trivia-token.start, last-non-trivia-token.end)`).
-    /// Stamped by both front ends: the `Parser` via `currentStart()` /
-    /// `prevTokenEnd()`, and `CstLower` via `nonTriviaSpan`. Stays `.empty`
-    /// only on error-recovery synthetic nodes.
+    /// Stamped by the `Parser` via `currentStart()` / `prevTokenEnd()`.
+    /// Stays `.empty` only on error-recovery synthetic nodes.
     pub fn span(self: Expr) Span {
         return switch (self) {
             inline else => |ptr| ptr.span,

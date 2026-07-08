@@ -357,7 +357,7 @@ test "§17.5: countOneBits(1) valid (abstract-int concretizes to i32)" {
 // lexer's decision for the `digit . suffix` shape.
 // -------------------------------------------------------------------------
 
-test "lit: 1.f is f32 (parser/CstLower scanNumberText fix)" {
+test "lit: 1.f is f32 (parser scanNumberText fix)" {
     try validMustPass(
         \\fn f() {
         \\  let x = 1.f;

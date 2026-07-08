@@ -60,11 +60,10 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | Module | Purpose |
 |--------|---------|
 | `src/Lexer.zig` | Tokenizer with fast ASCII lookup tables |
-| `src/Cst.zig` | Concrete syntax tree (green+red) — lossless, trivia-preserving front-end |
+| `src/Cst.zig` | Concrete syntax tree (green+red) — lossless, trivia-preserving; built by the Parser alongside the AST for the incremental hot path |
 | `src/Parser.zig` | Two-pass parser (parse → visit/bind) |
-| `src/CstLower.zig` | Lowers a `Cst.Tree` into an `Ast.Module` |
 | `src/Ast.zig` | AST nodes (tagged unions), Symbol table, Scope tree |
-| `src/AstVisit.zig` | Pass-2 AST visitor shared by `Parser` and `CstLower` (bind refs, use counts, purity) |
+| `src/AstVisit.zig` | Pass-2 AST visitor run by `Parser` (bind refs, use counts, purity) |
 | `src/Printer.zig` | Code generator with minification + syntax optimization |
 | `src/Renamer.zig` | Frequency-based identifier renaming |
 | `src/RenamePolicy.zig` | Per-pipeline policy for which symbols may be renamed |
