@@ -713,18 +713,15 @@ const LowerCtx = struct {
                 }
             }
             var param_attrs: std.ArrayList(Ast.Attribute) = .empty;
-            var param_start: ?u32 = null;
             if (w.peekNodeKind()) |k| {
                 if (k == .attribute_list) {
                     const an = w.eatAnyNode().?;
-                    param_start = self.nonTriviaSpan(an).start;
                     param_attrs = try self.lowerAttributeList(self.nodeCursor(an));
                 }
             }
             const name_tok = w.eatToken(.ident) orelse w.eatToken(.reserved_ident) orelse break;
             const text = self.tokenText(name_tok);
             const loc = self.tokenStart(name_tok);
-            if (param_start == null) param_start = loc;
             const name = try self.declareSymbol(text, .parameter, .{}, loc);
             _ = w.eatToken(.colon);
             var typ: Ast.Type = undefined;
@@ -736,13 +733,10 @@ const LowerCtx = struct {
                 ident.* = .{ .name = "", .ref = .none, .loc = loc, .span = .empty };
                 typ = .{ .ident = ident };
             }
-            const type_end = typ.span().end;
-            const param_end = if (type_end != 0) type_end else self.tokenEnd(name_tok);
             try params.append(self.arena, .{
                 .attributes = param_attrs,
                 .name = name,
                 .typ = typ,
-                .span = .{ .start = param_start.?, .end = param_end },
             });
         } else unreachable;
         return params;
@@ -769,18 +763,15 @@ const LowerCtx = struct {
                 }
             }
             var member_attrs: std.ArrayList(Ast.Attribute) = .empty;
-            var member_start: ?u32 = null;
             if (w.peekNodeKind()) |k| {
                 if (k == .attribute_list) {
                     const an = w.eatAnyNode().?;
-                    member_start = self.nonTriviaSpan(an).start;
                     member_attrs = try self.lowerAttributeList(self.nodeCursor(an));
                 }
             }
             const name_tok = w.eatToken(.ident) orelse w.eatToken(.reserved_ident) orelse break;
             const text = self.tokenText(name_tok);
             const loc = self.tokenStart(name_tok);
-            if (member_start == null) member_start = loc;
             const name = try self.declareSymbolNoScope(text, .member, .{}, loc);
             _ = w.eatToken(.colon);
             var typ: Ast.Type = undefined;
@@ -791,13 +782,10 @@ const LowerCtx = struct {
                 ident.* = .{ .name = "", .ref = .none, .loc = loc, .span = .empty };
                 typ = .{ .ident = ident };
             }
-            const type_end = typ.span().end;
-            const member_end = if (type_end != 0) type_end else self.tokenEnd(name_tok);
             try decl.members.append(self.arena, .{
                 .attributes = member_attrs,
                 .name = name,
                 .typ = typ,
-                .span = .{ .start = member_start.?, .end = member_end },
             });
         } else unreachable;
         _ = w.eatToken(.r_brace);

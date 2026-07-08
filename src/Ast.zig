@@ -440,7 +440,6 @@ pub fn shiftDeclInteriorPart(decl: *Decl, splice_end_old: u32, delta: i64) void 
         .function => |d| {
             for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
             for (d.parameters.items) |*p| {
-                shiftNodeOffsets(p, splice_end_old, delta);
                 shiftTypeSpans(p.typ, splice_end_old, delta);
                 for (p.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
             }
@@ -450,7 +449,6 @@ pub fn shiftDeclInteriorPart(decl: *Decl, splice_end_old: u32, delta: i64) void 
         },
         .@"struct" => |d| {
             for (d.members.items) |*m| {
-                shiftNodeOffsets(m, splice_end_old, delta);
                 shiftTypeSpans(m.typ, splice_end_old, delta);
                 for (m.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
             }
@@ -650,10 +648,6 @@ pub const Parameter = struct {
     attributes: std.ArrayList(Attribute),
     name: SymbolIndex,
     typ: Type,
-    /// Byte span from the first attribute or name token through the end of
-    /// the type expression. Populated by `CstLower`; `.empty` from the
-    /// legacy `Parser` construction path.
-    span: Span = .empty,
 };
 
 pub const StructDecl = struct {
@@ -670,10 +664,6 @@ pub const StructMember = struct {
     attributes: std.ArrayList(Attribute),
     name: SymbolIndex,
     typ: Type,
-    /// Byte span from the first attribute or name token through the end of
-    /// the type expression. Populated by `CstLower`; `.empty` from the
-    /// legacy `Parser` construction path.
-    span: Span = .empty,
 };
 
 pub const AliasDecl = struct {
@@ -1536,7 +1526,6 @@ fn shiftDeclSpans(decl: *Decl, splice_end_old: u32, delta: i64) void {
             shiftNodeOffsets(d, splice_end_old, delta);
             for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
             for (d.parameters.items) |*p| {
-                shiftNodeOffsets(p, splice_end_old, delta);
                 shiftTypeSpans(p.typ, splice_end_old, delta);
                 for (p.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
             }
@@ -1547,7 +1536,6 @@ fn shiftDeclSpans(decl: *Decl, splice_end_old: u32, delta: i64) void {
         .@"struct" => |d| {
             shiftNodeOffsets(d, splice_end_old, delta);
             for (d.members.items) |*m| {
-                shiftNodeOffsets(m, splice_end_old, delta);
                 shiftTypeSpans(m.typ, splice_end_old, delta);
                 for (m.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
             }

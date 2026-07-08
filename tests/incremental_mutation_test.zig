@@ -1045,3 +1045,50 @@ test "SS-D4: rename the LHS identifier of a let binding" {
         "fn f() { let z = 1; }",
     );
 }
+
+// =========================================================================
+// Interior-bias drain (absorbInteriors) after a byte-deleting hot edit.
+//
+// Regression: `Parameter.span` / `StructMember.span` were dead-on-read but
+// still written by the interior-bias shift walk (`shiftDeclInteriorPart`).
+// On the Parser AST path (the only path since Block 1.3) they are always
+// `.empty` == (0,0); a byte-DELETING edit gives a downstream struct or
+// param'd function a negative `interior_pending`, and draining that bias via
+// `absorbInteriors` shifted the empty (0,0) span to -1 → `@intCast` panic.
+// Every external span reader (Validator, LSP, Printer) calls
+// `absorbInteriors` at entry, so this was a live LSP crash. Deleting the two
+// dead fields removes them from the shift walk and fixes it.
+// =========================================================================
+
+test "R1: absorbInteriors after a delete upstream of a struct does not underflow" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 =
+        "const x = 1;\nfn f() { let y = x + 2; return; }\nstruct S { a: f32, b: vec3<f32> }\n";
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+    // Delete the space in "fn f() {" → the downstream struct gets bias -1.
+    var updated = try Incremental.reparse(gpa, &prev, .{ .start = 19, .end = 20, .new_text = "" });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+    // Must not panic, and must leave every span in current coordinates.
+    updated.module.absorbInteriors();
+    const s = updated.module.declarations.items[2].@"struct";
+    const t = s.members.items[0].typ.span();
+    try std.testing.expectEqualStrings("f32", updated.source[t.start..t.end]);
+}
+
+test "R2: absorbInteriors after a delete upstream of a param'd fn does not underflow" {
+    const gpa = std.testing.allocator;
+    const base: [:0]const u8 =
+        "fn a() { let z = 1; }\nfn g(p: f32) -> f32 { return p; }\n";
+    var prev = try Incremental.parseFull(gpa, base);
+    defer prev.deinit();
+    // Delete the space in "fn a() {" → the downstream param'd fn gets bias -1.
+    var updated = try Incremental.reparse(gpa, &prev, .{ .start = 6, .end = 7, .new_text = "" });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+    updated.module.absorbInteriors();
+    const g = updated.module.declarations.items[1].function;
+    const t = g.parameters.items[0].typ.span();
+    try std.testing.expectEqualStrings("f32", updated.source[t.start..t.end]);
+}
