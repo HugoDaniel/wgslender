@@ -12,6 +12,7 @@
 
 const std = @import("std");
 const wgslender = @import("wgslender");
+const ast_equal = @import("ast_equal.zig");
 
 const Ast = wgslender.Ast;
 const Incremental = wgslender.Incremental;
@@ -1091,4 +1092,56 @@ test "R2: absorbInteriors after a delete upstream of a param'd fn does not under
     const g = updated.module.declarations.items[1].function;
     const t = g.parameters.items[0].typ.span();
     try std.testing.expectEqualStrings("f32", updated.source[t.start..t.end]);
+}
+
+// =========================================================================
+// B3b — strong-oracle gate for the scope-bearing hot paths.
+//
+// The SS-C / SS-D / A-series tests above gate the compound_stmt and
+// decl_stmt splice paths with the *weak* oracle (`expectSymbolsMatch`:
+// symbol name/kind/use_count + decl-tag shape). That oracle is blind to
+// the scope tree — kind, `sibling_index`, member refs, child structure.
+//
+// These tests gate the same two paths with `ast_equal.expectModulesEquivalent`
+// (the stale-tolerant structural oracle the fuzz test uses): full
+// decl/stmt/expr/type trees with byte-identical spans + flags, and the
+// scope tree including `sibling_index`. This is the safety net that keeps
+// the Block-1.4 CstLower→Parser anchor swap behavior-preserving — a
+// spliced module whose scope structure or spans drift from a fresh parse
+// fails here where the weak oracle would wave it through.
+// =========================================================================
+
+fn applyEditAndVerifyStrong(
+    gpa: std.mem.Allocator,
+    base_src: [:0]const u8,
+    edit: Incremental.Edit,
+    expected_src: []const u8,
+) !void {
+    var base = try Incremental.parseFull(gpa, base_src);
+    defer base.deinit();
+
+    var updated = try Incremental.reparse(gpa, &base, edit);
+    defer updated.deinit();
+
+    try std.testing.expectEqualStrings(expected_src, updated.source);
+    try std.testing.expect(updated.reused);
+
+    var oracle = try Incremental.parseFull(gpa, expected_src);
+    defer oracle.deinit();
+
+    // Drain lazy interior-bias on both before the structural compare — every
+    // external span reader does this at entry, and the oracle compare is one.
+    updated.module.absorbInteriors();
+    oracle.module.absorbInteriors();
+
+    try ast_equal.expectModulesEquivalent(gpa, oracle.module, updated.module);
+}
+
+test "B3b-D1: decl anchor — rename LHS, strong structural oracle" {
+    try applyEditAndVerifyStrong(
+        std.testing.allocator,
+        "fn f() { let x = 1; let y = x + 2; }",
+        .{ .start = 13, .end = 14, .new_text = "w" },
+        "fn f() { let w = 1; let y = x + 2; }",
+    );
 }

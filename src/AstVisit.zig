@@ -293,6 +293,18 @@ pub fn visitExpr(ctx: *Context, e: Ast.Expr) error{OutOfMemory}!Ast.Expr {
                                 // was_counted stays false — the E0102
                                 // branch sets `ref` for IDE goto-def but
                                 // intentionally skips the bump.
+                            } else {
+                                // Re-resolution found nothing: the symbol this
+                                // ident used to bind to is gone (e.g. a sibling
+                                // decl was renamed away, so the incremental
+                                // decl-splice re-walks this unchanged use). Clear
+                                // any stale ref from a prior Pass 2 so the result
+                                // matches a fresh parse, which leaves an
+                                // unresolved ident at `.none`. On an initial full
+                                // parse `ref` is already `.none`, so this is a
+                                // no-op there.
+                                expr.ref = .none;
+                                expr.was_counted = false;
                             }
                         },
                         .sub => {
