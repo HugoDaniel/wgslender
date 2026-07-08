@@ -1137,6 +1137,40 @@ fn applyEditAndVerifyStrong(
     try ast_equal.expectModulesEquivalent(gpa, oracle.module, updated.module);
 }
 
+test "B3b-C1: compound anchor — append inside a single nested block" {
+    try applyEditAndVerifyStrong(
+        std.testing.allocator,
+        "fn f() { { let a = 1; } }",
+        .{ .start = 21, .end = 21, .new_text = " let b = 2;" },
+        "fn f() { { let a = 1; let b = 2; } }",
+    );
+}
+
+test "B3b-C2: compound anchor — edit the FIRST of two sibling blocks (sibling_index)" {
+    // Two `.block` scopes hang off f's body. Editing the FIRST block's
+    // compound must give its replacement the SAME sibling_index (0) a full
+    // parse assigns. The splice detaches the old scope, then pushScope
+    // appends the new one counting the *remaining* same-kind siblings — so
+    // without the explicit fixup the replacement lands on sibling_index 1.
+    try applyEditAndVerifyStrong(
+        std.testing.allocator,
+        "fn f() { { let a = 1; } { let b = 2; } }",
+        .{ .start = 21, .end = 21, .new_text = " let c = 3;" },
+        "fn f() { { let a = 1; let c = 3; } { let b = 2; } }",
+    );
+}
+
+test "B3b-C3: compound anchor — edit the SECOND of two sibling blocks" {
+    // The last same-kind sibling: detach-then-push lands it back on the same
+    // sibling_index (1), so this case already agreed with a full parse.
+    try applyEditAndVerifyStrong(
+        std.testing.allocator,
+        "fn f() { { let a = 1; } { let b = 2; } }",
+        .{ .start = 36, .end = 36, .new_text = " let d = 4;" },
+        "fn f() { { let a = 1; } { let b = 2; let d = 4; } }",
+    );
+}
+
 test "B3b-D1: decl anchor — rename LHS, strong structural oracle" {
     try applyEditAndVerifyStrong(
         std.testing.allocator,
