@@ -389,10 +389,10 @@ pub fn visitType(ctx: *Context, t: Ast.Type) error{OutOfMemory}!void {
 //   - `.sub`: caller is about to splice `subtree` OUT of the module. Read
 //     pre-bound `ref` fields and decrement `use_count`.
 //
-// Callers take the `LoweredSubtree` union returned by
-// `CstLower.lowerSubtree` and dispatch on its tag into these two entry
-// points. AstVisit deliberately avoids importing CstLower to keep the
-// module dependency acyclic.
+// Callers take the `ParsedAnchor` union returned by
+// `Parser.reparseAnchor` and dispatch on its tag into these two entry
+// points. AstVisit deliberately avoids importing Parser/CstLower to keep
+// the module dependency acyclic.
 // =========================================================================
 
 pub fn visitSubtreeStmt(ctx: *Context, stmt: Ast.Stmt) error{OutOfMemory}!void {

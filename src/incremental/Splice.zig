@@ -133,9 +133,10 @@ fn commitInPlace(
 ///
 /// Locates the AST `*Stmt` / `*Expr` slot whose span matches the old
 /// anchor, sub-walks the slot's old contents to drop `use_count` for
-/// every resolved ident, lowers the new CST subtree into `prev.arena`,
-/// overwrites the slot, then add-walks the new subtree to rebind idents
-/// against the prev module's symbol table.
+/// every resolved ident, overwrites the slot with `new_lowered` (the AST
+/// node the sub-parser already built alongside the anchor's CST, in
+/// `prev.arena`), then add-walks the new subtree to rebind idents against
+/// the prev module's symbol table.
 ///
 /// `prev.arena` is reused (no new `ArenaAllocator`); `prev` is left
 /// holding `sentinel_stub` so `prev.deinit()` stays a safe no-op.
@@ -147,6 +148,7 @@ pub fn tryAddSubSpliceInPlace(
     new_subtree_node: Cst.NodeIndex,
     anchor_kind: Cst.Kind,
     old_anchor_span: Ast.Span,
+    new_lowered: Parser.ParsedAnchor,
 ) !Incremental.ReparseResult {
     var new_tree = new_tree_in;
     const prev_arena = prev.arena.allocator();
@@ -191,8 +193,9 @@ pub fn tryAddSubSpliceInPlace(
     const delta: i64 = @as(i64, new_len) - @as(i64, old_len);
     prev.module.shiftModuleForEdit(old_anchor_span.end, delta);
 
-    // 4. Lower the new CST subtree into prev.arena.
-    const new_lowered = try CstLower.lowerSubtree(prev_arena, &new_tree, new_subtree_node);
+    // 4. The new AST subtree is `new_lowered` — the node the sub-parser
+    //    already built while emitting the anchor's CST (spans in current
+    //    coordinates, ident refs unresolved). No second lowering.
 
     // 5. Splice AST in place.
     switch (slot) {

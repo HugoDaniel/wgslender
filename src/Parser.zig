@@ -244,20 +244,33 @@ pub const AnchorKind = enum {
     statement,
 };
 
+/// The AST node `reparseAnchor` built, handed straight to the incremental
+/// splice path (which slots it into the reused module and re-visits it to
+/// bind idents). Same shape as the retired `CstLower.LoweredSubtree`, so the
+/// splice's slot-switch is unchanged — the difference is that the node comes
+/// from the Parser's own Pass-1 build instead of a second CST lowering.
+pub const ParsedAnchor = union(enum) {
+    stmt: Ast.Stmt,
+    expr: Ast.Expr,
+};
+
 /// Reposition the parser at `start_nt_pos` (an index into the non-trivia
 /// cursor built by `TokenStream.init`) and invoke the grammar entry point
 /// matching `kind`. Emits CST events into the attached builder so a call
 /// to `builder.finish(...)` afterwards yields a single-rooted subtree.
 ///
 /// The parser's symbol table / scope are not meant to be reused after this
-/// call — any symbols declared by the inner production are throwaway. The
-/// caller lowers the resulting CST subtree into AST using the prev
-/// module's symbol table.
+/// call — for symbol-free anchors nothing is declared; for scope-bearing
+/// anchors any symbols declared by the inner production are throwaway. The
+/// returned `ParsedAnchor` is the freshly-built AST node in current source
+/// coordinates, with ident refs left unresolved (`.none`); the caller's
+/// targeted `.add`-mode visit binds them against the prev module's symbol
+/// table. The CST is still emitted into the attached builder for the splice.
 pub fn reparseAnchor(
     self: *Parser,
     kind: AnchorKind,
     start_nt_pos: u32,
-) error{ OutOfMemory, ParseFailed }!void {
+) error{ OutOfMemory, ParseFailed }!ParsedAnchor {
     std.debug.assert(self.cst != null);
     std.debug.assert(start_nt_pos <= self.token_tags.len);
 
@@ -276,8 +289,8 @@ pub fn reparseAnchor(
     self.cst_last_closed_expr = null;
 
     switch (kind) {
-        .expression => _ = try self.parseExpression(),
-        .statement => _ = try self.parseStatement(),
+        .expression => return .{ .expr = (try self.parseExpression()) orelse return error.ParseFailed },
+        .statement => return .{ .stmt = (try self.parseStatement()) orelse return error.ParseFailed },
     }
 }
 
@@ -4215,7 +4228,7 @@ fn runReparseAnchor(
     var all_tokens = try Lexer.tokenizeAll(arena, source);
     const stream = try TokenStream.init(arena, &all_tokens);
     var parser = try Parser.initWithCst(arena, source, stream, builder);
-    try parser.reparseAnchor(kind, 0);
+    _ = try parser.reparseAnchor(kind, 0);
     return builder.finish(arena, all_tokens, source);
 }
 
@@ -4291,7 +4304,7 @@ test "reparseAnchor: at start_nt_pos=0 includes leading trivia in anchor" {
     var builder = Cst.Builder.init(std.testing.allocator);
     defer builder.deinit();
     var parser = try Parser.initWithCst(arena.allocator(), source, stream, &builder);
-    try parser.reparseAnchor(.expression, 0);
+    _ = try parser.reparseAnchor(.expression, 0);
     var tree = try builder.finish(arena.allocator(), all_tokens, source);
 
     const root = tree.rootCursor();
@@ -4314,7 +4327,7 @@ test "reparseAnchor: at start_nt_pos>0 includes interior trivia only" {
     defer builder.deinit();
     var parser = try Parser.initWithCst(arena.allocator(), source, stream, &builder);
     // Skip the leading "x" — parse starting at non-trivia index 1 ("42").
-    try parser.reparseAnchor(.expression, 1);
+    _ = try parser.reparseAnchor(.expression, 1);
     var tree = try builder.finish(arena.allocator(), all_tokens, source);
 
     const root = tree.rootCursor();

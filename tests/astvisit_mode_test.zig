@@ -159,7 +159,7 @@ test "U2: sub-walk on ident with ref=.none does not panic or mutate symbols" {
     const x_uc_before = useCountOf(base.module, "x");
 
     // Hand-craft an unresolved ident expression with .none — mimics what
-    // `CstLower.lowerSubtree` produces before a targeted `add` pass.
+    // `Parser.reparseAnchor` produces before a targeted `add` pass.
     var dummy = Ast.IdentExpr{
         .name = "x",
         .ref = .none,
@@ -251,7 +251,7 @@ test "U5: add-walk on an ident_expr re-increments use_count after we zero it" {
     try std.testing.expectEqual(@as(u32, 0), useCountOf(base.module, "x"));
 
     // Zero the refs on the subtree so add-walk has to re-resolve (mimics
-    // a freshly lowered subtree from `CstLower.lowerSubtree`).
+    // a freshly parsed subtree from `Parser.reparseAnchor`).
     for (base.module.declarations.items) |d| {
         if (d == .@"const" and symbolNameIs(base.module, d.@"const".name, "y")) {
             zeroRefs(d.@"const".initializer.?);
@@ -369,7 +369,7 @@ test "U7: add-walk at a nested block scope resolves to the block-local symbol" {
     _ = try AstVisit.visitSubtreeExpr(&sub_ctx, expr);
     try std.testing.expectEqual(@as(u32, 0), useCountOf(base.module, "inner"));
 
-    // Zero the ref as if CstLower.lowerSubtree just produced the node.
+    // Zero the ref as if Parser.reparseAnchor just produced the node.
     expr.ident.ref = .none;
 
     // Walk scope-children to find the function body's block scope.
@@ -633,7 +633,7 @@ test "U-ROUND-E0102: add-walk on E0102 ident + sub-walk is a use_count no-op" {
     try std.testing.expectEqual(@as(u32, 1), useCountOf(base.module, "z"));
 
     // Fresh ident, ref=.none, counted=false — exactly what
-    // `CstLower.lowerSubtree` hands to `visitSubtreeExpr`.
+    // `Parser.reparseAnchor` hands to `visitSubtreeExpr`.
     var dummy = Ast.IdentExpr{
         .loc = 1,
         .name = "z",

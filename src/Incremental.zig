@@ -502,7 +502,11 @@ fn tryIncrementalReparseInPlace(
     defer sub_builder.deinit();
     var sub_parser = try Parser.initWithCst(arena, new_source, new_stream, &sub_builder);
     const parser_kind: Parser.AnchorKind = if (Anchor.isStmtKind(anchor_kind)) .statement else .expression;
-    sub_parser.reparseAnchor(parser_kind, nt_pos) catch return error.AnchorParseFailed;
+    // Keep the Parser's own AST node for the anchor. For symbol-free anchors
+    // the splice slots it straight in (no second CST lowering); the
+    // compound_stmt / decl_stmt paths ignore it and re-lower in-scope (until
+    // Block 1.4 B3b wires those up too).
+    const parsed_anchor = sub_parser.reparseAnchor(parser_kind, nt_pos) catch return error.AnchorParseFailed;
     if (sub_parser.errors.items.len > 0) return error.AnchorParseError;
     var new_sub = try sub_builder.finish(arena, new_all_tokens, new_source);
 
@@ -564,6 +568,7 @@ fn tryIncrementalReparseInPlace(
         anchor_cursor.node,
         anchor_kind,
         old_anchor_span,
+        parsed_anchor,
     );
 }
 

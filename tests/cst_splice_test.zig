@@ -11,7 +11,6 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Cst = wgslender.Cst;
-const CstLower = wgslender.CstLower;
 const Incremental = wgslender.Incremental;
 const Lexer = wgslender.Lexer;
 const Parser = wgslender.Parser;
@@ -104,7 +103,7 @@ fn runSplice(
     var sub_builder = Cst.Builder.init(gpa);
     defer sub_builder.deinit();
     var sub_parser = try Parser.initWithCst(aa, new_source_z, new_stream, &sub_builder);
-    try sub_parser.reparseAnchor(anchor_kind, nt_pos);
+    _ = try sub_parser.reparseAnchor(anchor_kind, nt_pos);
     var new_sub = try sub_builder.finish(aa, new_all_tokens, new_source_z);
 
     try std.testing.expectEqual(expected_anchor_kind, new_sub.rootCursor().kind());
@@ -249,7 +248,7 @@ test "spliceSubtree: replace whole binary expression with literal" {
     var sub_b = Cst.Builder.init(std.testing.allocator);
     defer sub_b.deinit();
     var sub_p = try Parser.initWithCst(aa, new_z, stream, &sub_b);
-    try sub_p.reparseAnchor(.expression, nt);
+    _ = try sub_p.reparseAnchor(.expression, nt);
     var sub = try sub_b.finish(aa, new_tokens, new_z);
     // Kind mismatch surfaces: new anchor is literal_expr, not binary_expr.
     try std.testing.expectEqual(Cst.Kind.literal_expr, sub.rootCursor().kind());
@@ -310,10 +309,16 @@ test "spliceSubtree: ident in second of several decls shifts later offsets" {
 }
 
 // =========================================================================
-// CstLower.lowerSubtree tests
+// reparseAnchor returned-AST-node tests
+//
+// Since Block 1.4, `reparseAnchor` returns the `Ast` node it built while
+// emitting the anchor's CST — the incremental symbol-free splice consumes it
+// directly instead of re-lowering the CST. These pin the returned node's
+// shape; ident refs are left unresolved (the caller's `.add`-mode visit
+// binds them).
 // =========================================================================
 
-test "lowerSubtree: literal_expr produces Ast.LiteralExpr" {
+test "reparseAnchor: literal_expr produces Ast.LiteralExpr" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
@@ -324,10 +329,7 @@ test "lowerSubtree: literal_expr produces Ast.LiteralExpr" {
     var builder = Cst.Builder.init(std.testing.allocator);
     defer builder.deinit();
     var parser = try Parser.initWithCst(aa, src, stream, &builder);
-    try parser.reparseAnchor(.expression, 0);
-    var tree = try builder.finish(aa, all_tokens, src);
-
-    const lowered = try CstLower.lowerSubtree(aa, &tree, tree.root());
+    const lowered = try parser.reparseAnchor(.expression, 0);
     switch (lowered) {
         .expr => |e| {
             const lit = e.literal;
@@ -338,7 +340,7 @@ test "lowerSubtree: literal_expr produces Ast.LiteralExpr" {
     }
 }
 
-test "lowerSubtree: ident_expr has unresolved ref" {
+test "reparseAnchor: ident_expr has unresolved ref" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
@@ -349,10 +351,7 @@ test "lowerSubtree: ident_expr has unresolved ref" {
     var builder = Cst.Builder.init(std.testing.allocator);
     defer builder.deinit();
     var parser = try Parser.initWithCst(aa, src, stream, &builder);
-    try parser.reparseAnchor(.expression, 0);
-    var tree = try builder.finish(aa, all_tokens, src);
-
-    const lowered = try CstLower.lowerSubtree(aa, &tree, tree.root());
+    const lowered = try parser.reparseAnchor(.expression, 0);
     switch (lowered) {
         .expr => |e| {
             const id = e.ident;
@@ -364,7 +363,7 @@ test "lowerSubtree: ident_expr has unresolved ref" {
     }
 }
 
-test "lowerSubtree: return statement" {
+test "reparseAnchor: return statement" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
@@ -375,10 +374,7 @@ test "lowerSubtree: return statement" {
     var builder = Cst.Builder.init(std.testing.allocator);
     defer builder.deinit();
     var parser = try Parser.initWithCst(aa, src, stream, &builder);
-    try parser.reparseAnchor(.statement, 0);
-    var tree = try builder.finish(aa, all_tokens, src);
-
-    const lowered = try CstLower.lowerSubtree(aa, &tree, tree.root());
+    const lowered = try parser.reparseAnchor(.statement, 0);
     switch (lowered) {
         .stmt => |s| {
             try std.testing.expect(s == .@"return");
@@ -389,22 +385,24 @@ test "lowerSubtree: return statement" {
     }
 }
 
-test "lowerSubtree: compound_stmt and control-flow bail with InvalidCst" {
-    // compound_stmt and if_stmt / for_stmt etc. introduce scope; the
-    // symbol-free hot path must NOT lower them.
+test "reparseAnchor: a compound parses as a .stmt (gating is the driver's job)" {
+    // reparseAnchor itself does NOT reject scope-bearing anchors — the
+    // Parser happily builds a compound. The symbol-free vs scope-bearing
+    // split is enforced upstream by `Anchor.isSymbolFreeAnchor` + the
+    // incremental driver's dispatch, not here. (This replaces the old
+    // `CstLower.lowerSubtree` InvalidCst-on-compound bail, which no longer
+    // exists.)
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const aa = arena.allocator();
 
-    // compound_stmt is parsed via a full parse since reparseAnchor
-    // doesn't have a .compound_stmt entry. Use parseFull and pick the
-    // compound node off a function body.
-    var result = try Incremental.parseFull(std.testing.allocator, "fn f() { return 1; }");
-    defer result.deinit();
-
-    const compound = result.cst.rootCursor().findSmallestContaining(.{ .start = 7, .end = 20 });
-    try std.testing.expectEqual(Cst.Kind.compound_stmt, compound.kind());
-
-    const err = CstLower.lowerSubtree(aa, &result.cst, compound.node);
-    try std.testing.expectError(error.InvalidCst, err);
+    const src: [:0]const u8 = "{ return 1; }";
+    var all_tokens = try Lexer.tokenizeAll(aa, src);
+    const stream = try Parser.TokenStream.init(aa, &all_tokens);
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var parser = try Parser.initWithCst(aa, src, stream, &builder);
+    const lowered = try parser.reparseAnchor(.statement, 0);
+    try std.testing.expect(lowered == .stmt);
+    try std.testing.expect(lowered.stmt == .compound);
 }
