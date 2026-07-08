@@ -1,7 +1,7 @@
 //! Property-based fuzz: `Incremental.reparse(prev, edit)` must produce a
 //! module *structurally identical* to `Incremental.parseFull(apply(source,
 //! edit))` — same symbols, use-counts, scopes, and decl/stmt/expr/type
-//! trees with byte-identical spans, checked via `ast_equal.expectModulesEqual`.
+//! trees with byte-identical spans, checked via `ast_equal.expectModulesEquivalent`.
 //!
 //! Runs a deterministic random walk by default; with `zig build test
 //! --fuzz` the corpus is mutated continuously. Each iteration picks a
@@ -10,10 +10,10 @@
 //! on sources that fail to parse cleanly (so fuzz-generated invalid
 //! inputs don't count against the property).
 //!
-//! This is Tier 1's primary correctness gate for retiring `CstLower`:
-//! from Block 1.4 the incremental hot path re-parses each anchor with the
-//! Parser (no CstLower re-lower), so a splice whose AST drifts from a
-//! fresh full parse must fail here. The full `expectModulesEqual` compare
+//! This is Tier 1's primary correctness gate now that `CstLower` is retired:
+//! the incremental hot path re-parses each anchor with the Parser (there is
+//! no CstLower re-lower), so a splice whose AST drifts from a fresh full
+//! parse must fail here. The full `expectModulesEquivalent` compare
 //! is what makes that drift observable — a coarse decl-count/source check
 //! would not.
 

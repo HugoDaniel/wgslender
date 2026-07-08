@@ -1,33 +1,30 @@
 //! Deep structural equality helpers for `Ast.Module`.
 //!
-//! Used by `tests/cst_lower_test.zig` to prove `CstLower.lowerTree` produces
-//! a module with identical shape, symbols, scopes, decl/stmt/expr/type trees,
-//! and `use_count` parity compared to `Parser.parse`. Error lists are NOT
-//! compared — CstLower consumes a clean tree and doesn't replay Parser's
-//! error-recovery diagnostics.
+//! The gate is `expectModulesEquivalent`: it proves an incremental hot-path
+//! splice is semantically identical to a fresh full parse of the same edited
+//! source — same shape, symbols, scopes, decl/stmt/expr/type trees, and
+//! `use_count`s — modulo the hot path's append-only symbol table. Error lists
+//! are NOT compared. Used by `tests/incremental_fuzz_test.zig` and
+//! `tests/incremental_mutation_test.zig`.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
 const Ast = wgslender.Ast;
 
 // ---------------------------------------------------------------------------
-// Symbol-reference comparison mode.
+// Symbol-reference comparison.
 //
-// `SymbolIndex` values are raw indices into a module's symbol array. Two
-// front-ends that build byte-identical symbol tables (Parser vs CstLower)
-// can compare refs by index. But an *incremental hot-path* module compared
-// against a fresh full parse cannot: the hot path's symbol table is
-// append-only (removed declarations leave a stale, use_count==0 symbol in
-// place), so every symbol after the first removal is index-shifted relative
-// to the compact full-parse table. For that comparison, refs must be matched
-// by the *resolved symbol name*, not the raw index.
+// `SymbolIndex` values are raw indices into a module's symbol array. An
+// *incremental hot-path* module compared against a fresh full parse cannot
+// compare refs by index: the hot path's symbol table is append-only (removed
+// declarations leave a stale, use_count==0 symbol in place), so every symbol
+// after the first removal is index-shifted relative to the compact full-parse
+// table. Refs are therefore matched by the *resolved symbol name*.
 //
-// The two entry points below set the mode (and the two symbol tables used to
-// resolve names in `.by_name` mode); every leaf comparison of a `SymbolIndex`
-// goes through `sameRef`. Tests are single-threaded, so file-scope state is
-// safe and keeps the comparator signatures unchanged.
-const RefMode = enum { strict_index, by_name };
-var ref_mode: RefMode = .strict_index;
+// `expectModulesEquivalent` publishes the two symbol tables used to resolve
+// those names; every leaf comparison of a `SymbolIndex` goes through
+// `sameRef`. Tests are single-threaded, so file-scope state is safe and keeps
+// the comparator signatures unchanged.
 var exp_syms: []const Ast.Symbol = &.{};
 var act_syms: []const Ast.Symbol = &.{};
 
@@ -37,19 +34,13 @@ fn symName(syms: []const Ast.Symbol, ref: Ast.SymbolIndex) []const u8 {
     return if (i < syms.len) syms[i].original_name else "<oob>";
 }
 
-/// Compare an expected vs actual `SymbolIndex`. In `.strict_index` mode this
-/// is raw index equality (Parser↔CstLower parity). In `.by_name` mode it is
-/// equality of the resolved declaration names, so a stale-symbol index shift
-/// between a hot-path splice and a full parse does not read as a mismatch.
+/// Compare an expected vs actual `SymbolIndex` by resolved declaration name,
+/// so a stale-symbol index shift between a hot-path splice and a full parse
+/// does not read as a mismatch.
 fn sameRef(e: Ast.SymbolIndex, a: Ast.SymbolIndex) bool {
-    return switch (ref_mode) {
-        .strict_index => e == a,
-        .by_name => blk: {
-            if (e.isValid() != a.isValid()) break :blk false;
-            if (!e.isValid()) break :blk true;
-            break :blk std.mem.eql(u8, symName(exp_syms, e), symName(act_syms, a));
-        },
-    };
+    if (e.isValid() != a.isValid()) return false;
+    if (!e.isValid()) return true;
+    return std.mem.eql(u8, symName(exp_syms, e), symName(act_syms, a));
 }
 
 /// All the concrete mismatch tags the helpers below can fail with. Declared
@@ -158,70 +149,6 @@ pub const Err = error{
     TestExpectedEqual,
 } || std.mem.Allocator.Error;
 
-/// Strict structural equality: both modules must have byte-identical symbol
-/// tables (same length, same order, same per-slot indices). Used by
-/// `cst_lower_test` to prove `Parser.parse` and `CstLower.lowerTree` are
-/// interchangeable front-ends.
-pub fn expectModulesEqual(expected: *const Ast.Module, actual: *const Ast.Module) Err!void {
-    ref_mode = .strict_index;
-
-    // Source pointer equality is not required; the slices usually do match
-    // but the invariant is only content equality.
-    try std.testing.expectEqualStrings(expected.source, actual.source);
-
-    // Symbols: length + each slot.
-    if (expected.symbols.items.len != actual.symbols.items.len) {
-        std.debug.print(
-            "symbols.len mismatch: expected {d}, actual {d}\n",
-            .{ expected.symbols.items.len, actual.symbols.items.len },
-        );
-        return error.SymbolsLenMismatch;
-    }
-    for (expected.symbols.items, actual.symbols.items, 0..) |e, a, i| {
-        try expectSymbolEqual(e, a, i);
-    }
-
-    // Per-symbol use counts (replaces the old `Symbol.use_count` field
-    // check inside `expectSymbolEqual` after B.M5).
-    if (expected.use_counts.counts.len != actual.use_counts.counts.len) {
-        std.debug.print(
-            "use_counts.len mismatch: expected {d}, actual {d}\n",
-            .{ expected.use_counts.counts.len, actual.use_counts.counts.len },
-        );
-        return error.UseCountsLenMismatch;
-    }
-    for (expected.use_counts.counts, actual.use_counts.counts, 0..) |ec, ac, i| {
-        if (ec != ac) {
-            std.debug.print(
-                "use_counts[{d}] mismatch: expected {d}, actual {d}\n",
-                .{ i, ec, ac },
-            );
-            return error.SymbolUseCountMismatch;
-        }
-    }
-
-    // Directives.
-    if (expected.directives.items.len != actual.directives.items.len) return error.DirectivesLenMismatch;
-    for (expected.directives.items, actual.directives.items) |e, a| {
-        try expectDirectiveEqual(e, a);
-    }
-
-    // Declarations.
-    if (expected.declarations.items.len != actual.declarations.items.len) {
-        std.debug.print(
-            "declarations.len mismatch: expected {d}, actual {d}\n",
-            .{ expected.declarations.items.len, actual.declarations.items.len },
-        );
-        return error.DeclarationsLenMismatch;
-    }
-    for (expected.declarations.items, actual.declarations.items) |e, a| {
-        try expectDeclEqual(e, a);
-    }
-
-    // Scope tree (structural: kind, sibling_index, member key set, children).
-    try expectScopeEqual(expected.scope, actual.scope);
-}
-
 /// Stale-symbol-tolerant equivalence: `actual` (an incremental hot-path
 /// splice) must be semantically identical to `expected` (a fresh full parse
 /// of the same edited source), *modulo* the hot path's append-only symbol
@@ -238,11 +165,9 @@ pub fn expectModulesEquivalent(
     expected: *const Ast.Module,
     actual: *const Ast.Module,
 ) Err!void {
-    ref_mode = .by_name;
     exp_syms = expected.symbols.items;
     act_syms = actual.symbols.items;
     defer {
-        ref_mode = .strict_index;
         exp_syms = &.{};
         act_syms = &.{};
     }
@@ -319,25 +244,6 @@ fn expectSymbolsEquivalent(
             );
             return error.SymbolUseCountMismatch;
         }
-    }
-}
-
-fn expectSymbolEqual(e: Ast.Symbol, a: Ast.Symbol, i: usize) Err!void {
-    if (!std.mem.eql(u8, e.original_name, a.original_name)) {
-        std.debug.print("symbol[{d}].original_name mismatch: '{s}' vs '{s}'\n", .{ i, e.original_name, a.original_name });
-        return error.SymbolNameMismatch;
-    }
-    if (e.kind != a.kind) {
-        std.debug.print("symbol[{d}] '{s}' .kind mismatch: {s} vs {s}\n", .{ i, e.original_name, @tagName(e.kind), @tagName(a.kind) });
-        return error.SymbolKindMismatch;
-    }
-    if (@as(u8, @bitCast(e.flags)) != @as(u8, @bitCast(a.flags))) {
-        std.debug.print("symbol[{d}] '{s}' .flags mismatch\n", .{ i, e.original_name });
-        return error.SymbolFlagsMismatch;
-    }
-    if (e.loc != a.loc) {
-        std.debug.print("symbol[{d}] '{s}' .loc mismatch: {d} vs {d}\n", .{ i, e.original_name, e.loc, a.loc });
-        return error.SymbolLocMismatch;
     }
 }
 
