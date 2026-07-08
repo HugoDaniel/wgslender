@@ -136,7 +136,9 @@ pub const Tag = enum(u8) {
     comma,
     underscore,
 
-    // Template delimiters (context-sensitive, reserved for future use)
+    // Vestigial: never emitted. WGSL template `<`…`>` disambiguation is a
+    // parser concern (`Parser.expectTemplateClose`, §3.8, which splits `>>`)
+    // over ordinary `less_than` / `greater_than` / `shift_right` tokens.
     template_args_start,
     template_args_end,
 

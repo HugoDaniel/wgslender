@@ -88,9 +88,6 @@ pub const Kind = enum(u16) {
     if_stmt,
     else_clause,
     switch_stmt,
-    switch_body,
-    switch_case,
-    case_selector,
     for_stmt,
     while_stmt,
     loop_stmt,
@@ -116,7 +113,6 @@ pub const Kind = enum(u16) {
 
     // Helpers
     name,
-    address_space_list,
 
     // Error recovery
     error_tree,
