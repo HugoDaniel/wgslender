@@ -10,6 +10,48 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 const Ast = wgslender.Ast;
 
+// ---------------------------------------------------------------------------
+// Symbol-reference comparison mode.
+//
+// `SymbolIndex` values are raw indices into a module's symbol array. Two
+// front-ends that build byte-identical symbol tables (Parser vs CstLower)
+// can compare refs by index. But an *incremental hot-path* module compared
+// against a fresh full parse cannot: the hot path's symbol table is
+// append-only (removed declarations leave a stale, use_count==0 symbol in
+// place), so every symbol after the first removal is index-shifted relative
+// to the compact full-parse table. For that comparison, refs must be matched
+// by the *resolved symbol name*, not the raw index.
+//
+// The two entry points below set the mode (and the two symbol tables used to
+// resolve names in `.by_name` mode); every leaf comparison of a `SymbolIndex`
+// goes through `sameRef`. Tests are single-threaded, so file-scope state is
+// safe and keeps the comparator signatures unchanged.
+const RefMode = enum { strict_index, by_name };
+var ref_mode: RefMode = .strict_index;
+var exp_syms: []const Ast.Symbol = &.{};
+var act_syms: []const Ast.Symbol = &.{};
+
+fn symName(syms: []const Ast.Symbol, ref: Ast.SymbolIndex) []const u8 {
+    if (!ref.isValid()) return "";
+    const i = ref.index();
+    return if (i < syms.len) syms[i].original_name else "<oob>";
+}
+
+/// Compare an expected vs actual `SymbolIndex`. In `.strict_index` mode this
+/// is raw index equality (Parser↔CstLower parity). In `.by_name` mode it is
+/// equality of the resolved declaration names, so a stale-symbol index shift
+/// between a hot-path splice and a full parse does not read as a mismatch.
+fn sameRef(e: Ast.SymbolIndex, a: Ast.SymbolIndex) bool {
+    return switch (ref_mode) {
+        .strict_index => e == a,
+        .by_name => blk: {
+            if (e.isValid() != a.isValid()) break :blk false;
+            if (!e.isValid()) break :blk true;
+            break :blk std.mem.eql(u8, symName(exp_syms, e), symName(act_syms, a));
+        },
+    };
+}
+
 /// All the concrete mismatch tags the helpers below can fail with. Declared
 /// as a single union so Zig can resolve mutual recursion between expr/type/
 /// stmt/decl comparators without inferring divergent error sets.
@@ -116,7 +158,13 @@ pub const Err = error{
     TestExpectedEqual,
 } || std.mem.Allocator.Error;
 
+/// Strict structural equality: both modules must have byte-identical symbol
+/// tables (same length, same order, same per-slot indices). Used by
+/// `cst_lower_test` to prove `Parser.parse` and `CstLower.lowerTree` are
+/// interchangeable front-ends.
 pub fn expectModulesEqual(expected: *const Ast.Module, actual: *const Ast.Module) Err!void {
+    ref_mode = .strict_index;
+
     // Source pointer equality is not required; the slices usually do match
     // but the invariant is only content equality.
     try std.testing.expectEqualStrings(expected.source, actual.source);
@@ -174,6 +222,106 @@ pub fn expectModulesEqual(expected: *const Ast.Module, actual: *const Ast.Module
     try expectScopeEqual(expected.scope, actual.scope);
 }
 
+/// Stale-symbol-tolerant equivalence: `actual` (an incremental hot-path
+/// splice) must be semantically identical to `expected` (a fresh full parse
+/// of the same edited source), *modulo* the hot path's append-only symbol
+/// table. Every full-parse symbol must have a matching (name, kind,
+/// use_count) symbol in the splice; any extra splice symbols must be dead
+/// (use_count == 0). Declaration trees, spans, flags, and scope structure
+/// are compared exactly, with symbol references resolved by name (see
+/// `sameRef`) so the stale-symbol index shift does not read as a mismatch.
+///
+/// This is the gate that keeps the Parser-driven anchor splice honest once
+/// `CstLower` is gone — see `tests/incremental_fuzz_test.zig`.
+pub fn expectModulesEquivalent(
+    gpa: std.mem.Allocator,
+    expected: *const Ast.Module,
+    actual: *const Ast.Module,
+) Err!void {
+    ref_mode = .by_name;
+    exp_syms = expected.symbols.items;
+    act_syms = actual.symbols.items;
+    defer {
+        ref_mode = .strict_index;
+        exp_syms = &.{};
+        act_syms = &.{};
+    }
+
+    try std.testing.expectEqualStrings(expected.source, actual.source);
+
+    // Symbols + use-counts, tolerant of the append-only hot-path table.
+    try expectSymbolsEquivalent(gpa, expected, actual);
+
+    // Directives.
+    if (expected.directives.items.len != actual.directives.items.len) return error.DirectivesLenMismatch;
+    for (expected.directives.items, actual.directives.items) |e, a| {
+        try expectDirectiveEqual(e, a);
+    }
+
+    // Declarations — deep tree compare (refs resolved by name).
+    if (expected.declarations.items.len != actual.declarations.items.len) {
+        std.debug.print(
+            "declarations.len mismatch: expected {d}, actual {d}\n",
+            .{ expected.declarations.items.len, actual.declarations.items.len },
+        );
+        return error.DeclarationsLenMismatch;
+    }
+    for (expected.declarations.items, actual.declarations.items) |e, a| {
+        try expectDeclEqual(e, a);
+    }
+
+    // Scope tree (member refs resolved by name; stale symbols never become
+    // scope members, so member counts still match a full parse).
+    try expectScopeEqual(expected.scope, actual.scope);
+}
+
+/// Match every `expected` symbol to a distinct `actual` symbol by
+/// (name, kind, use_count); leftover `actual` symbols must be dead
+/// (use_count == 0). Mirrors the append-only contract asserted by
+/// `tests/incremental_mutation_test.zig`'s `expectSymbolsMatch`.
+fn expectSymbolsEquivalent(
+    gpa: std.mem.Allocator,
+    expected: *const Ast.Module,
+    actual: *const Ast.Module,
+) Err!void {
+    const matched = try gpa.alloc(bool, actual.symbols.items.len);
+    defer gpa.free(matched);
+    @memset(matched, false);
+
+    for (expected.symbols.items, 0..) |se, ei| {
+        const se_uc: u32 = if (ei < expected.use_counts.counts.len) expected.use_counts.counts[ei] else 0;
+        var found = false;
+        for (actual.symbols.items, 0..) |sa, ai| {
+            if (matched[ai]) continue;
+            if (sa.kind != se.kind) continue;
+            const sa_uc: u32 = if (ai < actual.use_counts.counts.len) actual.use_counts.counts[ai] else 0;
+            if (sa_uc != se_uc) continue;
+            if (!std.mem.eql(u8, sa.original_name, se.original_name)) continue;
+            matched[ai] = true;
+            found = true;
+            break;
+        }
+        if (!found) {
+            std.debug.print(
+                "expected symbol '{s}' (kind={s}, use={d}) has no match in the splice\n",
+                .{ se.original_name, @tagName(se.kind), se_uc },
+            );
+            return error.SymbolsLenMismatch;
+        }
+    }
+    for (actual.symbols.items, matched, 0..) |sa, m, ai| {
+        if (m) continue;
+        const sa_uc: u32 = if (ai < actual.use_counts.counts.len) actual.use_counts.counts[ai] else 0;
+        if (sa_uc != 0) {
+            std.debug.print(
+                "unmatched splice symbol '{s}' (kind={s}, use={d}) is not dead\n",
+                .{ sa.original_name, @tagName(sa.kind), sa_uc },
+            );
+            return error.SymbolUseCountMismatch;
+        }
+    }
+}
+
 fn expectSymbolEqual(e: Ast.Symbol, a: Ast.Symbol, i: usize) Err!void {
     if (!std.mem.eql(u8, e.original_name, a.original_name)) {
         std.debug.print("symbol[{d}].original_name mismatch: '{s}' vs '{s}'\n", .{ i, e.original_name, a.original_name });
@@ -206,7 +354,7 @@ fn expectScopeEqual(e: *Ast.Scope, a: *Ast.Scope) Err!void {
     var iter = e.members.iterator();
     while (iter.next()) |entry| {
         const am = a.members.get(entry.key_ptr.*) orelse return error.ScopeMemberMissing;
-        if (am.ref != entry.value_ptr.ref) return error.ScopeMemberRefMismatch;
+        if (!sameRef(entry.value_ptr.ref, am.ref)) return error.ScopeMemberRefMismatch;
         if (am.loc != entry.value_ptr.loc) return error.ScopeMemberLocMismatch;
     }
     if (e.children.items.len != a.children.items.len) return error.ScopeChildCountMismatch;
@@ -257,20 +405,20 @@ fn expectDeclEqual(e: Ast.Decl, a: Ast.Decl) Err!void {
     switch (e) {
         .@"const" => |ed| {
             const ad = a.@"const";
-            if (ed.name != ad.name) return error.DeclNameMismatch;
+            if (!sameRef(ed.name, ad.name)) return error.DeclNameMismatch;
             try expectOptTypeEqual(ed.typ, ad.typ);
             try expectOptExprEqual(ed.initializer, ad.initializer);
         },
         .override => |ed| {
             const ad = a.override;
-            if (ed.name != ad.name) return error.DeclNameMismatch;
+            if (!sameRef(ed.name, ad.name)) return error.DeclNameMismatch;
             try expectAttributesEqual(ed.attributes, ad.attributes);
             try expectOptTypeEqual(ed.typ, ad.typ);
             try expectOptExprEqual(ed.initializer, ad.initializer);
         },
         .@"var" => |ed| {
             const ad = a.@"var";
-            if (ed.name != ad.name) return error.DeclNameMismatch;
+            if (!sameRef(ed.name, ad.name)) return error.DeclNameMismatch;
             if (ed.address_space != ad.address_space) return error.VarAddrSpaceMismatch;
             if (ed.access_mode != ad.access_mode) return error.VarAccessModeMismatch;
             try expectAttributesEqual(ed.attributes, ad.attributes);
@@ -279,18 +427,18 @@ fn expectDeclEqual(e: Ast.Decl, a: Ast.Decl) Err!void {
         },
         .let => |ed| {
             const ad = a.let;
-            if (ed.name != ad.name) return error.DeclNameMismatch;
+            if (!sameRef(ed.name, ad.name)) return error.DeclNameMismatch;
             try expectOptTypeEqual(ed.typ, ad.typ);
             try expectOptExprEqual(ed.initializer, ad.initializer);
         },
         .function => |ed| {
             const ad = a.function;
-            if (ed.name != ad.name) return error.FuncNameMismatch;
+            if (!sameRef(ed.name, ad.name)) return error.FuncNameMismatch;
             try expectAttributesEqual(ed.attributes, ad.attributes);
             try expectAttributesEqual(ed.return_attr, ad.return_attr);
             if (ed.parameters.items.len != ad.parameters.items.len) return error.FuncParamCountMismatch;
             for (ed.parameters.items, ad.parameters.items) |ep, ap| {
-                if (ep.name != ap.name) return error.ParamNameMismatch;
+                if (!sameRef(ep.name, ap.name)) return error.ParamNameMismatch;
                 try expectAttributesEqual(ep.attributes, ap.attributes);
                 try expectTypeEqual(ep.typ, ap.typ);
             }
@@ -299,17 +447,17 @@ fn expectDeclEqual(e: Ast.Decl, a: Ast.Decl) Err!void {
         },
         .@"struct" => |ed| {
             const ad = a.@"struct";
-            if (ed.name != ad.name) return error.StructNameMismatch;
+            if (!sameRef(ed.name, ad.name)) return error.StructNameMismatch;
             if (ed.members.items.len != ad.members.items.len) return error.StructMemberCountMismatch;
             for (ed.members.items, ad.members.items) |em, am| {
-                if (em.name != am.name) return error.StructMemberNameMismatch;
+                if (!sameRef(em.name, am.name)) return error.StructMemberNameMismatch;
                 try expectAttributesEqual(em.attributes, am.attributes);
                 try expectTypeEqual(em.typ, am.typ);
             }
         },
         .alias => |ed| {
             const ad = a.alias;
-            if (ed.name != ad.name) return error.AliasNameMismatch;
+            if (!sameRef(ed.name, ad.name)) return error.AliasNameMismatch;
             try expectTypeEqual(ed.typ, ad.typ);
         },
         .const_assert => |ed| {
@@ -343,12 +491,15 @@ fn expectTypeEqual(e: Ast.Type, a: Ast.Type) Err!void {
         std.debug.print("type tag mismatch: {s} vs {s}\n", .{ @tagName(std.meta.activeTag(e)), @tagName(std.meta.activeTag(a)) });
         return error.TypeTagMismatch;
     }
-    if (e.span().start != a.span().start or e.span().end != a.span().end) return error.TypeSpanMismatch;
+    if (e.span().start != a.span().start or e.span().end != a.span().end) {
+        std.debug.print("type span mismatch ({s}): {d}..{d} vs {d}..{d}\n", .{ @tagName(std.meta.activeTag(e)), e.span().start, e.span().end, a.span().start, a.span().end });
+        return error.TypeSpanMismatch;
+    }
     switch (e) {
         .ident => |et| {
             const at = a.ident;
             if (!std.mem.eql(u8, et.name, at.name)) return error.IdentTypeNameMismatch;
-            if (et.ref != at.ref) return error.IdentTypeRefMismatch;
+            if (!sameRef(et.ref, at.ref)) return error.IdentTypeRefMismatch;
             if (et.loc != at.loc) return error.IdentTypeLocMismatch;
         },
         .vec => |et| {
@@ -412,7 +563,7 @@ fn expectExprEqual(e: Ast.Expr, a: Ast.Expr) Err!void {
         .ident => |ex| {
             const ax = a.ident;
             if (!std.mem.eql(u8, ex.name, ax.name)) return error.IdentExprNameMismatch;
-            if (ex.ref != ax.ref) return error.IdentExprRefMismatch;
+            if (!sameRef(ex.ref, ax.ref)) return error.IdentExprRefMismatch;
             if (ex.loc != ax.loc) return error.IdentExprLocMismatch;
             if (@as(u8, @bitCast(ex.flags)) != @as(u8, @bitCast(ax.flags))) return error.IdentExprFlagsMismatch;
         },

@@ -1,6 +1,7 @@
-//! Property-based fuzz: `Incremental.reparse(prev, edit)` must produce
-//! the same AST (declaration count + CST source) as
-//! `Incremental.parseFull(apply(source, edit))`.
+//! Property-based fuzz: `Incremental.reparse(prev, edit)` must produce a
+//! module *structurally identical* to `Incremental.parseFull(apply(source,
+//! edit))` — same symbols, use-counts, scopes, and decl/stmt/expr/type
+//! trees with byte-identical spans, checked via `ast_equal.expectModulesEqual`.
 //!
 //! Runs a deterministic random walk by default; with `zig build test
 //! --fuzz` the corpus is mutated continuously. Each iteration picks a
@@ -9,13 +10,16 @@
 //! on sources that fail to parse cleanly (so fuzz-generated invalid
 //! inputs don't count against the property).
 //!
-//! The MVP `reparse` path full-parses every edit, so this test
-//! currently exercises correctness of the source-splice + full-parse
-//! composition. When subtree reuse lands, the same test proves the
-//! hot path agrees with the slow path.
+//! This is Tier 1's primary correctness gate for retiring `CstLower`:
+//! from Block 1.4 the incremental hot path re-parses each anchor with the
+//! Parser (no CstLower re-lower), so a splice whose AST drifts from a
+//! fresh full parse must fail here. The full `expectModulesEqual` compare
+//! is what makes that drift observable — a coarse decl-count/source check
+//! would not.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
+const ast_equal = @import("ast_equal.zig");
 
 const Incremental = wgslender.Incremental;
 
@@ -50,16 +54,6 @@ fn applyEdit(
     return out;
 }
 
-fn moduleShape(
-    gpa: std.mem.Allocator,
-    source: []const u8,
-) !struct { decl_count: usize, source: []u8 } {
-    var r = try Incremental.parseFull(gpa, source);
-    defer r.deinit();
-    const copied = try gpa.dupe(u8, r.source);
-    return .{ .decl_count = r.module.declarations.items.len, .source = copied };
-}
-
 fn testOne(
     gpa: std.mem.Allocator,
     base: []const u8,
@@ -67,15 +61,18 @@ fn testOne(
     end: u32,
     text: []const u8,
 ) !void {
-    // 1) Spliced source + full reparse — the oracle.
+    // 1) Spliced source + full reparse — the oracle. `parseFull` copies the
+    //    source into its own arena, so a plain (non-sentinel) slice is fine.
     const spliced = try applyEdit(gpa, base, start, end, text);
     defer gpa.free(spliced);
 
-    const expected = moduleShape(gpa, spliced) catch {
-        // The oracle itself rejected the spliced source — skip.
+    var oracle = Incremental.parseFull(gpa, spliced) catch {
+        // The oracle itself OOM'd — skip. Parse *errors* don't fail here;
+        // they land in the module + error list, and the module invariant
+        // below still holds (both paths parse the same bytes).
         return;
     };
-    defer gpa.free(expected.source);
+    defer oracle.deinit();
 
     // 2) The incremental path.
     var prev = try Incremental.parseFull(gpa, base);
@@ -88,8 +85,29 @@ fn testOne(
     });
     defer updated.deinit();
 
-    try std.testing.expectEqualStrings(expected.source, updated.source);
-    try std.testing.expectEqual(expected.decl_count, updated.module.declarations.items.len);
+    // The hot path shifts spans of decls after the edit lazily: they carry
+    // an `interior_pending` bias until drained. Every external span reader
+    // (Validator, LSP, Printer, …) calls `absorbInteriors` at entry; the
+    // oracle comparison is one such reader, so drain here before comparing.
+    // A no-op on the full-parse oracle (fresh decls start at zero bias).
+    updated.module.absorbInteriors();
+    oracle.module.absorbInteriors();
+
+    // 3) The hot-path splice (or its parseFull fallback) must produce a
+    //    module equivalent to a fresh full parse of the edited source:
+    //    identical decl/stmt/expr/type trees with byte-identical spans and
+    //    flags, identical scope structure, and per-symbol use-count parity —
+    //    tolerant only of the hot path's append-only symbol table (removed
+    //    declarations leave a dead, use_count==0 symbol behind). This is the
+    //    gate that keeps the Parser-driven anchor splice honest once CstLower
+    //    is gone; a coarse decl-count/source check would not see the drift.
+    ast_equal.expectModulesEquivalent(gpa, oracle.module, updated.module) catch |err| {
+        std.debug.print(
+            "fuzz AST divergence ({s}): edit=[{d}..{d}]=<<{s}>> reused={} base=<<{s}>>\n",
+            .{ @errorName(err), start, end, text, updated.reused, base },
+        );
+        return err;
+    };
 }
 
 // =========================================================================
