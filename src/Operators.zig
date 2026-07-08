@@ -60,6 +60,34 @@ const bitwise_sigs = [_]Sig{
     },
 };
 
+/// Shift `<<` / `>>` (§8.7). Asymmetric: the left operand is any integer
+/// (`i32`/`u32`/abstract-int) scalar or vector, the *shift amount* is `u32`
+/// (abstract-int accepted, concretizing to u32) with a matching shape, and the
+/// result is the **left** operand's type — not a common type. The scalar and
+/// vector forms don't share the amount's element tparam with the result, so the
+/// amount's kind never leaks into the result. Amount kinds outside `u32`/abstract
+/// (e.g. `i32`), width mismatches, and scalar↔vector shape mismatches have no
+/// matching overload; the value-dependent bit-width check (§8.7) is a call-site
+/// post-check applied after a successful resolve.
+const shift_sigs = [_]Sig{
+    .{
+        .tparam_count = 2,
+        .params = &.{
+            .{ .tparam_scalar = .{ .idx = 0, .family = .integer } },
+            .{ .tparam_scalar = .{ .idx = 1, .family = .u32_or_abstract } },
+        },
+        .result = .{ .pattern = .{ .bound_scalar = 0 } },
+    },
+    .{
+        .tparam_count = 3,
+        .params = &.{
+            .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .integer, .n_idx = 1 } },
+            .{ .tparam_vector = .{ .elem_idx = 2, .elem_family = .u32_or_abstract, .n_idx = 1 } },
+        },
+        .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } },
+    },
+};
+
 /// Overload set for a binary operator, or an empty set for operators whose
 /// legacy checker still owns them (only migrated operators are routed here by
 /// the validator, so the empty set is never resolved against).
@@ -67,6 +95,7 @@ pub fn binarySigs(op: Ast.BinaryOp) []const Sig {
     return switch (op) {
         .logical_and, .logical_or => &logical_sigs,
         .@"and", .@"or", .xor => &bitwise_sigs,
+        .shl, .shr => &shift_sigs,
         else => &.{},
     };
 }

@@ -505,54 +505,56 @@ pub fn checkModBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, 
     return InferResult.some(common, stage);
 }
 
-pub fn checkShiftBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
-    if (!Types.isInteger(left_type)) {
-        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer left operand, got '{s}'", .{ op_str, left_type.string() }));
-        return InferResult.fail;
-    }
-    // WGSL §8.7: the shift amount is u32 (abstract-int accepted) and its
-    // *shape* must match the LHS — scalar `int << u32`, or component-wise
-    // `vecN<int> << vecN<u32>` (RHS element is u32 regardless of the LHS
-    // element type). Scalar↔vector shape mismatches are rejected. Errors
-    // underline the RHS operand (the offending shift amount), not the operator.
-    const rhs_range = exprRange(e.right);
-    if (left_type == .vector) {
-        const want = left_type.vector.width;
-        const rhs_ok = right_type == .vector and
-            right_type.vector.width == want and
-            shiftAmountElemOk(right_type.vector.element);
-        if (!rhs_ok) {
-            v.addErrorWithCodeR(rhs_range, Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'vec{d}<u32>', got '{s}'", .{ want, right_type.string() }));
+pub fn checkShiftBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) Allocator.Error!InferResult {
+    // Shape + result come from the engine (`Operators.shift_sigs`): scalar
+    // `int << u32 -> int`, or component-wise `vecN<int> << vecN<u32> -> vecN<int>`
+    // (§8.7). The result is the LHS type — the u32 shift amount is an
+    // independent tparam that never leaks into it.
+    const sigs = Operators.binarySigs(e.op);
+    const arg_types = [_]?Types.Type{ left_type, right_type };
+    switch (Overload.resolve(sigs, &arg_types)) {
+        .ok => |ok| {
+            const sig = sigs[ok.sig_index];
+            var args8: [8]?Types.Type = @splat(null);
+            args8[0] = left_type;
+            args8[1] = right_type;
+            const ret = (try buildOverloadResult(v, sig.result, &ok.bindings, args8)) orelse
+                return InferResult.fail;
+            // WGSL §8.7 value-dependent post-check: a constant shift amount must
+            // be < the LHS bit width. Not expressible as an overload, so it runs
+            // after a successful shape resolve. AbstractInt LHS has no in-source
+            // bit width (`Scalar.size()` is 0); per spec it concretizes to
+            // i32/u32, so a 32-bit cap is the shader-creation-time ceiling (also
+            // the width for concrete i32/u32 LHS).
+            if (v.tryExtractIntValue(e.right)) |shift_val| {
+                const bit_width: i64 = blk: {
+                    if (left_type != .scalar) break :blk 32;
+                    const sz = left_type.scalar.size();
+                    break :blk if (sz == 0) 32 else @as(i64, sz) * 8;
+                };
+                if (shift_val < 0 or shift_val >= bit_width) {
+                    v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.invalid_operand, v.fmtError("shift amount {d} exceeds bit width of {d}", .{ shift_val, bit_width }));
+                }
+            }
+            return InferResult.some(ret, stage);
+        },
+        .err => {
+            // The engine's single "no match" can't say *which* operand failed,
+            // so re-derive the shift-specific diagnostic (the constructor path's
+            // `ctorRefine` does the same). A non-integer LHS is the operator's
+            // fault (underline the operator); an integer LHS with a bad shift
+            // amount is the RHS's fault (underline the amount, and name the exact
+            // expected shape: scalar `u32` vs component-wise `vecN<u32>`).
+            if (!Types.isInteger(left_type)) {
+                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires integer left operand, got '{s}'", .{ op_str, left_type.string() }));
+            } else if (left_type == .vector) {
+                v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'vec{d}<u32>', got '{s}'", .{ left_type.vector.width, right_type.string() }));
+            } else {
+                v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'u32', got '{s}'", .{right_type.string()}));
+            }
             return InferResult.fail;
-        }
-    } else if (!(right_type == .scalar and shiftAmountElemOk(right_type.scalar))) {
-        v.addErrorWithCodeR(rhs_range, Diagnostic.Code.invalid_operand, v.fmtError("shift amount must be 'u32', got '{s}'", .{right_type.string()}));
-        return InferResult.fail;
+        },
     }
-    // Shift amount must be less than the bit width of the LHS type (WGSL spec section 8.7).
-    // AbstractInt LHS has no in-source bit width (`Scalar.size()` is 0);
-    // per spec it concretizes to i32/u32 so a 32-bit cap is the right
-    // shader-creation-time ceiling. Preserves spec-literal behavior
-    // for concrete `i32`/`u32` LHS (also 32-bit).
-    if (v.tryExtractIntValue(e.right)) |shift_val| {
-        const bit_width: i64 = blk: {
-            if (left_type != .scalar) break :blk 32;
-            const sz = left_type.scalar.size();
-            break :blk if (sz == 0) 32 else @as(i64, sz) * 8;
-        };
-        if (shift_val < 0 or shift_val >= bit_width) {
-            v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.invalid_operand, v.fmtError("shift amount {d} exceeds bit width of {d}", .{ shift_val, bit_width }));
-        }
-    }
-    return InferResult.some(left_type, stage);
-}
-
-/// A shift amount's scalar element must be `u32` (abstract-int accepted, since
-/// it concretizes to u32). `i32`/`f32`/`bool` are rejected — matching the
-/// scalar-shift rule, now applied per component to the vector form too.
-fn shiftAmountElemOk(s: *const Types.Scalar) bool {
-    const t = Types.Type{ .scalar = s };
-    return t.eql(Types.U32) or Types.canConvertTo(t, Types.U32);
 }
 
 /// Syntactic approximation of whether an expression can denote a reference

@@ -85,3 +85,43 @@ test "bitwise &/|/^ : bool^bool -> bool; int^int -> common; vecN<int> matched by
         try std.testing.expect((try resolveBinary(a, op, Types.Bool, Types.I32)) == null);
     }
 }
+
+test "shifts <</>> : int<<u32 -> the LHS type; RHS is u32/abstract; vectors matched by width" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const vec3i = try vecT(a, 3, Types.scalar_i32_ptr);
+    const vec2i = try vecT(a, 2, Types.scalar_i32_ptr);
+    const vec3u = try vecT(a, 3, Types.scalar_u32_ptr);
+    const vec2u = try vecT(a, 2, Types.scalar_u32_ptr);
+
+    for ([_]Ast.BinaryOp{ .shl, .shr }) |op| {
+        // Asymmetric: the result is the *LHS* integer type, independent of the
+        // (u32) shift amount. i32<<u32 -> i32, not a common type.
+        try std.testing.expectEqualStrings("i32", (try resolveBinary(a, op, Types.I32, Types.U32)).?);
+        try std.testing.expectEqualStrings("u32", (try resolveBinary(a, op, Types.U32, Types.U32)).?);
+        try std.testing.expectEqualStrings("i32", (try resolveBinary(a, op, Types.I32, Types.AbstractInt)).?); // abstract RHS ok
+        try std.testing.expect((try resolveBinary(a, op, Types.AbstractInt, Types.U32)) != null); // abstract LHS ok
+
+        // RHS shift amount is u32-family only: i32/f32/bool amounts are rejected.
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, Types.I32)) == null);
+        try std.testing.expect((try resolveBinary(a, op, Types.U32, Types.I32)) == null);
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, Types.F32)) == null);
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, Types.Bool)) == null);
+        // LHS must be integer.
+        try std.testing.expect((try resolveBinary(a, op, Types.F32, Types.U32)) == null);
+        try std.testing.expect((try resolveBinary(a, op, Types.Bool, Types.U32)) == null);
+
+        // Vectors: component-wise, RHS is vecN<u32> of matching width; result
+        // is the LHS vector.
+        try std.testing.expectEqualStrings("vec3<i32>", (try resolveBinary(a, op, vec3i, vec3u)).?);
+        try std.testing.expectEqualStrings("vec3<u32>", (try resolveBinary(a, op, vec3u, vec3u)).?);
+        try std.testing.expectEqualStrings("vec2<i32>", (try resolveBinary(a, op, vec2i, vec2u)).?);
+        // Width mismatch, i32 shift amount, and scalar<->vector shapes reject.
+        try std.testing.expect((try resolveBinary(a, op, vec3i, vec2u)) == null);
+        try std.testing.expect((try resolveBinary(a, op, vec3i, vec3i)) == null);
+        try std.testing.expect((try resolveBinary(a, op, vec3i, Types.U32)) == null);
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, vec3u)) == null);
+    }
+}

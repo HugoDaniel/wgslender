@@ -54,6 +54,11 @@ pub const ScalarFamily = enum {
     /// spec domain excludes f16 (not 32 bits) and abstract numerics (the
     /// validator concretizes them before the sig runs).
     concrete_32,
+    /// u32 or abstract-int only — the WGSL shift-amount domain (§8.7). Shift
+    /// counts are unsigned, and abstract-int concretizes to u32. Distinct from
+    /// `.integer` (which also admits i32) and `.abstract_int` (which excludes
+    /// concrete u32).
+    u32_or_abstract,
 
     pub fn accepts(self: ScalarFamily, kind: Types.ScalarKind) bool {
         return switch (self) {
@@ -64,6 +69,7 @@ pub const ScalarFamily = enum {
             .any => true,
             .bool => kind == .bool,
             .concrete_32 => kind == .i32 or kind == .u32 or kind == .f32,
+            .u32_or_abstract => kind == .u32 or kind == .abstract_int,
         };
     }
 };
