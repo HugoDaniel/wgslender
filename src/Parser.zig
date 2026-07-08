@@ -294,6 +294,70 @@ pub fn reparseAnchor(
     }
 }
 
+/// Output of `reparseAnchorInScope`: the parsed statement plus every scope
+/// the parse pushed (DFS creation order), so the incremental splice path can
+/// feed them to a subsequent `.add`-mode `AstVisit` as `scopes_in_order`.
+/// Same shape as the retired `CstLower.SubtreeInScopeOut`.
+pub const AnchorInScopeOut = struct {
+    stmt: Ast.Stmt,
+    new_scopes: std.ArrayList(*Ast.Scope),
+};
+
+/// Re-parse a `compound_stmt` or `decl_stmt` anchor that DOES introduce
+/// scopes and/or symbols, seeding a throwaway parser with `parent_scope`
+/// and the module's existing `symbols` so declared symbols take fresh
+/// continuation indices (old `SymbolIndex` values stay valid) and pushed
+/// scopes hang under `parent_scope`. The incremental scope-splice paths
+/// (`Splice.tryCompoundSpliceInPlace` / `tryDeclStmtSpliceInPlace`) call this
+/// in place of the retired `CstLower.lowerSubtreeInScope`.
+///
+/// No CST is emitted (`cst` stays null) — the splice already holds the
+/// anchor's CST from the driver's `reparseAnchor` pass; only the AST /
+/// symbol table / scope tree are built, and only Pass 1 runs (ident refs
+/// left unresolved). The caller runs a targeted `.add`-mode `AstVisit` over
+/// `new_scopes` to bind them. Redeclaration (E0101) diagnostics the parse
+/// may raise are discarded, exactly as `lowerSubtreeInScope` discarded them;
+/// the driver already gates hot-path eligibility via its own (unseeded)
+/// `reparseAnchor` error check.
+///
+/// `symbols` is updated in place to the (possibly reallocated) grown list;
+/// pass the module's own arena as `arena` so the growth persists past the
+/// reparse.
+pub fn reparseAnchorInScope(
+    arena: Allocator,
+    source: [:0]const u8,
+    stream: TokenStream,
+    start_nt_pos: u32,
+    parent_scope: *Ast.Scope,
+    symbols: *std.ArrayList(Ast.Symbol),
+) error{ OutOfMemory, ParseFailed }!AnchorInScopeOut {
+    std.debug.assert(start_nt_pos <= stream.non_trivia_tags.len);
+
+    // A throwaway parser seeded mid-scope. No CST builder is attached, so
+    // every `cstOpen`/`cstClose` no-ops and the token cursor drives the
+    // AST/symbol/scope build directly. `init` is bypassed on purpose: it
+    // would allocate a fresh module root scope, but we want `parent_scope`.
+    var parser = Parser{
+        .arena = arena,
+        .source = source,
+        .token_tags = stream.non_trivia_tags,
+        .token_starts = stream.non_trivia_starts,
+        .token_ends = stream.non_trivia_ends,
+        .pos = start_nt_pos,
+        .symbols = symbols.*,
+        .scope = parent_scope,
+        .scopes_in_order = .empty,
+        .errors = .empty,
+    };
+
+    const stmt = (try parser.parseStatement()) orelse return error.ParseFailed;
+
+    // Hand the grown symbol list back to the caller (same arena storage).
+    symbols.* = parser.symbols;
+
+    return .{ .stmt = stmt, .new_scopes = parser.scopes_in_order };
+}
+
 /// Parse source into a Module. Caller owns the returned module via the arena.
 pub fn parse(self: *Parser) !*Ast.Module {
     std.debug.assert(self.pos == 0); // parse should only be called once

@@ -502,10 +502,13 @@ fn tryIncrementalReparseInPlace(
     defer sub_builder.deinit();
     var sub_parser = try Parser.initWithCst(arena, new_source, new_stream, &sub_builder);
     const parser_kind: Parser.AnchorKind = if (Anchor.isStmtKind(anchor_kind)) .statement else .expression;
-    // Keep the Parser's own AST node for the anchor. For symbol-free anchors
-    // the splice slots it straight in (no second CST lowering); the
-    // compound_stmt / decl_stmt paths ignore it and re-lower in-scope (until
-    // Block 1.4 B3b wires those up too).
+    // This unseeded reparse emits the anchor's CST (spliced below) and
+    // validates its kind / coverage / clean-parse. For symbol-free anchors
+    // the splice slots its AST node (`parsed_anchor`) straight in. The
+    // compound_stmt / decl_stmt paths discard this node and re-parse the same
+    // tokens seeded with the parent scope + symbol table
+    // (`Parser.reparseAnchorInScope`), which they must do AFTER detaching the
+    // old scope so `pushScope` counts the right siblings.
     const parsed_anchor = sub_parser.reparseAnchor(parser_kind, nt_pos) catch return error.AnchorParseFailed;
     if (sub_parser.errors.items.len > 0) return error.AnchorParseError;
     var new_sub = try sub_builder.finish(arena, new_all_tokens, new_source);
@@ -548,6 +551,8 @@ fn tryIncrementalReparseInPlace(
             new_tree,
             anchor_cursor.node,
             old_anchor_span,
+            new_stream,
+            nt_pos,
         );
     }
     if (is_decl_stmt_inplace) {
@@ -558,6 +563,8 @@ fn tryIncrementalReparseInPlace(
             new_tree,
             anchor_cursor.node,
             old_anchor_span,
+            new_stream,
+            nt_pos,
         );
     }
     return try Splice.tryAddSubSpliceInPlace(

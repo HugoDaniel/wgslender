@@ -30,7 +30,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("../Ast.zig");
 const Cst = @import("../Cst.zig");
-const CstLower = @import("../CstLower.zig");
 const Parser = @import("../Parser.zig");
 const AstVisit = @import("../AstVisit.zig");
 const Incremental = @import("../Incremental.zig");
@@ -266,7 +265,7 @@ pub fn tryAddSubSpliceInPlace(
 ///      use_counts drop to 0 by construction.
 ///   3. Detach old block scope from its parent's children list.
 ///   4. Shift downstream AST spans by delta.
-///   5. Lower the new subtree with `CstLower.lowerSubtreeInScope` —
+///   5. Re-parse the new subtree with `Parser.reparseAnchorInScope` —
 ///      appends symbols, pushes a fresh scope subtree under parent.
 ///   6. Reorder parent.children so the new scope sits at the OLD index
 ///      (pushScope always appends; move-to-position preserves DFS order).
@@ -282,6 +281,8 @@ pub fn tryCompoundSpliceInPlace(
     new_tree_in: Cst.Tree,
     new_subtree_node: Cst.NodeIndex,
     old_anchor_span: Ast.Span,
+    new_stream: Parser.TokenStream,
+    nt_pos: u32,
 ) !Incremental.ReparseResult {
     var new_tree = new_tree_in;
     const prev_arena = prev.arena.allocator();
@@ -335,12 +336,18 @@ pub fn tryCompoundSpliceInPlace(
     const delta: i64 = @as(i64, new_len) - @as(i64, old_len);
     prev.module.shiftModuleForEdit(old_anchor_span.end, delta);
 
-    // 5. Lower the new subtree under `parent_scope`, appending new
-    //    symbols and pushing fresh scopes.
-    const lowered = try CstLower.lowerSubtreeInScope(
+    // 5. Re-parse the new subtree under `parent_scope`, appending new
+    //    symbols and pushing fresh scopes. The Parser's Pass 1 builds the
+    //    same AST/symbols/scope tree the retired `CstLower.lowerSubtreeInScope`
+    //    did (both run the identical `parseCompoundStmt`/`declareSymbol`/
+    //    `pushScope` routines) — no CST is emitted; the anchor's CST is
+    //    already spliced into `new_tree`. The reparse runs AFTER the step-3
+    //    detach so `pushScope` sees the same sibling set the lower did.
+    const lowered = try Parser.reparseAnchorInScope(
         prev_arena,
-        &new_tree,
-        new_subtree_node,
+        new_source,
+        new_stream,
+        nt_pos,
         parent_scope,
         &prev.module.symbols,
     );
@@ -393,9 +400,9 @@ pub fn tryCompoundSpliceInPlace(
 
     // 9. Add-walk the updated compound. scopes_in_order must match what
     //    the walker will encounter: the compound's own scope first, then
-    //    its DFS descendants — exactly what `lowerSubtreeInScope` pushed.
+    //    its DFS descendants — exactly what `reparseAnchorInScope` pushed.
     //    The compound's own scope is the LAST entry appended to
-    //    `parent_scope.children` by the lower (then moved to
+    //    `parent_scope.children` by the reparse (then moved to
     //    `old_scope_idx` above). Its descendants are in `lowered.new_scopes`
     //    minus the compound's own scope, which is the first entry of
     //    `new_scopes`.
@@ -448,7 +455,7 @@ pub fn tryCompoundSpliceInPlace(
 ///      every resolved ident across the parent + descendants; the
 ///      removed decl's symbol drops to use_count 0).
 ///   6. Shift downstream AST spans by delta.
-///   7. Lower the new decl_stmt via `CstLower.lowerSubtreeInScope` —
+///   7. Re-parse the new decl_stmt via `Parser.reparseAnchorInScope` —
 ///      appends a fresh symbol and `put`s its scope-member entry.
 ///   8. Write the new `Ast.Stmt` back into the parent's stmts slot.
 ///   9. Rebuild `scope_for_cst_node` and add-walk the parent compound
@@ -461,6 +468,8 @@ pub fn tryDeclStmtSpliceInPlace(
     new_tree_in: Cst.Tree,
     new_subtree_node: Cst.NodeIndex,
     old_anchor_span: Ast.Span,
+    new_stream: Parser.TokenStream,
+    nt_pos: u32,
 ) !Incremental.ReparseResult {
     var new_tree = new_tree_in;
     const prev_arena = prev.arena.allocator();
@@ -547,17 +556,20 @@ pub fn tryDeclStmtSpliceInPlace(
     const delta: i64 = @as(i64, new_len) - @as(i64, old_len);
     prev.module.shiftModuleForEdit(old_anchor_span.end, delta);
 
-    // 7. Lower the new decl_stmt into prev.arena. `lowerSubtreeInScope`
+    // 7. Re-parse the new decl_stmt into prev.arena. `reparseAnchorInScope`
     //    appends a fresh symbol to `module.symbols`, puts its entry into
-    //    parent_scope.members, and (for decl_stmt) pushes no new scopes.
-    const lowered = try CstLower.lowerSubtreeInScope(
+    //    parent_scope.members (the old name was removed in step 4, so no
+    //    spurious E0101), and (for decl_stmt) pushes no new scopes. Same
+    //    Pass-1 build the retired `CstLower.lowerSubtreeInScope` produced.
+    const lowered = try Parser.reparseAnchorInScope(
         prev_arena,
-        &new_tree,
-        new_subtree_node,
+        new_source,
+        new_stream,
+        nt_pos,
         parent_scope,
         &prev.module.symbols,
     );
-    // The lower must have produced no new scopes for a decl_stmt. Defensive
+    // The reparse must have produced no new scopes for a decl_stmt. Defensive
     // check — if it did, something is off and we bail rather than leave
     // a stray scope attached.
     if (lowered.new_scopes.items.len != 0) return error.UnexpectedScopeInDecl;
