@@ -357,7 +357,7 @@ pub fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocat
         .logical_and, .logical_or, .@"and", .@"or", .xor => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .eq, .ne => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .lt, .le, .gt, .ge => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
-        .add, .sub => checkAdditiveBinary(v, e, left_type, right_type, stage, er, op_str),
+        .add, .sub => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .mul => checkMulBinary(v, e, left_type, right_type, stage, er),
         .div => checkDivBinary(v, e, left_type, right_type, stage, er),
         .mod => checkModBinary(v, e, left_type, right_type, stage, er),
@@ -426,18 +426,12 @@ fn binaryFailureMessage(v: *Validator, op: Ast.BinaryOp, op_str: []const u8, lef
             v.fmtError("operator '{s}' requires scalar or vector operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() })
         else
             v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
+        // Additive: reproduces `checkAdditiveBinary`'s wording. Now also covers
+        // the `bool` operands the old `commonType` fast path wrongly accepted
+        // (returning a `bool` result) — `bool` is not a numeric type.
+        .add, .sub => v.fmtError("operator '{s}' requires numeric types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
         else => unreachable,
     };
-}
-
-pub fn checkAdditiveBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
-    _ = e;
-    const result = Types.addSubResultType(v.arena, left_type, right_type) catch return InferResult.fail;
-    if (result) |r| {
-        return InferResult.some(r, stage);
-    }
-    v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires numeric types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-    return InferResult.fail;
 }
 
 pub fn checkMulBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) InferResult {

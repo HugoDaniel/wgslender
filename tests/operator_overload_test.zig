@@ -218,3 +218,51 @@ test "equality == != : any scalar/vector incl bool -> bool-shaped; matrix reject
         try std.testing.expect((try resolveBinary(a, op, mat2x2, mat2x2)) == null);
     }
 }
+
+test "additive + - : common numeric scalar/vector, scalar broadcast, same-shape matrix; bool rejects" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const vec2f = try vecT(a, 2, Types.scalar_f32_ptr);
+    const vec3f = try vecT(a, 3, Types.scalar_f32_ptr);
+    const vec2i = try vecT(a, 2, Types.scalar_i32_ptr);
+    const vec3b = try vecT(a, 3, Types.scalar_bool_ptr);
+    const mat2x3 = try matT(a, 2, 3, Types.scalar_f32_ptr);
+    const mat3x2 = try matT(a, 3, 2, Types.scalar_f32_ptr);
+
+    for ([_]Ast.BinaryOp{ .add, .sub }) |op| {
+        // Common numeric scalar; abstract yields to the concrete partner.
+        try std.testing.expectEqualStrings("i32", (try resolveBinary(a, op, Types.I32, Types.I32)).?);
+        try std.testing.expectEqualStrings("f32", (try resolveBinary(a, op, Types.F32, Types.F32)).?);
+        try std.testing.expectEqualStrings("i32", (try resolveBinary(a, op, Types.AbstractInt, Types.I32)).?);
+        try std.testing.expectEqualStrings("f32", (try resolveBinary(a, op, Types.F32, Types.AbstractInt)).?);
+        // Common numeric vector.
+        try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, op, vec2f, vec2f)).?);
+        try std.testing.expectEqualStrings("vec2<i32>", (try resolveBinary(a, op, vec2i, vec2i)).?);
+        // Scalar broadcast, both directions; the scalar's element must match.
+        try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, op, vec2f, Types.F32)).?);
+        try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, op, Types.F32, vec2f)).?);
+        try std.testing.expectEqualStrings("vec2<i32>", (try resolveBinary(a, op, vec2i, Types.AbstractInt)).?);
+        // An abstract-int scalar broadcasts into a float / uint vector, unifying
+        // to the vector's element (the old checker concretized it to i32 first
+        // and wrongly rejected `1 + vec2<f32>`).
+        try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, op, Types.AbstractInt, vec2f)).?);
+        // Same-shape matrix (+/- require identical dimensions).
+        try std.testing.expectEqualStrings("mat2x3<f32>", (try resolveBinary(a, op, mat2x3, mat2x3)).?);
+
+        // --- rejections ---
+        // bool operands are not numeric (the old checker wrongly returned bool).
+        try std.testing.expect((try resolveBinary(a, op, Types.Bool, Types.Bool)) == null);
+        try std.testing.expect((try resolveBinary(a, op, vec3b, vec3b)) == null);
+        try std.testing.expect((try resolveBinary(a, op, vec3b, Types.Bool)) == null);
+        // Mixed sign / int-vs-float / width / scalar<->vector.
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, Types.U32)) == null);
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, Types.F32)) == null);
+        try std.testing.expect((try resolveBinary(a, op, vec2f, vec3f)) == null);
+        try std.testing.expect((try resolveBinary(a, op, vec2f, vec2i)) == null);
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, vec2f)) == null);
+        // Different-shape matrices do not add.
+        try std.testing.expect((try resolveBinary(a, op, mat2x3, mat3x2)) == null);
+    }
+}

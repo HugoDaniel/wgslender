@@ -142,6 +142,56 @@ const equality_sigs = [_]Sig{
     },
 };
 
+// -- Arithmetic `+ - * / %` (§8.7) -----------------------------------------
+//
+// All five arithmetic operators share the scalar / vector / scalar-broadcast
+// forms below; they differ only in the composite (matrix) forms each one
+// additionally admits — `+`/`-` add same-shape matrices, `*` adds the
+// matrix/vector/scalar products, and `/`/`%` admit no composite form. The
+// element family is `.numeric` (no bool): the old `commonType`-identity fast
+// path wrongly accepted `bool` arithmetic and returned a `bool` result. The
+// shared element tparam (idx 0) enforces the common-type requirement; the
+// shared width tparam (idx 1) rejects width mismatches.
+
+/// `T op T -> T` for a common numeric scalar.
+const arith_scalar = Sig{ .tparam_count = 1, .params = &.{
+    .{ .tparam_scalar = .{ .idx = 0, .family = .numeric } },
+    .{ .tparam_scalar = .{ .idx = 0, .family = .numeric } },
+}, .result = .{ .pattern = .{ .bound_scalar = 0 } } };
+
+/// `vecN<T> op vecN<T> -> vecN<T>` (component-wise).
+const arith_vec = Sig{ .tparam_count = 2, .params = &.{
+    .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .numeric, .n_idx = 1 } },
+    .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .numeric, .n_idx = 1 } },
+}, .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } } };
+
+/// `vecN<T> op T -> vecN<T>` (scalar broadcast; the scalar shares the vector's
+/// element tparam, so `vec2<i32> + 1u` is rejected as a common-type failure).
+const arith_vec_scalar = Sig{ .tparam_count = 2, .params = &.{
+    .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .numeric, .n_idx = 1 } },
+    .{ .tparam_scalar = .{ .idx = 0, .family = .numeric } },
+}, .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } } };
+
+/// `T op vecN<T> -> vecN<T>` (scalar broadcast, scalar first).
+const arith_scalar_vec = Sig{ .tparam_count = 2, .params = &.{
+    .{ .tparam_scalar = .{ .idx = 0, .family = .numeric } },
+    .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .numeric, .n_idx = 1 } },
+}, .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } } };
+
+/// The four scalar/vector forms every arithmetic operator shares.
+const arith_scalar_vector_forms = [_]Sig{ arith_scalar, arith_vec, arith_vec_scalar, arith_scalar_vec };
+
+/// Addition / subtraction `+` `-` (§8.7): the shared scalar/vector forms plus
+/// same-shape matrix `matCxR<T> +/- matCxR<T> -> matCxR<T>`. Both operands
+/// share the cols (idx 1) and rows (idx 2) tparams, so only identical
+/// dimensions add — `mat2x3 + mat3x2` fails to unify. Matrices are float-only.
+const addsub_sigs = arith_scalar_vector_forms ++ [_]Sig{
+    .{ .tparam_count = 3, .params = &.{
+        .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } },
+        .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } },
+    }, .result = .{ .pattern = .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } } } },
+};
+
 /// Overload set for a binary operator, or an empty set for operators whose
 /// legacy checker still owns them (only migrated operators are routed here by
 /// the validator, so the empty set is never resolved against).
@@ -152,6 +202,7 @@ pub fn binarySigs(op: Ast.BinaryOp) []const Sig {
         .shl, .shr => &shift_sigs,
         .lt, .le, .gt, .ge => &comparison_sigs,
         .eq, .ne => &equality_sigs,
+        .add, .sub => &addsub_sigs,
         else => &.{},
     };
 }

@@ -20,6 +20,18 @@ All notable changes to wgslender are recorded here. The project follows
   `bool` and `vecN<bool>` operands, is unchanged, as is the "requires
   compatible types" wording for mismatched scalar/vector pairs. Part of
   routing operator type-checking through the shared overload engine.
+- **Additive operators** (`+` `-`): routed through the shared overload engine,
+  fixing two latent bugs in the old checker. (1) `bool` operands
+  (`true + true`, `vecN<bool> + vecN<bool>`, and `bool` scalar-broadcast),
+  previously accepted *silently* with a `bool` result, now report `E0201` —
+  `bool` is not a numeric type. (2) An abstract-integer literal added to a
+  float or unsigned vector (`1 + vec2<f32>`, `1 + vec2<u32>`, and the reverse)
+  was previously **rejected**: the checker concretized the literal to `i32`
+  before broadcasting, so `i32`-into-`f32`/`u32` failed. It now converts the
+  literal to the vector's element type per WGSL §8.7, matching other WGSL
+  implementations. Valid scalar / vector / same-shape-matrix additions keep
+  their exact result types. (The compound form `+=` / `-=` still uses the
+  legacy path and is unified in a later change.)
 
 ## [1.1.0] — 2026-05-06
 
