@@ -214,9 +214,61 @@ const div_sigs = arith_scalar_vector_forms;
 /// overload-expressible and stays a call-site post-check.
 const mod_sigs = arith_scalar_vector_forms;
 
-/// Overload set for a binary operator, or an empty set for operators whose
-/// legacy checker still owns them (only migrated operators are routed here by
-/// the validator, so the empty set is never resolved against).
+/// Multiplication `*` (§8.7): the richest arithmetic operator. Beyond the
+/// shared scalar / vector / scalar-broadcast forms it admits the full set of
+/// linear-algebra products — matrix·scalar, scalar·matrix, matrix·vector,
+/// vector·matrix, and matrix·matrix. Matrices are float-only, so every matrix
+/// form uses the `.float` family; an abstract-int scalar factor promotes to
+/// abstract-float and unifies with the matrix element, so `m * 2` is a matrix
+/// (the old `multiplyResultType` concretized that `2` to `i32` first and
+/// wrongly rejected it — the same premature-concretize bug the vector broadcast
+/// forms had).
+///
+/// The matrix·matrix form is what the old checker got wrong in *two*
+/// directions: its `commonType`-identity fast path (a) had no general
+/// `matKxR * matCxK -> matCxR` arm, so it wrongly *rejected* the six valid
+/// non-square products (`mat2x3 * mat3x2` …), and (b) *accepted* same-type
+/// non-square products (`mat2x3 * mat2x3`, `mat3x2 * mat3x2`) that WGSL leaves
+/// undefined, returning a nonsense matrix. Sharing the inner-dimension width
+/// tparam between the two matrix params expresses the conformance rule exactly:
+/// `mat_mat` binds A as matKxR (cols->slot 1 = K, rows->slot 2 = R) and B as
+/// matCxK (cols->slot 3 = C, rows->slot 1, *reusing* K), so `bindWidth`'s
+/// bind-then-check enforces A.cols == B.rows; the result materializes matCxR
+/// (cols = slot 3, rows = slot 2). Non-conformant pairs fail to unify slot 1.
+const mul_sigs = arith_scalar_vector_forms ++ [_]Sig{
+    // matCxR<T> * T -> matCxR<T> (scalar on the right).
+    .{ .tparam_count = 3, .params = &.{
+        .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } },
+        .{ .tparam_scalar = .{ .idx = 0, .family = .float } },
+    }, .result = .{ .pattern = .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } } } },
+    // T * matCxR<T> -> matCxR<T> (scalar on the left).
+    .{ .tparam_count = 3, .params = &.{
+        .{ .tparam_scalar = .{ .idx = 0, .family = .float } },
+        .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } },
+    }, .result = .{ .pattern = .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } } } },
+    // matCxR<T> * vecC<T> -> vecR<T> (matrix·vector; vector width = matrix cols).
+    .{ .tparam_count = 3, .params = &.{
+        .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } },
+        .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .float, .n_idx = 1 } },
+    }, .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 2 } } } },
+    // vecR<T> * matCxR<T> -> vecC<T> (vector·matrix; vector width = matrix rows).
+    .{ .tparam_count = 3, .params = &.{
+        .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .float, .n_idx = 2 } },
+        .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } },
+    }, .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } } },
+    // matKxR<T> * matCxK<T> -> matCxR<T> (matrix·matrix; A.cols == B.rows == K).
+    .{ .tparam_count = 4, .params = &.{
+        .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } },
+        .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 3, .rows_idx = 1 } },
+    }, .result = .{ .pattern = .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 3, .rows_idx = 2 } } } },
+};
+
+/// Overload set for a binary operator. The switch is exhaustive: every WGSL
+/// binary operator now resolves its operand *shapes* through the engine (`*`
+/// migrated the last hand-rolled table in Block 2.1). A few families keep a
+/// value-dependent *post-check* at the validator call site — div/mod-by-zero,
+/// shift-amount vs bit width — applied after a successful resolve; those aren't
+/// overload-expressible, but the shape resolution above them all lives here.
 pub fn binarySigs(op: Ast.BinaryOp) []const Sig {
     return switch (op) {
         .logical_and, .logical_or => &logical_sigs,
@@ -225,8 +277,8 @@ pub fn binarySigs(op: Ast.BinaryOp) []const Sig {
         .lt, .le, .gt, .ge => &comparison_sigs,
         .eq, .ne => &equality_sigs,
         .add, .sub => &addsub_sigs,
+        .mul => &mul_sigs,
         .div => &div_sigs,
         .mod => &mod_sigs,
-        else => &.{},
     };
 }

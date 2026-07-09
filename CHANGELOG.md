@@ -60,6 +60,32 @@ All notable changes to wgslender are recorded here. The project follows
   wording, and the const modulo-by-zero diagnostic is unchanged. Valid scalar /
   vector / scalar-broadcast moduli keep their exact result types. (The compound
   form `%=` still uses the legacy path and is unified in a later change.)
+- **Multiplication operator** (`*`): routed through the shared overload engine —
+  completing the binary-operator migration, so every WGSL binary operator now
+  resolves its operand shapes through one engine. Multiplication is the richest
+  arithmetic operator (scalar, vector, matrix·scalar, matrix·vector,
+  vector·matrix, matrix·matrix), and the old `commonType`-based checker had
+  several latent bugs, all now fixed. (1) `bool` operands (`true * true`,
+  `vecN<bool> * vecN<bool>`, and `bool` scalar-broadcast), previously accepted
+  *silently* with a `bool` result, now report `E0201` — `bool` is not numeric.
+  (2) An abstract-integer literal multiplied with a float or unsigned **vector**
+  (`2 * vec2<f32>`, `2 * vec2<u32>`, and the reverse) was previously
+  **rejected**: the checker concretized the literal to `i32` before
+  broadcasting. It now converts the literal to the operand's element type per
+  WGSL §8.7. (3) The same premature concretization rejected an abstract-integer
+  literal times a **matrix** (`2 * mat2x2<f32>` and the reverse); these now
+  resolve to the matrix type. (4) **Matrix·matrix** was wrong in *two*
+  directions: the checker had no general `matKxR * matCxK -> matCxR` arm, so it
+  **rejected** the six valid non-square products (`mat2x3 * mat3x2` …), while
+  its same-type fast path **accepted** the undefined non-square same-type
+  products (`mat2x3 * mat2x3`, `mat3x2 * mat3x2`), returning a nonsense matrix.
+  Both are fixed: the inner-dimension conformance rule (`A.cols == B.rows`) is
+  now enforced and the result is `mat(B.cols)x(A.rows)`. Across the real tint
+  corpus this eliminates five false-positive `E0201` diagnostics (valid shaders
+  previously rejected) with no new false positives and no missed errors. Valid
+  scalar / vector / matrix·scalar / matrix·vector / conformant matrix·matrix
+  products keep their exact result types. (The compound form `*=` still uses the
+  legacy path and is unified in a later change.)
 
 ## [1.1.0] — 2026-05-06
 

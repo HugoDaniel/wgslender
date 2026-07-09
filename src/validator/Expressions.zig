@@ -357,8 +357,7 @@ pub fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocat
         .logical_and, .logical_or, .@"and", .@"or", .xor => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .eq, .ne => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .lt, .le, .gt, .ge => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
-        .add, .sub => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
-        .mul => checkMulBinary(v, e, left_type, right_type, stage, er),
+        .add, .sub, .mul => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .div => checkDivBinary(v, e, left_type, right_type, stage, er),
         .mod => checkModBinary(v, e, left_type, right_type, stage, er),
         .shl, .shr => checkShiftBinary(v, e, left_type, right_type, stage, er, op_str),
@@ -430,18 +429,17 @@ fn binaryFailureMessage(v: *Validator, op: Ast.BinaryOp, op_str: []const u8, lef
         // the `bool` operands the old `commonType` fast path wrongly accepted
         // (returning a `bool` result) — `bool` is not a numeric type.
         .add, .sub => v.fmtError("operator '{s}' requires numeric types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
+        // Multiplication spans scalar, vector, matrix·scalar, matrix·vector, and
+        // matrix·matrix products; a single "cannot multiply" message states the
+        // operation is undefined for the operands without over-claiming a
+        // specific reason (a non-conformant matmul is a dimension mismatch, not
+        // a numeric / compatibility failure). Reproduces the old `checkMulBinary`
+        // wording — now also covering the `bool` operands and the same-type
+        // non-square matrix products the old `commonType` fast path wrongly
+        // accepted.
+        .mul => v.fmtError("cannot multiply '{s}' by '{s}'", .{ left_type.string(), right_type.string() }),
         else => unreachable,
     };
-}
-
-pub fn checkMulBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) InferResult {
-    _ = e;
-    const result = Types.multiplyResultType(v.arena, left_type, right_type) catch return InferResult.fail;
-    if (result) |r| {
-        return InferResult.some(r, stage);
-    }
-    v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot multiply '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
-    return InferResult.fail;
 }
 
 pub fn checkDivBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) Allocator.Error!InferResult {

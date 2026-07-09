@@ -361,3 +361,75 @@ test "modulo % : common numeric scalar/vector, scalar broadcast; no matrix form 
     try std.testing.expect((try resolveBinary(a, .mod, vec2f, vec2i)) == null);
     try std.testing.expect((try resolveBinary(a, .mod, Types.I32, vec2f)) == null);
 }
+
+test "multiplication * : scalar/vector/broadcast plus the full matrix product set (spec-correct matmul)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const vec2f = try vecT(a, 2, Types.scalar_f32_ptr);
+    const vec3f = try vecT(a, 3, Types.scalar_f32_ptr);
+    const vec2i = try vecT(a, 2, Types.scalar_i32_ptr);
+    const vec2u = try vecT(a, 2, Types.scalar_u32_ptr);
+    const vec3b = try vecT(a, 3, Types.scalar_bool_ptr);
+    const mat2x2 = try matT(a, 2, 2, Types.scalar_f32_ptr);
+    const mat2x3 = try matT(a, 2, 3, Types.scalar_f32_ptr); // cols=2, rows=3
+    const mat3x2 = try matT(a, 3, 2, Types.scalar_f32_ptr); // cols=3, rows=2
+    const mat3x3 = try matT(a, 3, 3, Types.scalar_f32_ptr);
+
+    // --- shared scalar / vector / broadcast forms (identical to +,-,/) ---
+    try std.testing.expectEqualStrings("i32", (try resolveBinary(a, .mul, Types.I32, Types.I32)).?);
+    try std.testing.expectEqualStrings("f32", (try resolveBinary(a, .mul, Types.F32, Types.AbstractInt)).?);
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .mul, vec2f, vec2f)).?);
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .mul, vec2f, Types.F32)).?);
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .mul, Types.F32, vec2f)).?);
+    // Abstract-int broadcasts into a float / uint vector, unifying to the
+    // vector's element (the old checker concretized it to i32 first and wrongly
+    // rejected `1 * vec2<f32>`).
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .mul, Types.AbstractInt, vec2f)).?);
+    try std.testing.expectEqualStrings("vec2<u32>", (try resolveBinary(a, .mul, vec2u, Types.AbstractInt)).?);
+
+    // --- matrix · scalar (either order); matrices are float-only, and an
+    // abstract-int factor promotes to abstract-float and unifies (`m * 2`). ---
+    try std.testing.expectEqualStrings("mat2x3<f32>", (try resolveBinary(a, .mul, mat2x3, Types.F32)).?);
+    try std.testing.expectEqualStrings("mat2x3<f32>", (try resolveBinary(a, .mul, Types.F32, mat2x3)).?);
+    try std.testing.expectEqualStrings("mat2x2<f32>", (try resolveBinary(a, .mul, mat2x2, Types.AbstractInt)).?);
+    try std.testing.expectEqualStrings("mat2x2<f32>", (try resolveBinary(a, .mul, Types.AbstractInt, mat2x2)).?);
+
+    // --- matrix · vector: matCxR * vecC -> vecR (vector width = matrix cols) ---
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .mul, mat2x2, vec2f)).?);
+    try std.testing.expectEqualStrings("vec3<f32>", (try resolveBinary(a, .mul, mat2x3, vec2f)).?); // cols=2 consumes width 2; rows=3 -> vec3
+    // --- vector · matrix: vecR * matCxR -> vecC (vector width = matrix rows) ---
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .mul, vec2f, mat2x2)).?);
+    try std.testing.expectEqualStrings("vec3<f32>", (try resolveBinary(a, .mul, vec2f, mat3x2)).?); // rows=2 consumes width 2; cols=3 -> vec3
+
+    // --- matrix · matrix: matKxR * matCxK -> matCxR (A.cols == B.rows == K) ---
+    try std.testing.expectEqualStrings("mat2x2<f32>", (try resolveBinary(a, .mul, mat2x2, mat2x2)).?);
+    try std.testing.expectEqualStrings("mat3x3<f32>", (try resolveBinary(a, .mul, mat3x3, mat3x3)).?);
+    // Non-square products the old checker wrongly *rejected* (it had no general
+    // matmul arm): A.cols == B.rows, result mat(B.cols)x(A.rows).
+    try std.testing.expectEqualStrings("mat3x2<f32>", (try resolveBinary(a, .mul, mat2x2, mat3x2)).?); // K=2,R=2,C=3
+    try std.testing.expectEqualStrings("mat2x3<f32>", (try resolveBinary(a, .mul, mat2x3, mat2x2)).?); // K=2,R=3,C=2
+    try std.testing.expectEqualStrings("mat3x3<f32>", (try resolveBinary(a, .mul, mat2x3, mat3x2)).?); // K=2,R=3,C=3
+    try std.testing.expectEqualStrings("mat2x2<f32>", (try resolveBinary(a, .mul, mat3x2, mat2x3)).?); // K=3,R=2,C=2
+
+    // --- rejections ---
+    // Non-conformant matmul (A.cols != B.rows): the old checker's commonType
+    // fast path wrongly *accepted* these same-type non-square products,
+    // returning a nonsense matrix.
+    try std.testing.expect((try resolveBinary(a, .mul, mat2x3, mat2x3)) == null); // cols 2 != rows 3
+    try std.testing.expect((try resolveBinary(a, .mul, mat3x2, mat3x2)) == null); // cols 3 != rows 2
+    // Matrix · vector width mismatch (vector width != matrix cols).
+    try std.testing.expect((try resolveBinary(a, .mul, mat2x2, vec3f)) == null);
+    // Vector · matrix width mismatch (vector width != matrix rows).
+    try std.testing.expect((try resolveBinary(a, .mul, vec3f, mat2x2)) == null);
+    // Matrices are float-only: an integer vector never pairs with a matrix.
+    try std.testing.expect((try resolveBinary(a, .mul, mat2x2, vec2i)) == null);
+    // bool operands are not numeric (the old checker wrongly returned bool).
+    try std.testing.expect((try resolveBinary(a, .mul, Types.Bool, Types.Bool)) == null);
+    try std.testing.expect((try resolveBinary(a, .mul, vec3b, vec3b)) == null);
+    // Mixed sign / int-vs-float / element mismatch.
+    try std.testing.expect((try resolveBinary(a, .mul, Types.I32, Types.U32)) == null);
+    try std.testing.expect((try resolveBinary(a, .mul, Types.I32, Types.F32)) == null);
+    try std.testing.expect((try resolveBinary(a, .mul, vec2f, vec2i)) == null);
+}
