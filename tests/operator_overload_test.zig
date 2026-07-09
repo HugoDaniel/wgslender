@@ -266,3 +266,50 @@ test "additive + - : common numeric scalar/vector, scalar broadcast, same-shape 
         try std.testing.expect((try resolveBinary(a, op, mat2x3, mat3x2)) == null);
     }
 }
+
+test "division / : common numeric scalar/vector, scalar broadcast; no matrix form; bool rejects" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const vec2f = try vecT(a, 2, Types.scalar_f32_ptr);
+    const vec3f = try vecT(a, 3, Types.scalar_f32_ptr);
+    const vec2i = try vecT(a, 2, Types.scalar_i32_ptr);
+    const vec2u = try vecT(a, 2, Types.scalar_u32_ptr);
+    const vec3b = try vecT(a, 3, Types.scalar_bool_ptr);
+    const mat2x2 = try matT(a, 2, 2, Types.scalar_f32_ptr);
+    const mat2x3 = try matT(a, 2, 3, Types.scalar_f32_ptr);
+
+    // Common numeric scalar; abstract yields to the concrete partner.
+    try std.testing.expectEqualStrings("i32", (try resolveBinary(a, .div, Types.I32, Types.I32)).?);
+    try std.testing.expectEqualStrings("f32", (try resolveBinary(a, .div, Types.F32, Types.F32)).?);
+    try std.testing.expectEqualStrings("i32", (try resolveBinary(a, .div, Types.AbstractInt, Types.I32)).?);
+    try std.testing.expectEqualStrings("f32", (try resolveBinary(a, .div, Types.F32, Types.AbstractInt)).?);
+    // Common numeric vector.
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .div, vec2f, vec2f)).?);
+    try std.testing.expectEqualStrings("vec2<u32>", (try resolveBinary(a, .div, vec2u, vec2u)).?);
+    // Scalar broadcast, both directions.
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .div, vec2f, Types.F32)).?);
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .div, Types.F32, vec2f)).?);
+    // An abstract-int scalar broadcasts into a float / uint vector, unifying to
+    // the vector's element (the old `divResultType` concretized it to i32 first
+    // and wrongly rejected `1 / vec2<f32>` and `1 / vec2<u32>`).
+    try std.testing.expectEqualStrings("vec2<f32>", (try resolveBinary(a, .div, Types.AbstractInt, vec2f)).?);
+    try std.testing.expectEqualStrings("vec2<u32>", (try resolveBinary(a, .div, vec2u, Types.AbstractInt)).?);
+
+    // --- rejections ---
+    // WGSL defines no matrix division; unlike +/- there is no composite form
+    // (the old `commonType` fast path wrongly accepted `mat / mat`).
+    try std.testing.expect((try resolveBinary(a, .div, mat2x2, mat2x2)) == null);
+    try std.testing.expect((try resolveBinary(a, .div, mat2x3, mat2x3)) == null);
+    try std.testing.expect((try resolveBinary(a, .div, mat2x2, Types.F32)) == null);
+    // bool operands are not numeric (the old checker wrongly returned bool).
+    try std.testing.expect((try resolveBinary(a, .div, Types.Bool, Types.Bool)) == null);
+    try std.testing.expect((try resolveBinary(a, .div, vec3b, vec3b)) == null);
+    // Mixed sign / int-vs-float / width / elem / scalar<->vector.
+    try std.testing.expect((try resolveBinary(a, .div, Types.I32, Types.U32)) == null);
+    try std.testing.expect((try resolveBinary(a, .div, Types.I32, Types.F32)) == null);
+    try std.testing.expect((try resolveBinary(a, .div, vec2f, vec3f)) == null);
+    try std.testing.expect((try resolveBinary(a, .div, vec2f, vec2i)) == null);
+    try std.testing.expect((try resolveBinary(a, .div, Types.I32, vec2f)) == null);
+}

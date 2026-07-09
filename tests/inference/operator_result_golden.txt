@@ -4050,12 +4050,12 @@ mat3x3f() * mat3x3f() => type=mat3x3<f32>
 1 / 1u => type=u32
 1 / 1f => type=f32
 1 / true => err=E0201
-1 / vec2f() => err=E0201
-1 / vec3f() => err=E0201
+1 / vec2f() => type=vec2<f32>
+1 / vec3f() => type=vec3<f32>
 1 / vec2i() => type=vec2<i32>
 1 / vec3i() => type=vec3<i32>
-1 / vec2u() => err=E0201
-1 / vec3u() => err=E0201
+1 / vec2u() => type=vec2<u32>
+1 / vec3u() => type=vec3<u32>
 1 / vec3<bool>(true, true, true) => err=E0201
 1 / mat2x2f() => err=E0201
 1 / mat2x3f() => err=E0201
@@ -4134,19 +4134,19 @@ true / 1.0 => err=E0201
 true / 1i => err=E0201
 true / 1u => err=E0201
 true / 1f => err=E0201
-true / true => type=bool
+true / true => err=E0201
 true / vec2f() => err=E0201
 true / vec3f() => err=E0201
 true / vec2i() => err=E0201
 true / vec3i() => err=E0201
 true / vec2u() => err=E0201
 true / vec3u() => err=E0201
-true / vec3<bool>(true, true, true) => type=vec3<bool>
+true / vec3<bool>(true, true, true) => err=E0201
 true / mat2x2f() => err=E0201
 true / mat2x3f() => err=E0201
 true / mat3x2f() => err=E0201
 true / mat3x3f() => err=E0201
-vec2f() / 1 => err=E0201
+vec2f() / 1 => type=vec2<f32>
 vec2f() / 1.0 => type=vec2<f32>
 vec2f() / 1i => err=E0201
 vec2f() / 1u => err=E0201
@@ -4163,7 +4163,7 @@ vec2f() / mat2x2f() => err=E0201
 vec2f() / mat2x3f() => err=E0201
 vec2f() / mat3x2f() => err=E0201
 vec2f() / mat3x3f() => err=E0201
-vec3f() / 1 => err=E0201
+vec3f() / 1 => type=vec3<f32>
 vec3f() / 1.0 => type=vec3<f32>
 vec3f() / 1i => err=E0201
 vec3f() / 1u => err=E0201
@@ -4214,7 +4214,7 @@ vec3i() / mat2x2f() => err=E0201
 vec3i() / mat2x3f() => err=E0201
 vec3i() / mat3x2f() => err=E0201
 vec3i() / mat3x3f() => err=E0201
-vec2u() / 1 => err=E0201
+vec2u() / 1 => type=vec2<u32>
 vec2u() / 1.0 => err=E0201
 vec2u() / 1i => err=E0201
 vec2u() / 1u => type=vec2<u32>
@@ -4231,7 +4231,7 @@ vec2u() / mat2x2f() => err=E0201
 vec2u() / mat2x3f() => err=E0201
 vec2u() / mat3x2f() => err=E0201
 vec2u() / mat3x3f() => err=E0201
-vec3u() / 1 => err=E0201
+vec3u() / 1 => type=vec3<u32>
 vec3u() / 1.0 => err=E0201
 vec3u() / 1i => err=E0201
 vec3u() / 1u => type=vec3<u32>
@@ -4253,14 +4253,14 @@ vec3<bool>(true, true, true) / 1.0 => err=E0201
 vec3<bool>(true, true, true) / 1i => err=E0201
 vec3<bool>(true, true, true) / 1u => err=E0201
 vec3<bool>(true, true, true) / 1f => err=E0201
-vec3<bool>(true, true, true) / true => type=vec3<bool>
+vec3<bool>(true, true, true) / true => err=E0201
 vec3<bool>(true, true, true) / vec2f() => err=E0201
 vec3<bool>(true, true, true) / vec3f() => err=E0201
 vec3<bool>(true, true, true) / vec2i() => err=E0201
 vec3<bool>(true, true, true) / vec3i() => err=E0201
 vec3<bool>(true, true, true) / vec2u() => err=E0201
 vec3<bool>(true, true, true) / vec3u() => err=E0201
-vec3<bool>(true, true, true) / vec3<bool>(true, true, true) => type=vec3<bool>
+vec3<bool>(true, true, true) / vec3<bool>(true, true, true) => err=E0201
 vec3<bool>(true, true, true) / mat2x2f() => err=E0201
 vec3<bool>(true, true, true) / mat2x3f() => err=E0201
 vec3<bool>(true, true, true) / mat3x2f() => err=E0201
@@ -4278,7 +4278,7 @@ mat2x2f() / vec3i() => err=E0201
 mat2x2f() / vec2u() => err=E0201
 mat2x2f() / vec3u() => err=E0201
 mat2x2f() / vec3<bool>(true, true, true) => err=E0201
-mat2x2f() / mat2x2f() => type=mat2x2<f32>
+mat2x2f() / mat2x2f() => err=E0201
 mat2x2f() / mat2x3f() => err=E0201
 mat2x2f() / mat3x2f() => err=E0201
 mat2x2f() / mat3x3f() => err=E0201
@@ -4296,7 +4296,7 @@ mat2x3f() / vec2u() => err=E0201
 mat2x3f() / vec3u() => err=E0201
 mat2x3f() / vec3<bool>(true, true, true) => err=E0201
 mat2x3f() / mat2x2f() => err=E0201
-mat2x3f() / mat2x3f() => type=mat2x3<f32>
+mat2x3f() / mat2x3f() => err=E0201
 mat2x3f() / mat3x2f() => err=E0201
 mat2x3f() / mat3x3f() => err=E0201
 mat3x2f() / 1 => err=E0201
@@ -4314,7 +4314,7 @@ mat3x2f() / vec3u() => err=E0201
 mat3x2f() / vec3<bool>(true, true, true) => err=E0201
 mat3x2f() / mat2x2f() => err=E0201
 mat3x2f() / mat2x3f() => err=E0201
-mat3x2f() / mat3x2f() => type=mat3x2<f32>
+mat3x2f() / mat3x2f() => err=E0201
 mat3x2f() / mat3x3f() => err=E0201
 mat3x3f() / 1 => err=E0201
 mat3x3f() / 1.0 => err=E0201
@@ -4332,7 +4332,7 @@ mat3x3f() / vec3<bool>(true, true, true) => err=E0201
 mat3x3f() / mat2x2f() => err=E0201
 mat3x3f() / mat2x3f() => err=E0201
 mat3x3f() / mat3x2f() => err=E0201
-mat3x3f() / mat3x3f() => type=mat3x3<f32>
+mat3x3f() / mat3x3f() => err=E0201
 1 % 1 => type=i32
 1 % 1.0 => type=f32
 1 % 1i => type=i32

@@ -32,6 +32,21 @@ All notable changes to wgslender are recorded here. The project follows
   implementations. Valid scalar / vector / same-shape-matrix additions keep
   their exact result types. (The compound form `+=` / `-=` still uses the
   legacy path and is unified in a later change.)
+- **Division operator** (`/`): routed through the shared overload engine,
+  fixing three latent bugs in the old `commonType`-based checker. (1) `bool`
+  operands (`true / true`, `vecN<bool> / vecN<bool>`, and `bool`
+  scalar-broadcast), previously accepted *silently* with a `bool` result, now
+  report `E0201` — `bool` is not a numeric type. (2) Same-shape matrix division
+  (`matCxR / matCxR`), previously accepted *silently* and returning a matrix,
+  now reports `E0201` — WGSL defines no matrix division. (3) An abstract-integer
+  literal divided with a float or unsigned vector (`1 / vec2<f32>`,
+  `1 / vec2<u32>`, and the reverse) was previously **rejected**: the checker
+  concretized the literal to `i32` before broadcasting, so `i32`-into-`f32` /
+  `u32` failed. It now converts the literal to the vector's element type per
+  WGSL §8.7. Valid scalar / vector / scalar-broadcast divisions keep their exact
+  result types, and the const division-by-zero diagnostic is unchanged. (The
+  compound form `/=` still uses the legacy path and is unified in a later
+  change.)
 
 ## [1.1.0] — 2026-05-06
 

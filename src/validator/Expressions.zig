@@ -444,19 +444,33 @@ pub fn checkMulBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, 
     return InferResult.fail;
 }
 
-pub fn checkDivBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) InferResult {
-    const result = Types.divResultType(v.arena, left_type, right_type) catch return InferResult.fail;
-    if (result) |r| {
-        // Const division by zero
-        if (v.tryExtractIntValue(e.right)) |rhs_val| {
-            if (rhs_val == 0) {
-                v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
+pub fn checkDivBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) Allocator.Error!InferResult {
+    // Shape + result come from the engine (`Operators.div_sigs`): a common
+    // numeric scalar/vector with scalar broadcast, no matrix form (§8.7). The
+    // value-dependent const division-by-zero check is not overload-expressible,
+    // so it stays a call-site post-check, applied after a successful resolve.
+    const sigs = Operators.binarySigs(e.op);
+    const arg_types = [_]?Types.Type{ left_type, right_type };
+    switch (Overload.resolve(sigs, &arg_types)) {
+        .ok => |ok| {
+            const sig = sigs[ok.sig_index];
+            var args8: [8]?Types.Type = @splat(null);
+            args8[0] = left_type;
+            args8[1] = right_type;
+            const ret = (try buildOverloadResult(v, sig.result, &ok.bindings, args8)) orelse
+                return InferResult.fail;
+            if (v.tryExtractIntValue(e.right)) |rhs_val| {
+                if (rhs_val == 0) {
+                    v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
+                }
             }
-        }
-        return InferResult.some(r, stage);
+            return InferResult.some(ret, stage);
+        },
+        .err => {
+            v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot divide '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
+            return InferResult.fail;
+        },
     }
-    v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("cannot divide '{s}' by '{s}'", .{ left_type.string(), right_type.string() }));
-    return InferResult.fail;
 }
 
 pub fn checkModBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) InferResult {

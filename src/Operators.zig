@@ -192,6 +192,15 @@ const addsub_sigs = arith_scalar_vector_forms ++ [_]Sig{
     }, .result = .{ .pattern = .{ .tparam_matrix = .{ .elem_idx = 0, .elem_family = .float, .cols_idx = 1, .rows_idx = 2 } } } },
 };
 
+/// Division `/` (§8.7): the shared scalar / vector / scalar-broadcast forms
+/// only — WGSL defines no matrix division, so unlike `+`/`-` there is no
+/// composite form. The old `commonType`-based `divResultType` fast path wrongly
+/// accepted `bool` operands (returning `bool`) and same-shape `matCxR / matCxR`
+/// (returning a matrix); neither matches a sig here, so both now report
+/// `E0201`. The value-dependent const division-by-zero check is not
+/// overload-expressible and stays a call-site post-check.
+const div_sigs = arith_scalar_vector_forms;
+
 /// Overload set for a binary operator, or an empty set for operators whose
 /// legacy checker still owns them (only migrated operators are routed here by
 /// the validator, so the empty set is never resolved against).
@@ -203,6 +212,7 @@ pub fn binarySigs(op: Ast.BinaryOp) []const Sig {
         .lt, .le, .gt, .ge => &comparison_sigs,
         .eq, .ne => &equality_sigs,
         .add, .sub => &addsub_sigs,
+        .div => &div_sigs,
         else => &.{},
     };
 }
