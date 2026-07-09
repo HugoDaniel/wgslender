@@ -47,6 +47,19 @@ All notable changes to wgslender are recorded here. The project follows
   result types, and the const division-by-zero diagnostic is unchanged. (The
   compound form `/=` still uses the legacy path and is unified in a later
   change.)
+- **Modulo operator** (`%`): routed through the shared overload engine (WGSL
+  `%` is the remainder for both integers and floats). The old checker took the
+  `commonType` of its operands, so it silently failed — typeless, no
+  diagnostic — on every numeric-but-incompatible pair. (1) Mixed-sign
+  (`1i % 1u`), int-vs-float, and width- or element-mismatched pairs now report
+  `E0201` ("requires compatible types") instead of producing a typeless result.
+  (2) Scalar/vector broadcasts, which the old `commonType`-only path never
+  handled — `vec3<f32> % 1.0`, and an abstract-integer literal against a float
+  or unsigned vector — now resolve per WGSL section 8.7. `bool` and matrix
+  operands stay rejected with the unchanged "requires numeric operands"
+  wording, and the const modulo-by-zero diagnostic is unchanged. Valid scalar /
+  vector / scalar-broadcast moduli keep their exact result types. (The compound
+  form `%=` still uses the legacy path and is unified in a later change.)
 
 ## [1.1.0] — 2026-05-06
 

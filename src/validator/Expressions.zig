@@ -473,20 +473,44 @@ pub fn checkDivBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, 
     }
 }
 
-pub fn checkModBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) InferResult {
-    // WGSL % works on both integers and floats (unlike C where fmod is separate).
-    if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type)) {
-        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '%' requires numeric operands, got '{s}' and '{s}'", .{ left_type.string(), right_type.string() }));
-        return InferResult.fail;
+pub fn checkModBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) Allocator.Error!InferResult {
+    // Shape + result come from the engine (`Operators.mod_sigs`): the same
+    // common numeric scalar / vector / scalar-broadcast forms as `/`, with no
+    // matrix form — WGSL `%` is the remainder for both integers and floats
+    // (§8.7). The value-dependent const modulo-by-zero check is not
+    // overload-expressible, so it stays a call-site post-check applied after a
+    // successful resolve.
+    const sigs = Operators.binarySigs(e.op);
+    const arg_types = [_]?Types.Type{ left_type, right_type };
+    switch (Overload.resolve(sigs, &arg_types)) {
+        .ok => |ok| {
+            const sig = sigs[ok.sig_index];
+            var args8: [8]?Types.Type = @splat(null);
+            args8[0] = left_type;
+            args8[1] = right_type;
+            const ret = (try buildOverloadResult(v, sig.result, &ok.bindings, args8)) orelse
+                return InferResult.fail;
+            if (v.tryExtractIntValue(e.right)) |rhs_val| {
+                if (rhs_val == 0) {
+                    v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
+                }
+            }
+            return InferResult.some(ret, stage);
+        },
+        .err => {
+            // Two-way refinement mirroring comparison/equality: a non-numeric
+            // operand keeps the original "requires numeric operands" wording,
+            // while a numeric-but-incompatible pair (mixed-sign, int-vs-float,
+            // width mismatch) — previously a silent failure — now reports the
+            // common-type failure.
+            const msg = if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type))
+                v.fmtError("operator '%' requires numeric operands, got '{s}' and '{s}'", .{ left_type.string(), right_type.string() })
+            else
+                v.fmtError("operator '%' requires compatible types, got '{s}' and '{s}'", .{ left_type.string(), right_type.string() });
+            v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, msg);
+            return InferResult.fail;
+        },
     }
-    // Const modulo by zero
-    if (v.tryExtractIntValue(e.right)) |rhs_val| {
-        if (rhs_val == 0) {
-            v.addErrorWithCodeR(exprRange(e.right), Diagnostic.Code.division_by_zero, "division by zero in const-expression");
-        }
-    }
-    const common = Types.commonType(left_type, right_type) orelse return InferResult.fail;
-    return InferResult.some(common, stage);
 }
 
 pub fn checkShiftBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) Allocator.Error!InferResult {

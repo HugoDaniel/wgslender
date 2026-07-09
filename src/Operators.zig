@@ -201,6 +201,19 @@ const addsub_sigs = arith_scalar_vector_forms ++ [_]Sig{
 /// overload-expressible and stays a call-site post-check.
 const div_sigs = arith_scalar_vector_forms;
 
+/// Modulo `%` (§8.7): shares division's forms exactly — a common numeric
+/// scalar / vector with scalar broadcast, and no matrix form (WGSL `%` is the
+/// remainder for both integers and floats, unlike C's separate `fmod`). The
+/// old `checkModBinary` guarded numeric-ness with `isNumeric` and then took the
+/// `commonType` of the operands, so it silently failed (typeless, no
+/// diagnostic) on every numeric-but-incompatible pair — mixed-sign (`1i % 1u`),
+/// int-vs-float, width-mismatched, and *all* scalar↔vector broadcasts (which it
+/// never handled). Broadcasts now resolve per §8.7; the incompatible pairs now
+/// report `E0201`. bool/matrix operands stay rejected exactly as before (no
+/// matching sig). The value-dependent const modulo-by-zero check is not
+/// overload-expressible and stays a call-site post-check.
+const mod_sigs = arith_scalar_vector_forms;
+
 /// Overload set for a binary operator, or an empty set for operators whose
 /// legacy checker still owns them (only migrated operators are routed here by
 /// the validator, so the empty set is never resolved against).
@@ -213,6 +226,7 @@ pub fn binarySigs(op: Ast.BinaryOp) []const Sig {
         .eq, .ne => &equality_sigs,
         .add, .sub => &addsub_sigs,
         .div => &div_sigs,
+        .mod => &mod_sigs,
         else => &.{},
     };
 }
