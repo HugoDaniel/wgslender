@@ -30,6 +30,18 @@ fn resolveBinary(arena: std.mem.Allocator, op: Ast.BinaryOp, a: Types.Type, b: T
                 .fixed => |ft| ft,
                 .pattern => |p| (try Overload.buildPatternType(arena, p, &ok.bindings)) orelse
                     return error.UnboundResultPattern,
+                // Comparison / equality: bool-shaped like the indexed operand.
+                // Reproduces `Validator.buildOverloadResult`'s materialization
+                // (which needs the arg types, not just the bindings).
+                .bool_shape_of => |idx| bs: {
+                    const at = if (idx == 0) a else b;
+                    if (at == .vector) {
+                        const bv = try arena.create(Types.Vector);
+                        bv.* = .{ .width = at.vector.width, .element = Types.scalar_bool_ptr };
+                        break :bs Types.Type{ .vector = bv };
+                    }
+                    break :bs Types.Bool;
+                },
                 else => return error.UnexpectedResultRule,
             };
             break :blk t.string();
@@ -41,6 +53,12 @@ fn vecT(arena: std.mem.Allocator, width: u8, elem: *const Types.Scalar) !Types.T
     const v = try arena.create(Types.Vector);
     v.* = .{ .width = width, .element = elem };
     return .{ .vector = v };
+}
+
+fn matT(arena: std.mem.Allocator, cols: u8, rows: u8, elem: *const Types.Scalar) !Types.Type {
+    const m = try arena.create(Types.Matrix);
+    m.* = .{ .cols = cols, .rows = rows, .element = elem };
+    return .{ .matrix = m };
 }
 
 test "logical &&/|| : only (bool, bool) resolves, to bool" {
@@ -123,5 +141,43 @@ test "shifts <</>> : int<<u32 -> the LHS type; RHS is u32/abstract; vectors matc
         try std.testing.expect((try resolveBinary(a, op, vec3i, vec3i)) == null);
         try std.testing.expect((try resolveBinary(a, op, vec3i, Types.U32)) == null);
         try std.testing.expect((try resolveBinary(a, op, Types.I32, vec3u)) == null);
+    }
+}
+
+test "comparisons < <= > >= : common numeric scalar/vector -> bool-shaped; bool/matrix/mixed reject" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const vec2f = try vecT(a, 2, Types.scalar_f32_ptr);
+    const vec2i = try vecT(a, 2, Types.scalar_i32_ptr);
+    const vec3i = try vecT(a, 3, Types.scalar_i32_ptr);
+    const vec2u = try vecT(a, 2, Types.scalar_u32_ptr);
+    const vec3b = try vecT(a, 3, Types.scalar_bool_ptr);
+    const mat2x2 = try matT(a, 2, 2, Types.scalar_f32_ptr);
+
+    for ([_]Ast.BinaryOp{ .lt, .le, .gt, .ge }) |op| {
+        // Common numeric scalar -> bool (independent of the element type).
+        try std.testing.expectEqualStrings("bool", (try resolveBinary(a, op, Types.I32, Types.I32)).?);
+        try std.testing.expectEqualStrings("bool", (try resolveBinary(a, op, Types.U32, Types.U32)).?);
+        try std.testing.expectEqualStrings("bool", (try resolveBinary(a, op, Types.F32, Types.F32)).?);
+        try std.testing.expectEqualStrings("bool", (try resolveBinary(a, op, Types.AbstractInt, Types.I32)).?);
+        try std.testing.expectEqualStrings("bool", (try resolveBinary(a, op, Types.AbstractInt, Types.AbstractInt)).?);
+        // Common numeric vector -> vecN<bool>.
+        try std.testing.expectEqualStrings("vec2<bool>", (try resolveBinary(a, op, vec2f, vec2f)).?);
+        try std.testing.expectEqualStrings("vec3<bool>", (try resolveBinary(a, op, vec3i, vec3i)).?);
+
+        // bool operands have no comparison form.
+        try std.testing.expect((try resolveBinary(a, op, Types.Bool, Types.Bool)) == null);
+        try std.testing.expect((try resolveBinary(a, op, vec3b, vec3b)) == null);
+        // Mixed sign / int-vs-float never share a common type.
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, Types.U32)) == null);
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, Types.F32)) == null);
+        try std.testing.expect((try resolveBinary(a, op, vec2i, vec2u)) == null);
+        // Width mismatch and scalar<->vector shapes.
+        try std.testing.expect((try resolveBinary(a, op, vec2i, vec3i)) == null);
+        try std.testing.expect((try resolveBinary(a, op, Types.I32, vec2i)) == null);
+        // Matrices (and other composites) match neither sig.
+        try std.testing.expect((try resolveBinary(a, op, mat2x2, mat2x2)) == null);
     }
 }

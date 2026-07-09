@@ -234,6 +234,12 @@ pub const ResultRule = union(enum) {
     synth_atomic_cmp_xchg: u8,
     /// The scalar element of a bound tparam (indexes the scalar tparam).
     bound_scalar_as_type: u8,
+    /// Bool-shaped like the operand at the given arg index: `bool` for a
+    /// scalar operand, `vecN<bool>` for a `vecN` operand. The result rule for
+    /// the comparison / equality operators (§8.7), whose result is a boolean
+    /// of the operands' shape regardless of their (unified) element type — so
+    /// unlike `.pattern` it can't be built from the tparam bindings alone.
+    bool_shape_of: u8,
 };
 
 /// Number of tparams an overload declares. 4 is the current maximum —

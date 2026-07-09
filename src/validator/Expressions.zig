@@ -356,7 +356,7 @@ pub fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocat
     return switch (e.op) {
         .logical_and, .logical_or, .@"and", .@"or", .xor => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .eq, .ne => checkEqualityBinary(v, e, left_type, right_type, stage, er, op_str),
-        .lt, .le, .gt, .ge => checkComparisonBinary(v, e, left_type, right_type, stage, er, op_str),
+        .lt, .le, .gt, .ge => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .add, .sub => checkAdditiveBinary(v, e, left_type, right_type, stage, er, op_str),
         .mul => checkMulBinary(v, e, left_type, right_type, stage, er),
         .div => checkDivBinary(v, e, left_type, right_type, stage, er),
@@ -408,32 +408,20 @@ fn binaryFailureMessage(v: *Validator, op: Ast.BinaryOp, op_str: []const u8, lef
     return switch (op) {
         .logical_and, .logical_or => v.fmtError("operator '{s}' requires 'bool' operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
         .@"and", .@"or", .xor => v.fmtError("operator '{s}' requires integer or bool, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
+        // Comparison: a non-numeric operand (bool, matrix, …) is the "wrong
+        // domain" case; two numeric-but-incompatible operands (mixed sign,
+        // int-vs-float, width mismatch) fail the common-type requirement.
+        // Reproduces the hand-rolled `checkComparisonBinary` split exactly.
+        .lt, .le, .gt, .ge => if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type))
+            v.fmtError("operator '{s}' requires numeric operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() })
+        else
+            v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
         else => unreachable,
     };
 }
 
 pub fn checkEqualityBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
     _ = e;
-    if (!left_type.eql(right_type) and
-        !Types.canConvertTo(left_type, right_type) and
-        !Types.canConvertTo(right_type, left_type))
-    {
-        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-        return InferResult.fail;
-    }
-    return vectorOrBool(v, left_type, stage);
-}
-
-pub fn checkComparisonBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
-    _ = e;
-    if (!Types.isNumeric(left_type) or !Types.isNumeric(right_type)) {
-        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires numeric operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-        return InferResult.fail;
-    }
-    // WGSL §17.1 "Comparison Expressions": operands must share a
-    // common numeric type. Mixing signed and unsigned integers
-    // (`1i < 2u`) has no matching overload — reject rather than
-    // silently picking a winner via implicit conversion.
     if (!left_type.eql(right_type) and
         !Types.canConvertTo(left_type, right_type) and
         !Types.canConvertTo(right_type, left_type))
@@ -1085,7 +1073,23 @@ pub fn buildOverloadResult(
                 .abstract_float => Types.scalar_abstract_float_ptr,
             } };
         },
+        .bool_shape_of => |arg_idx| {
+            const at = arg_types[arg_idx] orelse return null;
+            return try boolShapeOf(v, at);
+        },
     }
+}
+
+/// Bool-shaped like `t`: `vecN<bool>` for a `vecN` operand, `bool` otherwise.
+/// The result type of the comparison / equality operators (§8.7) — the
+/// materializer for `Overload.ResultRule.bool_shape_of`.
+fn boolShapeOf(v: *Validator, t: Types.Type) Allocator.Error!Types.Type {
+    if (t == .vector) {
+        const bvec = try v.arena.create(Types.Vector);
+        bvec.* = .{ .width = t.vector.width, .element = Types.scalar_bool_ptr };
+        return .{ .vector = bvec };
+    }
+    return Types.Bool;
 }
 
 /// Runs before `Overload.resolve()` for the two builtins whose WGSL rules

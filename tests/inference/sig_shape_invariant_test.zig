@@ -117,7 +117,7 @@ fn walkResult(ctx: []const u8, name: []const u8, r: Overload.ResultRule, kinds: 
     switch (r) {
         .pattern => |p| try walkPattern(ctx, name, p, kinds),
         .fixed => {},
-        .synth_frexp, .synth_modf, .synth_atomic_cmp_xchg => |arg_idx| {
+        .synth_frexp, .synth_modf, .synth_atomic_cmp_xchg, .bool_shape_of => |arg_idx| {
             // arg_idx indexes into the call's args, not into tparams.
             _ = arg_idx;
         },

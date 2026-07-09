@@ -88,6 +88,33 @@ const shift_sigs = [_]Sig{
     },
 };
 
+/// Comparison `<` / `<=` / `>` / `>=` (§8.7): a common numeric scalar
+/// (`T < T -> bool`) or a common numeric vector of matching width
+/// (`vecN<T> < vecN<T> -> vecN<bool>`). Bool operands have no comparison form
+/// (only `==`/`!=` compare bools); matrices and other composites match
+/// neither sig. The shared element tparam (idx 0) enforces the common-type
+/// requirement, so mixed-sign (`1i < 1u`), int-vs-float, and element- or
+/// width-mismatched vector pairs have no matching overload. The result is
+/// bool-shaped like the operand, independent of its element type.
+const comparison_sigs = [_]Sig{
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_scalar = .{ .idx = 0, .family = .numeric } },
+            .{ .tparam_scalar = .{ .idx = 0, .family = .numeric } },
+        },
+        .result = .{ .bool_shape_of = 0 },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{
+            .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .numeric, .n_idx = 1 } },
+            .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .numeric, .n_idx = 1 } },
+        },
+        .result = .{ .bool_shape_of = 0 },
+    },
+};
+
 /// Overload set for a binary operator, or an empty set for operators whose
 /// legacy checker still owns them (only migrated operators are routed here by
 /// the validator, so the empty set is never resolved against).
@@ -96,6 +123,7 @@ pub fn binarySigs(op: Ast.BinaryOp) []const Sig {
         .logical_and, .logical_or => &logical_sigs,
         .@"and", .@"or", .xor => &bitwise_sigs,
         .shl, .shr => &shift_sigs,
+        .lt, .le, .gt, .ge => &comparison_sigs,
         else => &.{},
     };
 }
