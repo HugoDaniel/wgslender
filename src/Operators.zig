@@ -115,6 +115,33 @@ const comparison_sigs = [_]Sig{
     },
 };
 
+/// Equality `==` / `!=` (§8.7): any common scalar (`T == T -> bool`) or any
+/// common vector of matching width (`vecN<T> == vecN<T> -> vecN<bool>`).
+/// Unlike comparison, bool operands ARE comparable, so the element family is
+/// `.any`. The shared element tparam (idx 0) enforces the common-type
+/// requirement — mixed-sign, scalar-bool-vs-int, and element/width-mismatched
+/// pairs have no matching overload. Matrices and other composites match
+/// neither sig: WGSL has no matrix/struct/array equality, and the result is
+/// always bool-shaped like the operand.
+const equality_sigs = [_]Sig{
+    .{
+        .tparam_count = 1,
+        .params = &.{
+            .{ .tparam_scalar = .{ .idx = 0, .family = .any } },
+            .{ .tparam_scalar = .{ .idx = 0, .family = .any } },
+        },
+        .result = .{ .bool_shape_of = 0 },
+    },
+    .{
+        .tparam_count = 2,
+        .params = &.{
+            .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .any, .n_idx = 1 } },
+            .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .any, .n_idx = 1 } },
+        },
+        .result = .{ .bool_shape_of = 0 },
+    },
+};
+
 /// Overload set for a binary operator, or an empty set for operators whose
 /// legacy checker still owns them (only migrated operators are routed here by
 /// the validator, so the empty set is never resolved against).
@@ -124,6 +151,7 @@ pub fn binarySigs(op: Ast.BinaryOp) []const Sig {
         .@"and", .@"or", .xor => &bitwise_sigs,
         .shl, .shr => &shift_sigs,
         .lt, .le, .gt, .ge => &comparison_sigs,
+        .eq, .ne => &equality_sigs,
         else => &.{},
     };
 }

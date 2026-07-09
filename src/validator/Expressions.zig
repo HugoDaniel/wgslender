@@ -355,7 +355,7 @@ pub fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocat
     const op_str = e.op.string();
     return switch (e.op) {
         .logical_and, .logical_or, .@"and", .@"or", .xor => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
-        .eq, .ne => checkEqualityBinary(v, e, left_type, right_type, stage, er, op_str),
+        .eq, .ne => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .lt, .le, .gt, .ge => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .add, .sub => checkAdditiveBinary(v, e, left_type, right_type, stage, er, op_str),
         .mul => checkMulBinary(v, e, left_type, right_type, stage, er),
@@ -416,30 +416,18 @@ fn binaryFailureMessage(v: *Validator, op: Ast.BinaryOp, op_str: []const u8, lef
             v.fmtError("operator '{s}' requires numeric operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() })
         else
             v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
+        // Equality: a composite operand (matrix, struct, array, …) is outside
+        // the scalar/vector domain equality is defined on — its own message.
+        // Two scalar/vector operands that simply don't share a type keep the
+        // hand-rolled `checkEqualityBinary` wording. The matrix-domain case is
+        // the ⚠ behavior change: `mat == mat` used to succeed silently.
+        .eq, .ne => if ((left_type != .scalar and left_type != .vector) or
+            (right_type != .scalar and right_type != .vector))
+            v.fmtError("operator '{s}' requires scalar or vector operands, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() })
+        else
+            v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }),
         else => unreachable,
     };
-}
-
-pub fn checkEqualityBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {
-    _ = e;
-    if (!left_type.eql(right_type) and
-        !Types.canConvertTo(left_type, right_type) and
-        !Types.canConvertTo(right_type, left_type))
-    {
-        v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("operator '{s}' requires compatible types, got '{s}' and '{s}'", .{ op_str, left_type.string(), right_type.string() }));
-        return InferResult.fail;
-    }
-    return vectorOrBool(v, left_type, stage);
-}
-
-/// Vector comparisons return vec<N, bool>; scalar comparisons return bool.
-pub fn vectorOrBool(v: *Validator, left_type: Types.Type, stage: ExprStage) InferResult {
-    if (left_type == .vector) {
-        const bvec = v.arena.create(Types.Vector) catch return InferResult.some(Types.Bool, stage);
-        bvec.* = .{ .width = left_type.vector.width, .element = Types.scalar_bool_ptr };
-        return InferResult.some(.{ .vector = bvec }, stage);
-    }
-    return InferResult.some(Types.Bool, stage);
 }
 
 pub fn checkAdditiveBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange, op_str: []const u8) InferResult {

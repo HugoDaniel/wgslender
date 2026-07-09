@@ -13,6 +13,13 @@ All notable changes to wgslender are recorded here. The project follows
   now report `E0201` instead of producing a typeless result with no diagnostic.
   Every valid pair keeps its exact result type. Part of routing operator
   type-checking through the shared overload engine.
+- **Equality operators** (`==` `!=`): matrix operands (`m == m`) that the
+  validator previously accepted *silently* — returning `bool` even though WGSL
+  defines equality only on scalars and vectors — now report `E0201`
+  ("requires scalar or vector operands"). Scalar/vector equality, including
+  `bool` and `vecN<bool>` operands, is unchanged, as is the "requires
+  compatible types" wording for mismatched scalar/vector pairs. Part of
+  routing operator type-checking through the shared overload engine.
 
 ## [1.1.0] — 2026-05-06
 
