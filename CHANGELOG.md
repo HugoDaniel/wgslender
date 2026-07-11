@@ -86,6 +86,28 @@ All notable changes to wgslender are recorded here. The project follows
   scalar / vector / matrix·scalar / matrix·vector / conformant matrix·matrix
   products keep their exact result types. (The compound form `*=` still uses the
   legacy path and is unified in a later change.)
+- **Compound assignment** (`+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=`):
+  `v op= e` is defined as `v = v op e`, so its operand shapes now resolve
+  through the same shared overload engine (`Operators.binarySigs`) as the binary
+  operator `op`, completing Block 2.1 — the compound forms no longer diverge from
+  the binary forms migrated above. The old path computed the result with the
+  legacy `commonType`-based `Types.*ResultType` helpers and so carried the same
+  latent bugs those helpers had, in both directions. Wrongly **accepted**, now
+  `E0201`: bool arithmetic (`v += true`), matrix division (`m /= m`), mixed-sign
+  bitwise (`i32 &= 1u`), and the undefined non-conformant same-type matrix
+  products (`mat2x3 *= mat2x3`). Wrongly **rejected**, now accepted: abstract-
+  integer literals broadcast into a float/uint vector or matrix (`vec2f += 1`,
+  `mat2x2f *= 2`, `vec3f %= 1.0`, per §8.7) and conformant non-square matrix
+  products whose result stores back (`mat2x3 *= mat2x2` → mat2x3). A conformant
+  product whose result cannot store back into the target (`mat2x3 *= mat3x2`
+  yields mat3x3) now reports the more precise assignability error (`E0200`,
+  "result type … is not assignable") rather than a flat operand error (`E0201`):
+  the multiplication is well-defined, it is the assignment that fails. Every
+  compound assignment on matching concrete scalars/vectors keeps its exact
+  behavior, and no tint-corpus diagnostics change. The value-dependent post-
+  checks the binary `/` `%` `<<` `>>` shells apply (div/mod-by-zero, shift bit
+  width) gate const-expression contexts a mutable assignment target is not, so
+  they remain unapplied to the compound forms, exactly as before.
 
 ## [1.1.0] — 2026-05-06
 

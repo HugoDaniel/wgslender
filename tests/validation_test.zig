@@ -308,6 +308,84 @@ test "fp guard: vector shift RHS must be u32 elements" {
     try std.testing.expect(hasDiagCode(result, "E0201"));
 }
 
+// =========================================================================
+// Compound assignment (`v op= e`) — Block 2.1 Step 4e.
+//
+// `v op= e` is defined as `v = v op e`, so the operand-shape resolution of the
+// compound form must match the binary operator `op` exactly. Before Step 4e
+// the compound path used the legacy `Types.*ResultType` + `commonType` helpers,
+// which diverged from the migrated binary path in both directions: they wrongly
+// ACCEPTED bool arithmetic, non-conformant / undefined matrix products, matrix
+// division, and mixed-sign bitwise ops, and wrongly REJECTED abstract-int
+// literals broadcast into float/uint vectors and matrices. Routing the compound
+// path through the same `Operators.binarySigs` engine fixes all of these at
+// once. A conformant product whose result cannot store back into the target
+// (`mat2x3 *= mat3x2` yields mat3x3) is now an assignability error (E0200)
+// rather than a flat operand error (E0201): the operation is well-defined, it
+// is the assignment that fails.
+// =========================================================================
+
+const CompoundCase = struct {
+    name: []const u8,
+    src: []const u8,
+    valid: bool,
+    // Expected diagnostic code when invalid (empty = only require invalidity).
+    code: []const u8 = "",
+};
+
+const compound_assign_cases = [_]CompoundCase{
+    // Wrong-accepts the legacy path let through — now rejected (E0201).
+    .{ .name = "bool += bool (bool is not numeric)", .src = "fn f(){ var v=true; v+=true; }", .valid = false, .code = "E0201" },
+    .{ .name = "mat2x3 *= mat2x3 (non-conformant, undefined product)", .src = "fn f(){ var m=mat2x3f(1,2,3,4,5,6); m*=mat2x3f(1,2,3,4,5,6); }", .valid = false, .code = "E0201" },
+    .{ .name = "mat2x2 /= mat2x2 (no matrix division)", .src = "fn f(){ var m=mat2x2f(1,2,3,4); m/=mat2x2f(1,2,3,4); }", .valid = false, .code = "E0201" },
+    .{ .name = "i32 &= 1u (mixed-sign bitwise)", .src = "fn f(){ var v=1i; v&=1u; }", .valid = false, .code = "E0201" },
+    // Wrong-rejects the legacy path emitted — now accepted (§8.7 broadcast).
+    .{ .name = "vec2f += 1 (abstract-int broadcast into float vector)", .src = "fn f(){ var v=vec2f(1,2); v+=1; }", .valid = true },
+    .{ .name = "vec2f *= 2 (abstract-int broadcast into float vector)", .src = "fn f(){ var v=vec2f(1,2); v*=2; }", .valid = true },
+    .{ .name = "vec3f %= 1.0 (scalar-broadcast modulo)", .src = "fn f(){ var v=vec3f(1,2,3); v%=1.0; }", .valid = true },
+    .{ .name = "mat2x3 *= mat2x2 (conformant product, result assignable)", .src = "fn f(){ var m=mat2x3f(1,2,3,4,5,6); m*=mat2x2f(1,2,3,4); }", .valid = true },
+    .{ .name = "mat2x2 *= 2 (abstract-int matrix scalar)", .src = "fn f(){ var m=mat2x2f(1,2,3,4); m*=2; }", .valid = true },
+    // Refined code: a conformant product whose result cannot store back is an
+    // assignability error (E0200), not a flat operand error (E0201).
+    .{ .name = "mat2x3 *= mat3x2 (product mat3x3 not assignable to mat2x3)", .src = "fn f(){ var m=mat2x3f(1,2,3,4,5,6); m*=mat3x2f(1,2,3,4,5,6); }", .valid = false, .code = "E0200" },
+    // Stable guards — behavior unchanged by the migration.
+    .{ .name = "bool |= bool (bitwise bool stays valid)", .src = "fn f(){ var v=true; v|=false; }", .valid = true },
+    .{ .name = "mat2x2 *= mat2x2 (conformant square product stays valid)", .src = "fn f(){ var m=mat2x2f(1,2,3,4); m*=mat2x2f(1,2,3,4); }", .valid = true },
+    .{ .name = "i32 += 1u (mixed-sign add stays rejected)", .src = "fn f(){ var v=1i; v+=1u; }", .valid = false, .code = "E0201" },
+    .{ .name = "f32 += 1 (abstract-int scalar stays valid)", .src = "fn f(){ var v=1f; v+=1; }", .valid = true },
+    .{ .name = "mat2x2 *= 2.0 (abstract-float matrix scalar stays valid)", .src = "fn f(){ var m=mat2x2f(1,2,3,4); m*=2.0; }", .valid = true },
+    .{ .name = "f32 *= mat2x2 (result matrix not assignable to f32)", .src = "fn f(){ var v=1f; v*=mat2x2f(1,2,3,4); }", .valid = false, .code = "E0200" },
+};
+
+test "compound assignment operand shapes match the binary operator (Block 2.1 4e)" {
+    for (compound_assign_cases) |c| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const result = try runValidation(arena.allocator(), c.src);
+        if (c.valid) {
+            if (!result.valid) {
+                std.debug.print("\n[{s}] expected VALID, got errors:\n", .{c.name});
+                for (result.diagnostics.diagnostics.items) |d| {
+                    if (d.severity == .@"error") std.debug.print("  [{s}] {s}\n", .{ d.code, d.message });
+                }
+            }
+            try std.testing.expect(result.valid);
+        } else {
+            if (result.valid) std.debug.print("\n[{s}] expected INVALID but it passed\n", .{c.name});
+            try std.testing.expect(!result.valid);
+            if (c.code.len > 0) {
+                if (!hasDiagCode(result, c.code)) {
+                    std.debug.print("\n[{s}] expected code {s}, got:\n", .{ c.name, c.code });
+                    for (result.diagnostics.diagnostics.items) |d| {
+                        if (d.severity == .@"error") std.debug.print("  [{s}] {s}\n", .{ d.code, d.message });
+                    }
+                }
+                try std.testing.expect(hasDiagCode(result, c.code));
+            }
+        }
+    }
+}
+
 // --- Fix 3: inferred array(...) constructor ---
 
 test "fp: array(1,2,3) inferred constructor is valid" {

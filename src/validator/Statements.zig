@@ -528,29 +528,30 @@ pub fn checkSwizzleAssignTarget(v: *Validator, s: *Ast.AssignStmt) void {
     }
 }
 
-/// Compound assignment (`v op= e`) is defined as `v = v op e`. Compute
-/// the result type of the binary operation; caller verifies assignability.
+/// Compound assignment (`v op= e`) is defined as `v = v op e`, so its operand
+/// shapes resolve exactly like the binary operator `op`: map the assignment
+/// operator to its identically-named binary counterpart and go through the same
+/// `Operators.binarySigs` overload engine the binary path was migrated onto in
+/// Block 2.1, giving one source of truth for operand shapes. The caller verifies
+/// the result is assignable back to the target. The value-dependent post-checks
+/// the binary div/mod/shift shells add (div/mod-by-zero, shift bit width) gate
+/// const-expression contexts a mutable assignment target never is, so they do
+/// not apply here — this computes shape only.
 pub fn compoundAssignResultType(v: *Validator, op: Ast.AssignOp, lhs_type: Types.Type, rhs_type: Types.Type) ?Types.Type {
-    return switch (op) {
-        .add, .sub => Types.addSubResultType(v.arena, lhs_type, rhs_type) catch null,
-        .mul => Types.multiplyResultType(v.arena, lhs_type, rhs_type) catch null,
-        .div => Types.divResultType(v.arena, lhs_type, rhs_type) catch null,
-        .mod => if (Types.isNumeric(lhs_type) and Types.isNumeric(rhs_type))
-            Types.commonType(lhs_type, rhs_type)
-        else
-            null,
-        .@"and", .@"or", .xor => if ((lhs_type.eql(Types.Bool) and rhs_type.eql(Types.Bool)) or
-            (Types.isInteger(lhs_type) and Types.isInteger(rhs_type)))
-            (Types.commonType(lhs_type, rhs_type) orelse lhs_type)
-        else
-            null,
-        .shl, .shr => if (Types.isInteger(lhs_type) and
-            (rhs_type.eql(Types.U32) or Types.canConvertTo(rhs_type, Types.U32)))
-            lhs_type
-        else
-            null,
+    const binop: Ast.BinaryOp = switch (op) {
+        .add => .add,
+        .sub => .sub,
+        .mul => .mul,
+        .div => .div,
+        .mod => .mod,
+        .@"and" => .@"and",
+        .@"or" => .@"or",
+        .xor => .xor,
+        .shl => .shl,
+        .shr => .shr,
         .simple => unreachable,
     };
+    return Expressions.binaryResultType(v, binop, lhs_type, rhs_type);
 }
 
 pub fn validateIncrDecrStmt(v: *Validator, s: *Ast.IncrDecrStmt) Allocator.Error!void {

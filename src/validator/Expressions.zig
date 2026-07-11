@@ -399,6 +399,32 @@ fn binaryViaEngine(
     }
 }
 
+/// Diagnostic-free core of `binaryViaEngine`: resolve a binary operator's
+/// operand *shapes* to a result type through the shared overload engine,
+/// returning null (emitting nothing) when no overload matches. Exposed for the
+/// compound-assignment path — `v op= e` is defined as `v = v op e`, so its RHS
+/// resolves against the very same `Operators.binarySigs` the binary path uses,
+/// giving one source of truth for operand shapes. `Statements.checkCompoundAssign`
+/// owns the `op=` wording, range, and the follow-up assignability check, so it
+/// wants the result type or a plain null, not an emitted binary diagnostic. The
+/// value-dependent post-checks the div/mod/shift shells add (div/mod-by-zero,
+/// shift bit width) gate const-expression contexts a mutable assignment target
+/// never is, so they are intentionally not applied here.
+pub fn binaryResultType(v: *Validator, op: Ast.BinaryOp, left_type: Types.Type, right_type: Types.Type) ?Types.Type {
+    const sigs = Operators.binarySigs(op);
+    const arg_types = [_]?Types.Type{ left_type, right_type };
+    switch (Overload.resolve(sigs, &arg_types)) {
+        .ok => |ok| {
+            const sig = sigs[ok.sig_index];
+            var args8: [8]?Types.Type = @splat(null);
+            args8[0] = left_type;
+            args8[1] = right_type;
+            return buildOverloadResult(v, sig.result, &ok.bindings, args8) catch null;
+        },
+        .err => return null,
+    }
+}
+
 /// The per-family "no matching overload" message, reproducing the wording the
 /// hand-rolled checkers emitted — now also covering the shapes they used to
 /// reject *silently* (mixed-sign / width-mismatched / scalar↔vector integer
