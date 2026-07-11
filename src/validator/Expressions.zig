@@ -468,6 +468,53 @@ fn binaryFailureMessage(v: *Validator, op: Ast.BinaryOp, op_str: []const u8, lef
     };
 }
 
+/// Shared unary-operator validation on the overload engine — the unary analogue
+/// of `binaryViaEngine`. Resolves the single operand against
+/// `Operators.unarySigs(op)`, materializes the winning result rule, and on
+/// no-match emits the family's diagnostic. Only the three value operators (`-`
+/// `!` `~`) route here; `*`/`&` stay hand-rolled (their sig set is empty).
+fn unaryViaEngine(
+    v: *Validator,
+    op: Ast.UnaryOp,
+    operand_type: Types.Type,
+    stage: ExprStage,
+    er: LocRange,
+) Allocator.Error!InferResult {
+    const sigs = Operators.unarySigs(op);
+    const arg_types = [_]?Types.Type{operand_type};
+    switch (Overload.resolve(sigs, &arg_types)) {
+        .ok => |ok| {
+            const sig = sigs[ok.sig_index];
+            var args8: [8]?Types.Type = @splat(null);
+            args8[0] = operand_type;
+            const ret = (try buildOverloadResult(v, sig.result, &ok.bindings, args8)) orelse
+                return InferResult.fail;
+            return InferResult.some(ret, stage);
+        },
+        .err => {
+            v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, unaryFailureMessage(v, op, operand_type));
+            return InferResult.fail;
+        },
+    }
+}
+
+/// The per-operator "no matching overload" message for the unary value
+/// operators. `!` and `~` keep the exact wording the hand-rolled checker
+/// emitted (pinned by `validation_range_test`). `-` is reworded from the old
+/// "requires numeric type" to "requires a signed numeric type": the migration
+/// newly rejects `-1u` / `-vecN<u32>` (unsigned has no negation, §8.6), and the
+/// old phrasing would have been self-contradictory on a u32 operand — u32 *is*
+/// numeric; it is not *signed*. The new wording is accurate for every neg
+/// failure (unsigned, bool, and matrix operands alike).
+fn unaryFailureMessage(v: *Validator, op: Ast.UnaryOp, operand_type: Types.Type) []const u8 {
+    return switch (op) {
+        .neg => v.fmtError("unary '-' requires a signed numeric type, got '{s}'", .{operand_type.string()}),
+        .not => v.fmtError("unary '!' requires 'bool', got '{s}'", .{operand_type.string()}),
+        .bit_not => v.fmtError("unary '~' requires integer type, got '{s}'", .{operand_type.string()}),
+        .deref, .addr => unreachable,
+    };
+}
+
 pub fn checkDivBinary(v: *Validator, e: *Ast.BinaryExpr, left_type: Types.Type, right_type: Types.Type, stage: ExprStage, er: LocRange) Allocator.Error!InferResult {
     // Shape + result come from the engine (`Operators.div_sigs`): a common
     // numeric scalar/vector with scalar broadcast, no matrix form (§8.7). The
@@ -756,31 +803,11 @@ pub fn checkUnaryE(v: *Validator, e: *Ast.UnaryExpr, exp: Expectation) Allocator
     const er = exprRange(.{ .unary = e });
 
     switch (e.op) {
-        .neg => {
-            if (!Types.isNumeric(operand_type)) {
-                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("unary '-' requires numeric type, got '{s}'", .{operand_type.string()}));
-                return InferResult.fail;
-            }
-            return InferResult.some(operand_type, stage);
-        },
-        .not => {
-            if (!operand_type.eql(Types.Bool)) {
-                // Also allow vector<bool>
-                if (operand_type == .vector and operand_type.vector.element.kind == .bool) {
-                    return InferResult.some(operand_type, stage);
-                }
-                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("unary '!' requires 'bool', got '{s}'", .{operand_type.string()}));
-                return InferResult.fail;
-            }
-            return InferResult.some(Types.Bool, stage);
-        },
-        .bit_not => {
-            if (!Types.isInteger(operand_type)) {
-                v.addErrorWithCodeR(er, Diagnostic.Code.invalid_operand, v.fmtError("unary '~' requires integer type, got '{s}'", .{operand_type.string()}));
-                return InferResult.fail;
-            }
-            return InferResult.some(operand_type, stage);
-        },
+        // `-` `!` `~` are value operators: their operand shapes resolve through
+        // the shared overload engine (`Operators.unarySigs`), the unary analogue
+        // of `binaryViaEngine`. `*` and `&` manipulate pointers/references and
+        // keep their hand-rolled checks below.
+        .neg, .not, .bit_not => return unaryViaEngine(v, e.op, operand_type, stage, er),
         .deref => {
             switch (operand_type) {
                 .pointer => |p| return InferResult.some(p.element, stage),

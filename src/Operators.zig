@@ -282,3 +282,60 @@ pub fn binarySigs(op: Ast.BinaryOp) []const Sig {
         .mod => &mod_sigs,
     };
 }
+
+// -- Unary value operators `- ! ~` (§8.6) ----------------------------------
+
+/// Unary minus `-e` (§8.6): a *signed* numeric scalar (`-T -> T`) or vector
+/// (`-vecN<T> -> vecN<T>`). The `.signed` family is `.numeric` minus u32:
+/// unsigned integers have no negation, so `-1u` / `-vecN<u32>` — which the old
+/// `isNumeric` checker wrongly accepted, returning the unsigned type — now have
+/// no matching overload and report `E0201`. bool and matrix operands match
+/// neither sig (unchanged rejection); WGSL defines no unary minus on matrices.
+const neg_sigs = [_]Sig{
+    .{ .tparam_count = 1, .params = &.{
+        .{ .tparam_scalar = .{ .idx = 0, .family = .signed } },
+    }, .result = .{ .pattern = .{ .bound_scalar = 0 } } },
+    .{ .tparam_count = 2, .params = &.{
+        .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .signed, .n_idx = 1 } },
+    }, .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } } },
+};
+
+/// Logical not `!e` (§8.6): scalar `bool -> bool` or `vecN<bool> -> vecN<bool>`.
+/// The element family is `.bool`, so every non-bool operand (int/float scalar
+/// or vector, matrix) has no matching overload — exactly what the old checker
+/// rejected. The scalar form is a fixed `bool` param/result (no tparam); the
+/// vector form binds the width so the result echoes the operand's shape.
+const not_sigs = [_]Sig{
+    .{ .tparam_count = 0, .params = &.{.{ .concrete = Types.Bool }}, .result = .{ .fixed = Types.Bool } },
+    .{ .tparam_count = 2, .params = &.{
+        .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .bool, .n_idx = 1 } },
+    }, .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } } },
+};
+
+/// Bitwise not `~e` (§8.6): an *integer* scalar (`~T -> T`) or vector
+/// (`~vecN<T> -> vecN<T>`), where T ∈ {i32, u32, abstract-int}. Float, bool,
+/// and matrix operands match neither sig and report `E0201`, exactly as the old
+/// `isInteger` checker did — bitwise not is the one unary operator the migration
+/// leaves behaviorally identical (its `.integer` domain was already correct).
+const bitnot_sigs = [_]Sig{
+    .{ .tparam_count = 1, .params = &.{
+        .{ .tparam_scalar = .{ .idx = 0, .family = .integer } },
+    }, .result = .{ .pattern = .{ .bound_scalar = 0 } } },
+    .{ .tparam_count = 2, .params = &.{
+        .{ .tparam_vector = .{ .elem_idx = 0, .elem_family = .integer, .n_idx = 1 } },
+    }, .result = .{ .pattern = .{ .bound_vector = .{ .elem_idx = 0, .n_idx = 1 } } } },
+};
+
+/// Overload set for a unary operator. Only the three *value* operators (`-`
+/// `!` `~`) resolve their operand shape through the engine. `*` (deref) and `&`
+/// (addr-of) manipulate pointers / references — neither is an overload over
+/// value types — so they stay hand-rolled in `validator/Expressions.zig` and
+/// return an empty set here (the validator never routes them to the engine).
+pub fn unarySigs(op: Ast.UnaryOp) []const Sig {
+    return switch (op) {
+        .neg => &neg_sigs,
+        .not => &not_sigs,
+        .bit_not => &bitnot_sigs,
+        .deref, .addr => &.{},
+    };
+}

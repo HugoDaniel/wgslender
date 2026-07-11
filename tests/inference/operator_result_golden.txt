@@ -5203,15 +5203,15 @@ mat3x3f() >> mat3x3f() => err=E0201
 -1 => type=i32
 -1.0 => type=f32
 -1i => type=i32
--1u => type=u32
+-1u => err=E0201
 -1f => type=f32
 -true => err=E0201
 -vec2f() => type=vec2<f32>
 -vec3f() => type=vec3<f32>
 -vec2i() => type=vec2<i32>
 -vec3i() => type=vec3<i32>
--vec2u() => type=vec2<u32>
--vec3u() => type=vec3<u32>
+-vec2u() => err=E0201
+-vec3u() => err=E0201
 -vec3<bool>(true, true, true) => err=E0201
 -mat2x2f() => err=E0201
 -mat2x3f() => err=E0201

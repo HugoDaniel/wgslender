@@ -111,6 +111,24 @@ All notable changes to wgslender are recorded here. The project follows
   binary `/` `%` `<<` `>>` shells apply (div/mod-by-zero, shift bit width) gate
   const-expression contexts a mutable assignment target is not, so they remain
   unapplied to the compound forms, exactly as before.
+- **Unary operators** (`-` `!` `~`): the three unary *value* operators now
+  resolve their operand shape through the same shared overload engine
+  (`Operators.unarySigs`) as the binary and compound-assignment forms,
+  completing Block 2.1 — every WGSL value operator, unary and binary, now
+  shares one resolver. `!` (logical not — `bool` scalar / vector) and `~`
+  (bitwise not — integer scalar / vector) were already spec-correct and are
+  behavior-preserving. Unary minus `-` had one latent bug: the old checker
+  gated on `isNumeric`, which admits `u32`, so `-1u` and `-vecN<u32>` were
+  wrongly **accepted**, returning the unsigned type — but WGSL §8.6 defines no
+  negation for unsigned integers. They now report `E0201`. The neg failure
+  message is reworded from "requires numeric type" to "requires a signed
+  numeric type": the old phrasing was self-contradictory on the newly-rejected
+  `u32` operand (`u32` *is* numeric; it is not *signed*), and the new wording
+  is accurate for every neg failure (unsigned, bool, and matrix operands
+  alike). `!` and `~` keep their exact wording (pinned by
+  `validation_range_test`). No tint-corpus diagnostics change from this
+  migration. `*` (deref) and `&` (address-of) manipulate pointers / references,
+  are not overloads over value types, and keep their hand-rolled checks.
 
 ## [1.1.0] — 2026-05-06
 

@@ -41,6 +41,10 @@ pub const ScalarFamily = enum {
     integer,
     /// any non-bool scalar (i32, u32, f32, f16, abstract-int, abstract-float).
     numeric,
+    /// signed numerics only: i32, f32, f16, abstract-int, abstract-float. The
+    /// domain of unary minus (§8.6) — u32 is unsigned and has no negation, and
+    /// bool is not numeric. Narrower than `.numeric` solely by excluding u32.
+    signed,
     /// abstract-int only — used to pin packed-dot callers that must be u32 via
     /// the load rule; not currently needed but keeps the enum honest.
     abstract_int,
@@ -65,6 +69,7 @@ pub const ScalarFamily = enum {
             .float => kind == .f32 or kind == .f16 or kind == .abstract_float,
             .integer => kind == .i32 or kind == .u32 or kind == .abstract_int,
             .numeric => kind != .bool,
+            .signed => kind == .i32 or kind == .f32 or kind == .f16 or kind == .abstract_int or kind == .abstract_float,
             .abstract_int => kind == .abstract_int,
             .any => true,
             .bool => kind == .bool,

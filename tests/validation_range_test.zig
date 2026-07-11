@@ -674,7 +674,7 @@ test "validation range: unary negation of bool underlines -" {
     var result = try validateSource(source);
     defer result.deinit(std.testing.allocator);
     // '-' is 1 char
-    try expectErrorWidth(result, "requires numeric", 1);
+    try expectErrorWidth(result, "signed numeric", 1);
 }
 
 test "validation range: deref non-pointer underlines *" {

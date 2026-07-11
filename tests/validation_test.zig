@@ -386,6 +386,69 @@ test "compound assignment operand shapes match the binary operator (Block 2.1 4e
     }
 }
 
+// Unary value operators `-` `!` `~` resolve their operand shape through the
+// same overload engine as the binary forms (Block 2.1 Step 5). The reds-first
+// cases are the three unsigned negations the old `isNumeric` neg checker
+// wrongly accepted — WGSL §8.6 unary minus has no u32 form. `!` and `~` were
+// already spec-correct and stay so (guards). `*` (deref) and `&` (addr-of) are
+// not value operators and keep their own hand-rolled checks.
+const unary_op_cases = [_]CompoundCase{
+    // Wrong-accepts the legacy neg checker let through — now rejected (E0201).
+    .{ .name = "-1u (u32 has no negation)", .src = "fn f(){ let r = -1u; }", .valid = false, .code = "E0201" },
+    .{ .name = "-vec2u (unsigned vector has no negation)", .src = "fn f(){ let r = -vec2u(); }", .valid = false, .code = "E0201" },
+    .{ .name = "-vec3u (unsigned vector has no negation)", .src = "fn f(){ let r = -vec3u(); }", .valid = false, .code = "E0201" },
+    // Negation guards — signed / float scalars and vectors stay valid.
+    .{ .name = "-1 (abstract-int)", .src = "fn f(){ let r = -1; }", .valid = true },
+    .{ .name = "-1i (i32)", .src = "fn f(){ let r = -1i; }", .valid = true },
+    .{ .name = "-1.0 (abstract-float)", .src = "fn f(){ let r = -1.0; }", .valid = true },
+    .{ .name = "-1f (f32)", .src = "fn f(){ let r = -1f; }", .valid = true },
+    .{ .name = "-vec2f (float vector)", .src = "fn f(){ let r = -vec2f(); }", .valid = true },
+    .{ .name = "-vec2i (signed int vector)", .src = "fn f(){ let r = -vec2i(); }", .valid = true },
+    .{ .name = "-true (bool is not negatable)", .src = "fn f(){ let r = -true; }", .valid = false, .code = "E0201" },
+    .{ .name = "-mat2x2 (no matrix negation)", .src = "fn f(){ let r = -mat2x2f(); }", .valid = false, .code = "E0201" },
+    // Logical not `!` — bool scalar / vector only; unchanged by the migration.
+    .{ .name = "!true (bool)", .src = "fn f(){ let r = !true; }", .valid = true },
+    .{ .name = "!vec3<bool> (bool vector)", .src = "fn f(){ let r = !vec3<bool>(true,true,true); }", .valid = true },
+    .{ .name = "!1 (int is not bool)", .src = "fn f(){ let r = !1; }", .valid = false, .code = "E0201" },
+    .{ .name = "!vec2f (float vector is not bool)", .src = "fn f(){ let r = !vec2f(); }", .valid = false, .code = "E0201" },
+    // Bitwise not `~` — integer scalar / vector only; unchanged by the migration.
+    .{ .name = "~1i (i32)", .src = "fn f(){ let r = ~1i; }", .valid = true },
+    .{ .name = "~1u (u32)", .src = "fn f(){ let r = ~1u; }", .valid = true },
+    .{ .name = "~vec2i (signed int vector)", .src = "fn f(){ let r = ~vec2i(); }", .valid = true },
+    .{ .name = "~vec2u (unsigned int vector)", .src = "fn f(){ let r = ~vec2u(); }", .valid = true },
+    .{ .name = "~1.0 (float has no bitwise not)", .src = "fn f(){ let r = ~1.0; }", .valid = false, .code = "E0201" },
+    .{ .name = "~true (bool has no bitwise not)", .src = "fn f(){ let r = ~true; }", .valid = false, .code = "E0201" },
+};
+
+test "unary operator operand shapes resolve through the engine (Block 2.1 Step 5)" {
+    for (unary_op_cases) |c| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const result = try runValidation(arena.allocator(), c.src);
+        if (c.valid) {
+            if (!result.valid) {
+                std.debug.print("\n[{s}] expected VALID, got errors:\n", .{c.name});
+                for (result.diagnostics.diagnostics.items) |d| {
+                    if (d.severity == .@"error") std.debug.print("  [{s}] {s}\n", .{ d.code, d.message });
+                }
+            }
+            try std.testing.expect(result.valid);
+        } else {
+            if (result.valid) std.debug.print("\n[{s}] expected INVALID but it passed\n", .{c.name});
+            try std.testing.expect(!result.valid);
+            if (c.code.len > 0) {
+                if (!hasDiagCode(result, c.code)) {
+                    std.debug.print("\n[{s}] expected code {s}, got:\n", .{ c.name, c.code });
+                    for (result.diagnostics.diagnostics.items) |d| {
+                        if (d.severity == .@"error") std.debug.print("  [{s}] {s}\n", .{ d.code, d.message });
+                    }
+                }
+                try std.testing.expect(hasDiagCode(result, c.code));
+            }
+        }
+    }
+}
+
 // --- Fix 3: inferred array(...) constructor ---
 
 test "fp: array(1,2,3) inferred constructor is valid" {
