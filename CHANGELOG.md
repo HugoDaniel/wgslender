@@ -104,10 +104,13 @@ All notable changes to wgslender are recorded here. The project follows
   "result type … is not assignable") rather than a flat operand error (`E0201`):
   the multiplication is well-defined, it is the assignment that fails. Every
   compound assignment on matching concrete scalars/vectors keeps its exact
-  behavior, and no tint-corpus diagnostics change. The value-dependent post-
-  checks the binary `/` `%` `<<` `>>` shells apply (div/mod-by-zero, shift bit
-  width) gate const-expression contexts a mutable assignment target is not, so
-  they remain unapplied to the compound forms, exactly as before.
+  behavior. On the tint corpus this eliminates 4 false-positive `E0201`
+  diagnostics — valid shaders whose compound-assignment operands (abstract-int
+  broadcasts and conformant non-square products) the legacy path wrongly
+  rejected — with no true-positive change. The value-dependent post-checks the
+  binary `/` `%` `<<` `>>` shells apply (div/mod-by-zero, shift bit width) gate
+  const-expression contexts a mutable assignment target is not, so they remain
+  unapplied to the compound forms, exactly as before.
 
 ## [1.1.0] — 2026-05-06
 

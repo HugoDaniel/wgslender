@@ -3,7 +3,7 @@
 # fp is a false-positive *candidate* for E-codes; W/I rows are mechanical.
 # shaders=8726 accepts=8235 rejects=1 unknown=490 excluded=3226 validate_errors=0
 E0200 14 fp=13 tp=1 unk=0
-E0201 7 fp=6 tp=0 unk=1
+E0201 3 fp=2 tp=0 unk=1
 E0202 2 fp=2 tp=0 unk=0
 E0203 6 fp=6 tp=0 unk=0
 E0204 32 fp=32 tp=0 unk=0
