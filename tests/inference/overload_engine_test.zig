@@ -1356,6 +1356,132 @@ test "refiner: plain resolveTargeted has no refined field set" {
 }
 
 // =========================================================================
+// 17b. Constructor failure detail (Block 2.2)
+//
+// A failed value-constructor resolution now carries a structured
+// `FailureDetail` (on `ResolveFailure.detail` and in `RefineInput`) that the
+// validator's ctor refiners *format* rather than re-derive. The engine walk
+// mirrors the refiners' priority exactly so the emitted wording is
+// byte-identical; these tests pin the structured reason for each shape.
+// Detail is populated only for the reduction-fold (multi-arg vec/mat) forms
+// and struct — the single-arg copy/splat and scalar/array refiners keep their
+// own wording (detail stays null → generic dispatch).
+// =========================================================================
+
+fn detailOf(sigs: []const Overload.OverloadSig, target: Types.Type, args: []const ?Types.Type) ?Overload.FailureDetail {
+    const r = Overload.resolveTargetedRefined(sigs, target, args, null);
+    if (r != .err) return null;
+    return r.err.detail;
+}
+
+test "ctor detail: vec3f(1,2) → component_sum got=2 want=3" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v3f_t);
+    const d = detailOf(sigs, v3f_t, &.{ Types.AbstractInt, Types.AbstractInt }) orelse return error.NoDetail;
+    try std.testing.expect(d == .component_sum);
+    try std.testing.expectEqual(@as(u32, 2), d.component_sum.got);
+    try std.testing.expectEqual(@as(u32, 3), d.component_sum.want);
+}
+
+test "ctor detail: vec3f(1i,2i,3i) → elem_no_convert arg 0" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v3f_t);
+    const d = detailOf(sigs, v3f_t, &.{ Types.I32, Types.I32, Types.I32 }) orelse return error.NoDetail;
+    try std.testing.expect(d == .elem_no_convert);
+    try std.testing.expectEqual(@as(u32, 0), d.elem_no_convert.arg_index);
+}
+
+test "ctor detail: vec3f(mat2x2f, f32) → value_no_convert arg 0" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v3f_t);
+    const d = detailOf(sigs, v3f_t, &.{ m2x2f_t, Types.F32 }) orelse return error.NoDetail;
+    try std.testing.expect(d == .value_no_convert);
+    try std.testing.expectEqual(@as(u32, 0), d.value_no_convert.arg_index);
+}
+
+test "ctor detail: null arg leaves detail null (generic dispatch)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), v3f_t);
+    try std.testing.expect(detailOf(sigs, v3f_t, &.{ null, Types.F32 }) == null);
+}
+
+test "ctor detail: mat2x2f(f32, vec2f) → mixed_scalar_vector" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), m2x2f_t);
+    const d = detailOf(sigs, m2x2f_t, &.{ Types.F32, v2f_t }) orelse return error.NoDetail;
+    try std.testing.expect(d == .mixed_scalar_vector);
+}
+
+test "ctor detail: mat2x2f(1,2,3) → count_mismatch matrix_scalars got=3 want=4" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), m2x2f_t);
+    const d = detailOf(sigs, m2x2f_t, &.{ Types.AbstractFloat, Types.AbstractFloat, Types.AbstractFloat }) orelse return error.NoDetail;
+    try std.testing.expect(d == .count_mismatch);
+    try std.testing.expectEqual(Overload.CountKind.matrix_scalars, d.count_mismatch.kind);
+    try std.testing.expectEqual(@as(u32, 3), d.count_mismatch.got);
+    try std.testing.expectEqual(@as(u32, 4), d.count_mismatch.want);
+}
+
+test "ctor detail: mat2x2f(v2f,v2f,v2f) → count_mismatch matrix_columns got=3 want=2" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), m2x2f_t);
+    const d = detailOf(sigs, m2x2f_t, &.{ v2f_t, v2f_t, v2f_t }) orelse return error.NoDetail;
+    try std.testing.expect(d == .count_mismatch);
+    try std.testing.expectEqual(Overload.CountKind.matrix_columns, d.count_mismatch.kind);
+    try std.testing.expectEqual(@as(u32, 3), d.count_mismatch.got);
+    try std.testing.expectEqual(@as(u32, 2), d.count_mismatch.want);
+}
+
+test "ctor detail: mat2x2f(v3f,v3f) → matrix_column_shape arg 0" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), m2x2f_t);
+    const d = detailOf(sigs, m2x2f_t, &.{ v3f_t, v3f_t }) orelse return error.NoDetail;
+    try std.testing.expect(d == .matrix_column_shape);
+    try std.testing.expectEqual(@as(u32, 0), d.matrix_column_shape.arg_index);
+}
+
+test "ctor detail: struct arity → count_mismatch struct_fields" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const fields = try arena.allocator().alloc(Types.StructField, 2);
+    fields[0] = .{ .name = "a", .typ = Types.I32, .offset = 0 };
+    fields[1] = .{ .name = "b", .typ = Types.F32, .offset = 0 };
+    const st = try arena.allocator().create(Types.Struct);
+    st.* = .{ .name = "S", .fields = fields, .size_bytes = 0, .align_bytes = 0, .has_runtime_array = false };
+    const target: Types.Type = .{ .@"struct" = st };
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), target);
+    const d = detailOf(sigs, target, &.{Types.I32}) orelse return error.NoDetail;
+    try std.testing.expect(d == .count_mismatch);
+    try std.testing.expectEqual(Overload.CountKind.struct_fields, d.count_mismatch.kind);
+    try std.testing.expectEqual(@as(u32, 1), d.count_mismatch.got);
+    try std.testing.expectEqual(@as(u32, 2), d.count_mismatch.want);
+}
+
+test "ctor detail: struct field mismatch → elem_no_convert at culprit field" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const fields = try arena.allocator().alloc(Types.StructField, 2);
+    fields[0] = .{ .name = "a", .typ = Types.I32, .offset = 0 };
+    fields[1] = .{ .name = "b", .typ = Types.F32, .offset = 0 };
+    const st = try arena.allocator().create(Types.Struct);
+    st.* = .{ .name = "S", .fields = fields, .size_bytes = 0, .align_bytes = 0, .has_runtime_array = false };
+    const target: Types.Type = .{ .@"struct" = st };
+    const sigs = try Overload.ctorSigsFor(arena.allocator(), target);
+    // field 'a' (i32) gets a vec2f → the culprit is arg 0.
+    const d = detailOf(sigs, target, &.{ v2f_t, Types.F32 }) orelse return error.NoDetail;
+    try std.testing.expect(d == .elem_no_convert);
+    try std.testing.expectEqual(@as(u32, 0), d.elem_no_convert.arg_index);
+}
+
+// =========================================================================
 // 18. Explicit-composite copy/convert (Block 4b)
 //
 // The single-composite value ctors vecN<T>(vecN<S>) / matCxR<T>(matCxR<S>)

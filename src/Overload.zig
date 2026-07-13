@@ -280,6 +280,39 @@ pub const ResolveError = enum {
     ambiguous_overload,
 };
 
+/// Which count-based constructor message a `count_mismatch` detail feeds.
+/// Selects the exact wording ("N values" / "N vectors" / "N arguments") that
+/// the validator's family-specific refiner prints; kept in the engine so the
+/// reason — not the string — is the single source of truth.
+pub const CountKind = enum { matrix_scalars, matrix_columns, struct_fields };
+
+/// Structured reason a value-constructor call failed to resolve. Computed by
+/// the engine's constructor-failure analysis (`ctorFailureDetail`) and
+/// *formatted* — never re-derived — by the validator's ctor refiners, so the
+/// classification/counting logic lives once, next to the reduction folds it
+/// mirrors. Populated only on the reduction-fold (multi-arg vec/mat) and
+/// struct failure paths; the single-arg copy/splat, scalar, and array refiners
+/// keep their own wording and see a null detail. See Block 2.2.
+pub const FailureDetail = union(enum) {
+    /// Vector composition: the summed component width `got` ≠ the target
+    /// `want`. The validator adds any "did you mean 'vecN'?" suggestion.
+    component_sum: struct { got: u32, want: u32 },
+    /// A whole argument cannot convert to the target ("cannot convert
+    /// '<arg>' to '<target>'") — a non-scalar/vector arg in a composition.
+    value_no_convert: struct { arg_index: u32 },
+    /// An argument's *element* cannot convert to the target element. Each
+    /// family formats its own wording (vec/mat "… in '<ctor>' constructor";
+    /// struct "… for field '<name>'").
+    elem_no_convert: struct { arg_index: u32 },
+    /// A positional/dichotomy form got the wrong argument count. `got` is the
+    /// number provided, `want` the number required; `kind` picks the wording.
+    count_mismatch: struct { got: u32, want: u32, kind: CountKind },
+    /// A matrix column vector at `arg_index` has the wrong component count.
+    matrix_column_shape: struct { arg_index: u32 },
+    /// Matrix arguments are a mix of scalars and column vectors.
+    mixed_scalar_vector,
+};
+
 pub const ResolveFailure = struct {
     kind: ResolveError,
     /// For `no_matching_overload` on a single-overload builtin: the 0-based
@@ -291,6 +324,10 @@ pub const ResolveFailure = struct {
     /// `resolveTargetedRefined` path (null everywhere else). Constructors set
     /// one so "requires 3 components, got 4" beats the generic no-match.
     refined: ?RefinedDiagnostic = null,
+    /// Structured failure reason for a value constructor, set on the
+    /// `resolveTargetedRefined` path (null for builtins). The refiner formats
+    /// it; see `FailureDetail`.
+    detail: ?FailureDetail = null,
 };
 
 pub const ResolveResult = union(enum) {
@@ -469,6 +506,11 @@ pub const RefineInput = struct {
     sigs: []const OverloadSig,
     arg_types: []const ?Types.Type,
     first_bad_arg: u8,
+    /// Structured failure reason (see `FailureDetail`); the refiner formats it
+    /// instead of re-deriving the classification. Null for the constructor
+    /// forms whose refiner keeps its own wording (single-arg copy/splat,
+    /// scalar, array) and for null-arg cascades that fall back to generic.
+    detail: ?FailureDetail = null,
 };
 
 /// A caller-installed hook that turns an engine no-match into a better
@@ -493,11 +535,14 @@ pub fn resolveTargetedRefined(
 ) TargetedResult {
     var result = resolveTargeted(sigs, target, arg_types);
     if (result == .err) {
+        const detail = ctorFailureDetail(target, arg_types, result.err.first_bad_arg);
+        result.err.detail = detail;
         if (refiner) |rf| {
             const input = RefineInput{
                 .sigs = sigs,
                 .arg_types = arg_types,
                 .first_bad_arg = result.err.first_bad_arg,
+                .detail = detail,
             };
             if (rf.refine(rf.ctx, input)) |rd| result.err.refined = rd;
         }
@@ -624,6 +669,117 @@ fn unifyMatrixDichotomy(cols: u8, rows: u8, elem: Types.Type, arg_types: []const
         return max_rank;
     }
     return error.Mismatch; // mix of scalars and vectors — refiner explains
+}
+
+// =========================================================================
+// Constructor failure detail (Block 2.2)
+//
+// The reduction folds above decide pass/fail for resolution; when a value
+// constructor fails, these functions compute *why* — a `FailureDetail` the
+// validator's refiners format into the exact message. They deliberately
+// mirror the refiners' priority (which differs from a fold's short-circuit
+// order: a component-count mismatch is reported ahead of an element-convert
+// failure, and a null arg — an upstream inference failure — makes the whole
+// call defer to the generic no-match) so the wording stays byte-identical.
+// =========================================================================
+
+/// Compute the structured failure reason for a failed value-constructor
+/// resolution, or null when the failing form isn't detail-driven (single-arg
+/// copy/splat, scalar, array) or an upstream null arg should fall back to the
+/// generic no-match. `first_bad_arg` is the solver's deepest-progress arg,
+/// used to locate the culprit field for the per-slot struct form.
+pub fn ctorFailureDetail(target: Types.Type, arg_types: []const ?Types.Type, first_bad_arg: u8) ?FailureDetail {
+    return switch (target) {
+        .vector => |ve| if (arg_types.len == 1) null else variadicFailureDetail(ve, arg_types),
+        .matrix => |mt| if (arg_types.len == 1) null else matrixDichotomyFailureDetail(mt, arg_types),
+        .@"struct" => |st| structFailureDetail(st, arg_types, first_bad_arg),
+        else => null,
+    };
+}
+
+/// Scalar convertibility as the ctor refiners test it: pointer identity first,
+/// then the general implicit-conversion rule.
+fn scalarConvertsTo(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
+    if (src == dst) return true;
+    return Types.canConvertTo(.{ .scalar = src }, .{ .scalar = dst });
+}
+
+/// The scalar element of a scalar/vector/matrix argument, else null.
+fn elementScalarOf(t: Types.Type) ?*const Types.Scalar {
+    return switch (t) {
+        .scalar => |s| s,
+        .vector => |ve| ve.element,
+        .matrix => |mt| mt.element,
+        else => null,
+    };
+}
+
+/// Mirrors `refineVectorCtorMulti`: non-component arg > component-count
+/// mismatch > first non-convertible element; any null arg defers to generic.
+fn variadicFailureDetail(ve: *const Types.Vector, arg_types: []const ?Types.Type) ?FailureDetail {
+    var total: u32 = 0;
+    for (arg_types, 0..) |at_opt, i| {
+        const at = at_opt orelse return null;
+        switch (at) {
+            .scalar => total += 1,
+            .vector => |vv| total += vv.width,
+            else => return .{ .value_no_convert = .{ .arg_index = @intCast(i) } },
+        }
+    }
+    if (total != ve.width) return .{ .component_sum = .{ .got = total, .want = ve.width } };
+    for (arg_types, 0..) |at_opt, i| {
+        const at = at_opt orelse continue;
+        const src_elem = elementScalarOf(at) orelse continue;
+        if (!scalarConvertsTo(src_elem, ve.element)) return .{ .elem_no_convert = .{ .arg_index = @intCast(i) } };
+    }
+    return null;
+}
+
+/// Mirrors `refineMatrixCtorMulti`: classify all-scalar / all-vector / mix,
+/// then within the chosen branch report count > column shape > element
+/// convert; any null arg defers to generic.
+fn matrixDichotomyFailureDetail(mt: *const Types.Matrix, arg_types: []const ?Types.Type) ?FailureDetail {
+    var all_scalar = true;
+    var all_vector = true;
+    for (arg_types) |at_opt| {
+        const at = at_opt orelse return null;
+        if (at != .scalar) all_scalar = false;
+        if (at != .vector) all_vector = false;
+    }
+
+    if (all_scalar) {
+        const want: u32 = @as(u32, mt.cols) * mt.rows;
+        if (arg_types.len != want) return .{ .count_mismatch = .{ .got = @intCast(arg_types.len), .want = want, .kind = .matrix_scalars } };
+        for (arg_types, 0..) |at_opt, i| {
+            const at = at_opt orelse continue;
+            if (at == .scalar and !scalarConvertsTo(at.scalar, mt.element)) return .{ .elem_no_convert = .{ .arg_index = @intCast(i) } };
+        }
+        return null;
+    }
+    if (all_vector) {
+        if (arg_types.len != mt.cols) return .{ .count_mismatch = .{ .got = @intCast(arg_types.len), .want = mt.cols, .kind = .matrix_columns } };
+        for (arg_types, 0..) |at_opt, i| {
+            const at = at_opt orelse continue;
+            if (at == .vector) {
+                if (at.vector.width != mt.rows) return .{ .matrix_column_shape = .{ .arg_index = @intCast(i) } };
+                if (!scalarConvertsTo(at.vector.element, mt.element)) return .{ .elem_no_convert = .{ .arg_index = @intCast(i) } };
+            }
+        }
+        return null;
+    }
+    return .mixed_scalar_vector;
+}
+
+/// Mirrors `refineStructCtor`: an arity mismatch, else the culprit field is the
+/// solver's deepest-progress arg (per-slot `.concrete` unification stops at the
+/// first field whose argument fails to convert, skipping null args).
+fn structFailureDetail(st: *const Types.Struct, arg_types: []const ?Types.Type, first_bad_arg: u8) ?FailureDetail {
+    if (arg_types.len != st.fields.len) return .{ .count_mismatch = .{
+        .got = @intCast(arg_types.len),
+        .want = @intCast(st.fields.len),
+        .kind = .struct_fields,
+    } };
+    return .{ .elem_no_convert = .{ .arg_index = first_bad_arg } };
 }
 
 /// Element rule for the single-composite copy/convert ctor form (WGSL

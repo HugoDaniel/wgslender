@@ -1591,9 +1591,9 @@ fn ctorRefine(ctx_ptr: *anyopaque, input: Overload.RefineInput) ?Overload.Refine
     const ctx: *CtorRefineCtx = @ptrCast(@alignCast(ctx_ptr));
     return switch (ctx.target) {
         .scalar => refineScalarCtor(ctx.v, ctx.callee_name, ctx.target, input.arg_types),
-        .vector => |ve| refineVectorCtor(ctx.v, ctx.callee_name, ctx.target, ve, input.arg_types),
-        .matrix => |mt| refineMatrixCtor(ctx.v, ctx.callee_name, ctx.target, mt, input.arg_types),
-        .@"struct" => |st| refineStructCtor(ctx.v, ctx.callee_name, st, input.arg_types),
+        .vector => |ve| refineVectorCtor(ctx.v, ctx.callee_name, ctx.target, ve, input.arg_types, input.detail),
+        .matrix => |mt| refineMatrixCtor(ctx.v, ctx.callee_name, ctx.target, mt, input.arg_types, input.detail),
+        .@"struct" => |st| refineStructCtor(ctx.v, ctx.callee_name, st, input.arg_types, input.detail),
         .array => |arr| refineArrayCtor(ctx.v, ctx.callee_name, arr, input.arg_types),
         else => null,
     };
@@ -1634,9 +1634,9 @@ fn warnRedundantScalarCast(v: *Validator, range: LocRange, t: Types.Type, arg_ty
 /// messages the engine's generic no-match can't. Reached only on engine
 /// failure — a zero-arg / splat / copy / valid-compose call succeeds in the
 /// engine and never lands here.
-fn refineVectorCtor(v: *Validator, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+fn refineVectorCtor(v: *Validator, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type, detail: ?Overload.FailureDetail) ?Overload.RefinedDiagnostic {
     if (arg_types.len == 1) return refineVectorCtorOne(v, callee_name, t, ve, arg_types);
-    return refineVectorCtorMulti(v, callee_name, t, ve, arg_types);
+    return refineVectorCtorMulti(v, callee_name, t, ve, arg_types, detail);
 }
 
 fn refineVectorCtorOne(v: *Validator, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
@@ -1663,43 +1663,37 @@ fn refineVectorCtorOne(v: *Validator, callee_name: []const u8, t: Types.Type, ve
     return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }) };
 }
 
-fn refineVectorCtorMulti(v: *Validator, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
-    // Count total components (scalars + vector widths).
-    var total: usize = 0;
-    for (arg_types) |at_opt| {
-        const at = at_opt orelse return null; // null arg is engine-feasible
-        if (at == .scalar) {
-            total += 1;
-        } else if (at == .vector) {
-            total += at.vector.width;
-        } else {
-            // Non scalar/vector arg: old switch accepted; engine now rejects.
+/// Format-only over the engine's `FailureDetail` (Block 2.2): the
+/// classification/counting that used to live here now runs once in
+/// `Overload.variadicFailureDetail`, next to the fold it mirrors.
+fn refineVectorCtorMulti(v: *Validator, callee_name: []const u8, t: Types.Type, ve: *const Types.Vector, arg_types: []const ?Types.Type, detail: ?Overload.FailureDetail) ?Overload.RefinedDiagnostic {
+    const d = detail orelse return null; // null arg cascade → generic no-match
+    switch (d) {
+        // Non scalar/vector arg: old switch accepted; engine now rejects.
+        .value_no_convert => |x| {
+            const at = arg_types[x.arg_index].?;
             return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }) };
-        }
-    }
-    if (total != ve.width) {
-        if (suggestVecForComponents(v, callee_name, total)) |suggestion| {
-            return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, ve.width, total, suggestion }) };
-        }
-        return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, ve.width, total }) };
-    }
-    // Component count matches: some argument's element failed to convert.
-    for (arg_types) |at_opt| {
-        const at = at_opt orelse continue;
-        const src_elem = elementTypeOf(at) orelse continue;
-        if (!canConvertScalarTo(src_elem, ve.element)) {
+        },
+        .component_sum => |x| {
+            if (suggestVecForComponents(v, callee_name, x.got)) |suggestion| {
+                return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' requires {d} components, got {d}; did you mean '{s}'?", .{ callee_name, x.want, x.got, suggestion }) };
+            }
+            return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' requires {d} components, got {d}", .{ callee_name, x.want, x.got }) };
+        },
+        .elem_no_convert => |x| {
+            const src_elem = elementTypeOf(arg_types[x.arg_index].?).?;
             return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ src_elem.string(), ve.element.string(), callee_name }) };
-        }
+        },
+        else => return null,
     }
-    return null;
 }
 
 /// Matrix `matCxR<E>(...)` failures, dispatched on arity like the old
 /// `checkMatrixCtor`. Reproduces the dichotomy / conversion messages the
 /// engine's generic no-match can't. Reached only on engine failure.
-fn refineMatrixCtor(v: *Validator, callee_name: []const u8, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
+fn refineMatrixCtor(v: *Validator, callee_name: []const u8, t: Types.Type, mt: *const Types.Matrix, arg_types: []const ?Types.Type, detail: ?Overload.FailureDetail) ?Overload.RefinedDiagnostic {
     if (arg_types.len == 1) return refineMatrixCtorOne(v, t, arg_types);
-    return refineMatrixCtorMulti(v, callee_name, mt, arg_types);
+    return refineMatrixCtorMulti(v, callee_name, mt, arg_types, detail);
 }
 
 fn refineMatrixCtorOne(v: *Validator, t: Types.Type, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
@@ -1711,70 +1705,45 @@ fn refineMatrixCtorOne(v: *Validator, t: Types.Type, arg_types: []const ?Types.T
     return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}'", .{ at.string(), t.string() }) };
 }
 
-fn refineMatrixCtorMulti(v: *Validator, callee_name: []const u8, mt: *const Types.Matrix, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
-    // Classify args: all scalars or all vectors.
-    var all_scalar = true;
-    var all_vector = true;
-    for (arg_types) |at_opt| {
-        const at = at_opt orelse return null; // null arg is engine-feasible
-        if (at != .scalar) all_scalar = false;
-        if (at != .vector) all_vector = false;
+/// Format-only over the engine's `FailureDetail` (Block 2.2): the dichotomy
+/// classification now runs once in `Overload.matrixDichotomyFailureDetail`.
+fn refineMatrixCtorMulti(v: *Validator, callee_name: []const u8, mt: *const Types.Matrix, arg_types: []const ?Types.Type, detail: ?Overload.FailureDetail) ?Overload.RefinedDiagnostic {
+    const d = detail orelse return null; // null arg cascade → generic no-match
+    switch (d) {
+        .count_mismatch => |x| switch (x.kind) {
+            .matrix_scalars => return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' scalar constructor requires {d} values, got {d}", .{ callee_name, x.want, x.got }) },
+            .matrix_columns => return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' column constructor requires {d} vectors, got {d}", .{ callee_name, x.want, x.got }) },
+            .struct_fields => return null, // never produced for a matrix target
+        },
+        .elem_no_convert => |x| {
+            const src_elem = elementTypeOf(arg_types[x.arg_index].?).?;
+            return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ src_elem.string(), mt.element.string(), callee_name }) };
+        },
+        .matrix_column_shape => |x| {
+            const width = arg_types[x.arg_index].?.vector.width;
+            return .{ .code = Diagnostic.Code.invalid_arg_type, .message = v.fmtError("'{s}' column vectors must have {d} components, got {d}", .{ callee_name, mt.rows, width }) };
+        },
+        .mixed_scalar_vector => return .{ .code = Diagnostic.Code.invalid_arg_type, .message = v.fmtError("'{s}' constructor requires all scalar values or all column vectors, not a mix", .{callee_name}) },
+        else => return null,
     }
-
-    if (all_scalar) {
-        // C*R scalars required.
-        if (arg_types.len != mt.cols * mt.rows) {
-            return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' scalar constructor requires {d} values, got {d}", .{ callee_name, mt.cols * mt.rows, arg_types.len }) };
-        }
-        for (arg_types) |at_opt| {
-            const at = at_opt orelse continue;
-            if (at == .scalar and !canConvertScalarTo(at.scalar, mt.element)) {
-                return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.scalar.string(), mt.element.string(), callee_name }) };
-            }
-        }
-        return null;
-    }
-    if (all_vector) {
-        // C column vectors of height R required.
-        if (arg_types.len != mt.cols) {
-            return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' column constructor requires {d} vectors, got {d}", .{ callee_name, mt.cols, arg_types.len }) };
-        }
-        for (arg_types) |at_opt| {
-            if (at_opt) |at| {
-                if (at == .vector) {
-                    if (at.vector.width != mt.rows) {
-                        return .{ .code = Diagnostic.Code.invalid_arg_type, .message = v.fmtError("'{s}' column vectors must have {d} components, got {d}", .{ callee_name, mt.rows, at.vector.width }) };
-                    }
-                    if (!canConvertScalarTo(at.vector.element, mt.element)) {
-                        return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' in '{s}' constructor", .{ at.vector.element.string(), mt.element.string(), callee_name }) };
-                    }
-                }
-            }
-        }
-        return null;
-    }
-    // Mix of scalars and column vectors.
-    return .{ .code = Diagnostic.Code.invalid_arg_type, .message = v.fmtError("'{s}' constructor requires all scalar values or all column vectors, not a mix", .{callee_name}) };
 }
 
-/// Struct `S(...)` failures: arity mismatch, or a field whose argument does not
-/// convert. Mirrors the old `checkStructCtor` error branches verbatim. Reached
-/// only on engine failure (arg_count 0 and arg_count == fields.len both succeed
-/// in the engine, so a reached failure is a genuine count or field mismatch).
-fn refineStructCtor(v: *Validator, callee_name: []const u8, st: *const Types.Struct, arg_types: []const ?Types.Type) ?Overload.RefinedDiagnostic {
-    if (arg_types.len != st.fields.len) {
-        return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' constructor expects {d} arguments, got {d}", .{ callee_name, st.fields.len, arg_types.len }) };
+/// Struct `S(...)` failures: an arity mismatch, or the culprit field located by
+/// the solver's deepest-progress arg index. Format-only over the engine's
+/// `FailureDetail` (Block 2.2, `Overload.structFailureDetail`). Reached only on
+/// engine failure — `S()` and `S(f0, …, fN)` both resolve — so a reached
+/// failure is a genuine count or field mismatch.
+fn refineStructCtor(v: *Validator, callee_name: []const u8, st: *const Types.Struct, arg_types: []const ?Types.Type, detail: ?Overload.FailureDetail) ?Overload.RefinedDiagnostic {
+    const d = detail orelse return null;
+    switch (d) {
+        .count_mismatch => |x| return .{ .code = Diagnostic.Code.invalid_arg_count, .message = v.fmtError("'{s}' constructor expects {d} arguments, got {d}", .{ callee_name, x.want, x.got }) },
+        .elem_no_convert => |x| {
+            const field = st.fields[x.arg_index];
+            const at = arg_types[x.arg_index].?;
+            return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' for field '{s}'", .{ at.string(), field.typ.string(), field.name }) };
+        },
+        else => return null,
     }
-    for (st.fields, 0..) |field, i| {
-        if (i < arg_types.len) {
-            if (arg_types[i]) |at| {
-                if (!at.eql(field.typ) and !Types.canConvertTo(at, field.typ)) {
-                    return .{ .code = Diagnostic.Code.invalid_conversion, .message = v.fmtError("cannot convert '{s}' to '{s}' for field '{s}'", .{ at.string(), field.typ.string(), field.name }) };
-                }
-            }
-        }
-    }
-    return null;
 }
 
 /// Array `array<E, N>(...)` failures: wrong element count, or an element that
@@ -1792,11 +1761,6 @@ fn refineArrayCtor(v: *Validator, callee_name: []const u8, arr: *const Types.Arr
         }
     }
     return null;
-}
-
-pub fn canConvertScalarTo(src: *const Types.Scalar, dst: *const Types.Scalar) bool {
-    if (src == dst) return true;
-    return Types.canConvertTo(.{ .scalar = src }, .{ .scalar = dst });
 }
 
 pub fn elementTypeOf(t: Types.Type) ?*const Types.Scalar {
