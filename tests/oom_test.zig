@@ -409,3 +409,99 @@ test "Minifier.minify: simple fn — exhaustive OOM" {
 test "Minifier.minify: struct+binding — exhaustive OOM" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testMinifierMinify, .{struct_binding});
 }
+
+// =========================================================================
+// Tier 3: OOM honesty (Block 1.5)
+//
+// `checkAllAllocationFailures` above verifies OOM does not *leak*, but it
+// tolerates a swallowed OOM that returns a (wrong) success. These tests are
+// stronger: they assert that a single induced allocation failure NEVER causes
+// the validator to fabricate a semantic diagnostic on a *valid* shader. OOM
+// must surface as `error.OutOfMemory`, not as a bogus "unknown type" / type
+// mismatch produced by a `catch return null` swallow in the resolveType /
+// constructor-inference families.
+// =========================================================================
+
+/// A valid shader that exercises every allocating branch of the resolveType
+/// family: vector/matrix/array struct members, a `ptr<>` parameter, an
+/// `atomic<>`, plus a constructor whose element type is inferred.
+const type_heavy_valid: [:0]const u8 =
+    \\struct Data {
+    \\  v: vec3f,
+    \\  m: mat2x2f,
+    \\  arr: array<f32, 4>,
+    \\  counter: atomic<u32>,
+    \\}
+    \\@group(0) @binding(0) var<storage, read_write> d: Data;
+    \\fn helper(p: ptr<function, f32>) -> f32 { return *p; }
+    \\@compute @workgroup_size(1) fn main() {
+    \\  var x: f32 = 1.0;
+    \\  let r = helper(&x);
+    \\  let a = d.arr[0];
+    \\  let c = vec3(1.0, 2.0, 3.0);
+    \\}
+;
+
+const OomOutcome = enum { oom, valid, invalid };
+
+/// Re-parse + validate `source` under a FailingAllocator that fails its
+/// `fail_index`-th allocation. Returns whether the run OOM'd (correct), stayed
+/// valid, or fabricated an invalid Result (the silent-corruption bug).
+fn validateUnderFailIndex(
+    backing: std.mem.Allocator,
+    source: [:0]const u8,
+    fail_index: usize,
+    count_out: ?*usize,
+) OomOutcome {
+    // The FailingAllocator sits *between* the pipeline and a real arena so that
+    // every individual `create`/`alloc` is a distinct failure point (an arena
+    // over the failing allocator would batch everything into ~3 page requests
+    // and never reach the per-object resolveType creates). The arena bulk-frees
+    // on deinit, so no individual frees are needed and nothing leaks.
+    var arena = std.heap.ArenaAllocator.init(backing);
+    defer arena.deinit();
+    var fa = std.testing.FailingAllocator.init(arena.allocator(), .{ .fail_index = fail_index });
+    const alloc = fa.allocator();
+    const outcome: OomOutcome = blk: {
+        const tokens = Lexer.tokenize(alloc, source) catch break :blk .oom;
+        var parser = Parser.init(alloc, source, tokens) catch break :blk .oom;
+        const module = parser.parse() catch |e| switch (e) {
+            error.OutOfMemory => break :blk .oom,
+            else => break :blk .valid, // parse errors irrelevant; source is valid
+        };
+        const result = Validator.validate(alloc, module, .{}) catch break :blk .oom;
+        break :blk if (result.valid) .valid else .invalid;
+    };
+    if (count_out) |c| c.* = fa.alloc_index;
+    return outcome;
+}
+
+test "OOM honesty: single allocation failure never fabricates a semantic error" {
+    const backing = std.testing.allocator;
+    // Baseline: with no induced failure the shader is valid; capture the total
+    // allocation count so we can sweep every failure point.
+    var total: usize = 0;
+    try std.testing.expectEqual(
+        OomOutcome.valid,
+        validateUnderFailIndex(backing, type_heavy_valid, std.math.maxInt(usize), &total),
+    );
+
+    var invalid_count: usize = 0;
+    var first_invalid: ?usize = null;
+    var i: usize = 0;
+    while (i < total) : (i += 1) {
+        if (validateUnderFailIndex(backing, type_heavy_valid, i, null) == .invalid) {
+            invalid_count += 1;
+            if (first_invalid == null) first_invalid = i;
+        }
+    }
+    if (invalid_count != 0) {
+        std.debug.print(
+            "OOM dishonesty: a single allocation failure made a valid shader report " ++
+                "invalid at {d} of {d} failure points (first at index {?d}) — OOM was " ++
+                "swallowed into a fabricated semantic diagnostic instead of propagating.\n",
+            .{ invalid_count, total, first_invalid },
+        );
+        return error.OomFabricatedDiagnostic;
+    }
+}

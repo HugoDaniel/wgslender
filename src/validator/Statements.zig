@@ -66,7 +66,7 @@ pub fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
 
     // Resolve return type
     if (fn_decl.return_type) |rt| {
-        v.return_type = v.resolveType(rt);
+        v.return_type = try v.resolveType(rt);
         if (v.return_type) |ret| {
             if (!ret.isConstructible()) {
                 v.addErrorWithCodeR(v.symbolRange(fn_decl.name), Diagnostic.Code.type_mismatch, v.fmtError("function '{s}' has non-constructible return type '{s}'", .{ v.symbolName(fn_decl.name), ret.string() }));

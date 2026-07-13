@@ -573,21 +573,21 @@ pub const analyzeUniformity = @import("validator/Uniformity.zig").analyzeUniform
 // Type Resolution Helpers
 // =========================================================================
 
-pub fn resolveType(v: *Validator, ast_type: Ast.Type) ?Types.Type {
+pub fn resolveType(v: *Validator, ast_type: Ast.Type) Allocator.Error!?Types.Type {
     return switch (ast_type) {
-        .ident => |t| resolveIdentType(v, t),
-        .vec => |t| resolveVecType(v, t),
-        .mat => |t| resolveMatType(v, t),
-        .array => |t| resolveArrayType(v, t),
-        .ptr => |t| resolvePtrType(v, t),
-        .atomic => |t| resolveAtomicType(v, t),
-        .sampler => |t| resolveSamplerType(v, t),
-        .texture => |t| resolveTextureType(v, t),
+        .ident => |t| try resolveIdentType(v, t),
+        .vec => |t| try resolveVecType(v, t),
+        .mat => |t| try resolveMatType(v, t),
+        .array => |t| try resolveArrayType(v, t),
+        .ptr => |t| try resolvePtrType(v, t),
+        .atomic => |t| try resolveAtomicType(v, t),
+        .sampler => |t| try resolveSamplerType(v, t),
+        .texture => |t| try resolveTextureType(v, t),
     };
 }
 
-pub fn resolveIdentType(v: *Validator, t: anytype) ?Types.Type {
-    if (v.lookupType(t.name)) |typ| return typ;
+pub fn resolveIdentType(v: *Validator, t: anytype) Allocator.Error!?Types.Type {
+    if (try v.lookupType(t.name)) |typ| return typ;
     // Type not found — report with suggestion if close match exists.
     if (v.suggestType(t.name, null)) |suggestion| {
         v.addErrorWithCodeDataR(astTypeRange(.{ .ident = t }), Diagnostic.Code.type_mismatch, v.fmtError("unknown type '{s}'; did you mean '{s}'?", .{ t.name, suggestion }), .{ .did_you_mean = suggestion });
@@ -597,10 +597,10 @@ pub fn resolveIdentType(v: *Validator, t: anytype) ?Types.Type {
     return null;
 }
 
-pub fn resolveVecType(v: *Validator, t: anytype) ?Types.Type {
+pub fn resolveVecType(v: *Validator, t: anytype) Allocator.Error!?Types.Type {
     var elem_scalar: *const Types.Scalar = Types.scalar_f32_ptr;
     if (t.elem_type) |et| {
-        if (v.resolveType(et)) |resolved| {
+        if (try v.resolveType(et)) |resolved| {
             switch (resolved) {
                 .scalar => |s| elem_scalar = s,
                 else => {},
@@ -609,15 +609,15 @@ pub fn resolveVecType(v: *Validator, t: anytype) ?Types.Type {
     } else if (t.shorthand.len > 0) {
         elem_scalar = shorthandElement(t.shorthand);
     }
-    const result = v.arena.create(Types.Vector) catch return null;
+    const result = try v.arena.create(Types.Vector);
     result.* = .{ .width = t.size, .element = elem_scalar };
     return .{ .vector = result };
 }
 
-pub fn resolveMatType(v: *Validator, t: anytype) ?Types.Type {
+pub fn resolveMatType(v: *Validator, t: anytype) Allocator.Error!?Types.Type {
     var elem_scalar: *const Types.Scalar = Types.scalar_f32_ptr;
     if (t.elem_type) |et| {
-        if (v.resolveType(et)) |resolved| {
+        if (try v.resolveType(et)) |resolved| {
             switch (resolved) {
                 .scalar => |s| {
                     // Spec: matrix element type must be f32, f16, or AbstractFloat.
@@ -636,13 +636,13 @@ pub fn resolveMatType(v: *Validator, t: anytype) ?Types.Type {
     } else if (t.shorthand.len > 0) {
         elem_scalar = shorthandElement(t.shorthand);
     }
-    const result = v.arena.create(Types.Matrix) catch return null;
+    const result = try v.arena.create(Types.Matrix);
     result.* = .{ .cols = t.cols, .rows = t.rows, .element = elem_scalar };
     return .{ .matrix = result };
 }
 
-pub fn resolveArrayType(v: *Validator, t: anytype) ?Types.Type {
-    const elem_type = if (t.elem_type) |et| (v.resolveType(et) orelse return null) else return null;
+pub fn resolveArrayType(v: *Validator, t: anytype) Allocator.Error!?Types.Type {
+    const elem_type = if (t.elem_type) |et| ((try v.resolveType(et)) orelse return null) else return null;
     var count: u32 = 0;
     if (t.size) |size_expr| {
         // Array element count must be a const-expression or override-expression
@@ -661,13 +661,13 @@ pub fn resolveArrayType(v: *Validator, t: anytype) ?Types.Type {
         }
         // If we couldn't extract the value (identifier, complex expr), leave count=0
     }
-    const result = v.arena.create(Types.Array) catch return null;
+    const result = try v.arena.create(Types.Array);
     result.* = .{ .element = elem_type, .count = count };
     return .{ .array = result };
 }
 
-pub fn resolvePtrType(v: *Validator, t: anytype) ?Types.Type {
-    const elem_type = v.resolveType(t.elem_type) orelse return null;
+pub fn resolvePtrType(v: *Validator, t: anytype) Allocator.Error!?Types.Type {
+    const elem_type = (try v.resolveType(t.elem_type)) orelse return null;
     // Spec: pointer element type must not be a pointer, reference, sampler, or texture.
     switch (elem_type) {
         .pointer, .reference => {
@@ -684,7 +684,7 @@ pub fn resolvePtrType(v: *Validator, t: anytype) ?Types.Type {
         },
         else => {},
     }
-    const result = v.arena.create(Types.Pointer) catch return null;
+    const result = try v.arena.create(Types.Pointer);
     result.* = .{
         .address_space = t.address_space,
         .element = elem_type,
@@ -693,8 +693,8 @@ pub fn resolvePtrType(v: *Validator, t: anytype) ?Types.Type {
     return .{ .pointer = result };
 }
 
-pub fn resolveAtomicType(v: *Validator, t: anytype) ?Types.Type {
-    const elem_type = v.resolveType(t.elem_type) orelse return null;
+pub fn resolveAtomicType(v: *Validator, t: anytype) Allocator.Error!?Types.Type {
+    const elem_type = (try v.resolveType(t.elem_type)) orelse return null;
     switch (elem_type) {
         .scalar => |s| {
             // Spec: atomic type requires i32 or u32 only.
@@ -702,7 +702,7 @@ pub fn resolveAtomicType(v: *Validator, t: anytype) ?Types.Type {
                 v.addErrorWithCodeR(astTypeRange(.{ .atomic = t }), Diagnostic.Code.invalid_atomic_type, v.fmtError("atomic type requires i32 or u32, got '{s}'", .{elem_type.string()}));
                 return null;
             }
-            const result = v.arena.create(Types.Atomic) catch return null;
+            const result = try v.arena.create(Types.Atomic);
             result.* = .{ .element = s };
             return .{ .atomic = result };
         },
@@ -713,20 +713,20 @@ pub fn resolveAtomicType(v: *Validator, t: anytype) ?Types.Type {
     }
 }
 
-pub fn resolveSamplerType(v: *Validator, t: anytype) ?Types.Type {
-    const result = v.arena.create(Types.Sampler) catch return null;
+pub fn resolveSamplerType(v: *Validator, t: anytype) Allocator.Error!?Types.Type {
+    const result = try v.arena.create(Types.Sampler);
     result.* = .{ .comparison = t.comparison };
     return .{ .sampler = result };
 }
 
-pub fn resolveTextureType(v: *Validator, t: anytype) ?Types.Type {
+pub fn resolveTextureType(v: *Validator, t: anytype) Allocator.Error!?Types.Type {
     const tex_range = astTypeRange(.{ .texture = t });
     const kind = astTextureKindToType(t.kind);
     const dimension = astTextureDimToType(t.dimension);
 
     var sampled_scalar: ?*const Types.Scalar = null;
     if (t.sampled_type) |st| {
-        if (v.resolveType(st)) |resolved| {
+        if (try v.resolveType(st)) |resolved| {
             switch (resolved) {
                 .scalar => |s| sampled_scalar = s,
                 else => {},
@@ -757,7 +757,7 @@ pub fn resolveTextureType(v: *Validator, t: anytype) ?Types.Type {
         }
     }
 
-    const result = v.arena.create(Types.Texture) catch return null;
+    const result = try v.arena.create(Types.Texture);
     result.* = .{
         .kind = kind,
         .dimension = dimension,
@@ -768,7 +768,7 @@ pub fn resolveTextureType(v: *Validator, t: anytype) ?Types.Type {
     return .{ .texture = result };
 }
 
-pub fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
+pub fn lookupType(v: *Validator, name: []const u8) Allocator.Error!?Types.Type {
     assert(name.len > 0);
     assert(v.module.source.len < std.math.maxInt(u32));
     // Built-in scalar types
@@ -783,24 +783,24 @@ pub fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
         return Types.F16;
     }
     if (std.mem.eql(u8, name, "sampler")) {
-        const s = v.arena.create(Types.Sampler) catch return null;
+        const s = try v.arena.create(Types.Sampler);
         s.* = .{ .comparison = false };
         return .{ .sampler = s };
     }
     if (std.mem.eql(u8, name, "sampler_comparison")) {
-        const s = v.arena.create(Types.Sampler) catch return null;
+        const s = try v.arena.create(Types.Sampler);
         s.* = .{ .comparison = true };
         return .{ .sampler = s };
     }
 
     // Vector shorthand (vec2f, vec3i, etc.) and bare constructors (vec2, vec3, vec4)
     if (name.len >= 4 and std.mem.startsWith(u8, name, "vec")) {
-        return v.parseVectorShorthand(name);
+        return try v.parseVectorShorthand(name);
     }
 
     // Matrix shorthand (mat2x2f, mat3x3f, etc.) and bare constructors (mat2x2, mat3x3, etc.)
     if (name.len >= 5 and std.mem.startsWith(u8, name, "mat")) {
-        return v.parseMatrixShorthand(name);
+        return try v.parseMatrixShorthand(name);
     }
 
     // Texture types spelled without template arguments: depth textures and
@@ -810,7 +810,7 @@ pub fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
     // "unknown type").
     if (Predeclared.textureInfo(name)) |info| switch (info.kind) {
         .depth, .depth_multisampled, .external => {
-            const t = v.arena.create(Types.Texture) catch return null;
+            const t = try v.arena.create(Types.Texture);
             t.* = .{
                 .kind = astTextureKindToType(info.kind),
                 .dimension = astTextureDimToType(info.dim),
@@ -825,7 +825,7 @@ pub fn lookupType(v: *Validator, name: []const u8) ?Types.Type {
 
     // Bare array constructor
     if (std.mem.eql(u8, name, "array")) {
-        const arr = v.arena.create(Types.Array) catch return null;
+        const arr = try v.arena.create(Types.Array);
         arr.* = .{ .element = Types.F32, .count = 0 };
         return .{ .array = arr };
     }
@@ -973,16 +973,16 @@ fn suffixScalarPtr(elem: ?Predeclared.SuffixScalar) *const Types.Scalar {
     };
 }
 
-pub fn parseVectorShorthand(v: *Validator, name: []const u8) ?Types.Type {
+pub fn parseVectorShorthand(v: *Validator, name: []const u8) Allocator.Error!?Types.Type {
     const sh = Predeclared.parseVecShorthand(name) orelse return null;
-    const result = v.arena.create(Types.Vector) catch return null;
+    const result = try v.arena.create(Types.Vector);
     result.* = .{ .width = sh.width, .element = suffixScalarPtr(sh.elem) };
     return .{ .vector = result };
 }
 
-pub fn parseMatrixShorthand(v: *Validator, name: []const u8) ?Types.Type {
+pub fn parseMatrixShorthand(v: *Validator, name: []const u8) Allocator.Error!?Types.Type {
     const sh = Predeclared.parseMatShorthand(name) orelse return null;
-    const result = v.arena.create(Types.Matrix) catch return null;
+    const result = try v.arena.create(Types.Matrix);
     result.* = .{ .cols = sh.cols, .rows = sh.rows, .element = suffixScalarPtr(sh.elem) };
     return .{ .matrix = result };
 }
@@ -1117,6 +1117,13 @@ pub fn setSymbolType(v: *Validator, sym_idx: Ast.SymbolIndex, typ: ?Types.Type) 
     }
 }
 
+/// Best-effort by contract: on OOM this returns the raw (unformatted) format
+/// string rather than propagating an error. A degraded diagnostic *message* is
+/// never a wrong *result* — the caller has already decided a diagnostic is
+/// warranted, so the worst case here is a less-specific string, not a fabricated
+/// or missed verdict. This is the deliberate counterpart to the resolveType /
+/// constructor-inference families, whose allocations DO propagate `error.OutOfMemory`
+/// because their failure would corrupt the inferred type (see Block 1.5).
 pub fn fmtError(v: *Validator, comptime fmt: []const u8, args: anytype) []const u8 {
     return std.fmt.allocPrint(v.arena, fmt, args) catch fmt;
 }

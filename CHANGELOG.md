@@ -7,6 +7,19 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Fixed
 
+- **Out-of-memory honesty (validator):** the type-resolution and
+  constructor-inference paths no longer swallow allocation failures.
+  `resolveType` / `lookupType`, the `resolve*Type` helpers, the vector/matrix
+  shorthand parsers, and the bare-constructor element inference
+  (`inferGenericCtorElement` / `inferArrayCtorType` / `ctorViaEngine`)
+  previously returned `null` on OOM — indistinguishable from a genuine "type
+  not found" — so under memory pressure a *valid* shader could be reported
+  invalid with a fabricated diagnostic. These paths now surface
+  `error.OutOfMemory`, which the validator propagates. Diagnostic *emission*
+  stays best-effort by documented contract (`fmtError` degrades to the raw
+  format string; `Diagnostic.add` drops the entry on OOM) but is verdict-safe:
+  a dropped error still marks the result invalid, so OOM can never flip an
+  invalid shader to valid. JSON / C-ABI / WASM surfaces are unaffected.
 - **Bitwise operators** (`&` `|` `^`): invalid integer operand pairs that the
   validator previously accepted *silently* — mixed-sign (`1i & 1u`),
   width-mismatched (`vec3<i32> & vec2<i32>`), and scalar↔vector combinations —

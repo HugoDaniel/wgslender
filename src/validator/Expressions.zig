@@ -44,7 +44,7 @@ pub fn checkExprE(v: *Validator, expr: Ast.Expr, exp: Expectation) Allocator.Err
     defer v.expr_depth -= 1;
     var result: InferResult = switch (expr) {
         .literal => |e| checkLiteral(v, e),
-        .ident => |e| checkIdent(v, e),
+        .ident => |e| try checkIdent(v, e),
         .binary => |e| try checkBinaryE(v, e, exp),
         .unary => |e| try checkUnaryE(v, e, exp),
         .call => |e| try checkCallExpr(v, e),
@@ -250,7 +250,7 @@ pub fn checkFloatLiteralValue(v: *Validator, e: *Ast.LiteralExpr) void {
     }
 }
 
-pub fn checkIdent(v: *Validator, e: *Ast.IdentExpr) InferResult {
+pub fn checkIdent(v: *Validator, e: *Ast.IdentExpr) Allocator.Error!InferResult {
     // Staging follows the declaration kind. Unresolved idents (attribute
     // arguments still being wired up) fall back to a by-name classifier.
     // Stage is always computed — even when type inference fails — so that
@@ -273,7 +273,7 @@ pub fn checkIdent(v: *Validator, e: *Ast.IdentExpr) InferResult {
     };
 
     // Check if it's a type name being used as expression (constructor)
-    if (v.lookupType(e.name)) |t| {
+    if (try v.lookupType(e.name)) |t| {
         return InferResult.some(t, stage);
     }
 
@@ -899,7 +899,7 @@ pub fn checkAddrOfUnary(v: *Validator, e: *Ast.UnaryExpr, er: LocRange, operand_
     // would cascade misleading type-mismatch errors downstream.
     const asam = (try addrOfOperandAsAm(v, e.operand, er)) orelse return InferResult.fail;
 
-    const p = v.arena.create(Types.Pointer) catch return InferResult.fail;
+    const p = try v.arena.create(Types.Pointer);
     p.* = .{
         .address_space = asam.address_space,
         .element = operand_type,
@@ -957,7 +957,7 @@ pub fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResul
     }
 
     // Check if it's a type constructor
-    if (v.lookupType(callee_name)) |t| {
+    if (try v.lookupType(callee_name)) |t| {
         return checkBareTypeCtor(v, e, callee_name, t, constructor_arg_types.items, args_stage);
     }
 
@@ -990,7 +990,7 @@ pub fn extractCalleeName(v: *Validator, e: *Ast.CallExpr) ?[]const u8 {
 
 pub fn checkBitcastDispatch(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResult {
     if (e.template_type) |tt| {
-        const dest_type = v.resolveType(tt) orelse return InferResult.fail;
+        const dest_type = (try v.resolveType(tt)) orelse return InferResult.fail;
         return try checkBitcastCall(v, e, dest_type);
     }
     v.addErrorWithCodeR(
@@ -1002,7 +1002,7 @@ pub fn checkBitcastDispatch(v: *Validator, e: *Ast.CallExpr) Allocator.Error!Inf
 }
 
 pub fn checkTemplateTypeCtor(v: *Validator, e: *Ast.CallExpr, tt: Ast.Type, callee_name: []const u8) Allocator.Error!InferResult {
-    const resolved = v.resolveType(tt) orelse return InferResult.fail;
+    const resolved = (try v.resolveType(tt)) orelse return InferResult.fail;
     // Use type string as callee_name when the parser doesn't set func
     const name = if (callee_name.len > 0) callee_name else resolved.string();
     // Validate constructor arguments against the resolved type
@@ -1013,20 +1013,20 @@ pub fn checkTemplateTypeCtor(v: *Validator, e: *Ast.CallExpr, tt: Ast.Type, call
         try constructor_arg_types.append(v.arena, ar.typ);
         args_stage = ExprStage.combine(args_stage, ar.stage);
     }
-    const ret = checkTypeConstructor(v, e, name, resolved, constructor_arg_types.items) orelse
+    const ret = (try checkTypeConstructor(v, e, name, resolved, constructor_arg_types.items)) orelse
         return .{ .typ = null, .stage = args_stage };
     return InferResult.some(ret, args_stage);
 }
 
-pub fn checkBareTypeCtor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type, args_stage: ExprStage) InferResult {
+pub fn checkBareTypeCtor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type, args_stage: ExprStage) Allocator.Error!InferResult {
     // Bare vec/mat constructors (`vec2`, `mat3x3`, …) infer their
     // element type from the argument list per WGSL §14.462 rather than
     // defaulting to f32. parseVectorShorthand / parseMatrixShorthand
     // return a f32-default type; swap its element with the arg-unified
     // scalar before validation so `let x = vec2(1, 2)` is vec2<i32>
     // (or vec2<abstract-int> in contexts that retain abstractness).
-    const effective_t = inferGenericCtorElement(v, callee_name, t, arg_types) orelse t;
-    const ret = checkTypeConstructor(v, e, callee_name, effective_t, arg_types) orelse
+    const effective_t = (try inferGenericCtorElement(v, callee_name, t, arg_types)) orelse t;
+    const ret = (try checkTypeConstructor(v, e, callee_name, effective_t, arg_types)) orelse
         return .{ .typ = null, .stage = args_stage };
     return InferResult.some(ret, args_stage);
 }
@@ -1321,8 +1321,8 @@ pub fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentE
 /// unified scalar across the args (AbstractInt/AbstractFloat propagate
 /// unless a concrete arg is present). Returns null when the name is not
 /// a bare numeric constructor or when we fail to pick an element.
-pub fn inferGenericCtorElement(v: *Validator, name: []const u8, default: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
-    if (std.mem.eql(u8, name, "array")) return inferArrayCtorType(v, arg_types);
+pub fn inferGenericCtorElement(v: *Validator, name: []const u8, default: Types.Type, arg_types: []const ?Types.Type) Allocator.Error!?Types.Type {
+    if (std.mem.eql(u8, name, "array")) return try inferArrayCtorType(v, arg_types);
 
     const is_bare_vec = std.mem.eql(u8, name, "vec2") or
         std.mem.eql(u8, name, "vec3") or
@@ -1351,21 +1351,21 @@ pub fn inferGenericCtorElement(v: *Validator, name: []const u8, default: Types.T
     // already unifies to vec3<abstract-int>. Matrices keep the f32 default here
     // (their element must be floating-point) and are handled by checkMatrixCtor.
     if (is_bare_vec and arg_types.len == 0) {
-        const result = v.arena.create(Types.Vector) catch return null;
+        const result = try v.arena.create(Types.Vector);
         result.* = .{ .width = default.vector.width, .element = Types.scalar_abstract_int_ptr };
         return .{ .vector = result };
     }
 
     const chosen = elem orelse return null;
     if (is_bare_vec) {
-        const result = v.arena.create(Types.Vector) catch return null;
+        const result = try v.arena.create(Types.Vector);
         result.* = .{ .width = default.vector.width, .element = chosen };
         return .{ .vector = result };
     }
     // Matrices carry a float element only; fall back to default if an
     // integer sneaks in — checkTypeConstructor reports the real error.
     if (!chosen.isFloat()) return null;
-    const result = v.arena.create(Types.Matrix) catch return null;
+    const result = try v.arena.create(Types.Matrix);
     result.* = .{ .cols = default.matrix.cols, .rows = default.matrix.rows, .element = chosen };
     return .{ .matrix = result };
 }
@@ -1376,7 +1376,7 @@ pub fn inferGenericCtorElement(v: *Validator, name: []const u8, default: Types.T
 /// argument count. Returns null — falling back to the default `array<f32, 0>`
 /// so the array-ctor overload sigs report the mismatch — when there are no arguments or
 /// the argument types have no common type.
-fn inferArrayCtorType(v: *Validator, arg_types: []const ?Types.Type) ?Types.Type {
+fn inferArrayCtorType(v: *Validator, arg_types: []const ?Types.Type) Allocator.Error!?Types.Type {
     if (arg_types.len == 0) return null;
     var elem: ?Types.Type = null;
     for (arg_types) |at_opt| {
@@ -1391,7 +1391,7 @@ fn inferArrayCtorType(v: *Validator, arg_types: []const ?Types.Type) ?Types.Type
     // producing an unbounded-depth type. `+ 1` accounts for the array level
     // this call adds on top of `chosen`.
     if (Types.arrayNestingDepth(chosen, constants.max_parser_type_depth) + 1 >= constants.max_parser_type_depth) return null;
-    const result = v.arena.create(Types.Array) catch return null;
+    const result = try v.arena.create(Types.Array);
     result.* = .{ .element = chosen, .count = @intCast(arg_types.len) };
     return .{ .array = result };
 }
@@ -1509,7 +1509,7 @@ pub fn synthesizeModfResult(v: *Validator, operand: Types.Type) Allocator.Error!
     return .{ .@"struct" = st };
 }
 
-pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
+pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type) Allocator.Error!?Types.Type {
     const range = exprRange(.{ .call = e });
 
     // Spec: only constructible types can be used as value constructors.
@@ -1533,7 +1533,7 @@ pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []cons
     // target, but the constructibility gate above already excluded those, so
     // `else` is unreachable for a well-typed call and just passes t through.
     return switch (t) {
-        .scalar, .vector, .matrix, .@"struct", .array => ctorViaEngine(v, range, callee_name, t, arg_types),
+        .scalar, .vector, .matrix, .@"struct", .array => try ctorViaEngine(v, range, callee_name, t, arg_types),
         else => t,
     };
 }
@@ -1556,8 +1556,8 @@ const CtorRefineCtx = struct {
 /// old switch emitted on a no-op cast. Constructors are migrated onto this path
 /// family by family (Block 4b); the outer `checkTypeConstructor` switch routes
 /// the migrated arms here.
-fn ctorViaEngine(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type) ?Types.Type {
-    const sigs = Overload.ctorSigsFor(v.arena, t) catch return null;
+fn ctorViaEngine(v: *Validator, range: LocRange, callee_name: []const u8, t: Types.Type, arg_types: []const ?Types.Type) Allocator.Error!?Types.Type {
+    const sigs = try Overload.ctorSigsFor(v.arena, t);
     var rctx = CtorRefineCtx{ .v = v, .callee_name = callee_name, .target = t };
     const res = Overload.resolveTargetedRefined(sigs, t, arg_types, .{
         .ctx = &rctx,
@@ -1992,7 +1992,7 @@ pub fn checkIndex(v: *Validator, e: *Ast.IndexExpr) Allocator.Error!InferResult 
         .vector => |ve| return InferResult.some(.{ .scalar = ve.element }, stage),
         .matrix => |m| {
             // Indexing a matrix gives a column vector
-            const col_vec = v.arena.create(Types.Vector) catch return InferResult.fail;
+            const col_vec = try v.arena.create(Types.Vector);
             col_vec.* = .{ .width = m.rows, .element = m.element };
             return InferResult.some(.{ .vector = col_vec }, stage);
         },
@@ -2130,7 +2130,7 @@ pub fn checkMember(v: *Validator, e: *Ast.MemberExpr) Allocator.Error!InferResul
                 return InferResult.some(.{ .scalar = ve.element }, stage);
             }
             // Multi-component swizzle: returns vector
-            const swiz_vec = v.arena.create(Types.Vector) catch return InferResult.fail;
+            const swiz_vec = try v.arena.create(Types.Vector);
             swiz_vec.* = .{
                 .width = @intCast(e.member_name.len),
                 .element = ve.element,

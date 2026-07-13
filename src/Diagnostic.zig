@@ -417,8 +417,14 @@ pub fn add(self: *Diagnostic, allocator: Allocator, entry: Entry) void {
     if (e.spec_ref.len == 0 and e.code.len > 0) {
         e.spec_ref = specRefFor(e.code);
     }
-    // Diagnostics are best-effort: silently drop if OOM rather than
-    // propagating allocation failure through every parse/validate call site.
+    // Diagnostics are best-effort by contract: silently drop the entry on OOM
+    // rather than propagating allocation failure through every parse/validate
+    // call site. This is verdict-safe — `has_errors` is set below regardless of
+    // whether the entry itself was stored, so a dropped error can only lose the
+    // specific *message*, never flip an invalid result to valid. (Contrast the
+    // resolveType / constructor-inference families, whose allocations DO
+    // propagate `error.OutOfMemory` because their failure corrupts the inferred
+    // type — Block 1.5.)
     self.diagnostics.append(allocator, e) catch {};
     if (e.severity == .@"error") {
         self.has_errors = true;

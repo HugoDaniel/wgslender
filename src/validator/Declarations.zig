@@ -217,7 +217,7 @@ pub fn resolveAliasTypes(v: *Validator) Allocator.Error!void {
                 if (slot != null) continue; // already resolved
             }
             const savepoint = v.diags.mark();
-            if (v.resolveType(d.typ)) |at| {
+            if (try v.resolveType(d.typ)) |at| {
                 try v.alias_types.put(v.arena, name, at);
                 resolved_any = true;
             } else {
@@ -240,7 +240,7 @@ pub fn resolveAliasTypes(v: *Validator) Allocator.Error!void {
         if (name.len == 0) continue;
         const slot = v.alias_types.get(name) orelse continue;
         if (slot != null) continue;
-        _ = v.resolveType(d.typ);
+        _ = try v.resolveType(d.typ);
         v.addErrorR(v.symbolRange(d.name), v.fmtError("cannot resolve type alias '{s}'", .{name}));
     }
 }
@@ -305,7 +305,7 @@ pub fn validateStructMember(v: *Validator, struct_name: []const u8, member: anyt
         return;
     }
     try seen_members.put(v.arena, member_name, member_range);
-    const member_type = v.resolveType(member.typ) orelse {
+    const member_type = (try v.resolveType(member.typ)) orelse {
         if (member.typ != .ident)
             v.addErrorR(member_range, v.fmtError("cannot resolve type for member '{s}'", .{member_name}));
         return;
@@ -582,7 +582,7 @@ pub fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl, handling: AbstractHan
     // scope const (handling = .keep, §6.6) keeps `.none` so abstract types
     // survive through the hover.
     var decl_type: ?Types.Type = null;
-    const ann_type: ?Types.Type = if (d.typ) |ast_type| v.resolveType(ast_type) else null;
+    const ann_type: ?Types.Type = if (d.typ) |ast_type| try v.resolveType(ast_type) else null;
     const exp: Expectation = if (ann_type) |dt| .{ .exact = dt } else switch (handling) {
         .keep => .none,
         .concretize => .concrete,
@@ -660,7 +660,7 @@ pub fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error
     var decl_type: ?Types.Type = null;
     var init_r: ?InferResult = null;
     if (d.typ) |ast_type| {
-        decl_type = v.resolveType(ast_type);
+        decl_type = try v.resolveType(ast_type);
     } else if (d.initializer) |init| {
         // No annotation: infer from the initializer and materialize any
         // abstract type to its concrete default (abstract-int→i32,
@@ -772,7 +772,7 @@ pub fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
     var decl_type: ?Types.Type = null;
     var init_r: ?InferResult = null;
     if (d.typ) |ast_type| {
-        decl_type = v.resolveType(ast_type);
+        decl_type = try v.resolveType(ast_type);
     } else if (d.initializer) |init| {
         // `var` always concretizes; push `.concrete` so the initializer's
         // subexpressions cache their default concrete type for hovers, even
@@ -1029,7 +1029,7 @@ pub fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
     }
 
     var decl_type: ?Types.Type = null;
-    const ann_type: ?Types.Type = if (d.typ) |ast_type| v.resolveType(ast_type) else null;
+    const ann_type: ?Types.Type = if (d.typ) |ast_type| try v.resolveType(ast_type) else null;
     // `let` always concretizes (function scope, §15); without an annotation
     // push `.concrete` so the initializer's subexpressions cache their
     // default concrete type for LSP hovers.
@@ -1182,14 +1182,14 @@ pub fn registerFunctionSignatures(v: *Validator) Allocator.Error!void {
             .function => |fn_decl| {
                 var param_types: std.ArrayList(Types.Type) = .empty;
                 for (fn_decl.parameters.items) |param| {
-                    if (v.resolveType(param.typ)) |pt| {
+                    if (try v.resolveType(param.typ)) |pt| {
                         try param_types.append(v.arena, pt);
                     }
                 }
 
                 var return_type: ?Types.Type = null;
                 if (fn_decl.return_type) |rt| {
-                    return_type = v.resolveType(rt);
+                    return_type = try v.resolveType(rt);
                 }
 
                 if (fn_decl.name.isValid()) {
@@ -1221,7 +1221,7 @@ pub fn determineShaderStage(fn_decl: *Ast.FunctionDecl) ShaderStage {
 pub fn resolveFunctionParameters(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error![]Types.Type {
     var param_types: std.ArrayList(Types.Type) = .empty;
     for (fn_decl.parameters.items) |param| {
-        const param_type = v.resolveType(param.typ);
+        const param_type = try v.resolveType(param.typ);
         if (param_type) |pt| {
             try v.setSymbolType(param.name, pt);
             try param_types.append(v.arena, pt);
@@ -1242,7 +1242,7 @@ pub fn resolveFunctionParameters(v: *Validator, fn_decl: *Ast.FunctionDecl) Allo
 }
 
 pub fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) Allocator.Error!void {
-    const param_type = v.resolveType(param.typ);
+    const param_type = try v.resolveType(param.typ);
     const param_range = v.symbolRange(param.name);
     for (param.attributes.items) |attr| {
         if (std.mem.eql(u8, attr.name, "location")) {
@@ -1323,7 +1323,7 @@ pub fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.E
     switch (v.current_stage) {
         .vertex => {
             // Must return @builtin(position)
-            if (!vertexHasPositionOutput(v, fn_decl)) {
+            if (!(try vertexHasPositionOutput(v, fn_decl))) {
                 v.addErrorWithCodeDataR(fn_range, Diagnostic.Code.invalid_entry_point, v.fmtError("vertex entry point '{s}' must include @builtin(position) output", .{v.symbolName(fn_decl.name)}), .vertex_missing_builtin_position);
             }
         },
@@ -1399,12 +1399,12 @@ pub fn validateEntryPointInputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Alloc
             }
         }
         // If param type is a struct, check its members
-        const param_type = v.resolveType(param.typ) orelse continue;
+        const param_type = (try v.resolveType(param.typ)) orelse continue;
         if (param_type == .@"struct") {
             if (findStructDecl(v, param_type.@"struct".name)) |sd| {
                 for (sd.members.items) |member| {
                     // WGSL spec section 10.1: entry point I/O struct members must not be struct types.
-                    const mt = v.resolveType(member.typ);
+                    const mt = try v.resolveType(member.typ);
                     if (mt != null and mt.? == .@"struct") {
                         v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("entry point I/O member '{s}' cannot be a struct type", .{v.symbolName(member.name)}));
                     }
@@ -1475,7 +1475,7 @@ pub fn validateEntryPointOutputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Allo
         try output_locations.put(v.arena, info.value, .{ .loc = info.loc, .blend_src = null });
     }
     const rt = fn_decl.return_type orelse return;
-    const ret_type = v.resolveType(rt) orelse return;
+    const ret_type = (try v.resolveType(rt)) orelse return;
     if (ret_type == .@"struct") {
         try validateEntryPointStructOutput(v, fn_decl, ret_type, fn_range, &output_locations);
     } else {
@@ -1494,11 +1494,11 @@ pub fn validateEntryPointStructOutput(v: *Validator, fn_decl: *Ast.FunctionDecl,
     // Post-walk: validate @blend_src dual-source pairing (WGSL spec §11.3,
     // §12.3.1.2). Each location with @blend_src must have exactly 2 members
     // with values {0, 1} of the same type.
-    validateBlendSrcPairing(v, blend_src_members.items, fn_range);
+    try validateBlendSrcPairing(v, blend_src_members.items, fn_range);
 }
 
 pub fn validateEntryPointStructOutputMember(v: *Validator, member: anytype, fn_range: LocRange, output_locations: *std.AutoHashMapUnmanaged(i64, OutputLocEntry), output_builtins: *std.StringHashMapUnmanaged(u32), blend_src_members: *std.ArrayList(BlendSrcEntry)) Allocator.Error!void {
-    const out_mt = v.resolveType(member.typ);
+    const out_mt = try v.resolveType(member.typ);
     // Nested struct in output I/O is invalid.
     if (out_mt != null and out_mt.? == .@"struct") {
         v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_shader_io, v.fmtError("entry point I/O member '{s}' cannot be a struct type", .{v.symbolName(member.name)}));
@@ -1603,7 +1603,7 @@ pub fn validateEntryPointDirectOutput(v: *Validator, fn_decl: *Ast.FunctionDecl,
 /// Verify dual-source blending pairing rules (WGSL spec §12.3.1.2):
 /// members with @blend_src must come as exactly two entries at the same
 /// @location, one with value 0 and one with value 1, of the same type.
-pub fn validateBlendSrcPairing(v: *Validator, entries: []const BlendSrcEntry, fn_range: LocRange) void {
+pub fn validateBlendSrcPairing(v: *Validator, entries: []const BlendSrcEntry, fn_range: LocRange) Allocator.Error!void {
     if (entries.len == 0) return;
     // Group by location — expected to always be location 0 per spec, but we
     // check each distinct location independently.
@@ -1631,7 +1631,7 @@ pub fn validateBlendSrcPairing(v: *Validator, entries: []const BlendSrcEntry, fn
     var seen_counts: std.AutoHashMapUnmanaged(i64, u32) = .{};
     defer seen_counts.deinit(v.arena);
     for (entries) |e| {
-        const gop = seen_counts.getOrPut(v.arena, e.location) catch return;
+        const gop = try seen_counts.getOrPut(v.arena, e.location);
         if (!gop.found_existing) gop.value_ptr.* = 0;
         gop.value_ptr.* += 1;
     }
@@ -1793,12 +1793,12 @@ pub fn isIntegerVector(t: Types.Type) bool {
     };
 }
 
-pub fn vertexHasPositionOutput(v: *Validator, fn_decl: *Ast.FunctionDecl) bool {
+pub fn vertexHasPositionOutput(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!bool {
     // Check return attributes for @builtin(position)
     if (hasBuiltinAttr(fn_decl.return_attr, "position")) return true;
     // Check if return type is a struct with a @builtin(position) member
     if (fn_decl.return_type) |rt| {
-        if (v.resolveType(rt)) |resolved| {
+        if (try v.resolveType(rt)) |resolved| {
             if (resolved == .@"struct") {
                 const struct_name = resolved.@"struct".name;
                 for (v.module.declarations.items) |decl| {
