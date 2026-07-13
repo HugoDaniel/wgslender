@@ -40,7 +40,7 @@ test "§6.7: const initializer must be const-expression" {
         \\override run_time: i32;
         \\const bad: i32 = run_time + 1;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0302")) {
         dump("expected E0302 on const ref-to-override", r);
         return error.TestUnexpectedResult;
@@ -51,7 +51,7 @@ test "§6.7: const with literal + literal is valid" {
     var r = try validate(
         \\const ok: i32 = 1 + 2;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0302") or hasErrorWithCode(r, "E0315")) {
         dump("spurious const-expression error", r);
         return error.TestUnexpectedResult;
@@ -63,7 +63,7 @@ test "§6.7: const with ref to other const is valid" {
         \\const a: i32 = 1;
         \\const b: i32 = a + 2;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0302") or hasErrorWithCode(r, "E0315")) {
         dump("const ref-to-const should be valid", r);
         return error.TestUnexpectedResult;
@@ -79,7 +79,7 @@ test "§6.8: override initializer can be const-expression" {
         \\const base: i32 = 10;
         \\override x: i32 = base + 5;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0315")) {
         dump("override(const-expr) should be valid", r);
         return error.TestUnexpectedResult;
@@ -91,7 +91,7 @@ test "§6.8: override initializer can be override-expression" {
         \\override base: i32 = 1;
         \\override x: i32 = base + 5;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0315")) {
         dump("override(override-expr) should be valid", r);
         return error.TestUnexpectedResult;
@@ -103,7 +103,7 @@ test "§6.8: override initializer rejects var-private (runtime)" {
         \\var<private> rv: i32 = 0;
         \\override x: i32 = rv;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0315")) {
         dump("expected E0315 on override init with var ref", r);
         return error.TestUnexpectedResult;
@@ -121,7 +121,7 @@ test "§11.3: array size must be const or override (reject let)" {
         \\  var a: array<f32, n>;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0315")) {
         dump("expected E0315 on array size from let", r);
         return error.TestUnexpectedResult;
@@ -133,7 +133,7 @@ test "§11.3: array size with const is valid" {
         \\const N: i32 = 4;
         \\fn f() { var a: array<f32, N>; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0315") or hasErrorWithCode(r, "E0313")) {
         dump("array size from const should be valid", r);
         return error.TestUnexpectedResult;
@@ -145,7 +145,7 @@ test "§11.3: array size with override is valid at function scope" {
         \\override N: i32 = 4;
         \\fn f() { var a: array<f32, N>; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0315")) {
         dump("array size from override should be valid", r);
         return error.TestUnexpectedResult;
@@ -157,7 +157,7 @@ test "§11.3 struct member array count: must be const (reject override)" {
         \\override N: i32 = 4;
         \\struct S { xs: array<f32, N> }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0313")) {
         dump("expected E0313 on struct member array<_, override>", r);
         return error.TestUnexpectedResult;
@@ -172,7 +172,7 @@ test "§11.9: const_assert with literal bool is valid" {
     var r = try validate(
         \\const_assert 1 < 2;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0302")) {
         dump("const_assert literal should be valid", r);
         return error.TestUnexpectedResult;
@@ -184,7 +184,7 @@ test "§11.9: const_assert rejects override-expression" {
         \\override N: i32 = 4;
         \\const_assert N > 0;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     // We expect some const-expression diagnostic; E0302 or E0315 are the
     // two codes the validator currently uses here.
     if (!hasErrorWithCode(r, "E0302") and !hasErrorWithCode(r, "E0315")) {
@@ -202,7 +202,7 @@ test "§9.x: @id requires const-expression" {
         \\override other = 5;
         \\@id(other) override x: i32 = 0;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0315")) {
         dump("expected E0315 on @id(override)", r);
         return error.TestUnexpectedResult;
@@ -213,7 +213,7 @@ test "§9.x: @id with integer literal is valid" {
     var r = try validate(
         \\@id(42) override x: i32 = 0;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0315")) {
         dump("spurious E0315 on literal @id", r);
         return error.TestUnexpectedResult;
@@ -225,7 +225,7 @@ test "§9.x: @align requires const-expression (reject override)" {
         \\override A: i32 = 16;
         \\struct S { @align(A) x: i32 }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0315")) {
         dump("expected E0315 on @align(override)", r);
         return error.TestUnexpectedResult;
@@ -241,7 +241,7 @@ test "§10.x: @workgroup_size accepts const-expression" {
         \\const WG: i32 = 64;
         \\@compute @workgroup_size(WG) fn main() {}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0315")) {
         dump("spurious E0315 on @workgroup_size(const)", r);
         return error.TestUnexpectedResult;
@@ -253,7 +253,7 @@ test "§10.x: @workgroup_size accepts override-expression" {
         \\override WG: i32 = 64;
         \\@compute @workgroup_size(WG) fn main() {}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0315")) {
         dump("spurious E0315 on @workgroup_size(override)", r);
         return error.TestUnexpectedResult;
@@ -266,7 +266,7 @@ test "§10.x: @workgroup_size rejects runtime ref" {
         \\var<private> w: i32 = 1;
         \\@compute @workgroup_size(w) fn main() {}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0315")) {
         dump("expected E0315 on @workgroup_size(var)", r);
         return error.TestUnexpectedResult;
@@ -287,7 +287,7 @@ test "§8.x: switch case selector must be const-expression (reject let)" {
         \\  }
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0315")) {
         dump("expected E0315 on switch case with let", r);
         return error.TestUnexpectedResult;
@@ -304,7 +304,7 @@ test "§8.x: switch case selector accepts const" {
         \\  }
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (hasErrorWithCode(r, "E0315")) {
         dump("spurious E0315 on switch case with const", r);
         return error.TestUnexpectedResult;
@@ -321,7 +321,7 @@ test "§8.x: switch case selector rejects override-expression" {
         \\  }
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0315")) {
         dump("expected E0315 on switch case with override", r);
         return error.TestUnexpectedResult;
@@ -340,7 +340,7 @@ test "classify: binop lifts to max of operands (const + override → override)" 
         \\override N: i32 = 3;
         \\struct S { xs: array<f32, N + M> }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0313")) {
         dump("expected E0313 — binop propagates override classification", r);
         return error.TestUnexpectedResult;
@@ -352,7 +352,7 @@ test "classify: paren does not change classification" {
         \\override N: i32 = 3;
         \\struct S { xs: array<f32, (N)> }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0313")) {
         dump("expected E0313 — paren preserves override classification", r);
         return error.TestUnexpectedResult;
@@ -364,7 +364,7 @@ test "classify: unary negation does not change classification" {
         \\override N: i32 = -3;
         \\struct S { xs: array<f32, -N> }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0313")) {
         dump("expected E0313 — unary preserves override classification", r);
         return error.TestUnexpectedResult;

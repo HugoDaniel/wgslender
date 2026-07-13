@@ -52,7 +52,7 @@ fn dump(label: []const u8, r: wgslender.Validator.Result) void {
 
 fn validMustPass(src: [:0]const u8, label: []const u8) !void {
     var r = try validate(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump(label, r);
         return error.TestUnexpectedResult;
@@ -61,7 +61,7 @@ fn validMustPass(src: [:0]const u8, label: []const u8) !void {
 
 fn expectNoMatchingOverload(src: [:0]const u8, label: []const u8) !void {
     var r = try validate(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "no matching overload")) {
         dump(label, r);
         return error.TestUnexpectedResult;
@@ -284,7 +284,7 @@ test "§17.5.12: clamp(vec3f(0.5), vec3f(0.0), vec3f(1.0)) valid" {
 
 test "§17.5.1: abs(true) rejected (not numeric)" {
     var r = try validate("fn f() { let x = abs(true); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "no matching overload")) {
         dump("expected numeric error on abs(true)", r);
         return error.TestUnexpectedResult;
@@ -293,7 +293,7 @@ test "§17.5.1: abs(true) rejected (not numeric)" {
 
 test "§17.5.33: min(true, false) rejected" {
     var r = try validate("fn f() { let x = min(true, false); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "no matching overload")) {
         dump("expected numeric error on min(bool)", r);
         return error.TestUnexpectedResult;

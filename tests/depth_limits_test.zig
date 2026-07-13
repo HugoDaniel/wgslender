@@ -56,7 +56,7 @@ test "parser: deeply nested parens just under expr limit parse without E0504" {
     defer arena.deinit();
     const source = try buildParenExpr(arena.allocator(), 200);
     var result = try wgslender.analyze(std.testing.allocator, source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(!hasCode(result, E0504));
 }
 
@@ -65,7 +65,7 @@ test "parser: deeply nested parens past expr limit produce E0504" {
     defer arena.deinit();
     const source = try buildParenExpr(arena.allocator(), 400);
     var result = try wgslender.analyze(std.testing.allocator, source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(hasCode(result, E0504));
 }
 
@@ -74,7 +74,7 @@ test "parser: deeply nested compound stmts just under stmt limit parse without E
     defer arena.deinit();
     const source = try buildNestedBlock(arena.allocator(), 100);
     var result = try wgslender.analyze(std.testing.allocator, source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(!hasCode(result, E0504));
 }
 
@@ -83,7 +83,7 @@ test "parser: deeply nested compound stmts past stmt limit produce E0504" {
     defer arena.deinit();
     const source = try buildNestedBlock(arena.allocator(), 200);
     var result = try wgslender.analyze(std.testing.allocator, source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(hasCode(result, E0504));
 }
 
@@ -92,7 +92,7 @@ test "parser: deeply nested array<...> just under type limit parses without E050
     defer arena.deinit();
     const source = try buildNestedArrayType(arena.allocator(), 50);
     var result = try wgslender.analyze(std.testing.allocator, source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(!hasCode(result, E0504));
 }
 
@@ -101,6 +101,6 @@ test "parser: deeply nested array<...> past type limit produce E0504" {
     defer arena.deinit();
     const source = try buildNestedArrayType(arena.allocator(), 100);
     var result = try wgslender.analyze(std.testing.allocator, source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(hasCode(result, E0504));
 }

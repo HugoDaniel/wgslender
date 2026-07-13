@@ -38,20 +38,20 @@ fn dump(label: []const u8, r: wgslender.Validator.Result) void {
 
 test "9223372036854775807 accepts (i64 max)" {
     var r = try validate("const X = 9223372036854775807;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
 test "0x10000000000000000 rejects (2^64, doesn't fit in u64)" {
     var r = try validate("const X = 0x10000000000000000;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0317"));
 }
 
 test "0xFFFFFFFFFFFFFFFF rejects (u64 max > i64-min carve-out)" {
     // Parses as u64 max; exceeds the 2^63 abstract-int ceiling.
     var r = try validate("const X = 0xFFFFFFFFFFFFFFFF;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0317"));
 }
 
@@ -59,13 +59,13 @@ test "0xFFFFFFFFFFFFFFFF rejects (u64 max > i64-min carve-out)" {
 
 test "4294967295u accepts (u32 max)" {
     var r = try validate("const X = 4294967295u;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
 test "4294967296u rejects (u32 max + 1)" {
     var r = try validate("const X = 4294967296u;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0317"));
 }
 
@@ -73,19 +73,19 @@ test "4294967296u rejects (u32 max + 1)" {
 
 test "2147483647i accepts (i32 max)" {
     var r = try validate("const X = 2147483647i;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
 test "-2147483648i accepts (i32 min via unary -)" {
     var r = try validate("const X = -2147483648i;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
 test "2147483649i rejects (beyond the i32-min carve-out)" {
     var r = try validate("const X = 2147483649i;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0317"));
 }
 
@@ -93,18 +93,18 @@ test "2147483649i rejects (beyond the i32-min carve-out)" {
 
 test "1e400 (unsuffixed) rejects as infinity" {
     var r = try validate("const X = 1e400;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0314"));
 }
 
 test "1e40f rejects (finite in f64, out of f32 range)" {
     var r = try validate("const X = 1e40f;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0314"));
 }
 
 test "1.0f accepts" {
     var r = try validate("const X = 1.0f;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }

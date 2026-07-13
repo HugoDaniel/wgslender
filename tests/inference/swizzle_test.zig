@@ -45,7 +45,7 @@ fn dump(label: []const u8, r: wgslender.Validator.Result) void {
 
 test "§5.3.4: single-letter swizzle write v.x = 1.0 is valid" {
     var r = try validate("fn f() { var v: vec3f; v.x = 1.0; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("expected no errors on v.x write", r);
         return error.TestUnexpectedResult;
@@ -54,7 +54,7 @@ test "§5.3.4: single-letter swizzle write v.x = 1.0 is valid" {
 
 test "§5.3.4: single-letter swizzle v.r (rgba group) write is valid" {
     var r = try validate("fn f() { var v: vec4f; v.r = 1.0; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("expected no errors on v.r write", r);
         return error.TestUnexpectedResult;
@@ -65,7 +65,7 @@ test "§5.3.4: single-letter swizzle v.r (rgba group) write is valid" {
 
 test "§5.3.4: v.xy = ... is rejected (multi-letter swizzle as LHS)" {
     var r = try validate("fn f() { var v: vec3f; v.xy = vec2f(1.0, 2.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "multi-letter swizzle 'xy'")) {
         dump("expected multi-letter-swizzle error", r);
         return error.TestUnexpectedResult;
@@ -74,7 +74,7 @@ test "§5.3.4: v.xy = ... is rejected (multi-letter swizzle as LHS)" {
 
 test "§5.3.4: v.xyz = ... is rejected" {
     var r = try validate("fn f() { var v: vec3f; v.xyz = vec3f(1.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "multi-letter swizzle 'xyz'")) {
         dump("expected multi-letter-swizzle error on xyz", r);
         return error.TestUnexpectedResult;
@@ -83,7 +83,7 @@ test "§5.3.4: v.xyz = ... is rejected" {
 
 test "§5.3.4: v.rgb = ... is rejected" {
     var r = try validate("fn f() { var v: vec4f; v.rgb = vec3f(1.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "multi-letter swizzle 'rgb'")) {
         dump("expected multi-letter-swizzle error on rgb", r);
         return error.TestUnexpectedResult;
@@ -94,7 +94,7 @@ test "§5.3.4: v.rgb = ... is rejected" {
 
 test "§5.3.4: v.xx is rejected for duplicates" {
     var r = try validate("fn f() { var v: vec3f; v.xx = vec2f(1.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "duplicate components")) {
         dump("expected duplicate-components error on xx", r);
         return error.TestUnexpectedResult;
@@ -103,7 +103,7 @@ test "§5.3.4: v.xx is rejected for duplicates" {
 
 test "§5.3.4: v.xyx is rejected for duplicates" {
     var r = try validate("fn f() { var v: vec3f; v.xyx = vec3f(1.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "duplicate components")) {
         dump("expected duplicate-components error on xyx", r);
         return error.TestUnexpectedResult;
@@ -114,7 +114,7 @@ test "§5.3.4: v.xyx is rejected for duplicates" {
 
 test "§5.3.4: v.a on vec3 is rejected (a requires vec4)" {
     var r = try validate("fn f() { var v: vec3f; v.a = 1.0; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "out of bounds")) {
         dump("expected out-of-bounds error", r);
         return error.TestUnexpectedResult;
@@ -125,7 +125,7 @@ test "§5.3.4: v.a on vec3 is rejected (a requires vec4)" {
 
 test "§5.3.4: let y = v.xy reads multi-letter swizzle — valid" {
     var r = try validate("fn f() { let v = vec3f(1.0, 2.0, 3.0); let y = v.xy; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("expected no errors on swizzle read", r);
         return error.TestUnexpectedResult;
@@ -134,7 +134,7 @@ test "§5.3.4: let y = v.xy reads multi-letter swizzle — valid" {
 
 test "§5.3.4: return v.xyz from a vec3<f32> fn is valid" {
     var r = try validate("fn f() -> vec3f { let v = vec4f(1.0, 2.0, 3.0, 4.0); return v.xyz; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("expected no errors on swizzle return", r);
         return error.TestUnexpectedResult;
@@ -145,7 +145,7 @@ test "§5.3.4: return v.xyz from a vec3<f32> fn is valid" {
 
 test "§5.3.4: compound += on v.x is valid" {
     var r = try validate("fn f() { var v: vec3f; v.x += 1.0; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("expected no errors on v.x +=", r);
         return error.TestUnexpectedResult;
@@ -154,7 +154,7 @@ test "§5.3.4: compound += on v.x is valid" {
 
 test "§5.3.4: compound += on multi-letter swizzle is rejected" {
     var r = try validate("fn f() { var v: vec3f; v.xy += vec2f(1.0, 2.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "multi-letter swizzle 'xy'")) {
         dump("expected multi-letter error on v.xy +=", r);
         return error.TestUnexpectedResult;

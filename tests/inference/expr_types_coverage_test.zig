@@ -34,7 +34,7 @@ test "literal, ident, binary, unary, call, index, member all land in expr_types"
         \\}
     ;
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     // Literal `2` — at the source offset of the byte '2' after the '+'.
@@ -70,7 +70,7 @@ test "literal, ident, binary, unary, call, index, member all land in expr_types"
 test "paren expression caches the inner expression, not the paren itself" {
     const src = "fn f() { let y = (1 + 2); }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     // Binary `+` inside the parens is cached at the operator position.

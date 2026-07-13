@@ -55,7 +55,7 @@ fn hasError(r: wgslender.Validator.Result, needle: []const u8) bool {
 
 fn expectRejected(src: [:0]const u8, needle: []const u8) !void {
     var r = try validate(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasError(r, needle));
 }
 
@@ -71,19 +71,19 @@ fn expectAccepted(src: [:0]const u8) !void {
 
 test "length(vec3<f32>) → f32" {
     var r = try analyze("fn f() { let x = length(vec3<f32>(1.0, 2.0, 3.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
 test "length(vec2<f32>) → f32" {
     var r = try analyze("fn f() { let x = length(vec2<f32>(3.0, 4.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
 test "length(3.0f) → f32 (scalar form)" {
     var r = try analyze("fn f() { let x = length(3.0f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -96,7 +96,7 @@ test "length(1u) rejected — integer arg" {
 
 test "distance(vec3f, vec3f) → f32" {
     var r = try analyze("fn f() { let x = distance(vec3<f32>(0.0), vec3<f32>(1.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -109,13 +109,13 @@ test "distance with mismatched widths rejected" {
 
 test "dot(vec3<i32>, vec3<i32>) → i32 (numeric-any)" {
     var r = try analyze("fn f() { let x = dot(vec3<i32>(1, 2, 3), vec3<i32>(4, 5, 6)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
 test "dot(vec2<u32>, vec2<u32>) → u32" {
     var r = try analyze("fn f() { let x = dot(vec2<u32>(1u, 2u), vec2<u32>(3u, 4u)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -132,7 +132,7 @@ test "dot(scalar, scalar) rejected — vector-only" {
 
 test "cross(vec3f, vec3f) → vec3<f32>" {
     var r = try analyze("fn f() { let x = cross(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -156,7 +156,7 @@ test "cross(vec4f, vec4f) rejected" {
 
 test "determinant(mat2x2f) → f32" {
     var r = try analyze("fn f() { let x = determinant(mat2x2<f32>(1.0, 2.0, 3.0, 4.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -169,7 +169,7 @@ test "determinant(mat3x3f) → f32" {
         \\  let x = determinant(m);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -195,7 +195,7 @@ test "determinant(mat3x2f) rejected — not square" {
 
 test "mix(f32, f32, f32) → f32" {
     var r = try analyze("fn f() { let x = mix(0.0f, 1.0f, 0.5f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -203,7 +203,7 @@ test "mix(vec3f, vec3f, vec3f) → vec3<f32>" {
     var r = try analyze(
         "fn f() { let x = mix(vec3<f32>(0.0), vec3<f32>(1.0), vec3<f32>(0.5)); }",
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -211,7 +211,7 @@ test "mix(vec3f, vec3f, f32) → vec3<f32> (scalar blend)" {
     var r = try analyze(
         "fn f() { let x = mix(vec3<f32>(0.0), vec3<f32>(1.0), 0.5f); }",
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -228,7 +228,7 @@ test "mix(vec3f, vec3f, vec2f) rejected — blend width mismatch" {
 
 test "select(i32, i32, true) → i32" {
     var r = try analyze("fn f() { let x = select(1i, 2i, true); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
@@ -236,7 +236,7 @@ test "select(vec3i, vec3i, vec3<bool>) → vec3<i32>" {
     var r = try analyze(
         "fn f() { let x = select(vec3<i32>(1), vec3<i32>(2), vec3<bool>(true, false, true)); }",
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<i32>");
 }
 
@@ -244,13 +244,13 @@ test "select(vec3i, vec3i, true) → vec3<i32> (scalar bool cond on vector)" {
     var r = try analyze(
         "fn f() { let x = select(vec3<i32>(1), vec3<i32>(2), true); }",
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<i32>");
 }
 
 test "select(bool, bool, true) → bool (T = bool)" {
     var r = try analyze("fn f() { let x = select(true, false, true); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "bool");
 }
 
@@ -285,19 +285,19 @@ test "min(1i, 2u) rejected — incompatible concrete kinds" {
 
 test "sin(1) valid — abstract_int promotes to abstract_float → f32 at let" {
     var r = try analyze("fn f() { let x = sin(1); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
 test "pow(2, 3) valid — both abstract_int → abstract_float" {
     var r = try analyze("fn f() { let x = pow(2, 3); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
 test "cross(vec3(1,2,3), vec3(4,5,6)) valid — element abstract_int → f32" {
     var r = try analyze("fn f() { let x = cross(vec3(1, 2, 3), vec3(4, 5, 6)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -307,7 +307,7 @@ test "cross(vec3(1,2,3), vec3(4,5,6)) valid — element abstract_int → f32" {
 
 test "pack4x8snorm(vec4f) → u32" {
     var r = try analyze("fn f() { let x = pack4x8snorm(vec4<f32>(0.5)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -320,7 +320,7 @@ test "pack4x8snorm(vec2f) rejected — wrong width" {
 
 test "pack4xI8(vec4i) → u32" {
     var r = try analyze("fn f() { let x = pack4xI8(vec4<i32>(1, 2, 3, 4)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -333,7 +333,7 @@ test "pack4xI8(vec4u) rejected — wrong element kind" {
 
 test "pack2x16float(vec2f) → u32" {
     var r = try analyze("fn f() { let x = pack2x16float(vec2<f32>(0.25, 0.75)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -343,19 +343,19 @@ test "pack2x16float(vec2f) → u32" {
 
 test "all(true) → bool" {
     var r = try analyze("fn f() { let x = all(true); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "bool");
 }
 
 test "all(vec3<bool>(true)) → bool" {
     var r = try analyze("fn f() { let x = all(vec3<bool>(true)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "bool");
 }
 
 test "any(vec2<bool>(false, true)) → bool" {
     var r = try analyze("fn f() { let x = any(vec2<bool>(false, true)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "bool");
 }
 
@@ -365,19 +365,19 @@ test "any(vec2<bool>(false, true)) → bool" {
 
 test "extractBits(1u, 0u, 4u) → u32" {
     var r = try analyze("fn f() { let x = extractBits(1u, 0u, 4u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
 test "extractBits(vec2<i32>, 0u, 4u) → vec2<i32>" {
     var r = try analyze("fn f() { let x = extractBits(vec2<i32>(5, 6), 0u, 4u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<i32>");
 }
 
 test "insertBits(1u, 0u, 0u, 4u) → u32" {
     var r = try analyze("fn f() { let x = insertBits(1u, 0u, 0u, 4u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -394,7 +394,7 @@ test "extractBits with float arg rejected" {
 
 test "reflect(vec3f, vec3f) → vec3<f32>" {
     var r = try analyze("fn f() { let x = reflect(vec3<f32>(1.0), vec3<f32>(0.0, 1.0, 0.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -402,7 +402,7 @@ test "refract(vec2f, vec2f, f32) → vec2<f32> — scalar eta preserved" {
     var r = try analyze(
         "fn f() { let x = refract(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0), 1.5f); }",
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<f32>");
 }
 
@@ -410,13 +410,13 @@ test "faceForward(vec3f, vec3f, vec3f) → vec3<f32>" {
     var r = try analyze(
         "fn f() { let x = faceForward(vec3<f32>(1.0), vec3<f32>(0.0), vec3<f32>(1.0)); }",
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
 test "normalize(vec3f) → vec3<f32>" {
     var r = try analyze("fn f() { let x = normalize(vec3<f32>(1.0, 2.0, 3.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -426,7 +426,7 @@ test "normalize(vec3f) → vec3<f32>" {
 
 test "ldexp(1.0f, 2i) → f32" {
     var r = try analyze("fn f() { let x = ldexp(1.0f, 2i); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -434,7 +434,7 @@ test "ldexp(vec3f, vec3i) → vec3<f32>" {
     var r = try analyze(
         "fn f() { let x = ldexp(vec3<f32>(1.0), vec3<i32>(2, 3, 4)); }",
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 

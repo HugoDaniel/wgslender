@@ -22,7 +22,7 @@ pub fn validateDocument(handler: *Handler, source: []const u8) ![]LspDiagnostic 
     defer handler.gpa.free(source_z);
 
     var result = try wgslender.validateWithOptions(handler.gpa, source_z, .{});
-    defer result.deinit(handler.gpa);
+    defer result.deinit();
 
     const entries = result.diagnostics.diagnostics.items;
     const diags = try handler.gpa.alloc(LspDiagnostic, entries.len);

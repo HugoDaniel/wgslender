@@ -145,7 +145,7 @@ fn testValidateValid(allocator: std.mem.Allocator) !void {
     var result = wgslender.validateWithOptions(allocator, struct_binding, .{}) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
     };
-    result.deinit(allocator);
+    result.deinit();
 }
 
 test "public API: validate valid shader — exhaustive OOM" {
@@ -156,7 +156,7 @@ fn testValidateInvalid(allocator: std.mem.Allocator) !void {
     var result = wgslender.validateWithOptions(allocator, invalid_source, .{}) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
     };
-    result.deinit(allocator);
+    result.deinit();
 }
 
 test "public API: validate invalid shader — exhaustive OOM" {

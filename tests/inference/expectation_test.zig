@@ -37,7 +37,7 @@ fn exprTypeAt(r: *const wgslender.Validator.AnalysisResult, loc: u32) ?wgslender
 test "let v: f32 = 1 + 2 — binary records f32, not abstract-int" {
     const src = "fn f() { let v: f32 = 1 + 2; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const plus_off = offsetOf(src, "+ 2").?;
@@ -50,7 +50,7 @@ test "let v: f32 = 1 + 2 — binary records f32, not abstract-int" {
 test "let v: f32 = 1 + 2 — operand literals also materialize to f32" {
     const src = "fn f() { let v: f32 = 10 + 20; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const lit_10_off = offsetOf(src, "= 10").? + 2;
@@ -64,7 +64,7 @@ test "let v: f32 = 1 + 2 — operand literals also materialize to f32" {
 test "const C: u32 = 1 + 2 — threads through const" {
     const src = "const C: u32 = 1 + 2;";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const plus_off = offsetOf(src, "+ 2").?;
@@ -75,7 +75,7 @@ test "const C: u32 = 1 + 2 — threads through const" {
 test "var v: i32 = 1 + 2 — threads through var with explicit type" {
     const src = "fn f() { var v: i32 = 1 + 2; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const plus_off = offsetOf(src, "+ 2").?;
@@ -89,7 +89,7 @@ test "let v: u32 = 1.0 — concrete mismatch still rejected under expectation" {
     // decl validator's `canConvertTo(f32, u32)` still returns false and
     // emits type_mismatch.
     var r = try validate("fn f() { let v: u32 = 1.0f; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -100,7 +100,7 @@ test "let v = 1 + 2 (no annotation) — cache materializes to i32 via .concrete"
     // `i32` at every intermediate node instead of `abstract-int`.
     const src = "fn f() { let v = 1 + 2; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const plus_off = offsetOf(src, "+ 2").?;
@@ -115,7 +115,7 @@ test "const C = 1 + 2 at module scope — cache keeps abstract-int" {
     // through the hover cache.
     const src = "const C = 1 + 2;";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const plus_off = offsetOf(src, "+ 2").?;
@@ -126,7 +126,7 @@ test "const C = 1 + 2 at module scope — cache keeps abstract-int" {
 test "unary -: propagates exact through negation" {
     const src = "fn f() { let v: f32 = -1; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const neg_off = offsetOf(src, "-1").?;
@@ -143,7 +143,7 @@ test "shift RHS: u32 constraint not overridden by outer f32 expectation" {
     // to `let v: i32 = ...`. Easier, cover via end-to-end correctness:
     // a mixed-type shift still rejects.
     var r = try validate("fn f() { let v: i32 = 1i << 2u; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -177,7 +177,7 @@ fn errorCount(r: wgslender.Validator.Result) usize {
 test "index .integer_scalar: valid i32/u32/abstract-int indices cache as-is" {
     const src = "fn f() { var a: array<f32, 4>; let i: i32 = 2; let _x = a[i]; let _y = a[0u]; let _z = a[0]; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     // The `0u` literal records as u32 (concrete already).
@@ -194,7 +194,7 @@ test "index .integer_scalar: valid i32/u32/abstract-int indices cache as-is" {
 
 test "index .integer_scalar: float literal rejected with precise message" {
     var r = try validate("fn f() { var a: array<f32, 4>; let _x = a[1.5]; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const d = firstErrorWithCode(r, "E0200") orelse return error.MissingDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, d.message, "expected integer scalar") != null);
     try std.testing.expect(std.mem.indexOf(u8, d.message, "abstract-float") != null);
@@ -202,7 +202,7 @@ test "index .integer_scalar: float literal rejected with precise message" {
 
 test "index .integer_scalar: bool rejected with precise message" {
     var r = try validate("fn f() { var a: array<f32, 4>; let _x = a[true]; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const d = firstErrorWithCode(r, "E0200") orelse return error.MissingDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, d.message, "expected integer scalar") != null);
     try std.testing.expect(std.mem.indexOf(u8, d.message, "bool") != null);
@@ -212,7 +212,7 @@ test "index .integer_scalar: integer vector rejected (scalar-only)" {
     // WGSL §6.2.3 requires array index to be a scalar — `vec2<i32>` is not
     // legal. `.integer_scalar` enforces this at the expectation site.
     var r = try validate("fn f() { var a: array<f32, 4>; let v = vec2<i32>(0, 1); let _x = a[v]; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const d = firstErrorWithCode(r, "E0200") orelse return error.MissingDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, d.message, "expected integer scalar") != null);
 }
@@ -222,7 +222,7 @@ test "index .integer_scalar: short-circuits so out-of-bounds does not double-fir
     // `checkExprE`. `tryExtractIntValue(1.5)` also returns null, so no
     // E0211 out-of-bounds check runs. Exactly one error.
     var r = try validate("fn f() { var a: array<f32, 4>; let _x = a[1.5]; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expectEqual(@as(usize, 1), errorCount(r));
     try std.testing.expectEqual(@as(usize, 1), countErrorsWithCode(r, "E0200"));
 }
@@ -232,7 +232,7 @@ test "index .integer_scalar: non-indexable base still reports E0205 not E0200" {
     // base-level "not indexable" E0205 rather than the index expectation
     // swallowing the shape error.
     var r = try validate("fn f() { let b = true; let _x = b[0]; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(firstErrorWithCode(r, "E0205") != null);
 }
 
@@ -243,7 +243,7 @@ test "index .integer_scalar: non-indexable base still reports E0205 not E0200" {
 test "shift RHS .integer_scalar: u32 literal cache entry is u32" {
     const src = "fn f() { let _x = 1u << 2u; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     // The `2u` literal on the RHS.
@@ -255,7 +255,7 @@ test "shift RHS .integer_scalar: u32 literal cache entry is u32" {
 test "shift RHS .integer_scalar: abstract-int RHS stays abstract in cache" {
     const src = "fn f() { let _x = 1u << 2; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     // `.integer_scalar` accepts abstract-int without concretizing. The
@@ -270,7 +270,7 @@ test "shift RHS float rejected with precise E0201 message" {
     // Shift RHS typing is owned by checkShiftBinary now (not `.integer_scalar`):
     // a float shift amount reports invalid_operand (E0201).
     var r = try validate("fn f() { let _x = 1u << 1.5; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const d = firstErrorWithCode(r, "E0201") orelse return error.MissingDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, d.message, "shift amount must be 'u32'") != null);
     try std.testing.expect(std.mem.indexOf(u8, d.message, "abstract-float") != null);
@@ -280,7 +280,7 @@ test "shift RHS float emits a single error, not a double" {
     // checkShiftBinary emits exactly one diagnostic and returns fail, so the
     // decl's follow-up narrowing can't double-fire and no stale E0200 remains.
     var r = try validate("fn f() { let _x = 1u << 1.5; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expectEqual(@as(usize, 1), errorCount(r));
     try std.testing.expectEqual(@as(usize, 0), countErrorsWithCode(r, "E0200"));
     try std.testing.expectEqual(@as(usize, 1), countErrorsWithCode(r, "E0201"));
@@ -291,7 +291,7 @@ test "shift RHS .integer_scalar: i32 passes expectation but fails u32 narrowing"
     // the type. The binary handler then runs its u32 narrowing and rejects
     // because concrete i32 is not convertible to u32.
     var r = try validate("fn f() { let i: i32 = 1; let _x = 1u << i; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(countErrorsWithCode(r, "E0200") == 0);
     const d = firstErrorWithCode(r, "E0201") orelse return error.MissingDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, d.message, "shift amount must be 'u32'") != null);
@@ -301,7 +301,7 @@ test "shift scalar LHS rejects vector RHS (shape mismatch)" {
     // A scalar LHS requires a scalar u32 shift amount; a vector RHS is a shape
     // mismatch reported as invalid_operand (E0201).
     var r = try validate("fn f() { let _x = 1u << vec2<u32>(1u, 2u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const d = firstErrorWithCode(r, "E0201") orelse return error.MissingDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, d.message, "shift amount must be 'u32'") != null);
 }
@@ -311,7 +311,7 @@ test "shift LHS is NOT .integer_scalar: integer LHS path still via E0201" {
     // shift LHS. Float LHS therefore fires E0201 "requires integer left
     // operand" from the binary handler, not E0200 from the expectation.
     var r = try validate("fn f() { let _x = 1.0 << 1u; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const d = firstErrorWithCode(r, "E0201") orelse return error.MissingDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, d.message, "requires integer left operand") != null);
     try std.testing.expectEqual(@as(usize, 0), countErrorsWithCode(r, "E0200"));
@@ -324,7 +324,7 @@ test "shift LHS is NOT .integer_scalar: integer LHS path still via E0201" {
 test "var v = 1 (no annotation) — cache materializes to i32" {
     const src = "fn f() -> i32 { var v = 1; return v; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const off = offsetOf(src, "1;").?;
@@ -336,7 +336,7 @@ test "var v = 1 (no annotation) — cache materializes to i32" {
 test "var v = 1.0 (no annotation) — cache materializes to f32" {
     const src = "fn f() -> f32 { var v = 1.0; return v; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const off = offsetOf(src, "1.0").?;
@@ -347,7 +347,7 @@ test "var v = 1.0 (no annotation) — cache materializes to f32" {
 test "function-scope const x = 1 + 2 (no annotation) — cache materializes to i32" {
     const src = "fn f() -> i32 { const x = 1 + 2; return x; }";
     var r = try analyze(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(r.valid);
 
     const plus_off = offsetOf(src, "+ 2").?;
@@ -359,14 +359,14 @@ test "nested: outer .concrete does not suppress inner shift-RHS error" {
     // The outer `let` pushes `.concrete`; a bad shift RHS still errors from
     // checkShiftBinary (E0201) even though the outer context would accept a u32.
     var r = try validate("fn f() -> u32 { let x = 1u << 1.5; return x; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const d = firstErrorWithCode(r, "E0201") orelse return error.MissingDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, d.message, "shift amount must be 'u32'") != null);
 }
 
 test "nested: outer .concrete does not override inner index .integer_scalar" {
     var r = try validate("fn f() -> f32 { var a: array<f32, 4>; let x = a[1.5]; return x; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const d = firstErrorWithCode(r, "E0200") orelse return error.MissingDiagnostic;
     try std.testing.expect(std.mem.indexOf(u8, d.message, "expected integer scalar") != null);
 }

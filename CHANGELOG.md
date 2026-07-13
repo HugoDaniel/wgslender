@@ -170,6 +170,13 @@ and npm wrapper work that landed since 1.0.0.
 
 ### Changed
 
+- **⚠ Zig API:** `Validator.Result.deinit` and `Validator.AnalysisResult.deinit`
+  no longer take an allocator argument (`result.deinit(gpa)` → `result.deinit()`).
+  The parameter was vestigial — both results own an internal arena and ignored
+  it. The `validate` / `analyze` family may now also return `error.OutOfMemory`
+  where a memory-starved run previously "succeeded" with a corrupted verdict
+  (see the resolveType OOM-honesty fix). JSON / C-ABI / WASM surfaces are
+  unaffected.
 - Validator split into per-phase modules under `src/Validator/`
   (Declarations, Statements, Expressions, Uniformity).
 - LSP codecs lifted into shared `lspkit` + per-feature wire trees, with

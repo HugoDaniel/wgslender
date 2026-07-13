@@ -69,7 +69,7 @@ test "every-kind: const/override/var/alias/struct/fn/param/let" {
         \\fn main(p: f32) { let q = p + PI; }
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -90,7 +90,7 @@ test "every-kind: struct member" {
     const a = std.testing.allocator;
     const src: [:0]const u8 = "struct S { x: f32, y: vec3f }";
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -107,7 +107,7 @@ test "every-kind: var with module-scope let (global let binding)" {
     const a = std.testing.allocator;
     const src: [:0]const u8 = "const K: i32 = 7;";
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -130,7 +130,7 @@ test "shadowing: sibling if branches declare same name" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -159,7 +159,7 @@ test "shadowing: deeply nested blocks at 5 levels" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -185,7 +185,7 @@ test "shadowing: same name nested — outer and inner both get distinct IDs" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -214,7 +214,7 @@ test "for-loop: init var and body let live in different scopes" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -237,7 +237,7 @@ test "for-loop: shadowing — `i` in for-init vs `i` in body" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -259,7 +259,7 @@ test "else-if chain of depth 3: each branch gets a unique ID" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -290,7 +290,7 @@ test "switch: three case bodies plus default, each with let of same name" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -317,7 +317,7 @@ test "while body" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -341,7 +341,7 @@ test "loop body and continuing are sibling blocks" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -360,7 +360,7 @@ test "empty function body" {
     const a = std.testing.allocator;
     const src: [:0]const u8 = "fn f() {}";
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -374,7 +374,7 @@ test "empty struct" {
     const a = std.testing.allocator;
     const src: [:0]const u8 = "struct S {}";
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -392,7 +392,7 @@ test "bare block in function body" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -442,9 +442,9 @@ test "invariant: whitespace-only edits don't change IDs" {
     const ar = aa.allocator();
 
     var an_a = try parse(a, src_a);
-    defer an_a.deinit(a);
+    defer an_a.deinit();
     var an_b = try parse(a, src_b);
-    defer an_b.deinit(a);
+    defer an_b.deinit();
     const m_a = an_a.module.?;
     const m_b = an_b.module.?;
 
@@ -472,9 +472,9 @@ test "invariant: inserting a non-scope statement leaves IDs unchanged" {
     const ar = aa.allocator();
 
     var an_a = try parse(a, src_a);
-    defer an_a.deinit(a);
+    defer an_a.deinit();
     var an_b = try parse(a, src_b);
-    defer an_b.deinit(a);
+    defer an_b.deinit();
 
     try std.testing.expectEqualStrings(
         (try idFor(ar, an_a.module.?, .let, "y")).?,
@@ -492,9 +492,9 @@ test "invariant: adding a new top-level const leaves existing module IDs intact"
     const ar = aa.allocator();
 
     var an_a = try parse(a, src_a);
-    defer an_a.deinit(a);
+    defer an_a.deinit();
     var an_b = try parse(a, src_b);
-    defer an_b.deinit(a);
+    defer an_b.deinit();
 
     try std.testing.expectEqualStrings(
         (try idFor(ar, an_a.module.?, .function, "f")).?,
@@ -516,9 +516,9 @@ test "invariant: renaming an unrelated symbol leaves other IDs intact" {
     const ar = aa.allocator();
 
     var an_a = try parse(a, src_a);
-    defer an_a.deinit(a);
+    defer an_a.deinit();
     var an_b = try parse(a, src_b);
-    defer an_b.deinit(a);
+    defer an_b.deinit();
 
     try std.testing.expectEqualStrings(
         (try idFor(ar, an_a.module.?, .let, "x")).?,
@@ -553,9 +553,9 @@ test "invariant: inserting a new block statement shifts later blocks but keeps n
     const ar = aa.allocator();
 
     var an_a = try parse(a, src_a);
-    defer an_a.deinit(a);
+    defer an_a.deinit();
     var an_b = try parse(a, src_b);
-    defer an_b.deinit(a);
+    defer an_b.deinit();
 
     // `let y` is NOT in a block; its ID uses the function body (block#0),
     // unchanged.
@@ -583,7 +583,7 @@ test "stale ID after deletion returns .none" {
     var id_str: []u8 = undefined;
     {
         var an = try parse(a, src_a);
-        defer an.deinit(a);
+        defer an.deinit();
         const id = (try StableId.stableIdFor(ar, an.module.?, findSym(an.module.?, .let, "x"))).?;
         id_str = try a.dupe(u8, id.bytes);
     }
@@ -591,7 +591,7 @@ test "stale ID after deletion returns .none" {
 
     const src_b: [:0]const u8 = "fn main() {}";
     var an_b = try parse(a, src_b);
-    defer an_b.deinit(a);
+    defer an_b.deinit();
 
     try std.testing.expectEqual(
         Ast.SymbolIndex.none,
@@ -607,7 +607,7 @@ test "stableIdAtOffset + locateStableId round-trip" {
     const a = std.testing.allocator;
     const src: [:0]const u8 = "fn f() { let foo = 1; }";
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -635,7 +635,7 @@ test "identifier-name edge: local named 'param' (legal WGSL)" {
     const a = std.testing.allocator;
     const src: [:0]const u8 = "fn f() { let param = 1; let member = 2; let block = 3; }";
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -651,7 +651,7 @@ test "rejecting ill-formed IDs" {
     const a = std.testing.allocator;
     const src: [:0]const u8 = "fn main() { let x = 1; }";
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     // Unknown version.
@@ -682,7 +682,7 @@ test "too-long ID rejected" {
     const a = std.testing.allocator;
     const src: [:0]const u8 = "fn f() {}";
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     // Construct a >MAX_LEN string after the `v1:` prefix.
@@ -709,7 +709,7 @@ test "multi-function: each has its own namespace" {
         \\fn c() { let x = 3; }
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -754,7 +754,7 @@ test "bulk: every named symbol in a complex shader roundtrips" {
         \\}
     ;
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);
@@ -838,7 +838,7 @@ test "compute.toys: every symbol in every shader roundtrips" {
         var an = wgslender.analyze(a, src) catch |e| switch (e) {
             error.OutOfMemory => return e,
         };
-        defer an.deinit(a);
+        defer an.deinit();
         const m = an.module orelse continue;
 
         for (m.symbols.items, 0..) |s, i| {
@@ -875,7 +875,7 @@ test "integration: stableId → symbolAtOffset-equivalent → renameEdits" {
     const a = std.testing.allocator;
     const src: [:0]const u8 = "fn foo() { let val = 1; }";
     var an = try parse(a, src);
-    defer an.deinit(a);
+    defer an.deinit();
     const m = an.module.?;
 
     var aa = std.heap.ArenaAllocator.init(a);

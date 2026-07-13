@@ -258,7 +258,7 @@ pub fn lint(gpa: Allocator, source: [:0]const u8, options: Linter.Options) !Lint
     var analysis = try analyzeWithOptions(gpa, source, .{
         .line_offset = options.line_offset,
     });
-    errdefer analysis.deinit(gpa);
+    errdefer analysis.deinit();
     var lint_result = try Linter.run(gpa, &analysis, options);
     errdefer lint_result.deinit(gpa);
     return .{ .analysis = analysis, .lint = lint_result };
@@ -273,7 +273,7 @@ pub const LintResult = struct {
 
     pub fn deinit(self: *LintResult, gpa: Allocator) void {
         self.lint.deinit(gpa);
-        self.analysis.deinit(gpa);
+        self.analysis.deinit();
     }
 };
 
@@ -347,7 +347,7 @@ test "validate: deinit frees all memory" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
     var result = try validateWithOptions(a, source, .{});
-    defer result.deinit(a);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -356,7 +356,7 @@ test "validate: deinit frees on invalid source" {
     // Use source with undeclared identifier to trigger validation error
     const source: [:0]const u8 = "fn f() { let x = undeclared_var; }";
     var result = try validateWithOptions(a, source, .{});
-    defer result.deinit(a);
+    defer result.deinit();
     try std.testing.expect(!result.valid);
 }
 
@@ -416,7 +416,7 @@ test "analyze: returns symbol_types for valid shader" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f() { let x: f32 = 1.0; let y: i32 = 2; }";
     var result = try analyzeWithOptions(a, source, .{});
-    defer result.deinit(a);
+    defer result.deinit();
     try std.testing.expect(result.valid);
     // The validator should have resolved types for the declared symbols
     try std.testing.expect(result.symbol_types.count() > 0);
@@ -426,7 +426,7 @@ test "analyze: returns struct_types" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct MyStruct { x: f32, y: f32 }";
     var result = try analyzeWithOptions(a, source, .{});
-    defer result.deinit(a);
+    defer result.deinit();
     try std.testing.expect(result.struct_types.get("MyStruct") != null);
 }
 
@@ -434,7 +434,7 @@ test "analyze: deinit frees all memory" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
     var result = try analyzeWithOptions(a, source, .{});
-    defer result.deinit(a);
+    defer result.deinit();
     try std.testing.expect(result.valid);
     try std.testing.expect(result.module != null);
     try std.testing.expect(result.module.?.declarations.items.len > 0);
@@ -444,7 +444,7 @@ test "analyze: parse error returns partial result" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn { invalid }";
     var result = try analyzeWithOptions(a, source, .{});
-    defer result.deinit(a);
+    defer result.deinit();
     try std.testing.expect(!result.valid);
     try std.testing.expect(result.diagnostics.diagnostics.items.len > 0);
 }
@@ -459,7 +459,7 @@ test "analyze: module symbols accessible" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const MY_CONST: f32 = 3.14; fn my_func() -> f32 { return MY_CONST; }";
     var result = try analyzeWithOptions(a, source, .{});
-    defer result.deinit(a);
+    defer result.deinit();
     try std.testing.expect(result.valid);
     const module = result.module orelse return error.TestUnexpectedResult;
     // Should have symbols for both declarations
@@ -470,7 +470,7 @@ test "analyze: const_values populated" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const N: i32 = 42;";
     var result = try analyzeWithOptions(a, source, .{});
-    defer result.deinit(a);
+    defer result.deinit();
     // The const value 42 should be tracked
     try std.testing.expect(result.const_values.count() > 0);
 }

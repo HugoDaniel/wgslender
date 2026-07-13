@@ -106,8 +106,7 @@ pub const Result = struct {
 
     /// Free all memory owned by this result. After calling deinit,
     /// the diagnostics pointer is invalid.
-    pub fn deinit(self: *Result, allocator: Allocator) void {
-        _ = allocator;
+    pub fn deinit(self: *Result) void {
         var arena = self._arena orelse return;
         arena.deinit();
         self._arena = null;
@@ -224,8 +223,7 @@ pub const AnalysisResult = struct {
     _arena: ?std.heap.ArenaAllocator = null,
 
     /// Free all memory owned by this result.
-    pub fn deinit(self: *AnalysisResult, allocator: Allocator) void {
-        _ = allocator;
+    pub fn deinit(self: *AnalysisResult) void {
         var arena = self._arena orelse return;
         arena.deinit();
         self._arena = null;

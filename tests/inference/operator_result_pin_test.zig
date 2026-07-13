@@ -146,7 +146,7 @@ test "operator result-type + error characterization pin" {
                 // then `a`, then the single separating space.
                 const op_off: u32 = @intCast(PREFIX.len + a.len + 1);
                 var r = try analyze(src);
-                defer r.deinit(gpa);
+                defer r.deinit();
                 try out.appendSlice(gpa, a);
                 try out.append(gpa, ' ');
                 try out.appendSlice(gpa, op);
@@ -165,7 +165,7 @@ test "operator result-type + error characterization pin" {
             defer gpa.free(src);
             const op_off: u32 = @intCast(PREFIX.len);
             var r = try analyze(src);
-            defer r.deinit(gpa);
+            defer r.deinit();
             try out.appendSlice(gpa, op);
             try out.appendSlice(gpa, a);
             try out.appendSlice(gpa, " => ");

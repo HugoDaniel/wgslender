@@ -75,7 +75,7 @@ test "§8.3: var read in arithmetic loads to value type" {
         \\  let y = x + 1;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "y", "i32");
 }
 
@@ -86,7 +86,7 @@ test "§8.3: var read in RHS of let loads" {
         \\  let y = x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "y", "f32");
 }
 
@@ -98,7 +98,7 @@ test "§8.3: var read in comparison loads" {
         \\  let c = a < b;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "c", "bool");
 }
 
@@ -109,7 +109,7 @@ test "§8.3: var read in unary loads" {
         \\  let y = -x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "y", "i32");
 }
 
@@ -121,7 +121,7 @@ test "§8.3: var read in binary-&& loads (bool)" {
         \\  let c = a && b;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "c", "bool");
 }
 
@@ -132,7 +132,7 @@ test "§8.3: var read in return loads" {
         \\  return x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -144,7 +144,7 @@ test "§8.3: var read as function arg loads" {
         \\  let y = g(v);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "y", "f32");
 }
 
@@ -155,7 +155,7 @@ test "§8.3: var read as builtin arg loads" {
         \\  let y = sin(v);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "y", "f32");
 }
 
@@ -172,7 +172,7 @@ test "§8.3: struct field read loads" {
         \\  let b = s.b;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "a", "i32");
     try expectLet(&r, "b", "f32");
 }
@@ -186,7 +186,7 @@ test "§8.3: nested struct field read loads" {
         \\  let x = o.inner.x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "x", "f32");
 }
 
@@ -197,7 +197,7 @@ test "§8.3: array index read loads" {
         \\  let x = a[0];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "x", "i32");
 }
 
@@ -210,7 +210,7 @@ test "§8.3: vector swizzle read loads" {
         \\  let c = v.xyz;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "a", "f32");
     try expectLet(&r, "b", "vec2<f32>");
     try expectLet(&r, "c", "vec3<f32>");
@@ -223,7 +223,7 @@ test "§8.3: matrix column read loads" {
         \\  let col = m[0];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "col", "vec3<f32>");
 }
 
@@ -234,7 +234,7 @@ test "§8.3: matrix element read loads" {
         \\  let e = m[0][1];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "e", "f32");
 }
 
@@ -248,7 +248,7 @@ test "§8.5: *p yields value type" {
         \\  let y = *p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "y", "i32");
 }
 
@@ -260,7 +260,7 @@ test "§8.5: (*p).field loads field" {
         \\  let b = (*p).b;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "a", "i32");
     try expectLet(&r, "b", "f32");
 }
@@ -271,7 +271,7 @@ test "§8.5: (*p)[i] loads element" {
         \\  let x = (*p)[0];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "x", "i32");
 }
 
@@ -281,7 +281,7 @@ test "§8.5: p[i] (pointer indexing) loads element" {
         \\  let x = p[0];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "x", "i32");
 }
 
@@ -297,7 +297,7 @@ test "§8.3: var on LHS of assign does not load (compound-assign parses)" {
         \\  x += 1;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -308,7 +308,7 @@ test "§8.5: &x on a var yields a pointer" {
         \\  let p = &x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -320,7 +320,7 @@ test "§8.5: &s.field on a var yields a pointer" {
         \\  let p = &s.a;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -331,7 +331,7 @@ test "§8.5: &arr[i] on a var yields a pointer" {
         \\  let p = &a[0];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -343,7 +343,7 @@ test "§8.5: &literal rejected (no reference)" {
     var r = try validate(
         \\fn f() { let p = &1i; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorCode(r, "E0215"));
 }
 
@@ -355,7 +355,7 @@ test "§8.5: &(a+b) rejected (arithmetic produces value)" {
         \\  let p = &(a + b);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorCode(r, "E0215"));
 }
 
@@ -366,7 +366,7 @@ test "§8.5: &f() rejected (call result has no address)" {
         \\  let p = &g();
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorCode(r, "E0215"));
 }
 
@@ -377,7 +377,7 @@ test "§8.5: &v.x rejected (vector component is not a reference)" {
         \\  let p = &v.x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorCode(r, "E0216"));
 }
 
@@ -388,7 +388,7 @@ test "§8.5: &texture_var rejected (handle has no reference)" {
         \\  let p = &tex;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorCode(r, "E0217"));
 }
 
@@ -403,7 +403,7 @@ test "§8.5: &private_var carries private AS" {
         \\  let p = &g;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const t = letType(&r, "p") orelse return error.TestUnexpectedResult;
     try std.testing.expect(t == .pointer);
     try std.testing.expect(t.pointer.address_space == .private);
@@ -416,7 +416,7 @@ test "§8.5: &workgroup_var carries workgroup AS" {
         \\  let p = &w;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const t = letType(&r, "p") orelse return error.TestUnexpectedResult;
     try std.testing.expect(t == .pointer);
     try std.testing.expect(t.pointer.address_space == .workgroup);
@@ -430,7 +430,7 @@ test "§8.5: &storage_var carries storage AS + read AM" {
         \\  let p = &s;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const t = letType(&r, "p") orelse return error.TestUnexpectedResult;
     try std.testing.expect(t == .pointer);
     try std.testing.expect(t.pointer.address_space == .storage);
@@ -445,7 +445,7 @@ test "§8.5: &storage_rw_var carries storage AS + read_write AM" {
         \\  let p = &s;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const t = letType(&r, "p") orelse return error.TestUnexpectedResult;
     try std.testing.expect(t == .pointer);
     try std.testing.expect(t.pointer.address_space == .storage);
@@ -459,7 +459,7 @@ test "§8.5: &function_var carries function AS" {
         \\  let p = &x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const t = letType(&r, "p") orelse return error.TestUnexpectedResult;
     try std.testing.expect(t == .pointer);
     try std.testing.expect(t.pointer.address_space == .function);
@@ -476,7 +476,7 @@ test "§8.3: ref + concrete loads ref first" {
         \\  let y = v + 2.0;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "y", "f32");
 }
 
@@ -488,7 +488,7 @@ test "§8.3: ref + ref loads both" {
         \\  let c = a + b;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "c", "f32");
 }
 
@@ -500,7 +500,7 @@ test "§8.3: ref of vec used as swizzle source loads element" {
         \\  let yz = v.gb;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "x", "f32");
     try expectLet(&r, "yz", "vec2<f32>");
 }
@@ -513,7 +513,7 @@ test "§8.3: ref used in constructor is loaded" {
         \\  let v = vec2<f32>(a, b);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "v", "vec2<f32>");
 }
 
@@ -525,7 +525,7 @@ test "§8.3: ref used as index loads index" {
         \\  let x = a[i];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "x", "i32");
 }
 
@@ -541,7 +541,7 @@ test "§8.3: let x = y; chain preserves value type" {
         \\  let c = b;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "a", "i32");
     try expectLet(&r, "b", "i32");
     try expectLet(&r, "c", "i32");
@@ -555,7 +555,7 @@ test "§8.3: const referenced from fn scope loads" {
         \\  let y = K + 1;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLet(&r, "x", "i32");
     try expectLet(&r, "y", "i32");
 }

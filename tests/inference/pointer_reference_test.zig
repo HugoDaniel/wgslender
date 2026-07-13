@@ -62,7 +62,7 @@ test "§8.5: &v on a function-scope var is valid" {
         \\  let p = &x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &x", r);
         return error.TestUnexpectedResult;
@@ -74,7 +74,7 @@ test "§8.5: &v on a module-scope private var is valid" {
         \\var<private> g: i32 = 0;
         \\fn f() { let p = &g; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &g private", r);
         return error.TestUnexpectedResult;
@@ -86,7 +86,7 @@ test "§8.5: &v on a workgroup var is valid" {
         \\var<workgroup> w: i32;
         \\fn f() { let p = &w; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &w workgroup", r);
         return error.TestUnexpectedResult;
@@ -98,7 +98,7 @@ test "§8.5: &v on a storage var is valid" {
         \\@group(0) @binding(0) var<storage, read_write> s: array<i32>;
         \\fn f() { let p = &s; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &s storage", r);
         return error.TestUnexpectedResult;
@@ -116,7 +116,7 @@ test "§8.5: &v.x on a vector is rejected (single-letter swizzle)" {
         \\  let p = &v.x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0216")) {
         dump("expected E0216 on &v.x", r);
         return error.TestUnexpectedResult;
@@ -130,7 +130,7 @@ test "§8.5: &v.r on a vec4 rgba-form is rejected" {
         \\  let p = &v.r;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0216")) {
         dump("expected E0216 on &v.r", r);
         return error.TestUnexpectedResult;
@@ -144,7 +144,7 @@ test "§8.5: &v.xy on a vector (multi-letter swizzle) is rejected" {
         \\  let p = &v.xy;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0216")) {
         dump("expected E0216 on &v.xy", r);
         return error.TestUnexpectedResult;
@@ -158,7 +158,7 @@ test "§8.5: &v[0] on a vector is rejected" {
         \\  let p = &v[0];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0216")) {
         dump("expected E0216 on &v[0]", r);
         return error.TestUnexpectedResult;
@@ -173,7 +173,7 @@ test "§8.5: &v[i] on a vector (dynamic index) is rejected" {
         \\  let p = &v[i];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0216")) {
         dump("expected E0216 on &v[i]", r);
         return error.TestUnexpectedResult;
@@ -187,7 +187,7 @@ test "§8.5: &(v).x — paren-wrapped — still rejected" {
         \\  let p = &(v).x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0216")) {
         dump("expected E0216 on &(v).x", r);
         return error.TestUnexpectedResult;
@@ -201,7 +201,7 @@ test "§8.5: diagnostic message names the offending swizzle" {
         \\  let p = &v.y;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, ".y")) {
         dump("expected the message to mention '.y'", r);
         return error.TestUnexpectedResult;
@@ -220,7 +220,7 @@ test "§8.5: &s.field on a struct is valid" {
         \\  let p = &s.x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &s.field", r);
         return error.TestUnexpectedResult;
@@ -234,7 +234,7 @@ test "§8.5: &arr[i] on an array is valid" {
         \\  let p = &arr[0];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &arr[0]", r);
         return error.TestUnexpectedResult;
@@ -249,7 +249,7 @@ test "§8.5: &arr[i].field on an array of structs is valid" {
         \\  let p = &arr[0].y;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &arr[0].y", r);
         return error.TestUnexpectedResult;
@@ -265,7 +265,7 @@ test "§8.5: &texture_var is rejected" {
         \\@group(0) @binding(0) var tex: texture_2d<f32>;
         \\fn f() { let p = &tex; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0217")) {
         dump("expected E0217 on &tex", r);
         return error.TestUnexpectedResult;
@@ -277,7 +277,7 @@ test "§8.5: &sampler_var is rejected" {
         \\@group(0) @binding(0) var samp: sampler;
         \\fn f() { let p = &samp; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0217")) {
         dump("expected E0217 on &samp", r);
         return error.TestUnexpectedResult;
@@ -289,7 +289,7 @@ test "§8.5: &comparison_sampler_var is rejected" {
         \\@group(0) @binding(0) var samp_cmp: sampler_comparison;
         \\fn f() { let p = &samp_cmp; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0217")) {
         dump("expected E0217 on &samp_cmp", r);
         return error.TestUnexpectedResult;
@@ -301,7 +301,7 @@ test "§8.5: &storage_texture_var is rejected" {
         \\@group(0) @binding(0) var tex_s: texture_storage_2d<rgba8unorm, write>;
         \\fn f() { let p = &tex_s; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0217")) {
         dump("expected E0217 on &tex_s storage", r);
         return error.TestUnexpectedResult;
@@ -314,7 +314,7 @@ test "§8.5: &storage_texture_var is rejected" {
 
 test "§8.5: &literal is rejected (E0215)" {
     var r = try validate("fn f() { let p = &1.0; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dump("expected E0215 on &1.0", r);
         return error.TestUnexpectedResult;
@@ -329,7 +329,7 @@ test "§8.5: &(a+b) is rejected (E0215)" {
         \\  let p = &(a + b);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dump("expected E0215 on &(a+b)", r);
         return error.TestUnexpectedResult;
@@ -341,7 +341,7 @@ test "§8.5: &f() is rejected (E0215)" {
         \\fn g() -> i32 { return 1; }
         \\fn f() { let p = &g(); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dump("expected E0215 on &g()", r);
         return error.TestUnexpectedResult;
@@ -355,7 +355,7 @@ test "§8.5: &!x (unary value) is rejected (E0215)" {
         \\  let p = &!b;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dump("expected E0215 on &!b", r);
         return error.TestUnexpectedResult;
@@ -369,7 +369,7 @@ test "§8.5: &-n (unary minus on value) is rejected (E0215)" {
         \\  let p = &-n;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dump("expected E0215 on &-n", r);
         return error.TestUnexpectedResult;
@@ -388,7 +388,7 @@ test "§8.5: *p on a pointer reads through" {
         \\  let y = *p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on *p read", r);
         return error.TestUnexpectedResult;
@@ -397,7 +397,7 @@ test "§8.5: *p on a pointer reads through" {
 
 test "§8.5: *p on a non-pointer is rejected (E0214)" {
     var r = try validate("fn f() { let n = 1; let p = *n; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0214")) {
         dump("expected E0214 on *n", r);
         return error.TestUnexpectedResult;
@@ -412,7 +412,7 @@ test "§8.5: **p (double indirection on i32 ptr) is rejected" {
         \\  let y = **p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0214")) {
         dump("expected E0214 on **p (inner * yields i32)", r);
         return error.TestUnexpectedResult;
@@ -431,7 +431,7 @@ test "§13: passing &v to a function taking ptr<function,i32,read_write>" {
         \\  inc(&x);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &x to ptr<function,i32>", r);
         return error.TestUnexpectedResult;
@@ -446,7 +446,7 @@ test "§13: passing &v to a function taking ptr<function,i32> (no AM specified)"
         \\  inc(&x);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &x to ptr<function,i32> default-AM", r);
         return error.TestUnexpectedResult;
@@ -466,7 +466,7 @@ test "§8.5: &s.inner.x on nested struct is valid" {
         \\  let p = &o.inner.x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &o.inner.x", r);
         return error.TestUnexpectedResult;
@@ -480,7 +480,7 @@ test "§8.5: &arr[0][0] on array of arrays is valid" {
         \\  let p = &a[0][0];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &a[0][0]", r);
         return error.TestUnexpectedResult;
@@ -494,7 +494,7 @@ test "§8.5: &matrix[0] (a column) is valid — matrix columns are references" {
         \\  let p = &m[0];
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &m[0] matrix column", r);
         return error.TestUnexpectedResult;
@@ -508,7 +508,7 @@ test "§8.5: &matrix[0].x — the column is a vector, so .x is a component → r
         \\  let p = &m[0].x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0216")) {
         dump("expected E0216 on &m[0].x (vector component of matrix col)", r);
         return error.TestUnexpectedResult;
@@ -528,7 +528,7 @@ test "§13: storage pointer matches ptr<storage,…,read_write> (unrestricted)" 
         \\fn sink(p: ptr<storage, i32, read_write>) { *p = 1; }
         \\fn f() { sink(&s); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &s storage → ptr<storage,…>", r);
         return error.TestUnexpectedResult;
@@ -542,7 +542,7 @@ test "§13: workgroup pointer matches ptr<workgroup,…> (unrestricted)" {
         \\fn sink(p: ptr<workgroup, i32, read_write>) { *p = 1; }
         \\fn f() { sink(&w); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &w workgroup → ptr<workgroup,…>", r);
         return error.TestUnexpectedResult;
@@ -561,7 +561,7 @@ test "§8.5: &*p is valid when p is a pointer" {
         \\  let q = &*p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &*p round-trip", r);
         return error.TestUnexpectedResult;
@@ -583,7 +583,7 @@ test "§8.5: &*p preserves storage,read_write on a storage var" {
         \\fn sink(p: ptr<storage, array<f32>, read_write>) -> u32 { return arrayLength(p); }
         \\fn f() -> u32 { let p = &G; let q = &*p; return sink(q); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &*p → ptr<storage,…,read_write>", r);
         return error.TestUnexpectedResult;
@@ -597,7 +597,7 @@ test "§8.5: &*p preserves storage,read on a storage<read> var" {
         \\fn sink(p: ptr<storage, array<u32>, read>) -> u32 { return arrayLength(p); }
         \\fn f() -> u32 { let p = &R; let q = &*p; return sink(q); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &*p → ptr<storage,…,read>", r);
         return error.TestUnexpectedResult;
@@ -611,7 +611,7 @@ test "§8.5: &*p preserves workgroup on a workgroup var" {
         \\fn sink(p: ptr<workgroup, i32, read_write>) { *p = 1; }
         \\fn f() { let p = &W; let q = &*p; sink(q); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &*p → ptr<workgroup,…>", r);
         return error.TestUnexpectedResult;
@@ -625,7 +625,7 @@ test "§8.5: &*p preserves private on a private var" {
         \\fn sink(p: ptr<private, i32, read_write>) { *p = 1; }
         \\fn f() { let p = &P; let q = &*p; sink(q); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &*p → ptr<private,…>", r);
         return error.TestUnexpectedResult;
@@ -639,7 +639,7 @@ test "§8.5: &*p preserves uniform on a uniform var" {
         \\fn sink(p: ptr<uniform, vec4f, read>) -> vec4f { return *p; }
         \\fn f() -> vec4f { let p = &U; let q = &*p; return sink(q); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &*p → ptr<uniform,…,read>", r);
         return error.TestUnexpectedResult;
@@ -651,7 +651,7 @@ test "§8.5: &*p defaults to function on a function-scope var (regression)" {
         \\fn sink(p: ptr<function, i32, read_write>) { *p = 2; }
         \\fn f() { var x: i32 = 1; let p = &x; let q = &*p; sink(q); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &*p → ptr<function,…>", r);
         return error.TestUnexpectedResult;
@@ -669,7 +669,7 @@ test "§8.5: &*p into a mismatched AS sink is rejected (storage vs function)" {
         \\fn sink(p: ptr<function, i32, read_write>) { *p = 1; }
         \\fn f() { let p = &G; let q = &*p; sink(q); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0304") and !anyError(r)) {
         dump("expected argument-type / AS error on storage &*p → function sink", r);
         return error.TestUnexpectedResult;
@@ -690,7 +690,7 @@ test "§8.5: &(*p).field preserves AS through member access" {
         \\fn sink(p: ptr<storage, f32, read_write>) { *p = 1.0; }
         \\fn f() { let p = &G; let q = &(*p).a; sink(q); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &(*p).field → ptr<storage,…>", r);
         return error.TestUnexpectedResult;
@@ -704,7 +704,7 @@ test "§8.5: &(*p)[i] preserves AS through index" {
         \\fn sink(p: ptr<storage, f32, read_write>) { *p = 2.0; }
         \\fn f() { let p = &G; let q = &(*p)[0]; sink(q); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on &(*p)[i] → ptr<storage,…>", r);
         return error.TestUnexpectedResult;
@@ -731,7 +731,7 @@ test "§8.5: &*p over a let-chain of pointers keeps source AS" {
         \\  sink(q);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on let-chain pointer AS propagation", r);
         return error.TestUnexpectedResult;
@@ -748,7 +748,7 @@ test "§13: &*p on a function-parameter pointer keeps the param's AS" {
         \\}
         \\fn f() -> u32 { return g(&G); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on param-pointer &*p preservation", r);
         return error.TestUnexpectedResult;
@@ -763,7 +763,7 @@ test "§17.14: arrayLength(&*p) resolves via tparam_ptr_runtime_array" {
         \\  return arrayLength(&*p);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump("no error expected on arrayLength(&*p) round-trip", r);
         return error.TestUnexpectedResult;

@@ -81,7 +81,7 @@ test "validation location: const missing initializer reports correct line" {
         \\const x : i32 = 1.5;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // The const 'x' is on line 2, col 7 (position of 'x')
     try expectErrorAt(result, 2, 7);
 }
@@ -93,7 +93,7 @@ test "validation location: var type mismatch reports declaration location" {
         \\var<private> myvar : i32 = 1.5;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'myvar' is on line 3, col 14
     try expectErrorAt(result, 3, 14);
 }
@@ -106,7 +106,7 @@ test "validation location: storage var with write-only access mode is rejected" 
         \\fn main() {}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'buf' is on line 2, col 43
     try expectErrorAtWithMessage(result, 2, 43, "access mode");
 }
@@ -119,7 +119,7 @@ test "validation location: let missing initializer reports declaration location"
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'y' is on line 3, col 9
     try expectErrorAt(result, 3, 9);
 }
@@ -136,7 +136,7 @@ test "validation location: break outside loop reports break keyword location" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'break' is on line 3, col 5
     try expectErrorAt(result, 3, 5);
 }
@@ -149,7 +149,7 @@ test "validation location: continue outside loop reports continue keyword locati
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'continue' is on line 3, col 5
     try expectErrorAt(result, 3, 5);
 }
@@ -163,7 +163,7 @@ test "validation location: discard outside fragment reports discard keyword loca
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'discard' is on line 3, col 5
     try expectErrorAtWithMessage(result, 3, 5, "discard");
 }
@@ -176,7 +176,7 @@ test "validation location: if condition not bool reports condition location" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // The literal '1.23' is at line 3, col 9
     try expectErrorAt(result, 3, 9);
 }
@@ -189,7 +189,7 @@ test "validation location: while condition not bool reports condition location" 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // The literal '42' is at line 3, col 12
     try expectErrorAt(result, 3, 12);
 }
@@ -202,7 +202,7 @@ test "validation location: for condition not bool reports condition location" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // The literal '10' is at line 3, col 21
     try expectErrorAt(result, 3, 21);
 }
@@ -220,7 +220,7 @@ test "validation location: binary operator type error reports operator location"
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // The '%' operator is at line 3, col 18
     try expectErrorAt(result, 3, 18);
 }
@@ -233,7 +233,7 @@ test "validation location: logical operator type error reports operator location
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // The '&&' is at line 3, col 15
     try expectErrorAt(result, 3, 15);
 }
@@ -246,7 +246,7 @@ test "validation location: unary operator type error reports operator location" 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // The '-' is at line 3, col 13
     try expectErrorAt(result, 3, 13);
 }
@@ -259,7 +259,7 @@ test "validation location: undefined identifier reports identifier location" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'undefined_var' starts at line 3, col 13
     try expectErrorAt(result, 3, 13);
 }
@@ -283,7 +283,7 @@ test "validation location: multiple errors report different locations" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // First error: 'break' at line 2, col 5
     try expectNthErrorAt(result, 0, 2, 5);
     // Second error: 'continue' at line 5, col 5
@@ -306,7 +306,7 @@ test "validation location: error in nested if body reports correct location" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'break' is deeply nested at line 5, col 13
     try expectErrorAt(result, 5, 13);
 }
@@ -323,7 +323,7 @@ test "validation location: error on last line of source" {
         \\const bad : i32 = 1.5;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'bad' is on line 4, col 7
     try expectErrorAt(result, 4, 7);
 }
@@ -340,7 +340,7 @@ test "validation location: error after many blank lines" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'break' is on line 7, col 5
     try expectErrorAt(result, 7, 5);
 }
@@ -357,7 +357,7 @@ test "validation location: error column with leading whitespace" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'break' at line 3, col 9 (8 spaces + 1)
     try expectErrorAt(result, 3, 9);
 }
@@ -377,7 +377,7 @@ test "validation location: line_offset shifts reported line numbers" {
     var result = try wgslender.validateWithOptions(std.testing.allocator, source, .{
         .line_offset = 99,
     });
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAt(result, 102, 5);
 }
 
@@ -391,7 +391,7 @@ test "validation location: line_offset zero is default behavior" {
     var result = try wgslender.validateWithOptions(std.testing.allocator, source, .{
         .line_offset = 0,
     });
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAt(result, 3, 5);
 }
 
@@ -405,7 +405,7 @@ test "validation location: line_offset does not affect column numbers" {
     var result = try wgslender.validateWithOptions(std.testing.allocator, source, .{
         .line_offset = 10,
     });
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // Line 3+10=13, column stays at 9
     try expectErrorAt(result, 13, 9);
 }
@@ -421,7 +421,7 @@ test "validation location: negative line_offset shifts lines down" {
     var result = try wgslender.validateWithOptions(std.testing.allocator, source, .{
         .line_offset = -2,
     });
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAt(result, 1, 5);
 }
 
@@ -436,7 +436,7 @@ test "validation location: negative line_offset clamps to line 1" {
     var result = try wgslender.validateWithOptions(std.testing.allocator, source, .{
         .line_offset = -100,
     });
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAt(result, 1, 5);
 }
 
@@ -454,7 +454,7 @@ test "validation location: line_offset applies to multiple errors" {
     var result = try wgslender.validateWithOptions(std.testing.allocator, source, .{
         .line_offset = 5,
     });
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // break at line 2 (+5 = 7), continue at line 5 (+5 = 10)
     try expectNthErrorAt(result, 0, 7, 5);
     try expectNthErrorAt(result, 1, 10, 5);
@@ -472,7 +472,7 @@ test "validation location: vec3f *= f32 is valid" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -484,7 +484,7 @@ test "validation location: vec3f += f32 is valid" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -496,7 +496,7 @@ test "validation location: vec3f -= f32 is valid" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -508,7 +508,7 @@ test "validation location: vec3f /= f32 is valid" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -520,7 +520,7 @@ test "validation location: vec3f *= vec3f is still valid" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -532,7 +532,7 @@ test "validation location: scalar i32 += i32 is still valid" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -544,7 +544,7 @@ test "validation location: vec3f *= bool is rejected" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(!result.valid);
 }
 
@@ -556,7 +556,7 @@ test "validation location: simple assignment f32 to vec3f is still rejected" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(!result.valid);
 }
 
@@ -567,7 +567,7 @@ test "validation location: return type mismatch reports return keyword" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'return' at line 2, col 5
     try expectErrorAtWithMessage(result, 2, 5, "return");
 }
@@ -603,7 +603,7 @@ test "validation location: unknown type in var reports type location" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'MyType' starts at line 3, col 13
     try expectErrorAtWithMessage(result, 3, 13, "unknown type");
 }
@@ -614,7 +614,7 @@ test "validation location: unknown type in function return reports type location
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'BadType' starts at line 1, col 13
     try expectErrorAtWithMessage(result, 1, 13, "unknown type");
 }
@@ -626,7 +626,7 @@ test "validation location: unknown type in function parameter reports type locat
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'BadType' starts at line 2, col 12
     try expectErrorAtWithMessage(result, 2, 12, "unknown type");
 }
@@ -638,7 +638,7 @@ test "validation location: unknown type in struct member reports type location" 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'BadType' at line 2, col 8
     try expectErrorAtWithMessage(result, 2, 8, "unknown type");
 }
@@ -651,7 +651,7 @@ test "validation location: unknown type in let reports type location" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'BadType' at line 3, col 13
     try expectErrorAtWithMessage(result, 3, 13, "unknown type");
 }
@@ -661,7 +661,7 @@ test "validation location: unknown type in const reports type location" {
         \\const x : BadType = 1;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'BadType' at line 1, col 11
     try expectErrorAtWithMessage(result, 1, 11, "unknown type");
 }
@@ -671,7 +671,7 @@ test "validation location: unknown type in override reports type location" {
         \\override x : BadType = 1;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'BadType' at line 1, col 14
     try expectErrorAtWithMessage(result, 1, 14, "unknown type");
 }
@@ -681,7 +681,7 @@ test "validation location: unknown type in alias reports type location" {
         \\alias T = BadType;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'BadType' at line 1, col 11
     try expectErrorAtWithMessage(result, 1, 11, "unknown type");
 }
@@ -695,7 +695,7 @@ test "validation location: multiple unknown type refs report distinct locations"
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // Return type 'Fo' at line 2 col 13, var type 'Fo' at line 3 col 12
     // (return type may be resolved in multiple phases, producing duplicates)
     try expectAnyErrorAtWithMessage(result, 2, 13, "unknown type 'Fo'");
@@ -715,7 +715,7 @@ test "validation location: did-you-mean suggests close struct name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'MyVertx' at line 4, col 13
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'MyVertex'");
 }
@@ -728,7 +728,7 @@ test "validation location: did-you-mean suggests close builtin type" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'vec4x' at line 3, col 13 — should suggest vec4f, vec4i, vec4u, or vec4h
     try expectErrorAtWithMessage(result, 3, 13, "did you mean");
 }
@@ -741,7 +741,7 @@ test "validation location: unknown type with did-you-mean reports type location"
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'VertexOutput' at line 3, col 12
     try expectErrorAtWithMessage(result, 3, 12, "did you mean 'VertexOutputs'");
 }
@@ -754,7 +754,7 @@ test "validation location: no suggestion for completely different name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // Should say "unknown type" without "did you mean"
     try expectErrorAtWithMessage(result, 3, 13, "unknown type");
     const diags = result.diagnostics.diagnostics.items;
@@ -791,7 +791,7 @@ test "validation location: renamed struct VertexOutput to VertexOutputs — thre
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // Three distinct locations where 'VertexOutput' is used:
     // Line 6 col 48: -> VertexOutput (return type)
     // Line 7 col 14: var out: VertexOutput
@@ -825,7 +825,7 @@ test "validation location: matrix with non-float element type reports location" 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'mat2x2' at line 3, col 13
     try expectErrorAtWithMessage(result, 3, 13, "matrix element");
 }
@@ -835,7 +835,7 @@ test "validation location: atomic with non-integer element type reports location
         \\var<workgroup> a : atomic<f32>;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'atomic' at line 1, col 20
     try expectErrorAtWithMessage(result, 1, 20, "atomic type requires");
 }
@@ -854,7 +854,7 @@ test "validation location: did-you-mean suggests close struct member" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 5, 16, "did you mean 'position'");
 }
 
@@ -868,7 +868,7 @@ test "validation location: did-you-mean suggests struct member with transpositio
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 5, 16, "did you mean 'color'");
 }
 
@@ -882,7 +882,7 @@ test "validation location: no suggestion for completely wrong struct member" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     const diags = result.diagnostics.diagnostics.items;
     for (diags) |d| {
         if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "foobar") != null) {
@@ -903,7 +903,7 @@ test "validation location: did-you-mean struct member off-by-one char" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 5, 16, "did you mean 'normal'");
 }
 
@@ -917,7 +917,7 @@ test "validation location: did-you-mean struct member picks best from multiple" 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'positon' is distance 1 from 'position', distance 3+ from 'rotation'
     try expectErrorAtWithMessage(result, 5, 16, "did you mean 'position'");
 }
@@ -934,7 +934,7 @@ test "validation location: did-you-mean suggests close builtin value" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 2, 9, "did you mean 'position'");
 }
 
@@ -946,7 +946,7 @@ test "validation location: did-you-mean for misspelled builtin vertex_index" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 2, 9, "did you mean 'vertex_index'");
 }
 
@@ -958,7 +958,7 @@ test "validation location: unknown builtin value with no close match" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 2, 9, "unknown @builtin value");
     const diags = result.diagnostics.diagnostics.items;
     for (diags) |d| {
@@ -977,7 +977,7 @@ test "validation location: did-you-mean builtin with underscore typo" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 2, 9, "did you mean 'local_invocation_id'");
 }
 
@@ -989,7 +989,7 @@ test "validation location: builtin wrong for stage suggests valid alternative" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // vertex_index is known but invalid for fragment stage
     try expectErrorAtWithMessage(result, 2, 9, "is not valid for fragment shaders");
 }
@@ -1007,7 +1007,7 @@ test "validation location: did-you-mean suggests close variable name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 15, "did you mean 'position'");
 }
 
@@ -1020,7 +1020,7 @@ test "validation location: did-you-mean suggests function name for identifier" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'comput' should suggest 'compute' (error at function name)
     try expectErrorAtWithMessage(result, 4, 5, "did you mean 'compute'");
 }
@@ -1033,7 +1033,7 @@ test "validation location: did-you-mean suggests builtin function name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'sine' should suggest 'sin' (error at function name)
     try expectErrorAtWithMessage(result, 3, 15, "did you mean 'sin'");
 }
@@ -1046,7 +1046,7 @@ test "validation location: no suggestion for completely wrong identifier" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     const diags = result.diagnostics.diagnostics.items;
     for (diags) |d| {
         if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "xyzzyplugh") != null) {
@@ -1069,7 +1069,7 @@ test "validation location: did-you-mean suggests close builtin function call" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // 'coss' should suggest 'cos' (error at function name)
     try expectErrorAtWithMessage(result, 3, 15, "did you mean 'cos'");
 }
@@ -1083,7 +1083,7 @@ test "validation location: did-you-mean suggests close user function call" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // error at function name
     try expectErrorAtWithMessage(result, 4, 15, "did you mean 'calculate'");
 }
@@ -1096,7 +1096,7 @@ test "validation location: no suggestion for completely wrong call" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     const diags = result.diagnostics.diagnostics.items;
     for (diags) |d| {
         if (d.severity == .@"error") {
@@ -1115,7 +1115,7 @@ test "validation location: did-you-mean prefers vec3f for 3-arg call" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 15, "did you mean 'vec3f'");
 }
 
@@ -1127,7 +1127,7 @@ test "validation location: did-you-mean prefers vec4f for 4-arg call" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 15, "did you mean 'vec4f'");
 }
 
@@ -1139,7 +1139,7 @@ test "validation location: did-you-mean prefers vec2i for 2-arg call" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 15, "did you mean 'vec2i'");
 }
 
@@ -1155,7 +1155,7 @@ test "validation location: vec2f rejects 3 scalar args and suggests vec3f" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec3f'");
 }
 
@@ -1167,7 +1167,7 @@ test "validation location: vec2f rejects 4 scalar args and suggests vec4f" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec4f'");
 }
 
@@ -1179,7 +1179,7 @@ test "validation location: vec3f rejects 4 scalar args and suggests vec4f" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec4f'");
 }
 
@@ -1191,7 +1191,7 @@ test "validation location: vec2i rejects 3 args and suggests vec3i" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec3i'");
 }
 
@@ -1203,7 +1203,7 @@ test "validation location: vec4f rejects 3 scalar args and suggests vec3f" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec3f'");
 }
 
@@ -1215,7 +1215,7 @@ test "validation location: vec3f rejects 2 scalar args and suggests vec2f" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec2f'");
 }
 
@@ -1227,7 +1227,7 @@ test "validation location: vec4f rejects 2 scalar args and suggests vec2f" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "did you mean 'vec2f'");
 }
 
@@ -1240,7 +1240,7 @@ test "validation location: vec3f rejects vec2+vec2 (4 components) and suggests v
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec4f'");
 }
 
@@ -1253,7 +1253,7 @@ test "validation location: vec4f rejects vec2+scalar (3 components) and suggests
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec3f'");
 }
 
@@ -1266,7 +1266,7 @@ test "validation location: vec3f rejects single vec2 arg (width mismatch)" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec2f'");
 }
 
@@ -1279,7 +1279,7 @@ test "validation location: vec2f rejects single vec4 arg (width mismatch)" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "did you mean 'vec4f'");
 }
 
@@ -1292,7 +1292,7 @@ test "validation location: vec2f rejects 6 components (no suggestion)" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "requires 2 components, got 6");
     // No valid vec type for 6 components, so no "did you mean"
     const diags = result.diagnostics.diagnostics.items;
@@ -1312,7 +1312,7 @@ test "validation location: mat2x2f rejects 3 scalar args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "scalar constructor requires 4 values, got 3");
 }
 
@@ -1324,7 +1324,7 @@ test "validation location: mat2x2f rejects 5 scalar args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "scalar constructor requires 4 values, got 5");
 }
 
@@ -1337,7 +1337,7 @@ test "validation location: mat2x2f rejects 3 column vectors" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "column constructor requires 2 vectors, got 3");
 }
 
@@ -1350,7 +1350,7 @@ test "validation location: mat2x2f rejects a scalar/vector mix" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "requires all scalar values or all column vectors, not a mix");
 }
 
@@ -1363,7 +1363,7 @@ test "validation location: struct ctor rejects a bad field type" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'vec2<f32>' to 'i32' for field 'a'");
 }
 
@@ -1375,7 +1375,7 @@ test "validation location: f32 rejects 2 arguments" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "takes at most 1 argument, got 2");
 }
 
@@ -1388,7 +1388,7 @@ test "validation location: struct constructor rejects wrong arg count" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "expects 3 arguments, got 1");
 }
 
@@ -1404,7 +1404,7 @@ test "validation location: vec3i rejects AbstractFloat args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'i32'");
 }
 
@@ -1416,7 +1416,7 @@ test "validation location: vec2u rejects AbstractFloat args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'u32'");
 }
 
@@ -1428,7 +1428,7 @@ test "validation location: vec3i rejects AbstractFloat splat" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'i32'");
 }
 
@@ -1444,7 +1444,7 @@ test "validation location: vec3i(vec3f) is a valid explicit conversion" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1456,7 +1456,7 @@ test "validation location: vec3f rejects concrete i32 args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'i32' to 'f32'");
 }
 
@@ -1468,7 +1468,7 @@ test "validation location: vec3i rejects concrete f32 args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'f32' to 'i32'");
 }
 
@@ -1481,7 +1481,7 @@ test "validation location: vec3i rejects mixed vec2f arg" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'f32' to 'i32'");
 }
 
@@ -1494,7 +1494,7 @@ test "validation location: vec3f accepts AbstractInt args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1507,7 +1507,7 @@ test "validation location: vec3i accepts AbstractInt args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1523,7 +1523,7 @@ test "validation location: scalar constructor allows explicit cross-type convers
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1535,7 +1535,7 @@ test "validation location: mat2x2f rejects concrete i32 scalar args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'i32' to 'f32'");
 }
 
@@ -1549,7 +1549,7 @@ test "validation location: mat3x3f rejects AbstractFloat-to-i32 impossible case 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 13, "cannot convert 'i32' to 'f32'");
 }
 
@@ -1562,7 +1562,7 @@ test "validation location: mat2x2f accepts AbstractInt scalar args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1575,7 +1575,7 @@ test "validation location: mat2x2f accepts AbstractFloat scalar args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1589,7 +1589,7 @@ test "validation location: mat2x2f accepts vec2f column vectors" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1606,7 +1606,7 @@ test "validation location: mat2x2f copy rejects mat2x2 with wrong element type" 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1618,7 +1618,7 @@ test "validation location: vec4i rejects AbstractFloat in 4-arg form" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'abstract-float' to 'i32'");
 }
 
@@ -1630,7 +1630,7 @@ test "validation location: vec2f rejects concrete u32 args" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 13, "cannot convert 'u32' to 'f32'");
 }
 
@@ -1646,7 +1646,7 @@ test "validation location: array<vec3f,3> rejects vec2f element" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     //                  array<vec3f,3>( → col 27
     try expectErrorAtWithMessage(result, 3, 27, "cannot convert 'vec2<f32>' to 'vec3<f32>' for element 0");
 }
@@ -1659,7 +1659,7 @@ test "validation location: array<vec3f,2> rejects wrong element count" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 3, 27, "constructor expects 2 elements, got 1");
 }
 
@@ -1671,7 +1671,7 @@ test "validation location: array<f32,3> rejects i32 element" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     //                  array<f32,3>( → col 25
     try expectErrorAtWithMessage(result, 3, 25, "cannot convert 'i32' to 'f32' for element 1");
 }
@@ -1685,7 +1685,7 @@ test "validation location: array<vec3f,2> accepts valid elements" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1697,7 +1697,7 @@ test "validation location: template vec3<i32> rejects AbstractFloat" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     //                  vec3<i32>( → col 22
     try expectErrorAtWithMessage(result, 3, 22, "cannot convert 'abstract-float' to 'i32'");
 }
@@ -1711,7 +1711,7 @@ test "validation location: template vec3<f32> accepts AbstractInt" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try std.testing.expect(result.valid);
 }
 
@@ -1728,7 +1728,7 @@ test "validation location: swizzle error shows valid components hint" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // error at member expression (`.` position)
     try expectErrorAtWithMessage(result, 4, 16, "valid components are xyzw or rgba");
 }
@@ -1742,7 +1742,7 @@ test "validation location: swizzle with invalid character in multi-component sho
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorAtWithMessage(result, 4, 16, "valid components are xyzw or rgba");
 }
 
@@ -1755,7 +1755,7 @@ test "validation location: swizzle out-of-bounds does not show components hint" 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // Out-of-bounds error should NOT mention "valid components"
     try expectErrorAtWithMessage(result, 4, 16, "out of bounds");
 }

@@ -263,31 +263,31 @@ test "solver: bound_scalar in param position — later args must match bound T" 
 
 test "frexp(f32): return is __frexp_result_f32" {
     var r = try analyze("fn f() { let x = frexp(1.0f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "__frexp_result_f32");
 }
 
 test "frexp(f32).fract → f32" {
     var r = try analyze("fn f() { let r = frexp(2.5f); let m = r.fract; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "m", "f32");
 }
 
 test "frexp(f32).exp → i32" {
     var r = try analyze("fn f() { let r = frexp(2.5f); let e = r.exp; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "e", "i32");
 }
 
 test "frexp(vec3<f32>) result.exp is vec3<i32>" {
     var r = try analyze("fn f() { let r = frexp(vec3<f32>(1.0, 2.0, 3.0)); let e = r.exp; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "e", "vec3<i32>");
 }
 
 test "frexp(vec2<f32>) result.fract is vec2<f32>" {
     var r = try analyze("fn f() { let r = frexp(vec2<f32>(1.0, 2.0)); let m = r.fract; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "m", "vec2<f32>");
 }
 
@@ -299,19 +299,19 @@ test "frexp: abstract-float arg preserves abstract in the synthesized struct nam
     // type. This is a known quirk scoped to the synth_* rules; a concrete
     // literal (`frexp(1.0f)`) correctly names the struct `__frexp_result_f32`.
     var r = try analyze("fn f() { let x = frexp(1.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "__frexp_result_abstract-float");
 }
 
 test "frexp: reject i32 (no matching overload)" {
     var r = try validate("fn f() { let x = frexp(1i); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
 test "frexp: reject bool" {
     var r = try validate("fn f() { let x = frexp(true); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -324,7 +324,7 @@ test "frexp: cached struct — two calls yield the same struct type string" {
         \\  let bm = b.fract;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "am", "f32");
     try expectLetString(&r, "bm", "f32");
 }
@@ -335,7 +335,7 @@ test "frexp: cached struct — two calls yield the same struct type string" {
 
 test "modf(f32): return is __modf_result_f32" {
     var r = try analyze("fn f() { let x = modf(1.5f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "__modf_result_f32");
 }
 
@@ -347,20 +347,20 @@ test "modf(f32).fract and .whole → f32" {
         \\  let b = r.whole;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "f32");
     try expectLetString(&r, "b", "f32");
 }
 
 test "modf(vec4<f32>).whole → vec4<f32>" {
     var r = try analyze("fn f() { let r = modf(vec4<f32>(1.0, 2.0, 3.0, 4.0)); let w = r.whole; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "w", "vec4<f32>");
 }
 
 test "modf: reject integer arg" {
     var r = try validate("fn f() { let x = modf(1i); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -373,7 +373,7 @@ test "atomicLoad on atomic<u32> returns u32" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let x = atomicLoad(&s); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -382,7 +382,7 @@ test "atomicLoad on atomic<i32> returns i32" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<i32>;
         \\fn f() { let x = atomicLoad(&s); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
@@ -391,7 +391,7 @@ test "atomicAdd(ptr<atomic<u32>>, u32) returns u32" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let x = atomicAdd(&s, 1u); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -400,7 +400,7 @@ test "atomicAdd accepts abstract-int as value (promotes to u32)" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let x = atomicAdd(&s, 1); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -409,7 +409,7 @@ test "atomicAdd(u32 atomic, i32 value) — rejected: mismatched scalars" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let x = atomicAdd(&s, 1i); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!anyError(r)) {
         dump("expected atomic<u32> + i32 value rejection", r);
         return error.TestUnexpectedResult;
@@ -424,7 +424,7 @@ test "atomicSub / atomicMax / atomicMin / atomicAnd / atomicOr / atomicXor / ato
             \\fn f() {{ let x = {s}(&s, 1i); }}
         , .{name});
         var r = try analyze(src);
-        defer r.deinit(std.testing.allocator);
+        defer r.deinit();
         try expectLetString(&r, "x", "i32");
     }
 }
@@ -434,7 +434,7 @@ test "atomicExchange on atomic<u32> with u32 value" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let x = atomicExchange(&s, 2u); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -447,7 +447,7 @@ test "atomicCompareExchangeWeak on atomic<i32> returns the spec struct" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<i32>;
         \\fn f() { let x = atomicCompareExchangeWeak(&s, 0i, 1i); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "__atomic_compare_exchange_result_i32");
 }
 
@@ -456,7 +456,7 @@ test "atomicCompareExchangeWeak .old_value → scalar T" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let r = atomicCompareExchangeWeak(&s, 0u, 1u); let v = r.old_value; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "v", "u32");
 }
 
@@ -465,7 +465,7 @@ test "atomicCompareExchangeWeak .exchanged → bool" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let r = atomicCompareExchangeWeak(&s, 0u, 1u); let e = r.exchanged; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "e", "bool");
 }
 
@@ -477,7 +477,7 @@ test "atomicCompareExchangeWeak rejects i32 compare / u32 atomic" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let x = atomicCompareExchangeWeak(&s, 0i, 1u); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -487,55 +487,55 @@ test "atomicCompareExchangeWeak rejects i32 compare / u32 atomic" {
 
 test "unpack4xI8(u32) → vec4<i32>" {
     var r = try analyze("fn f() { let x = unpack4xI8(0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<i32>");
 }
 
 test "unpack4xU8(u32) → vec4<u32>" {
     var r = try analyze("fn f() { let x = unpack4xU8(0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<u32>");
 }
 
 test "unpack4x8snorm(u32) → vec4<f32>" {
     var r = try analyze("fn f() { let x = unpack4x8snorm(0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
 test "unpack4x8unorm(u32) → vec4<f32>" {
     var r = try analyze("fn f() { let x = unpack4x8unorm(0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
 test "unpack2x16snorm(u32) → vec2<f32>" {
     var r = try analyze("fn f() { let x = unpack2x16snorm(0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<f32>");
 }
 
 test "unpack2x16unorm(u32) → vec2<f32>" {
     var r = try analyze("fn f() { let x = unpack2x16unorm(0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<f32>");
 }
 
 test "unpack2x16float(u32) → vec2<f32>" {
     var r = try analyze("fn f() { let x = unpack2x16float(0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<f32>");
 }
 
 test "unpack4xI8 accepts abstract-int (promotes to u32)" {
     var r = try analyze("fn f() { let x = unpack4xI8(0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<i32>");
 }
 
 test "unpack4xI8 rejects i32 (no matching overload — u32 only)" {
     var r = try validate("fn f() { let x = unpack4xI8(1i); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -547,7 +547,7 @@ test "subgroupBallot() with no args → vec4<u32>" {
     var r = try analyze(
         \\@compute @workgroup_size(1) fn main() { let x = subgroupBallot(); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<u32>");
 }
 
@@ -555,7 +555,7 @@ test "subgroupBallot(bool) → vec4<u32>" {
     var r = try analyze(
         \\@compute @workgroup_size(1) fn main() { let x = subgroupBallot(true); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<u32>");
 }
 
@@ -563,7 +563,7 @@ test "subgroupBallot(u32) rejected (only bool)" {
     var r = try validate(
         \\@compute @workgroup_size(1) fn main() { let x = subgroupBallot(1u); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -571,7 +571,7 @@ test "subgroupBallot too many args rejected" {
     var r = try validate(
         \\@compute @workgroup_size(1) fn main() { let x = subgroupBallot(true, false); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -584,7 +584,7 @@ test "workgroupUniformLoad on ptr<workgroup, i32, read_write> → i32" {
         \\var<workgroup> w: i32;
         \\@compute @workgroup_size(1) fn main() { let x = workgroupUniformLoad(&w); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
@@ -593,7 +593,7 @@ test "workgroupUniformLoad on ptr<workgroup, u32> → u32" {
         \\var<workgroup> w: u32;
         \\@compute @workgroup_size(1) fn main() { let x = workgroupUniformLoad(&w); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -602,7 +602,7 @@ test "workgroupUniformLoad rejected on storage pointer (wrong AS)" {
         \\@group(0) @binding(0) var<storage, read_write> s: i32;
         \\@compute @workgroup_size(1) fn main() { let x = workgroupUniformLoad(&s); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -617,7 +617,7 @@ test "transpose(mat2x3<f32>) → mat3x2<f32>" {
         \\  let t = transpose(m);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "t", "mat3x2<f32>");
 }
 
@@ -631,7 +631,7 @@ test "transpose(mat4x4<f32>) → mat4x4<f32>" {
         \\  let t = transpose(m);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "t", "mat4x4<f32>");
 }
 
@@ -642,19 +642,19 @@ test "transpose(mat3x2<f32>) → mat2x3<f32>" {
         \\  let t = transpose(m);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "t", "mat2x3<f32>");
 }
 
 test "transpose rejects scalar argument" {
     var r = try validate("fn f() { let t = transpose(1.0f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
 test "transpose rejects vector argument" {
     var r = try validate("fn f() { let t = transpose(vec3<f32>(1.0, 2.0, 3.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -664,7 +664,7 @@ test "transpose rejects vector argument" {
 
 test "diagnostic: frexp(i32) uses E0203 invalid_arg_type" {
     var r = try validate("fn f() { let x = frexp(1i); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     // Either the category check (float_only) or the overload engine
     // should trigger E0203. Pre-engine, the category check always fired
     // first; post-engine, behavior is unchanged because frexp is .numeric.
@@ -676,7 +676,7 @@ test "diagnostic: atomicAdd mismatched T uses E0203" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let x = atomicAdd(&s, 1i); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0203"));
 }
 
@@ -685,7 +685,7 @@ test "diagnostic: overload rejection mentions the builtin name" {
         \\@group(0) @binding(0) var<storage, read_write> s: atomic<u32>;
         \\fn f() { let x = atomicAdd(&s, 1i); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorContaining(r, "atomicAdd"));
 }
 
@@ -695,13 +695,13 @@ test "diagnostic: overload rejection mentions the builtin name" {
 
 test "regression: min(5, 0u) → u32 (same_as_arg path, not Phase 1 but shares stage)" {
     var r = try analyze("fn f() { let x = min(5, 0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
 test "regression: sin(1.0f) → f32 (numeric category, not migrated to engine)" {
     var r = try analyze("fn f() { let x = sin(1.0f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -714,7 +714,7 @@ test "regression: textureSample unchanged (not Phase 1 migration)" {
         \\  return c;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "c", "vec4<f32>");
 }
 
@@ -772,13 +772,13 @@ test "buildPatternType: bound_matrix_transposed swaps cols/rows" {
 
 test "dot4I8Packed(u32, u32) → i32" {
     var r = try analyze("fn f() { let x = dot4I8Packed(0u, 0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
 test "dot4U8Packed(u32, u32) → u32" {
     var r = try analyze("fn f() { let x = dot4U8Packed(0u, 0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -790,27 +790,27 @@ test "dot4I8Packed accepts u32 variable references (load rule)" {
         \\    let x = dot4I8Packed(a, b);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
 test "dot4I8Packed rejects i32 args (no matching overload)" {
     var r = try validate("fn f() { let x = dot4I8Packed(1i, 2i); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0203"));
     try std.testing.expect(hasErrorContaining(r, "dot4I8Packed"));
 }
 
 test "dot4U8Packed rejects mixed u32/i32 on second arg" {
     var r = try validate("fn f() { let x = dot4U8Packed(0u, 1i); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0203"));
     try std.testing.expect(hasErrorContaining(r, "argument 2"));
 }
 
 test "dot4I8Packed arity: one arg rejected" {
     var r = try validate("fn f() { let x = dot4I8Packed(0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -829,25 +829,25 @@ test "dot4I8Packed arity: one arg rejected" {
 
 test "bitcast<f32>(1u) → f32 (scalar_32 sig, slot 0 seeded f32)" {
     var r = try analyze("fn f() { let x = bitcast<f32>(1u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
 test "bitcast<i32>(1u) → i32 (cross-type scalar)" {
     var r = try analyze("fn f() { let x = bitcast<i32>(1u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
 test "bitcast<vec2u>(vec2i(1,2)) → vec2<u32> (vecN_32 sig, N=2 seeded)" {
     var r = try analyze("fn f() { let x = bitcast<vec2u>(vec2i(1, 2)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<u32>");
 }
 
 test "bitcast<vec3f>(vec3i(1,2,3)) → vec3<f32> (vecN_32 sig, N=3 seeded)" {
     var r = try analyze("fn f() { let x = bitcast<vec3f>(vec3i(1, 2, 3)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -856,7 +856,7 @@ test "bitcast<vec2h>(1u) → vec2<f16> (vec2_f16 sig, T=f16/N=2 seeded)" {
         \\enable f16;
         \\fn f() { let x = bitcast<vec2h>(1u); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<f16>");
 }
 
@@ -865,7 +865,7 @@ test "bitcast<u32>(vec2h) → u32 (scalar_32 sig, concrete vec2<f16> param)" {
         \\enable f16;
         \\fn f() { let y = bitcast<vec2h>(1u); let x = bitcast<u32>(y); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
@@ -874,7 +874,7 @@ test "bitcast<vec4h>(vec2u(1u, 2u)) → vec4<f16> (vec4_f16 sig)" {
         \\enable f16;
         \\fn f() { let x = bitcast<vec4h>(vec2u(1u, 2u)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f16>");
 }
 
@@ -886,7 +886,7 @@ test "bitcast<vec2f>(vec4h(…)) → vec2<f32> (vecN_32 sig via concrete vec4<f1
         \\    let x = bitcast<vec2f>(p);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<f32>");
 }
 
@@ -894,7 +894,7 @@ test "bitcast seed preservation: T=f32 returned even when arg is u32" {
     // Confirms the return comes from the seeded slot 0 (= template T),
     // not from the solver-bound slot 2 (= source scalar S).
     var r = try analyze("fn f() { let x = bitcast<f32>(0xFFFFFFFFu); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -905,7 +905,7 @@ test "bitcast width seeding rejects wrong-N vector (vec3 template vs vec2 arg)" 
     // emits the bit-width diagnostic. Either rejection path is a fail,
     // so we just assert an error.
     var r = try validate("fn f() { let x = bitcast<vec3u>(vec2i(1, 2)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -918,7 +918,7 @@ test "bitcast concrete_32 family rejects f16 scalar source" {
         \\enable f16;
         \\fn f() { let x = bitcast<vec2h>(1.0h); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -932,25 +932,25 @@ test "bitcast invalid template shape (vec3<f16>) produces 'cannot bitcast to'" {
         \\    let x = bitcast<vec3h>(p);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
 test "bitcast arity: zero args rejected" {
     var r = try validate("fn f() { let x = bitcast<u32>(); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorContaining(r, "bitcast"));
 }
 
 test "bitcast arity: two args rejected" {
     var r = try validate("fn f() { let x = bitcast<u32>(1u, 2u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorContaining(r, "bitcast"));
 }
 
 test "bitcast abstract-int concretizes before seeding" {
     var r = try analyze("fn f() { let x = bitcast<f32>(42); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -959,7 +959,7 @@ test "bitcast nested: outer f32 seeded even when inner is vec2<f16>" {
         \\enable f16;
         \\fn f() { let x = bitcast<f32>(bitcast<vec2h>(1u)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -968,7 +968,7 @@ test "bitcast without template argument rejected" {
     // inferCustomBuiltin → null). Now the validator emits a dedicated
     // diagnostic so the user knows a template is required.
     var r = try validate("fn f() { let x = bitcast(1u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorContaining(r, "template type argument"));
 }
 

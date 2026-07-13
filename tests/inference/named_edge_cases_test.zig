@@ -38,7 +38,7 @@ test "infer: i32 * -1 preserves i32" {
         \\const x: i32 = 1;
         \\const y = x * -1;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -53,7 +53,7 @@ test "infer: user fn accepts abstract-float arg" {
         \\fn make_one(x: f32) -> u32 { return 1u; }
         \\fn main() { let a = make_one(0.333); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -67,7 +67,7 @@ test "infer: const_assert accepts bool expression" {
         \\const a = 29;
         \\const_assert 27 < a;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -76,7 +76,7 @@ test "infer: const_assert rejects non-bool expression" {
         \\const a = 29;
         \\const_assert 27 + a;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -95,7 +95,7 @@ test "infer: struct constructor applies load rule to ref args" {
         \\    let s = S(u, a);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -109,7 +109,7 @@ test "infer: hex literal concretizes to integer (no_crash_on_hex_int)" {
     var r = try validate(
         \\fn f() { let i2 = 0u; let p0 = (i2 >> 0u) & 0xf; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -119,7 +119,7 @@ test "infer: hex literal with embedded 'e' stays integer" {
     var r = try validate(
         \\fn f() { let a: u32 = 0xe5; let b = a & 0xff; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -129,7 +129,7 @@ test "infer: hex float with p-exponent still types as float" {
     var r = try validate(
         \\const c: f32 = 0x1p0;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -143,7 +143,7 @@ test "infer: var<function> at module scope is rejected" {
     var r = try validate(
         \\var<function> x: u32;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0304"));
 }
 
@@ -153,7 +153,7 @@ test "infer: var<private> at module scope is accepted" {
     var r = try validate(
         \\var<private> x: u32;
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -163,7 +163,7 @@ test "infer: var<function> inside a function body is accepted" {
     var r = try validate(
         \\fn f() { var<function> x: u32 = 1u; let y = x; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -184,7 +184,7 @@ test "infer: break if accepts bool condition in continuing block" {
         \\    }
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
 
@@ -196,6 +196,6 @@ test "infer: break if rejects non-bool condition" {
         \\    }
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(hasErrorWithCode(r, "E0200"));
 }

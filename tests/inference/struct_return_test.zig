@@ -38,31 +38,31 @@ fn expectLetString(r: *const wgslender.Validator.AnalysisResult, name: []const u
 
 test "§17.5.33: frexp(f32) returns __frexp_result_f32" {
     var r = try analyze("fn f() { let x = frexp(1.5f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "__frexp_result_f32");
 }
 
 test "§17.5.33: frexp(f32).fract → f32" {
     var r = try analyze("fn f() { let r = frexp(1.5f); let m = r.fract; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "m", "f32");
 }
 
 test "§17.5.33: frexp(f32).exp → i32" {
     var r = try analyze("fn f() { let r = frexp(1.5f); let e = r.exp; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "e", "i32");
 }
 
 test "§17.5.33: frexp(vec3<f32>).fract → vec3<f32>" {
     var r = try analyze("fn f() { let r = frexp(vec3f(1.0, 2.0, 3.0)); let m = r.fract; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "m", "vec3<f32>");
 }
 
 test "§17.5.33: frexp(vec3<f32>).exp → vec3<i32>" {
     var r = try analyze("fn f() { let r = frexp(vec3f(1.0, 2.0, 3.0)); let e = r.exp; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "e", "vec3<i32>");
 }
 
@@ -77,7 +77,7 @@ test "§17.5.33: repeated frexp calls reuse the same cached struct" {
         \\  let bx = b.fract;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "ax", "f32");
     try expectLetString(&r, "bx", "f32");
 }
@@ -86,25 +86,25 @@ test "§17.5.33: repeated frexp calls reuse the same cached struct" {
 
 test "§17.5.49: modf(f32) returns __modf_result_f32" {
     var r = try analyze("fn f() { let x = modf(1.5f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "__modf_result_f32");
 }
 
 test "§17.5.49: modf(f32).fract → f32" {
     var r = try analyze("fn f() { let r = modf(1.5f); let m = r.fract; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "m", "f32");
 }
 
 test "§17.5.49: modf(f32).whole → f32" {
     var r = try analyze("fn f() { let r = modf(1.5f); let w = r.whole; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "w", "f32");
 }
 
 test "§17.5.49: modf(vec2<f32>).fract → vec2<f32>" {
     var r = try analyze("fn f() { let r = modf(vec2f(1.5, 2.5)); let m = r.fract; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "m", "vec2<f32>");
 }
 
@@ -115,7 +115,7 @@ test "§17.9.7: atomicCompareExchangeWeak on atomic<i32>" {
         \\var<workgroup> w: atomic<i32>;
         \\fn f() { let x = atomicCompareExchangeWeak(&w, 0, 1); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "__atomic_compare_exchange_result_i32");
 }
 
@@ -127,7 +127,7 @@ test "§17.9.7: .old_value field → underlying atomic scalar" {
         \\  let v = r.old_value;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "v", "i32");
 }
 
@@ -139,7 +139,7 @@ test "§17.9.7: .exchanged field → bool" {
         \\  let e = r.exchanged;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "e", "bool");
 }
 
@@ -152,7 +152,7 @@ test "§17.9.7: atomic<u32> variant" {
         \\  let e = r.exchanged;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "v", "u32");
     try expectLetString(&r, "e", "bool");
 }

@@ -10,7 +10,7 @@ fn analyzeSource(source: [:0]const u8) !*wgslender.Validator.AnalysisResult {
 }
 
 fn cleanup(result: *wgslender.Validator.AnalysisResult) void {
-    result.deinit(std.testing.allocator);
+    result.deinit();
     std.testing.allocator.destroy(result);
 }
 

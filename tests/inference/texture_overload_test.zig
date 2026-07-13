@@ -32,7 +32,7 @@ fn dump(label: []const u8, r: wgslender.Validator.Result) void {
 
 fn validMustPass(src: [:0]const u8, label: []const u8) !void {
     var r = try validate(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump(label, r);
         return error.TestUnexpectedResult;
@@ -369,7 +369,7 @@ test "§17.7: textureSample without enough args rejected" {
         \\  return textureSample(tex);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     var saw = false;
     for (r.diagnostics.items()) |d| {
         if (std.mem.indexOf(u8, d.message, "textureSample") != null) saw = true;
@@ -400,7 +400,7 @@ test "§17.7.11: textureStore on read-only storage rejected" {
         \\  textureStore(tex, vec2<i32>(0), vec4f(0.0));
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasMessage(r, "textureStore")) {
         dump("expected textureStore access error on read-only storage", r);
         return error.TestUnexpectedResult;
@@ -432,7 +432,7 @@ test "§17.7.13: textureLoad on write-only storage rejected" {
         \\  return textureLoad(tex, vec2<i32>(0));
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasMessage(r, "textureLoad")) {
         dump("expected textureLoad access error on write-only storage", r);
         return error.TestUnexpectedResult;
@@ -478,7 +478,7 @@ test "§17.7.11: textureStore 2d with vec3 coord rejected" {
         \\  textureStore(t, vec3<i32>(0), vec4f(0.0));
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasMessage(r, "wrong dimension")) {
         dump("expected 2d coord dim error", r);
         return error.TestUnexpectedResult;
@@ -492,7 +492,7 @@ test "§17.7.11: textureStore 3d with vec2 coord rejected" {
         \\  textureStore(t, vec2<i32>(0), vec4f(0.0));
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasMessage(r, "wrong dimension")) {
         dump("expected 3d coord dim error", r);
         return error.TestUnexpectedResult;
@@ -506,7 +506,7 @@ test "§17.7.11: textureStore 1d with vec2 coord rejected" {
         \\  textureStore(t, vec2<i32>(0), vec4f(0.0));
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasMessage(r, "wrong dimension")) {
         dump("expected 1d coord dim error", r);
         return error.TestUnexpectedResult;
@@ -520,7 +520,7 @@ test "§17.7.11: textureStore 2d with float-vec coord rejected" {
         \\  textureStore(t, vec2f(0.0), vec4f(0.0));
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasMessage(r, "wrong dimension")) {
         dump("expected float-coord rejection", r);
         return error.TestUnexpectedResult;

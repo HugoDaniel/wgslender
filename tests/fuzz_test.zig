@@ -105,7 +105,7 @@ fn testValidateNoCrash(_: void, smith: *std.testing.Smith) !void {
     const source: [:0]const u8 = buf[0..len :0];
 
     var result = wgslender.validateWithOptions(std.testing.allocator, source, .{}) catch return;
-    result.deinit(std.testing.allocator);
+    result.deinit();
 }
 
 // =========================================================================

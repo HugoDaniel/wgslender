@@ -109,25 +109,25 @@ fn expectSymbolType(
 
 test "§15: let x = 1; → i32 (demote AbstractInt to default)" {
     var r = try analyze("fn f() { let x = 1; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "i32");
 }
 
 test "§15: let x = 1.0; → f32" {
     var r = try analyze("fn f() { let x = 1.0; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "f32");
 }
 
 test "§15: let x = 1u; → u32" {
     var r = try analyze("fn f() { let x = 1u; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "u32");
 }
 
 test "§15: let x = 1i; → i32" {
     var r = try analyze("fn f() { let x = 1i; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "i32");
 }
 
@@ -137,49 +137,49 @@ test "§15: let x = 1i; → i32" {
 
 test "§8.2: let x = 1u + 2; → u32 (abstract RHS concretizes)" {
     var r = try analyze("fn f() { let x = 1u + 2; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "u32");
 }
 
 test "§8.2: let x = 1 + 2u; → u32" {
     var r = try analyze("fn f() { let x = 1 + 2u; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "u32");
 }
 
 test "§8.2: let x = 1.0 + 2; → f32 (abstract-int → abstract-float)" {
     var r = try analyze("fn f() { let x = 1.0 + 2; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "f32");
 }
 
 test "§8.2: let x = 1.0f + 2; → f32" {
     var r = try analyze("fn f() { let x = 1.0f + 2; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "f32");
 }
 
 test "§8.2: let x = 1 + 2 + 3; → i32 (all abstract, demotes to default)" {
     var r = try analyze("fn f() { let x = 1 + 2 + 3; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "i32");
 }
 
 test "§8.2: let x = 1.0 + 2 + 3; → f32 (tree-cascade)" {
     var r = try analyze("fn f() { let x = 1.0 + 2 + 3; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "f32");
 }
 
 test "§8.2: let x = 1u + (1 + 2); → u32 (paren subtree concretizes)" {
     var r = try analyze("fn f() { let x = 1u + (1 + 2); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "u32");
 }
 
 test "§8.2: let x = 1f + ((2 + 3) + 4); → f32" {
     var r = try analyze("fn f() { let x = 1f + ((2 + 3) + 4); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "f32");
 }
 
@@ -189,19 +189,19 @@ test "§8.2: let x = 1f + ((2 + 3) + 4); → f32" {
 
 test "§6.8: var x = 1; → i32" {
     var r = try analyze("fn f() { var x = 1; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(varType, &r, "x", "i32");
 }
 
 test "§6.8: var x = 1.0; → f32" {
     var r = try analyze("fn f() { var x = 1.0; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(varType, &r, "x", "f32");
 }
 
 test "§6.8: var x = 1u + 2; → u32" {
     var r = try analyze("fn f() { var x = 1u + 2; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(varType, &r, "x", "u32");
 }
 
@@ -214,20 +214,20 @@ test "§6.8: var x = 1u + 2; → u32" {
 test "§6.6: const MY_VAL = 1; preserves abstract-int" {
     try validMustPass("const MY_VAL = 1; fn f() { let x = MY_VAL; }", "const abstract-int");
     var r = try analyze("const MY_VAL = 1;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(constType, &r, "MY_VAL", "abstract-int");
 }
 
 test "§6.6: const PI = 3.14; preserves abstract-float" {
     try validMustPass("const PI = 3.14; fn f() { let x = PI; }", "const abstract-float");
     var r = try analyze("const PI = 3.14;");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(constType, &r, "PI", "abstract-float");
 }
 
 test "§15: function-scope const still demotes to concrete" {
     var r = try analyze("fn f() { const MY_VAL = 1; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(constType, &r, "MY_VAL", "i32");
 }
 
@@ -237,19 +237,19 @@ test "§15: function-scope const still demotes to concrete" {
 
 test "§8.4: let x = -5; → i32 (unary on abstract-int)" {
     var r = try analyze("fn f() { let x = -5; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "i32");
 }
 
 test "§8.4: let x = -5.5; → f32" {
     var r = try analyze("fn f() { let x = -5.5; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "x", "f32");
 }
 
 test "§8.4: let x = -5 + 1u; → u32 (unary result still participates)" {
     var r = try analyze("fn f() { let x = -5 + 1u; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     // The spec requires the concrete u32 to pull the unary-negated
     // abstract int. We produce u32 even though literal -5u is illegal
     // (u32 has no sign); the cast happens at the op, not at the literal.
@@ -262,25 +262,25 @@ test "§8.4: let x = -5 + 1u; → u32 (unary result still participates)" {
 
 test "§14.5: let v = vec3f(1.0, 2.0, 3.0); → vec3<f32>" {
     var r = try analyze("fn f() { let v = vec3f(1.0, 2.0, 3.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "v", "vec3<f32>");
 }
 
 test "§14.5: let v = vec3(1, 2, 3); → vec3<i32>" {
     var r = try analyze("fn f() { let v = vec3(1, 2, 3); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "v", "vec3<i32>");
 }
 
 test "§14.5: let v = vec3(1.0, 2.0, 3.0); → vec3<f32>" {
     var r = try analyze("fn f() { let v = vec3(1.0, 2.0, 3.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "v", "vec3<f32>");
 }
 
 test "§14.5: let v = vec2(1u, 2); → vec2<u32>" {
     var r = try analyze("fn f() { let v = vec2(1u, 2); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectSymbolType(letType, &r, "v", "vec2<u32>");
 }
 
@@ -293,7 +293,7 @@ test "§14.5: let v = vec2(1u, 2); → vec2<u32>" {
 
 test "§15: let v: i32 = 1u + 2; rejects (u32 not convertible to i32)" {
     var r = try validate("fn f() { let v: i32 = 1u + 2; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!anyError(r)) {
         dump("expected i32-assignment error", r);
         return error.TestUnexpectedResult;
@@ -306,7 +306,7 @@ test "§15: let v: f32 = 1 + 2; accepts (both abstract → f32)" {
 
 test "§15: let v: i32 = 1.5; rejects (float → int no auto-conversion)" {
     var r = try validate("fn f() { let v: i32 = 1.5; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!anyError(r)) {
         dump("expected i32-from-float error", r);
         return error.TestUnexpectedResult;
@@ -319,7 +319,7 @@ test "§15: let v: i32 = 1.5; rejects (float → int no auto-conversion)" {
 
 test "§8.2: 1u + 1i rejected (mixed signedness)" {
     var r = try validate("fn f() { let x = 1u + 1i; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!anyError(r)) {
         dump("expected mixed-signedness error", r);
         return error.TestUnexpectedResult;
@@ -328,7 +328,7 @@ test "§8.2: 1u + 1i rejected (mixed signedness)" {
 
 test "§8.2: 1u - 1i rejected" {
     var r = try validate("fn f() { let x = 1u - 1i; }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!anyError(r)) {
         dump("expected mixed-signedness error on sub", r);
         return error.TestUnexpectedResult;
@@ -338,7 +338,7 @@ test "§8.2: 1u - 1i rejected" {
 // helper used above
 fn validMustPass(src: [:0]const u8, label: []const u8) !void {
     var r = try validate(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (anyError(r)) {
         dump(label, r);
         return error.TestUnexpectedResult;

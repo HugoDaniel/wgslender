@@ -8,7 +8,7 @@ const wgslender = @import("wgslender");
 
 fn expectErrorContains(source: [:0]const u8, needle: []const u8) !void {
     var r = try wgslender.validateWithOptions(std.testing.allocator, source, .{});
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
 
     for (r.diagnostics.items()) |d| {
         if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, needle) != null) {

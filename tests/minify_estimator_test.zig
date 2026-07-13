@@ -36,20 +36,20 @@ const Ctx = struct {
 
     fn init(gpa: std.mem.Allocator, source: [:0]const u8, options: MinifyEstimator.Options) !Ctx {
         var analysis = try wgslender.analyzeWithOptions(gpa, source, .{});
-        errdefer analysis.deinit(gpa);
+        errdefer analysis.deinit();
         const module = analysis.module orelse return error.MissingModule;
         const estimate = try MinifyEstimator.estimate(analysis._arena.?.allocator(), module, options);
         return .{ .analysis = analysis, .estimate = estimate };
     }
 
-    fn deinit(self: *Ctx, gpa: std.mem.Allocator) void {
-        self.analysis.deinit(gpa);
+    fn deinit(self: *Ctx) void {
+        self.analysis.deinit();
     }
 };
 
 fn estimateTotal(gpa: std.mem.Allocator, source: [:0]const u8, options: MinifyEstimator.Options) !u32 {
     var ctx = try Ctx.init(gpa, source, options);
-    defer ctx.deinit(gpa);
+    defer ctx.deinit();
     return ctx.estimate.total_min;
 }
 
@@ -342,7 +342,7 @@ test "per_function populated for every function decl" {
     defer gpa.free(source);
 
     var ctx = try Ctx.init(gpa, source, .{});
-    defer ctx.deinit(gpa);
+    defer ctx.deinit();
 
     // Every function in the module should appear in per_function, keyed by
     // the function's name symbol.
@@ -370,7 +370,7 @@ test "per_decl populated for every named declaration" {
     defer gpa.free(source);
 
     var ctx = try Ctx.init(gpa, source, .{});
-    defer ctx.deinit(gpa);
+    defer ctx.deinit();
 
     const module = ctx.analysis.module.?;
     for (module.declarations.items) |decl| {
@@ -391,7 +391,7 @@ test "per_function.min sums to total minus directives+non-function decls" {
     defer gpa.free(source);
 
     var ctx = try Ctx.init(gpa, source, .{});
-    defer ctx.deinit(gpa);
+    defer ctx.deinit();
 
     var sum_per_decl: u32 = 0;
     var it = ctx.estimate.per_decl.iterator();
@@ -410,7 +410,7 @@ test "total_gz heuristic is 35% of total_min" {
     defer gpa.free(source);
 
     var ctx = try Ctx.init(gpa, source, .{});
-    defer ctx.deinit(gpa);
+    defer ctx.deinit();
 
     const expected: u32 = @intFromFloat(@as(f32, @floatFromInt(ctx.estimate.total_min)) * 0.35);
     try testing.expectEqual(expected, ctx.estimate.total_gz);
@@ -450,7 +450,7 @@ test "parse error produces estimate result with zero total" {
     defer gpa.free(source);
 
     var analysis = try wgslender.analyzeWithOptions(gpa, source, .{});
-    defer analysis.deinit(gpa);
+    defer analysis.deinit();
 
     // Parser failed → module may be null or malformed. If module is null,
     // the estimator shouldn't be called. If it's present, estimator should
@@ -517,7 +517,7 @@ test "estimator.useFullMinify=true populates per_decl + per_function" {
     var opts: MinifyEstimator.Options = .{};
     opts.use_full_minify = true;
     var ctx = try Ctx.init(gpa, source, opts);
-    defer ctx.deinit(gpa);
+    defer ctx.deinit();
 
     const module = ctx.analysis.module.?;
     var fn_count: u32 = 0;

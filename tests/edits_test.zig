@@ -24,7 +24,7 @@ test "edits: rename a const across a shader preserves comments" {
 
     // Analyze to get symbols.
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     // Locate PI by searching for its declared name.
@@ -61,7 +61,7 @@ test "edits: rename a struct updates type references" {
     ;
 
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const decl_offset = findOffsetOf(source, "Uniforms");
@@ -82,7 +82,7 @@ test "edits: rename a struct updates type references" {
     const rewritten_z = try a.dupeZ(u8, rewritten);
     defer a.free(rewritten_z);
     var re = try wgslender.analyze(a, rewritten_z);
-    defer re.deinit(a);
+    defer re.deinit();
     try std.testing.expect(re.valid);
 
     // And the new name must appear where the old one was.
@@ -94,7 +94,7 @@ test "edits: renameEdits rejects invalid identifiers" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const x: f32 = 1.0;";
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const target = wgslender.Edits.symbolAtOffset(module, findOffsetOf(source, "x"));
@@ -115,7 +115,7 @@ test "edits: findReferences includes assignment writes" {
         \\fn bump() { counter = counter + 1; }
     ;
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const target = wgslender.Edits.symbolAtOffset(module, findOffsetOf(source, "counter"));
@@ -138,7 +138,7 @@ test "edits: symbolAtOffset returns none outside any identifier" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const x: f32 = 1.0;";
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     // Offset at the space between `const` and `x`.
@@ -152,7 +152,7 @@ test "edits: setWorkgroupSize changes attribute args" {
         \\@compute @workgroup_size(1) fn main() {}
     ;
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const edits = try wgslender.Edits.setWorkgroupSize(a, source, module, "main", .{ 8, 8, 1 }) orelse
@@ -168,7 +168,7 @@ test "edits: setWorkgroupSize changes attribute args" {
     const rewritten_z = try a.dupeZ(u8, rewritten);
     defer a.free(rewritten_z);
     var re = try wgslender.analyze(a, rewritten_z);
-    defer re.deinit(a);
+    defer re.deinit();
     try std.testing.expect(re.valid);
 }
 
@@ -176,7 +176,7 @@ test "edits: setWorkgroupSize missing entry point returns null" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const edits = try wgslender.Edits.setWorkgroupSize(a, source, module, "nonexistent", .{ 4, 1, 1 });
@@ -188,7 +188,7 @@ test "edits: setWorkgroupSize missing attribute returns null" {
     // `main` has no @workgroup_size.
     const source: [:0]const u8 = "@fragment fn main() -> @location(0) vec4f { return vec4f(0.0); }";
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const edits = try wgslender.Edits.setWorkgroupSize(a, source, module, "main", .{ 4, 1, 1 });
@@ -228,7 +228,7 @@ fn renameAndReanalyze(
     new_name: []const u8,
 ) ![]u8 {
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const off = findOffsetOf(source, needle);
@@ -245,7 +245,7 @@ fn renameAndReanalyze(
     const rewritten_z = try a.dupeZ(u8, rewritten);
     defer a.free(rewritten_z);
     var re = try wgslender.analyze(a, rewritten_z);
-    defer re.deinit(a);
+    defer re.deinit();
     if (!re.valid) return error.TestResultInvalid;
 
     return rewritten;
@@ -275,7 +275,7 @@ test "scenario: rename parameter touches only that function body" {
     // Rename the parameter `x` in `first` only. The `x` in `second` must be untouched.
     const first_x_off = findOffsetOf(source, "x: f32) -> f32 { return x + 1.0");
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const target = wgslender.Edits.symbolAtOffset(module, first_x_off);
@@ -376,7 +376,7 @@ test "scenario: rename across shadowed scopes updates only the target" {
     // Rename the INNER `value` (inside compute's body).
     const inner_off = findOffsetOf(source, "value: i32 = 7");
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const target = wgslender.Edits.symbolAtOffset(module, inner_off);
@@ -419,7 +419,7 @@ test "scenario: findReferences without declaration excludes decl site" {
         \\fn area(r: f32) -> f32 { return PI * r * r; }
     ;
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const target = wgslender.Edits.symbolAtOffset(module, findOffsetOf(source, "PI"));
@@ -441,7 +441,7 @@ test "scenario: rename builtin-conflict name rejected at apply, not edit-build" 
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const v: i32 = 0;";
     var analysis = try wgslender.analyze(a, source);
-    defer analysis.deinit(a);
+    defer analysis.deinit();
     const module = analysis.module orelse return error.TestUnexpectedResult;
 
     const target = wgslender.Edits.symbolAtOffset(module, findOffsetOf(source, "v"));

@@ -19,7 +19,7 @@ const Key = struct {
 
 fn expectNoDuplicates(label: []const u8, source: [:0]const u8) !void {
     var r = try wgslender.validateWithOptions(std.testing.allocator, source, .{});
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
 
     const diags = r.diagnostics.items();
     var seen: std.ArrayListUnmanaged(Key) = .empty;

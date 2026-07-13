@@ -27,7 +27,7 @@ fn runLint(src: [:0]const u8, ids: []const []const u8) !Linter.Result {
     for (ids, 0..) |id, i| overrides[i] = .{ .id = id, .severity = .warning };
 
     var analysis = try wgslender.analyze(std.testing.allocator, src);
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     return try Linter.run(std.testing.allocator, &analysis, .{ .rules = overrides });
 }

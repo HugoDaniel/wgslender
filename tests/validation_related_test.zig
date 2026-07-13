@@ -81,7 +81,7 @@ test "validation related: duplicate struct member has related info pointing to f
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Error on second 'x' (line 3), related should point to first 'x' (line 2)
     try expectRelatedAt(result, "duplicate member 'x'", 2, 3);
@@ -94,7 +94,7 @@ test "validation related: duplicate @id has related info pointing to first overr
         \\@id(1) override b: f32;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Error on second @id(1), related should point to first @id(1) (line 1)
     try expectRelatedAt(result, "@id(1) is already used", 1, 1);
@@ -107,7 +107,7 @@ test "validation related: duplicate @group/@binding has related info pointing to
         \\@group(0) @binding(0) var<uniform> b: f32;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Error on second binding, related should point to first var 'a' (line 1, col 36)
     try expectRelatedAt(result, "is already used by", 1, 36);
@@ -123,7 +123,7 @@ test "validation related: const init type mismatch has related info pointing to 
         \\const x: i32 = 1.5;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Related should point to 'i32' type annotation (line 1, col 10)
     try expectRelatedAt(result, "cannot initialize", 1, 10);
@@ -137,7 +137,7 @@ test "validation related: var init type mismatch has related info pointing to ty
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     try expectRelatedAt(result, "cannot initialize", 2, 10);
     try expectRelatedMessage(result, "cannot initialize", "type");
@@ -150,7 +150,7 @@ test "validation related: return type mismatch has related info pointing to retu
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Related should point to 'i32' return type (line 1, col 13)
     try expectRelatedAt(result, "cannot return", 1, 13);
@@ -165,7 +165,7 @@ test "validation related: assignment type mismatch has related info pointing to 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Related should point to 'x' on LHS
     try expectRelatedMessage(result, "cannot assign", "left-hand side");
@@ -186,7 +186,7 @@ test "validation related: struct has no member has related info pointing to stru
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Related should point to 'Foo' struct definition (line 1)
     try expectRelatedAt(result, "has no member 'y'", 1, 8);
@@ -203,7 +203,7 @@ test "validation related: function arg count mismatch has related info pointing 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Related should point to 'add' function declaration (line 1)
     try expectRelatedAt(result, "expects 2 arguments", 1, 4);
@@ -220,7 +220,7 @@ test "validation related: function arg type mismatch has related info pointing t
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Related should point to 'add' function declaration (line 1)
     try expectRelatedAt(result, "argument 2", 1, 4);
@@ -239,7 +239,7 @@ test "validation related: related info is serialized in JSON output" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Find the duplicate member error and check JSON serialization
     const diags = result.diagnostics.diagnostics.items;

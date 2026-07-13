@@ -74,7 +74,7 @@ test "W0100: module-scope shadow retains code" {
         \\var<private> x: f32 = 0.0;
         \\fn main() -> f32 { let x: f32 = 1.0; return x; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasWarningWithCode(r, "W0100")) {
         dumpDiags("no W0100 module-scope shadow", r);
         return error.TestUnexpectedResult;
@@ -91,7 +91,7 @@ test "W0100: nested block shadow inside function body" {
         \\  }
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasWarningContaining(r, "W0100", "shadows")) {
         dumpDiags("no W0100 nested shadow", r);
         return error.TestUnexpectedResult;
@@ -104,7 +104,7 @@ test "W0100: parameter shadowing module-scope const" {
         \\fn main() -> i32 { return x; }
         \\fn other(x: f32) -> f32 { return x; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasWarningWithCode(r, "W0100")) {
         dumpDiags("no W0100 param-shadow", r);
         return error.TestUnexpectedResult;
@@ -118,7 +118,7 @@ test "W0100: no shadow when names are different" {
         \\  { let b: f32 = a; return b; }
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     for (r.diagnostics.items()) |d| {
         if (d.severity == .warning and std.mem.eql(u8, d.code, "W0100")) {
             dumpDiags("unexpected W0100", r);
@@ -138,7 +138,7 @@ test "W0101: f32(f32) is redundant" {
         \\  return f32(a);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasWarningWithCode(r, "W0101")) {
         dumpDiags("no W0101 redundant cast", r);
         return error.TestUnexpectedResult;
@@ -152,7 +152,7 @@ test "W0101: i32(i32) is redundant" {
         \\  return i32(a);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasWarningWithCode(r, "W0101")) {
         dumpDiags("no W0101 redundant i32 cast", r);
         return error.TestUnexpectedResult;
@@ -166,7 +166,7 @@ test "W0101: f32(i32) is NOT a redundant cast" {
         \\  return f32(a);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     for (r.diagnostics.items()) |d| {
         if (d.severity == .warning and std.mem.eql(u8, d.code, "W0101")) {
             dumpDiags("unexpected W0101 on f32(i32)", r);
@@ -182,7 +182,7 @@ test "W0101: u32(u32) is redundant" {
         \\  return u32(a);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasWarningWithCode(r, "W0101")) {
         dumpDiags("no W0101 redundant u32 cast", r);
         return error.TestUnexpectedResult;
@@ -200,7 +200,7 @@ test "E0105: let __tmp is reserved" {
         \\  return __tmp;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0105")) {
         dumpDiags("no E0105 for let __tmp", r);
         return error.TestUnexpectedResult;
@@ -211,7 +211,7 @@ test "E0105: fn __main is reserved" {
     var r = try validateSource(
         \\fn __main() -> f32 { return 0.0; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0105")) {
         dumpDiags("no E0105 for fn __main", r);
         return error.TestUnexpectedResult;
@@ -226,7 +226,7 @@ test "E0105: struct __S is reserved" {
         \\  return s.x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0105")) {
         dumpDiags("no E0105 for struct __S", r);
         return error.TestUnexpectedResult;
@@ -237,7 +237,7 @@ test "E0105: parameter __p is reserved" {
     var r = try validateSource(
         \\fn helper(__p: f32) -> f32 { return __p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0105")) {
         dumpDiags("no E0105 for parameter __p", r);
         return error.TestUnexpectedResult;
@@ -252,7 +252,7 @@ test "E0105: struct member __x is reserved" {
         \\  return s.__x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0105")) {
         dumpDiags("no E0105 for struct member __x", r);
         return error.TestUnexpectedResult;
@@ -267,7 +267,7 @@ test "E0105: single-underscore leading name is OK" {
         \\  return _x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     for (r.diagnostics.items()) |d| {
         if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0105")) {
             dumpDiags("unexpected E0105 on '_x'", r);
@@ -284,7 +284,7 @@ test "E0105: x__y (internal double underscore) is OK" {
         \\  return x__y;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     for (r.diagnostics.items()) |d| {
         if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0105")) {
             dumpDiags("unexpected E0105 on 'x__y'", r);
@@ -306,7 +306,7 @@ test "E0213: shift nested in comparison without parens" {
         \\  return a < b << c;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0213")) {
         dumpDiags("no E0213 for 'a < b << c'", r);
         return error.TestUnexpectedResult;
@@ -322,7 +322,7 @@ test "E0213: && and || mixed without parens" {
         \\  return a && b || c;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0213")) {
         dumpDiags("no E0213 for '&& ||'", r);
         return error.TestUnexpectedResult;
@@ -338,7 +338,7 @@ test "E0213: bitwise & and | mixed without parens" {
         \\  return a & b | c;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0213")) {
         dumpDiags("no E0213 for '& |'", r);
         return error.TestUnexpectedResult;
@@ -354,7 +354,7 @@ test "E0213: shift nested in arithmetic without parens" {
         \\  return a + b << c;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0213")) {
         dumpDiags("no E0213 for '+ <<'", r);
         return error.TestUnexpectedResult;
@@ -370,7 +370,7 @@ test "E0213: parentheses silence the check" {
         \\  return (a && b) || c;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     for (r.diagnostics.items()) |d| {
         if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0213")) {
             dumpDiags("unexpected E0213 inside parens", r);
@@ -389,7 +389,7 @@ test "E0213: associative same-op chains are OK" {
         \\  return a & b & c;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     for (r.diagnostics.items()) |d| {
         if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0213")) {
             dumpDiags("unexpected E0213 on associative chain", r);
@@ -407,7 +407,7 @@ test "E0213: arithmetic within arithmetic is OK" {
         \\  return a + b * c;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     for (r.diagnostics.items()) |d| {
         if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0213")) {
             dumpDiags("unexpected E0213 on arithmetic", r);
@@ -427,7 +427,7 @@ test "E0214: *f32 on non-pointer fires" {
         \\  return *x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0214")) {
         dumpDiags("no E0214 for '*x' where x is f32", r);
         return error.TestUnexpectedResult;
@@ -442,7 +442,7 @@ test "E0214: dereferencing a pointer is OK" {
         \\  return *p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     for (r.diagnostics.items()) |d| {
         if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0214")) {
             dumpDiags("unexpected E0214 on valid pointer deref", r);
@@ -459,7 +459,7 @@ test "E0215: &literal has no address" {
         \\  return x;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dumpDiags("no E0215 for '&1.0'", r);
         return error.TestUnexpectedResult;
@@ -475,7 +475,7 @@ test "E0215: &(a + b) has no address" {
         \\  return a;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dumpDiags("no E0215 for '&(a + b)'", r);
         return error.TestUnexpectedResult;
@@ -490,7 +490,7 @@ test "E0215: &x on a variable is OK" {
         \\  return *p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     for (r.diagnostics.items()) |d| {
         if (d.severity == .@"error" and std.mem.eql(u8, d.code, "E0215")) {
             dumpDiags("unexpected E0215 on valid addr-of", r);
@@ -512,7 +512,7 @@ test "E0215: &module_const fires with kind-specific message" {
         \\const C: i32 = 1;
         \\fn main() { let p = &C; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "E0215", "'const' declarations")) {
         dumpDiags("no kind-specific E0215 for '&C' (const)", r);
         return error.TestUnexpectedResult;
@@ -527,7 +527,7 @@ test "E0215: &local_const fires" {
         \\  _ = p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "E0215", "'const' declarations")) {
         dumpDiags("no E0215 for '&c' (local const)", r);
         return error.TestUnexpectedResult;
@@ -539,7 +539,7 @@ test "E0215: &override fires" {
         \\override OV: i32 = 1;
         \\fn main() { let p = &OV; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "E0215", "'override' declarations")) {
         dumpDiags("no E0215 for '&OV' (override)", r);
         return error.TestUnexpectedResult;
@@ -554,7 +554,7 @@ test "E0215: &let_binding fires" {
         \\  _ = p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "E0215", "'let' bindings are not references")) {
         dumpDiags("no E0215 for '&x' (let)", r);
         return error.TestUnexpectedResult;
@@ -568,7 +568,7 @@ test "E0215: &value_parameter fires" {
         \\  return *q;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "E0215", "parameters are not references")) {
         dumpDiags("no E0215 for '&p' (value parameter)", r);
         return error.TestUnexpectedResult;
@@ -580,7 +580,7 @@ test "E0215: &struct_name fires" {
         \\struct S { a: i32 }
         \\fn main() { let p = &S; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "E0215", "type name")) {
         dumpDiags("no E0215 for '&S' (struct name)", r);
         return error.TestUnexpectedResult;
@@ -592,7 +592,7 @@ test "E0215: &alias_name fires" {
         \\alias A = i32;
         \\fn main() { let p = &A; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "E0215", "type name")) {
         dumpDiags("no E0215 for '&A' (alias)", r);
         return error.TestUnexpectedResult;
@@ -604,7 +604,7 @@ test "E0215: &user_function fires" {
         \\fn foo() {}
         \\fn main() { let p = &foo; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorContaining(r, "E0215", "function")) {
         dumpDiags("no E0215 for '&foo' (function)", r);
         return error.TestUnexpectedResult;
@@ -615,7 +615,7 @@ test "E0215: &builtin_function fires" {
     var r = try validateSource(
         \\fn main() { let p = &max; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     // Accept either E0215 (our preferred diagnostic) or any upstream error
     // that catches the builtin reference before it reaches the `&` handler.
     // What we refuse is: silent acceptance producing a phantom pointer.
@@ -644,7 +644,7 @@ test "E0215: &call().field is rejected (call base under member)" {
         \\  _ = p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     // Note: vec component errors (E0216) are specific to vector component
     // addressing; for `&make().x` on a value vector, E0215 fires at the
     // syntactic gate before the vector check runs.
@@ -662,7 +662,7 @@ test "E0215: &call()[0] is rejected (call base under index)" {
         \\  _ = p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dumpDiags("no E0215 for '&make()[0]' (call base)", r);
         return error.TestUnexpectedResult;
@@ -678,7 +678,7 @@ test "E0215: &(a+b).x is rejected (binary base under member)" {
         \\  _ = p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dumpDiags("no E0215 for '&(a+b).x' (binary base)", r);
         return error.TestUnexpectedResult;
@@ -693,7 +693,7 @@ test "E0215: &paren-wrapped call base is still rejected" {
         \\  _ = p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0215")) {
         dumpDiags("no E0215 for '&(make())'", r);
         return error.TestUnexpectedResult;
@@ -714,7 +714,7 @@ test "E0216: &vector_var.x still fires specifically" {
         \\  _ = p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0216")) {
         dumpDiags("no E0216 for '&v.x'", r);
         return error.TestUnexpectedResult;
@@ -729,7 +729,7 @@ test "E0216: &vector_var[0] still fires specifically" {
         \\  _ = p;
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0216")) {
         dumpDiags("no E0216 for '&v[0]'", r);
         return error.TestUnexpectedResult;
@@ -741,7 +741,7 @@ test "E0217: &texture_var still fires specifically" {
         \\@group(0) @binding(0) var tex: texture_2d<f32>;
         \\fn main() { let p = &tex; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0217")) {
         dumpDiags("no E0217 for '&tex' (texture)", r);
         return error.TestUnexpectedResult;
@@ -753,7 +753,7 @@ test "E0217: &sampler_var still fires specifically" {
         \\@group(0) @binding(0) var samp: sampler;
         \\fn main() { let p = &samp; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0217")) {
         dumpDiags("no E0217 for '&samp' (sampler)", r);
         return error.TestUnexpectedResult;
@@ -789,7 +789,7 @@ test "valid: &function_var → ptr<function, T, read_write>" {
         \\  takes(&x);
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&function_var regressed");
 }
 
@@ -799,7 +799,7 @@ test "valid: &private_var → ptr<private, T, read_write>" {
         \\fn takes(p: ptr<private, i32, read_write>) { *p = 1; }
         \\fn main() { takes(&pv); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&private_var regressed");
 }
 
@@ -810,7 +810,7 @@ test "valid: &workgroup_var → ptr<workgroup, T, read_write>" {
         \\@compute @workgroup_size(1)
         \\fn main() { takes(&wg); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&workgroup_var regressed");
 }
 
@@ -821,7 +821,7 @@ test "valid: &storage_var_rw → ptr<storage, T, read_write>" {
         \\@compute @workgroup_size(1)
         \\fn main() { takes(&buf); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&storage_var_rw regressed");
 }
 
@@ -832,7 +832,7 @@ test "valid: &storage_var_default → ptr<storage, T, read>" {
         \\@compute @workgroup_size(1)
         \\fn main() { _ = takes(&buf); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&storage_var_default regressed");
 }
 
@@ -844,7 +844,7 @@ test "valid: &uniform_var → ptr<uniform, T, read>" {
         \\@compute @workgroup_size(1)
         \\fn main() { _ = takes(&uni); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&uniform_var regressed");
 }
 
@@ -856,7 +856,7 @@ test "valid: &struct_var.field carries var AS/AM" {
         \\@compute @workgroup_size(1)
         \\fn main() { takes(&s.a); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&s.field regressed");
 }
 
@@ -866,7 +866,7 @@ test "valid: &array_var[i] carries var AS/AM" {
         \\fn takes(p: ptr<private, i32, read_write>) { *p = 1; }
         \\fn main() { takes(&arr[0]); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&arr[i] regressed");
 }
 
@@ -876,7 +876,7 @@ test "valid: &(*ptr_param).field projects parameter AS/AM" {
         \\fn inner(p: ptr<storage, i32, read_write>) { *p = 1; }
         \\fn outer(p: ptr<storage, S, read_write>) { inner(&(*p).a); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&(*p).field regressed");
 }
 
@@ -885,7 +885,7 @@ test "valid: &(*ptr_param)[i] projects parameter AS/AM" {
         \\fn inner(p: ptr<workgroup, i32, read_write>) { *p = 1; }
         \\fn outer(p: ptr<workgroup, array<i32, 4>, read_write>) { inner(&(*p)[0]); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "&(*p)[i] regressed");
 }
 
@@ -898,7 +898,7 @@ test "valid: deep member chain on storage var" {
         \\@compute @workgroup_size(1)
         \\fn main() { takes(&s.inner.deep); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try assertNoAddressOfErrors(r, "deep member chain regressed");
 }
 
@@ -914,7 +914,7 @@ test "cascade: &undefined_ident reports undefined without extra E0215" {
     var r = try validateSource(
         \\fn main() { let p = &unknown_ident; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     // Undefined-symbol must fire (E0100 or equivalent).
     if (!hasErrorWithCode(r, "E0100")) {
         dumpDiags("expected E0100 for '&unknown_ident'", r);
@@ -932,7 +932,7 @@ test "cascade: &(*unknown).field reports only upstream error" {
     var r = try validateSource(
         \\fn main() { let p = &(*unknown).field; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0100")) {
         dumpDiags("expected E0100 upstream of '&(*unknown).field'", r);
         return error.TestUnexpectedResult;
@@ -950,7 +950,7 @@ test "cascade: &s.missing_field reports no-such-member without extra E0215" {
         \\@compute @workgroup_size(1)
         \\fn main() { let p = &s.missing; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0206")) {
         dumpDiags("expected E0206 for '&s.missing'", r);
         return error.TestUnexpectedResult;
@@ -966,7 +966,7 @@ test "cascade: &arr[undefined] reports undefined without extra E0215" {
         \\var<private> arr: array<i32, 4>;
         \\fn main() { let p = &arr[unknown]; _ = p; }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     if (!hasErrorWithCode(r, "E0100")) {
         dumpDiags("expected E0100 for '&arr[unknown]'", r);
         return error.TestUnexpectedResult;

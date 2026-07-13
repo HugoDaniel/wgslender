@@ -50,7 +50,7 @@ test "decl_span: const with trivial initializer" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const PI: f32 = 3.14;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(usize, 1), module.declarations.items.len);
     const d = module.declarations.items[0];
@@ -61,7 +61,7 @@ test "decl_span: override with attrs" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "@id(0) override K: f32 = 2.0;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "@id(0) override K: f32 = 2.0;");
 }
@@ -70,7 +70,7 @@ test "decl_span: var without initializer" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "var<private> counter: atomic<u32>;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "var<private> counter: atomic<u32>;");
 }
@@ -79,7 +79,7 @@ test "decl_span: var with initializer" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "var<private> counter: u32 = 0u;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "var<private> counter: u32 = 0u;");
 }
@@ -88,7 +88,7 @@ test "decl_span: alias" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "alias V = vec3<f32>;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "alias V = vec3<f32>;");
 }
@@ -97,7 +97,7 @@ test "decl_span: struct with trailing comma" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: f32, y: i32, }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "struct S { x: f32, y: i32, }");
 }
@@ -106,7 +106,7 @@ test "decl_span: struct no trailing comma" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: f32, y: i32 }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "struct S { x: f32, y: i32 }");
 }
@@ -115,7 +115,7 @@ test "decl_span: empty function" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f() {}";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "fn f() {}");
 }
@@ -124,7 +124,7 @@ test "decl_span: function with body and return type" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f(x: i32) -> f32 { return 0.0; }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "fn f(x: i32) -> f32 { return 0.0; }");
 }
@@ -133,7 +133,7 @@ test "decl_span: entry point attrs included" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "@compute @workgroup_size(16) fn main() {}";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "@compute @workgroup_size(16) fn main() {}");
 }
@@ -142,7 +142,7 @@ test "decl_span: binding attributes + template args" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "@group(0) @binding(0) var<uniform> u: f32;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].declSpan(), "@group(0) @binding(0) var<uniform> u: f32;");
 }
@@ -151,7 +151,7 @@ test "decl_span: local let inside function body" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f() { let x = 1; }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const target = findSymByName(module, "x", 0);
     try std.testing.expect(target.isValid());
@@ -163,7 +163,7 @@ test "decl_span: local var typed inside function body" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f() { var y: i32 = 0; }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const range = wgslender.StableId.locateDeclaration(module, "v1:fn:f/block#0/var:y").?;
     try std.testing.expectEqualStrings("var y: i32 = 0;", source[range.start..range.end]);
@@ -173,7 +173,7 @@ test "decl_span: siblings in nested blocks" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f() { { let inner = 1; } }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const range = wgslender.StableId.locateDeclaration(module, "v1:fn:f/block#0/block#0/let:inner").?;
     try std.testing.expectEqualStrings("let inner = 1;", source[range.start..range.end]);
@@ -187,7 +187,7 @@ test "type_span: plain ident" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: f32 }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const s = module.declarations.items[0].@"struct";
     try expectSpan(source, s.members.items[0].typ.span(), "f32");
@@ -197,7 +197,7 @@ test "type_span: attribute does not bleed" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { @align(16) x: f32 }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const s = module.declarations.items[0].@"struct";
     try expectSpan(source, s.members.items[0].typ.span(), "f32");
@@ -207,7 +207,7 @@ test "type_span: vec" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: vec3<f32> }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const s = module.declarations.items[0].@"struct";
     try expectSpan(source, s.members.items[0].typ.span(), "vec3<f32>");
@@ -217,7 +217,7 @@ test "type_span: nested array" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: array<array<vec4<f32>, 4>, 8> }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const s = module.declarations.items[0].@"struct";
     try expectSpan(source, s.members.items[0].typ.span(), "array<array<vec4<f32>, 4>, 8>");
@@ -227,7 +227,7 @@ test "type_span: mat" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: mat4x4<f32> }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const s = module.declarations.items[0].@"struct";
     try expectSpan(source, s.members.items[0].typ.span(), "mat4x4<f32>");
@@ -237,7 +237,7 @@ test "type_span: parameter + return type" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f(x: vec3<f32>, y: f32) -> mat4x4<f32> {}";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const f = module.declarations.items[0].function;
     try expectSpan(source, f.parameters.items[0].typ.span(), "vec3<f32>");
@@ -253,7 +253,7 @@ test "type_span: var + const + local let explicit" {
         \\fn f() { let a: array<i32, 4> = array<i32, 4>(0, 0, 0, 0); }
     ;
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try expectSpan(source, module.declarations.items[0].@"var".typ.?.span(), "atomic<u32>");
     try expectSpan(source, module.declarations.items[1].@"const".typ.?.span(), "f32");
@@ -270,7 +270,7 @@ fn reanalyze(a: std.mem.Allocator, source: []const u8) !bool {
     const z = try a.dupeZ(u8, source);
     defer a.free(z);
     var re = try wgslender.analyze(a, z);
-    defer re.deinit(a);
+    defer re.deinit();
     return re.module != null;
 }
 
@@ -281,7 +281,7 @@ test "removeDeclarationEdit: unused top-level fn" {
         \\@compute @workgroup_size(1) fn main() {}
     ;
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const helper = findSymByName(module, "helper", 0);
     try std.testing.expect(helper.isValid());
@@ -303,7 +303,7 @@ test "removeDeclarationEdit: binding with attributes" {
         \\@compute @workgroup_size(1) fn main() {}
     ;
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
 
     const u = findSymByName(module, "u", 0);
@@ -323,7 +323,7 @@ test "removeDeclarationEdit: local let" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f() { let x = 1; let y = 2; }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const x = findSymByName(module, "x", 0);
 
@@ -340,7 +340,7 @@ test "removeDeclarationEdit: rejects member symbol" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: f32 }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const field = findSymByName(module, "x", 0);
     try std.testing.expect(field.isValid());
@@ -353,7 +353,7 @@ test "removeDeclarationEdit: rejects parameter symbol" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f(x: f32) {}";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const param = findSymByName(module, "x", 0);
 
@@ -365,7 +365,7 @@ test "removeDeclarationEdit: rejects .none" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const X = 1;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const edits = try wgslender.Edits.removeDeclarationEdit(a, module, .none);
     try std.testing.expect(edits == null);
@@ -379,7 +379,7 @@ test "changeTypeEdit: struct field" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: f32 }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const f = findSymByName(module, "x", 0);
 
@@ -396,7 +396,7 @@ test "changeTypeEdit: preserves neighbors in multi-field struct" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { a: f32, b: f32, c: f32 }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const b = findSymByName(module, "b", 0);
 
@@ -413,7 +413,7 @@ test "changeTypeEdit: attribute preserved" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { @align(16) x: f32 }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const x = findSymByName(module, "x", 0);
     const edits = (try wgslender.Edits.changeTypeEdit(a, module, x, "vec4<f32>")) orelse
@@ -428,7 +428,7 @@ test "changeTypeEdit: fn parameter" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f(x: f32) -> f32 { return x; }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const p = findSymByName(module, "x", 0);
 
@@ -445,7 +445,7 @@ test "changeTypeEdit: fn return type" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f() -> f32 { return 1.0; }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const f = findSymByName(module, "f", 0);
 
@@ -461,7 +461,7 @@ test "changeTypeEdit: const with explicit type" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const PI: f32 = 3.14;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const pi = findSymByName(module, "PI", 0);
     const edits = (try wgslender.Edits.changeTypeEdit(a, module, pi, "f16")) orelse
@@ -476,7 +476,7 @@ test "changeTypeEdit: rejects untyped const" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const PI = 3.14;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const pi = findSymByName(module, "PI", 0);
     const edits = try wgslender.Edits.changeTypeEdit(a, module, pi, "f32");
@@ -487,7 +487,7 @@ test "changeTypeEdit: rejects void return type" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f() {}";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const f = findSymByName(module, "f", 0);
     const edits = try wgslender.Edits.changeTypeEdit(a, module, f, "f32");
@@ -498,7 +498,7 @@ test "changeTypeEdit: malformed replacement rejected" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: f32 }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const x = findSymByName(module, "x", 0);
 
@@ -518,7 +518,7 @@ test "locateDeclaration: via stable ID" {
         \\fn helper() -> f32 { return 1.0; }
     ;
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const range = wgslender.StableId.locateDeclaration(module, "v1:fn:helper").?;
     try std.testing.expectEqualStrings("fn helper() -> f32 { return 1.0; }", source[range.start..range.end]);
@@ -528,7 +528,7 @@ test "locateType: fn return type via stable ID" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f() -> vec3<f32> { return vec3<f32>(0.0); }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const range = wgslender.StableId.locateType(module, "v1:fn:f").?;
     try std.testing.expectEqualStrings("vec3<f32>", source[range.start..range.end]);
@@ -538,7 +538,7 @@ test "locateType: struct member via stable ID" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: vec2<f32> }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const range = wgslender.StableId.locateType(module, "v1:struct:S/member:x").?;
     try std.testing.expectEqualStrings("vec2<f32>", source[range.start..range.end]);
@@ -548,7 +548,7 @@ test "locateType: parameter via stable ID" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "fn f(p: u32) {}";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const range = wgslender.StableId.locateType(module, "v1:fn:f/param:p").?;
     try std.testing.expectEqualStrings("u32", source[range.start..range.end]);
@@ -558,7 +558,7 @@ test "locateDeclaration: null for unknown ID" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "const X = 1;";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     try std.testing.expect(wgslender.StableId.locateDeclaration(module, "v1:fn:nope") == null);
     try std.testing.expect(wgslender.StableId.locateType(module, "v1:fn:nope") == null);
@@ -613,7 +613,7 @@ test "compute.toys: changeTypeEdit no-op is byte-identical" {
         const src = try makeSentinel(alloc, bytes);
 
         var an = try wgslender.analyze(a, src);
-        defer an.deinit(a);
+        defer an.deinit();
         const module = an.module orelse continue;
 
         // Walk decls, collect every typed site, apply a no-op changeTypeEdit,
@@ -726,7 +726,7 @@ test "compute.toys: removeDeclarationEdit produces parseable rewrites" {
         const src = try makeSentinel(alloc, bytes);
 
         var an = try wgslender.analyze(a, src);
-        defer an.deinit(a);
+        defer an.deinit();
         const module = an.module orelse continue;
 
         // Collect top-level decl symbols before any rewrite.
@@ -749,7 +749,7 @@ test "compute.toys: removeDeclarationEdit produces parseable rewrites" {
             const rz = try a.dupeZ(u8, rewritten);
             defer a.free(rz);
             var re = try wgslender.analyze(a, rz);
-            defer re.deinit(a);
+            defer re.deinit();
             try std.testing.expect(re.module != null);
             decls_removed += 1;
         }
@@ -767,7 +767,7 @@ test "change + re-stable-id round-trip" {
     const a = std.testing.allocator;
     const source: [:0]const u8 = "struct S { x: f32 } fn f() -> f32 { return 0.0; }";
     var r = try analyze(a, source);
-    defer r.deinit(a);
+    defer r.deinit();
     const module = r.module orelse return error.TestUnexpectedResult;
     const x = findSymByName(module, "x", 0);
     const edits = (try wgslender.Edits.changeTypeEdit(a, module, x, "i32")) orelse
@@ -779,7 +779,7 @@ test "change + re-stable-id round-trip" {
     const z = try a.dupeZ(u8, rewritten);
     defer a.free(z);
     var r2 = try wgslender.analyze(a, z);
-    defer r2.deinit(a);
+    defer r2.deinit();
     const m2 = r2.module orelse return error.TestUnexpectedResult;
 
     const range2 = wgslender.StableId.locateType(m2, "v1:struct:S/member:x").?;

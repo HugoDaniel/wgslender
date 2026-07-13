@@ -166,7 +166,7 @@ pub fn deinit(self: *Handler) void {
     var it = self.documents.iterator();
     while (it.next()) |entry| {
         if (entry.value_ptr.analysis) |a| {
-            a.deinit(self.gpa);
+            a.deinit();
             self.gpa.destroy(a);
         }
         if (entry.value_ptr.analysis_source) |s| {
@@ -192,7 +192,7 @@ pub fn invalidateAnalysis(self: *Handler, uri: []const u8) void {
 
 pub fn invalidateAnalysisAt(self: *Handler, doc: *Document) void {
     if (doc.analysis) |a| {
-        a.deinit(self.gpa);
+        a.deinit();
         self.gpa.destroy(a);
         doc.analysis = null;
     }

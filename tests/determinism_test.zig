@@ -147,7 +147,7 @@ test "determinism: validate" {
 
     for (0..runs) |_| {
         var result = try wgslender.validateWithOptions(a, complex_shader, .{});
-        defer result.deinit(a);
+        defer result.deinit();
 
         if (ref_valid) |rv| {
             try std.testing.expectEqual(rv, result.valid);

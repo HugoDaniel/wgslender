@@ -61,7 +61,7 @@ test "textureSample(texture_2d<f32>, sampler, vec2<f32>) → vec4<f32>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -71,7 +71,7 @@ test "textureSample(texture_2d<i32>, sampler, vec2<f32>) → vec4<i32>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<i32>");
 }
 
@@ -81,7 +81,7 @@ test "textureSample with offset vec2<i32> → vec4<T>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec2<f32>(0.0, 0.0), vec2<i32>(1, 1)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -91,7 +91,7 @@ test "textureSample(texture_2d_array, ..., array_index) → vec4<T>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec2<f32>(0.0, 0.0), 0i); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -101,7 +101,7 @@ test "textureSample(texture_2d_array, ..., array_index, offset) → vec4<T>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec2<f32>(0.0, 0.0), 0i, vec2<i32>(0, 0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -111,7 +111,7 @@ test "textureSample(texture_3d<f32>, sampler, vec3<f32>) → vec4<f32>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec3<f32>(0.0, 0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -121,7 +121,7 @@ test "textureSample(texture_cube<f32>, sampler, vec3<f32>) → vec4<f32>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec3<f32>(0.0, 0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -131,7 +131,7 @@ test "textureSample(texture_depth_2d, sampler, vec2<f32>) → f32" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -141,7 +141,7 @@ test "textureSample(texture_depth_cube_array, sampler, vec3<f32>, arr_idx) → f
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec3<f32>(0.0, 0.0, 0.0), 0i); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -151,7 +151,7 @@ test "textureSample on storage texture rejected — no matching overload" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -161,7 +161,7 @@ test "textureSample with sampler_comparison rejected — wrong sampler kind" {
         \\@group(0) @binding(1) var s: sampler_comparison;
         \\fn f() { let x = textureSample(t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -171,7 +171,7 @@ test "textureSample with vec3<f32> coord on texture_2d rejected" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSample(t, s, vec3<f32>(0.0, 0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -185,7 +185,7 @@ test "textureSampleBias(texture_2d, sampler, vec2f, bias) → vec4<f32>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleBias(t, s, vec2<f32>(0.0, 0.0), 0.5); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -195,7 +195,7 @@ test "textureSampleBias(texture_cube_array, ..., arr_idx, bias) → vec4<f32>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleBias(t, s, vec3<f32>(0.0, 0.0, 0.0), 0i, 0.5); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -205,7 +205,7 @@ test "textureSampleBias on depth texture rejected" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleBias(t, s, vec2<f32>(0.0, 0.0), 0.5); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -221,7 +221,7 @@ test "textureSampleGrad(texture_2d, sampler, vec2f, ddx, ddy) → vec4<f32>" {
         \\  let x = textureSampleGrad(t, s, vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.0), vec2<f32>(0.0, 0.0));
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -236,7 +236,7 @@ test "textureSampleGrad(texture_3d, ..., ddx=vec3, ddy=vec3, offset=vec3i) → v
         \\                               vec3<i32>(0, 0, 0));
         \\}
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -250,7 +250,7 @@ test "textureSampleLevel(texture_2d, sampler, vec2f, f32) → vec4<f32>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleLevel(t, s, vec2<f32>(0.0, 0.0), 0.0); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -260,7 +260,7 @@ test "textureSampleLevel(texture_depth_2d, sampler, vec2f, i32) → f32" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleLevel(t, s, vec2<f32>(0.0, 0.0), 0i); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -270,7 +270,7 @@ test "textureSampleLevel(texture_depth_2d_array, ..., arr_idx, i32, offset) → 
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleLevel(t, s, vec2<f32>(0.0, 0.0), 0i, 0i, vec2<i32>(0, 0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -284,7 +284,7 @@ test "textureSampleCompare(texture_depth_2d, sampler_comparison, vec2f, f32) →
         \\@group(0) @binding(1) var s: sampler_comparison;
         \\fn f() { let x = textureSampleCompare(t, s, vec2<f32>(0.0, 0.0), 0.5); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -294,7 +294,7 @@ test "textureSampleCompareLevel(texture_depth_cube_array, ..., arr_idx, f32) →
         \\@group(0) @binding(1) var s: sampler_comparison;
         \\fn f() { let x = textureSampleCompareLevel(t, s, vec3<f32>(0.0, 0.0, 0.0), 0i, 0.5); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -304,7 +304,7 @@ test "textureSampleCompare on non-depth texture rejected" {
         \\@group(0) @binding(1) var s: sampler_comparison;
         \\fn f() { let x = textureSampleCompare(t, s, vec2<f32>(0.0, 0.0), 0.5); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -314,7 +314,7 @@ test "textureSampleCompare with non-comparison sampler rejected" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleCompare(t, s, vec2<f32>(0.0, 0.0), 0.5); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -328,7 +328,7 @@ test "textureGather(component, texture_2d<f32>, sampler, vec2f) → vec4<f32>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureGather(0i, t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -338,7 +338,7 @@ test "textureGather(component, texture_2d<u32>, sampler, vec2f) → vec4<u32>" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureGather(0i, t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<u32>");
 }
 
@@ -348,7 +348,7 @@ test "textureGather(texture_depth_2d, sampler, vec2f) → vec4<f32> (no componen
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureGather(t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -358,7 +358,7 @@ test "textureGather(texture_depth_2d_array, ..., arr_idx, offset) → vec4<f32>"
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureGather(t, s, vec2<f32>(0.0, 0.0), 0i, vec2<i32>(0, 0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -368,7 +368,7 @@ test "textureGatherCompare(texture_depth_2d, sampler_comparison, vec2f, f32) →
         \\@group(0) @binding(1) var s: sampler_comparison;
         \\fn f() { let x = textureGatherCompare(t, s, vec2<f32>(0.0, 0.0), 0.5); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -378,7 +378,7 @@ test "textureGather on texture_3d rejected — spec disallows 3d" {
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureGather(0i, t, s, vec3<f32>(0.0, 0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }
 
@@ -392,7 +392,7 @@ test "textureSampleBaseClampToEdge(texture_2d<f32>, sampler, vec2f) → vec4<f32
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleBaseClampToEdge(t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -402,7 +402,7 @@ test "textureSampleBaseClampToEdge(texture_external, sampler, vec2f) → vec4<f3
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleBaseClampToEdge(t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec4<f32>");
 }
 
@@ -412,6 +412,6 @@ test "textureSampleBaseClampToEdge on texture_2d<i32> rejected — f32-element o
         \\@group(0) @binding(1) var s: sampler;
         \\fn f() { let x = textureSampleBaseClampToEdge(t, s, vec2<f32>(0.0, 0.0)); }
     );
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try std.testing.expect(anyError(r));
 }

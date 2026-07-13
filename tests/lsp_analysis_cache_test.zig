@@ -50,7 +50,7 @@ fn expectConsistencyOracle(handler: *Handler, uri: []const u8) !void {
     defer std.testing.allocator.free(source_z);
 
     var oracle = try wgslender.analyzeWithOptions(std.testing.allocator, source_z, .{});
-    defer oracle.deinit(std.testing.allocator);
+    defer oracle.deinit();
 
     const analyzed = try handler.analyzeDocument(uri);
 
@@ -524,7 +524,7 @@ test "LA14: is_live flags match oracle after symbol-free hot edit" {
     const source_z = try std.testing.allocator.dupeZ(u8, doc_source);
     defer std.testing.allocator.free(source_z);
     var oracle = try wgslender.analyzeWithOptions(std.testing.allocator, source_z, .{});
-    defer oracle.deinit(std.testing.allocator);
+    defer oracle.deinit();
     if (oracle.module) |om| {
         if (oracle._arena) |*oa| {
             const aa = oa.allocator();

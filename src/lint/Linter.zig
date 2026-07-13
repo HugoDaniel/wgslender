@@ -337,7 +337,7 @@ test "Linter: empty options produces no diagnostics" {
     const root = @import("../root.zig");
     const src: [:0]const u8 = "fn unused_fn() {}";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{});
     defer result.deinit(std.testing.allocator);
@@ -349,7 +349,7 @@ test "Linter: extends @wgslender/recommended catches unused" {
     const root = @import("../root.zig");
     const src: [:0]const u8 = "fn unused_fn() {}";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .extends = &.{"@wgslender/recommended"},
@@ -362,7 +362,7 @@ test "Linter: rule override to error elevates severity" {
     const root = @import("../root.zig");
     const src: [:0]const u8 = "fn unused_fn() {}";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .rules = &.{
@@ -378,7 +378,7 @@ test "Linter: rule override to disabled silences extended pack" {
     const root = @import("../root.zig");
     const src: [:0]const u8 = "fn unused_fn() {}";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .extends = &.{"@wgslender/recommended"},
@@ -395,7 +395,7 @@ test "Linter: disabled flag suppresses all diagnostics" {
     const root = @import("../root.zig");
     const src: [:0]const u8 = "fn unused_fn() {}";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .extends = &.{"@wgslender/recommended"},
@@ -409,7 +409,7 @@ test "Linter: unknown extends name is ignored" {
     const root = @import("../root.zig");
     const src: [:0]const u8 = "fn unused_fn() {}";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .extends = &.{ "@wgslender/nope", "@wgslender/recommended" },
@@ -422,7 +422,7 @@ test "Linter: unknown rule id in rules is ignored" {
     const root = @import("../root.zig");
     const src: [:0]const u8 = "fn unused_fn() {}";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .rules = &.{
@@ -439,7 +439,7 @@ test "Linter: Diagnostic.source stamped on every entry" {
     const root = @import("../root.zig");
     const src: [:0]const u8 = "fn unused_fn() {}";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .rules = &.{.{ .id = "no-unused-vars", .severity = .warning }},
@@ -458,7 +458,7 @@ test "Linter: listener-driven rule fires via shared MultiVisitor walk" {
     // the listener-driven `no-redundant-casts` rule.
     const src: [:0]const u8 = "fn f(x: f32, y: f32) -> f32 { return f32(x) + f32(y); }";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .rules = &.{.{ .id = "no-redundant-casts", .severity = .warning }},
@@ -481,7 +481,7 @@ test "Linter: fixable_count excludes diagnostics silenced by disable directives"
         "// wgslender-disable-file no-redundant-casts\n" ++
         "fn f(x: f32, y: f32) -> f32 { return f32(x) + f32(y); }";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .rules = &.{.{ .id = "no-redundant-casts", .severity = .warning }},
@@ -499,7 +499,7 @@ test "Linter: two listener-driven rules share one walk and both fire" {
     const src: [:0]const u8 =
         "fn f(a: f32, b: f32, t: f32) -> f32 { return f32(a + (b - a) * t); }";
     var analysis = try root.analyzeWithOptions(std.testing.allocator, src, .{});
-    defer analysis.deinit(std.testing.allocator);
+    defer analysis.deinit();
 
     var result = try run(std.testing.allocator, &analysis, .{
         .rules = &.{

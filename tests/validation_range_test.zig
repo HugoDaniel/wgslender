@@ -102,7 +102,7 @@ test "validation range: unknown type underlines full type name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "VertexOutput" is 12 chars
     try expectErrorWidth(result, "unknown type", 12);
 }
@@ -114,7 +114,7 @@ test "validation range: short unknown type underlines 1 char" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "T" is 1 char
     try expectErrorWidth(result, "unknown type", 1);
 }
@@ -127,7 +127,7 @@ test "validation range: undefined identifier underlines full name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "myVariable" is 10 chars
     try expectErrorWidth(result, "undeclared identifier", 10);
 }
@@ -140,7 +140,7 @@ test "validation range: short undefined identifier underlines 1 char" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorWidth(result, "undeclared identifier", 1);
 }
 
@@ -156,7 +156,7 @@ test "validation range: vec shorthand type range" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorWidth(result, "cannot initialize", 1); // 'x' is the declaration name
 }
 
@@ -166,7 +166,7 @@ test "validation range: custom struct type range in error" {
         \\const x: MyStruct = 1.5;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorWidth(result, "cannot initialize", 1); // 'x' is 1 char
 }
 
@@ -182,7 +182,7 @@ test "validation range: binary operator range for +" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // '+' is 1 char
     try expectErrorWidth(result, "requires numeric", 1);
 }
@@ -196,7 +196,7 @@ test "validation range: binary operator range for ==" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // '==' is 2 chars
     try expectErrorWidth(result, "requires compatible", 2);
 }
@@ -209,7 +209,7 @@ test "validation range: binary operator range for <<" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // '<<' is 2 chars
     try expectErrorWidth(result, "requires integer", 2);
 }
@@ -222,7 +222,7 @@ test "validation range: unary operator range for !" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // '!' is 1 char
     try expectErrorWidth(result, "requires 'bool'", 1);
 }
@@ -235,7 +235,7 @@ test "validation range: unary operator range for ~" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // '~' is 1 char
     try expectErrorWidth(result, "requires integer", 1);
 }
@@ -249,7 +249,7 @@ test "validation range: const declaration name range" {
         \\const myvar: i32 = 1.5;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "myvar" is 5 chars
     try expectErrorWidth(result, "cannot initialize", 5);
 }
@@ -260,7 +260,7 @@ test "validation range: var declaration name range" {
         \\var<private> myvar: i32 = 1.5;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     try expectErrorWidth(result, "cannot initialize", 5);
 }
 
@@ -272,7 +272,7 @@ test "validation range: let declaration name range" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "mylet" is 5 chars
     try expectErrorWidth(result, "cannot initialize", 5);
 }
@@ -283,7 +283,7 @@ test "validation range: override declaration name range" {
         \\override o: S = 1;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "o" is 1 char
     try expectErrorWidth(result, "must be bool", 1);
 }
@@ -300,7 +300,7 @@ test "validation range: break outside loop underlines keyword" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "break" is 5 chars
     try expectErrorWidth(result, "break", 5);
 }
@@ -313,7 +313,7 @@ test "validation range: continue outside loop underlines keyword" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "continue" is 8 chars
     try expectErrorWidth(result, "continue", 8);
 }
@@ -326,7 +326,7 @@ test "validation range: discard outside fragment underlines keyword" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "discard" is 7 chars
     try expectErrorWidth(result, "discard", 7);
 }
@@ -338,7 +338,7 @@ test "validation range: return missing value underlines keyword" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "return" is 6 chars
     try expectErrorWidth(result, "return must provide", 6);
 }
@@ -357,7 +357,7 @@ test "validation range: member access error underlines dot+member" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // ".nonexistent" is 1 (dot) + 11 (name) = 12 chars
     try expectErrorWidth(result, "no member", 12);
 }
@@ -372,7 +372,7 @@ test "validation range: short member access error" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // ".z" is 2 chars
     try expectErrorWidth(result, "no member", 2);
 }
@@ -389,7 +389,7 @@ test "validation range: unknown function call underlines function name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "nonexistent" is 11 chars — error message varies (could be "undeclared" or "not callable")
     try expectErrorWidth(result, "nonexistent", 11);
 }
@@ -406,7 +406,7 @@ test "validation range: related info for duplicate member spans full name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // Primary error: "myfield" is 7 chars
     try expectErrorWidth(result, "duplicate member", 7);
     // Related: "first declared here" also spans "myfield" = 7 chars
@@ -418,7 +418,7 @@ test "validation range: related info for type annotation spans type name" {
         \\const x: i32 = 1.5;
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // Related: "type 'i32' declared here" spans "i32" = 3 chars
     try expectRelatedWidth(result, "cannot initialize", 3);
 }
@@ -434,7 +434,7 @@ test "validation range: return type mismatch underlines return expression" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "1.5" is 3 chars
     try expectErrorWidth(result, "cannot return", 3);
 }
@@ -448,7 +448,7 @@ test "validation range: assignment type mismatch underlines RHS expression" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "1.5" is 3 chars
     try expectErrorWidth(result, "cannot assign", 3);
 }
@@ -464,7 +464,7 @@ test "validation range: recursive struct underlines struct name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "Node" is 4 chars
     try expectErrorWidth(result, "contains itself recursively", 4);
 }
@@ -480,7 +480,7 @@ test "validation range: end-of-source error does not crash" {
         \\  let x: i32 =
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // Just verify no crash — may or may not have errors
     _ = result.diagnostics.count();
 }
@@ -493,7 +493,7 @@ test "validation range: single-char identifier range" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "x" is 1 char
     try expectErrorWidth(result, "undeclared identifier", 1);
 }
@@ -511,7 +511,7 @@ test "validation range: unknown type in function signature is not duplicated" {
         \\fn main(input: BadType) {}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // Count how many times "unknown type 'BadType'" appears
     var count: u32 = 0;
     for (result.diagnostics.diagnostics.items) |d| {
@@ -530,7 +530,7 @@ test "validation range: unknown return type is not duplicated" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     var count: u32 = 0;
     for (result.diagnostics.diagnostics.items) |d| {
         if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, "unknown type 'BadOutput'") != null) {
@@ -553,7 +553,7 @@ test "validation range: invalid swizzle underlines dot+swizzle" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // ".wxyz" is 1 (dot) + 4 (swizzle) = 5 chars
     try expectErrorWidth(result, "swizzle", 5);
 }
@@ -567,7 +567,7 @@ test "validation range: out-of-bounds swizzle component on vec2" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // ".z" is 2 chars
     try expectErrorWidth(result, "out of bounds", 2);
 }
@@ -581,7 +581,7 @@ test "validation range: mixed swizzle groups xyzw and rgba" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // ".xr" is 3 chars
     try expectErrorWidth(result, "mixes xyzw and rgba", 3);
 }
@@ -599,7 +599,7 @@ test "validation range: not-indexable error underlines bracket" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // '[' is 1 char
     try expectErrorWidth(result, "not indexable", 1);
 }
@@ -613,7 +613,7 @@ test "validation range: array index type error underlines the index expression" 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // The `.integer_scalar` expectation reports E0200 at the offending
     // sub-expression (the `1.5` literal, 3 chars wide) rather than at the
     // opening `[` — a more useful range for editors.
@@ -629,7 +629,7 @@ test "validation range: array index inner binary underlines the whole expression
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // `1.0 + 2.0` is 9 chars — exprSpan covers leftmost to rightmost.
     try expectErrorWidth(result, "expected integer scalar", 9);
 }
@@ -642,7 +642,7 @@ test "validation range: shift RHS float underlines the literal" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // `1.5` is 3 chars — the shift-amount type error underlines the RHS operand.
     try expectErrorWidth(result, "shift amount must be 'u32'", 3);
 }
@@ -655,7 +655,7 @@ test "validation range: shift RHS bool underlines the literal" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // `true` is 4 chars — the shift-amount type error underlines the RHS operand.
     try expectErrorWidth(result, "shift amount must be 'u32'", 4);
 }
@@ -672,7 +672,7 @@ test "validation range: unary negation of bool underlines -" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // '-' is 1 char
     try expectErrorWidth(result, "signed numeric", 1);
 }
@@ -686,7 +686,7 @@ test "validation range: deref non-pointer underlines *" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // '*' is 1 char
     try expectErrorWidth(result, "unary '*' requires a pointer", 1);
 }
@@ -704,7 +704,7 @@ test "validation range: wrong argument count underlines function name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "foo" is 3 chars
     try expectErrorWidth(result, "expects 2 arguments", 3);
 }
@@ -718,7 +718,7 @@ test "validation range: wrong argument type underlines function name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "foo" is 3 chars
     try expectErrorWidth(result, "argument 1", 3);
 }
@@ -731,7 +731,7 @@ test "validation range: builtin arg count error underlines function name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "sin" is 3 chars
     try expectErrorWidth(result, "expects", 3);
 }
@@ -748,7 +748,7 @@ test "validation range: if condition type error underlines condition expression"
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "42" is 2 chars
     try expectErrorWidth(result, "if condition must be 'bool'", 2);
 }
@@ -761,7 +761,7 @@ test "validation range: while condition type error underlines condition" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "123" is 3 chars
     try expectErrorWidth(result, "while condition must be 'bool'", 3);
 }
@@ -774,7 +774,7 @@ test "validation range: for condition type error underlines condition" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "99" is 2 chars
     try expectErrorWidth(result, "for condition must be 'bool'", 2);
 }
@@ -792,7 +792,7 @@ test "validation range: compound assignment operator error underlines operator" 
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "+=" is 2 chars
     try expectErrorWidth(result, "invalid operands", 2);
 }
@@ -806,7 +806,7 @@ test "validation range: incr/decr on float underlines operand expression" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "x" is 1 char
     try expectErrorWidth(result, "increment/decrement", 1);
 }
@@ -820,7 +820,7 @@ test "validation range: empty struct error underlines struct name" {
         \\struct Empty {}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "Empty" is 5 chars
     try expectErrorWidth(result, "must have at least one member", 5);
 }
@@ -836,7 +836,7 @@ test "validation range: missing return underlines function name" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "compute" is 7 chars
     try expectErrorWidth(result, "must return a value", 7);
 }
@@ -853,7 +853,7 @@ test "validation range: error at exact column with indentation" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "unknownIdent" starts at col 17, ends at col 29
     try expectErrorRange(result, "undeclared identifier", 17, 29);
 }
@@ -863,7 +863,7 @@ test "validation range: error at column 1 for top-level declaration" {
         \\struct E {}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     // "E" is at col 8, ends at col 9
     try expectErrorRange(result, "must have at least one member", 8, 9);
 }
@@ -880,7 +880,7 @@ test "validation range: multiple unknown types each appear exactly once" {
         \\}
     ;
     var result = try validateSource(source);
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
     var count_a: u32 = 0;
     var count_b: u32 = 0;
     var count_c: u32 = 0;

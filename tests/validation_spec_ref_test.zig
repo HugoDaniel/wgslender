@@ -141,7 +141,7 @@ test "add: leaves spec_ref empty when no code is set" {
 
 fn expectAllDiagsHaveSpecRef(source: [:0]const u8) !void {
     var r = try wgslender.validateWithOptions(std.testing.allocator, source, .{});
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
 
     for (r.diagnostics.items()) |d| {
         if (d.code.len == 0) continue; // raw errors without codes are allowed

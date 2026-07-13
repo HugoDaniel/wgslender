@@ -37,7 +37,7 @@ fn expectCode(
     want_code: []const u8,
 ) !void {
     var r = try validate(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
 
     for (r.diagnostics.items()) |d| {
         if (d.severity != .@"error") continue;
@@ -60,7 +60,7 @@ fn expectBadArg(
     want_arg_1based: u32,
 ) !void {
     var r = try validate(src);
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
 
     var arg_buf: [32]u8 = undefined;
     const arg_needle = try std.fmt.bufPrint(&arg_buf, "argument {d}", .{want_arg_1based});
@@ -474,7 +474,7 @@ test "bitcast rejects f16 source (not in concrete_32 family)" {
     // concrete_32 family. Message path differs (bitcast has its own
     // dispatcher), so just confirm *some* error fires.
     var r = try validate(wrapMain("let r = bitcast<f32>(1.0h);"));
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     var has_err = false;
     for (r.diagnostics.items()) |d| {
         if (d.severity == .@"error") {

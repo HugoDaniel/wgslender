@@ -4,7 +4,7 @@ const wgslender = @import("wgslender");
 
 fn getUnusedWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
     var result = try wgslender.analyzeWithOptions(std.testing.allocator, source, .{});
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     var diags: std.ArrayListUnmanaged(Handler.LspDiagnostic) = .empty;
     Handler.appendUnusedWarnings(std.testing.allocator, &result, &diags);
@@ -162,7 +162,7 @@ test "unused warnings: unused symbol has unnecessary tag" {
 
 fn getDeadCodeWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
     var result = try wgslender.analyzeWithOptions(std.testing.allocator, source, .{});
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Run DCE to compute is_live flags. Stash the Liveness side-table
     // on the analysis so the new `unused_warnings` reads exercise the
@@ -221,7 +221,7 @@ test "dead code: entry point itself not flagged" {
 
 fn getUnusedBindingWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
     var result = try wgslender.analyzeWithOptions(std.testing.allocator, source, .{});
-    defer result.deinit(std.testing.allocator);
+    defer result.deinit();
 
     // Run DCE to compute is_live flags. Stash the Liveness side-table
     // on the analysis so the new `unused_warnings` reads exercise the

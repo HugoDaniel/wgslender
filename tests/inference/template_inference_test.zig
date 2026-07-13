@@ -39,43 +39,43 @@ fn expectLetString(r: *const wgslender.Validator.AnalysisResult, name: []const u
 
 test "§14.462: bare vec2(1, 2) infers vec2<i32> at let" {
     var r = try analyze("fn f() { let a = vec2(1, 2); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec2<i32>");
 }
 
 test "§14.462: bare vec3(1.0, 2.0, 3.0) infers vec3<f32> at let" {
     var r = try analyze("fn f() { let a = vec3(1.0, 2.0, 3.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec3<f32>");
 }
 
 test "§14.462: bare vec4(1u, 2u, 3u, 4u) infers vec4<u32>" {
     var r = try analyze("fn f() { let a = vec4(1u, 2u, 3u, 4u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec4<u32>");
 }
 
 test "§14.462: bare vec2(1, 2u) — one u32 forces vec2<u32>" {
     var r = try analyze("fn f() { let a = vec2(1, 2u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec2<u32>");
 }
 
 test "§14.462: bare vec3(1.0, 2, 3) — one float forces vec3<f32>" {
     var r = try analyze("fn f() { let a = vec3(1.0, 2, 3); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec3<f32>");
 }
 
 test "§14.462: nested vec3(vec2(1.0, 2.0), 3.0) → vec3<f32>" {
     var r = try analyze("fn f() { let a = vec3(vec2(1.0, 2.0), 3.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec3<f32>");
 }
 
 test "§14.462: nested vec4(vec3(1, 2, 3), 4) — all-abstract-int" {
     var r = try analyze("fn f() { let a = vec4(vec3(1, 2, 3), 4); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec4<i32>");
 }
 
@@ -83,19 +83,19 @@ test "§14.462: nested vec4(vec3(1, 2, 3), 4) — all-abstract-int" {
 
 test "§14.462: vec2f(1, 2) → vec2<f32> (args convert abstract→f32)" {
     var r = try analyze("fn f() { let a = vec2f(1, 2); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec2<f32>");
 }
 
 test "§14.462: vec3i(1, 2, 3) → vec3<i32>" {
     var r = try analyze("fn f() { let a = vec3i(1, 2, 3); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec3<i32>");
 }
 
 test "§14.462: vec4u(1, 2, 3, 4) → vec4<u32>" {
     var r = try analyze("fn f() { let a = vec4u(1, 2, 3, 4); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec4<u32>");
 }
 
@@ -103,13 +103,13 @@ test "§14.462: vec4u(1, 2, 3, 4) → vec4<u32>" {
 
 test "§14.462: vec2<i32>(3, 4) → vec2<i32>" {
     var r = try analyze("fn f() { let a = vec2<i32>(3, 4); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec2<i32>");
 }
 
 test "§14.462: vec3<f32>(1, 2, 3) → vec3<f32>" {
     var r = try analyze("fn f() { let a = vec3<f32>(1, 2, 3); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec3<f32>");
 }
 
@@ -117,7 +117,7 @@ test "§14.462: vec3<f32>(1, 2, 3) → vec3<f32>" {
 
 test "§14.462: vec3<f32>(1.0f) splat → vec3<f32>" {
     var r = try analyze("fn f() { let a = vec3<f32>(1.0f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec3<f32>");
 }
 
@@ -125,19 +125,19 @@ test "§14.462: vec3<f32>(1.0f) splat → vec3<f32>" {
 
 test "§14.462: bare mat2x2(…) all-f32 → mat2x2<f32>" {
     var r = try analyze("fn f() { let a = mat2x2(1.0f, 2.0f, 3.0f, 4.0f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "mat2x2<f32>");
 }
 
 test "§14.462: bare mat3x3(…) abstract-float args → mat3x3<f32>" {
     var r = try analyze("fn f() { let a = mat3x3(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "mat3x3<f32>");
 }
 
 test "§14.462: mat2x3f(…) explicit → mat2x3<f32>" {
     var r = try analyze("fn f() { let a = mat2x3f(1.0, 2.0, 3.0, 4.0, 5.0, 6.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "mat2x3<f32>");
 }
 
@@ -145,13 +145,13 @@ test "§14.462: mat2x3f(…) explicit → mat2x3<f32>" {
 
 test "§14.462 regression: min(vec2(1,2), vec2<i32>(3,4)) → vec2<i32>" {
     var r = try analyze("fn f() { let x = min(vec2(1, 2), vec2<i32>(3, 4)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<i32>");
 }
 
 test "§14.462 regression: min(vec3(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0)) → vec3<f32>" {
     var r = try analyze("fn f() { let x = min(vec3(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -159,6 +159,6 @@ test "§14.462 regression: min(vec3(1.0, 2.0, 3.0), vec3f(4.0, 5.0, 6.0)) → ve
 
 test "§14.462: vec2<f32>(vec2f(1.0)) → vec2<f32>" {
     var r = try analyze("fn f() { let a = vec2<f32>(vec2f(1.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "a", "vec2<f32>");
 }

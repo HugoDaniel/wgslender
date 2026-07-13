@@ -199,7 +199,7 @@ test "tint corpus diagnostic-code pin + oracle triage" {
                 outcome = .validate_error;
                 break :process;
             };
-            defer result.deinit(alloc);
+            defer result.deinit();
 
             shaders_processed += 1;
             switch (verdict) {

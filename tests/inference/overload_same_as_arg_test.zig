@@ -38,31 +38,31 @@ fn expectLetString(r: *const wgslender.Validator.AnalysisResult, name: []const u
 
 test "same_as_arg: min(abs, u32) → u32" {
     var r = try analyze("fn f() { let x = min(5, 0u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
 test "same_as_arg: min(u32, abs) → u32" {
     var r = try analyze("fn f() { let x = min(0u, 5); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
 test "same_as_arg: min(abs, abs-float) → abstract-float → f32 at let" {
     var r = try analyze("fn f() { let x = min(0, 1.0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
 test "same_as_arg: max(f32, abs) → f32" {
     var r = try analyze("fn f() { let x = max(1.5f, 0); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
 test "same_as_arg: min all-abstract stays abstract then demotes to i32 at let" {
     var r = try analyze("fn f() { let x = min(5, 10); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
@@ -72,7 +72,7 @@ test "same_as_arg: min all-abstract stays abstract then demotes to i32 at let" {
 // still demotes via `Types.concreteType` (§15).
 test "same_as_arg: min all-abstract at module-scope const preserves abstract-int" {
     var r = try analyze("const x = min(5, 10);");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const mod = r.module orelse return error.TestUnexpectedResult;
     var found = false;
     for (mod.symbols.items, 0..) |sym, idx| {
@@ -89,19 +89,19 @@ test "same_as_arg: min all-abstract at module-scope const preserves abstract-int
 
 test "same_as_arg: clamp(abs, f32, abs) → f32" {
     var r = try analyze("fn f() { let x = clamp(0, 1f, 1); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
 test "same_as_arg: clamp(abs, abs, u32) → u32" {
     var r = try analyze("fn f() { let x = clamp(5, 0, 1u); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "u32");
 }
 
 test "same_as_arg: clamp all-abstract → i32 at let" {
     var r = try analyze("fn f() { let x = clamp(1, 0, 10); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
@@ -109,7 +109,7 @@ test "same_as_arg: clamp all-abstract → i32 at let" {
 
 test "same_as_arg: mix(abs-float, f32, abs-float) → f32" {
     var r = try analyze("fn f() { let x = mix(0.0, 1.0f, 0.5); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -117,19 +117,19 @@ test "same_as_arg: mix(abs-float, f32, abs-float) → f32" {
 
 test "same_as_arg: select(i32, i32, bool) → i32" {
     var r = try analyze("fn f() { let x = select(1i, 2i, true); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
 test "same_as_arg: select(abs, abs, bool) → i32 at let" {
     var r = try analyze("fn f() { let x = select(1, 2, true); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "i32");
 }
 
 test "same_as_arg: select(abs, f32, bool) → f32 — numeric args unified despite bool trailing" {
     var r = try analyze("fn f() { let x = select(0, 1.5f, true); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -137,7 +137,7 @@ test "same_as_arg: select(abs, f32, bool) → f32 — numeric args unified despi
 
 test "same_as_arg: refract(vec3f, vec3f, f32) → vec3<f32>" {
     var r = try analyze("fn f() { let x = refract(vec3f(1.0), vec3f(0.0, 0.0, 1.0), 1.5f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -145,13 +145,13 @@ test "same_as_arg: refract(vec3f, vec3f, f32) → vec3<f32>" {
 
 test "same_as_arg: min(vec<i32>, vec<i32>) → vec<i32>" {
     var r = try analyze("fn f() { let x = min(vec2<i32>(1, 2), vec2<i32>(3, 4)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec2<i32>");
 }
 
 test "same_as_arg: min(vec<f32>, vec<f32>) → vec<f32>" {
     var r = try analyze("fn f() { let x = min(vec3<f32>(1.0), vec3<f32>(2.0)); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "vec3<f32>");
 }
 
@@ -159,7 +159,7 @@ test "same_as_arg: min(vec<f32>, vec<f32>) → vec<f32>" {
 
 test "same_as_arg: abs(-5) at module-scope const preserves abstract-int" {
     var r = try analyze("const x = abs(-5);");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const mod = r.module orelse return error.TestUnexpectedResult;
     var found = false;
     for (mod.symbols.items, 0..) |sym, idx| {
@@ -174,7 +174,7 @@ test "same_as_arg: abs(-5) at module-scope const preserves abstract-int" {
 
 test "same_as_arg: sin(1.0) at module-scope const preserves abstract-float" {
     var r = try analyze("const x = sin(1.0);");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     const mod = r.module orelse return error.TestUnexpectedResult;
     var found = false;
     for (mod.symbols.items, 0..) |sym, idx| {
@@ -189,7 +189,7 @@ test "same_as_arg: sin(1.0) at module-scope const preserves abstract-float" {
 
 test "same_as_arg: sin(1.0f) at let → f32" {
     var r = try analyze("fn f() { let x = sin(1.0f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -197,13 +197,13 @@ test "same_as_arg: sin(1.0f) at let → f32" {
 
 test "same_as_arg: step(abs, f32) → f32" {
     var r = try analyze("fn f() { let x = step(0.5, 1.0f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
 test "same_as_arg: smoothstep(abs, f32, abs) → f32" {
     var r = try analyze("fn f() { let x = smoothstep(0.0, 1.0f, 0.5); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
 
@@ -211,6 +211,6 @@ test "same_as_arg: smoothstep(abs, f32, abs) → f32" {
 
 test "same_as_arg: fma(abs, abs, f32) → f32" {
     var r = try analyze("fn f() { let x = fma(1.0, 2.0, 3.0f); }");
-    defer r.deinit(std.testing.allocator);
+    defer r.deinit();
     try expectLetString(&r, "x", "f32");
 }
