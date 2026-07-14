@@ -14,8 +14,8 @@
 //! vector-algebra helpers are float-only.
 //!
 //! Post-Phase-2 (Task #9): domain enforcement lives in the declarative
-//! overload signatures in `Builtins.sig_entries`; the legacy
-//! `mathBuiltinDomain` switch has been retired. Rejection errors now
+//! overload signatures on each `Builtins.Builtin` row (`.overloads`); the
+//! legacy `mathBuiltinDomain` switch has been retired. Rejection errors now
 //! read "no matching overload for 'X': argument N has type 'Y'".
 
 const std = @import("std");

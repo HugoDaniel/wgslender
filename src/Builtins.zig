@@ -57,7 +57,22 @@ pub const UniformityRequirement = enum(u8) {
 // Builtin Definition
 // =========================================================================
 
+/// Documentation for a WGSL builtin function, used by the LSP hover feature.
+pub const BuiltinDoc = struct {
+    /// Generic signature from the WGSL spec (e.g., "fn sin(e: T) -> T").
+    signature: []const u8,
+    /// One-line description of the function.
+    description: []const u8,
+    /// Type constraint or overload info (e.g., "T is f32, f16, vecN<f32>, or vecN<f16>").
+    type_constraint: []const u8,
+};
+
 /// Describes a single WGSL builtin function.
+///
+/// One row is the single source of truth for a builtin: its metadata,
+/// its declarative overload set, and its hover documentation all live
+/// here (see `def`). `lookup()` returns the row verbatim — there are no
+/// side tables to keep in sync.
 pub const Builtin = struct {
     name: []const u8,
     kind: Kind,
@@ -70,9 +85,12 @@ pub const Builtin = struct {
     /// this table; `Validator.checkBuiltinCall` asserts non-empty and
     /// routes through `Overload.resolve`. `bitcast` is the only exception
     /// — it dispatches from its own block with template-seeded bindings
-    /// (see `bitcast_to_*_sigs` below), so its `lookup().overloads` is
+    /// (see `bitcast_to_*_sigs` below), so its `overloads` is
     /// intentionally empty.
     overloads: []const Overload.OverloadSig = &.{},
+    /// Hover documentation (WGSL-spec signature, one-line description, type
+    /// constraint). Consumed by `lsp/handler/hover.zig` via `doc()`.
+    doc: BuiltinDoc,
 
     /// Returns true if this builtin requires uniform control flow.
     pub fn requiresUniform(self: *const Builtin) bool {
@@ -99,24 +117,17 @@ pub const Builtin = struct {
 // =========================================================================
 
 /// Comptime-built lookup table mapping builtin function names to definitions.
+/// Each value is a complete `Builtin` row (metadata + overloads + doc); there
+/// are no side tables to merge.
 const table = std.StaticStringMap(Builtin).initComptime(builtin_entries);
-
-/// Side table of declarative overload signatures. Kept separate from
-/// `table` so the core entries remain simple tuples; `lookup()` merges
-/// in the signatures when present. See `Overload.zig` for the signature
-/// DSL and solver.
-const sig_table = std.StaticStringMap([]const Overload.OverloadSig).initComptime(sig_entries);
 
 /// Look up a builtin function by name, or return null if not found.
 /// Empty `name` is permitted and returns null — callers use it as a
 /// "no callee identifier" sentinel (e.g. method-call expressions).
 pub fn lookup(name: []const u8) ?Builtin {
-    var b = table.get(name) orelse return null;
+    const b = table.get(name) orelse return null;
     assert(b.min_args <= b.max_args);
     assert(std.mem.eql(u8, b.name, name));
-    if (sig_table.get(name)) |sigs| {
-        b.overloads = sigs;
-    }
     return b;
 }
 
@@ -132,6 +143,14 @@ pub fn names() []const []const u8 {
     assert(keys.len > 0);
     assert(keys.len == table.kvs.len);
     return keys;
+}
+
+/// Look up hover documentation for a builtin function by name, or null if
+/// not found. The doc is a field of the builtin's row (see `Builtin.doc`);
+/// this is just a thin accessor over `lookup`. Consumed by
+/// `lsp/handler/hover.zig`.
+pub fn doc(name: []const u8) ?BuiltinDoc {
+    return (lookup(name) orelse return null).doc;
 }
 
 // =========================================================================
@@ -158,12 +177,20 @@ const builtin_entries = conversion_entries ++
     synchronization_entries ++
     subgroup_entries;
 
+// Shared type-constraint strings for the hover `doc` fields below.
+const T_FLOAT = "T is f32, f16, vecN<f32>, or vecN<f16>";
+const T_FLOAT_INT = "T is f32, f16, i32, u32, vecN<f32>, vecN<f16>, vecN<i32>, or vecN<u32>";
+const T_INT = "T is i32, u32, vecN<i32>, or vecN<u32>";
+const T_NUMERIC = "T is f32, f16, i32, u32, or vecN of these";
+
 // ---------------------------------------------------------------------------
 // Conversion Builtins (Section 17.2)
 // ---------------------------------------------------------------------------
 
 const conversion_entries = [_]struct { []const u8, Builtin }{
-    entry("bitcast", .conversion, .const_eval, .none, 1, 1, true),
+    // bitcast dispatches via template-seeded `bitcast_to_*_sigs`, so its
+    // overload set here is intentionally empty (see `def` / the guard test).
+    def("bitcast", .conversion, .const_eval, .none, 1, 1, true, &.{}, "fn bitcast<T>(e: S) -> T", "Reinterprets the bits of the value as the target type.", "T and S must have the same bit width"),
 };
 
 // ---------------------------------------------------------------------------
@@ -171,9 +198,9 @@ const conversion_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const logical_entries = [_]struct { []const u8, Builtin }{
-    entry("all", .logical, .const_eval, .none, 1, 1, true),
-    entry("any", .logical, .const_eval, .none, 1, 1, true),
-    entry("select", .logical, .const_eval, .none, 3, 3, true),
+    def("all", .logical, .const_eval, .none, 1, 1, true, bool_reduce_sigs, "fn all(e: vecN<bool>) -> bool", "Returns true if every component of e is true.", ""),
+    def("any", .logical, .const_eval, .none, 1, 1, true, bool_reduce_sigs, "fn any(e: vecN<bool>) -> bool", "Returns true if any component of e is true.", ""),
+    def("select", .logical, .const_eval, .none, 3, 3, true, select_sigs, "fn select(f: T, t: T, cond: bool) -> T", "Returns t when cond is true, and f otherwise.", T_NUMERIC),
 };
 
 // ---------------------------------------------------------------------------
@@ -181,7 +208,7 @@ const logical_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const array_entries = [_]struct { []const u8, Builtin }{
-    entry("arrayLength", .array, .runtime, .none, 1, 1, true),
+    def("arrayLength", .array, .runtime, .none, 1, 1, true, array_length_sigs, "fn arrayLength(p: ptr<storage, array<T>>) -> u32", "Returns the number of elements in the runtime-sized array.", ""),
 };
 
 // ---------------------------------------------------------------------------
@@ -189,19 +216,19 @@ const array_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_trig_entries = [_]struct { []const u8, Builtin }{
-    entry("sin", .numeric, .const_eval, .none, 1, 1, true),
-    entry("cos", .numeric, .const_eval, .none, 1, 1, true),
-    entry("tan", .numeric, .const_eval, .none, 1, 1, true),
-    entry("asin", .numeric, .const_eval, .none, 1, 1, true),
-    entry("acos", .numeric, .const_eval, .none, 1, 1, true),
-    entry("atan", .numeric, .const_eval, .none, 1, 1, true),
-    entry("sinh", .numeric, .const_eval, .none, 1, 1, true),
-    entry("cosh", .numeric, .const_eval, .none, 1, 1, true),
-    entry("tanh", .numeric, .const_eval, .none, 1, 1, true),
-    entry("asinh", .numeric, .const_eval, .none, 1, 1, true),
-    entry("acosh", .numeric, .const_eval, .none, 1, 1, true),
-    entry("atanh", .numeric, .const_eval, .none, 1, 1, true),
-    entry("atan2", .numeric, .const_eval, .none, 2, 2, true),
+    def("sin", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn sin(e: T) -> T", "Returns the sine of e (radians).", T_FLOAT),
+    def("cos", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn cos(e: T) -> T", "Returns the cosine of e (radians).", T_FLOAT),
+    def("tan", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn tan(e: T) -> T", "Returns the tangent of e (radians).", T_FLOAT),
+    def("asin", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn asin(e: T) -> T", "Returns the arc sine of e. Result in [-pi/2, pi/2].", T_FLOAT),
+    def("acos", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn acos(e: T) -> T", "Returns the arc cosine of e. Result in [0, pi].", T_FLOAT),
+    def("atan", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn atan(e: T) -> T", "Returns the arc tangent of e. Result in [-pi/2, pi/2].", T_FLOAT),
+    def("sinh", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn sinh(e: T) -> T", "Returns the hyperbolic sine of e.", T_FLOAT),
+    def("cosh", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn cosh(e: T) -> T", "Returns the hyperbolic cosine of e.", T_FLOAT),
+    def("tanh", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn tanh(e: T) -> T", "Returns the hyperbolic tangent of e.", T_FLOAT),
+    def("asinh", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn asinh(e: T) -> T", "Returns the inverse hyperbolic sine of e.", T_FLOAT),
+    def("acosh", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn acosh(e: T) -> T", "Returns the inverse hyperbolic cosine of e.", T_FLOAT),
+    def("atanh", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn atanh(e: T) -> T", "Returns the inverse hyperbolic tangent of e.", T_FLOAT),
+    def("atan2", .numeric, .const_eval, .none, 2, 2, true, binary_float_sigs, "fn atan2(y: T, x: T) -> T", "Returns the arc tangent of y/x. Result in [-pi, pi].", T_FLOAT),
 };
 
 // ---------------------------------------------------------------------------
@@ -209,13 +236,13 @@ const numeric_trig_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_exp_entries = [_]struct { []const u8, Builtin }{
-    entry("exp", .numeric, .const_eval, .none, 1, 1, true),
-    entry("exp2", .numeric, .const_eval, .none, 1, 1, true),
-    entry("log", .numeric, .const_eval, .none, 1, 1, true),
-    entry("log2", .numeric, .const_eval, .none, 1, 1, true),
-    entry("pow", .numeric, .const_eval, .none, 2, 2, true),
-    entry("sqrt", .numeric, .const_eval, .none, 1, 1, true),
-    entry("inverseSqrt", .numeric, .const_eval, .none, 1, 1, true),
+    def("exp", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn exp(e: T) -> T", "Returns the natural exponentiation e^e.", T_FLOAT),
+    def("exp2", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn exp2(e: T) -> T", "Returns 2 raised to the power e.", T_FLOAT),
+    def("log", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn log(e: T) -> T", "Returns the natural logarithm of e.", T_FLOAT),
+    def("log2", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn log2(e: T) -> T", "Returns the base-2 logarithm of e.", T_FLOAT),
+    def("pow", .numeric, .const_eval, .none, 2, 2, true, binary_float_sigs, "fn pow(base: T, exponent: T) -> T", "Returns base raised to the power exponent.", T_FLOAT),
+    def("sqrt", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn sqrt(e: T) -> T", "Returns the square root of e.", T_FLOAT),
+    def("inverseSqrt", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn inverseSqrt(e: T) -> T", "Returns the reciprocal of the square root of e.", T_FLOAT),
 };
 
 // ---------------------------------------------------------------------------
@@ -223,23 +250,23 @@ const numeric_exp_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_misc_entries = [_]struct { []const u8, Builtin }{
-    entry("abs", .numeric, .const_eval, .none, 1, 1, true),
-    entry("sign", .numeric, .const_eval, .none, 1, 1, true),
-    entry("floor", .numeric, .const_eval, .none, 1, 1, true),
-    entry("ceil", .numeric, .const_eval, .none, 1, 1, true),
-    entry("round", .numeric, .const_eval, .none, 1, 1, true),
-    entry("trunc", .numeric, .const_eval, .none, 1, 1, true),
-    entry("fract", .numeric, .const_eval, .none, 1, 1, true),
-    entry("min", .numeric, .const_eval, .none, 2, 2, true),
-    entry("max", .numeric, .const_eval, .none, 2, 2, true),
-    entry("clamp", .numeric, .const_eval, .none, 3, 3, true),
-    entry("saturate", .numeric, .const_eval, .none, 1, 1, true),
-    entry("mix", .numeric, .const_eval, .none, 3, 3, true),
-    entry("step", .numeric, .const_eval, .none, 2, 2, true),
-    entry("smoothstep", .numeric, .const_eval, .none, 3, 3, true),
-    entry("fma", .numeric, .const_eval, .none, 3, 3, true),
-    entry("degrees", .numeric, .const_eval, .none, 1, 1, true),
-    entry("radians", .numeric, .const_eval, .none, 1, 1, true),
+    def("abs", .numeric, .const_eval, .none, 1, 1, true, unary_numeric_sigs, "fn abs(e: T) -> T", "Returns the absolute value of e.", T_FLOAT_INT),
+    def("sign", .numeric, .const_eval, .none, 1, 1, true, unary_numeric_sigs, "fn sign(e: T) -> T", "Returns the sign of e: -1, 0, or 1.", T_FLOAT_INT),
+    def("floor", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn floor(e: T) -> T", "Returns the floor of e (largest integer <= e).", T_FLOAT),
+    def("ceil", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn ceil(e: T) -> T", "Returns the ceiling of e (smallest integer >= e).", T_FLOAT),
+    def("round", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn round(e: T) -> T", "Returns e rounded to the nearest integer.", T_FLOAT),
+    def("trunc", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn trunc(e: T) -> T", "Returns the integer part of e, removing fractional digits.", T_FLOAT),
+    def("fract", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn fract(e: T) -> T", "Returns the fractional part of e (e - floor(e)).", T_FLOAT),
+    def("min", .numeric, .const_eval, .none, 2, 2, true, binary_numeric_sigs, "fn min(e1: T, e2: T) -> T", "Returns the minimum of e1 and e2.", T_FLOAT_INT),
+    def("max", .numeric, .const_eval, .none, 2, 2, true, binary_numeric_sigs, "fn max(e1: T, e2: T) -> T", "Returns the maximum of e1 and e2.", T_FLOAT_INT),
+    def("clamp", .numeric, .const_eval, .none, 3, 3, true, ternary_numeric_sigs, "fn clamp(e: T, low: T, high: T) -> T", "Restricts e to the range [low, high].", T_FLOAT_INT),
+    def("saturate", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn saturate(e: T) -> T", "Clamps e to the range [0.0, 1.0].", T_FLOAT),
+    def("mix", .numeric, .const_eval, .none, 3, 3, true, mix_sigs, "fn mix(e1: T, e2: T, e3: T) -> T", "Returns the linear blend e1*(1-e3) + e2*e3.", T_FLOAT),
+    def("step", .numeric, .const_eval, .none, 2, 2, true, binary_float_sigs, "fn step(edge: T, x: T) -> T", "Returns 0.0 if x < edge, otherwise 1.0.", T_FLOAT),
+    def("smoothstep", .numeric, .const_eval, .none, 3, 3, true, ternary_float_sigs, "fn smoothstep(low: T, high: T, x: T) -> T", "Returns smooth Hermite interpolation between 0 and 1.", T_FLOAT),
+    def("fma", .numeric, .const_eval, .none, 3, 3, true, ternary_float_sigs, "fn fma(e1: T, e2: T, e3: T) -> T", "Returns e1 * e2 + e3 (fused multiply-add).", T_FLOAT),
+    def("degrees", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn degrees(e: T) -> T", "Converts radians to degrees.", T_FLOAT),
+    def("radians", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn radians(e: T) -> T", "Converts degrees to radians.", T_FLOAT),
 };
 
 // ---------------------------------------------------------------------------
@@ -247,16 +274,16 @@ const numeric_misc_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_vector_entries = [_]struct { []const u8, Builtin }{
-    entry("dot", .numeric, .const_eval, .none, 2, 2, true),
-    entry("dot4I8Packed", .numeric, .const_eval, .none, 2, 2, true),
-    entry("dot4U8Packed", .numeric, .const_eval, .none, 2, 2, true),
-    entry("cross", .numeric, .const_eval, .none, 2, 2, true),
-    entry("length", .numeric, .const_eval, .none, 1, 1, true),
-    entry("distance", .numeric, .const_eval, .none, 2, 2, true),
-    entry("normalize", .numeric, .const_eval, .none, 1, 1, true),
-    entry("reflect", .numeric, .const_eval, .none, 2, 2, true),
-    entry("refract", .numeric, .const_eval, .none, 3, 3, true),
-    entry("faceForward", .numeric, .const_eval, .none, 3, 3, true),
+    def("dot", .numeric, .const_eval, .none, 2, 2, true, dot_sigs, "fn dot(e1: vecN<T>, e2: vecN<T>) -> T", "Returns the dot product of e1 and e2.", "T is f32, f16"),
+    def("dot4I8Packed", .numeric, .const_eval, .none, 2, 2, true, dot4I8Packed_sigs, "fn dot4I8Packed(e1: u32, e2: u32) -> i32", "Interprets inputs as vectors of four 8-bit signed integers and returns the signed dot product.", "Requires packed_4x8_integer_dot_product"),
+    def("dot4U8Packed", .numeric, .const_eval, .none, 2, 2, true, dot4U8Packed_sigs, "fn dot4U8Packed(e1: u32, e2: u32) -> u32", "Interprets inputs as vectors of four 8-bit unsigned integers and returns the unsigned dot product.", "Requires packed_4x8_integer_dot_product"),
+    def("cross", .numeric, .const_eval, .none, 2, 2, true, cross_sigs, "fn cross(e1: vec3<T>, e2: vec3<T>) -> vec3<T>", "Returns the cross product of e1 and e2.", "T is f32, f16"),
+    def("length", .numeric, .const_eval, .none, 1, 1, true, length_sigs, "fn length(e: vecN<T>) -> T", "Returns the length (magnitude) of e.", "T is f32, f16"),
+    def("distance", .numeric, .const_eval, .none, 2, 2, true, distance_sigs, "fn distance(e1: vecN<T>, e2: vecN<T>) -> T", "Returns the distance between e1 and e2.", "T is f32, f16"),
+    def("normalize", .numeric, .const_eval, .none, 1, 1, true, normalize_sigs, "fn normalize(e: vecN<T>) -> vecN<T>", "Returns the unit vector in the direction of e.", "T is f32, f16"),
+    def("reflect", .numeric, .const_eval, .none, 2, 2, true, reflect_sigs, "fn reflect(e1: vecN<T>, e2: vecN<T>) -> vecN<T>", "Returns the reflection direction for incident e1 and normal e2.", "T is f32, f16"),
+    def("refract", .numeric, .const_eval, .none, 3, 3, true, refract_sigs, "fn refract(e1: vecN<T>, e2: vecN<T>, e3: T) -> vecN<T>", "Returns the refraction vector for incident e1, normal e2, and ratio e3.", "T is f32, f16"),
+    def("faceForward", .numeric, .const_eval, .none, 3, 3, true, faceForward_sigs, "fn faceForward(e1: vecN<T>, e2: vecN<T>, e3: vecN<T>) -> vecN<T>", "Returns e1 if dot(e2,e3) < 0, otherwise -e1.", "T is f32, f16"),
 };
 
 // ---------------------------------------------------------------------------
@@ -264,14 +291,14 @@ const numeric_vector_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_bit_entries = [_]struct { []const u8, Builtin }{
-    entry("countOneBits", .numeric, .const_eval, .none, 1, 1, true),
-    entry("countLeadingZeros", .numeric, .const_eval, .none, 1, 1, true),
-    entry("countTrailingZeros", .numeric, .const_eval, .none, 1, 1, true),
-    entry("reverseBits", .numeric, .const_eval, .none, 1, 1, true),
-    entry("firstLeadingBit", .numeric, .const_eval, .none, 1, 1, true),
-    entry("firstTrailingBit", .numeric, .const_eval, .none, 1, 1, true),
-    entry("extractBits", .numeric, .const_eval, .none, 3, 3, true),
-    entry("insertBits", .numeric, .const_eval, .none, 4, 4, true),
+    def("countOneBits", .numeric, .const_eval, .none, 1, 1, true, unary_int_sigs, "fn countOneBits(e: T) -> T", "Returns the number of 1 bits in the binary representation of e.", T_INT),
+    def("countLeadingZeros", .numeric, .const_eval, .none, 1, 1, true, unary_int_sigs, "fn countLeadingZeros(e: T) -> T", "Returns the number of leading zero bits in e.", T_INT),
+    def("countTrailingZeros", .numeric, .const_eval, .none, 1, 1, true, unary_int_sigs, "fn countTrailingZeros(e: T) -> T", "Returns the number of trailing zero bits in e.", T_INT),
+    def("reverseBits", .numeric, .const_eval, .none, 1, 1, true, unary_int_sigs, "fn reverseBits(e: T) -> T", "Returns e with its bits reversed.", T_INT),
+    def("firstLeadingBit", .numeric, .const_eval, .none, 1, 1, true, unary_int_sigs, "fn firstLeadingBit(e: T) -> T", "Returns the bit position of the most significant 1 bit, or -1/0xFFFFFFFF.", T_INT),
+    def("firstTrailingBit", .numeric, .const_eval, .none, 1, 1, true, unary_int_sigs, "fn firstTrailingBit(e: T) -> T", "Returns the bit position of the least significant 1 bit, or -1/0xFFFFFFFF.", T_INT),
+    def("extractBits", .numeric, .const_eval, .none, 3, 3, true, extractBits_sigs, "fn extractBits(e: T, offset: u32, count: u32) -> T", "Extracts count bits from e starting at offset.", T_INT),
+    def("insertBits", .numeric, .const_eval, .none, 4, 4, true, insertBits_sigs, "fn insertBits(e: T, newbits: T, offset: u32, count: u32) -> T", "Replaces count bits in e starting at offset with bits from newbits.", T_INT),
 };
 
 // ---------------------------------------------------------------------------
@@ -279,8 +306,8 @@ const numeric_bit_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_matrix_entries = [_]struct { []const u8, Builtin }{
-    entry("transpose", .numeric, .const_eval, .none, 1, 1, true),
-    entry("determinant", .numeric, .const_eval, .none, 1, 1, true),
+    def("transpose", .numeric, .const_eval, .none, 1, 1, true, transpose_sigs, "fn transpose(e: matRxC<T>) -> matCxR<T>", "Returns the transpose of the matrix.", "T is f32, f16"),
+    def("determinant", .numeric, .const_eval, .none, 1, 1, true, determinant_sigs, "fn determinant(e: matNxN<T>) -> T", "Returns the determinant of the square matrix.", "T is f32, f16"),
 };
 
 // ---------------------------------------------------------------------------
@@ -288,15 +315,15 @@ const numeric_matrix_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const numeric_special_entries = [_]struct { []const u8, Builtin }{
-    entry("ldexp", .numeric, .const_eval, .none, 2, 2, true),
+    def("ldexp", .numeric, .const_eval, .none, 2, 2, true, ldexp_sigs, "fn ldexp(e1: T, e2: I) -> T", "Returns e1 * 2^e2.", "T is f32, f16; I is i32 or vecN<i32>"),
     // frexp/modf are const functions (WGSL §17.5): `const r = frexp(1.25)` is a
     // const-expression — Tint const-folds them to an OpConstantComposite. Their
     // struct result has no bearing on eval stage; `.const_eval` (like every other
     // const-capable numeric) lets a const arg stay const while a runtime arg still
     // yields a runtime call. `.runtime` here wrongly forced E0302 in const context.
-    entry("frexp", .numeric, .const_eval, .none, 1, 1, true),
-    entry("modf", .numeric, .const_eval, .none, 1, 1, true),
-    entry("quantizeToF16", .numeric, .const_eval, .none, 1, 1, true),
+    def("frexp", .numeric, .const_eval, .none, 1, 1, true, frexp_sigs, "fn frexp(e: T) -> __frexp_result", "Splits e into a significand in [0.5,1.0) and an exponent.", T_FLOAT),
+    def("modf", .numeric, .const_eval, .none, 1, 1, true, modf_sigs, "fn modf(e: T) -> __modf_result", "Splits e into integer and fractional parts.", T_FLOAT),
+    def("quantizeToF16", .numeric, .const_eval, .none, 1, 1, true, unary_float_sigs, "fn quantizeToF16(e: T) -> T", "Quantizes e to IEEE-754 binary16 then converts back.", "T is f32 or vecN<f32>"),
 };
 
 // ---------------------------------------------------------------------------
@@ -304,15 +331,15 @@ const numeric_special_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const derivative_entries = [_]struct { []const u8, Builtin }{
-    entry("dpdx", .derivative, .runtime, .uniform_flow, 1, 1, true),
-    entry("dpdy", .derivative, .runtime, .uniform_flow, 1, 1, true),
-    entry("fwidth", .derivative, .runtime, .uniform_flow, 1, 1, true),
-    entry("dpdxCoarse", .derivative, .runtime, .uniform_flow, 1, 1, true),
-    entry("dpdyCoarse", .derivative, .runtime, .uniform_flow, 1, 1, true),
-    entry("fwidthCoarse", .derivative, .runtime, .uniform_flow, 1, 1, true),
-    entry("dpdxFine", .derivative, .runtime, .uniform_flow, 1, 1, true),
-    entry("dpdyFine", .derivative, .runtime, .uniform_flow, 1, 1, true),
-    entry("fwidthFine", .derivative, .runtime, .uniform_flow, 1, 1, true),
+    def("dpdx", .derivative, .runtime, .uniform_flow, 1, 1, true, unary_float_sigs, "fn dpdx(e: T) -> T", "Returns the partial derivative of e with respect to window x.", T_FLOAT),
+    def("dpdy", .derivative, .runtime, .uniform_flow, 1, 1, true, unary_float_sigs, "fn dpdy(e: T) -> T", "Returns the partial derivative of e with respect to window y.", T_FLOAT),
+    def("fwidth", .derivative, .runtime, .uniform_flow, 1, 1, true, unary_float_sigs, "fn fwidth(e: T) -> T", "Returns abs(dpdx(e)) + abs(dpdy(e)).", T_FLOAT),
+    def("dpdxCoarse", .derivative, .runtime, .uniform_flow, 1, 1, true, unary_float_sigs, "fn dpdxCoarse(e: T) -> T", "Returns a coarse partial derivative of e w.r.t. window x.", T_FLOAT),
+    def("dpdyCoarse", .derivative, .runtime, .uniform_flow, 1, 1, true, unary_float_sigs, "fn dpdyCoarse(e: T) -> T", "Returns a coarse partial derivative of e w.r.t. window y.", T_FLOAT),
+    def("fwidthCoarse", .derivative, .runtime, .uniform_flow, 1, 1, true, unary_float_sigs, "fn fwidthCoarse(e: T) -> T", "Returns abs(dpdxCoarse(e)) + abs(dpdyCoarse(e)).", T_FLOAT),
+    def("dpdxFine", .derivative, .runtime, .uniform_flow, 1, 1, true, unary_float_sigs, "fn dpdxFine(e: T) -> T", "Returns a fine partial derivative of e w.r.t. window x.", T_FLOAT),
+    def("dpdyFine", .derivative, .runtime, .uniform_flow, 1, 1, true, unary_float_sigs, "fn dpdyFine(e: T) -> T", "Returns a fine partial derivative of e w.r.t. window y.", T_FLOAT),
+    def("fwidthFine", .derivative, .runtime, .uniform_flow, 1, 1, true, unary_float_sigs, "fn fwidthFine(e: T) -> T", "Returns abs(dpdxFine(e)) + abs(dpdyFine(e)).", T_FLOAT),
 };
 
 // ---------------------------------------------------------------------------
@@ -321,27 +348,27 @@ const derivative_entries = [_]struct { []const u8, Builtin }{
 
 const texture_entries = [_]struct { []const u8, Builtin }{
     // textureSample requires uniform control flow
-    entry("textureSample", .texture, .runtime, .uniform_flow, 2, 5, true),
-    entry("textureSampleBias", .texture, .runtime, .uniform_flow, 3, 6, true),
-    entry("textureSampleCompare", .texture, .runtime, .uniform_flow, 3, 6, true),
+    def("textureSample", .texture, .runtime, .uniform_flow, 2, 5, true, textureSample_sigs, "fn textureSample(t: texture, s: sampler, coords: vecN<f32>, ...) -> vec4<f32>", "Samples a texture using implicit level of detail.", "Requires uniform control flow"),
+    def("textureSampleBias", .texture, .runtime, .uniform_flow, 3, 6, true, textureSampleBias_sigs, "fn textureSampleBias(t: texture, s: sampler, coords: vecN<f32>, bias: f32, ...) -> vec4<f32>", "Samples a texture with a bias applied to the mip level.", "Requires uniform control flow"),
+    def("textureSampleCompare", .texture, .runtime, .uniform_flow, 3, 6, true, textureSampleCompare_sigs, "fn textureSampleCompare(t: texture_depth, s: sampler_comparison, coords: vecN<f32>, depth_ref: f32, ...) -> f32", "Samples a depth texture and compares against a reference value.", "Requires uniform control flow"),
     // textureSampleCompareLevel does NOT require uniform control flow
-    entry("textureSampleCompareLevel", .texture, .runtime, .none, 4, 6, true),
+    def("textureSampleCompareLevel", .texture, .runtime, .none, 4, 6, true, textureSampleCompareLevel_sigs, "fn textureSampleCompareLevel(t: texture_depth, s: sampler_comparison, coords: vecN<f32>, depth_ref: f32, ...) -> f32", "Samples a depth texture at mip level 0 and compares against a reference value.", ""),
     // textureSampleLevel does NOT require uniform control flow
-    entry("textureSampleLevel", .texture, .runtime, .none, 3, 6, true),
+    def("textureSampleLevel", .texture, .runtime, .none, 3, 6, true, textureSampleLevel_sigs, "fn textureSampleLevel(t: texture, s: sampler, coords: vecN<f32>, level: f32, ...) -> vec4<f32>", "Samples a texture at an explicit mip level.", ""),
     // textureSampleGrad does NOT require uniform control flow
-    entry("textureSampleGrad", .texture, .runtime, .none, 4, 7, true),
+    def("textureSampleGrad", .texture, .runtime, .none, 4, 7, true, textureSampleGrad_sigs, "fn textureSampleGrad(t: texture, s: sampler, coords: vecN<f32>, ddx: vecN<f32>, ddy: vecN<f32>, ...) -> vec4<f32>", "Samples a texture using explicit gradients.", ""),
     // textureLoad/Store
-    entry("textureLoad", .texture, .runtime, .none, 2, 4, true),
-    entry("textureStore", .texture, .runtime, .none, 3, 4, false),
+    def("textureLoad", .texture, .runtime, .none, 2, 4, true, textureLoad_sigs, "fn textureLoad(t: texture, coords: vecN<i32/u32>, ...) -> vec4<T>", "Reads a single texel from a texture without sampling.", ""),
+    def("textureStore", .texture, .runtime, .none, 3, 4, false, textureStore_sigs, "fn textureStore(t: texture_storage, coords: vecN<i32/u32>, value: vec4<T>)", "Writes a single texel to a storage texture.", ""),
     // textureDimensions, textureNumLayers, textureNumLevels, textureNumSamples
-    entry("textureDimensions", .texture, .runtime, .none, 1, 2, true),
-    entry("textureNumLayers", .texture, .runtime, .none, 1, 1, true),
-    entry("textureNumLevels", .texture, .runtime, .none, 1, 1, true),
-    entry("textureNumSamples", .texture, .runtime, .none, 1, 1, true),
+    def("textureDimensions", .texture, .runtime, .none, 1, 2, true, textureDimensions_sigs, "fn textureDimensions(t: texture, ...) -> vecN<u32>", "Returns the dimensions of the texture in texels.", ""),
+    def("textureNumLayers", .texture, .runtime, .none, 1, 1, true, textureNumLayers_sigs, "fn textureNumLayers(t: texture_array) -> u32", "Returns the number of layers in an arrayed texture.", ""),
+    def("textureNumLevels", .texture, .runtime, .none, 1, 1, true, textureNumLevels_sigs, "fn textureNumLevels(t: texture) -> u32", "Returns the number of mip levels in the texture.", ""),
+    def("textureNumSamples", .texture, .runtime, .none, 1, 1, true, textureNumSamples_sigs, "fn textureNumSamples(t: texture_multisampled) -> u32", "Returns the number of samples per texel in a multisampled texture.", ""),
     // textureGather and textureGatherCompare require uniform control flow
-    entry("textureGather", .texture, .runtime, .uniform_flow, 3, 6, true),
-    entry("textureGatherCompare", .texture, .runtime, .uniform_flow, 4, 6, true),
-    entry("textureSampleBaseClampToEdge", .texture, .runtime, .none, 3, 3, true),
+    def("textureGather", .texture, .runtime, .uniform_flow, 3, 6, true, textureGather_sigs, "fn textureGather(component: i32, t: texture, s: sampler, coords: vecN<f32>, ...) -> vec4<T>", "Gathers the component from four texels in a 2x2 footprint.", "Requires uniform control flow"),
+    def("textureGatherCompare", .texture, .runtime, .uniform_flow, 4, 6, true, textureGatherCompare_sigs, "fn textureGatherCompare(t: texture_depth, s: sampler_comparison, coords: vec2<f32>, depth_ref: f32, ...) -> vec4<f32>", "Gathers depth comparison results from four texels.", "Requires uniform control flow"),
+    def("textureSampleBaseClampToEdge", .texture, .runtime, .none, 3, 3, true, textureSampleBaseClampToEdge_sigs, "fn textureSampleBaseClampToEdge(t: texture_2d<f32>, s: sampler, coords: vec2<f32>) -> vec4<f32>", "Samples a texture at base level, clamping coordinates to avoid edge wrapping.", "T is texture_2d<f32> or texture_external"),
 };
 
 // ---------------------------------------------------------------------------
@@ -349,17 +376,17 @@ const texture_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const atomic_entries = [_]struct { []const u8, Builtin }{
-    entry("atomicLoad", .atomic, .runtime, .none, 1, 1, true),
-    entry("atomicStore", .atomic, .runtime, .none, 2, 2, false),
-    entry("atomicAdd", .atomic, .runtime, .none, 2, 2, true),
-    entry("atomicSub", .atomic, .runtime, .none, 2, 2, true),
-    entry("atomicMax", .atomic, .runtime, .none, 2, 2, true),
-    entry("atomicMin", .atomic, .runtime, .none, 2, 2, true),
-    entry("atomicAnd", .atomic, .runtime, .none, 2, 2, true),
-    entry("atomicOr", .atomic, .runtime, .none, 2, 2, true),
-    entry("atomicXor", .atomic, .runtime, .none, 2, 2, true),
-    entry("atomicExchange", .atomic, .runtime, .none, 2, 2, true),
-    entry("atomicCompareExchangeWeak", .atomic, .runtime, .none, 3, 3, true),
+    def("atomicLoad", .atomic, .runtime, .none, 1, 1, true, atomic_load_sigs, "fn atomicLoad(p: ptr<AS, atomic<T>>) -> T", "Atomically loads the value pointed to by p.", "T is i32 or u32"),
+    def("atomicStore", .atomic, .runtime, .none, 2, 2, false, atomic_store_sigs, "fn atomicStore(p: ptr<AS, atomic<T>>, v: T)", "Atomically stores v into the value pointed to by p.", "T is i32 or u32"),
+    def("atomicAdd", .atomic, .runtime, .none, 2, 2, true, atomic_rmw_sigs, "fn atomicAdd(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically adds v to *p and returns the original value.", "T is i32 or u32"),
+    def("atomicSub", .atomic, .runtime, .none, 2, 2, true, atomic_rmw_sigs, "fn atomicSub(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically subtracts v from *p and returns the original value.", "T is i32 or u32"),
+    def("atomicMax", .atomic, .runtime, .none, 2, 2, true, atomic_rmw_sigs, "fn atomicMax(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores max(*p, v) and returns the original value.", "T is i32 or u32"),
+    def("atomicMin", .atomic, .runtime, .none, 2, 2, true, atomic_rmw_sigs, "fn atomicMin(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores min(*p, v) and returns the original value.", "T is i32 or u32"),
+    def("atomicAnd", .atomic, .runtime, .none, 2, 2, true, atomic_rmw_sigs, "fn atomicAnd(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores (*p & v) and returns the original value.", "T is i32 or u32"),
+    def("atomicOr", .atomic, .runtime, .none, 2, 2, true, atomic_rmw_sigs, "fn atomicOr(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores (*p | v) and returns the original value.", "T is i32 or u32"),
+    def("atomicXor", .atomic, .runtime, .none, 2, 2, true, atomic_rmw_sigs, "fn atomicXor(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores (*p ^ v) and returns the original value.", "T is i32 or u32"),
+    def("atomicExchange", .atomic, .runtime, .none, 2, 2, true, atomic_rmw_sigs, "fn atomicExchange(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically replaces *p with v and returns the original value.", "T is i32 or u32"),
+    def("atomicCompareExchangeWeak", .atomic, .runtime, .none, 3, 3, true, atomic_cmp_xchg_sigs, "fn atomicCompareExchangeWeak(p: ptr<AS, atomic<T>>, expected: T, v: T) -> __atomic_compare_exchange_result<T>", "Atomically compares *p with expected and exchanges with v if equal.", "T is i32 or u32"),
 };
 
 // ---------------------------------------------------------------------------
@@ -368,23 +395,23 @@ const atomic_entries = [_]struct { []const u8, Builtin }{
 
 const packing_entries = [_]struct { []const u8, Builtin }{
     // Packing functions: input is a vector, output is u32
-    entry("pack4x8snorm", .packing, .const_eval, .none, 1, 1, true),
-    entry("pack4x8unorm", .packing, .const_eval, .none, 1, 1, true),
-    entry("pack2x16snorm", .packing, .const_eval, .none, 1, 1, true),
-    entry("pack2x16unorm", .packing, .const_eval, .none, 1, 1, true),
-    entry("pack2x16float", .packing, .const_eval, .none, 1, 1, true),
-    entry("pack4xI8", .packing, .const_eval, .none, 1, 1, true),
-    entry("pack4xU8", .packing, .const_eval, .none, 1, 1, true),
-    entry("pack4xI8Clamp", .packing, .const_eval, .none, 1, 1, true),
-    entry("pack4xU8Clamp", .packing, .const_eval, .none, 1, 1, true),
+    def("pack4x8snorm", .packing, .const_eval, .none, 1, 1, true, pack_vec4_f32_sigs, "fn pack4x8snorm(e: vec4<f32>) -> u32", "Packs four normalized f32 values into a u32 as signed bytes.", ""),
+    def("pack4x8unorm", .packing, .const_eval, .none, 1, 1, true, pack_vec4_f32_sigs, "fn pack4x8unorm(e: vec4<f32>) -> u32", "Packs four normalized f32 values into a u32 as unsigned bytes.", ""),
+    def("pack2x16snorm", .packing, .const_eval, .none, 1, 1, true, pack_vec2_f32_sigs, "fn pack2x16snorm(e: vec2<f32>) -> u32", "Packs two normalized f32 values into a u32 as signed 16-bit integers.", ""),
+    def("pack2x16unorm", .packing, .const_eval, .none, 1, 1, true, pack_vec2_f32_sigs, "fn pack2x16unorm(e: vec2<f32>) -> u32", "Packs two normalized f32 values into a u32 as unsigned 16-bit integers.", ""),
+    def("pack2x16float", .packing, .const_eval, .none, 1, 1, true, pack_vec2_f32_sigs, "fn pack2x16float(e: vec2<f32>) -> u32", "Packs two f32 values into a u32 as f16 values.", ""),
+    def("pack4xI8", .packing, .const_eval, .none, 1, 1, true, pack_vec4_i32_sigs, "fn pack4xI8(e: vec4<i32>) -> u32", "Packs four i32 values into a u32 as signed bytes.", ""),
+    def("pack4xU8", .packing, .const_eval, .none, 1, 1, true, pack_vec4_u32_sigs, "fn pack4xU8(e: vec4<u32>) -> u32", "Packs four u32 values into a u32 as unsigned bytes.", ""),
+    def("pack4xI8Clamp", .packing, .const_eval, .none, 1, 1, true, pack_vec4_i32_sigs, "fn pack4xI8Clamp(e: vec4<i32>) -> u32", "Packs four i32 values into a u32 as signed bytes, clamping to [-128, 127].", ""),
+    def("pack4xU8Clamp", .packing, .const_eval, .none, 1, 1, true, pack_vec4_u32_sigs, "fn pack4xU8Clamp(e: vec4<u32>) -> u32", "Packs four u32 values into a u32 as unsigned bytes, clamping to [0, 255].", ""),
     // Unpacking functions: variable return types
-    entry("unpack4x8snorm", .packing, .const_eval, .none, 1, 1, true),
-    entry("unpack4x8unorm", .packing, .const_eval, .none, 1, 1, true),
-    entry("unpack2x16snorm", .packing, .const_eval, .none, 1, 1, true),
-    entry("unpack2x16unorm", .packing, .const_eval, .none, 1, 1, true),
-    entry("unpack2x16float", .packing, .const_eval, .none, 1, 1, true),
-    entry("unpack4xI8", .packing, .const_eval, .none, 1, 1, true),
-    entry("unpack4xU8", .packing, .const_eval, .none, 1, 1, true),
+    def("unpack4x8snorm", .packing, .const_eval, .none, 1, 1, true, unpack4x8_float_sigs, "fn unpack4x8snorm(e: u32) -> vec4<f32>", "Unpacks a u32 into four normalized f32 values as signed bytes.", ""),
+    def("unpack4x8unorm", .packing, .const_eval, .none, 1, 1, true, unpack4x8_float_sigs, "fn unpack4x8unorm(e: u32) -> vec4<f32>", "Unpacks a u32 into four normalized f32 values as unsigned bytes.", ""),
+    def("unpack2x16snorm", .packing, .const_eval, .none, 1, 1, true, unpack2x16_float_sigs, "fn unpack2x16snorm(e: u32) -> vec2<f32>", "Unpacks a u32 into two normalized f32 values as signed 16-bit integers.", ""),
+    def("unpack2x16unorm", .packing, .const_eval, .none, 1, 1, true, unpack2x16_float_sigs, "fn unpack2x16unorm(e: u32) -> vec2<f32>", "Unpacks a u32 into two normalized f32 values as unsigned 16-bit integers.", ""),
+    def("unpack2x16float", .packing, .const_eval, .none, 1, 1, true, unpack2x16_float_sigs, "fn unpack2x16float(e: u32) -> vec2<f32>", "Unpacks a u32 into two f32 values from f16 values.", ""),
+    def("unpack4xI8", .packing, .const_eval, .none, 1, 1, true, unpack4xI8_sigs, "fn unpack4xI8(e: u32) -> vec4<i32>", "Unpacks a u32 into four i32 values as signed bytes.", ""),
+    def("unpack4xU8", .packing, .const_eval, .none, 1, 1, true, unpack4xU8_sigs, "fn unpack4xU8(e: u32) -> vec4<u32>", "Unpacks a u32 into four u32 values as unsigned bytes.", ""),
 };
 
 // ---------------------------------------------------------------------------
@@ -392,10 +419,10 @@ const packing_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const synchronization_entries = [_]struct { []const u8, Builtin }{
-    entry("workgroupBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, false),
-    entry("storageBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, false),
-    entry("textureBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, false),
-    entry("workgroupUniformLoad", .synchronization, .runtime, .uniform_flow, 1, 1, true),
+    def("workgroupBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, false, barrier_sigs, "fn workgroupBarrier()", "Synchronizes all invocations in the workgroup. Requires uniform control flow.", ""),
+    def("storageBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, false, barrier_sigs, "fn storageBarrier()", "Ensures all storage memory accesses are visible. Requires uniform control flow.", ""),
+    def("textureBarrier", .synchronization, .runtime, .uniform_flow, 0, 0, false, barrier_sigs, "fn textureBarrier()", "Ensures all texture memory accesses are visible. Requires uniform control flow.", ""),
+    def("workgroupUniformLoad", .synchronization, .runtime, .uniform_flow, 1, 1, true, wg_uniform_load_sigs, "fn workgroupUniformLoad(p: ptr<workgroup, T>) -> T", "Loads a value from workgroup memory after synchronization.", "Requires uniform control flow"),
 };
 
 // ---------------------------------------------------------------------------
@@ -403,43 +430,51 @@ const synchronization_entries = [_]struct { []const u8, Builtin }{
 // ---------------------------------------------------------------------------
 
 const subgroup_entries = [_]struct { []const u8, Builtin }{
-    entry("subgroupBallot", .subgroup, .runtime, .uniform_flow, 0, 1, true),
-    entry("subgroupBroadcast", .subgroup, .runtime, .uniform_flow, 2, 2, true),
-    entry("subgroupBroadcastFirst", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupShuffle", .subgroup, .runtime, .uniform_flow, 2, 2, true),
-    entry("subgroupShuffleDown", .subgroup, .runtime, .uniform_flow, 2, 2, true),
-    entry("subgroupShuffleUp", .subgroup, .runtime, .uniform_flow, 2, 2, true),
-    entry("subgroupShuffleXor", .subgroup, .runtime, .uniform_flow, 2, 2, true),
-    entry("subgroupAdd", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupMul", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupAnd", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupOr", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupXor", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupMin", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupMax", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupInclusiveAdd", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupInclusiveMul", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupExclusiveAdd", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupExclusiveMul", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupAll", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupAny", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("subgroupElect", .subgroup, .runtime, .uniform_flow, 0, 0, true),
+    def("subgroupBallot", .subgroup, .runtime, .uniform_flow, 0, 1, true, subgroup_ballot_sigs, "fn subgroupBallot(pred: bool) -> vec4<u32>", "Returns a bitmask of which invocations have pred true.", "Requires enable subgroups"),
+    def("subgroupBroadcast", .subgroup, .runtime, .uniform_flow, 2, 2, true, subgroup_shuffle_sigs, "fn subgroupBroadcast(e: T, id: u32) -> T", "Broadcasts the value of e from the invocation with the given id.", T_NUMERIC),
+    def("subgroupBroadcastFirst", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupBroadcastFirst(e: T) -> T", "Broadcasts the value of e from the invocation with the lowest active id.", T_NUMERIC),
+    def("subgroupShuffle", .subgroup, .runtime, .uniform_flow, 2, 2, true, subgroup_shuffle_sigs, "fn subgroupShuffle(e: T, id: u32) -> T", "Returns the value of e from the invocation with the given id.", T_NUMERIC),
+    def("subgroupShuffleDown", .subgroup, .runtime, .uniform_flow, 2, 2, true, subgroup_shuffle_sigs, "fn subgroupShuffleDown(e: T, delta: u32) -> T", "Returns the value of e from the invocation at current id + delta.", T_NUMERIC),
+    def("subgroupShuffleUp", .subgroup, .runtime, .uniform_flow, 2, 2, true, subgroup_shuffle_sigs, "fn subgroupShuffleUp(e: T, delta: u32) -> T", "Returns the value of e from the invocation at current id - delta.", T_NUMERIC),
+    def("subgroupShuffleXor", .subgroup, .runtime, .uniform_flow, 2, 2, true, subgroup_shuffle_sigs, "fn subgroupShuffleXor(e: T, mask: u32) -> T", "Returns the value of e from the invocation at current id XOR mask.", T_NUMERIC),
+    def("subgroupAdd", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupAdd(e: T) -> T", "Returns the sum of e across all active invocations.", T_NUMERIC),
+    def("subgroupMul", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupMul(e: T) -> T", "Returns the product of e across all active invocations.", T_NUMERIC),
+    def("subgroupAnd", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupAnd(e: T) -> T", "Returns the bitwise AND of e across all active invocations.", T_INT),
+    def("subgroupOr", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupOr(e: T) -> T", "Returns the bitwise OR of e across all active invocations.", T_INT),
+    def("subgroupXor", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupXor(e: T) -> T", "Returns the bitwise XOR of e across all active invocations.", T_INT),
+    def("subgroupMin", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupMin(e: T) -> T", "Returns the minimum of e across all active invocations.", T_NUMERIC),
+    def("subgroupMax", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupMax(e: T) -> T", "Returns the maximum of e across all active invocations.", T_NUMERIC),
+    def("subgroupInclusiveAdd", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupInclusiveAdd(e: T) -> T", "Returns the inclusive prefix sum of e.", T_NUMERIC),
+    def("subgroupInclusiveMul", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupInclusiveMul(e: T) -> T", "Returns the inclusive prefix product of e.", T_NUMERIC),
+    def("subgroupExclusiveAdd", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupExclusiveAdd(e: T) -> T", "Returns the exclusive prefix sum of e.", T_NUMERIC),
+    def("subgroupExclusiveMul", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn subgroupExclusiveMul(e: T) -> T", "Returns the exclusive prefix product of e.", T_NUMERIC),
+    def("subgroupAll", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_bool_reduce_sigs, "fn subgroupAll(e: bool) -> bool", "Returns true if e is true for all active invocations.", ""),
+    def("subgroupAny", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_bool_reduce_sigs, "fn subgroupAny(e: bool) -> bool", "Returns true if e is true for any active invocation.", ""),
+    def("subgroupElect", .subgroup, .runtime, .uniform_flow, 0, 0, true, subgroup_elect_sigs, "fn subgroupElect() -> bool", "Returns true for exactly one active invocation in the subgroup.", ""),
     // Quad operations (Section 17.13)
-    entry("quadBroadcast", .subgroup, .runtime, .uniform_flow, 2, 2, true),
-    entry("quadSwapDiagonal", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("quadSwapX", .subgroup, .runtime, .uniform_flow, 1, 1, true),
-    entry("quadSwapY", .subgroup, .runtime, .uniform_flow, 1, 1, true),
+    def("quadBroadcast", .subgroup, .runtime, .uniform_flow, 2, 2, true, quad_broadcast_sigs, "fn quadBroadcast(e: T, id: u32) -> T", "Broadcasts the value of e from the quad invocation with the given id.", T_NUMERIC),
+    def("quadSwapDiagonal", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn quadSwapDiagonal(e: T) -> T", "Returns the value of e from the diagonally opposite quad invocation.", T_NUMERIC),
+    def("quadSwapX", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn quadSwapX(e: T) -> T", "Returns the value of e from the horizontally adjacent quad invocation.", T_NUMERIC),
+    def("quadSwapY", .subgroup, .runtime, .uniform_flow, 1, 1, true, subgroup_unary_numeric_sigs, "fn quadSwapY(e: T) -> T", "Returns the value of e from the vertically adjacent quad invocation.", T_NUMERIC),
 };
 
 // =========================================================================
 // Entry Helper
 // =========================================================================
 
-/// Builds a StaticStringMap entry tuple from builtin metadata. Every
-/// builtin with a return value is `@must_use` per WGSL spec; pass
+/// Builds a StaticStringMap entry tuple from a builtin's complete
+/// definition: metadata, declarative overload set, and hover documentation.
+/// This is the single source of truth for one builtin — there are no side
+/// tables to keep in sync.
+///
+/// `sigs` is the overload set (`&.{}` only for `bitcast`, which dispatches
+/// via template-seeded `bitcast_to_*_sigs`). `signature` / `description` /
+/// `type_constraint` are the hover doc fields.
+///
+/// Every builtin with a return value is `@must_use` per WGSL spec; pass
 /// `false` only for the handful of void-returning builtins (barriers,
 /// textureStore, atomicStore).
-fn entry(
+fn def(
     comptime name: []const u8,
     comptime kind: Kind,
     comptime stage: EvalStage,
@@ -447,9 +482,24 @@ fn entry(
     comptime min_args: u8,
     comptime max_args: u8,
     comptime must_use: bool,
+    comptime sigs: []const Overload.OverloadSig,
+    comptime signature: []const u8,
+    comptime description: []const u8,
+    comptime type_constraint: []const u8,
 ) struct { []const u8, Builtin } {
-    comptime assert(name.len > 0);
-    comptime assert(min_args <= max_args);
+    comptime {
+        assert(name.len > 0);
+        assert(min_args <= max_args);
+        assert(signature.len > 0);
+        // Name↔doc alignment guard: catches a row whose doc string was
+        // pasted from the wrong builtin during the one-row merge. Every
+        // spec signature reads "fn <name>(" — or "fn <name><" for the sole
+        // templated builtin, bitcast. Requiring the char after <name> to be
+        // '(' or '<' distinguishes e.g. "dot" from "dot4I8Packed".
+        assert(std.mem.startsWith(u8, signature, "fn " ++ name));
+        const after = signature["fn ".len + name.len];
+        assert(after == '(' or after == '<');
+    }
     return .{
         name,
         .{
@@ -460,274 +510,11 @@ fn entry(
             .min_args = min_args,
             .max_args = max_args,
             .must_use = must_use,
+            .overloads = sigs,
+            .doc = .{ .signature = signature, .description = description, .type_constraint = type_constraint },
         },
     };
 }
-
-// =========================================================================
-// Documentation Table (for LSP hover)
-// =========================================================================
-
-/// Documentation for a WGSL builtin function, used by the LSP hover feature.
-pub const BuiltinDoc = struct {
-    /// Generic signature from the WGSL spec (e.g., "fn sin(e: T) -> T").
-    signature: []const u8,
-    /// One-line description of the function.
-    description: []const u8,
-    /// Type constraint or overload info (e.g., "T is f32, f16, vecN<f32>, or vecN<f16>").
-    type_constraint: []const u8,
-};
-
-/// Look up documentation for a builtin function by name.
-pub fn doc(name: []const u8) ?BuiltinDoc {
-    return doc_table.get(name);
-}
-
-const doc_table = std.StaticStringMap(BuiltinDoc).initComptime(doc_entries);
-
-const doc_entries = conversion_doc ++
-    logical_doc ++
-    array_doc ++
-    numeric_trig_doc ++
-    numeric_exp_doc ++
-    numeric_misc_doc ++
-    numeric_vector_doc ++
-    numeric_bit_doc ++
-    numeric_matrix_doc ++
-    numeric_special_doc ++
-    derivative_doc ++
-    texture_doc ++
-    atomic_doc ++
-    packing_doc ++
-    synchronization_doc ++
-    subgroup_doc;
-
-fn docEntry(
-    comptime name: []const u8,
-    comptime signature: []const u8,
-    comptime description: []const u8,
-    comptime type_constraint: []const u8,
-) struct { []const u8, BuiltinDoc } {
-    comptime assert(name.len > 0);
-    comptime assert(signature.len > 0);
-    return .{ name, .{ .signature = signature, .description = description, .type_constraint = type_constraint } };
-}
-
-const T_FLOAT = "T is f32, f16, vecN<f32>, or vecN<f16>";
-const T_FLOAT_INT = "T is f32, f16, i32, u32, vecN<f32>, vecN<f16>, vecN<i32>, or vecN<u32>";
-const T_INT = "T is i32, u32, vecN<i32>, or vecN<u32>";
-const T_NUMERIC = "T is f32, f16, i32, u32, or vecN of these";
-
-// --- Conversion ---
-const conversion_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("bitcast", "fn bitcast<T>(e: S) -> T", "Reinterprets the bits of the value as the target type.", "T and S must have the same bit width"),
-};
-
-// --- Logical ---
-const logical_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("all", "fn all(e: vecN<bool>) -> bool", "Returns true if every component of e is true.", ""),
-    docEntry("any", "fn any(e: vecN<bool>) -> bool", "Returns true if any component of e is true.", ""),
-    docEntry("select", "fn select(f: T, t: T, cond: bool) -> T", "Returns t when cond is true, and f otherwise.", T_NUMERIC),
-};
-
-// --- Array ---
-const array_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("arrayLength", "fn arrayLength(p: ptr<storage, array<T>>) -> u32", "Returns the number of elements in the runtime-sized array.", ""),
-};
-
-// --- Numeric: Trigonometric ---
-const numeric_trig_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("sin", "fn sin(e: T) -> T", "Returns the sine of e (radians).", T_FLOAT),
-    docEntry("cos", "fn cos(e: T) -> T", "Returns the cosine of e (radians).", T_FLOAT),
-    docEntry("tan", "fn tan(e: T) -> T", "Returns the tangent of e (radians).", T_FLOAT),
-    docEntry("asin", "fn asin(e: T) -> T", "Returns the arc sine of e. Result in [-pi/2, pi/2].", T_FLOAT),
-    docEntry("acos", "fn acos(e: T) -> T", "Returns the arc cosine of e. Result in [0, pi].", T_FLOAT),
-    docEntry("atan", "fn atan(e: T) -> T", "Returns the arc tangent of e. Result in [-pi/2, pi/2].", T_FLOAT),
-    docEntry("sinh", "fn sinh(e: T) -> T", "Returns the hyperbolic sine of e.", T_FLOAT),
-    docEntry("cosh", "fn cosh(e: T) -> T", "Returns the hyperbolic cosine of e.", T_FLOAT),
-    docEntry("tanh", "fn tanh(e: T) -> T", "Returns the hyperbolic tangent of e.", T_FLOAT),
-    docEntry("asinh", "fn asinh(e: T) -> T", "Returns the inverse hyperbolic sine of e.", T_FLOAT),
-    docEntry("acosh", "fn acosh(e: T) -> T", "Returns the inverse hyperbolic cosine of e.", T_FLOAT),
-    docEntry("atanh", "fn atanh(e: T) -> T", "Returns the inverse hyperbolic tangent of e.", T_FLOAT),
-    docEntry("atan2", "fn atan2(y: T, x: T) -> T", "Returns the arc tangent of y/x. Result in [-pi, pi].", T_FLOAT),
-};
-
-// --- Numeric: Exponential ---
-const numeric_exp_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("exp", "fn exp(e: T) -> T", "Returns the natural exponentiation e^e.", T_FLOAT),
-    docEntry("exp2", "fn exp2(e: T) -> T", "Returns 2 raised to the power e.", T_FLOAT),
-    docEntry("log", "fn log(e: T) -> T", "Returns the natural logarithm of e.", T_FLOAT),
-    docEntry("log2", "fn log2(e: T) -> T", "Returns the base-2 logarithm of e.", T_FLOAT),
-    docEntry("pow", "fn pow(base: T, exponent: T) -> T", "Returns base raised to the power exponent.", T_FLOAT),
-    docEntry("sqrt", "fn sqrt(e: T) -> T", "Returns the square root of e.", T_FLOAT),
-    docEntry("inverseSqrt", "fn inverseSqrt(e: T) -> T", "Returns the reciprocal of the square root of e.", T_FLOAT),
-};
-
-// --- Numeric: Misc math ---
-const numeric_misc_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("abs", "fn abs(e: T) -> T", "Returns the absolute value of e.", T_FLOAT_INT),
-    docEntry("sign", "fn sign(e: T) -> T", "Returns the sign of e: -1, 0, or 1.", T_FLOAT_INT),
-    docEntry("floor", "fn floor(e: T) -> T", "Returns the floor of e (largest integer <= e).", T_FLOAT),
-    docEntry("ceil", "fn ceil(e: T) -> T", "Returns the ceiling of e (smallest integer >= e).", T_FLOAT),
-    docEntry("round", "fn round(e: T) -> T", "Returns e rounded to the nearest integer.", T_FLOAT),
-    docEntry("trunc", "fn trunc(e: T) -> T", "Returns the integer part of e, removing fractional digits.", T_FLOAT),
-    docEntry("fract", "fn fract(e: T) -> T", "Returns the fractional part of e (e - floor(e)).", T_FLOAT),
-    docEntry("min", "fn min(e1: T, e2: T) -> T", "Returns the minimum of e1 and e2.", T_FLOAT_INT),
-    docEntry("max", "fn max(e1: T, e2: T) -> T", "Returns the maximum of e1 and e2.", T_FLOAT_INT),
-    docEntry("clamp", "fn clamp(e: T, low: T, high: T) -> T", "Restricts e to the range [low, high].", T_FLOAT_INT),
-    docEntry("saturate", "fn saturate(e: T) -> T", "Clamps e to the range [0.0, 1.0].", T_FLOAT),
-    docEntry("mix", "fn mix(e1: T, e2: T, e3: T) -> T", "Returns the linear blend e1*(1-e3) + e2*e3.", T_FLOAT),
-    docEntry("step", "fn step(edge: T, x: T) -> T", "Returns 0.0 if x < edge, otherwise 1.0.", T_FLOAT),
-    docEntry("smoothstep", "fn smoothstep(low: T, high: T, x: T) -> T", "Returns smooth Hermite interpolation between 0 and 1.", T_FLOAT),
-    docEntry("fma", "fn fma(e1: T, e2: T, e3: T) -> T", "Returns e1 * e2 + e3 (fused multiply-add).", T_FLOAT),
-    docEntry("degrees", "fn degrees(e: T) -> T", "Converts radians to degrees.", T_FLOAT),
-    docEntry("radians", "fn radians(e: T) -> T", "Converts degrees to radians.", T_FLOAT),
-};
-
-// --- Numeric: Vector ---
-const numeric_vector_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("dot", "fn dot(e1: vecN<T>, e2: vecN<T>) -> T", "Returns the dot product of e1 and e2.", "T is f32, f16"),
-    docEntry("dot4I8Packed", "fn dot4I8Packed(e1: u32, e2: u32) -> i32", "Interprets inputs as vectors of four 8-bit signed integers and returns the signed dot product.", "Requires packed_4x8_integer_dot_product"),
-    docEntry("dot4U8Packed", "fn dot4U8Packed(e1: u32, e2: u32) -> u32", "Interprets inputs as vectors of four 8-bit unsigned integers and returns the unsigned dot product.", "Requires packed_4x8_integer_dot_product"),
-    docEntry("cross", "fn cross(e1: vec3<T>, e2: vec3<T>) -> vec3<T>", "Returns the cross product of e1 and e2.", "T is f32, f16"),
-    docEntry("length", "fn length(e: vecN<T>) -> T", "Returns the length (magnitude) of e.", "T is f32, f16"),
-    docEntry("distance", "fn distance(e1: vecN<T>, e2: vecN<T>) -> T", "Returns the distance between e1 and e2.", "T is f32, f16"),
-    docEntry("normalize", "fn normalize(e: vecN<T>) -> vecN<T>", "Returns the unit vector in the direction of e.", "T is f32, f16"),
-    docEntry("reflect", "fn reflect(e1: vecN<T>, e2: vecN<T>) -> vecN<T>", "Returns the reflection direction for incident e1 and normal e2.", "T is f32, f16"),
-    docEntry("refract", "fn refract(e1: vecN<T>, e2: vecN<T>, e3: T) -> vecN<T>", "Returns the refraction vector for incident e1, normal e2, and ratio e3.", "T is f32, f16"),
-    docEntry("faceForward", "fn faceForward(e1: vecN<T>, e2: vecN<T>, e3: vecN<T>) -> vecN<T>", "Returns e1 if dot(e2,e3) < 0, otherwise -e1.", "T is f32, f16"),
-};
-
-// --- Numeric: Bit operations ---
-const numeric_bit_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("countOneBits", "fn countOneBits(e: T) -> T", "Returns the number of 1 bits in the binary representation of e.", T_INT),
-    docEntry("countLeadingZeros", "fn countLeadingZeros(e: T) -> T", "Returns the number of leading zero bits in e.", T_INT),
-    docEntry("countTrailingZeros", "fn countTrailingZeros(e: T) -> T", "Returns the number of trailing zero bits in e.", T_INT),
-    docEntry("reverseBits", "fn reverseBits(e: T) -> T", "Returns e with its bits reversed.", T_INT),
-    docEntry("firstLeadingBit", "fn firstLeadingBit(e: T) -> T", "Returns the bit position of the most significant 1 bit, or -1/0xFFFFFFFF.", T_INT),
-    docEntry("firstTrailingBit", "fn firstTrailingBit(e: T) -> T", "Returns the bit position of the least significant 1 bit, or -1/0xFFFFFFFF.", T_INT),
-    docEntry("extractBits", "fn extractBits(e: T, offset: u32, count: u32) -> T", "Extracts count bits from e starting at offset.", T_INT),
-    docEntry("insertBits", "fn insertBits(e: T, newbits: T, offset: u32, count: u32) -> T", "Replaces count bits in e starting at offset with bits from newbits.", T_INT),
-};
-
-// --- Numeric: Matrix ---
-const numeric_matrix_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("transpose", "fn transpose(e: matRxC<T>) -> matCxR<T>", "Returns the transpose of the matrix.", "T is f32, f16"),
-    docEntry("determinant", "fn determinant(e: matNxN<T>) -> T", "Returns the determinant of the square matrix.", "T is f32, f16"),
-};
-
-// --- Numeric: Special ---
-const numeric_special_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("ldexp", "fn ldexp(e1: T, e2: I) -> T", "Returns e1 * 2^e2.", "T is f32, f16; I is i32 or vecN<i32>"),
-    docEntry("frexp", "fn frexp(e: T) -> __frexp_result", "Splits e into a significand in [0.5,1.0) and an exponent.", T_FLOAT),
-    docEntry("modf", "fn modf(e: T) -> __modf_result", "Splits e into integer and fractional parts.", T_FLOAT),
-    docEntry("quantizeToF16", "fn quantizeToF16(e: T) -> T", "Quantizes e to IEEE-754 binary16 then converts back.", "T is f32 or vecN<f32>"),
-};
-
-// --- Derivative ---
-const derivative_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("dpdx", "fn dpdx(e: T) -> T", "Returns the partial derivative of e with respect to window x.", T_FLOAT),
-    docEntry("dpdy", "fn dpdy(e: T) -> T", "Returns the partial derivative of e with respect to window y.", T_FLOAT),
-    docEntry("fwidth", "fn fwidth(e: T) -> T", "Returns abs(dpdx(e)) + abs(dpdy(e)).", T_FLOAT),
-    docEntry("dpdxCoarse", "fn dpdxCoarse(e: T) -> T", "Returns a coarse partial derivative of e w.r.t. window x.", T_FLOAT),
-    docEntry("dpdyCoarse", "fn dpdyCoarse(e: T) -> T", "Returns a coarse partial derivative of e w.r.t. window y.", T_FLOAT),
-    docEntry("fwidthCoarse", "fn fwidthCoarse(e: T) -> T", "Returns abs(dpdxCoarse(e)) + abs(dpdyCoarse(e)).", T_FLOAT),
-    docEntry("dpdxFine", "fn dpdxFine(e: T) -> T", "Returns a fine partial derivative of e w.r.t. window x.", T_FLOAT),
-    docEntry("dpdyFine", "fn dpdyFine(e: T) -> T", "Returns a fine partial derivative of e w.r.t. window y.", T_FLOAT),
-    docEntry("fwidthFine", "fn fwidthFine(e: T) -> T", "Returns abs(dpdxFine(e)) + abs(dpdyFine(e)).", T_FLOAT),
-};
-
-// --- Texture ---
-const texture_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("textureSample", "fn textureSample(t: texture, s: sampler, coords: vecN<f32>, ...) -> vec4<f32>", "Samples a texture using implicit level of detail.", "Requires uniform control flow"),
-    docEntry("textureSampleBias", "fn textureSampleBias(t: texture, s: sampler, coords: vecN<f32>, bias: f32, ...) -> vec4<f32>", "Samples a texture with a bias applied to the mip level.", "Requires uniform control flow"),
-    docEntry("textureSampleCompare", "fn textureSampleCompare(t: texture_depth, s: sampler_comparison, coords: vecN<f32>, depth_ref: f32, ...) -> f32", "Samples a depth texture and compares against a reference value.", "Requires uniform control flow"),
-    docEntry("textureSampleCompareLevel", "fn textureSampleCompareLevel(t: texture_depth, s: sampler_comparison, coords: vecN<f32>, depth_ref: f32, ...) -> f32", "Samples a depth texture at mip level 0 and compares against a reference value.", ""),
-    docEntry("textureSampleLevel", "fn textureSampleLevel(t: texture, s: sampler, coords: vecN<f32>, level: f32, ...) -> vec4<f32>", "Samples a texture at an explicit mip level.", ""),
-    docEntry("textureSampleGrad", "fn textureSampleGrad(t: texture, s: sampler, coords: vecN<f32>, ddx: vecN<f32>, ddy: vecN<f32>, ...) -> vec4<f32>", "Samples a texture using explicit gradients.", ""),
-    docEntry("textureLoad", "fn textureLoad(t: texture, coords: vecN<i32/u32>, ...) -> vec4<T>", "Reads a single texel from a texture without sampling.", ""),
-    docEntry("textureStore", "fn textureStore(t: texture_storage, coords: vecN<i32/u32>, value: vec4<T>)", "Writes a single texel to a storage texture.", ""),
-    docEntry("textureDimensions", "fn textureDimensions(t: texture, ...) -> vecN<u32>", "Returns the dimensions of the texture in texels.", ""),
-    docEntry("textureNumLayers", "fn textureNumLayers(t: texture_array) -> u32", "Returns the number of layers in an arrayed texture.", ""),
-    docEntry("textureNumLevels", "fn textureNumLevels(t: texture) -> u32", "Returns the number of mip levels in the texture.", ""),
-    docEntry("textureNumSamples", "fn textureNumSamples(t: texture_multisampled) -> u32", "Returns the number of samples per texel in a multisampled texture.", ""),
-    docEntry("textureGather", "fn textureGather(component: i32, t: texture, s: sampler, coords: vecN<f32>, ...) -> vec4<T>", "Gathers the component from four texels in a 2x2 footprint.", "Requires uniform control flow"),
-    docEntry("textureGatherCompare", "fn textureGatherCompare(t: texture_depth, s: sampler_comparison, coords: vec2<f32>, depth_ref: f32, ...) -> vec4<f32>", "Gathers depth comparison results from four texels.", "Requires uniform control flow"),
-    docEntry("textureSampleBaseClampToEdge", "fn textureSampleBaseClampToEdge(t: texture_2d<f32>, s: sampler, coords: vec2<f32>) -> vec4<f32>", "Samples a texture at base level, clamping coordinates to avoid edge wrapping.", "T is texture_2d<f32> or texture_external"),
-};
-
-// --- Atomic ---
-const atomic_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("atomicLoad", "fn atomicLoad(p: ptr<AS, atomic<T>>) -> T", "Atomically loads the value pointed to by p.", "T is i32 or u32"),
-    docEntry("atomicStore", "fn atomicStore(p: ptr<AS, atomic<T>>, v: T)", "Atomically stores v into the value pointed to by p.", "T is i32 or u32"),
-    docEntry("atomicAdd", "fn atomicAdd(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically adds v to *p and returns the original value.", "T is i32 or u32"),
-    docEntry("atomicSub", "fn atomicSub(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically subtracts v from *p and returns the original value.", "T is i32 or u32"),
-    docEntry("atomicMax", "fn atomicMax(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores max(*p, v) and returns the original value.", "T is i32 or u32"),
-    docEntry("atomicMin", "fn atomicMin(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores min(*p, v) and returns the original value.", "T is i32 or u32"),
-    docEntry("atomicAnd", "fn atomicAnd(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores (*p & v) and returns the original value.", "T is i32 or u32"),
-    docEntry("atomicOr", "fn atomicOr(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores (*p | v) and returns the original value.", "T is i32 or u32"),
-    docEntry("atomicXor", "fn atomicXor(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically stores (*p ^ v) and returns the original value.", "T is i32 or u32"),
-    docEntry("atomicExchange", "fn atomicExchange(p: ptr<AS, atomic<T>>, v: T) -> T", "Atomically replaces *p with v and returns the original value.", "T is i32 or u32"),
-    docEntry("atomicCompareExchangeWeak", "fn atomicCompareExchangeWeak(p: ptr<AS, atomic<T>>, expected: T, v: T) -> __atomic_compare_exchange_result<T>", "Atomically compares *p with expected and exchanges with v if equal.", "T is i32 or u32"),
-};
-
-// --- Packing ---
-const packing_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("pack4x8snorm", "fn pack4x8snorm(e: vec4<f32>) -> u32", "Packs four normalized f32 values into a u32 as signed bytes.", ""),
-    docEntry("pack4x8unorm", "fn pack4x8unorm(e: vec4<f32>) -> u32", "Packs four normalized f32 values into a u32 as unsigned bytes.", ""),
-    docEntry("pack2x16snorm", "fn pack2x16snorm(e: vec2<f32>) -> u32", "Packs two normalized f32 values into a u32 as signed 16-bit integers.", ""),
-    docEntry("pack2x16unorm", "fn pack2x16unorm(e: vec2<f32>) -> u32", "Packs two normalized f32 values into a u32 as unsigned 16-bit integers.", ""),
-    docEntry("pack2x16float", "fn pack2x16float(e: vec2<f32>) -> u32", "Packs two f32 values into a u32 as f16 values.", ""),
-    docEntry("pack4xI8", "fn pack4xI8(e: vec4<i32>) -> u32", "Packs four i32 values into a u32 as signed bytes.", ""),
-    docEntry("pack4xU8", "fn pack4xU8(e: vec4<u32>) -> u32", "Packs four u32 values into a u32 as unsigned bytes.", ""),
-    docEntry("pack4xI8Clamp", "fn pack4xI8Clamp(e: vec4<i32>) -> u32", "Packs four i32 values into a u32 as signed bytes, clamping to [-128, 127].", ""),
-    docEntry("pack4xU8Clamp", "fn pack4xU8Clamp(e: vec4<u32>) -> u32", "Packs four u32 values into a u32 as unsigned bytes, clamping to [0, 255].", ""),
-    docEntry("unpack4x8snorm", "fn unpack4x8snorm(e: u32) -> vec4<f32>", "Unpacks a u32 into four normalized f32 values as signed bytes.", ""),
-    docEntry("unpack4x8unorm", "fn unpack4x8unorm(e: u32) -> vec4<f32>", "Unpacks a u32 into four normalized f32 values as unsigned bytes.", ""),
-    docEntry("unpack2x16snorm", "fn unpack2x16snorm(e: u32) -> vec2<f32>", "Unpacks a u32 into two normalized f32 values as signed 16-bit integers.", ""),
-    docEntry("unpack2x16unorm", "fn unpack2x16unorm(e: u32) -> vec2<f32>", "Unpacks a u32 into two normalized f32 values as unsigned 16-bit integers.", ""),
-    docEntry("unpack2x16float", "fn unpack2x16float(e: u32) -> vec2<f32>", "Unpacks a u32 into two f32 values from f16 values.", ""),
-    docEntry("unpack4xI8", "fn unpack4xI8(e: u32) -> vec4<i32>", "Unpacks a u32 into four i32 values as signed bytes.", ""),
-    docEntry("unpack4xU8", "fn unpack4xU8(e: u32) -> vec4<u32>", "Unpacks a u32 into four u32 values as unsigned bytes.", ""),
-};
-
-// --- Synchronization ---
-const synchronization_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("workgroupBarrier", "fn workgroupBarrier()", "Synchronizes all invocations in the workgroup. Requires uniform control flow.", ""),
-    docEntry("storageBarrier", "fn storageBarrier()", "Ensures all storage memory accesses are visible. Requires uniform control flow.", ""),
-    docEntry("textureBarrier", "fn textureBarrier()", "Ensures all texture memory accesses are visible. Requires uniform control flow.", ""),
-    docEntry("workgroupUniformLoad", "fn workgroupUniformLoad(p: ptr<workgroup, T>) -> T", "Loads a value from workgroup memory after synchronization.", "Requires uniform control flow"),
-};
-
-// --- Subgroup ---
-const subgroup_doc = [_]struct { []const u8, BuiltinDoc }{
-    docEntry("subgroupBallot", "fn subgroupBallot(pred: bool) -> vec4<u32>", "Returns a bitmask of which invocations have pred true.", "Requires enable subgroups"),
-    docEntry("subgroupBroadcast", "fn subgroupBroadcast(e: T, id: u32) -> T", "Broadcasts the value of e from the invocation with the given id.", T_NUMERIC),
-    docEntry("subgroupBroadcastFirst", "fn subgroupBroadcastFirst(e: T) -> T", "Broadcasts the value of e from the invocation with the lowest active id.", T_NUMERIC),
-    docEntry("subgroupShuffle", "fn subgroupShuffle(e: T, id: u32) -> T", "Returns the value of e from the invocation with the given id.", T_NUMERIC),
-    docEntry("subgroupShuffleDown", "fn subgroupShuffleDown(e: T, delta: u32) -> T", "Returns the value of e from the invocation at current id + delta.", T_NUMERIC),
-    docEntry("subgroupShuffleUp", "fn subgroupShuffleUp(e: T, delta: u32) -> T", "Returns the value of e from the invocation at current id - delta.", T_NUMERIC),
-    docEntry("subgroupShuffleXor", "fn subgroupShuffleXor(e: T, mask: u32) -> T", "Returns the value of e from the invocation at current id XOR mask.", T_NUMERIC),
-    docEntry("subgroupAdd", "fn subgroupAdd(e: T) -> T", "Returns the sum of e across all active invocations.", T_NUMERIC),
-    docEntry("subgroupMul", "fn subgroupMul(e: T) -> T", "Returns the product of e across all active invocations.", T_NUMERIC),
-    docEntry("subgroupAnd", "fn subgroupAnd(e: T) -> T", "Returns the bitwise AND of e across all active invocations.", T_INT),
-    docEntry("subgroupOr", "fn subgroupOr(e: T) -> T", "Returns the bitwise OR of e across all active invocations.", T_INT),
-    docEntry("subgroupXor", "fn subgroupXor(e: T) -> T", "Returns the bitwise XOR of e across all active invocations.", T_INT),
-    docEntry("subgroupMin", "fn subgroupMin(e: T) -> T", "Returns the minimum of e across all active invocations.", T_NUMERIC),
-    docEntry("subgroupMax", "fn subgroupMax(e: T) -> T", "Returns the maximum of e across all active invocations.", T_NUMERIC),
-    docEntry("subgroupInclusiveAdd", "fn subgroupInclusiveAdd(e: T) -> T", "Returns the inclusive prefix sum of e.", T_NUMERIC),
-    docEntry("subgroupInclusiveMul", "fn subgroupInclusiveMul(e: T) -> T", "Returns the inclusive prefix product of e.", T_NUMERIC),
-    docEntry("subgroupExclusiveAdd", "fn subgroupExclusiveAdd(e: T) -> T", "Returns the exclusive prefix sum of e.", T_NUMERIC),
-    docEntry("subgroupExclusiveMul", "fn subgroupExclusiveMul(e: T) -> T", "Returns the exclusive prefix product of e.", T_NUMERIC),
-    docEntry("subgroupAll", "fn subgroupAll(e: bool) -> bool", "Returns true if e is true for all active invocations.", ""),
-    docEntry("subgroupAny", "fn subgroupAny(e: bool) -> bool", "Returns true if e is true for any active invocation.", ""),
-    docEntry("subgroupElect", "fn subgroupElect() -> bool", "Returns true for exactly one active invocation in the subgroup.", ""),
-    // Quad operations
-    docEntry("quadBroadcast", "fn quadBroadcast(e: T, id: u32) -> T", "Broadcasts the value of e from the quad invocation with the given id.", T_NUMERIC),
-    docEntry("quadSwapDiagonal", "fn quadSwapDiagonal(e: T) -> T", "Returns the value of e from the diagonally opposite quad invocation.", T_NUMERIC),
-    docEntry("quadSwapX", "fn quadSwapX(e: T) -> T", "Returns the value of e from the horizontally adjacent quad invocation.", T_NUMERIC),
-    docEntry("quadSwapY", "fn quadSwapY(e: T) -> T", "Returns the value of e from the vertically adjacent quad invocation.", T_NUMERIC),
-};
 
 // =========================================================================
 // Overload Signatures
@@ -1860,200 +1647,6 @@ const pack_vec4_u32_sigs = &[_]O.OverloadSig{
     },
 };
 
-/// Side-table entries — built at comptime to keep lookup O(1).
-const sig_entries = [_]struct { []const u8, []const O.OverloadSig }{
-    // Atomic operations (§17.9)
-    .{ "atomicLoad", atomic_load_sigs },
-    .{ "atomicAdd", atomic_rmw_sigs },
-    .{ "atomicSub", atomic_rmw_sigs },
-    .{ "atomicMax", atomic_rmw_sigs },
-    .{ "atomicMin", atomic_rmw_sigs },
-    .{ "atomicAnd", atomic_rmw_sigs },
-    .{ "atomicOr", atomic_rmw_sigs },
-    .{ "atomicXor", atomic_rmw_sigs },
-    .{ "atomicExchange", atomic_rmw_sigs },
-    .{ "atomicCompareExchangeWeak", atomic_cmp_xchg_sigs },
-    .{ "atomicStore", atomic_store_sigs },
-
-    // Array (§17.14)
-    .{ "arrayLength", array_length_sigs },
-
-    // Numeric special (§17.5)
-    .{ "frexp", frexp_sigs },
-    .{ "modf", modf_sigs },
-    .{ "transpose", transpose_sigs },
-
-    // Packing (§17.10)
-    .{ "unpack4xI8", unpack4xI8_sigs },
-    .{ "unpack4xU8", unpack4xU8_sigs },
-    .{ "unpack4x8snorm", unpack4x8_float_sigs },
-    .{ "unpack4x8unorm", unpack4x8_float_sigs },
-    .{ "unpack2x16snorm", unpack2x16_float_sigs },
-    .{ "unpack2x16unorm", unpack2x16_float_sigs },
-    .{ "unpack2x16float", unpack2x16_float_sigs },
-
-    // Packed dot product (§17.5.20)
-    .{ "dot4I8Packed", dot4I8Packed_sigs },
-    .{ "dot4U8Packed", dot4U8Packed_sigs },
-
-    // Texture builtins (§17.6.x / §17.7.x) — Phases 3c + 3d. Every
-    // texture builtin resolves through the declarative engine.
-    .{ "textureLoad", textureLoad_sigs },
-    .{ "textureStore", textureStore_sigs },
-    .{ "textureDimensions", textureDimensions_sigs },
-    .{ "textureNumLayers", textureNumLayers_sigs },
-    .{ "textureNumLevels", textureNumLevels_sigs },
-    .{ "textureNumSamples", textureNumSamples_sigs },
-    .{ "textureSample", textureSample_sigs },
-    .{ "textureSampleBias", textureSampleBias_sigs },
-    .{ "textureSampleGrad", textureSampleGrad_sigs },
-    .{ "textureSampleLevel", textureSampleLevel_sigs },
-    .{ "textureSampleCompare", textureSampleCompare_sigs },
-    .{ "textureSampleCompareLevel", textureSampleCompareLevel_sigs },
-    .{ "textureGather", textureGather_sigs },
-    .{ "textureGatherCompare", textureGatherCompare_sigs },
-    .{ "textureSampleBaseClampToEdge", textureSampleBaseClampToEdge_sigs },
-
-    // Synchronization (§17.11)
-    .{ "workgroupUniformLoad", wg_uniform_load_sigs },
-    .{ "workgroupBarrier", barrier_sigs },
-    .{ "storageBarrier", barrier_sigs },
-    .{ "textureBarrier", barrier_sigs },
-
-    // Subgroup (§17.12)
-    .{ "subgroupBallot", subgroup_ballot_sigs },
-
-    // -------------------------------------------------------------------
-    // Same-as-arg family (§17.3 / §17.5 / §17.6 / §17.12)
-    // -------------------------------------------------------------------
-
-    // Logical (§17.3) — select is polymorphic across any scalar.
-    .{ "select", select_sigs },
-
-    // Trigonometric (§17.5.1–17.5.6, §17.5.44–17.5.49).
-    .{ "sin", unary_float_sigs },
-    .{ "cos", unary_float_sigs },
-    .{ "tan", unary_float_sigs },
-    .{ "asin", unary_float_sigs },
-    .{ "acos", unary_float_sigs },
-    .{ "atan", unary_float_sigs },
-    .{ "sinh", unary_float_sigs },
-    .{ "cosh", unary_float_sigs },
-    .{ "tanh", unary_float_sigs },
-    .{ "asinh", unary_float_sigs },
-    .{ "acosh", unary_float_sigs },
-    .{ "atanh", unary_float_sigs },
-    .{ "atan2", binary_float_sigs },
-
-    // Exponential (§17.5.16–17.5.18, §17.5.37, §17.5.45).
-    .{ "exp", unary_float_sigs },
-    .{ "exp2", unary_float_sigs },
-    .{ "log", unary_float_sigs },
-    .{ "log2", unary_float_sigs },
-    .{ "pow", binary_float_sigs },
-    .{ "sqrt", unary_float_sigs },
-    .{ "inverseSqrt", unary_float_sigs },
-
-    // Misc math (§17.5 — abs/sign/floor/ceil/round/trunc/fract/min/max/clamp/
-    // saturate/mix/step/smoothstep/fma/degrees/radians).
-    .{ "abs", unary_numeric_sigs },
-    .{ "sign", unary_numeric_sigs },
-    .{ "floor", unary_float_sigs },
-    .{ "ceil", unary_float_sigs },
-    .{ "round", unary_float_sigs },
-    .{ "trunc", unary_float_sigs },
-    .{ "fract", unary_float_sigs },
-    .{ "min", binary_numeric_sigs },
-    .{ "max", binary_numeric_sigs },
-    .{ "clamp", ternary_numeric_sigs },
-    .{ "saturate", unary_float_sigs },
-    .{ "mix", mix_sigs },
-    .{ "step", binary_float_sigs },
-    .{ "smoothstep", ternary_float_sigs },
-    .{ "fma", ternary_float_sigs },
-    .{ "degrees", unary_float_sigs },
-    .{ "radians", unary_float_sigs },
-
-    // Vector operations (§17.5.15, §17.5.19, §17.5.22–17.5.24, §17.5.37–39).
-    .{ "dot", dot_sigs },
-    .{ "cross", cross_sigs },
-    .{ "length", length_sigs },
-    .{ "distance", distance_sigs },
-    .{ "normalize", normalize_sigs },
-    .{ "reflect", reflect_sigs },
-    .{ "refract", refract_sigs },
-    .{ "faceForward", faceForward_sigs },
-
-    // Bit manipulation (§17.5.10–17.5.14, §17.5.22–23, §17.5.41).
-    .{ "countOneBits", unary_int_sigs },
-    .{ "countLeadingZeros", unary_int_sigs },
-    .{ "countTrailingZeros", unary_int_sigs },
-    .{ "reverseBits", unary_int_sigs },
-    .{ "firstLeadingBit", unary_int_sigs },
-    .{ "firstTrailingBit", unary_int_sigs },
-    .{ "extractBits", extractBits_sigs },
-    .{ "insertBits", insertBits_sigs },
-
-    // Matrix-reducing (§17.5.21).
-    .{ "determinant", determinant_sigs },
-
-    // Special (§17.5.32, §17.5.40).
-    .{ "ldexp", ldexp_sigs },
-    .{ "quantizeToF16", unary_float_sigs },
-
-    // Derivatives (§17.6).
-    .{ "dpdx", unary_float_sigs },
-    .{ "dpdy", unary_float_sigs },
-    .{ "fwidth", unary_float_sigs },
-    .{ "dpdxCoarse", unary_float_sigs },
-    .{ "dpdyCoarse", unary_float_sigs },
-    .{ "fwidthCoarse", unary_float_sigs },
-    .{ "dpdxFine", unary_float_sigs },
-    .{ "dpdyFine", unary_float_sigs },
-    .{ "fwidthFine", unary_float_sigs },
-
-    // Subgroup / quad ops (§17.12 / §17.13).
-    .{ "subgroupBroadcast", subgroup_shuffle_sigs },
-    .{ "subgroupBroadcastFirst", subgroup_unary_numeric_sigs },
-    .{ "subgroupShuffle", subgroup_shuffle_sigs },
-    .{ "subgroupShuffleDown", subgroup_shuffle_sigs },
-    .{ "subgroupShuffleUp", subgroup_shuffle_sigs },
-    .{ "subgroupShuffleXor", subgroup_shuffle_sigs },
-    .{ "subgroupAdd", subgroup_unary_numeric_sigs },
-    .{ "subgroupMul", subgroup_unary_numeric_sigs },
-    .{ "subgroupAnd", subgroup_unary_numeric_sigs },
-    .{ "subgroupOr", subgroup_unary_numeric_sigs },
-    .{ "subgroupXor", subgroup_unary_numeric_sigs },
-    .{ "subgroupMin", subgroup_unary_numeric_sigs },
-    .{ "subgroupMax", subgroup_unary_numeric_sigs },
-    .{ "subgroupInclusiveAdd", subgroup_unary_numeric_sigs },
-    .{ "subgroupInclusiveMul", subgroup_unary_numeric_sigs },
-    .{ "subgroupExclusiveAdd", subgroup_unary_numeric_sigs },
-    .{ "subgroupExclusiveMul", subgroup_unary_numeric_sigs },
-    .{ "quadBroadcast", quad_broadcast_sigs },
-    .{ "quadSwapDiagonal", subgroup_unary_numeric_sigs },
-    .{ "quadSwapX", subgroup_unary_numeric_sigs },
-    .{ "quadSwapY", subgroup_unary_numeric_sigs },
-
-    // Logical reductions (§17.3).
-    .{ "all", bool_reduce_sigs },
-    .{ "any", bool_reduce_sigs },
-    .{ "subgroupAll", subgroup_bool_reduce_sigs },
-    .{ "subgroupAny", subgroup_bool_reduce_sigs },
-    .{ "subgroupElect", subgroup_elect_sigs },
-
-    // Data packing (§17.9).
-    .{ "pack2x16snorm", pack_vec2_f32_sigs },
-    .{ "pack2x16unorm", pack_vec2_f32_sigs },
-    .{ "pack2x16float", pack_vec2_f32_sigs },
-    .{ "pack4x8snorm", pack_vec4_f32_sigs },
-    .{ "pack4x8unorm", pack_vec4_f32_sigs },
-    .{ "pack4xI8", pack_vec4_i32_sigs },
-    .{ "pack4xI8Clamp", pack_vec4_i32_sigs },
-    .{ "pack4xU8", pack_vec4_u32_sigs },
-    .{ "pack4xU8Clamp", pack_vec4_u32_sigs },
-};
-
 // =========================================================================
 // Tests
 // =========================================================================
@@ -2188,18 +1781,28 @@ test "builtins: must_use is true except for void-returning builtins" {
     try std.testing.expect(!lookup("atomicStore").?.must_use);
 }
 
-test "builtins: every callable entry has declarative overloads" {
-    // `Validator.checkBuiltinCall` asserts `overloads.len > 0` before
-    // dispatching to the solver. This test enforces the invariant at the
-    // table level so a missing sig table shows up here, not as an assert
-    // failure on the first call at validation time. `bitcast` is exempt:
-    // it dispatches through the dedicated `Validator.checkBitcastCall`
-    // block which seeds tparams from the template type and selects from
-    // `Builtins.bitcast_to_*_sigs` directly, so its `lookup().overloads`
-    // is intentionally empty.
+test "builtins: every row carries overloads and documentation" {
+    // One row per builtin: since Block 2.3 merged the former `sig_table`
+    // and `doc_table` side tables into `Builtin`, a single walk enforces
+    // both halves of the invariant that used to need two tables + two
+    // tests to stay in sync.
+    //
+    //   - `Validator.checkBuiltinCall` asserts `overloads.len > 0` before
+    //     dispatching to the solver, so every callable entry must carry a
+    //     non-empty overload set. `bitcast` is exempt: it dispatches through
+    //     the dedicated `Validator.checkBitcastCall` block which seeds
+    //     tparams from the template type and selects from
+    //     `Builtins.bitcast_to_*_sigs` directly, so its `overloads` is
+    //     intentionally empty.
+    //   - the LSP hover feature (`lsp/handler/hover.zig`) reads `doc`, so
+    //     every entry — bitcast included — must carry a non-empty signature.
     for (table.keys()) |name| {
-        if (std.mem.eql(u8, name, "bitcast")) continue;
         const b = lookup(name).?;
+        if (b.doc.signature.len == 0) {
+            std.debug.print("missing doc signature: {s}\n", .{name});
+            try std.testing.expect(false);
+        }
+        if (std.mem.eql(u8, name, "bitcast")) continue;
         if (b.overloads.len == 0) {
             std.debug.print("missing overloads: {s}\n", .{name});
             try std.testing.expect(false);
@@ -2389,16 +1992,6 @@ test "builtins: entry count matches Go implementation" {
     // Verify we have at least that many entries.
     const total = builtin_entries.len;
     try std.testing.expect(total >= 126);
-}
-
-test "builtins: all builtins have documentation" {
-    for (table.keys()) |name| {
-        const has_doc = doc_table.has(name);
-        if (!has_doc) {
-            std.debug.print("Missing doc for builtin: {s}\n", .{name});
-        }
-        try std.testing.expect(has_doc);
-    }
 }
 
 test "builtins: doc returns valid entries" {
