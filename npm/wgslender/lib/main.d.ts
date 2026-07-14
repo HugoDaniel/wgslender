@@ -805,6 +805,8 @@ export interface LintResult {
   diagnostics: LintDiagnostic[];
   errorCount: number;
   warningCount: number;
+  /** Number of diagnostics that carry an autofix (ESLint-style). */
+  fixableCount: number;
 }
 
 /** Result of `lintAndFix()`. Extends LintResult with the fixed source. */

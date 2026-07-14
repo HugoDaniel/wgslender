@@ -183,16 +183,25 @@ function createWrapper({ loadWasm }) {
     if (!resultPtr) throw new Error('Lint failed: WASM returned null');
 
     // [u32 error_count][u32 warning_count][u32 json_len][json]
+    // The JSON payload is the per-file lint result object
+    // { diagnostics, errorCount, warningCount, fixableCount }. errorCount /
+    // warningCount are also on the struct (authoritative for the C ABI);
+    // fixableCount rides only in the JSON.
     const view = new DataView(_wasm.memory.buffer);
     const errorCount = view.getUint32(resultPtr, true);
     const warningCount = view.getUint32(resultPtr + 4, true);
     const jsonLen = view.getUint32(resultPtr + 8, true);
-    const diagnostics = JSON.parse(
+    const parsed = JSON.parse(
       _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 12, jsonLen))
     );
     _wasm.wgslender_dealloc(resultPtr, 12 + jsonLen);
 
-    return { diagnostics, errorCount, warningCount };
+    return {
+      diagnostics: parsed.diagnostics,
+      errorCount,
+      warningCount,
+      fixableCount: parsed.fixableCount,
+    };
   }
 
   function lintAndFix(source, options) {
@@ -216,12 +225,18 @@ function createWrapper({ loadWasm }) {
     const fixed = _decoder.decode(
       new Uint8Array(_wasm.memory.buffer, resultPtr + 16, fixedLen)
     );
-    const diagnostics = JSON.parse(
+    const parsed = JSON.parse(
       _decoder.decode(new Uint8Array(_wasm.memory.buffer, resultPtr + 16 + fixedLen, jsonLen))
     );
     _wasm.wgslender_dealloc(resultPtr, 16 + fixedLen + jsonLen);
 
-    return { fixed, diagnostics, errorCount, warningCount };
+    return {
+      fixed,
+      diagnostics: parsed.diagnostics,
+      errorCount,
+      warningCount,
+      fixableCount: parsed.fixableCount,
+    };
   }
 
   function findReferences(source, offset, includeDeclaration) {

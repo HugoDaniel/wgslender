@@ -7,6 +7,17 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Changed
 
+- **Lint JSON schema (⚠ behavior):** the WASM/C-ABI `lint` / `lintAndFix`
+  JSON payload changed from a bare diagnostics array `[...]` to a canonical
+  per-file result object
+  `{"diagnostics":[...],"errorCount":N,"warningCount":N,"fixableCount":N}`.
+  The `WgslenderLintResult`/`WgslenderLintFixResult` C extern structs are
+  unchanged (their `error_count`/`warning_count` u32s stay authoritative);
+  `fixableCount` is new and rides only in the JSON. The npm `LintResult` /
+  `LintFixResult` now expose `fixableCount`. The `wgslender lint --format
+  json` CLI output is **unchanged** — its ESLint-style
+  `{"results":[{"filePath",...}],...}` envelope now wraps the same shared
+  object. The npm shipped wasm was rebuilt to match.
 - **Compile diagnostics (⚠ behavior):** the `compile` artifact now surfaces
   syntax errors as real diagnostics instead of masking them. Previously a
   malformed shader made `Compiler.compile` return `error.OutOfMemory` (a CLI

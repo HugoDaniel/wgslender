@@ -1098,22 +1098,16 @@ fn emitJson(
 ) !void {
     const Diagnostic = wgslender.Diagnostic;
     const File = std.Io.File;
+    const total_errors = lint_errors + analysis_errors;
+    // ESLint-style envelope: a `results` array of per-file objects (one here)
+    // plus run-wide totals. The per-file object is the shared
+    // `writeLintFileResult` shape with `filePath` prepended; the totals repeat
+    // it since this CLI lints a single file.
     var buf: std.ArrayList(u8) = .empty;
-    try buf.appendSlice(arena, "{\"results\":[{\"filePath\":\"");
-    try Diagnostic.appendJsonEscaped(&buf, arena, file_prefix);
-    try buf.appendSlice(arena, "\",\"diagnostics\":[");
-    for (entries, 0..) |*entry, i| {
-        if (i > 0) try buf.append(arena, ',');
-        try Diagnostic.entryToJson(&buf, arena, entry);
-    }
+    try buf.appendSlice(arena, "{\"results\":[");
+    try wgslender.api_json.writeLintFileResult(&buf, arena, file_prefix, entries, total_errors, lint_warnings, fixable_count);
     try buf.appendSlice(arena, "],\"errorCount\":");
-    try Diagnostic.appendInt(&buf, arena, lint_errors + analysis_errors);
-    try buf.appendSlice(arena, ",\"warningCount\":");
-    try Diagnostic.appendInt(&buf, arena, lint_warnings);
-    try buf.appendSlice(arena, ",\"fixableCount\":");
-    try Diagnostic.appendInt(&buf, arena, fixable_count);
-    try buf.appendSlice(arena, "}],\"errorCount\":");
-    try Diagnostic.appendInt(&buf, arena, lint_errors + analysis_errors);
+    try Diagnostic.appendInt(&buf, arena, total_errors);
     try buf.appendSlice(arena, ",\"warningCount\":");
     try Diagnostic.appendInt(&buf, arena, lint_warnings);
     try buf.appendSlice(arena, ",\"fixableCount\":");

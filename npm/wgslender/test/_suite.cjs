@@ -677,6 +677,20 @@ fn get_time(g: Uniforms) -> f32 { return g.time; }
       lintRecommended.diagnostics.every((d) => d.source === 'wgslender-lint'),
       'lint() diagnostics carry source="wgslender-lint"',
     );
+    assert(
+      typeof lintRecommended.fixableCount === 'number',
+      'lint() reports fixableCount from the per-file result object',
+      `got fixableCount=${lintRecommended.fixableCount}`,
+    );
+
+    const lintFixable = lint('fn f() -> i32 { return i32(1i); }', {
+      extends: ['@wgslender/recommended'],
+    });
+    assert(
+      lintFixable.fixableCount >= 1,
+      'lint() counts a redundant-cast diagnostic as fixable',
+      `got fixableCount=${lintFixable.fixableCount}`,
+    );
 
     const lintError = lint('fn unused() {}', {
       rules: { 'no-unused-vars': 'error' },

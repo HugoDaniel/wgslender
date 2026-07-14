@@ -620,24 +620,52 @@ pub fn parseLintConfig(
     };
 }
 
-fn writeLintDiagnostics(
+/// Append the canonical per-file lint result object
+/// `{"filePath":"...","diagnostics":[...],"errorCount":N,"warningCount":N,"fixableCount":N}`
+/// to `buf`. Single source of truth for the lint JSON shape, shared by the
+/// WASM/C-ABI lint surfaces (`file_path == null` ⇒ no `filePath` key) and the
+/// CLI's ESLint-style `emitJson` (passes the input path and wraps this object
+/// in a `{"results":[...]}` envelope). `entries` are the already-merged
+/// analysis + lint diagnostics; the three counts are passed explicitly because
+/// the CLI's `--quiet` filter can drop entries from the array while the counts
+/// must stay authoritative over the unfiltered run.
+pub fn writeLintFileResult(
     buf: *std.ArrayList(u8),
     alloc: Allocator,
-    result: *const wgslender.LintResult,
+    file_path: ?[]const u8,
+    entries: []const Diagnostic.Entry,
+    error_count: u32,
+    warning_count: u32,
+    fixable_count: u32,
 ) Allocator.Error!void {
-    try buf.append(alloc, '[');
-    var first = true;
-    for (result.analysis.diagnostics.items()) |*entry| {
-        if (!first) try buf.append(alloc, ',');
-        first = false;
-        try Diagnostic.entryToJson(buf, alloc, entry);
+    try buf.append(alloc, '{');
+    if (file_path) |fp| {
+        try buf.appendSlice(alloc, "\"filePath\":\"");
+        try Diagnostic.appendJsonEscaped(buf, alloc, fp);
+        try buf.appendSlice(alloc, "\",");
     }
-    for (result.lint.diagnostics.items()) |*entry| {
-        if (!first) try buf.append(alloc, ',');
-        first = false;
-        try Diagnostic.entryToJson(buf, alloc, entry);
-    }
-    try buf.append(alloc, ']');
+    try buf.appendSlice(alloc, "\"diagnostics\":");
+    try writeDiagnosticsBare(buf, alloc, entries);
+    try buf.appendSlice(alloc, ",\"errorCount\":");
+    try Diagnostic.appendInt(buf, alloc, error_count);
+    try buf.appendSlice(alloc, ",\"warningCount\":");
+    try Diagnostic.appendInt(buf, alloc, warning_count);
+    try buf.appendSlice(alloc, ",\"fixableCount\":");
+    try Diagnostic.appendInt(buf, alloc, fixable_count);
+    try buf.append(alloc, '}');
+}
+
+/// Merge a lint run's analysis (parser/validator) diagnostics with its lint
+/// diagnostics into one flat slice, analysis first — the order the CLI and the
+/// old bare-array writer both used.
+fn mergeLintEntries(
+    alloc: Allocator,
+    result: *const wgslender.LintResult,
+) Allocator.Error![]const Diagnostic.Entry {
+    var merged: std.ArrayList(Diagnostic.Entry) = .empty;
+    for (result.analysis.diagnostics.items()) |d| try merged.append(alloc, d);
+    for (result.lint.diagnostics.items()) |d| try merged.append(alloc, d);
+    return merged.items;
 }
 
 pub fn lintToResult(
@@ -649,10 +677,12 @@ pub fn lintToResult(
         error.OutOfMemory => return error.OutOfMemory,
     };
 
-    var buf: std.ArrayList(u8) = .empty;
-    try writeLintDiagnostics(&buf, alloc, &result);
-
+    const entries = try mergeLintEntries(alloc, &result);
     const error_count = result.analysis.diagnostics.errorCount() + result.lint.error_count;
+
+    var buf: std.ArrayList(u8) = .empty;
+    try writeLintFileResult(&buf, alloc, null, entries, error_count, result.lint.warning_count, result.lint.fixable_count);
+
     return .{
         .error_count = error_count,
         .warning_count = result.lint.warning_count,
@@ -675,10 +705,12 @@ pub fn lintFixToResult(
         result.lint.diagnostics.items(),
     );
 
-    var buf: std.ArrayList(u8) = .empty;
-    try writeLintDiagnostics(&buf, alloc, &result);
-
+    const entries = try mergeLintEntries(alloc, &result);
     const error_count = result.analysis.diagnostics.errorCount() + result.lint.error_count;
+
+    var buf: std.ArrayList(u8) = .empty;
+    try writeLintFileResult(&buf, alloc, null, entries, error_count, result.lint.warning_count, result.lint.fixable_count);
+
     return .{
         .fixed = try alloc.dupe(u8, fix_result.fixed),
         .error_count = error_count,
@@ -792,7 +824,7 @@ test "renameToJson: returns edits envelope" {
     try std.testing.expect(std.mem.startsWith(u8, json, "{\"edits\":["));
 }
 
-test "lintToResult: returns diagnostics array" {
+test "lintToResult: returns a per-file result object" {
     const a = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
@@ -800,8 +832,13 @@ test "lintToResult: returns diagnostics array" {
 
     const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() {}";
     const r = try lintToResult(alloc, source, .{});
-    try std.testing.expect(std.mem.startsWith(u8, r.json, "["));
-    try std.testing.expect(std.mem.endsWith(u8, r.json, "]"));
+    // Canonical per-file object: diagnostics first (no filePath on the WASM
+    // surface), then the three severity counts.
+    try std.testing.expect(std.mem.startsWith(u8, r.json, "{\"diagnostics\":["));
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "\"errorCount\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "\"warningCount\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, r.json, "\"fixableCount\":") != null);
+    try std.testing.expect(std.mem.endsWith(u8, r.json, "}"));
 }
 
 test "compileToResult: produces a valid WASM header" {
