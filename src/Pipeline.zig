@@ -287,9 +287,7 @@ fn runPrint(state: *State, options: Minifier.Options) Allocator.Error!void {
     if (options.sort_declarations) {
         const sorted = try Minifier.sortDeclarations(state.arena, module);
         printer.buf.clearRetainingCapacity();
-        for (sorted) |decl| {
-            try printer.printDecl(decl);
-        }
+        try printer.printDecls(sorted, null);
         state.output = printer.buf.items;
         return;
     }

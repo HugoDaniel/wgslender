@@ -80,6 +80,39 @@ pub fn print(self: *Printer, module: *const Ast.Module) ![]const u8 {
     return self.buf.items;
 }
 
+/// Optional per-declaration measurement hook for `printDecls`. `onDecl` fires
+/// after each decl is printed with that decl's printed byte count. When
+/// `accumulate` is true the output buffer grows across decls and `size` is the
+/// delta (after − before); when false the buffer is cleared before each decl
+/// and `size` is the full buffer length (the decl in isolation). Callers that
+/// only want the concatenated bytes pass `null` to `printDecls`.
+pub const PerDeclSink = struct {
+    ctx: *anyopaque,
+    onDecl: *const fn (ctx: *anyopaque, decl: Ast.Decl, size: u32) std.mem.Allocator.Error!void,
+    accumulate: bool = true,
+};
+
+/// Print each declaration in `decls` into `buf`, optionally measuring per-decl
+/// sizes through `sink`. This is the shared clear/print loop behind the sorted
+/// minify print (Pipeline, Compiler — `sink == null`, buffer accumulates) and
+/// the size estimator (`sink != null`). Callers own `buf`'s initial state:
+/// the accumulating paths clear it once before calling; a cleared-per-decl
+/// sink resets it each iteration. `decls` is printed verbatim — any
+/// tree-shake/sort filtering is the caller's responsibility.
+pub fn printDecls(self: *Printer, decls: []const Ast.Decl, sink: ?PerDeclSink) std.mem.Allocator.Error!void {
+    const accumulate = if (sink) |s| s.accumulate else true;
+    for (decls) |decl| {
+        const before: u32 = @intCast(self.buf.items.len);
+        if (!accumulate) self.buf.clearRetainingCapacity();
+        try self.printDecl(decl);
+        if (sink) |s| {
+            const after: u32 = @intCast(self.buf.items.len);
+            const size: u32 = if (accumulate) after - before else after;
+            try s.onDecl(s.ctx, decl, size);
+        }
+    }
+}
+
 // =========================================================================
 // Output helpers
 // =========================================================================

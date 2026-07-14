@@ -196,37 +196,23 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
     }
 
     // Declarations. When sort_declarations is on, use Minifier's sort
-    // helper (already filters to live decls); otherwise iterate the
-    // module's order and filter dead decls inline — matches
-    // Printer.printModule's behaviour under tree_shaking.
+    // helper (already filters to live decls); otherwise iterate the module's
+    // order, pre-filtering dead decls under tree_shaking — matches
+    // Printer.printModule's behaviour. Pre-filtering (rather than skipping
+    // inside the loop) lets `printDecls` own the clear/print/measure loop.
     const decl_list: []const Ast.Decl = if (options.sort_declarations)
         try Minifier.sortDeclarations(arena, module)
+    else if (options.tree_shaking)
+        try liveDecls(arena, module.declarations.items, liveness)
     else
         module.declarations.items;
 
-    for (decl_list) |decl| {
-        if (!options.sort_declarations and options.tree_shaking) {
-            if (!Dce.isDeclarationLive(decl, liveness)) continue;
-        }
-
-        const before: u32 = @intCast(printer.buf.items.len);
-        if (!accumulate) printer.buf.clearRetainingCapacity();
-        try printer.printDecl(decl);
-        const after: u32 = @intCast(printer.buf.items.len);
-        const size: u32 = if (accumulate) after - before else after;
-        result.total_min += size;
-
-        const name_ref = decl.nameRef();
-        if (name_ref.isValid()) {
-            try result.per_decl.put(arena, name_ref, .{ .min = size });
-            if (decl == .function) {
-                try result.per_function.put(arena, name_ref, .{
-                    .min = size,
-                    .gz = estimateGz(size),
-                });
-            }
-        }
-    }
+    var sink_state = EstimateSink{ .arena = arena, .result = &result };
+    try printer.printDecls(decl_list, .{
+        .ctx = &sink_state,
+        .onDecl = EstimateSink.onDecl,
+        .accumulate = accumulate,
+    });
 
     if (accumulate) {
         // Ground-truth gzip on the actual minified bytes. Falls back to
@@ -242,6 +228,42 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
 // =========================================================================
 // Internals
 // =========================================================================
+
+/// Filter `decls` to those whose declared symbol is live. Mirrors the inline
+/// tree-shake skip the estimator's decl loop used to do (which matched
+/// Printer.printModule's behaviour under tree_shaking), materialized into a
+/// fresh slice so `Printer.printDecls` can walk a pre-filtered list.
+fn liveDecls(arena: Allocator, decls: []const Ast.Decl, liveness: Liveness) ![]const Ast.Decl {
+    var live: std.ArrayList(Ast.Decl) = .empty;
+    for (decls) |decl| {
+        if (Dce.isDeclarationLive(decl, liveness)) try live.append(arena, decl);
+    }
+    return live.items;
+}
+
+/// `Printer.PerDeclSink` implementation: accumulates per-decl and per-function
+/// byte sizes into the `EstimateResult` as `printDecls` walks the (already
+/// sorted/filtered) declaration list.
+const EstimateSink = struct {
+    arena: Allocator,
+    result: *EstimateResult,
+
+    fn onDecl(ctx: *anyopaque, decl: Ast.Decl, size: u32) Allocator.Error!void {
+        const self: *EstimateSink = @ptrCast(@alignCast(ctx));
+        self.result.total_min += size;
+
+        const name_ref = decl.nameRef();
+        if (name_ref.isValid()) {
+            try self.result.per_decl.put(self.arena, name_ref, .{ .min = size });
+            if (decl == .function) {
+                try self.result.per_function.put(self.arena, name_ref, .{
+                    .min = size,
+                    .gz = estimateGz(size),
+                });
+            }
+        }
+    }
+};
 
 fn isRenameable(idx: u32, sym: *const Ast.Symbol, policy: *const RenamePolicy, options: Options) bool {
     if (policy.mustNotRename(@enumFromInt(idx))) return false;

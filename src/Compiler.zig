@@ -238,19 +238,12 @@ fn sortedMinifiedText(arena: Allocator, source: [:0]const u8, module: *Ast.Modul
         .renamer = renamer,
     }, module.symbols.items);
     defer printer.deinit();
-    return printSortedModule(arena, &printer, module, sorted_decls);
-}
 
-/// Print a module with pre-sorted declarations (bypasses Printer's own module printing).
-fn printSortedModule(arena: Allocator, printer: *Printer, module: *const Ast.Module, sorted_decls: []const Ast.Decl) ![]const u8 {
-    _ = module;
     printer.buf.clearRetainingCapacity();
-    for (sorted_decls) |decl| {
-        try printer.printDecl(decl);
-    }
-    const result = try arena.alloc(u8, printer.buf.items.len);
-    @memcpy(result, printer.buf.items);
-    return result;
+    try printer.printDecls(sorted_decls, null);
+    // Own the bytes past the printer's arena-backed buffer (BPE reads them
+    // after `printer` is deinit'd at scope exit).
+    return arena.dupe(u8, printer.buf.items);
 }
 
 /// Round `value` up to the next multiple of `alignment` (must be power of 2).
