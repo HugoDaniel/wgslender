@@ -153,28 +153,9 @@ fn compileInner(arena: Allocator, source: [:0]const u8, options: CompileOptions)
     }
     const module = maybe_module.?;
 
-    // 2. Prepare renamer (global frequency-based) and the rename policy
-    //    that the scope-local wrapper consults to skip pinned symbols.
-    const prep = try prepareRenamer(arena, source, module, options);
-
-    // 3. Apply scope-local renaming for better compression
-    //    Within each function, reassign params/locals to a,b,c,... per function.
-    //    This makes similar functions produce identical text patterns.
-    const scope_renamer = try ScopeLocalRenamer.init(arena, module, prep.renamer, prep.policy);
-    const renamer = &scope_renamer.ren;
-
-    // 4. Sort declarations by kind + size for better compression
-    const sorted_decls = try Minifier.sortDeclarations(arena, module);
-
-    // 5. Print sorted minified text
-    var printer = Printer.init(arena, .{
-        .minify_whitespace = true,
-        .minify_identifiers = true,
-        .tree_shaking = false, // already filtered by sortDeclarations
-        .renamer = renamer,
-    }, module.symbols.items);
-    defer printer.deinit();
-    const minified = try printSortedModule(arena, &printer, module, sorted_decls);
+    // 2-5. Prepare the renamer, scope-localize, sort, and print the sorted
+    //      minified text (the exact bytes the BPE stage compresses).
+    const minified = try sortedMinifiedText(arena, source, module, options);
 
     // 6. BPE compress
     var bpe = try BpeEncoder.compress(arena, minified);
@@ -229,6 +210,35 @@ fn compileInner(arena: Allocator, source: [:0]const u8, options: CompileOptions)
         .original_size = original_size,
         .wasm_size = wasm.len,
     };
+}
+
+/// Steps 2-5 of `compileInner`: build the global frequency renamer, wrap it
+/// scope-local (params/locals → a,b,c,… per function), sort declarations, and
+/// print the sorted minified text. Returns the exact bytes the BPE stage
+/// compresses — the same text the `compile` binary regenerates at runtime.
+/// Factored out so the round-trip pin can assert it byte-for-byte against the
+/// public minifier's sorted output.
+fn sortedMinifiedText(arena: Allocator, source: [:0]const u8, module: *Ast.Module, options: CompileOptions) ![]const u8 {
+    // Global frequency-based renamer + the rename policy the scope-local
+    // wrapper consults to skip pinned symbols.
+    const prep = try prepareRenamer(arena, source, module, options);
+
+    // Scope-local renaming: within each function, reassign params/locals to
+    // a,b,c,… so structurally similar functions produce identical text.
+    const scope_renamer = try ScopeLocalRenamer.init(arena, module, prep.renamer, prep.policy);
+    const renamer = &scope_renamer.ren;
+
+    // Sort declarations by kind + size (already filters to live decls).
+    const sorted_decls = try Minifier.sortDeclarations(arena, module);
+
+    var printer = Printer.init(arena, .{
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .tree_shaking = false, // already filtered by sortDeclarations
+        .renamer = renamer,
+    }, module.symbols.items);
+    defer printer.deinit();
+    return printSortedModule(arena, &printer, module, sorted_decls);
 }
 
 /// Print a module with pre-sorted declarations (bypasses Printer's own module printing).
@@ -1702,6 +1712,43 @@ fn compileAndVerifyRoundTrip(source: [:0]const u8) !void {
     );
 
     try std.testing.expectEqualStrings(expected, actual);
+}
+
+test "pin: compiler sorted text == Minifier.minify sorted output (shared print loop)" {
+    // Both the compiler's sorted print and the public minifier's
+    // sort_declarations branch drive the *same* clear/print loop over sorted
+    // decls. This pins them byte-for-byte so the upcoming `Printer.printDecls`
+    // unification can't silently drift one path from the other. No external
+    // bindings (their alias/mangle handling differs between the paths) and
+    // `minify_syntax = false` to match the compiler printer's config.
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        \\fn helper(x: f32) -> f32 { return x * 2.0; }
+        \\fn secondary(a: f32, b: f32) -> f32 { return a + b; }
+        \\@compute @workgroup_size(1) fn main() {
+        \\  let y = secondary(helper(1.0), 2.0);
+        \\}
+    ;
+
+    // Path A — public minifier, sorted branch (Pipeline.runPrint).
+    const mr = try Minifier.minify(alloc, source, .{
+        .minify_syntax = false,
+        .sort_declarations = true,
+        .scope_local_rename = true,
+    });
+
+    // Path B — compiler's sorted print (sortedMinifiedText → printSortedModule).
+    const tokens = try Lexer.tokenize(alloc, source);
+    var parser = try Parser.init(alloc, source, tokens);
+    const module = parser.parse() catch return error.OutOfMemory;
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
+    const text_b = try sortedMinifiedText(alloc, source, module, .{});
+
+    try std.testing.expectEqualStrings(mr.code, text_b);
 }
 
 test "compile: empty function" {
