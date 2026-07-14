@@ -679,23 +679,26 @@ pub fn compileToResult(
     const config = Config.parseJson(alloc, opts_json) catch Config{};
     const minify_options = config.toOptions();
 
-    // Compiler.compile collapses parse / codegen problems to OutOfMemory
-    // (see Compiler.zig). Mirror the WASM contract: any failure surfaces
-    // as a generic "compile failed" envelope rather than propagating —
-    // a real OOM will fail again on the dupeLiteral below.
+    // Syntax errors are surfaced as diagnostics on the result (empty wasm);
+    // only a real OOM propagates, matching every other function in this layer.
     const result = Compiler.compile(alloc, source, .{
         .minify = true,
         .minify_options = minify_options,
-    }) catch return .{
-        .wasm = try alloc.alloc(u8, 0),
-        .original_size = @intCast(source.len),
-        .errors_json = try dupeLiteral(alloc, "[{\"message\":\"compile failed\"}]"),
+    }) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
     };
+
+    // Serialize parse errors through the same entry serializer as validate, so
+    // compile diagnostics carry positions/codes and share one wire shape.
+    var buf: std.ArrayList(u8) = .empty;
+    var diag = try Diagnostic.init(alloc, source);
+    Parser.mergeErrorsInto(result.errors, &diag, alloc);
+    try writeDiagnosticsBare(&buf, alloc, diag.diagnostics.items);
 
     return .{
         .wasm = try alloc.dupe(u8, result.wasm),
         .original_size = @intCast(result.original_size),
-        .errors_json = try dupeLiteral(alloc, "[]"),
+        .errors_json = finalize(buf),
     };
 }
 

@@ -508,8 +508,12 @@ export interface CompileResult {
   originalSize: number;
   /** Size of the generated `.wasm` in bytes. */
   wasmSize: number;
-  /** Errors collected during compile; empty on success. */
-  errors: { message: string }[];
+  /**
+   * Syntax diagnostics collected during compile; empty on success. Each entry
+   * carries a position and code, sharing the same shape as validation
+   * diagnostics. A non-empty array means `wasm` is empty (no binary produced).
+   */
+  errors: DiagnosticInfo[];
 }
 
 /**

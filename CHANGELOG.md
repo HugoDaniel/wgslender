@@ -5,6 +5,20 @@ All notable changes to wgslender are recorded here. The project follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Compile diagnostics (⚠ behavior):** the `compile` artifact now surfaces
+  syntax errors as real diagnostics instead of masking them. Previously a
+  malformed shader made `Compiler.compile` return `error.OutOfMemory` (a CLI
+  crash) and the JSON surface (WASM/C-ABI `compile`) collapsed every failure
+  to `[{"message":"compile failed"}]`. Now `CompileResult` carries an
+  `errors` list (mirroring `Minifier.Result`); the JSON `errors` array holds
+  positioned diagnostic entries (`severity`/`message`/`code`/`line`/`column`),
+  the same shape as validation; and `wgslender compile` prints those
+  diagnostics to stderr and exits 1 **without writing an output file**. A real
+  OOM still propagates. The npm `CompileResult.errors` type widens from
+  `{ message }[]` to `DiagnosticInfo[]`.
+
 ### Fixed
 
 - **Out-of-memory honesty (validator):** the type-resolution and

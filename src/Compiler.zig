@@ -79,9 +79,16 @@ pub const CompileOptions = struct {
 /// The `wasm` slice is valid until `deinit()` is called.
 pub const CompileResult = struct {
     /// The generated WASM binary. Feed to `WebAssembly.instantiate()`.
+    /// Empty (`len == 0`) when `errors` is non-empty — a syntax error yields
+    /// diagnostics, not a binary.
     wasm: []const u8,
     original_size: usize,
     wasm_size: usize,
+    /// Parse/syntax diagnostics. Non-empty ⇒ compilation produced no wasm.
+    /// Mirrors `Minifier.Result.errors`: the artifact surfaces failures as
+    /// data on the result, not as `error.OutOfMemory`. Real OOM still
+    /// propagates through the `!CompileResult` error union.
+    errors: []const Parser.ParseError = &.{},
     /// Internal arena owning all allocated data.
     _arena: ?std.heap.ArenaAllocator = null,
 
@@ -106,11 +113,15 @@ pub fn compile(gpa: Allocator, source: [:0]const u8, options: CompileOptions) !C
 
     var result = try compileInner(alloc, source, options);
 
-    // Post: WASM binary always carries the 8-byte magic + version header
-    // (`\0asm\x01\x00\x00\x00`). A shorter slice means assembly aborted
-    // mid-stream without surfacing an error.
-    std.debug.assert(result.wasm.len >= 8);
-    std.debug.assert(std.mem.eql(u8, result.wasm[0..4], "\x00asm"));
+    // Post: a successful compile (no diagnostics) always carries the 8-byte
+    // magic + version header (`\0asm\x01\x00\x00\x00`). A shorter slice means
+    // assembly aborted mid-stream without surfacing an error. When `errors` is
+    // non-empty the shader never reached codegen, so `wasm` is deliberately
+    // empty and the header assert does not apply.
+    if (result.errors.len == 0) {
+        std.debug.assert(result.wasm.len >= 8);
+        std.debug.assert(std.mem.eql(u8, result.wasm[0..4], "\x00asm"));
+    }
 
     result._arena = arena;
     return result;
@@ -124,8 +135,23 @@ fn compileInner(arena: Allocator, source: [:0]const u8, options: CompileOptions)
     defer tokens.deinit(arena);
 
     var parser = try Parser.init(arena, source, tokens);
-    const module = parser.parse() catch return error.OutOfMemory;
-    if (parser.errors.items.len > 0) return error.OutOfMemory;
+    // A recoverable syntax error is data, not a failure: surface the collected
+    // diagnostics on the result with an empty binary. Only a real OOM
+    // propagates. (ParseFailed is a catastrophic abort that always records a
+    // diagnostic first — mirror Minifier's `errors.len > 0 or module == null`.)
+    const maybe_module = parser.parse() catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ParseFailed => null,
+    };
+    if (maybe_module == null or parser.errors.items.len > 0) {
+        return .{
+            .wasm = &.{},
+            .original_size = original_size,
+            .wasm_size = 0,
+            .errors = try arena.dupe(Parser.ParseError, parser.errors.items),
+        };
+    }
+    const module = maybe_module.?;
 
     // 2. Prepare renamer (global frequency-based) and the rename policy
     //    that the scope-local wrapper consults to skip pinned symbols.

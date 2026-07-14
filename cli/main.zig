@@ -130,7 +130,7 @@ pub fn main(init: std.process.Init) !void {
             args.input_path,
         ),
         .reflect => try runReflect(arena, io, source, args.output_path, args.reflect_options.compact, args.reflect_options.reflect_format),
-        .compile => try runCompile(arena, io, source, args.output_path, args.options),
+        .compile => try runCompile(arena, io, source, args.output_path, args.input_path, args.options),
         .lint => try runLint(
             arena,
             io,
@@ -920,7 +920,7 @@ fn runReflect(
     }
 }
 
-fn runCompile(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, output_path: ?[]const u8, minify_options: wgslender.Minifier.Options) !void {
+fn runCompile(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, output_path: ?[]const u8, input_path: ?[]const u8, minify_options: wgslender.Minifier.Options) !void {
     const File = std.Io.File;
     const Dir = std.Io.Dir;
 
@@ -929,6 +929,36 @@ fn runCompile(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, output
         .minify_options = minify_options,
     });
     defer result.deinit(arena);
+
+    // Syntax errors: print positioned diagnostics and exit 1 without writing
+    // any output file (the artifact never reached codegen).
+    if (result.errors.len > 0) {
+        const Diagnostic = wgslender.Diagnostic;
+        var diag = try Diagnostic.init(arena, source);
+        wgslender.Parser.mergeErrorsInto(result.errors, &diag, arena);
+        const file_prefix = input_path orelse "<stdin>";
+        for (diag.diagnostics.items) |entry| {
+            var scratch: [20]u8 = undefined;
+            try File.stderr().writeStreamingAll(io, file_prefix);
+            try File.stderr().writeStreamingAll(io, ":");
+            const line_s = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.line}) catch "";
+            try File.stderr().writeStreamingAll(io, line_s);
+            try File.stderr().writeStreamingAll(io, ":");
+            const col_s = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.column}) catch "";
+            try File.stderr().writeStreamingAll(io, col_s);
+            try File.stderr().writeStreamingAll(io, ": ");
+            try File.stderr().writeStreamingAll(io, entry.severity.string());
+            try File.stderr().writeStreamingAll(io, ": ");
+            try File.stderr().writeStreamingAll(io, entry.message);
+            if (entry.code.len > 0) {
+                try File.stderr().writeStreamingAll(io, " [");
+                try File.stderr().writeStreamingAll(io, entry.code);
+                try File.stderr().writeStreamingAll(io, "]");
+            }
+            try File.stderr().writeStreamingAll(io, "\n");
+        }
+        std.process.exit(1);
+    }
 
     if (output_path) |path| {
         const file = try Dir.cwd().createFile(io, path, .{});

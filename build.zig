@@ -410,6 +410,9 @@ pub fn build(b: *std.Build) void {
     // Diagnostic JSON escaping — serialized entries must parse under std.json
     // even when a message carries a control byte (< 0x20).
     _ = addTestStep(b, test_step, "tests/diagnostic_json_test.zig", target, optimize, &.{w});
+    // Compile artifact diagnostics — syntax errors surface as positioned
+    // diagnostics (native + JSON), never as error.OutOfMemory or "compile failed".
+    _ = addTestStep(b, test_step, "tests/compile_diagnostics_test.zig", target, optimize, &.{w});
     // Reflect tests
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/reflect_wgslreflect_test.zig", target, optimize, &.{w});
