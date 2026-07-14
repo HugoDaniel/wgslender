@@ -11,6 +11,7 @@
 //! Default ceiling: 15. Configurable via `["warn", { "max": 10 }]`.
 
 const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 const Rule = @import("../Rule.zig");
 const Context = @import("../Context.zig");
@@ -51,7 +52,7 @@ fn readMax(ctx: *const Context) u32 {
 
 fn check(ctx: *Context, fd: *const Ast.FunctionDecl, max: u32) error{OutOfMemory}!void {
     const body = fd.body orelse return;
-    const cyclo = 1 + compoundDecisions(body);
+    const cyclo = 1 + try compoundDecisions(ctx.arena, body);
     if (cyclo <= max) return;
 
     const name_ref = fd.name;
@@ -69,102 +70,77 @@ fn check(ctx: *Context, fd: *const Ast.FunctionDecl, max: u32) error{OutOfMemory
     });
 }
 
-fn compoundDecisions(c: *Ast.CompoundStmt) u32 {
+fn compoundDecisions(arena: Allocator, c: *Ast.CompoundStmt) error{OutOfMemory}!u32 {
     var n: u32 = 0;
-    for (c.stmts.items) |stmt| n += stmtDecisions(stmt);
+    for (c.stmts.items) |stmt| n += try stmtDecisions(arena, stmt);
     return n;
 }
 
-fn stmtDecisions(stmt: Ast.Stmt) u32 {
+fn stmtDecisions(arena: Allocator, stmt: Ast.Stmt) error{OutOfMemory}!u32 {
     return switch (stmt) {
-        .compound => |s| compoundDecisions(s),
+        .compound => |s| try compoundDecisions(arena, s),
         .@"if" => |s| blk: {
-            var n: u32 = 1 + exprDecisions(s.condition) + compoundDecisions(s.body);
-            if (s.else_branch) |eb| n += stmtDecisions(eb);
+            var n: u32 = 1 + (try exprDecisions(arena, s.condition)) + (try compoundDecisions(arena, s.body));
+            if (s.else_branch) |eb| n += try stmtDecisions(arena, eb);
             break :blk n;
         },
         .@"for" => |s| blk: {
-            var n: u32 = 1 + compoundDecisions(s.body);
-            if (s.condition) |c| n += exprDecisions(c);
+            var n: u32 = 1 + (try compoundDecisions(arena, s.body));
+            if (s.condition) |c| n += try exprDecisions(arena, c);
             break :blk n;
         },
-        .@"while" => |s| 1 + exprDecisions(s.condition) + compoundDecisions(s.body),
+        .@"while" => |s| 1 + (try exprDecisions(arena, s.condition)) + (try compoundDecisions(arena, s.body)),
         .loop => |s| blk: {
-            var n: u32 = 1 + compoundDecisions(s.body);
-            if (s.continuing) |cc| n += compoundDecisions(cc);
+            var n: u32 = 1 + (try compoundDecisions(arena, s.body));
+            if (s.continuing) |cc| n += try compoundDecisions(arena, cc);
             break :blk n;
         },
         .@"switch" => |s| blk: {
-            var n: u32 = exprDecisions(s.expr);
-            for (s.cases.items) |case| n += 1 + compoundDecisions(case.body);
+            var n: u32 = try exprDecisions(arena, s.expr);
+            for (s.cases.items) |case| n += 1 + (try compoundDecisions(arena, case.body));
             break :blk n;
         },
-        .break_if => |s| 1 + exprDecisions(s.condition),
-        .@"return" => |s| if (s.value) |v| exprDecisions(v) else 0,
-        .assign => |s| exprDecisions(s.left) + exprDecisions(s.right),
+        .break_if => |s| 1 + (try exprDecisions(arena, s.condition)),
+        .@"return" => |s| if (s.value) |v| try exprDecisions(arena, v) else 0,
+        .assign => |s| (try exprDecisions(arena, s.left)) + (try exprDecisions(arena, s.right)),
         .call => |s| blk: {
             var n: u32 = 0;
-            if (s.call.func) |f| n += exprDecisions(f);
-            for (s.call.args.items) |a| n += exprDecisions(a);
+            if (s.call.func) |f| n += try exprDecisions(arena, f);
+            for (s.call.args.items) |a| n += try exprDecisions(arena, a);
             break :blk n;
         },
-        .incr_decr => |s| exprDecisions(s.expr),
+        .incr_decr => |s| try exprDecisions(arena, s.expr),
         else => 0,
     };
 }
 
 /// Each `&&` / `||` in a condition is an additional independent path.
-fn exprDecisions(root: Ast.Expr) u32 {
+/// Arena-backed iterative walk — the expression tree can nest arbitrarily
+/// deep, so the traversal stack must grow (a fixed buffer silently dropped
+/// subtrees past its cap, under-counting deeply nested conditions).
+fn exprDecisions(arena: Allocator, root: Ast.Expr) error{OutOfMemory}!u32 {
     var count: u32 = 0;
-    var stack_buf: [64]Ast.Expr = undefined;
-    var top: usize = 1;
-    stack_buf[0] = root;
-    while (top > 0) {
-        top -= 1;
-        const e = stack_buf[top];
-        switch (e) {
-            .binary => |b| {
-                if (b.op == .logical_and or b.op == .logical_or) count += 1;
-                if (top + 2 > stack_buf.len) continue;
-                stack_buf[top] = b.left;
-                stack_buf[top + 1] = b.right;
-                top += 2;
-            },
-            .unary => |u| {
-                if (top >= stack_buf.len) continue;
-                stack_buf[top] = u.operand;
-                top += 1;
-            },
-            .paren => |p| {
-                if (top >= stack_buf.len) continue;
-                stack_buf[top] = p.expr;
-                top += 1;
-            },
-            .call => |c| {
-                if (c.func) |f| {
-                    if (top >= stack_buf.len) continue;
-                    stack_buf[top] = f;
-                    top += 1;
-                }
-                for (c.args.items) |a| {
-                    if (top >= stack_buf.len) continue;
-                    stack_buf[top] = a;
-                    top += 1;
-                }
-            },
-            .index => |i| {
-                if (top + 2 > stack_buf.len) continue;
-                stack_buf[top] = i.base;
-                stack_buf[top + 1] = i.idx;
-                top += 2;
-            },
-            .member => |m| {
-                if (top >= stack_buf.len) continue;
-                stack_buf[top] = m.base;
-                top += 1;
-            },
-            .literal, .ident => {},
-        }
-    }
+    var stack: std.ArrayList(Ast.Expr) = .empty;
+    defer stack.deinit(arena);
+    try stack.append(arena, root);
+    while (stack.pop()) |e| switch (e) {
+        .binary => |b| {
+            if (b.op == .logical_and or b.op == .logical_or) count += 1;
+            try stack.append(arena, b.left);
+            try stack.append(arena, b.right);
+        },
+        .unary => |u| try stack.append(arena, u.operand),
+        .paren => |p| try stack.append(arena, p.expr),
+        .call => |c| {
+            if (c.func) |f| try stack.append(arena, f);
+            for (c.args.items) |a| try stack.append(arena, a);
+        },
+        .index => |i| {
+            try stack.append(arena, i.base);
+            try stack.append(arena, i.idx);
+        },
+        .member => |m| try stack.append(arena, m.base),
+        .literal, .ident => {},
+    };
     return count;
 }

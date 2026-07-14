@@ -1464,6 +1464,40 @@ test "complexity: simple function passes" {
     try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0222"));
 }
 
+test "complexity: deep boolean expr counted past the old 64-slot cap (W0222)" {
+    const alloc = std.testing.allocator;
+    // Right-nested `a && (a && (a && ... (a && a)))` — 100 `&&` nested ~100
+    // deep, past the old fixed 64-element expr stack. With that cap the walk
+    // truncated the tree at ~64 decisions (complexity 65 < 80 → no flag);
+    // counted in full it's 101 > 80 → flag. The `max:80` ceiling sits
+    // between the truncated and true counts, so this distinguishes the
+    // 64-slot bug from the fix.
+    var expr: std.ArrayList(u8) = .empty;
+    defer expr.deinit(alloc);
+    for (0..99) |_| try expr.appendSlice(alloc, "a && (");
+    try expr.appendSlice(alloc, "a && a");
+    for (0..99) |_| try expr.append(alloc, ')');
+
+    var src: std.ArrayList(u8) = .empty;
+    defer src.deinit(alloc);
+    try src.appendSlice(alloc, "fn f(a: bool) -> bool { return ");
+    try src.appendSlice(alloc, expr.items);
+    try src.appendSlice(alloc, "; }");
+    const source = try src.toOwnedSliceSentinel(alloc, 0);
+    defer alloc.free(source);
+
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, "{\"max\":80}", .{});
+    defer parsed.deinit();
+
+    var r = try runLint(source, .{ .rules = &.{.{
+        .id = "complexity",
+        .severity = .warning,
+        .options = parsed.value,
+    }} });
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCode(r, "W0222"));
+}
+
 // =========================================================================
 // max-lines-per-function (W0223)
 // =========================================================================
