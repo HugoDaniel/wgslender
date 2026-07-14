@@ -285,6 +285,36 @@ pub fn appendInt(buf: *std.ArrayList(u8), allocator: Allocator, value: anytype) 
     try buf.appendSlice(allocator, s);
 }
 
+/// Append one `file:line:col: severity: message [code]\n` line for `entry`.
+/// Single source of truth for the CLI's plain-text diagnostic rendering —
+/// validate (`emitValidateText`), lint (`emitText`), and compile-error output
+/// all funnel through here so the line shape can never drift between them.
+/// Tools and the LSP can reuse it to render the same line. Positions are the
+/// entry's start line/column verbatim; the bracketed code is omitted when
+/// `entry.code` is empty.
+pub fn writeTextLine(
+    buf: *std.ArrayList(u8),
+    allocator: Allocator,
+    entry: *const Entry,
+    file_prefix: []const u8,
+) Allocator.Error!void {
+    try buf.appendSlice(allocator, file_prefix);
+    try buf.append(allocator, ':');
+    try appendInt(buf, allocator, entry.range.start.line);
+    try buf.append(allocator, ':');
+    try appendInt(buf, allocator, entry.range.start.column);
+    try buf.appendSlice(allocator, ": ");
+    try buf.appendSlice(allocator, entry.severity.string());
+    try buf.appendSlice(allocator, ": ");
+    try buf.appendSlice(allocator, entry.message);
+    if (entry.code.len > 0) {
+        try buf.appendSlice(allocator, " [");
+        try buf.appendSlice(allocator, entry.code);
+        try buf.append(allocator, ']');
+    }
+    try buf.append(allocator, '\n');
+}
+
 // =========================================================================
 // LineIndex
 // =========================================================================
@@ -995,6 +1025,33 @@ test "diagnostic: Severity.string" {
     try std.testing.expectEqualStrings("info", Severity.info.string());
     try std.testing.expectEqualStrings("note", Severity.note.string());
     try std.testing.expectEqualStrings("hint", Severity.hint.string());
+}
+
+test "diagnostic: writeTextLine formats file:line:col: severity: message [code]" {
+    const alloc = std.testing.allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    const entry = Entry{
+        .severity = .@"error",
+        .code = "E0001",
+        .message = "type mismatch",
+        .range = .{ .start = .{ .line = 3, .column = 5 } },
+    };
+    try writeTextLine(&buf, alloc, &entry, "<stdin>");
+    try std.testing.expectEqualStrings("<stdin>:3:5: error: type mismatch [E0001]\n", buf.items);
+}
+
+test "diagnostic: writeTextLine omits the bracketed code when empty" {
+    const alloc = std.testing.allocator;
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(alloc);
+    const entry = Entry{
+        .severity = .warning,
+        .message = "unused",
+        .range = .{ .start = .{ .line = 1, .column = 1 } },
+    };
+    try writeTextLine(&buf, alloc, &entry, "shader.wgsl");
+    try std.testing.expectEqualStrings("shader.wgsl:1:1: warning: unused\n", buf.items);
 }
 
 test "diagnostic: LineIndex basic" {

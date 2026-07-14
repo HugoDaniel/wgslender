@@ -806,7 +806,7 @@ fn runValidate(
 
     switch (format) {
         .json => try emitValidateJson(arena, io, &result, is_valid),
-        .stylish, .text => try emitValidateText(io, &result, is_valid, input_path),
+        .stylish, .text => try emitValidateText(arena, io, &result, is_valid, input_path),
     }
 
     if (!is_valid) {
@@ -839,33 +839,20 @@ fn emitValidateJson(
 }
 
 fn emitValidateText(
+    arena: std.mem.Allocator,
     io: std.Io,
     result: *const wgslender.Validator.Result,
     is_valid: bool,
     input_path: ?[]const u8,
 ) !void {
     const File = std.Io.File;
+    const Diagnostic = wgslender.Diagnostic;
     const file_prefix = input_path orelse "<stdin>";
-    for (result.diagnostics.diagnostics.items) |entry| {
-        var scratch: [20]u8 = undefined;
-        try File.stderr().writeStreamingAll(io, file_prefix);
-        try File.stderr().writeStreamingAll(io, ":");
-        const line_s = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.line}) catch "";
-        try File.stderr().writeStreamingAll(io, line_s);
-        try File.stderr().writeStreamingAll(io, ":");
-        const col_s = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.column}) catch "";
-        try File.stderr().writeStreamingAll(io, col_s);
-        try File.stderr().writeStreamingAll(io, ": ");
-        try File.stderr().writeStreamingAll(io, entry.severity.string());
-        try File.stderr().writeStreamingAll(io, ": ");
-        try File.stderr().writeStreamingAll(io, entry.message);
-        if (entry.code.len > 0) {
-            try File.stderr().writeStreamingAll(io, " [");
-            try File.stderr().writeStreamingAll(io, entry.code);
-            try File.stderr().writeStreamingAll(io, "]");
-        }
-        try File.stderr().writeStreamingAll(io, "\n");
+    var buf: std.ArrayList(u8) = .empty;
+    for (result.diagnostics.diagnostics.items) |*entry| {
+        try Diagnostic.writeTextLine(&buf, arena, entry, file_prefix);
     }
+    try File.stderr().writeStreamingAll(io, buf.items);
 
     if (is_valid) {
         try File.stdout().writeStreamingAll(io, "valid\n");
@@ -937,26 +924,11 @@ fn runCompile(arena: std.mem.Allocator, io: std.Io, source: [:0]const u8, output
         var diag = try Diagnostic.init(arena, source);
         wgslender.Parser.mergeErrorsInto(result.errors, &diag, arena);
         const file_prefix = input_path orelse "<stdin>";
-        for (diag.diagnostics.items) |entry| {
-            var scratch: [20]u8 = undefined;
-            try File.stderr().writeStreamingAll(io, file_prefix);
-            try File.stderr().writeStreamingAll(io, ":");
-            const line_s = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.line}) catch "";
-            try File.stderr().writeStreamingAll(io, line_s);
-            try File.stderr().writeStreamingAll(io, ":");
-            const col_s = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.column}) catch "";
-            try File.stderr().writeStreamingAll(io, col_s);
-            try File.stderr().writeStreamingAll(io, ": ");
-            try File.stderr().writeStreamingAll(io, entry.severity.string());
-            try File.stderr().writeStreamingAll(io, ": ");
-            try File.stderr().writeStreamingAll(io, entry.message);
-            if (entry.code.len > 0) {
-                try File.stderr().writeStreamingAll(io, " [");
-                try File.stderr().writeStreamingAll(io, entry.code);
-                try File.stderr().writeStreamingAll(io, "]");
-            }
-            try File.stderr().writeStreamingAll(io, "\n");
+        var buf: std.ArrayList(u8) = .empty;
+        for (diag.diagnostics.items) |*entry| {
+            try Diagnostic.writeTextLine(&buf, arena, entry, file_prefix);
         }
+        try File.stderr().writeStreamingAll(io, buf.items);
         std.process.exit(1);
     }
 
@@ -1075,27 +1047,12 @@ fn emitText(
     file_prefix: []const u8,
 ) !void {
     const File = std.Io.File;
-    _ = arena;
-    for (entries) |entry| {
-        var scratch: [32]u8 = undefined;
-        try File.stderr().writeStreamingAll(io, file_prefix);
-        try File.stderr().writeStreamingAll(io, ":");
-        const ls = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.line}) catch "";
-        try File.stderr().writeStreamingAll(io, ls);
-        try File.stderr().writeStreamingAll(io, ":");
-        const cs = std.fmt.bufPrint(&scratch, "{d}", .{entry.range.start.column}) catch "";
-        try File.stderr().writeStreamingAll(io, cs);
-        try File.stderr().writeStreamingAll(io, ": ");
-        try File.stderr().writeStreamingAll(io, entry.severity.string());
-        try File.stderr().writeStreamingAll(io, ": ");
-        try File.stderr().writeStreamingAll(io, entry.message);
-        if (entry.code.len > 0) {
-            try File.stderr().writeStreamingAll(io, " [");
-            try File.stderr().writeStreamingAll(io, entry.code);
-            try File.stderr().writeStreamingAll(io, "]");
-        }
-        try File.stderr().writeStreamingAll(io, "\n");
+    const Diagnostic = wgslender.Diagnostic;
+    var buf: std.ArrayList(u8) = .empty;
+    for (entries) |*entry| {
+        try Diagnostic.writeTextLine(&buf, arena, entry, file_prefix);
     }
+    try File.stderr().writeStreamingAll(io, buf.items);
 }
 
 fn emitStylish(
