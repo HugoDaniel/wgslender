@@ -7,6 +7,15 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Added
 
+- **npm CLI `lint` and `compile` subcommands.** `npx wgslender lint [file]`
+  and `npx wgslender compile -o out.wasm [file]` now work — previously both
+  fell through to `minify` (`compile` even wrote minified WGSL text to the
+  `-o` path instead of a `.wasm` binary). `lint` mirrors the native config/CLI
+  merge (`--extends` / `--rule` / `--no-recommended` / `--fix`, `@wgslender/
+  recommended` by default) and exits non-zero only on errors; `compile`
+  reports syntax errors to stderr and exits 1 without writing output. No WASM
+  rebuild — both call the existing `wgslender_lint` / `wgslender_compile`
+  exports.
 - **Generated npm config mirrors.** `npm/wgslender/configs.{js,d.ts}` are now
   generated from the Zig source of truth by `zig build gen-npm` (pack tables
   from `src/lint/configs.zig`, `lspSettingsSchema` minifier knobs from
