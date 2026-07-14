@@ -248,6 +248,33 @@ pub fn computeSymbolUsage(arena: Allocator, module: *const Ast.Module) !std.Auto
     return uses;
 }
 
+/// Build the per-pipeline rename-protection policy. Entry points, builtins,
+/// overrides, and — unless `options.mangle_external_bindings` — external
+/// bindings are always pinned. `honor_user_pins` additionally pins user
+/// `keep_names` and, when `options.preserve_uniform_struct_types` is set,
+/// uniform struct types. The full minify pipeline passes `true`; the size
+/// estimator passes `false` to model a hypothetical minify that ignores those
+/// user pins (it only cares about kind / external-binding marks). Returns an
+/// arena-owned policy box so callers can stash the pointer.
+pub fn buildRenamePolicy(
+    arena: Allocator,
+    module: *const Ast.Module,
+    options: Options,
+    honor_user_pins: bool,
+) Allocator.Error!*RenamePolicy {
+    var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
+    builder.markEntryPoints(module);
+    builder.markBuiltinsAndOverrides(module);
+    if (!options.mangle_external_bindings) builder.markExternalBindings(module);
+    if (honor_user_pins) {
+        builder.markKeepNames(module, options.keep_names);
+        if (options.preserve_uniform_struct_types) builder.markUniformStructTypes(module);
+    }
+    const box = try arena.create(RenamePolicy);
+    box.* = builder.build();
+    return box;
+}
+
 fn countDeclUsage(arena: Allocator, decl: Ast.Decl, uses: *std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32)) Allocator.Error!void {
     switch (decl) {
         .@"const" => |d| {

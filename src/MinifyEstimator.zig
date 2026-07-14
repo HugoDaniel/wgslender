@@ -109,17 +109,14 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
     const seed_n = @min(use_counts_box.counts.len, module.use_counts.counts.len);
     @memcpy(use_counts_box.counts[0..seed_n], module.use_counts.counts[0..seed_n]);
 
-    // Step 3: per-call RenamePolicy. The estimator's hypothetical
-    // analysis doesn't honor `keep_names` or
-    // `preserve_uniform_struct_types` (preserved behavior — those are
-    // LSP-driven minify-mode estimations that don't see those options
-    // today); only the kind / external-binding marks apply.
-    var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
-    builder.markEntryPoints(module);
-    builder.markBuiltinsAndOverrides(module);
-    if (!options.mangle_external_bindings) builder.markExternalBindings(module);
-    const policy_box = try arena.create(RenamePolicy);
-    policy_box.* = builder.build();
+    // Step 3: per-call RenamePolicy. The estimator's hypothetical analysis
+    // doesn't honor `keep_names` or `preserve_uniform_struct_types`
+    // (preserved behavior — those are LSP-driven minify-mode estimations
+    // that don't see those options today); only the kind / external-binding
+    // marks apply, so pass `honor_user_pins = false`.
+    const policy_box = try Minifier.buildRenamePolicy(arena, module, .{
+        .mangle_external_bindings = options.mangle_external_bindings,
+    }, false);
 
     // Step 4: usage counts. Shared helper with the real minifier so rank
     // ordering is byte-identical.

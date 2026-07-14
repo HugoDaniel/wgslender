@@ -193,15 +193,7 @@ fn runParse(state: *State) Allocator.Error!void {
 
 fn runMarkApiFacing(state: *State, options: Minifier.Options) Allocator.Error!void {
     const module = state.module orelse return;
-    var builder = try RenamePolicy.Builder.init(state.arena, module.symbols.items.len);
-    builder.markEntryPoints(module);
-    builder.markBuiltinsAndOverrides(module);
-    if (!options.mangle_external_bindings) builder.markExternalBindings(module);
-    builder.markKeepNames(module, options.keep_names);
-    if (options.preserve_uniform_struct_types) builder.markUniformStructTypes(module);
-    const policy_box = try state.arena.create(RenamePolicy);
-    policy_box.* = builder.build();
-    state.rename_policy = policy_box;
+    state.rename_policy = try Minifier.buildRenamePolicy(state.arena, module, options, true);
 }
 
 fn runDce(state: *State, options: Minifier.Options) Allocator.Error!void {
