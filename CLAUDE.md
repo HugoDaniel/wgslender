@@ -149,7 +149,7 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 5. If the rule reads `Symbol.is_live`, set `meta.requires_dce = true` so the Linter runs `Dce.mark` before the rule.
 6. Register a diagnostic code in `src/Diagnostic.zig` `Code` struct (W02xx for new lint rules).
 7. Add unit tests to `tests/lint_rules_test.zig` following the `runLint` + `hasCodeContaining` pattern.
-8. If the rule's pack changes, mirror in `npm/wgslender/configs.js` + `configs.d.ts`.
+8. If the rule's pack changes, run `zig build gen-npm` to regenerate `npm/wgslender/configs.js` + `configs.d.ts` from `src/lint/configs.zig` (do **not** hand-edit them — `tests/npm_generated_test.zig` byte-compares them against the generator and fails with "run `zig build gen-npm`" on drift), then commit the regenerated files.
 
 Rules see a `Context` with `.module`, `.source`, `.symbols`, `.arena`, and `.report()`. Rules may use `AstVisit.visit` internally, walk `ctx.module.symbols.items`, or use `src/lint/walk.zig` for expression scans — the Linter doesn't prescribe traversal shape. Severity is config-resolved; `ctx.report()` stamps `code`, `source`, and effective severity automatically.
 
@@ -196,7 +196,10 @@ matching and `usage_text` edits are only for outliers.
    `usage_minify_outliers`; mark its spec `.cli_simple = false` (an empty
    `summary` also opts it out of `printHelp`).
 6. Update tests and README.md; if the npm API exposes the option, mirror it
-   in the package's TypeScript types (`npm/wgslender/*.d.ts`).
+   in the package's TypeScript types (`npm/wgslender/*.d.ts`). A new
+   `minifier_options_specs` row also feeds `lspSettingsSchema` — run `zig
+   build gen-npm` to regenerate `configs.{js,d.ts}` (see the lint-rule step 8
+   note; the freshness test enforces it).
 
 ### Debugging Type Renaming Issues
 

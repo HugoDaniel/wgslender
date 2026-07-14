@@ -5,6 +5,17 @@ All notable changes to wgslender are recorded here. The project follows
 
 ## [Unreleased]
 
+### Added
+
+- **Generated npm config mirrors.** `npm/wgslender/configs.{js,d.ts}` are now
+  generated from the Zig source of truth by `zig build gen-npm` (pack tables
+  from `src/lint/configs.zig`, `lspSettingsSchema` minifier knobs from
+  `src/options.zig`), and a freshness test (`tests/npm_generated_test.zig`)
+  byte-compares the committed files against the generator so they can no
+  longer drift silently. Fixing that drift, `wgslender/configs` now exports
+  the advisory `@wgslender/minify` pack (its rules use `hint` severity), which
+  was previously missing from the hand-maintained mirror.
+
 ### Changed
 
 - **Lint JSON schema (⚠ behavior):** the WASM/C-ABI `lint` / `lintAndFix`

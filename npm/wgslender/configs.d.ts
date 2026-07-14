@@ -1,14 +1,19 @@
-/** Shareable lint configs. Mirrors src/lint/configs.zig. */
+/**
+ * Shareable lint configs. GENERATED FILE — do not edit by hand.
+ * Regenerate with `zig build gen-npm` (see tools/gen_npm.zig).
+ * Mirrors src/lint/configs.zig.
+ */
 
 export interface SharedConfig {
   name: string;
-  rules: Record<string, 'off' | 'warn' | 'error'>;
+  rules: Record<string, 'off' | 'warn' | 'error' | 'hint'>;
 }
 
 export const recommended: SharedConfig;
 export const style: SharedConfig;
 export const performance: SharedConfig;
 export const portability: SharedConfig;
+export const minify: SharedConfig;
 export const strict: SharedConfig;
 
 /**

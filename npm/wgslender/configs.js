@@ -1,13 +1,17 @@
 /**
  * Shareable lint configs for wgslender.
  *
+ * GENERATED FILE — do not edit by hand. Regenerate with `zig build gen-npm`
+ * (see tools/gen_npm.zig). The pack tables mirror src/lint/configs.zig and
+ * the lspSettingsSchema minifier knobs mirror src/options.zig, so this
+ * package can never silently drift from the Zig source of truth.
+ *
  * Usage:
  *   const { recommended } = require('wgslender/configs');
  *   const { lint } = require('wgslender');
  *   await initialize();
  *   const result = lint(source, { extends: [recommended.name] });
  *
- * These exports mirror the built-in Zig configs (src/lint/configs.zig) so
  * JS callers can either pass the config name (the WASM backend resolves it)
  * or merge rules client-side before calling `lint`.
  */
@@ -59,6 +63,19 @@ const portability = {
     'require-entry-point-attrs': 'error',
     'consistent-binding-annotations': 'warn',
     'no-f16-without-extension': 'warn',
+  },
+};
+
+/** @type {{name: string, rules: Record<string, string>}} */
+const minify = {
+  name: '@wgslender/minify',
+  rules: {
+    'minify/external-binding-blocks-rename': 'hint',
+    'minify/unused-const': 'hint',
+    'minify/unused-override': 'hint',
+    'minify/dead-code-kept': 'hint',
+    'minify/long-entry-point-name': 'hint',
+    'minify/shader-exceeds-size-budget': 'hint',
   },
 };
 
@@ -159,9 +176,9 @@ const lspSettingsSchema = Object.freeze({
     minifyWhitespace: { type: 'boolean' },
     minifyIdentifiers: { type: 'boolean' },
     minifySyntax: { type: 'boolean' },
+    mangleExternalBindings: { type: 'boolean' },
     treeShaking: { type: 'boolean' },
     preserveUniformStructTypes: { type: 'boolean' },
-    mangleExternalBindings: { type: 'boolean' },
     keepNames: { type: 'array', items: { type: 'string' } },
     sortDeclarations: { type: 'boolean' },
     scopeLocalRename: { type: 'boolean' },
@@ -173,6 +190,7 @@ module.exports = {
   style,
   performance,
   portability,
+  minify,
   strict,
   lspSettingsSchema,
 };
