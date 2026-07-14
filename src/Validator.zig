@@ -1335,6 +1335,15 @@ pub fn tryEvalConstBool(v: *const Validator, expr: Ast.Expr) ?bool {
 /// Try to extract a constant integer value from an expression.
 /// Handles literals, paren/negate wrappers, const-declared identifiers,
 /// and binary arithmetic/bitwise operations on const sub-expressions.
+///
+/// This is the Validator's const-integer folder — one of two evaluators
+/// slated to merge into `src/ConstEval.zig` (see
+/// `docs/deferred/consteval-extraction.md`). It differs deliberately from
+/// Reflect's `LayoutComputer.evalConst`: **saturating** arithmetic (`+|`,
+/// `-|`, `*|`), an int-only domain (no `.call`/float folding — `u32(...)`
+/// chains fold in Reflect but are invisible here), eager identifier
+/// resolution via the precomputed `const_values` map, and a depth cap of 32.
+/// Characterization pins for both sides: `tests/const_eval_test.zig`.
 pub fn tryExtractIntValue(v: *const Validator, expr: Ast.Expr) ?i64 {
     return v.tryExtractIntValueDepth(expr, 0);
 }

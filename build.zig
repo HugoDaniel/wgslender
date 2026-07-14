@@ -419,6 +419,10 @@ pub fn build(b: *std.Build) void {
     // Reflect tests
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/reflect_wgslreflect_test.zig", target, optimize, &.{w});
+    // Const-expression evaluator characterization pins — lock the divergent
+    // Validator (saturating, int-only, depth 32) vs Reflect (wrapping, full
+    // domain, depth 64) semantics that ConstEval extraction (C1/C2) unifies.
+    _ = addTestStep(b, test_step, "tests/const_eval_test.zig", target, optimize, &.{w});
     // Edits tests — library-level rename / text edit primitives
     _ = addTestStep(b, test_step, "tests/edits_test.zig", target, optimize, &.{w});
     // StableId tests — reparse-stable symbol identifiers

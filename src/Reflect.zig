@@ -1167,6 +1167,13 @@ const primitive_layouts = std.StaticStringMap(PrimitiveLayout).initComptime(.{
 /// (e.g. `sin(radians(90))`); the latter only matters when the result
 /// flows through a cast back to an integer (see wgsl_reflect's `const2`
 /// test). `bool` covers logical-op intermediates.
+/// The value domain of Reflect's const-expression interpreter. Slated to
+/// become `ConstEval.Value` when the two evaluators merge into
+/// `src/ConstEval.zig` (see `docs/deferred/consteval-extraction.md`). Unlike
+/// the Validator's int-only `tryExtractIntValue` folder, this carries a full
+/// `{int, float, bool}` domain — needed to fold `u32(sin(radians(90)) + 3)`
+/// style chains into an array size. Characterization pins for both sides:
+/// `tests/const_eval_test.zig`.
 const ConstValue = union(enum) {
     int: i64,
     float: f64,
@@ -1731,6 +1738,14 @@ const LayoutComputer = struct {
     /// expression isn't a const-expression or evaluation fails (overflow,
     /// div-by-zero, unresolved identifier, …). Capped at depth 64 to
     /// guard pathological asts.
+    ///
+    /// The Reflect half of the two-evaluator split that merges into
+    /// `src/ConstEval.zig` (see `docs/deferred/consteval-extraction.md`).
+    /// Contrast with the Validator's `tryExtractIntValue`: **wrapping**
+    /// arithmetic (`+%`, `-%`, `*%`), the full `{int,float,bool}` domain,
+    /// lazy identifier resolution via `evalConstSymbol` + `const_cache`
+    /// (memoized, cycle-breaking), and a depth cap of 64. Characterization
+    /// pins for both sides: `tests/const_eval_test.zig`.
     fn evalConst(self: *LayoutComputer, expr: Ast.Expr, depth: u32) ?ConstValue {
         if (depth > 64) return null;
         return switch (expr) {
