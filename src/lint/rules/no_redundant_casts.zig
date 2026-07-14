@@ -19,10 +19,10 @@ const Context = @import("../Context.zig");
 const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
 const Types = @import("../../Types.zig");
-const walk = @import("../walk.zig");
+const span = @import("../span.zig");
 const MultiVisitor = @import("../MultiVisitor.zig");
-const exprStart = walk.exprStart;
-const exprEnd = walk.exprEnd;
+const exprStart = span.exprStart;
+const exprEnd = span.exprEnd;
 
 pub const rule = Rule{
     .meta = .{

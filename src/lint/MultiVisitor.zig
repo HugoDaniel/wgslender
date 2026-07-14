@@ -1,24 +1,39 @@
 //! Multi-listener AST walker — one traversal of a module fans out to N
-//! subscribed listeners. Replaces the per-rule `walk.zig` pattern: when
-//! 10 rules each call `walkExprs`, that's 10× the traversal cost; with
-//! `MultiVisitor.walk`, the cost is paid once.
+//! subscribed listeners. When many rules each want to observe every node,
+//! `MultiVisitor.walk` pays the traversal cost once instead of once per rule.
 //!
-//! Coexists with `walk.zig` — rules migrate incrementally. The Linter
-//! (see `Linter.zig`) collects subscribed listeners and fans events out;
-//! un-migrated rules keep using `walk.zig` directly.
+//! Which rules ride the shared walk is a *taxonomy*, not a migration
+//! backlog. A rule subscribes a `listener` when it is a **pure per-node
+//! observer** — it reacts to each `Ast.Expr` / `Ast.Stmt` / `Ast.Decl` in
+//! isolation, with no context beyond the node itself (e.g. `no-self-assign`,
+//! `no-lonely-if`, `no-redundant-casts`). Those, and only those, dedup onto
+//! this walk. Everything else keeps its own `run` pass, because the shared
+//! node-fanout is the wrong shape for it:
+//!   - **Table scans** walk `module.symbols` / a `MinifyEstimator`, not the
+//!     tree (`no-unused-vars`, `minify/*`, `naming-convention`).
+//!   - **Subtree folds** reduce a whole function body to one number and read
+//!     best as direct recursion — `complexity` (`1 + decisions`), `max-depth`
+//!     (`1 + max(children)`). A fanout would also over-count, since these
+//!     deliberately weight some node positions and ignore others.
+//!   - **Block-sequential** rules need statement *order within a block*
+//!     (`no-unreachable`'s "after a terminator"), which per-node events drop.
+//!   - **Context-sensitive observers** exempt whole regions the generic walk
+//!     still visits — `no-magic-numbers` skips `const` initializers,
+//!     attribute args and switch selectors, so a plain `on_expr` would
+//!     false-positive.
+//! Adding enter/exit events purely to force a fold onto this walk would be
+//! machinery for one beneficiary; the recursive form is the clearer home.
 //!
-//! Traversal shape matches `walk.zig` byte-for-byte:
+//! Traversal shape:
 //!   - Expressions: iterative, stack-based (deeply nested shaders don't
 //!     blow the host stack). Children are pushed right-then-left so the
 //!     pop order yields document order (left-then-right).
-//!   - Statements / declarations: recursive (matches existing helpers,
-//!     bodies are not deeply nested).
+//!   - Statements / declarations: recursive (bodies are not deeply nested).
 //!
 //! Dispatch order:
 //!   - For each visited node, all listeners' callbacks fire (in slice
-//!     order) BEFORE descending into children. This matches `walk.zig`'s
-//!     `cb(state, e); switch (e) { ... }` order so converted rules see
-//!     identical event streams.
+//!     order) BEFORE descending into children, so listeners see nodes in
+//!     document order (parent before children, left sibling before right).
 //!
 //! All callbacks are optional and propagate `Allocator.Error` — rules
 //! that can't fail simply use a wrapper that returns `error{}!void`-style

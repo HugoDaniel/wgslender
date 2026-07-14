@@ -18,11 +18,11 @@ const Rule = @import("../Rule.zig");
 const Context = @import("../Context.zig");
 const Diagnostic = @import("../../Diagnostic.zig");
 const Ast = @import("../../Ast.zig");
-const walk = @import("../walk.zig");
+const span = @import("../span.zig");
 const MultiVisitor = @import("../MultiVisitor.zig");
 const constants = @import("../../constants.zig");
-const exprStart = walk.exprStart;
-const exprEnd = walk.exprEnd;
+const exprStart = span.exprStart;
+const exprEnd = span.exprEnd;
 
 pub const rule = Rule{
     .meta = .{

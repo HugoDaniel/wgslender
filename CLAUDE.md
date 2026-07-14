@@ -101,7 +101,7 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/lint/Fixer.zig` | Applies non-overlapping `Entry.fix` splices to source (ESLint-style) |
 | `src/lint/registry.zig` | Comptime `[_]Rule{...}` listing every built-in rule |
 | `src/lint/configs.zig` | Shareable packs: @wgslender/recommended, /style, /performance, /portability, /minify, /strict |
-| `src/lint/walk.zig` | Read-only expression/statement walker — used by rules that scan function bodies |
+| `src/lint/span.zig` | Expression source-span helpers (`exprStart`/`exprEnd`) shared by lint rules |
 | `src/lint/MultiVisitor.zig` | Multi-listener AST walker — one traversal fans out to N subscribed rules |
 | `src/lint/rules/` | Individual rule modules (one file per rule, exporting `pub const rule: Rule`) |
 | `src/SourceMap.zig` | Source map v3 generation with VLQ encoding |
@@ -151,7 +151,7 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 7. Add unit tests to `tests/lint_rules_test.zig` following the `runLint` + `hasCodeContaining` pattern.
 8. If the rule's pack changes, run `zig build gen-npm` to regenerate `npm/wgslender/configs.js` + `configs.d.ts` from `src/lint/configs.zig` (do **not** hand-edit them — `tests/npm_generated_test.zig` byte-compares them against the generator and fails with "run `zig build gen-npm`" on drift), then commit the regenerated files.
 
-Rules see a `Context` with `.module`, `.source`, `.symbols`, `.arena`, and `.report()`. Rules may use `AstVisit.visit` internally, walk `ctx.module.symbols.items`, or use `src/lint/walk.zig` for expression scans — the Linter doesn't prescribe traversal shape. Severity is config-resolved; `ctx.report()` stamps `code`, `source`, and effective severity automatically.
+Rules see a `Context` with `.module`, `.source`, `.symbols`, `.arena`, and `.report()`. A rule is either a **listener** (a pure per-node observer folded into one shared `MultiVisitor.walk`) or a **run** pass (table scans over `ctx.module.symbols.items`, subtree folds, block-sequential or context-sensitive walks); see the taxonomy in `src/lint/MultiVisitor.zig`. Either style may use `src/lint/span.zig` for expression positions — the Linter doesn't prescribe traversal shape. Severity is config-resolved; `ctx.report()` stamps `code`, `source`, and effective severity automatically.
 
 ### Adding a New AST Node Type
 

@@ -115,7 +115,7 @@ test "MultiVisitor: decl + stmt + expr listeners fire on the right node kinds" {
     try std.testing.expect(counters.exprs >= 4); // 0, x (left), x (right), 1, x+1 binary
 }
 
-test "MultiVisitor: expression visitation order matches walk.zig (left-then-right)" {
+test "MultiVisitor: expression visitation order is parent-then-left-then-right" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const source: [:0]const u8 = "const k: i32 = 1 + 2;";
