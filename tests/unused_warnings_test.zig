@@ -23,10 +23,16 @@ fn freeWarnings(warnings: []Handler.LspDiagnostic) void {
 }
 
 fn hasWarningFor(warnings: []const Handler.LspDiagnostic, name: []const u8) bool {
+    return messageContaining(warnings, name) != null;
+}
+
+/// Return the first diagnostic message that mentions `name`, or null.
+/// Used to pin the exact wording of a specific symbol's warning.
+fn messageContaining(warnings: []const Handler.LspDiagnostic, name: []const u8) ?[]const u8 {
     for (warnings) |w| {
-        if (std.mem.indexOf(u8, w.message, name) != null) return true;
+        if (std.mem.indexOf(u8, w.message, name) != null) return w.message;
     }
-    return false;
+    return null;
 }
 
 test "unused warnings: unused let" {
@@ -215,6 +221,17 @@ test "dead code: entry point itself not flagged" {
     try std.testing.expectEqual(@as(usize, 0), warnings.len);
 }
 
+test "dead code: W0002 message is pinned exactly" {
+    // `helper` is referenced by `process`, but neither is reachable from
+    // the entry point — so `helper` fires W0002 (not W0001). Pin the full
+    // wording so it can't fork from the no-dead-code lint rule.
+    const source: [:0]const u8 = "fn helper() -> f32 { return 1.0; } fn process() -> f32 { return helper(); } @vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }";
+    const warnings = try getDeadCodeWarnings(source);
+    defer freeWarnings(warnings);
+    const msg = messageContaining(warnings, "helper") orelse return error.MissingW0002;
+    try std.testing.expectEqualStrings("'helper' is not reachable from any entry point", msg);
+}
+
 // =========================================================================
 // Unused binding warnings (W0003)
 // =========================================================================
@@ -312,6 +329,21 @@ test "unused binding: message mentions bind group layout" {
     try std.testing.expect(warnings.len > 0);
     try std.testing.expect(std.mem.indexOf(u8, warnings[0].message, "'my_buf'") != null);
     try std.testing.expect(std.mem.indexOf(u8, warnings[0].message, "bind group layout slot") != null);
+}
+
+test "unused binding: W0003 message is pinned exactly" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var<uniform> unused_buf: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    ;
+    const warnings = try getUnusedBindingWarnings(source);
+    defer freeWarnings(warnings);
+    const msg = messageContaining(warnings, "unused_buf") orelse return error.MissingW0003;
+    try std.testing.expectEqualStrings(
+        "binding variable 'unused_buf' is declared but never used — it will consume a bind group layout slot",
+        msg,
+    );
 }
 
 test "unused binding: multiple unused bindings" {

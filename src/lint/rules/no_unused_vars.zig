@@ -39,7 +39,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
         if (!ctx.isUnusedReportable(@intCast(i))) continue;
         const name_len: u32 = @intCast(sym.original_name.len);
         const end = sym.loc + name_len;
-        const msg = try ctx.fmt("'{s}' is declared but never used", .{sym.original_name});
+        const msg = try ctx.fmt(Diagnostic.Message.unused_symbol, .{sym.original_name});
         ctx.report(.{
             .message = msg,
             .range = ctx.makeRange(sym.loc, end),

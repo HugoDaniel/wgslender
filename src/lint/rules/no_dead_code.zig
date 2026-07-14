@@ -6,9 +6,12 @@
 //! everything live and this rule emits nothing — there's no "dead" root
 //! to measure against.
 //!
-//! Preserves the shape of the hand-coded LSP `appendDeadCodeWarnings`:
-//! same W0002 code, same filtering, same message. In Slice 5 the LSP
-//! handler will delegate to this rule instead of duplicating the logic.
+//! Shares its base filter with the LSP `appendDeadCodeWarnings` hint pass
+//! via `AnalysisResult.isDeadCodeReportable` (gated on `hasEntryPoints`)
+//! and its wording via `Diagnostic.Message.dead_code`, so the two surfaces
+//! can never diverge on what counts as dead or how it reads. This rule
+//! layers one extra suppression on top (unused-function body locals, see
+//! below); the LSP hint pass reports every match.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -36,14 +39,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
 
     // Library mode (no entry points) → DCE conservatively marks every
     // symbol live, so there is no "dead" set to flag. Skip entirely.
-    var has_entry_points = false;
-    for (module.symbols.items) |sym| {
-        if (sym.flags.is_entry_point) {
-            has_entry_points = true;
-            break;
-        }
-    }
-    if (!has_entry_points) return;
+    if (!ctx.hasEntryPoints()) return;
 
     // Map every function-local symbol to the symbol index of its
     // enclosing function. Used below to suppress redundant W0002s on
@@ -53,17 +49,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
     try buildEnclosingFnMap(ctx.arena, module, &enclosing_fn);
 
     for (module.symbols.items, 0..) |sym, i| {
-        if (ctx.isLive(@intCast(i))) continue;
-        // Unreferenced altogether is the other rule's territory.
-        if (ctx.useCount(@intCast(i)) == 0) continue;
-        if (sym.original_name.len == 0) continue;
-        if (sym.flags.is_entry_point) continue;
-        if (sym.flags.is_external_binding) continue;
-
-        switch (sym.kind) {
-            .function, .@"struct", .@"const", .let, .@"var", .override => {},
-            else => continue,
-        }
+        if (!ctx.isDeadCodeReportable(@intCast(i))) continue;
 
         // Suppress noise: if this symbol's enclosing function is itself
         // about to be flagged by no-unused-vars (W0001), the user only
@@ -81,7 +67,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
 
         const name_len: u32 = @intCast(sym.original_name.len);
         const end = sym.loc + name_len;
-        const msg = try ctx.fmt("'{s}' is not reachable from any entry point", .{sym.original_name});
+        const msg = try ctx.fmt(Diagnostic.Message.dead_code, .{sym.original_name});
         ctx.report(.{
             .message = msg,
             .range = ctx.makeRange(sym.loc, end),

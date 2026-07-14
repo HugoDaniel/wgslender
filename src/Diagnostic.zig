@@ -928,6 +928,19 @@ pub const Code = struct {
     pub const unknown_minify_directive: []const u8 = "M0000";
 };
 
+/// Canonical message templates for the three unused-symbol warnings
+/// (`W0001`/`W0002`/`W0003`). Shared verbatim by the lint rules
+/// (`no-unused-vars` / `no-dead-code` / `no-unused-binding`) and the LSP
+/// appenders in `lsp/handler/unused_warnings.zig` so the two surfaces can
+/// never fork the wording. Each is a `std.fmt` template taking the
+/// symbol's source name as its sole `{s}` argument. Mirrors `Code` above:
+/// `Message.dead_code` is the wording of `Code.lint_no_dead_code`.
+pub const Message = struct {
+    pub const unused_symbol: []const u8 = "'{s}' is declared but never used";
+    pub const dead_code: []const u8 = "'{s}' is not reachable from any entry point";
+    pub const unused_binding: []const u8 = "binding variable '{s}' is declared but never used — it will consume a bind group layout slot";
+};
+
 /// Map a diagnostic code to a WGSL spec section slug.
 /// Empty string if the code is unknown or does not belong to a known
 /// category — callers may still set `spec_ref` explicitly on `Entry`.

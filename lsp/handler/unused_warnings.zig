@@ -24,7 +24,7 @@ pub fn appendUnusedWarnings(
         if (!analysis.isUnusedReportable(@intCast(i))) continue;
         const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
         var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "'{s}' is declared but never used", .{sym.original_name}) catch continue;
+        const msg = std.fmt.bufPrint(&buf, wgslender.Diagnostic.Message.unused_symbol, .{sym.original_name}) catch continue;
         const owned_msg = gpa.dupe(u8, msg) catch continue;
         const owned_name = gpa.dupe(u8, sym.original_name) catch {
             gpa.free(owned_msg);
@@ -55,36 +55,19 @@ pub fn appendDeadCodeWarnings(
     const module = analysis.module orelse return;
     const source = module.source;
 
-    // Check if any entry points exist. If none, DCE conservatively marks
-    // everything live (library mode), so there's nothing to warn about.
-    var has_entry_points = false;
-    for (module.symbols.items) |sym| {
-        if (sym.flags.is_entry_point) {
-            has_entry_points = true;
-            break;
-        }
-    }
-    if (!has_entry_points) return;
+    // No entry points → DCE conservatively marks everything live (library
+    // mode), so there's nothing to warn about.
+    if (!analysis.hasEntryPoints()) return;
 
     for (module.symbols.items, 0..) |sym, i| {
-        // Only flag symbols that are used (use_count > 0) but not live
-        if (analysis.liveness) |liv| {
-            if (liv.isLive(@intCast(i))) continue;
-        } else continue; // No liveness info available — can't make a safe call.
-        const uc = if (i < analysis.use_counts.counts.len) analysis.use_counts.counts[i] else 0;
-        if (uc == 0) continue; // Already caught by appendUnusedWarnings
-        if (sym.original_name.len == 0) continue;
-        if (sym.flags.is_entry_point) continue;
-        if (sym.flags.is_external_binding) continue;
-
-        switch (sym.kind) {
-            .function, .@"struct", .@"const", .let, .@"var", .override => {},
-            else => continue,
-        }
+        // Base dead-code filter (used-but-unreachable) shared with the
+        // `no-dead-code` lint rule. The LSP hint pass reports every match;
+        // the lint rule additionally suppresses unused-function body locals.
+        if (!analysis.isDeadCodeReportable(@intCast(i))) continue;
 
         const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
         var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "'{s}' is not reachable from any entry point", .{sym.original_name}) catch continue;
+        const msg = std.fmt.bufPrint(&buf, wgslender.Diagnostic.Message.dead_code, .{sym.original_name}) catch continue;
         diags.append(gpa, .{
             .range = range,
             .severity = .hint,
@@ -112,7 +95,7 @@ pub fn appendUnusedBindingWarnings(
 
         const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
         var buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "binding variable '{s}' is declared but never used — it will consume a bind group layout slot", .{sym.original_name}) catch continue;
+        const msg = std.fmt.bufPrint(&buf, wgslender.Diagnostic.Message.unused_binding, .{sym.original_name}) catch continue;
         diags.append(gpa, .{
             .range = range,
             .severity = .warning,

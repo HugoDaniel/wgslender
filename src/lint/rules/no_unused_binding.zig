@@ -34,10 +34,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
 
         const name_len: u32 = @intCast(sym.original_name.len);
         const end = sym.loc + name_len;
-        const msg = try ctx.fmt(
-            "binding variable '{s}' is declared but never used — it will consume a bind group layout slot",
-            .{sym.original_name},
-        );
+        const msg = try ctx.fmt(Diagnostic.Message.unused_binding, .{sym.original_name});
         ctx.report(.{
             .message = msg,
             .range = ctx.makeRange(sym.loc, end),

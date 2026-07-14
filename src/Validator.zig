@@ -270,6 +270,48 @@ pub const AnalysisResult = struct {
         if (sym.original_name.len == 0) return false;
         return true;
     }
+
+    /// True iff the module declares at least one entry-point symbol.
+    /// Dead-code analysis is meaningless without one — DCE conservatively
+    /// marks every symbol live in library mode — so both the LSP
+    /// `appendDeadCodeWarnings` pass and the `no-dead-code` lint rule gate
+    /// on this before scanning for `W0002`.
+    pub fn hasEntryPoints(self: *const AnalysisResult) bool {
+        const module = self.module orelse return false;
+        for (module.symbols.items) |sym| {
+            if (sym.flags.is_entry_point) return true;
+        }
+        return false;
+    }
+
+    /// True iff `Symbol[sym_idx]` should fire `W0002` (referenced by other
+    /// declarations but unreachable from any entry point). Shared base
+    /// filter for the LSP `appendDeadCodeWarnings` hint pass and the
+    /// `no-dead-code` lint rule.
+    ///
+    /// Requires liveness (DCE) to have run: without it, dead can't be told
+    /// from live, so this conservatively returns false. Callers gate on
+    /// `hasEntryPoints()` first — in library mode DCE marks everything live,
+    /// so this would return false for all symbols anyway, but the explicit
+    /// gate documents intent and short-circuits the scan. The `no-dead-code`
+    /// rule layers an extra enclosing-function suppression on top of this
+    /// predicate; the LSP hint pass does not, by design.
+    pub fn isDeadCodeReportable(self: *const AnalysisResult, sym_idx: u32) bool {
+        const module = self.module orelse return false;
+        if (sym_idx >= module.symbols.items.len) return false;
+        const sym = module.symbols.items[sym_idx];
+        const liv = self.liveness orelse return false;
+        if (liv.isLive(sym_idx)) return false;
+        // use_count == 0 is W0001's territory (never referenced at all).
+        if (self.useCount(sym_idx) == 0) return false;
+        if (sym.original_name.len == 0) return false;
+        if (sym.flags.is_entry_point) return false;
+        if (sym.flags.is_external_binding) return false;
+        return switch (sym.kind) {
+            .function, .@"struct", .@"const", .let, .@"var", .override => true,
+            else => false,
+        };
+    }
 };
 
 // =========================================================================

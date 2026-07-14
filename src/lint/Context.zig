@@ -117,3 +117,16 @@ pub fn isUnusedReportable(self: *const Context, sym_idx: u32) bool {
 pub fn isUnusedBindingReportable(self: *const Context, sym_idx: u32) bool {
     return self.analysis.isUnusedBindingReportable(sym_idx);
 }
+
+/// Thin wrapper over `AnalysisResult.hasEntryPoints`. `no-dead-code` gates
+/// on this before scanning — dead-code analysis needs an entry point.
+pub fn hasEntryPoints(self: *const Context) bool {
+    return self.analysis.hasEntryPoints();
+}
+
+/// Thin wrapper over `AnalysisResult.isDeadCodeReportable` so the
+/// `no-dead-code` rule reads the same base filter the LSP's
+/// `appendDeadCodeWarnings` consults.
+pub fn isDeadCodeReportable(self: *const Context, sym_idx: u32) bool {
+    return self.analysis.isDeadCodeReportable(sym_idx);
+}

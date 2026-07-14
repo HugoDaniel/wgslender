@@ -34,6 +34,16 @@ fn hasCodeContaining(result: wgslender.LintResult, code: []const u8, needle: []c
     return false;
 }
 
+/// Return the first `code` diagnostic whose message mentions `needle`, or
+/// null. Used to pin the exact wording of a specific rule's message.
+fn messageForCodeContaining(result: wgslender.LintResult, code: []const u8, needle: []const u8) ?[]const u8 {
+    for (result.lint.diagnostics.items()) |d| {
+        if (!std.mem.eql(u8, d.code, code)) continue;
+        if (std.mem.indexOf(u8, d.message, needle) != null) return d.message;
+    }
+    return null;
+}
+
 fn hasSeverity(result: wgslender.LintResult, code: []const u8, sev: Severity) bool {
     for (result.lint.diagnostics.items()) |d| {
         if (std.mem.eql(u8, d.code, code) and d.severity == sev) return true;
@@ -232,6 +242,22 @@ test "no-dead-code: function unreachable from entry point is flagged" {
     }
 }
 
+test "no-dead-code: W0002 message is pinned exactly" {
+    // Same wording the LSP `appendDeadCodeWarnings` emits — pinned on both
+    // surfaces so the shared message template can't fork.
+    var r = try runLint(
+        \\fn orphan() -> f32 { return 1.0; }
+        \\fn sibling() -> f32 { return orphan(); }
+        \\@vertex fn main() -> @builtin(position) vec4f { return vec4f(0.0); }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    const msg = messageForCodeContaining(r, "W0002", "orphan") orelse {
+        dump("no-dead-code: W0002 message pin", r);
+        return error.MissingW0002;
+    };
+    try std.testing.expectEqualStrings("'orphan' is not reachable from any entry point", msg);
+}
+
 test "no-dead-code: reachable helper is not flagged" {
     var r = try runLint(
         \\fn helper() -> f32 { return 1.0; }
@@ -412,6 +438,25 @@ test "no-unused-binding: message mentions bind group layout slot" {
     , recommended_opts);
     defer r.deinit(std.testing.allocator);
     try std.testing.expect(hasCodeContaining(r, "W0003", "bind group layout slot"));
+}
+
+test "no-unused-binding: W0003 message is pinned exactly" {
+    // Same wording the LSP `appendUnusedBindingWarnings` emits — pinned on
+    // both surfaces so the shared message template can't fork.
+    var r = try runLint(
+        \\@group(0) @binding(0) var<uniform> unused_buf: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    const msg = messageForCodeContaining(r, "W0003", "unused_buf") orelse {
+        dump("no-unused-binding: W0003 message pin", r);
+        return error.MissingW0003;
+    };
+    try std.testing.expectEqualStrings(
+        "binding variable 'unused_buf' is declared but never used — it will consume a bind group layout slot",
+        msg,
+    );
 }
 
 test "no-unused-binding: does NOT fire on non-binding vars" {
