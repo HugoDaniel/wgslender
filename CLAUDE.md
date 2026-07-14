@@ -82,6 +82,7 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/Types.zig` | WGSL type system representation |
 | `src/Builtins.zig` | Builtin function signatures and uniformity info |
 | `src/Overload.zig` | Declarative builtin overload signatures + unification solver |
+| `src/ConstEval.zig` | Shared const-expression evaluator (`{int,float,bool}` domain, comptime `OverflowMode`, `anytype` resolver); consumed by `Reflect` (`.wrap`) and — from `docs/deferred/consteval-extraction.md` C2 — the `Validator` folder (`.saturate`) |
 | `src/Validator.zig` | Semantic validation orchestrator (drives `src/validator/*`) |
 | `src/validator/Declarations.zig` | Top-level decls: directives, structs, vars, fn signatures, recursion, entry-point IO |
 | `src/validator/Expressions.zig` | Expression type-checking + inference (`checkExpr` family, type constructors) |
@@ -105,7 +106,7 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/lint/MultiVisitor.zig` | Multi-listener AST walker — one traversal fans out to N subscribed rules |
 | `src/lint/rules/` | Individual rule modules (one file per rule, exporting `pub const rule: Rule`) |
 | `src/SourceMap.zig` | Source map v3 generation with VLQ encoding |
-| `src/Reflect.zig` | Shader reflection and WGSL memory layout computation |
+| `src/Reflect.zig` | Shader reflection and WGSL memory layout computation (const-expr folding via `src/ConstEval.zig`, wrapping mode) |
 | `src/Compiler.zig` | WGSL → WASM binary shader compiler (BPE + WASM codegen) |
 | `src/WasmBinary.zig` | Low-level WASM binary format writer |
 | `src/wasm.zig` | WASM entry point (C-ABI exports for JS) |

@@ -35,6 +35,14 @@ pub const max_parser_type_depth: u16 = 64;
 /// `for (0..max_tree_walk_iterations) |_| { ... } else unreachable`.
 pub const max_tree_walk_iterations: u32 = 1 << 20;
 
+/// Maximum recursive depth of `ConstEval.eval`. Each parenthesized
+/// sub-expression, operand, call argument, and struct-member step consumes
+/// one slot. Comfortably below `max_parser_expr_depth` (256) so any
+/// expression the parser accepts and that a shader could plausibly contain
+/// folds, while deeper — necessarily machine-generated — nests bail to
+/// `null` (un-evaluable) rather than recursing without bound.
+pub const max_const_eval_depth: u32 = 64;
+
 comptime {
     std.debug.assert(max_parser_expr_depth > 0);
     std.debug.assert(max_parser_stmt_depth > 0);
@@ -43,4 +51,5 @@ comptime {
     std.debug.assert(max_parser_stmt_depth < (1 << 20));
     std.debug.assert(max_parser_type_depth < (1 << 20));
     std.debug.assert(max_tree_walk_iterations >= max_parser_expr_depth);
+    std.debug.assert(max_const_eval_depth <= max_parser_expr_depth);
 }

@@ -20,6 +20,7 @@ const StableId = @import("StableId.zig");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
 const Printer = @import("Printer.zig");
+const ConstEval = @import("ConstEval.zig");
 
 // =========================================================================
 // Public types
@@ -1161,41 +1162,6 @@ const primitive_layouts = std.StaticStringMap(PrimitiveLayout).initComptime(.{
 // LayoutComputer
 // =========================================================================
 
-/// Tagged numeric value produced by const-expression evaluation. WGSL
-/// const-exprs include integer arithmetic (used for array sizes /
-/// workgroup_size args / @binding values) AND floating-point arithmetic
-/// (e.g. `sin(radians(90))`); the latter only matters when the result
-/// flows through a cast back to an integer (see wgsl_reflect's `const2`
-/// test). `bool` covers logical-op intermediates.
-/// The value domain of Reflect's const-expression interpreter. Slated to
-/// become `ConstEval.Value` when the two evaluators merge into
-/// `src/ConstEval.zig` (see `docs/deferred/consteval-extraction.md`). Unlike
-/// the Validator's int-only `tryExtractIntValue` folder, this carries a full
-/// `{int, float, bool}` domain — needed to fold `u32(sin(radians(90)) + 3)`
-/// style chains into an array size. Characterization pins for both sides:
-/// `tests/const_eval_test.zig`.
-const ConstValue = union(enum) {
-    int: i64,
-    float: f64,
-    bool: bool,
-
-    fn toI64(self: ConstValue) ?i64 {
-        return switch (self) {
-            .int => |v| v,
-            .float => |v| if (std.math.isFinite(v)) @intFromFloat(@trunc(v)) else null,
-            .bool => |v| @intFromBool(v),
-        };
-    }
-
-    fn toF64(self: ConstValue) f64 {
-        return switch (self) {
-            .int => |v| @floatFromInt(v),
-            .float => |v| v,
-            .bool => |v| if (v) 1.0 else 0.0,
-        };
-    }
-};
-
 const LayoutComputer = struct {
     arena: Allocator,
     module: *Ast.Module,
@@ -1205,7 +1171,7 @@ const LayoutComputer = struct {
     fmt_buf: std.ArrayList(u8) = .empty,
     /// Cache of evaluated const declarations keyed by `SymbolIndex.index()`.
     /// Speeds up repeated identifier lookups and breaks cycles.
-    const_cache: std.AutoHashMapUnmanaged(u32, ?ConstValue) = .{},
+    const_cache: std.AutoHashMapUnmanaged(u32, ?ConstEval.Value) = .{},
 
     fn init(
         arena: Allocator,
@@ -1727,110 +1693,28 @@ const LayoutComputer = struct {
     /// workgroup_size args, attribute values are all required to be a
     /// non-negative integer).  Returns `-1` if the expression doesn't
     /// reduce to a finite non-negative integer at compile time.
+    ///
+    /// The single seam onto the shared evaluator: every layout / extraction
+    /// call site goes through this i32 wrapper. Reflect drives `ConstEval`
+    /// in **wrapping** mode (`.wrap`) and supplies `LayoutComputer` itself as
+    /// the resolver — see `resolveIdent` / `resolveMember` below. Contrast
+    /// with the Validator's `.saturate` mode + int-only resolver
+    /// (`docs/deferred/consteval-extraction.md`). Characterization pins:
+    /// `tests/const_eval_test.zig`.
     fn evaluateConstExpr(self: *LayoutComputer, expr: Ast.Expr) i32 {
-        const v = self.evalConst(expr, 0) orelse return -1;
+        const v = ConstEval.eval(self, .wrap, expr, 0) orelse return -1;
         const i = v.toI64() orelse return -1;
         if (i < 0 or i > std.math.maxInt(i32)) return -1;
         return @intCast(i);
     }
 
-    /// Recursive const-expression evaluator. Returns `null` if the
-    /// expression isn't a const-expression or evaluation fails (overflow,
-    /// div-by-zero, unresolved identifier, …). Capped at depth 64 to
-    /// guard pathological asts.
-    ///
-    /// The Reflect half of the two-evaluator split that merges into
-    /// `src/ConstEval.zig` (see `docs/deferred/consteval-extraction.md`).
-    /// Contrast with the Validator's `tryExtractIntValue`: **wrapping**
-    /// arithmetic (`+%`, `-%`, `*%`), the full `{int,float,bool}` domain,
-    /// lazy identifier resolution via `evalConstSymbol` + `const_cache`
-    /// (memoized, cycle-breaking), and a depth cap of 64. Characterization
-    /// pins for both sides: `tests/const_eval_test.zig`.
-    fn evalConst(self: *LayoutComputer, expr: Ast.Expr, depth: u32) ?ConstValue {
-        if (depth > 64) return null;
-        return switch (expr) {
-            .literal => |lit| evalLiteral(lit),
-            .paren => |p| self.evalConst(p.expr, depth + 1),
-            .unary => |u| {
-                const v = self.evalConst(u.operand, depth + 1) orelse return null;
-                return switch (u.op) {
-                    .neg => switch (v) {
-                        .int => |x| ConstValue{ .int = 0 -% x },
-                        .float => |x| ConstValue{ .float = -x },
-                        .bool => null,
-                    },
-                    .bit_not => switch (v) {
-                        .int => |x| ConstValue{ .int = ~x },
-                        else => null,
-                    },
-                    .not => switch (v) {
-                        .bool => |x| ConstValue{ .bool = !x },
-                        else => null,
-                    },
-                    else => null,
-                };
-            },
-            .binary => |b| self.evalBinary(b, depth + 1),
-            .ident => |id| self.evalIdent(id),
-            .call => |c| self.evalCall(c, depth + 1),
-            .member => |m| self.evalMember(m, depth + 1),
-            else => null,
-        };
-    }
-
-    fn evalBinary(self: *LayoutComputer, b: *Ast.BinaryExpr, depth: u32) ?ConstValue {
-        const l = self.evalConst(b.left, depth) orelse return null;
-        const r = self.evalConst(b.right, depth) orelse return null;
-        // Promote to float if either side is float.
-        const both_int = l == .int and r == .int;
-        if (both_int) {
-            const li = l.int;
-            const ri = r.int;
-            return switch (b.op) {
-                .add => .{ .int = li +% ri },
-                .sub => .{ .int = li -% ri },
-                .mul => .{ .int = li *% ri },
-                .div => if (ri == 0) null else .{ .int = @divTrunc(li, ri) },
-                .mod => if (ri == 0) null else .{ .int = @mod(li, ri) },
-                .@"and" => .{ .int = li & ri },
-                .@"or" => .{ .int = li | ri },
-                .xor => .{ .int = li ^ ri },
-                .shl => if (ri >= 0 and ri < 64) .{ .int = li << @intCast(ri) } else null,
-                .shr => if (ri >= 0 and ri < 64) .{ .int = li >> @intCast(ri) } else null,
-                .eq => .{ .bool = li == ri },
-                .ne => .{ .bool = li != ri },
-                .lt => .{ .bool = li < ri },
-                .le => .{ .bool = li <= ri },
-                .gt => .{ .bool = li > ri },
-                .ge => .{ .bool = li >= ri },
-                .logical_and, .logical_or => null,
-            };
-        }
-        // Bitwise / shift ops require integer operands.
-        switch (b.op) {
-            .@"and", .@"or", .xor, .shl, .shr, .mod => return null,
-            else => {},
-        }
-        const lf = l.toF64();
-        const rf = r.toF64();
-        return switch (b.op) {
-            .add => .{ .float = lf + rf },
-            .sub => .{ .float = lf - rf },
-            .mul => .{ .float = lf * rf },
-            .div => if (rf == 0) null else .{ .float = lf / rf },
-            .eq => .{ .bool = lf == rf },
-            .ne => .{ .bool = lf != rf },
-            .lt => .{ .bool = lf < rf },
-            .le => .{ .bool = lf <= rf },
-            .gt => .{ .bool = lf > rf },
-            .ge => .{ .bool = lf >= rf },
-            else => null,
-        };
-    }
-
-    fn evalIdent(self: *LayoutComputer, id: *Ast.IdentExpr) ?ConstValue {
-        if (!id.ref.isValid()) return null;
-        const idx = id.ref.index();
+    /// `ConstEval` resolver hook for `.ident` — map a bound symbol reference
+    /// to the value of its `const` declaration, or `null` when the reference
+    /// is unbound / out of range / not a const. Lazy + memoized via
+    /// `evalConstSymbol`.
+    pub fn resolveIdent(self: *LayoutComputer, ref: Ast.SymbolIndex) ?ConstEval.Value {
+        if (!ref.isValid()) return null;
+        const idx = ref.index();
         if (idx >= self.module.symbols.items.len) return null;
         const sym = &self.module.symbols.items[idx];
         if (sym.kind != .@"const") return null;
@@ -1841,7 +1725,7 @@ const LayoutComputer = struct {
     /// resolves to `sym_idx`. Memoised to avoid redundant work and to
     /// short-circuit recursive cycles (which the parser should already
     /// reject, but we belt-and-brace).
-    fn evalConstSymbol(self: *LayoutComputer, sym_idx: u32) ?ConstValue {
+    fn evalConstSymbol(self: *LayoutComputer, sym_idx: u32) ?ConstEval.Value {
         if (self.const_cache.get(sym_idx)) |cached| return cached;
         // Mark as in-progress (`null`) to break cycles.
         self.const_cache.put(self.arena, sym_idx, null) catch return null;
@@ -1851,7 +1735,7 @@ const LayoutComputer = struct {
                 .@"const" => |c| {
                     if (c.name.isValid() and c.name.index() == sym_idx) {
                         const init_expr = c.initializer orelse return null;
-                        const v = self.evalConst(init_expr, 0);
+                        const v = ConstEval.eval(self, .wrap, init_expr, 0);
                         self.const_cache.put(self.arena, sym_idx, v) catch {};
                         return v;
                     }
@@ -1862,107 +1746,13 @@ const LayoutComputer = struct {
         return null;
     }
 
-    fn evalCall(self: *LayoutComputer, c: *Ast.CallExpr, depth: u32) ?ConstValue {
-        const func = c.func orelse return null;
-        const callee_name = switch (func) {
-            .ident => |i| i.name,
-            else => return null,
-        };
-
-        // Constructor casts to scalar types — convert the single argument.
-        if (c.args.items.len == 1) {
-            const arg = self.evalConst(c.args.items[0], depth) orelse return null;
-            if (std.mem.eql(u8, callee_name, "u32") or
-                std.mem.eql(u8, callee_name, "i32"))
-            {
-                const v = arg.toI64() orelse return null;
-                return .{ .int = v };
-            }
-            if (std.mem.eql(u8, callee_name, "f32") or
-                std.mem.eql(u8, callee_name, "f16"))
-            {
-                return .{ .float = arg.toF64() };
-            }
-            if (std.mem.eql(u8, callee_name, "bool")) {
-                return switch (arg) {
-                    .int => |v| ConstValue{ .bool = v != 0 },
-                    .float => |v| ConstValue{ .bool = v != 0.0 },
-                    .bool => arg,
-                };
-            }
-        }
-
-        // Const-evaluable builtin functions.
-        if (std.mem.eql(u8, callee_name, "radians") and c.args.items.len == 1) {
-            const a = self.evalConst(c.args.items[0], depth) orelse return null;
-            return .{ .float = a.toF64() * std.math.pi / 180.0 };
-        }
-        if (std.mem.eql(u8, callee_name, "degrees") and c.args.items.len == 1) {
-            const a = self.evalConst(c.args.items[0], depth) orelse return null;
-            return .{ .float = a.toF64() * 180.0 / std.math.pi };
-        }
-        if (c.args.items.len == 1) {
-            const a = self.evalConst(c.args.items[0], depth) orelse return null;
-            // `abs` preserves int vs float kind.
-            if (std.mem.eql(u8, callee_name, "abs")) {
-                return switch (a) {
-                    .int => |v| ConstValue{ .int = if (v < 0) 0 -% v else v },
-                    .float => |v| ConstValue{ .float = @abs(v) },
-                    .bool => null,
-                };
-            }
-            const f = a.toF64();
-            const single_arg_builtins = std.StaticStringMap(*const fn (f64) f64).initComptime(.{
-                .{ "sin", &builtinSin },
-                .{ "cos", &builtinCos },
-                .{ "tan", &builtinTan },
-                .{ "asin", &builtinAsin },
-                .{ "acos", &builtinAcos },
-                .{ "atan", &builtinAtan },
-                .{ "floor", &builtinFloor },
-                .{ "ceil", &builtinCeil },
-                .{ "round", &builtinRound },
-                .{ "trunc", &builtinTrunc },
-                .{ "sqrt", &builtinSqrt },
-                .{ "exp", &builtinExp },
-                .{ "log", &builtinLog },
-            });
-            if (single_arg_builtins.get(callee_name)) |fp| {
-                return .{ .float = fp(f) };
-            }
-        }
-        if (c.args.items.len == 2) {
-            const a = self.evalConst(c.args.items[0], depth) orelse return null;
-            const b = self.evalConst(c.args.items[1], depth) orelse return null;
-            if (std.mem.eql(u8, callee_name, "min")) {
-                if (a == .int and b == .int) return .{ .int = @min(a.int, b.int) };
-                return .{ .float = @min(a.toF64(), b.toF64()) };
-            }
-            if (std.mem.eql(u8, callee_name, "max")) {
-                if (a == .int and b == .int) return .{ .int = @max(a.int, b.int) };
-                return .{ .float = @max(a.toF64(), b.toF64()) };
-            }
-            if (std.mem.eql(u8, callee_name, "pow")) {
-                return .{ .float = std.math.pow(f64, a.toF64(), b.toF64()) };
-            }
-        }
-        if (c.args.items.len == 3 and std.mem.eql(u8, callee_name, "clamp")) {
-            const x = self.evalConst(c.args.items[0], depth) orelse return null;
-            const lo = self.evalConst(c.args.items[1], depth) orelse return null;
-            const hi = self.evalConst(c.args.items[2], depth) orelse return null;
-            if (x == .int and lo == .int and hi == .int) {
-                return .{ .int = @max(lo.int, @min(hi.int, x.int)) };
-            }
-            return .{ .float = @max(lo.toF64(), @min(hi.toF64(), x.toF64())) };
-        }
-
-        return null;
-    }
-
-    /// `member` on a const symbol whose initializer is a struct
-    /// constructor (e.g. `const a = Foo(2, 10.5); a.x`). Find the field
-    /// index by name in the struct decl, evaluate the matching arg.
-    fn evalMember(self: *LayoutComputer, m: *Ast.MemberExpr, depth: u32) ?ConstValue {
+    /// `ConstEval` resolver hook for `.member` — `a.x` on a const symbol
+    /// whose initializer is a struct constructor (e.g. `const a = Foo(2,
+    /// 10.5); a.x`). Find the field index by name in the struct decl and
+    /// evaluate the matching constructor argument back through `ConstEval`.
+    /// Needs the module's declarations + symbol naming, so it lives with the
+    /// resolver rather than in the shared core.
+    pub fn resolveMember(self: *LayoutComputer, m: *Ast.MemberExpr, depth: u32) ?ConstEval.Value {
         // Resolve the base to a const declaration.
         const base_ident = switch (m.base) {
             .ident => |i| i,
@@ -1996,7 +1786,7 @@ const LayoutComputer = struct {
                 const member_name = self.getSymbolName(sm.name);
                 if (std.mem.eql(u8, member_name, m.member_name)) {
                     if (i >= ctor.args.items.len) return null;
-                    return self.evalConst(ctor.args.items[i], depth);
+                    return ConstEval.eval(self, .wrap, ctor.args.items[i], depth);
                 }
             }
             return null;
@@ -2548,78 +2338,6 @@ fn handleIdentToTypeInfo(name: []const u8) ?TypeInfo {
         }
     }
     return null;
-}
-
-// Literal parsing for const-expression evaluation.
-
-fn evalLiteral(lit: *Ast.LiteralExpr) ?ConstValue {
-    if (lit.value.len == 0) return null;
-    return switch (lit.kind) {
-        .int_literal => parseIntLiteral(lit.value),
-        .float_literal => parseFloatLiteral(lit.value),
-        .true_literal => .{ .bool = true },
-        .false_literal => .{ .bool = false },
-        else => null,
-    };
-}
-
-fn parseIntLiteral(s: []const u8) ?ConstValue {
-    var v = s;
-    if (v.len == 0) return null;
-    if (v[v.len - 1] == 'i' or v[v.len - 1] == 'u') v = v[0 .. v.len - 1];
-    const i = std.fmt.parseInt(i64, v, 0) catch return null;
-    return .{ .int = i };
-}
-
-fn parseFloatLiteral(s: []const u8) ?ConstValue {
-    var v = s;
-    if (v.len == 0) return null;
-    // Strip suffixes: f32 = 'f', f16 = 'h'.
-    if (v[v.len - 1] == 'f' or v[v.len - 1] == 'h') v = v[0 .. v.len - 1];
-    const f = std.fmt.parseFloat(f64, v) catch return null;
-    return .{ .float = f };
-}
-
-// f64 wrappers for std.math functions so we can hand them to a comptime map.
-
-fn builtinSin(x: f64) f64 {
-    return std.math.sin(x);
-}
-fn builtinCos(x: f64) f64 {
-    return std.math.cos(x);
-}
-fn builtinTan(x: f64) f64 {
-    return std.math.tan(x);
-}
-fn builtinAsin(x: f64) f64 {
-    return std.math.asin(x);
-}
-fn builtinAcos(x: f64) f64 {
-    return std.math.acos(x);
-}
-fn builtinAtan(x: f64) f64 {
-    return std.math.atan(x);
-}
-fn builtinFloor(x: f64) f64 {
-    return @floor(x);
-}
-fn builtinCeil(x: f64) f64 {
-    return @ceil(x);
-}
-fn builtinRound(x: f64) f64 {
-    return @round(x);
-}
-fn builtinTrunc(x: f64) f64 {
-    return @trunc(x);
-}
-fn builtinSqrt(x: f64) f64 {
-    return @sqrt(x);
-}
-fn builtinExp(x: f64) f64 {
-    return @exp(x);
-}
-fn builtinLog(x: f64) f64 {
-    return @log(x);
 }
 
 // =========================================================================

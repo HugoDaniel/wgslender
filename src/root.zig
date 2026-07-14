@@ -58,6 +58,10 @@ pub const MinifySettings = @import("MinifySettings.zig");
 pub const MinifyEstimator = @import("MinifyEstimator.zig");
 pub const MultiVisitor = @import("lint/MultiVisitor.zig");
 pub const OptionsSpec = @import("options.zig");
+/// Shared const-expression evaluator consumed by `Reflect` (wrapping mode)
+/// and the `Validator` const-folding family (saturating mode). See
+/// `docs/deferred/consteval-extraction.md`.
+pub const ConstEval = @import("ConstEval.zig");
 
 // --- Internal (no compatibility promise) ---
 pub const Ast = @import("Ast.zig");
@@ -492,6 +496,7 @@ comptime {
     _ = Types;
     _ = Validator;
     _ = Reflect;
+    _ = ConstEval;
     _ = SourceMap;
     _ = Dce;
     _ = Compiler;
