@@ -6,10 +6,14 @@
 //! extraction (Blocks C1/C2) can be proven byte-identical:
 //!
 //!   * Validator side (`tryExtractIntValue` family): **saturating** integer
-//!     arithmetic, an int-only domain (no `.call`/float folding), and a depth
-//!     cap of 32.
+//!     arithmetic and an int-only domain (no `.call`/float folding).
 //!   * Reflect side (`LayoutComputer.evalConst`): **wrapping** integer
-//!     arithmetic, a full `{int,float,bool}` domain, and a depth cap of 64.
+//!     arithmetic and a full `{int,float,bool}` domain.
+//!
+//! The depth cap was the one *non*-divergent-preserving change: it used to be
+//! 32 on the Validator side and 64 on the Reflect side; ConstEval C2 unified
+//! both on `constants.max_const_eval_depth` (64). The overflow / value-domain
+//! divergences remain, parameterized by `OverflowMode` + `Value.asInt`.
 //!
 //! The wrap-vs-saturate contrast lives *only* here; the member-access and
 //! memoized-chain reflect paths are already densely pinned in
@@ -142,20 +146,29 @@ test "const_eval[validator]: folding beyond any cap yields no value" {
     try std.testing.expectEqual(@as(?i64, null), validatorConstValue(&result, "DEEP"));
 }
 
-test "const_eval[validator]: depth-cap boundary is 32 (guarded — C2 widens to 64)" {
+test "const_eval[validator]: depth-cap boundary is 64 (unified by ConstEval C2)" {
     const a = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
-    // 32 parens fold (literal reached at depth 32, `32 > 32` is false);
-    // 33 parens do not (depth 33 > 32 → null). ⚠ ConstEval C2 unifies the cap
-    // on 64: when it lands, the 33-deep case starts folding to 1 and THIS
-    // expectation flips (documented, guarded behavior change).
-    const at_cap = try buildParenConst(arena.allocator(), "AT_CAP", 32);
+    // ⚠ BEHAVIOR (ConstEval C2, guarded): the Validator's folder used to cap at
+    // depth 32; migrating onto `ConstEval.evalIntOnly` unified the cap on
+    // `constants.max_const_eval_depth` (64) — the same limit Reflect always
+    // used. So 33 parens, which returned `null` before C2, now fold to 1. The
+    // new boundary: 64 parens fold (literal at depth 64, `64 > 64` is false),
+    // 65 do not (depth 65 > 64 → null). No const-expression in the tests or the
+    // corpus nests past 32, so this is a theoretical widening (see the plan's
+    // behavior-change register), pinned here to lock the unified boundary.
+    const was_over_old_cap = try buildParenConst(arena.allocator(), "DEEP33", 33);
+    var r33 = try wgslender.analyzeWithOptions(a, was_over_old_cap, .{});
+    defer r33.deinit();
+    try std.testing.expectEqual(@as(?i64, 1), validatorConstValue(&r33, "DEEP33"));
+
+    const at_cap = try buildParenConst(arena.allocator(), "AT_CAP", 64);
     var r_at = try wgslender.analyzeWithOptions(a, at_cap, .{});
     defer r_at.deinit();
     try std.testing.expectEqual(@as(?i64, 1), validatorConstValue(&r_at, "AT_CAP"));
 
-    const over_cap = try buildParenConst(arena.allocator(), "OVER_CAP", 33);
+    const over_cap = try buildParenConst(arena.allocator(), "OVER_CAP", 65);
     var r_over = try wgslender.analyzeWithOptions(a, over_cap, .{});
     defer r_over.deinit();
     try std.testing.expectEqual(@as(?i64, null), validatorConstValue(&r_over, "OVER_CAP"));

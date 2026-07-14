@@ -47,6 +47,7 @@ const Predeclared = @import("Predeclared.zig");
 const Dce = @import("Dce.zig");
 const Liveness = @import("Liveness.zig");
 const UseCounts = @import("UseCounts.zig");
+const ConstEval = @import("ConstEval.zig");
 const Allocator = std.mem.Allocator;
 
 const Validator = @This();
@@ -1298,144 +1299,70 @@ pub fn attrRange(attr: *const Ast.Attribute) LocRange {
     return .{ .start = attr.loc, .end = attr.loc +| 1 +| @as(u32, @intCast(attr.name.len)) };
 }
 
-/// Try to evaluate a const bool expression (for const_assert).
-/// Handles: true/false literals, comparison operators on known-const int operands, logical not.
-pub fn tryEvalConstBool(v: *const Validator, expr: Ast.Expr) ?bool {
-    switch (expr) {
-        .literal => |lit| {
-            if (std.mem.eql(u8, lit.value, "true")) return true;
-            if (std.mem.eql(u8, lit.value, "false")) return false;
-            return null;
-        },
-        .paren => |p| return v.tryEvalConstBool(p.expr),
-        .unary => |u| {
-            if (u.op == .not) {
-                if (v.tryEvalConstBool(u.operand)) |val| return !val;
-            }
-            return null;
-        },
-        .binary => |b| {
-            // Try evaluating as integer comparison.
-            const left_val = v.tryExtractIntValue(b.left) orelse return null;
-            const right_val = v.tryExtractIntValue(b.right) orelse return null;
-            return switch (b.op) {
-                .eq => left_val == right_val,
-                .ne => left_val != right_val,
-                .lt => left_val < right_val,
-                .le => left_val <= right_val,
-                .gt => left_val > right_val,
-                .ge => left_val >= right_val,
-                else => null,
-            };
-        },
-        else => return null,
+/// Resolver adapting the Validator's precomputed const map to `ConstEval`.
+/// Eager, integer-domain: `const_values` holds only the module-scope `const`
+/// decls whose initializer already int-reduced (populated by
+/// `validateConstDecl`). Members are intentionally *not* resolved — the
+/// pre-extraction extractor never folded `a.x`, so returning null keeps the
+/// migrated paths byte-for-byte. See `docs/deferred/consteval-extraction.md`.
+const ConstResolver = struct {
+    v: *const Validator,
+
+    pub fn resolveIdent(self: ConstResolver, ref: Ast.SymbolIndex) ?ConstEval.Value {
+        if (ref.isValid()) {
+            if (self.v.const_values.get(ref.index())) |i| return .{ .int = i };
+        }
+        return null;
     }
+
+    pub fn resolveMember(_: ConstResolver, _: *Ast.MemberExpr, _: u32) ?ConstEval.Value {
+        return null;
+    }
+};
+
+/// Try to evaluate a const bool expression (for const_assert).
+/// Handles true/false literals, logical not, and comparison operators on
+/// known-const int operands — the integer-domain subset of `ConstEval`
+/// (`evalIntOnly`), narrowed to the boolean results (`Value.asBool`).
+pub fn tryEvalConstBool(v: *const Validator, expr: Ast.Expr) ?bool {
+    const val = ConstEval.evalIntOnly(ConstResolver{ .v = v }, .saturate, expr, 0) orelse return null;
+    return val.asBool();
 }
 
 /// Try to extract a constant integer value from an expression.
 /// Handles literals, paren/negate wrappers, const-declared identifiers,
 /// and binary arithmetic/bitwise operations on const sub-expressions.
 ///
-/// This is the Validator's const-integer folder — the second of two
-/// evaluators slated to consume `src/ConstEval.zig` (see
-/// `docs/deferred/consteval-extraction.md`; Reflect already routes through it
-/// via `ConstEval.eval(..., .wrap, ...)`, Block C2 migrates this side with
-/// `.saturate`). It differs deliberately from Reflect's use: **saturating**
-/// arithmetic (`+|`, `-|`, `*|`), an int-only domain (no `.call`/float folding
-/// — `u32(...)` chains fold in Reflect but are invisible here), eager
-/// identifier resolution via the precomputed `const_values` map, and a depth
-/// cap of 32. Characterization pins for both sides: `tests/const_eval_test.zig`.
+/// The Validator's const-integer folder. Delegates to the shared
+/// `src/ConstEval.zig` in its integer-only mode (`evalIntOnly`) with
+/// **saturating** overflow (`.saturate`) and a `const_values`-backed resolver,
+/// then narrows to `.int` (`Value.asInt`). It differs from Reflect's use of the
+/// same evaluator — the full `{int,float,bool}` domain with **wrapping**
+/// overflow (`ConstEval.eval(..., .wrap, ...)`) — so the `.call` / float folding
+/// (`u32(sin(...))` chains) that Reflect resolves stays invisible here. That
+/// capability gap is deliberate today; ConstEval C3 is where it closes.
+/// Characterization pins for both sides: `tests/const_eval_test.zig`.
 pub fn tryExtractIntValue(v: *const Validator, expr: Ast.Expr) ?i64 {
     return v.tryExtractIntValueDepth(expr, 0);
 }
 
 pub fn tryExtractIntValueDepth(v: *const Validator, expr: Ast.Expr, depth: u32) ?i64 {
-    if (depth > 32) return null;
-    return switch (expr) {
-        .literal => |lit| extractLiteralInt(lit),
-        .ident => |ident| {
-            if (ident.ref.isValid()) {
-                return v.const_values.get(ident.ref.index());
-            }
-            return null;
-        },
-        .unary => |u| {
-            const val = v.tryExtractIntValueDepth(u.operand, depth + 1) orelse return null;
-            return switch (u.op) {
-                .neg => 0 -| val,
-                .bit_not => ~val,
-                else => null,
-            };
-        },
-        .paren => |p| v.tryExtractIntValueDepth(p.expr, depth + 1),
-        .binary => |b| {
-            const l = v.tryExtractIntValueDepth(b.left, depth + 1) orelse return null;
-            const r = v.tryExtractIntValueDepth(b.right, depth + 1) orelse return null;
-            return switch (b.op) {
-                .add => l +| r,
-                .sub => l -| r,
-                .mul => l *| r,
-                .div => if (r != 0) @divTrunc(l, r) else null,
-                .mod => if (r != 0) @mod(l, r) else null,
-                .shl => if (r >= 0 and r < 64) l << @intCast(r) else null,
-                .shr => if (r >= 0 and r < 64) l >> @intCast(r) else null,
-                .@"and" => l & r,
-                .@"or" => l | r,
-                .xor => l ^ r,
-                else => null,
-            };
-        },
-        else => null,
-    };
+    const val = ConstEval.evalIntOnly(ConstResolver{ .v = v }, .saturate, expr, depth) orelse return null;
+    return val.asInt();
 }
 
-pub fn extractLiteralInt(lit: *Ast.LiteralExpr) ?i64 {
-    if (lit.value.len == 0) return 0;
-    var val_str = lit.value;
-    if (val_str.len > 0 and (val_str[val_str.len - 1] == 'i' or val_str[val_str.len - 1] == 'u')) {
-        val_str = val_str[0 .. val_str.len - 1];
-    }
-    return std.fmt.parseInt(i64, val_str, 0) catch null;
-}
-
-/// Extract a constant integer from a literal expression (no const lookup).
-/// Used by freestanding helpers that don't have access to the Validator.
+/// Extract a constant integer from a literal/arithmetic expression with no
+/// const-identifier lookup. Used by freestanding helpers that don't have a
+/// `*Validator` (`getLocationInfo` / `getBlendSrcInfo`). Same integer-only,
+/// saturating evaluator, resolved through `ConstEval.NullResolver` so idents
+/// and members fold to null.
 pub fn extractLiteralIntValue(expr: Ast.Expr) ?i64 {
     return extractLiteralIntValueDepth(expr, 0);
 }
 
 pub fn extractLiteralIntValueDepth(expr: Ast.Expr, depth: u32) ?i64 {
-    if (depth > 32) return null;
-    return switch (expr) {
-        .literal => |lit| extractLiteralInt(lit),
-        .unary => |u| {
-            const val = extractLiteralIntValueDepth(u.operand, depth + 1) orelse return null;
-            return switch (u.op) {
-                .neg => 0 -| val,
-                .bit_not => ~val,
-                else => null,
-            };
-        },
-        .paren => |p| extractLiteralIntValueDepth(p.expr, depth + 1),
-        .binary => |b| {
-            const l = extractLiteralIntValueDepth(b.left, depth + 1) orelse return null;
-            const r = extractLiteralIntValueDepth(b.right, depth + 1) orelse return null;
-            return switch (b.op) {
-                .add => l +| r,
-                .sub => l -| r,
-                .mul => l *| r,
-                .div => if (r != 0) @divTrunc(l, r) else null,
-                .mod => if (r != 0) @mod(l, r) else null,
-                .shl => if (r >= 0 and r < 64) l << @intCast(r) else null,
-                .shr => if (r >= 0 and r < 64) l >> @intCast(r) else null,
-                .@"and" => l & r,
-                .@"or" => l | r,
-                .xor => l ^ r,
-                else => null,
-            };
-        },
-        else => null,
-    };
+    const val = ConstEval.evalIntOnly(ConstEval.NullResolver{}, .saturate, expr, depth) orelse return null;
+    return val.asInt();
 }
 
 /// Classify the evaluation stage of an expression.

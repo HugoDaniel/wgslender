@@ -73,6 +73,28 @@ pub const Value = union(enum) {
             .bool => |v| if (v) 1.0 else 0.0,
         };
     }
+
+    /// Narrow to an `i64` *only* when this value is exactly an `.int`. Unlike
+    /// `toI64`, a `.float` or `.bool` folds to `null` — it does NOT coerce.
+    /// This is the Validator's narrowing: its historical `tryExtractIntValue`
+    /// never produced a value from a float literal or a comparison result, so
+    /// the shared evaluator's richer domain is filtered back to int-only here.
+    pub fn asInt(self: Value) ?i64 {
+        return switch (self) {
+            .int => |v| v,
+            else => null,
+        };
+    }
+
+    /// Narrow to a `bool` *only* when this value is exactly a `.bool` (the
+    /// Validator's `const_assert` path — `tryEvalConstBool`). A `.int`/`.float`
+    /// folds to `null`.
+    pub fn asBool(self: Value) ?bool {
+        return switch (self) {
+            .bool => |v| v,
+            else => null,
+        };
+    }
 };
 
 /// How integer arithmetic (`+`, `-`, `*`, unary `-`, `abs`) behaves on
@@ -88,6 +110,21 @@ pub const OverflowMode = enum {
     /// The resolver's `onOverflow` hook (a later block) turns that into a
     /// diagnostic; here it just fails the fold.
     checked,
+};
+
+/// Which expression forms the evaluator will fold. Selected at comptime by the
+/// entry point (`eval` vs `evalIntOnly`), so each caller's reachable code paths
+/// specialize with zero runtime dispatch.
+const Feature = enum {
+    /// The whole domain — casts (`u32(...)`), float builtins (`sin`), float
+    /// arithmetic, struct-member access. Reflect's layout interpreter.
+    full,
+    /// The Validator's historical `tryExtractIntValue` reach: integer
+    /// arithmetic / bitwise / shift over literals + resolved const idents,
+    /// plus integer comparisons (for `const_assert`). No `.call` folding and
+    /// no mixed-domain (float / bool-operand) binaries — those stay
+    /// un-evaluable so the migrated Validator paths remain byte-identical.
+    int_only,
 };
 
 // Only add/sub/mul (and the negations built on sub) differ by mode; every
@@ -142,21 +179,36 @@ fn intVal(x: ?i64) ?Value {
 /// overflow behavior. Both are comptime-friendly: `resolver` is `anytype` and
 /// `mode` a comptime enum.
 pub fn eval(resolver: anytype, comptime mode: OverflowMode, expr: Ast.Expr, depth: u32) ?Value {
+    return evalImpl(resolver, mode, .full, expr, depth);
+}
+
+/// Integer-domain subset of `eval` — the Validator's `tryExtractIntValue`
+/// reach. Folds integer arithmetic / bitwise / shift over literals and
+/// resolver-supplied const idents (and integer comparisons → `.bool`, for the
+/// `const_assert` path), but never `.call`s and never mixed float/bool-operand
+/// binaries. Narrow the result with `Value.asInt` (int context) or
+/// `Value.asBool` (const_assert). Byte-identical to the pre-extraction
+/// extractor modulo the unified depth cap (32 → `max_const_eval_depth`).
+pub fn evalIntOnly(resolver: anytype, comptime mode: OverflowMode, expr: Ast.Expr, depth: u32) ?Value {
+    return evalImpl(resolver, mode, .int_only, expr, depth);
+}
+
+fn evalImpl(resolver: anytype, comptime mode: OverflowMode, comptime feat: Feature, expr: Ast.Expr, depth: u32) ?Value {
     if (depth > constants.max_const_eval_depth) return null;
     return switch (expr) {
         .literal => |lit| evalLiteral(lit),
-        .paren => |p| eval(resolver, mode, p.expr, depth + 1),
-        .unary => |u| evalUnary(resolver, mode, u, depth),
-        .binary => |b| evalBinary(resolver, mode, b, depth + 1),
+        .paren => |p| evalImpl(resolver, mode, feat, p.expr, depth + 1),
+        .unary => |u| evalUnary(resolver, mode, feat, u, depth),
+        .binary => |b| evalBinary(resolver, mode, feat, b, depth + 1),
         .ident => |id| resolver.resolveIdent(id.ref),
-        .call => |c| evalCall(resolver, mode, c, depth + 1),
+        .call => |c| if (feat == .int_only) null else evalCall(resolver, mode, c, depth + 1),
         .member => |m| resolver.resolveMember(m, depth + 1),
         else => null,
     };
 }
 
-fn evalUnary(resolver: anytype, comptime mode: OverflowMode, u: *Ast.UnaryExpr, depth: u32) ?Value {
-    const v = eval(resolver, mode, u.operand, depth + 1) orelse return null;
+fn evalUnary(resolver: anytype, comptime mode: OverflowMode, comptime feat: Feature, u: *Ast.UnaryExpr, depth: u32) ?Value {
+    const v = evalImpl(resolver, mode, feat, u.operand, depth + 1) orelse return null;
     return switch (u.op) {
         .neg => switch (v) {
             .int => |x| intVal(subInt(mode, 0, x)),
@@ -175,9 +227,9 @@ fn evalUnary(resolver: anytype, comptime mode: OverflowMode, u: *Ast.UnaryExpr, 
     };
 }
 
-fn evalBinary(resolver: anytype, comptime mode: OverflowMode, b: *Ast.BinaryExpr, depth: u32) ?Value {
-    const l = eval(resolver, mode, b.left, depth) orelse return null;
-    const r = eval(resolver, mode, b.right, depth) orelse return null;
+fn evalBinary(resolver: anytype, comptime mode: OverflowMode, comptime feat: Feature, b: *Ast.BinaryExpr, depth: u32) ?Value {
+    const l = evalImpl(resolver, mode, feat, b.left, depth) orelse return null;
+    const r = evalImpl(resolver, mode, feat, b.right, depth) orelse return null;
     // Both-integer path: exact integer semantics.
     const both_int = l == .int and r == .int;
     if (both_int) {
@@ -203,6 +255,10 @@ fn evalBinary(resolver: anytype, comptime mode: OverflowMode, b: *Ast.BinaryExpr
             .logical_and, .logical_or => null,
         };
     }
+    // int_only never reaches a non-both-int binary: float literals and casts
+    // are already gone, so a non-int operand here is a nested comparison/`.not`
+    // result — which the pre-extraction extractor folded to `null`. Match it.
+    if (feat == .int_only) return null;
     // Bitwise / shift / mod ops require integer operands.
     switch (b.op) {
         .@"and", .@"or", .xor, .shl, .shr, .mod => return null,
@@ -396,23 +452,29 @@ fn builtinLog(x: f64) f64 {
     return @log(x);
 }
 
+// -------------------------------------------------------------------------
+// Resolvers
+// -------------------------------------------------------------------------
+
+/// A resolver that resolves nothing — the literal/arithmetic-only context.
+/// Every identifier and member folds to `null`, so `eval`/`evalIntOnly` see
+/// only the syntactic const forms. Used by the Validator's freestanding
+/// `extractLiteralIntValue` (helpers without a `*Validator`) and by the unit
+/// tests below.
+pub const NullResolver = struct {
+    pub fn resolveIdent(_: NullResolver, _: Ast.SymbolIndex) ?Value {
+        return null;
+    }
+    pub fn resolveMember(_: NullResolver, _: *Ast.MemberExpr, _: u32) ?Value {
+        return null;
+    }
+};
+
 // =========================================================================
 // Tests
 // =========================================================================
 
 const testing = std.testing;
-
-/// A resolver that resolves nothing — the literal/arithmetic-only context
-/// (matches the Validator's freestanding `extractLiteralIntValue`). Every
-/// identifier and member folds to `null`.
-const NullResolver = struct {
-    fn resolveIdent(_: NullResolver, _: Ast.SymbolIndex) ?Value {
-        return null;
-    }
-    fn resolveMember(_: NullResolver, _: *Ast.MemberExpr, _: u32) ?Value {
-        return null;
-    }
-};
 
 /// Build a heap-allocated literal expression for the eval unit tests. The
 /// arena frees everything on `deinit`.
@@ -521,4 +583,62 @@ test "eval: unresolved ident folds to null through NullResolver" {
     const id = try a.create(Ast.IdentExpr);
     id.* = .{ .name = "X" };
     try testing.expectEqual(@as(?Value, null), eval(NullResolver{}, .wrap, .{ .ident = id }, 0));
+}
+
+// -------------------------------------------------------------------------
+// evalIntOnly — the Validator subset (byte-neutral with `tryExtractIntValue`)
+// -------------------------------------------------------------------------
+
+fn floatLit(arena: std.mem.Allocator, text: []const u8) !Ast.Expr {
+    const lit = try arena.create(Ast.LiteralExpr);
+    lit.* = .{ .kind = .float_literal, .value = text };
+    return .{ .literal = lit };
+}
+
+fn callExpr(arena: std.mem.Allocator, name: []const u8, arg: Ast.Expr) !Ast.Expr {
+    const id = try arena.create(Ast.IdentExpr);
+    id.* = .{ .name = name };
+    const c = try arena.create(Ast.CallExpr);
+    c.* = .{ .func = .{ .ident = id }, .args = .empty };
+    try c.args.append(arena, arg);
+    return .{ .call = c };
+}
+
+test "evalIntOnly: suppresses casts/builtins that full eval would fold" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // `u32(3)` — full eval casts to 3; int-only never folds a call.
+    const cast = try callExpr(a, "u32", try litInt(a, "3"));
+    try testing.expectEqual(@as(i64, 3), eval(NullResolver{}, .saturate, cast, 0).?.int);
+    try testing.expectEqual(@as(?Value, null), evalIntOnly(NullResolver{}, .saturate, cast, 0));
+}
+
+test "evalIntOnly: float literal narrows to null (never enters the int domain)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const f = try floatLit(a, "3.5");
+    // A bare float folds under full eval but `asInt` drops it; and a float
+    // comparison is un-evaluable under int-only (mixed-domain guard).
+    try testing.expectEqual(@as(?i64, null), evalIntOnly(NullResolver{}, .saturate, f, 0).?.asInt());
+    const fcmp = try binExpr(a, .lt, try floatLit(a, "1.5"), try floatLit(a, "2.5"));
+    try testing.expectEqual(@as(?Value, null), evalIntOnly(NullResolver{}, .saturate, fcmp, 0));
+}
+
+test "evalIntOnly: integer comparison yields bool (asBool), saturates arithmetic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // Comparison → bool: asBool sees it, asInt drops it (matches the old
+    // tryEvalConstBool vs tryExtractIntValue split).
+    const cmp = try binExpr(a, .eq, try litInt(a, "4"), try litInt(a, "4"));
+    try testing.expectEqual(@as(?bool, true), evalIntOnly(NullResolver{}, .saturate, cmp, 0).?.asBool());
+    try testing.expectEqual(@as(?i64, null), evalIntOnly(NullResolver{}, .saturate, cmp, 0).?.asInt());
+    // Saturating add (the Validator's overflow mode).
+    const add = try binExpr(a, .add, try litInt(a, "9223372036854775807"), try litInt(a, "1"));
+    try testing.expectEqual(@as(?i64, std.math.maxInt(i64)), evalIntOnly(NullResolver{}, .saturate, add, 0).?.asInt());
+    // A bool-operand binary is un-evaluable (matches the old int extractor).
+    const mixed = try binExpr(a, .add, cmp, try litInt(a, "1"));
+    try testing.expectEqual(@as(?Value, null), evalIntOnly(NullResolver{}, .saturate, mixed, 0));
 }

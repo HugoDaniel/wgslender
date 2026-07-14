@@ -82,8 +82,8 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/Types.zig` | WGSL type system representation |
 | `src/Builtins.zig` | Builtin function signatures and uniformity info |
 | `src/Overload.zig` | Declarative builtin overload signatures + unification solver |
-| `src/ConstEval.zig` | Shared const-expression evaluator (`{int,float,bool}` domain, comptime `OverflowMode`, `anytype` resolver); consumed by `Reflect` (`.wrap`) and — from `docs/deferred/consteval-extraction.md` C2 — the `Validator` folder (`.saturate`) |
-| `src/Validator.zig` | Semantic validation orchestrator (drives `src/validator/*`) |
+| `src/ConstEval.zig` | Shared const-expression evaluator (`{int,float,bool}` domain, comptime `OverflowMode`, `anytype` resolver); consumed by `Reflect` (full-domain `.wrap` via `eval`) and the `Validator` folder (int-only `.saturate` via `evalIntOnly`, narrowed with `Value.asInt`/`asBool`) |
+| `src/Validator.zig` | Semantic validation orchestrator (drives `src/validator/*`); its `tryExtractIntValue`/`tryEvalConstBool`/`extractLiteralIntValue` const folders are thin shims over `ConstEval.evalIntOnly` |
 | `src/validator/Declarations.zig` | Top-level decls: directives, structs, vars, fn signatures, recursion, entry-point IO |
 | `src/validator/Expressions.zig` | Expression type-checking + inference (`checkExpr` family, type constructors) |
 | `src/validator/Statements.zig` | Statement validation + control-flow analysis |
