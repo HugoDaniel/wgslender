@@ -449,6 +449,14 @@ pub const Struct = struct {
     /// Computes field offsets, struct size, and alignment. Empty structs
     /// (produced by error-recovery paths where every member type was
     /// rejected) get align=1, size=0, has_runtime_array=false.
+    ///
+    /// This is a second, independent implementation of the algorithm in
+    /// `src/reflect/Layout.zig`'s `LayoutComputer.computeStructLayout`. The two
+    /// are deliberately NOT unified: this one runs on resolved `Types.Type`
+    /// (the validator's domain, post type-resolution); the reflect one runs
+    /// directly on the AST so reflection works on any parse without resolving
+    /// types. Keep the numeric rules (§6.2.10 roundUp discipline, vec3
+    /// over-alignment, matrix column stride) in sync by hand.
     pub fn computeLayout(self: *Struct) void {
         var offset: u32 = 0;
         var max_align: u32 = 1;
@@ -458,7 +466,8 @@ pub const Struct = struct {
             // footprint (both validated in the validator). Honor them so the
             // laid-out size/alignment — and array element stride in the uniform
             // check (WGSL §13.4) — match what an implementation produces. Both
-            // overrides only ever raise (@max), mirroring the reflect layout path.
+            // overrides only ever raise (@max), mirroring the reflect layout
+            // path in `src/reflect/Layout.zig` (`computeStructLayout`).
             const natural_align = f.typ.alignment();
             const field_align = if (f.align_override) |a| @max(a, natural_align) else natural_align;
             if (field_align > max_align) {
