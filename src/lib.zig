@@ -21,8 +21,20 @@ const api_json = @import("api_json.zig");
 const page_allocator = std.heap.page_allocator;
 
 // =========================================================================
-// Option flags
+// Option flags — FROZEN legacy fast path
 // =========================================================================
+//
+// These `u32` bitflags are a deliberately frozen ABI. They can only express
+// the six boolean minify knobs (and the single validate `strict` bit) — a
+// bitmask cannot carry lists (`keepNames`), enums, or per-rule lint options,
+// so the option surface reachable this way is closed.
+//
+// New options are JSON-only, by construction: the `*_json_c` exports route
+// through `Config.parseJson`, which is the single source of truth for the
+// full option set (see the module doc comment). `wgslender_minify_json_c`
+// is the complete superset of `wgslender_minify_c`; the flag path stays for
+// existing callers but gains no new bits. Do NOT add a `1 << 6` here — add
+// the field to `Config` and reach it via the JSON entry points instead.
 
 const OPT_MINIFY_WHITESPACE: u32 = 1 << 0;
 const OPT_MINIFY_IDENTIFIERS: u32 = 1 << 1;

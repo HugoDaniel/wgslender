@@ -15,7 +15,14 @@
 extern "C" {
 #endif
 
-/* ── Option flags for wgslender_minify_c ────────────────────────── */
+/* ── Option flags for wgslender_minify_c (frozen legacy fast path) ──
+ *
+ * These bitflags are a frozen ABI: they express only the six boolean minify
+ * knobs and cannot carry lists (keepNames), enums, or per-rule options. New
+ * options are JSON-only — prefer wgslender_minify_json_c, which accepts the
+ * full option set as JSON and is a strict superset of wgslender_minify_c.
+ * No new bit will be added to this mask.
+ */
 
 #define WGSLENDER_OPT_MINIFY_WHITESPACE        (1u << 0)
 #define WGSLENDER_OPT_MINIFY_IDENTIFIERS       (1u << 1)
