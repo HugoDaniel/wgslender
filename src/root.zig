@@ -495,6 +495,7 @@ comptime {
     _ = SourceMap;
     _ = Dce;
     _ = Compiler;
+    _ = api_json;
     _ = Pipeline;
     _ = @import("WasmBinary.zig");
     _ = Edits;

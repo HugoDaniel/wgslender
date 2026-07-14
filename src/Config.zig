@@ -211,7 +211,9 @@ test "config: parseJson basic" {
         \\  "keepNames": ["foo", "bar"]
         \\}
     ;
-    const cfg = try parseJson(std.testing.allocator, content);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try parseJson(arena.allocator(), content);
     try std.testing.expectEqual(@as(?bool, false), cfg.minify_whitespace);
     try std.testing.expectEqual(@as(?bool, true), cfg.minify_identifiers);
     try std.testing.expectEqual(@as(?bool, true), cfg.mangle_external_bindings);
@@ -233,7 +235,9 @@ test "config: parseJson all fields" {
         \\  "sourceMapSources": false
         \\}
     ;
-    const cfg = try parseJson(std.testing.allocator, content);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try parseJson(arena.allocator(), content);
     try std.testing.expectEqual(@as(?bool, true), cfg.minify_whitespace);
     try std.testing.expectEqual(@as(?bool, false), cfg.minify_identifiers);
     try std.testing.expectEqual(@as(?bool, true), cfg.minify_syntax);
@@ -298,7 +302,9 @@ test "config: parseJson wrong types ignored" {
         \\  "keepNames": "not_array"
         \\}
     ;
-    const cfg = try parseJson(std.testing.allocator, content);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try parseJson(arena.allocator(), content);
     try std.testing.expectEqual(@as(?bool, null), cfg.minify_whitespace);
     try std.testing.expectEqual(@as(?bool, null), cfg.minify_identifiers);
     try std.testing.expectEqual(@as(usize, 0), cfg.keep_names.len);
@@ -310,7 +316,9 @@ test "config: parseJson keepNames values" {
         \\  "keepNames": ["foo", "bar"]
         \\}
     ;
-    const cfg = try parseJson(std.testing.allocator, content);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try parseJson(arena.allocator(), content);
     try std.testing.expectEqual(@as(usize, 2), cfg.keep_names.len);
     try std.testing.expectEqualStrings("foo", cfg.keep_names[0]);
     try std.testing.expectEqualStrings("bar", cfg.keep_names[1]);
@@ -353,7 +361,9 @@ test "config: parseJson keepNames with mixed types" {
         \\  "keepNames": ["valid", 42, "also_valid", true]
         \\}
     ;
-    const cfg = try parseJson(std.testing.allocator, content);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try parseJson(arena.allocator(), content);
     try std.testing.expectEqual(@as(usize, 2), cfg.keep_names.len);
     try std.testing.expectEqualStrings("valid", cfg.keep_names[0]);
     try std.testing.expectEqualStrings("also_valid", cfg.keep_names[1]);
@@ -402,7 +412,9 @@ test "config: parseJson source map fields" {
         \\  "sourceMapSources": false
         \\}
     ;
-    const cfg = try parseJson(std.testing.allocator, content);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try parseJson(arena.allocator(), content);
     try std.testing.expectEqual(@as(?bool, true), cfg.source_map);
     try std.testing.expectEqual(@as(?bool, false), cfg.source_map_inline);
     try std.testing.expectEqual(@as(?bool, false), cfg.source_map_sources);
@@ -474,7 +486,9 @@ test "config: parseJson lsp section populates lsp_minify partial" {
         \\  }
         \\}
     ;
-    const cfg = try parseJson(std.testing.allocator, content);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const cfg = try parseJson(arena.allocator(), content);
     try std.testing.expectEqual(MinifySettings.Mode.strict, cfg.lsp_minify.mode.?);
     try std.testing.expectEqual(MinifySettings.InsightsFormat.bytes, cfg.lsp_minify.format.?);
     try std.testing.expectEqual(false, cfg.lsp_minify.function_size.?);

@@ -202,6 +202,34 @@ fn writeDiagnosticsBare(
     try buf.append(alloc, ']');
 }
 
+/// Append the canonical validate envelope
+/// `{"valid":<bool>,"diagnostics":[...],"errorCount":N,"warningCount":N}` to
+/// `buf`. Single source of truth for the shape, shared by the WASM/C-ABI
+/// `validateToJson` and the CLI's `emitValidateJson`. No trailing newline —
+/// the WASM surface stays newline-free; the CLI appends its own `\n`.
+///
+/// `valid` is passed explicitly (not read off a result) so each caller can
+/// supply its own notion: the WASM path passes raw `result.valid`, while the
+/// CLI's `--strict` mode passes a validity that also fails on warnings.
+pub fn writeValidateEnvelope(
+    buf: *std.ArrayList(u8),
+    alloc: Allocator,
+    valid: bool,
+    entries: []const Diagnostic.Entry,
+    error_count: u32,
+    warning_count: u32,
+) Allocator.Error!void {
+    try buf.appendSlice(alloc, "{\"valid\":");
+    try buf.appendSlice(alloc, if (valid) "true" else "false");
+    try buf.appendSlice(alloc, ",\"diagnostics\":");
+    try writeDiagnosticsBare(buf, alloc, entries);
+    try buf.appendSlice(alloc, ",\"errorCount\":");
+    try Diagnostic.appendInt(buf, alloc, error_count);
+    try buf.appendSlice(alloc, ",\"warningCount\":");
+    try Diagnostic.appendInt(buf, alloc, warning_count);
+    try buf.append(alloc, '}');
+}
+
 /// Validate WGSL source. Returns a wrapped-object envelope
 /// `{"valid":...,"diagnostics":[...],"errorCount":N,"warningCount":N}` plus
 /// authoritative severity-typed counts on the result struct. Both the C-ABI
@@ -219,15 +247,7 @@ pub fn validateToJson(
     const warning_count = result.diagnostics.warningCount();
 
     var buf: std.ArrayList(u8) = .empty;
-    try buf.appendSlice(alloc, "{\"valid\":");
-    try buf.appendSlice(alloc, if (result.valid) "true" else "false");
-    try buf.appendSlice(alloc, ",\"diagnostics\":");
-    try writeDiagnosticsBare(&buf, alloc, result.diagnostics.diagnostics.items);
-    try buf.appendSlice(alloc, ",\"errorCount\":");
-    try Diagnostic.appendInt(&buf, alloc, error_count);
-    try buf.appendSlice(alloc, ",\"warningCount\":");
-    try Diagnostic.appendInt(&buf, alloc, warning_count);
-    try buf.append(alloc, '}');
+    try writeValidateEnvelope(&buf, alloc, result.valid, result.diagnostics.diagnostics.items, error_count, warning_count);
 
     return .{
         .valid = result.valid,
@@ -732,6 +752,20 @@ test "validateToJson: returns wrapped object form with severity-typed counts" {
     try std.testing.expect(std.mem.indexOf(u8, r.json, "\"diagnostics\":[") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.json, "\"errorCount\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, r.json, "\"warningCount\":") != null);
+}
+
+test "writeValidateEnvelope: canonical newline-free shape" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var buf: std.ArrayList(u8) = .empty;
+    try writeValidateEnvelope(&buf, alloc, true, &.{}, 0, 0);
+    try std.testing.expectEqualStrings(
+        "{\"valid\":true,\"diagnostics\":[],\"errorCount\":0,\"warningCount\":0}",
+        buf.items,
+    );
 }
 
 test "reflectToJson: produces bindings/structs/entryPoints" {

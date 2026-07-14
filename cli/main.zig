@@ -821,20 +821,18 @@ fn emitValidateJson(
     is_valid: bool,
 ) !void {
     const File = std.Io.File;
-    const Diagnostic = wgslender.Diagnostic;
     var json_buf: std.ArrayList(u8) = .empty;
-    try json_buf.appendSlice(arena, "{\"valid\":");
-    try json_buf.appendSlice(arena, if (is_valid) "true" else "false");
-    try json_buf.appendSlice(arena, ",\"diagnostics\":[");
-    for (result.diagnostics.diagnostics.items, 0..) |*entry, i| {
-        if (i > 0) try json_buf.append(arena, ',');
-        try Diagnostic.entryToJson(&json_buf, arena, entry);
-    }
-    try json_buf.appendSlice(arena, "],\"errorCount\":");
-    try Diagnostic.appendInt(&json_buf, arena, result.diagnostics.errorCount());
-    try json_buf.appendSlice(arena, ",\"warningCount\":");
-    try Diagnostic.appendInt(&json_buf, arena, result.diagnostics.warningCount());
-    try json_buf.appendSlice(arena, "}\n");
+    // `is_valid` already folds in `--strict`'s warnings-are-fatal rule, so the
+    // CLI's envelope can differ from the WASM path's raw `result.valid`.
+    try wgslender.api_json.writeValidateEnvelope(
+        &json_buf,
+        arena,
+        is_valid,
+        result.diagnostics.diagnostics.items,
+        result.diagnostics.errorCount(),
+        result.diagnostics.warningCount(),
+    );
+    try json_buf.append(arena, '\n');
     try File.stdout().writeStreamingAll(io, json_buf.items);
 }
 
