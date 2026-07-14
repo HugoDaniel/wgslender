@@ -275,16 +275,15 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     }
 
     const loaded_config: ?wgslender.Config = loadConfig(&args, arena, io, config_path, no_config) catch return null;
-    applyMinifyOverrides(
-        &args.options,
-        cli_minify_all,
-        cli_minify_whitespace,
-        cli_minify_identifiers,
-        cli_minify_syntax,
-        cli_no_mangle,
-        cli_no_whitespace,
-        cli_no_syntax,
-    );
+    wgslender.OptionsSpec.applyMinifyPrecedence(&args.options, .{
+        .all = cli_minify_all,
+        .whitespace = cli_minify_whitespace,
+        .identifiers = cli_minify_identifiers,
+        .syntax = cli_minify_syntax,
+        .no_mangle = cli_no_mangle,
+        .no_whitespace = cli_no_whitespace,
+        .no_syntax = cli_no_syntax,
+    });
     // CLI flag (true) wins; else config value if set; else false. Mirrors
     // the `report_unused_disable_directives` precedence below — kept inline
     // because `configureSourceMap` reads from `args.source_map_flags` next.
@@ -295,43 +294,22 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     }
     configureSourceMap(&args);
     if (args.subcommand == .lint) {
-        // Merge config-derived lint settings under CLI overrides:
-        //   extends: config.lint_extends ++ CLI extends. If neither is
-        //     populated and --no-recommended wasn't passed, default to
-        //     @wgslender/recommended.
-        //   rules: config.lint_rules ++ CLI overrides. The Linter applies
-        //     overrides in slice order; CLI rules come last so they win.
-        //   report_unused_disable_directives: CLI flag (true) wins; else
-        //     config value if set; else false.
-        // The CLI accumulators arrive on `args.lint_options.lint_extends`
-        // / `.lint_rules` from the spec dispatcher; the merged result is
-        // written back to the same fields for `runLint` to read.
-        const cli_extends = args.lint_options.lint_extends;
-        var merged_extends: std.ArrayList([]const u8) = .empty;
-        if (loaded_config) |cfg| {
-            merged_extends.appendSlice(arena, cfg.lint_extends) catch return null;
-        }
-        merged_extends.appendSlice(arena, cli_extends) catch return null;
-        if (lint_use_recommended and merged_extends.items.len == 0) {
-            merged_extends.append(arena, "@wgslender/recommended") catch return null;
-        }
-        args.lint_options.lint_extends = merged_extends.items;
-
-        const cli_rules = args.lint_options.lint_rules;
-        var merged_rules: std.ArrayList(wgslender.Linter.Options.RuleOverride) = .empty;
-        if (loaded_config) |cfg| {
-            merged_rules.appendSlice(arena, cfg.lint_rules) catch return null;
-        }
-        merged_rules.appendSlice(arena, cli_rules) catch return null;
-        args.lint_options.lint_rules = merged_rules.items;
-
-        if (loaded_config) |cfg| {
-            if (cfg.report_unused_disable_directives) |v| {
-                if (!args.lint_options.report_unused_disable_directives) {
-                    args.lint_options.report_unused_disable_directives = v;
-                }
-            }
-        }
+        // Merge config-derived lint settings under CLI overrides. The CLI
+        // accumulators arrive on `args.lint_options.*` from the spec
+        // dispatcher; `Config.mergeLintOptions` folds the config layer under
+        // them (precedence documented there) and the merged result is written
+        // back to the same fields for `runLint` to read.
+        const merged = wgslender.Config.mergeLintOptions(
+            arena,
+            loaded_config,
+            args.lint_options.lint_extends,
+            args.lint_options.lint_rules,
+            args.lint_options.report_unused_disable_directives,
+            lint_use_recommended,
+        ) catch return null;
+        args.lint_options.lint_extends = merged.extends;
+        args.lint_options.lint_rules = merged.rules;
+        args.lint_options.report_unused_disable_directives = merged.report_unused_disable_directives;
     }
 
     warnIgnoredFlags(io, args.subcommand, passed);
@@ -646,50 +624,19 @@ fn loadConfig(
     return null;
 }
 
-/// Apply CLI minification flag overrides with correct precedence.
-/// Granular flags (--minify-*) disable unspecified passes; --minify forces all on.
-/// `--no-*` post-overrides force a single pass off regardless of granular state.
-/// `--no-tree-shaking` is dispatched directly via the `tree_shaking` spec's
-/// `cli_inverse` and does not pass through here.
-fn applyMinifyOverrides(
-    options: *wgslender.Minifier.Options,
-    cli_minify_all: bool,
-    cli_minify_whitespace: ?bool,
-    cli_minify_identifiers: ?bool,
-    cli_minify_syntax: ?bool,
-    cli_no_mangle: bool,
-    cli_no_whitespace: bool,
-    cli_no_syntax: bool,
-) void {
-    const has_granular = cli_minify_whitespace != null or
-        cli_minify_identifiers != null or cli_minify_syntax != null;
-    if (has_granular) {
-        options.minify_whitespace = cli_minify_whitespace orelse false;
-        options.minify_identifiers = cli_minify_identifiers orelse false;
-        options.minify_syntax = cli_minify_syntax orelse false;
-    }
-    if (cli_minify_all) {
-        options.minify_whitespace = true;
-        options.minify_identifiers = true;
-        options.minify_syntax = true;
-    }
-    if (cli_no_mangle) options.minify_identifiers = false;
-    if (cli_no_whitespace) options.minify_whitespace = false;
-    if (cli_no_syntax) options.minify_syntax = false;
-}
-
-/// Hand-rolled post-step: the spec dispatcher writes the three boolean
-/// toggles into `args.source_map_flags`, but the resulting
-/// `source_map_options.source_name` / `.file` are derived from the
-/// input/output basenames — that's CLI plumbing, not a single-field knob,
-/// so it stays here.
+/// Hand-rolled post-step: `OptionsSpec.applySourceMapFlags` folds the three
+/// boolean toggles into `args.options` (returning whether a map is emitted),
+/// but the resulting `source_map_options.source_name` / `.file` are derived
+/// from the input/output basenames — that's CLI plumbing, not a single-field
+/// knob, so it stays here.
 fn configureSourceMap(args: *CliArgs) void {
     const flags = args.source_map_flags;
-    const generate = flags.source_map or flags.source_map_inline;
-    if (!generate) return;
-
-    args.options.generate_source_map = true;
-    args.options.source_map_options.include_source = flags.source_map_sources;
+    if (!wgslender.OptionsSpec.applySourceMapFlags(
+        &args.options,
+        flags.source_map,
+        flags.source_map_inline,
+        flags.source_map_sources,
+    )) return;
     if (args.input_path) |path| {
         args.options.source_map_options.source_name = std.fs.path.basename(path);
     }

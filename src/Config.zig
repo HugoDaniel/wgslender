@@ -198,6 +198,57 @@ pub fn toOptions(self: Config) Minifier.Options {
     return opts;
 }
 
+/// Result of merging config-file lint settings with CLI lint overrides.
+/// Slices are owned by the arena passed to `mergeLintOptions`.
+pub const MergedLint = struct {
+    extends: []const []const u8,
+    rules: []const Linter.Options.RuleOverride,
+    report_unused_disable_directives: bool,
+};
+
+/// Merge config-file lint settings underneath CLI overrides. Precedence:
+///   * extends: `config.lint_extends ++ cli_extends`; if the result is empty
+///     and `use_recommended` is set, seed with `@wgslender/recommended`.
+///   * rules:   `config.lint_rules ++ cli_rules` — the Linter applies
+///     overrides in slice order, so CLI rules (appended last) win.
+///   * report_unused_disable_directives: CLI (`true`) wins; else the config
+///     value if set; else `false`.
+/// `config` is the loaded `wgslender.json` (`null` when none was found). The
+/// caller (CLI arg parse) threads its own accumulators in and writes the
+/// result back onto its lint-options struct.
+pub fn mergeLintOptions(
+    arena: Allocator,
+    config: ?Config,
+    cli_extends: []const []const u8,
+    cli_rules: []const Linter.Options.RuleOverride,
+    cli_report_unused: bool,
+    use_recommended: bool,
+) Allocator.Error!MergedLint {
+    var extends: std.ArrayList([]const u8) = .empty;
+    if (config) |cfg| try extends.appendSlice(arena, cfg.lint_extends);
+    try extends.appendSlice(arena, cli_extends);
+    if (use_recommended and extends.items.len == 0) {
+        try extends.append(arena, "@wgslender/recommended");
+    }
+
+    var rules: std.ArrayList(Linter.Options.RuleOverride) = .empty;
+    if (config) |cfg| try rules.appendSlice(arena, cfg.lint_rules);
+    try rules.appendSlice(arena, cli_rules);
+
+    var report_unused = cli_report_unused;
+    if (config) |cfg| {
+        if (cfg.report_unused_disable_directives) |v| {
+            if (!report_unused) report_unused = v;
+        }
+    }
+
+    return .{
+        .extends = extends.items,
+        .rules = rules.items,
+        .report_unused_disable_directives = report_unused,
+    };
+}
+
 // =========================================================================
 // Tests
 // =========================================================================

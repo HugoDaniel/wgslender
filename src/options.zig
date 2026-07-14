@@ -754,6 +754,76 @@ pub fn applyDefaults(
 }
 
 // =========================================================================
+// CLI shell logic (housed here so its precedence is unit-testable without a
+// full arg parse). `options.zig` is imported by `Minifier` and cannot import
+// it back, so the mutating helpers take the `Minifier.Options`-shaped target
+// as `anytype` rather than a concrete type.
+// =========================================================================
+
+/// State of the hand-rolled minify-cluster flags (`--minify`, `--minify-*`,
+/// `--no-mangle`, `--no-whitespace`, `--no-syntax`). This cluster can't fit
+/// the derived `--flag` / `--no-flag` spec shape (it's tri-state), so it's
+/// parsed by hand in `cli/main.zig` and handed here as an explicit struct.
+pub const MinifyClusterFlags = struct {
+    /// `--minify` — force all three passes on.
+    all: bool = false,
+    /// `--minify-whitespace` — `null` = flag absent. Presence of *any*
+    /// granular flag resets the unspecified passes off.
+    whitespace: ?bool = null,
+    identifiers: ?bool = null,
+    syntax: ?bool = null,
+    /// `--no-mangle` / `--no-whitespace` / `--no-syntax` — force one pass
+    /// off as the final word.
+    no_mangle: bool = false,
+    no_whitespace: bool = false,
+    no_syntax: bool = false,
+};
+
+/// Resolve the minify-cluster flags onto a `Minifier.Options`-shaped target
+/// (any struct with `minify_whitespace` / `minify_identifiers` /
+/// `minify_syntax` bool fields). Precedence, low→high:
+///   1. any granular `--minify-*` present → unspecified granular passes off
+///   2. `--minify` → all three on
+///   3. `--no-*` → that one pass off (the final word)
+/// `--no-tree-shaking` is a separate spec knob (`cli_inverse`) and never
+/// reaches here.
+pub fn applyMinifyPrecedence(target: anytype, flags: MinifyClusterFlags) void {
+    const has_granular = flags.whitespace != null or
+        flags.identifiers != null or flags.syntax != null;
+    if (has_granular) {
+        target.minify_whitespace = flags.whitespace orelse false;
+        target.minify_identifiers = flags.identifiers orelse false;
+        target.minify_syntax = flags.syntax orelse false;
+    }
+    if (flags.all) {
+        target.minify_whitespace = true;
+        target.minify_identifiers = true;
+        target.minify_syntax = true;
+    }
+    if (flags.no_mangle) target.minify_identifiers = false;
+    if (flags.no_whitespace) target.minify_whitespace = false;
+    if (flags.no_syntax) target.minify_syntax = false;
+}
+
+/// Fold the three source-map toggles into the source-map fields of a
+/// `Minifier.Options`-shaped target, returning whether a map will be emitted.
+/// Pure: knows nothing about file paths. When this returns `true` the caller
+/// derives `source_map_options.source_name` / `.file` from the input/output
+/// basenames — that path plumbing stays in `cli/main.zig`.
+pub fn applySourceMapFlags(
+    target: anytype,
+    source_map: bool,
+    source_map_inline: bool,
+    include_source: bool,
+) bool {
+    const generate = source_map or source_map_inline;
+    if (!generate) return false;
+    target.generate_source_map = true;
+    target.source_map_options.include_source = include_source;
+    return true;
+}
+
+// =========================================================================
 // Spec tables
 // =========================================================================
 

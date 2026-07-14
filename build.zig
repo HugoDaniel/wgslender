@@ -386,6 +386,9 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/validation_suggestions_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/lint_warnings_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/lint_rules_test.zig", target, optimize, &.{w});
+    // CLI shell logic relocated into src/ (Block 3.4): minify precedence,
+    // source-map flag fold, lint config/CLI merge.
+    _ = addTestStep(b, test_step, "tests/options_precedence_test.zig", target, optimize, &.{w});
     // MultiVisitor — multi-listener AST walker shared by lint rules.
     _ = addTestStep(b, test_step, "tests/multi_visitor_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/multi_visitor_dispatch_test.zig", target, optimize, &.{w});
