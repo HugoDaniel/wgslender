@@ -26,14 +26,30 @@ if (args[0] === 'reflect') {
   runReflect(args.slice(1));
 } else if (args[0] === 'validate') {
   runValidate(args.slice(1));
+} else if (args[0] === 'lint') {
+  runLint(args.slice(1));
+} else if (args[0] === 'compile') {
+  runCompile(args.slice(1));
 } else {
   runMinify(args);
+}
+
+/// Resolve the config file path: an explicit `--config` wins, otherwise walk
+/// up from the input file's directory (skipped by `--no-config`). Shared by
+/// the minify and lint subcommands.
+function resolveConfigPath(inputFile, configFile, noConfig) {
+  if (configFile) return configFile;
+  if (noConfig) return null;
+  const startDir = inputFile ? path.dirname(path.resolve(inputFile)) : process.cwd();
+  return findConfig(startDir);
 }
 
 function printUsage() {
   console.log(`Usage: wgslender [options] [file]
        wgslender validate [options] [file]
        wgslender reflect [options] [file]
+       wgslender lint [options] [file]
+       wgslender compile [options] -o out.wasm [file]
 
 Options:
   -h, --help                       Show this help message
@@ -55,6 +71,8 @@ Options:
 Subcommands:
   validate                         Validate WGSL source and report diagnostics
   reflect                          Extract bindings, struct layouts, and entry points as JSON
+  lint                             Lint WGSL source against configurable rule packs
+  compile                          Compile WGSL to a binary .wasm shader
 
 Config file:
   Searches for wgslender.json, .wgslenderrc, or .wgslenderrc.json starting from
@@ -296,13 +314,7 @@ function runMinify(args) {
   }
 
   // Resolve config file: explicit --config wins, then auto-discovery unless --no-config
-  let resolvedConfigPath = null;
-  if (configFile) {
-    resolvedConfigPath = configFile;
-  } else if (!noConfig) {
-    const startDir = inputFile ? path.dirname(path.resolve(inputFile)) : process.cwd();
-    resolvedConfigPath = findConfig(startDir);
-  }
+  const resolvedConfigPath = resolveConfigPath(inputFile, configFile, noConfig);
 
   // Load config file — config provides base, CLI flags override
   if (resolvedConfigPath) {
@@ -386,6 +398,209 @@ function runMinify(args) {
       }
     } catch (err) {
       console.error(`Minification error: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  main();
+}
+
+function printLintUsage() {
+  console.log(`Usage: wgslender lint [options] [file]
+
+Lint WGSL source against configurable rule packs (ESLint-inspired).
+
+Options:
+  -h, --help                       Show this help message
+  -v, --version                    Show version
+  --json                           Emit diagnostics as a JSON result object
+  --extends <pack>                 Add a config pack (repeatable, e.g. @wgslender/strict)
+  --no-recommended                 Do not seed @wgslender/recommended when no --extends given
+  --rule <id=severity>             Override a rule (severity: off|warn|error), repeatable
+  --fix                            Apply autofixes in place (requires a file input)
+  --config <file>                  Load config from JSON file
+  --no-config                      Skip config file auto-discovery
+
+If no file is specified, reads from stdin. Exits non-zero only when errors
+(not warnings) are reported.`);
+}
+
+function runLint(args) {
+  let inputFile = null;
+  let jsonOutput = false;
+  let fix = false;
+  let configFile = null;
+  let noConfig = false;
+  let useRecommended = true;
+  const cliExtends = [];
+  const cliRules = [];
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '-h' || arg === '--help') {
+      printLintUsage();
+      process.exit(0);
+    } else if (arg === '-v' || arg === '--version') {
+      printVersion();
+      process.exit(0);
+    } else if (arg === '--json') {
+      jsonOutput = true;
+    } else if (arg === '--fix') {
+      fix = true;
+    } else if (arg === '--extends') {
+      cliExtends.push(args[++i]);
+    } else if (arg === '--no-recommended') {
+      useRecommended = false;
+    } else if (arg === '--rule') {
+      const spec = args[++i] || '';
+      const eq = spec.indexOf('=');
+      if (eq < 0) {
+        console.error(`Invalid --rule (expected id=severity): ${spec}`);
+        process.exit(1);
+      }
+      cliRules.push({ id: spec.slice(0, eq), severity: spec.slice(eq + 1) });
+    } else if (arg === '--config') {
+      configFile = args[++i];
+    } else if (arg === '--no-config') {
+      noConfig = true;
+    } else if (!arg.startsWith('-')) {
+      inputFile = arg;
+    } else {
+      console.error(`Unknown option: ${arg}`);
+      process.exit(1);
+    }
+  }
+
+  // Merge config-file lint settings under CLI overrides (mirrors the native
+  // CLI's `Config.mergeLintOptions`): config `extends`/`rules` come first,
+  // CLI overrides last so they win; seed @wgslender/recommended when the
+  // merged extends list is empty and --no-recommended wasn't passed.
+  let extendsList = [...cliExtends];
+  let rules = [...cliRules];
+  const resolvedConfigPath = resolveConfigPath(inputFile, configFile, noConfig);
+  if (resolvedConfigPath) {
+    try {
+      const config = JSON.parse(fs.readFileSync(resolvedConfigPath, 'utf8'));
+      if (Array.isArray(config.extends)) extendsList = [...config.extends, ...extendsList];
+      if (Array.isArray(config.rules)) rules = [...config.rules, ...rules];
+    } catch (err) {
+      console.error(`Error loading config file: ${err.message}`);
+      process.exit(1);
+    }
+  }
+  if (useRecommended && extendsList.length === 0) {
+    extendsList = ['@wgslender/recommended'];
+  }
+
+  const lintOptions = {};
+  if (extendsList.length) lintOptions.extends = extendsList;
+  if (rules.length) lintOptions.rules = rules;
+
+  async function main() {
+    if (fix && !inputFile) {
+      console.error('--fix requires a file input (cannot rewrite stdin)');
+      process.exit(1);
+    }
+    const source = readInput(inputFile);
+    const { initialize, lint, lintAndFix } = require('../lib/main.js');
+
+    try {
+      await initialize();
+      const result = fix ? lintAndFix(source, lintOptions) : lint(source, lintOptions);
+
+      if (fix && result.fixed !== undefined) {
+        fs.writeFileSync(inputFile, result.fixed);
+      }
+
+      if (jsonOutput) {
+        console.log(JSON.stringify({
+          diagnostics: result.diagnostics,
+          errorCount: result.errorCount,
+          warningCount: result.warningCount,
+          fixableCount: result.fixableCount,
+        }, null, 2));
+      } else {
+        for (const d of result.diagnostics) {
+          const loc = d.line ? `${d.line}:${d.column}: ` : '';
+          const code = d.code ? ` [${d.code}]` : '';
+          console.log(`${loc}${d.severity}: ${d.message}${code}`);
+        }
+      }
+
+      // Exit non-zero only on errors; warnings alone are a clean lint.
+      process.exit(result.errorCount > 0 ? 1 : 0);
+    } catch (err) {
+      console.error(`Lint error: ${err.message}`);
+      process.exit(1);
+    }
+  }
+
+  main();
+}
+
+function printCompileUsage() {
+  console.log(`Usage: wgslender compile [options] -o out.wasm [file]
+
+Compile WGSL to a binary .wasm shader that regenerates the (minified) WGSL at
+runtime. See the README for the JS loader snippet.
+
+Options:
+  -h, --help                       Show this help message
+  -v, --version                    Show version
+  -o, --output <file>              Output .wasm file (required)
+
+If no file is specified, reads WGSL from stdin.`);
+}
+
+function runCompile(args) {
+  let inputFile = null;
+  let outputFile = null;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '-h' || arg === '--help') {
+      printCompileUsage();
+      process.exit(0);
+    } else if (arg === '-v' || arg === '--version') {
+      printVersion();
+      process.exit(0);
+    } else if (arg === '-o' || arg === '--output') {
+      outputFile = args[++i];
+    } else if (!arg.startsWith('-')) {
+      inputFile = arg;
+    } else {
+      console.error(`Unknown option: ${arg}`);
+      process.exit(1);
+    }
+  }
+
+  async function main() {
+    if (!outputFile) {
+      console.error('compile requires an output file (-o out.wasm)');
+      process.exit(1);
+    }
+    const source = readInput(inputFile);
+    const { initialize, compile } = require('../lib/main.js');
+
+    try {
+      await initialize();
+      const result = compile(source);
+
+      if (result.errors && result.errors.length > 0) {
+        for (const d of result.errors) {
+          const loc = d.line ? `${d.line}:${d.column}: ` : '';
+          const code = d.code ? ` [${d.code}]` : '';
+          console.error(`${loc}${d.severity || 'error'}: ${d.message}${code}`);
+        }
+        process.exit(1);
+      }
+
+      fs.writeFileSync(outputFile, Buffer.from(result.wasm));
+      process.stderr.write(
+        `Original: ${result.originalSize} bytes -> WASM: ${result.wasmSize} bytes\n`
+      );
+    } catch (err) {
+      console.error(`Compile error: ${err.message}`);
       process.exit(1);
     }
   }

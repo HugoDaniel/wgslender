@@ -491,6 +491,81 @@ console.log('\n--- reflect subcommand ---');
 }
 
 // =============================================
+// lint subcommand
+// =============================================
+console.log('\n--- lint subcommand ---');
+
+// A shader whose `helper` function is never called → unused-declaration
+// warning (W0001) under the default @wgslender/recommended pack, no errors.
+const LINT_WARN_SHADER = `fn helper(t: f32) -> f32 { return t; }
+@fragment fn main() -> @location(0) vec4f { return vec4f(1.0); }
+`;
+const lintWarnFile = path.join(TMP, 'lint-warn.wgsl');
+fs.writeFileSync(lintWarnFile, LINT_WARN_SHADER);
+
+{
+  const r = run(['lint', '--help']);
+  assert(r.exitCode === 0, 'lint --help exits 0');
+  assert(r.stdout.includes('Lint WGSL'), 'lint --help shows description');
+}
+
+{
+  const r = run(['lint', simpleFile]);
+  assert(r.exitCode === 0, 'lint clean shader exits 0');
+}
+
+{
+  const r = run(['lint', lintWarnFile]);
+  assert(r.exitCode === 0, 'lint warnings-only exits 0');
+  assert(r.stdout.includes('helper') || r.stderr.includes('helper'),
+    'lint reports the unused helper');
+}
+
+{
+  const r = run(['lint', '--json', lintWarnFile]);
+  assert(r.exitCode === 0, 'lint --json exits 0');
+  const result = JSON.parse(r.stdout);
+  assert(Array.isArray(result.diagnostics), 'lint --json: has diagnostics array');
+  assert(typeof result.warningCount === 'number', 'lint --json: has warningCount');
+  assert(result.warningCount > 0, 'lint --json: warningCount > 0');
+}
+
+{
+  const r = run(['lint'], { stdin: LINT_WARN_SHADER });
+  assert(r.exitCode === 0, 'lint from stdin exits 0');
+}
+
+// =============================================
+// compile subcommand
+// =============================================
+console.log('\n--- compile subcommand ---');
+
+{
+  const r = run(['compile', '--help']);
+  assert(r.exitCode === 0, 'compile --help exits 0');
+  assert(r.stdout.includes('Compile WGSL'), 'compile --help shows description');
+}
+
+{
+  const outWasm = path.join(TMP, 'shader.wasm');
+  const r = run(['compile', simpleFile, '-o', outWasm]);
+  assert(r.exitCode === 0, 'compile exits 0');
+  assert(fs.existsSync(outWasm), 'compile creates .wasm output');
+  const bytes = fs.readFileSync(outWasm);
+  assert(bytes[0] === 0x00 && bytes[1] === 0x61 && bytes[2] === 0x73 && bytes[3] === 0x6d,
+    'compile output starts with wasm magic \\0asm');
+}
+
+{
+  const badFile = path.join(TMP, 'bad-compile.wgsl');
+  fs.writeFileSync(badFile, 'fn main( {');
+  const outWasm = path.join(TMP, 'bad-shader.wasm');
+  const r = run(['compile', badFile, '-o', outWasm]);
+  assert(r.exitCode !== 0, 'compile syntax error exits non-zero');
+  assert(!fs.existsSync(outWasm), 'compile syntax error writes no output file');
+}
+
+// =============================================
 // Flag combinations
 // =============================================
 console.log('\n--- Flag Combinations ---');
