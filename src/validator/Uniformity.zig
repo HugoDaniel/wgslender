@@ -15,12 +15,25 @@
 //! non-uniform past the conditional. Every approximation leans false-negative
 //! (spec §2.1 of docs/deferred/uniformity-dataflow-upgrade.md): when the
 //! analysis cannot prove non-uniformity by a rule it implements exactly, it
-//! assumes uniform. Cross-function summaries are Block U3.
+//! assumes uniform.
+//!
+//! Block U3 added cross-function summaries. A first bottom-up pass over the
+//! call graph computes a `FnSummary` per function — `call_site_requirement`
+//! (does it reach a uniform-flow builtin while its own control flow is still
+//! uniform?) and `ret` (return-value uniformity relative to its parameters,
+//! `depends_on_args`). A second declaration-order pass reports, consulting a
+//! callee's summary at each user-call site: a call under non-uniform control
+//! flow to a function with a requirement is a violation reported at the call
+//! site; a call's *result* uniformity comes from `ret` folded against the
+//! actual arguments (so an arg-ignoring helper stays uniform even under a
+//! non-uniform argument — precise where U2's "non-uniform iff any arg is" was
+//! false-positive-leaning).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("../Ast.zig");
 const Builtins = @import("../Builtins.zig");
+const Dce = @import("../Dce.zig");
 const Diagnostic = @import("../Diagnostic.zig");
 const Validator = @import("../Validator.zig");
 
@@ -94,6 +107,53 @@ const StmtResult = struct {
     cf_after: Taint,
 };
 
+/// A bitset over a function's parameter positions (param index → bit). `u64`
+/// caps precise tracking at 64 params; a return deriving from a parameter
+/// beyond that falls back to uniform (false-negative-safe per §2.1). WGSL
+/// functions never approach 64 parameters in practice.
+const ArgBitset = u64;
+
+/// A uniform-flow requirement reached inside a function: the root builtin whose
+/// call must be from uniform control flow. Carries the kind (for E070x code
+/// selection), name, and the callee-side loc (for the related-info chain).
+const Requirement = struct { kind: Builtins.Kind, name: []const u8, loc: u32 };
+
+/// Uniformity of a function's return value, relative to its parameters.
+const RetUniformity = union(enum) {
+    uniform,
+    /// Non-uniform from a source independent of the arguments (a storage /
+    /// workgroup load reached inside the callee).
+    non_uniform: Source,
+    /// Uniform iff every actual argument named by the bitset is uniform at the
+    /// call site. Folded per call in `applyRet`.
+    depends_on_args: ArgBitset,
+};
+
+/// Bottom-up summary of one function, keyed by its fn `SymbolIndex`. Computed in
+/// pass 1 (callees first, so a caller sees its callees' summaries); consulted in
+/// pass 2 at call sites — `call_site_requirement` in `checkCalls` (control-flow
+/// enforcement) and `ret` in `callUniformity` (return-value uniformity).
+const FnSummary = struct {
+    /// Set when the function reaches a uniform-flow builtin (directly, or via a
+    /// callee that itself has a requirement) while its own control flow is still
+    /// uniform (== entry). Calling it from non-uniform control flow is then a
+    /// violation, reported at the *call site*.
+    call_site_requirement: ?Requirement = null,
+    ret: RetUniformity = .uniform,
+};
+
+/// Combine two return-value uniformities (fold across an expression's operands
+/// or across a function's `return` statements): non-uniform dominates; else the
+/// argument-dependence bitsets union; else uniform.
+fn combine(a: RetUniformity, b: RetUniformity) RetUniformity {
+    if (a == .non_uniform) return a;
+    if (b == .non_uniform) return b;
+    const abits: ArgBitset = if (a == .depends_on_args) a.depends_on_args else 0;
+    const bbits: ArgBitset = if (b == .depends_on_args) b.depends_on_args else 0;
+    const bits = abits | bbits;
+    return if (bits == 0) .uniform else .{ .depends_on_args = bits };
+}
+
 /// Uniformity analysis detects non-uniform control flow violations.
 /// Implements WGSL spec section 15.
 const UniformityAnalyzer = struct {
@@ -111,9 +171,23 @@ const UniformityAnalyzer = struct {
     /// assignments as the body is walked.
     values: std.AutoHashMapUnmanaged(u32, Taint) = .{},
 
-    /// When false, `checkCalls` walks but does not emit — used for the silent
-    /// value-propagation pre-pass over loop bodies (back-edge taint) so a
-    /// barrier isn't reported twice.
+    /// Cross-function summaries, keyed by fn `SymbolIndex.index()`. Filled by
+    /// pass 1 (bottom-up); read by pass 2 at call sites.
+    summaries: std.AutoHashMapUnmanaged(u32, FnSummary) = .{},
+
+    /// The function currently being walked: its own summary is accumulated here
+    /// and committed by `commitSummary` at the end of the pass-1 walk.
+    cur_requirement: ?Requirement = null,
+    cur_ret: RetUniformity = .uniform,
+
+    /// Parameters of the current function, in declaration order — resolves an
+    /// ident back to its parameter position for `ret`'s `depends_on_args`.
+    current_params: []const Ast.Parameter = &.{},
+
+    /// When false, `report` walks but does not emit. Two uses: the pass-1
+    /// summary walk (`walkFunction(.., false)`) computes summaries silently, and
+    /// the silent value-propagation pre-pass over a loop body (back-edge taint,
+    /// `runLoopPasses`) avoids reporting the same barrier twice.
     reporting: bool = true,
 
     /// Nesting depth of loop bodies currently being re-walked. Caps the
@@ -130,27 +204,110 @@ const UniformityAnalyzer = struct {
     const max_fixed_point_depth = 4;
 
     fn analyze(ua: *UniformityAnalyzer) Allocator.Error!void {
+        // Pass 1 (silent): compute a `FnSummary` for every function, bottom-up
+        // over the call graph so a caller sees its callees' summaries. The graph
+        // is acyclic by phase 3.75 (`checkRecursiveFunctions`); the post-order
+        // color guard is defensive.
+        const order = try ua.bottomUpOrder();
+        for (order) |fn_decl| {
+            try ua.walkFunction(fn_decl, false);
+            try ua.commitSummary(fn_decl);
+        }
+        // Pass 2 (reporting): emit diagnostics in declaration order (unchanged
+        // from U2), now consulting the summaries at user-call sites.
         for (ua.module.declarations.items) |decl| {
             switch (decl) {
-                .function => |fn_decl| try ua.analyzeFunction(fn_decl),
+                .function => |fn_decl| try ua.walkFunction(fn_decl, true),
                 else => {},
             }
         }
     }
 
-    fn analyzeFunction(ua: *UniformityAnalyzer, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
+    /// Walk one function's body. `emit` selects the pass: false = pass 1
+    /// (accumulate the summary in `cur_requirement`/`cur_ret`, emit nothing),
+    /// true = pass 2 (emit diagnostics, summaries already computed).
+    fn walkFunction(ua: *UniformityAnalyzer, fn_decl: *Ast.FunctionDecl, emit: bool) Allocator.Error!void {
         ua.values = .{};
-        ua.reporting = true;
+        ua.reporting = emit;
         ua.loop_depth = 0;
+        ua.cur_requirement = null;
+        ua.cur_ret = .uniform;
+        ua.current_params = fn_decl.parameters.items;
 
         try ua.seedParameters(fn_decl.parameters.items);
 
         if (fn_decl.body) |body| {
-            // Entry control flow is uniform for every function. (Non-entry
-            // callees get the caller's CF applied via summaries in Block U3;
-            // analyzing them at uniform entry CF is false-negative-safe.)
+            // Entry control flow is uniform for every function. A non-entry
+            // callee's actual CF is applied by its callers via the summary at
+            // each call site; analyzing it at uniform entry CF is
+            // false-negative-safe (§2.1).
             _ = try ua.analyzeCompound(body, .uniform);
         }
+    }
+
+    /// Commit the current function's accumulated summary (pass 1). Bottom-up
+    /// order guarantees any caller walked later reads a complete summary.
+    fn commitSummary(ua: *UniformityAnalyzer, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
+        if (fn_decl.name == .none) return;
+        try ua.summaries.put(ua.arena, fn_decl.name.index(), .{
+            .call_site_requirement = ua.cur_requirement,
+            .ret = ua.cur_ret,
+        });
+    }
+
+    /// Functions in bottom-up (callees-first) order. Post-order DFS over the
+    /// call graph — the same fn-symbol-indexed edges `checkRecursiveFunctions`
+    /// builds (`Dce.collectStmtRefs` filtered to `.function` symbols).
+    fn bottomUpOrder(ua: *UniformityAnalyzer) Allocator.Error![]const *Ast.FunctionDecl {
+        var by_sym: std.AutoHashMapUnmanaged(u32, *Ast.FunctionDecl) = .{};
+        var decls: std.ArrayList(*Ast.FunctionDecl) = .empty;
+        for (ua.module.declarations.items) |decl| switch (decl) {
+            .function => |fn_decl| {
+                try decls.append(ua.arena, fn_decl);
+                if (fn_decl.name != .none) try by_sym.put(ua.arena, fn_decl.name.index(), fn_decl);
+            },
+            else => {},
+        };
+
+        var order: std.ArrayList(*Ast.FunctionDecl) = .empty;
+        var color: std.AutoHashMapUnmanaged(u32, u2) = .{}; // 0 white, 1 gray, 2 black
+        for (decls.items) |fn_decl| {
+            if (fn_decl.name == .none) {
+                // Nameless (malformed) function: no edges, emit as a leaf.
+                try order.append(ua.arena, fn_decl);
+                continue;
+            }
+            try ua.visitPostOrder(fn_decl, &by_sym, &color, &order);
+        }
+        return order.items;
+    }
+
+    fn visitPostOrder(
+        ua: *UniformityAnalyzer,
+        fn_decl: *Ast.FunctionDecl,
+        by_sym: *const std.AutoHashMapUnmanaged(u32, *Ast.FunctionDecl),
+        color: *std.AutoHashMapUnmanaged(u32, u2),
+        order: *std.ArrayList(*Ast.FunctionDecl),
+    ) Allocator.Error!void {
+        const idx = fn_decl.name.index();
+        // Gray (on the current DFS stack — a back-edge, impossible in valid WGSL)
+        // or black (already emitted): stop. Skipping a back-edge is
+        // false-negative-safe.
+        if ((color.get(idx) orelse 0) != 0) return;
+        try color.put(ua.arena, idx, 1);
+
+        if (fn_decl.body) |body| {
+            var refs: std.ArrayList(u32) = .empty;
+            try Dce.collectStmtRefs(ua.arena, .{ .compound = body }, &refs);
+            for (refs.items) |ref| {
+                if (ref >= ua.module.symbols.items.len) continue;
+                if (ua.module.symbols.items[ref].kind != .function) continue;
+                if (by_sym.get(ref)) |callee| try ua.visitPostOrder(callee, by_sym, color, order);
+            }
+        }
+
+        try color.put(ua.arena, idx, 2);
+        try order.append(ua.arena, fn_decl);
     }
 
     /// Seed `values` with the non-uniform builtin parameters (U1's set). This
@@ -205,7 +362,12 @@ const UniformityAnalyzer = struct {
             .@"while" => |s| return ua.analyzeWhile(s, cf),
             .@"for" => |s| return ua.analyzeFor(s, cf),
             .@"return" => |s| {
-                if (s.value) |val| try ua.checkCalls(val, cf);
+                if (s.value) |val| {
+                    try ua.checkCalls(val, cf);
+                    // Fold this return into the function's `ret` summary (pass 1
+                    // accumulates it; harmless in pass 2, which never commits).
+                    ua.cur_ret = combine(ua.cur_ret, try ua.evalReturnValue(val));
+                }
                 return .{ .behaviors = .{ .ret = true }, .cf_after = cf };
             },
             .assign => |s| {
@@ -444,14 +606,100 @@ const UniformityAnalyzer = struct {
         // definition — that's its whole purpose (§15). Its own uniform-flow
         // requirement is still enforced at the call site in `checkCalls`.
         if (std.mem.eql(u8, callee, "workgroupUniformLoad")) return .uniform;
-        // Otherwise a call result is uniform iff all its arguments are uniform.
-        // (Builtins with a genuinely non-uniform result — subgroup ballots and
-        // scans — are Block U3's per-row column.)
+        // A user function's result uniformity comes from its summary (Block U3):
+        // precise per-argument dependence, not "non-uniform iff any argument
+        // is". This is what keeps an arg-ignoring helper uniform even under a
+        // non-uniform argument (§2.1 lean-false-negative), where U2's coarse
+        // fold was a false-positive surface.
+        if (Builtins.lookup(callee) == null) {
+            if (ua.calleeSummary(e)) |summary| return ua.applyRet(summary.ret, e);
+        }
+        // Builtin (or unresolved) call: uniform iff all its arguments are
+        // uniform. Builtins with a genuinely non-uniform result — subgroup
+        // ballots and scans — are deferred to Block U5's per-row column.
         for (e.args.items) |arg| {
             const t = try ua.valueUniformity(arg);
             if (t.isNonUniform()) return t;
         }
         return .uniform;
+    }
+
+    /// Fold a callee's `ret` summary against the actual arguments at a call site.
+    fn applyRet(ua: *UniformityAnalyzer, ret: RetUniformity, e: *Ast.CallExpr) Allocator.Error!Taint {
+        switch (ret) {
+            .uniform => return .uniform,
+            .non_uniform => |src| return .{ .non_uniform = src },
+            .depends_on_args => |bits| {
+                for (e.args.items, 0..) |arg, i| {
+                    if (i >= 64) break;
+                    if ((bits >> @intCast(i)) & 1 == 0) continue;
+                    const t = try ua.valueUniformity(arg);
+                    if (t.isNonUniform()) return t;
+                }
+                return .uniform;
+            },
+        }
+    }
+
+    /// The return-value uniformity of an expression *relative to the current
+    /// function's parameters* — the per-`return` contribution to `ret`. Like
+    /// `valueUniformity`, but a parameter read yields `depends_on_args` (deferred
+    /// to the call site) instead of resolving through the (unseeded) `values`
+    /// map. A non-parameter local is not traced back to its parameter
+    /// provenance: it resolves through `identUniformity` and defaults uniform (a
+    /// documented false-negative, §2.1).
+    fn evalReturnValue(ua: *UniformityAnalyzer, expr: Ast.Expr) Allocator.Error!RetUniformity {
+        switch (expr) {
+            .literal => return .uniform,
+            .ident => |e| {
+                if (ua.paramBit(e.ref)) |bit| return .{ .depends_on_args = bit };
+                const t = try ua.identUniformity(e);
+                return if (t == .non_uniform) .{ .non_uniform = t.non_uniform } else .uniform;
+            },
+            .call => |e| {
+                const callee = calleeName(e);
+                if (std.mem.eql(u8, callee, "workgroupUniformLoad")) return .uniform;
+                if (Builtins.lookup(callee) == null) {
+                    // Compose with the callee's summary: our return depends on
+                    // whatever we pass into its arg-dependent slots.
+                    if (ua.calleeSummary(e)) |summary| switch (summary.ret) {
+                        .uniform => return .uniform,
+                        .non_uniform => |src| return .{ .non_uniform = src },
+                        .depends_on_args => |bits| {
+                            var acc: RetUniformity = .uniform;
+                            for (e.args.items, 0..) |arg, i| {
+                                if (i >= 64) break;
+                                if ((bits >> @intCast(i)) & 1 == 0) continue;
+                                acc = combine(acc, try ua.evalReturnValue(arg));
+                            }
+                            return acc;
+                        },
+                    };
+                    return .uniform;
+                }
+                // Builtin result: uniform iff all arguments are — fold their
+                // parameter provenance through.
+                var acc: RetUniformity = .uniform;
+                for (e.args.items) |arg| acc = combine(acc, try ua.evalReturnValue(arg));
+                return acc;
+            },
+            .binary => |e| return combine(try ua.evalReturnValue(e.left), try ua.evalReturnValue(e.right)),
+            .unary => |e| return ua.evalReturnValue(e.operand),
+            .index => |e| return combine(try ua.evalReturnValue(e.base), try ua.evalReturnValue(e.idx)),
+            .member => |e| return ua.evalReturnValue(e.base),
+            .paren => |e| return ua.evalReturnValue(e.expr),
+        }
+    }
+
+    /// The single-bit `ArgBitset` for a symbol that is a parameter of the current
+    /// function, or null if it is not a parameter (or its position exceeds the
+    /// 64-bit tracking width, beyond which `ret` falls back to uniform, §2.1).
+    fn paramBit(ua: *UniformityAnalyzer, ref: Ast.SymbolIndex) ?ArgBitset {
+        if (ref == .none) return null;
+        for (ua.current_params, 0..) |param, i| {
+            if (param.name == ref) return if (i < 64) (@as(ArgBitset, 1) << @intCast(i)) else null;
+        }
+        return null;
     }
 
     // ---------------------------------------------------------------------
@@ -464,10 +712,18 @@ const UniformityAnalyzer = struct {
         switch (expr) {
             .call => |e| {
                 for (e.args.items) |arg| try ua.checkCalls(arg, cf);
-                if (Builtins.lookup(calleeName(e))) |builtin| {
-                    if (builtin.requiresUniform() and cf.isNonUniform()) {
-                        try ua.report(e, builtin.kind, cf);
+                const name = calleeName(e);
+                if (Builtins.lookup(name)) |builtin| {
+                    if (builtin.requiresUniform()) {
+                        const loc = calleeLoc(e);
+                        try ua.reachRequirement(.{ .kind = builtin.kind, .name = name, .loc = loc }, loc, cf);
                     }
+                } else if (ua.calleeSummary(e)) |summary| {
+                    // A user call inherits its callee's uniform-flow requirement
+                    // (Block U3): reported at *this* call site, chained back to
+                    // the callee-side builtin.
+                    if (summary.call_site_requirement) |req|
+                        try ua.reachRequirement(req, calleeLoc(e), cf);
                 }
             },
             .binary => |e| {
@@ -485,14 +741,25 @@ const UniformityAnalyzer = struct {
         }
     }
 
-    fn report(ua: *UniformityAnalyzer, e: *Ast.CallExpr, kind: Builtins.Kind, cf: Taint) Allocator.Error!void {
-        if (!ua.reporting) return;
+    /// A uniform-flow requirement (a barrier / derivative / texture / subgroup
+    /// builtin, or a callee that transitively reaches one) is reached at
+    /// `site_loc`. Under non-uniform control flow this is a violation reported
+    /// here; under uniform control flow it becomes *this* function's own
+    /// `call_site_requirement`, so a caller invoking it from non-uniform flow
+    /// inherits it (bottom-up). `root` carries the originating builtin.
+    fn reachRequirement(ua: *UniformityAnalyzer, root: Requirement, site_loc: u32, cf: Taint) Allocator.Error!void {
+        if (cf.isNonUniform()) {
+            // Chain the related-info back to the root builtin — unless the root
+            // *is* this site (a direct builtin call needs no extra hop).
+            const chain: ?Requirement = if (root.loc == site_loc) null else root;
+            try ua.report(site_loc, root.kind, cf, chain);
+        } else if (ua.cur_requirement == null) {
+            ua.cur_requirement = root;
+        }
+    }
 
-        var loc: u32 = 0;
-        if (e.func) |func| switch (func) {
-            .ident => |ident| loc = ident.loc,
-            else => {},
-        };
+    fn report(ua: *UniformityAnalyzer, loc: u32, kind: Builtins.Kind, cf: Taint, chain: ?Requirement) Allocator.Error!void {
+        if (!ua.reporting) return;
 
         // Determine the diagnostic rule and code.
         var rule: []const u8 = "";
@@ -535,16 +802,20 @@ const UniformityAnalyzer = struct {
             else => "function requires uniform control flow",
         };
 
-        // Attach the taint chain: point back at the source that made control
-        // flow non-uniform. Additive `related` on CLI JSON + LSP (the
-        // `Diagnostic` wire shape already serializes `related`).
-        var related: []const Diagnostic.RelatedInfo = &.{};
+        // Attach the taint chain: (a) the source that made control flow
+        // non-uniform, and (b) — for a cross-function violation — the
+        // callee-side builtin the call chain reaches. Additive `related` on CLI
+        // JSON + LSP (the `Diagnostic` wire shape already serializes `related`).
+        var infos: std.ArrayList(Diagnostic.RelatedInfo) = .empty;
         if (cf == .non_uniform) {
             const src = cf.non_uniform;
-            const infos = try ua.arena.alloc(Diagnostic.RelatedInfo, 1);
-            infos[0] = .{ .range = ua.diags.makeRange(src.loc, src.loc + 1), .message = src.desc };
-            related = infos;
+            try infos.append(ua.arena, .{ .range = ua.diags.makeRange(src.loc, src.loc + 1), .message = src.desc });
         }
+        if (chain) |root| {
+            const msg = try std.fmt.allocPrint(ua.arena, "non-uniform control flow reaches '{s}' here", .{root.name});
+            try infos.append(ua.arena, .{ .range = ua.diags.makeRange(root.loc, root.loc + 1), .message = msg });
+        }
+        const related: []const Diagnostic.RelatedInfo = infos.items;
 
         ua.diags.add(ua.arena, .{
             .severity = severity,
@@ -565,6 +836,36 @@ const UniformityAnalyzer = struct {
             else => {},
         };
         return "";
+    }
+
+    /// The byte offset of the callee at a call site — the reporting anchor for a
+    /// requirement (the builtin's own loc for a direct call, the call
+    /// expression's loc for a user function).
+    fn calleeLoc(e: *Ast.CallExpr) u32 {
+        if (e.func) |func| switch (func) {
+            .ident => |ident| return ident.loc,
+            else => {},
+        };
+        return e.loc;
+    }
+
+    /// The symbol the callee ident resolves to (`.none` for an unresolved or
+    /// non-ident callee), used to look up a user function's summary.
+    fn calleeRef(e: *Ast.CallExpr) Ast.SymbolIndex {
+        if (e.func) |func| switch (func) {
+            .ident => |ident| return ident.ref,
+            else => {},
+        };
+        return .none;
+    }
+
+    /// The already-computed summary of the user function a call resolves to, or
+    /// null if the callee is unresolved / has no summary (pass 1 computes one for
+    /// every named function, so a null here means an unresolved call).
+    fn calleeSummary(ua: *UniformityAnalyzer, e: *Ast.CallExpr) ?FnSummary {
+        const ref = calleeRef(e);
+        if (ref == .none) return null;
+        return ua.summaries.get(ref.index());
     }
 
     fn symbolLoc(ua: *UniformityAnalyzer, sym: Ast.SymbolIndex) u32 {

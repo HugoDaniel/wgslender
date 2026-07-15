@@ -781,7 +781,7 @@ test "validation: declarations/atomic_valid" {
     try runValidationTest(arena.allocator(), validation_data.@"declarations/atomic_valid");
 }
 
-// --- uniformity/ (12 files) ---
+// --- uniformity/ (16 files) ---
 
 test "validation: uniformity/barrier_uniform" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -853,6 +853,30 @@ test "validation: uniformity/uniform_load_condition" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try runValidationTest(arena.allocator(), validation_data.@"uniformity/uniform_load_condition");
+}
+
+test "validation: uniformity/helper_barrier_non_uniform_call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"uniformity/helper_barrier_non_uniform_call");
+}
+
+test "validation: uniformity/helper_returns_non_uniform" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"uniformity/helper_returns_non_uniform");
+}
+
+test "validation: uniformity/helper_barrier_uniform_call" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"uniformity/helper_barrier_uniform_call");
+}
+
+test "validation: uniformity/helper_returns_uniform" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"uniformity/helper_returns_uniform");
 }
 
 // --- builtins/ (4 files) ---

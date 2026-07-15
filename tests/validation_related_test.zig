@@ -69,6 +69,29 @@ fn expectRelatedMessage(
     return error.TestUnexpectedResult;
 }
 
+/// Verify that an error containing `pattern` has *some* related entry whose
+/// message contains `related_pattern` (unlike `expectRelatedMessage`, which only
+/// inspects the first — needed when a diagnostic carries a multi-hop chain).
+fn expectSomeRelatedMessage(
+    result: wgslender.Validator.Result,
+    pattern: []const u8,
+    related_pattern: []const u8,
+) !void {
+    try std.testing.expect(!result.valid);
+    const diags = result.diagnostics.diagnostics.items;
+    for (diags) |d| {
+        if (d.severity == .@"error" and std.mem.indexOf(u8, d.message, pattern) != null) {
+            for (d.related) |rel| {
+                if (std.mem.indexOf(u8, rel.message, related_pattern) != null) return;
+            }
+            std.debug.print("\nNo related entry of \"{s}\" contains \"{s}\"\n", .{ d.message, related_pattern });
+            return error.TestUnexpectedResult;
+        }
+    }
+    std.debug.print("\nNo error containing \"{s}\"\n", .{pattern});
+    return error.TestUnexpectedResult;
+}
+
 // =========================================================================
 // Duplicate Detection
 // =========================================================================
@@ -264,6 +287,28 @@ test "validation related: barrier gated on a storage load points at the buffer r
 
     // The taint chain names the read_write storage buffer, not a builtin.
     try expectRelatedMessage(result, "barrier function", "storage buffer 'data'");
+}
+
+test "validation related: cross-function barrier chains through the callee's builtin" {
+    const source =
+        \\fn sync() {
+        \\  workgroupBarrier();
+        \\}
+        \\@compute @workgroup_size(64)
+        \\fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+        \\  if (gid.x > 0u) {
+        \\    sync();
+        \\  }
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit();
+
+    // The E0701 is reported at the `sync()` call, and its related chain names
+    // both the non-uniform source (the builtin) and the callee-side barrier the
+    // call reaches (Block U3 cross-function taint chain).
+    try expectSomeRelatedMessage(result, "barrier function", "non-uniform builtin input 'global_invocation_id'");
+    try expectSomeRelatedMessage(result, "barrier function", "reaches 'workgroupBarrier'");
 }
 
 // =========================================================================

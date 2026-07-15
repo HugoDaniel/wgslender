@@ -34,9 +34,8 @@ pub const @"declarations/const_assert_true" = @embedFile("testdata/validation/de
 
 // --- uniformity/ ---
 // Green pins committed in Block U0; U1's three reds registered next; U2's four
-// reds + one valid twin registered below. The remaining red inventory (helper_*)
-// lives as unregistered `.wgsl` files carrying `@blocked-on: U3` headers — each
-// later block registers its own reds (reds-first per block; suite stays green
+// reds + one valid twin; U3's two reds + two valid twins registered below —
+// each block registers its own reds (reds-first per block; suite stays green
 // between blocks).
 pub const @"uniformity/barrier_uniform" = @embedFile("testdata/validation/uniformity/barrier_uniform.wgsl");
 pub const @"uniformity/derivatives_uniform" = @embedFile("testdata/validation/uniformity/derivatives_uniform.wgsl");
@@ -53,6 +52,13 @@ pub const @"uniformity/workgroup_load_condition" = @embedFile("testdata/validati
 pub const @"uniformity/divergent_return_barrier" = @embedFile("testdata/validation/uniformity/divergent_return_barrier.wgsl");
 // Block U2 valid twin — a uniform-buffer load in a condition stays valid.
 pub const @"uniformity/uniform_load_condition" = @embedFile("testdata/validation/uniformity/uniform_load_condition.wgsl");
+// Block U3 reds — cross-function summaries (callee-side + value-side taint).
+pub const @"uniformity/helper_barrier_non_uniform_call" = @embedFile("testdata/validation/uniformity/helper_barrier_non_uniform_call.wgsl");
+pub const @"uniformity/helper_returns_non_uniform" = @embedFile("testdata/validation/uniformity/helper_returns_non_uniform.wgsl");
+// Block U3 valid twins — a helper's barrier/return is only tainted under a
+// non-uniform call site / argument.
+pub const @"uniformity/helper_barrier_uniform_call" = @embedFile("testdata/validation/uniformity/helper_barrier_uniform_call.wgsl");
+pub const @"uniformity/helper_returns_uniform" = @embedFile("testdata/validation/uniformity/helper_returns_uniform.wgsl");
 
 // --- builtins/ ---
 pub const @"builtins/vector_math" = @embedFile("testdata/validation/builtins/vector_math.wgsl");
