@@ -398,6 +398,13 @@ const Scratch = struct {
     /// Per-var declaration metadata: populated during validateVarDecl. See
     /// `VarInfo` above for what's recorded and why.
     var_info: std.AutoHashMapUnmanaged(u32, VarInfo) = .{},
+    /// Uniformity `diagnostic(...)` controls collected from module-scope
+    /// directives in phase 0 (`processDirectives`). Consumed by phase-5
+    /// uniformity analysis, layered above any caller-provided
+    /// `options.diagnostic_filters` and below function-level `@diagnostic`
+    /// attributes (spec §2.3: the innermost scope wins). Empty `rules` map when
+    /// the module declares no `diagnostic(...)` directive.
+    module_diagnostics: Diagnostic.DiagnosticFilter = .{ .rules = .{} },
 };
 
 // =========================================================================

@@ -43,9 +43,40 @@ pub fn analyzeUniformity(v: *Validator) Allocator.Error!void {
         .diags = v.diags,
         .arena = v.arena,
         .var_info = &v.scratch.var_info,
-        .filters = if (v.options.diagnostic_filters) |f| f else null,
+        .base_filter = try mergeBaseFilter(v.arena, v.options.diagnostic_filters, &v.scratch.module_diagnostics),
     };
     try ua.analyze();
+}
+
+/// The base diagnostic filter for the whole module: a caller-provided filter
+/// (`options.diagnostic_filters`) with any module-scope `diagnostic(...)`
+/// directives layered on top — the source directive is the inner scope and wins
+/// per spec §2.3. Function-level `@diagnostic` attributes layer on top of this
+/// per function (`functionFilter`). Allocates a merged filter only when both
+/// sources carry rules; otherwise returns whichever one is populated (or null).
+fn mergeBaseFilter(
+    arena: Allocator,
+    caller: ?*Diagnostic.DiagnosticFilter,
+    module: *Diagnostic.DiagnosticFilter,
+) Allocator.Error!?*Diagnostic.DiagnosticFilter {
+    if (module.rules.count() == 0) return caller; // no source directives
+    if (caller == null) return module; // source directives only
+    const merged = try arena.create(Diagnostic.DiagnosticFilter);
+    merged.* = .{ .rules = .{} };
+    try copyRules(arena, merged, caller.?); // outer scope first …
+    try copyRules(arena, merged, module); // … inner scope overrides
+    return merged;
+}
+
+/// Overlay `src`'s rules onto `dst`, overwriting any shared keys (so calling it
+/// with successively-inner scopes leaves the innermost severity per rule).
+fn copyRules(
+    arena: Allocator,
+    dst: *Diagnostic.DiagnosticFilter,
+    src: *const Diagnostic.DiagnosticFilter,
+) Allocator.Error!void {
+    var it = src.rules.iterator();
+    while (it.next()) |e| try dst.rules.put(arena, e.key_ptr.*, e.value_ptr.*);
 }
 
 /// The origin of a non-uniform value or control-flow, carried so a diagnostic
@@ -164,7 +195,14 @@ const UniformityAnalyzer = struct {
     /// Populated in Phase 3 (`validateVarDecl`); read here to classify module
     /// `var` loads (storage-read_write / workgroup => non-uniform).
     var_info: *const std.AutoHashMapUnmanaged(u32, Validator.VarInfo),
-    filters: ?*Diagnostic.DiagnosticFilter,
+    /// Module-wide filter (caller-provided ⊕ module-scope `diagnostic(...)`).
+    /// `cur_fn_filter` overlays the current function's `@diagnostic` attributes
+    /// on top of this per function; `report` consults `cur_fn_filter`.
+    base_filter: ?*Diagnostic.DiagnosticFilter,
+    /// Effective filter for the function currently being walked in pass 2:
+    /// `base_filter` plus that function's `@diagnostic` attributes. Set by
+    /// `walkFunction`; read by `report`.
+    cur_fn_filter: ?*Diagnostic.DiagnosticFilter = null,
 
     /// Per-function value uniformity, keyed by `SymbolIndex.index()`. Seeded at
     /// entry with non-uniform builtin params; updated by local decls and
@@ -233,6 +271,7 @@ const UniformityAnalyzer = struct {
         ua.cur_requirement = null;
         ua.cur_ret = .uniform;
         ua.current_params = fn_decl.parameters.items;
+        ua.cur_fn_filter = try ua.functionFilter(fn_decl);
 
         try ua.seedParameters(fn_decl.parameters.items);
 
@@ -253,6 +292,47 @@ const UniformityAnalyzer = struct {
             .call_site_requirement = ua.cur_requirement,
             .ret = ua.cur_ret,
         });
+    }
+
+    /// The effective diagnostic filter for `fn_decl`: `base_filter` with the
+    /// function's own `@diagnostic(severity, rule)` attributes overlaid (the
+    /// innermost scope, spec §2.3). Returns `base_filter` untouched — no
+    /// allocation — when the function carries no `@diagnostic` attribute.
+    /// A violation *reported at a call site* inside this function is scoped by
+    /// this function's attributes; statement-level scoping is out of scope (a
+    /// documented false-negative — the whole-function severity still applies).
+    fn functionFilter(ua: *UniformityAnalyzer, fn_decl: *Ast.FunctionDecl) Allocator.Error!?*Diagnostic.DiagnosticFilter {
+        var has_attr = false;
+        for (fn_decl.attributes.items) |attr| {
+            if (std.mem.eql(u8, attr.name, "diagnostic")) {
+                has_attr = true;
+                break;
+            }
+        }
+        if (!has_attr) return ua.base_filter;
+
+        const f = try ua.arena.create(Diagnostic.DiagnosticFilter);
+        f.* = .{ .rules = .{} };
+        if (ua.base_filter) |b| try copyRules(ua.arena, f, b);
+        for (fn_decl.attributes.items) |attr| {
+            if (!std.mem.eql(u8, attr.name, "diagnostic")) continue;
+            if (attr.args.items.len < 2) continue;
+            const sev_name = identName(attr.args.items[0]) orelse continue;
+            const rule_name = identName(attr.args.items[1]) orelse continue;
+            if (Diagnostic.severityFromKeyword(sev_name)) |sev| {
+                try f.rules.put(ua.arena, rule_name, sev);
+            }
+        }
+        return f;
+    }
+
+    /// The identifier text of an expression, or null if it isn't a bare ident
+    /// (a `@diagnostic` severity / rule argument is always an ident).
+    fn identName(e: Ast.Expr) ?[]const u8 {
+        return switch (e) {
+            .ident => |i| i.name,
+            else => null,
+        };
     }
 
     /// Functions in bottom-up (callees-first) order. Post-order DFS over the
@@ -784,14 +864,17 @@ const UniformityAnalyzer = struct {
             else => return,
         }
 
-        // Check if this rule is filtered.
-        if (rule.len > 0 and ua.filters != null) {
-            if (ua.filters.?.isDisabled(rule)) return;
+        // Check if this rule is filtered. `.synchronization` (barriers) has an
+        // empty `rule` and is never filterable — a hard error per spec. The
+        // filter is the current function's effective one (base ⊕ its
+        // `@diagnostic` attributes).
+        if (rule.len > 0 and ua.cur_fn_filter != null) {
+            if (ua.cur_fn_filter.?.isDisabled(rule)) return;
         }
 
         var severity = Diagnostic.Severity.@"error";
-        if (rule.len > 0 and ua.filters != null) {
-            severity = ua.filters.?.getSeverity(rule, .@"error");
+        if (rule.len > 0 and ua.cur_fn_filter != null) {
+            severity = ua.cur_fn_filter.?.getSeverity(rule, .@"error");
         }
 
         const message = switch (kind) {

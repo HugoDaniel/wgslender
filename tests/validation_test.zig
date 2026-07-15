@@ -781,7 +781,7 @@ test "validation: declarations/atomic_valid" {
     try runValidationTest(arena.allocator(), validation_data.@"declarations/atomic_valid");
 }
 
-// --- uniformity/ (16 files) ---
+// --- uniformity/ (18 files) ---
 
 test "validation: uniformity/barrier_uniform" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -877,6 +877,94 @@ test "validation: uniformity/helper_returns_uniform" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try runValidationTest(arena.allocator(), validation_data.@"uniformity/helper_returns_uniform");
+}
+
+test "validation: uniformity/directive_off_derivative" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"uniformity/directive_off_derivative");
+}
+
+test "validation: uniformity/fn_attr_off_derivative" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"uniformity/fn_attr_off_derivative");
+}
+
+// --- uniformity diagnostic-filter behavior (inline; the file-fixture harness
+//     only checks validity, so severity/scoping assertions live here) ---
+
+test "validation: diagnostic(warning) demotes E0700 to a warning, not an error" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\diagnostic(warning, derivative_uniformity);
+        \\@fragment
+        \\fn main(@location(0) uv: vec2<f32>, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
+        \\  var r = 0.0;
+        \\  if (ff) { r = dpdx(uv.x); }
+        \\  return vec4<f32>(r);
+        \\}
+    ;
+    const result = try runValidation(arena.allocator(), src);
+    // Demoted to warning => no error-severity diagnostic => shader is valid …
+    try std.testing.expect(result.valid);
+    // … but the E0700 is still reported, now at warning severity.
+    var found = false;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, "E0700")) {
+            try std.testing.expectEqual(wgslender.Diagnostic.Severity.warning, d.severity);
+            found = true;
+        }
+    }
+    try std.testing.expect(found);
+}
+
+test "validation: @diagnostic(off) scopes only its own function" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\@diagnostic(off, derivative_uniformity)
+        \\@fragment
+        \\fn quiet(@location(0) uv: vec2<f32>, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
+        \\  var r = 0.0;
+        \\  if (ff) { r = dpdx(uv.x); }
+        \\  return vec4<f32>(r);
+        \\}
+        \\@fragment
+        \\fn loud(@location(0) uv: vec2<f32>, @builtin(front_facing) ff: bool) -> @location(0) vec4<f32> {
+        \\  var r = 0.0;
+        \\  if (ff) { r = dpdx(uv.x); }
+        \\  return vec4<f32>(r);
+        \\}
+    ;
+    const result = try runValidation(arena.allocator(), src);
+    // `quiet`'s derivative is suppressed; `loud`'s stays an error.
+    try std.testing.expect(!result.valid);
+    var e0700_count: usize = 0;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, "E0700")) e0700_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), e0700_count);
+}
+
+test "validation: diagnostic(off) never suppresses a barrier (E0701 unfilterable)" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const src =
+        \\diagnostic(off, derivative_uniformity);
+        \\@compute @workgroup_size(64)
+        \\fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+        \\  if (gid.x > 0u) { workgroupBarrier(); }
+        \\}
+    ;
+    const result = try runValidation(arena.allocator(), src);
+    try std.testing.expect(!result.valid);
+    var found = false;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, "E0701")) found = true;
+    }
+    try std.testing.expect(found);
 }
 
 // --- builtins/ (4 files) ---

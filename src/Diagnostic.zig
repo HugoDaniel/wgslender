@@ -977,6 +977,20 @@ pub fn specRefFor(code: []const u8) []const u8 {
 pub const rule_derivative_uniformity: []const u8 = "derivative_uniformity";
 pub const rule_subgroup_uniformity: []const u8 = "subgroup_uniformity";
 
+/// Maps a WGSL `diagnostic(...)` severity keyword to the `Severity` a
+/// `DiagnosticFilter` stores for that rule: `off` → the `disabled` sentinel,
+/// the other three to their own severity. Returns null for an unrecognized
+/// keyword so callers leave the rule unset (the directive validator reports the
+/// bad keyword separately). Shared by the module-directive walk and the
+/// function-level `@diagnostic` attribute reader.
+pub fn severityFromKeyword(kw: []const u8) ?Severity {
+    if (std.mem.eql(u8, kw, "off")) return .disabled;
+    if (std.mem.eql(u8, kw, "error")) return .@"error";
+    if (std.mem.eql(u8, kw, "warning")) return .warning;
+    if (std.mem.eql(u8, kw, "info")) return .info;
+    return null;
+}
+
 // =========================================================================
 // DiagnosticFilter
 // =========================================================================

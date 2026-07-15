@@ -107,6 +107,16 @@ pub fn processDirectives(v: *Validator) Allocator.Error!void {
                         v.addWarningR(.{ .start = 0, .end = 1 }, v.fmtError("unknown diagnostic rule '{s}'", .{d.rule}));
                     }
                 }
+                // Record a well-formed module-scope control so phase-5 uniformity
+                // analysis can consult it. A later directive for the same rule
+                // overrides an earlier one (same scope, last wins). Unknown rules
+                // are still recorded — only the two uniformity rules are ever
+                // queried, so the extra entries are inert.
+                if (severity_valid and d.rule.len > 0) {
+                    if (Diagnostic.severityFromKeyword(d.severity)) |sev| {
+                        try v.scratch.module_diagnostics.setRule(v.arena, d.rule, sev);
+                    }
+                }
             },
             .requires => {},
         }

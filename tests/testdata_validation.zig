@@ -59,6 +59,10 @@ pub const @"uniformity/helper_returns_non_uniform" = @embedFile("testdata/valida
 // non-uniform call site / argument.
 pub const @"uniformity/helper_barrier_uniform_call" = @embedFile("testdata/validation/uniformity/helper_barrier_uniform_call.wgsl");
 pub const @"uniformity/helper_returns_uniform" = @embedFile("testdata/validation/uniformity/helper_returns_uniform.wgsl");
+// Block U4 reds — source `diagnostic(...)` controls now suppress E0700: a
+// module-scope directive and a function-scope `@diagnostic` attribute.
+pub const @"uniformity/directive_off_derivative" = @embedFile("testdata/validation/uniformity/directive_off_derivative.wgsl");
+pub const @"uniformity/fn_attr_off_derivative" = @embedFile("testdata/validation/uniformity/fn_attr_off_derivative.wgsl");
 
 // --- builtins/ ---
 pub const @"builtins/vector_math" = @embedFile("testdata/validation/builtins/vector_math.wgsl");

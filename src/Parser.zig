@@ -867,6 +867,13 @@ fn parseAttributes(self: *Parser) !std.ArrayList(Ast.Attribute) {
         if (try self.eatIdent()) |text| {
             attr.name = text;
             self.advance();
+        } else if (self.currentTag() == .keyword_diagnostic) {
+            // `diagnostic` lexes as a keyword (it introduces a module-scope
+            // directive) but is also a valid attribute name — `@diagnostic(off,
+            // rule)` scopes a diagnostic control to a function. Accept it here so
+            // it isn't left unconsumed and mistaken for "unexpected attributes".
+            attr.name = "diagnostic";
+            self.advance();
         }
         if (self.currentTag() == .l_paren) {
             const args_marker = self.cstOpen();
@@ -3475,6 +3482,12 @@ test "parser: invalid directive" {
 
 test "parser: unexpected attributes" {
     try expectParseError("@group(0) ;");
+}
+
+test "parser: @diagnostic function attribute" {
+    // `diagnostic` is a keyword, but `@diagnostic(...)` is a valid attribute
+    // (a function-scoped diagnostic control) and must not error.
+    try expectNoError("@diagnostic(off, derivative_uniformity) fn f() {}");
 }
 
 test "parser: struct missing member type" {

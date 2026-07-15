@@ -1799,6 +1799,13 @@ test "printer: diagnostic directive" {
     try expectPrinted("diagnostic(warning, my_category);", "diagnostic(warning, my_category);\n");
 }
 
+test "printer: @diagnostic function attribute round-trips" {
+    try expectPrinted(
+        "@diagnostic(off, derivative_uniformity) fn f() {}",
+        "@diagnostic(off, derivative_uniformity) fn f() {\n}\n",
+    );
+}
+
 test "printer: directives followed by declarations" {
     // The Zig printer emits an extra newline between directives and declarations.
     try expectPrinted("enable f16; const x = 1;", "enable f16;\n\nconst x = 1;\n");
