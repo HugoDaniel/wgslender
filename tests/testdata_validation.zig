@@ -33,12 +33,11 @@ pub const @"declarations/override_workgroup_size" = @embedFile("testdata/validat
 pub const @"declarations/const_assert_true" = @embedFile("testdata/validation/declarations/const_assert_true.wgsl");
 
 // --- uniformity/ ---
-// Green pins committed in Block U0; U1's three reds registered below (they turn
-// green with the symbol-grounded sources of Block U1). The remaining red
-// inventory (let_propagation, {storage,workgroup}_load, divergent_return,
-// helper_*) lives as unregistered `.wgsl` files carrying `@blocked-on: U2|U3`
-// headers — each later block registers its own reds (reds-first per block; suite
-// stays green between blocks).
+// Green pins committed in Block U0; U1's three reds registered next; U2's four
+// reds + one valid twin registered below. The remaining red inventory (helper_*)
+// lives as unregistered `.wgsl` files carrying `@blocked-on: U3` headers — each
+// later block registers its own reds (reds-first per block; suite stays green
+// between blocks).
 pub const @"uniformity/barrier_uniform" = @embedFile("testdata/validation/uniformity/barrier_uniform.wgsl");
 pub const @"uniformity/derivatives_uniform" = @embedFile("testdata/validation/uniformity/derivatives_uniform.wgsl");
 pub const @"uniformity/barrier_non_uniform_if" = @embedFile("testdata/validation/uniformity/barrier_non_uniform_if.wgsl");
@@ -47,6 +46,13 @@ pub const @"uniformity/barrier_after_balanced_if" = @embedFile("testdata/validat
 pub const @"uniformity/renamed_param_barrier" = @embedFile("testdata/validation/uniformity/renamed_param_barrier.wgsl");
 pub const @"uniformity/user_var_named_position" = @embedFile("testdata/validation/uniformity/user_var_named_position.wgsl");
 pub const @"uniformity/texture_dimensions_condition" = @embedFile("testdata/validation/uniformity/texture_dimensions_condition.wgsl");
+// Block U2 reds — intra-function dataflow (values, behaviors, reconvergence).
+pub const @"uniformity/let_propagation_barrier" = @embedFile("testdata/validation/uniformity/let_propagation_barrier.wgsl");
+pub const @"uniformity/storage_load_condition" = @embedFile("testdata/validation/uniformity/storage_load_condition.wgsl");
+pub const @"uniformity/workgroup_load_condition" = @embedFile("testdata/validation/uniformity/workgroup_load_condition.wgsl");
+pub const @"uniformity/divergent_return_barrier" = @embedFile("testdata/validation/uniformity/divergent_return_barrier.wgsl");
+// Block U2 valid twin — a uniform-buffer load in a condition stays valid.
+pub const @"uniformity/uniform_load_condition" = @embedFile("testdata/validation/uniformity/uniform_load_condition.wgsl");
 
 // --- builtins/ ---
 pub const @"builtins/vector_math" = @embedFile("testdata/validation/builtins/vector_math.wgsl");

@@ -228,6 +228,45 @@ test "validation related: function arg type mismatch has related info pointing t
 }
 
 // =========================================================================
+// Uniformity taint chains (E07xx)
+// =========================================================================
+
+test "validation related: barrier in non-uniform control flow points at the taint source" {
+    const source =
+        \\@compute @workgroup_size(64)
+        \\fn main(@builtin(global_invocation_id) gid : vec3<u32>) {
+        \\  if (gid.x > 0u) {
+        \\    workgroupBarrier();
+        \\  }
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit();
+
+    // The E0701 barrier violation carries a `related` entry pointing back at
+    // the non-uniform builtin input that made control flow non-uniform.
+    try expectRelatedMessage(result, "barrier function", "non-uniform");
+    try expectRelatedMessage(result, "barrier function", "global_invocation_id");
+}
+
+test "validation related: barrier gated on a storage load points at the buffer read" {
+    const source =
+        \\@group(0) @binding(0) var<storage, read_write> data : array<u32>;
+        \\@compute @workgroup_size(64)
+        \\fn main() {
+        \\  if (data[0] > 0u) {
+        \\    workgroupBarrier();
+        \\  }
+        \\}
+    ;
+    var result = try validateSource(source);
+    defer result.deinit();
+
+    // The taint chain names the read_write storage buffer, not a builtin.
+    try expectRelatedMessage(result, "barrier function", "storage buffer 'data'");
+}
+
+// =========================================================================
 // JSON Serialization
 // =========================================================================
 
