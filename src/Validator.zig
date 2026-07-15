@@ -349,6 +349,25 @@ const FnContext = struct {
     stmt_depth: u32 = 0,
 };
 
+/// The validator's *output contract*: everything in `Outputs` outlives the
+/// Validator by being copied into `AnalysisResult` (see `analyze`). Nothing
+/// else the validator computes does — the `Scratch` maps and the `FnContext`
+/// cursor are torn down with the stack frame. Adding a field here commits to
+/// exposing it to LSP/lint consumers of `AnalysisResult`; adding one to
+/// `Scratch` does not. Field order mirrors the `analyze` copy-out.
+const Outputs = struct {
+    /// Symbol type cache: maps SymbolIndex -> resolved Types.Type.
+    symbol_types: std.AutoHashMapUnmanaged(u32, Types.Type) = .{},
+    /// Struct type cache: maps name -> resolved struct type.
+    struct_types: std.StringHashMapUnmanaged(*Types.Struct) = .{},
+    /// Alias type cache: maps name -> resolved type (null = placeholder).
+    alias_types: std.StringHashMapUnmanaged(?Types.Type) = .{},
+    /// Const value propagation: maps SymbolIndex raw u32 -> evaluated integer value.
+    const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
+    /// Expression type cache: maps expression start offset -> type info.
+    expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
+};
+
 // =========================================================================
 // Validator State
 // =========================================================================
@@ -361,17 +380,8 @@ options: Options,
 // Current function context (see `FnContext`).
 fn_ctx: FnContext = .{},
 
-// Symbol type cache: maps SymbolIndex -> resolved Types.Type
-symbol_types: std.AutoHashMapUnmanaged(u32, Types.Type) = .{},
-
-// Struct type cache: maps name -> resolved struct type
-struct_types: std.StringHashMapUnmanaged(*Types.Struct) = .{},
-
-// Alias type cache: maps name -> resolved type (null = placeholder)
-alias_types: std.StringHashMapUnmanaged(?Types.Type) = .{},
-
-// Expression type cache: maps expression start offset -> type info
-expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
+// Caches exported to AnalysisResult (see `Outputs`).
+out: Outputs = .{},
 
 // Override ID tracking for uniqueness validation
 override_ids: std.AutoHashMapUnmanaged(u32, LocName) = .{},
@@ -383,9 +393,6 @@ binding_infos: std.ArrayList(BindingInfo) = .empty,
 
 // True when module has >= 2 entry points (per-entry-point binding validation needed)
 multi_entry_point: bool = false,
-
-// Const value propagation: maps SymbolIndex raw u32 -> evaluated integer value
-const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
 
 // Enabled features from 'enable' directives
 enabled_features: std.StringHashMapUnmanaged(void) = .{},
@@ -522,11 +529,11 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
         .valid = !diags.hasErrors(),
         .diagnostics = diags,
         .module = module,
-        .symbol_types = v.symbol_types,
-        .struct_types = v.struct_types,
-        .alias_types = v.alias_types,
-        .const_values = v.const_values,
-        .expr_types = v.expr_types,
+        .symbol_types = v.out.symbol_types,
+        .struct_types = v.out.struct_types,
+        .alias_types = v.out.alias_types,
+        .const_values = v.out.const_values,
+        .expr_types = v.out.expr_types,
         .use_counts = module.use_counts,
     };
 }
@@ -891,12 +898,12 @@ pub fn lookupType(v: *Validator, name: []const u8) Allocator.Error!?Types.Type {
     }
 
     // Check struct types
-    if (v.struct_types.get(name)) |st| {
+    if (v.out.struct_types.get(name)) |st| {
         return .{ .@"struct" = st };
     }
 
     // Check type aliases
-    if (v.alias_types.get(name)) |maybe_type| {
+    if (v.out.alias_types.get(name)) |maybe_type| {
         return maybe_type;
     }
 
@@ -936,7 +943,7 @@ pub fn suggestType(v: *Validator, name: []const u8, arg_count: ?usize) ?[]const 
         }
     }
     // User-defined struct types
-    var sit = v.struct_types.iterator();
+    var sit = v.out.struct_types.iterator();
     while (sit.next()) |entry| {
         const d = levenshteinBounded(name, entry.key_ptr.*, best_dist);
         if (d < best_dist) {
@@ -945,7 +952,7 @@ pub fn suggestType(v: *Validator, name: []const u8, arg_count: ?usize) ?[]const 
         }
     }
     // Type aliases
-    var ait = v.alias_types.iterator();
+    var ait = v.out.alias_types.iterator();
     while (ait.next()) |entry| {
         const d = levenshteinBounded(name, entry.key_ptr.*, best_dist);
         if (d < best_dist) {
@@ -1173,7 +1180,7 @@ pub fn setSymbolType(v: *Validator, sym_idx: Ast.SymbolIndex, typ: ?Types.Type) 
                 }
             }
         }
-        try v.symbol_types.put(v.arena, sym_idx.index(), t);
+        try v.out.symbol_types.put(v.arena, sym_idx.index(), t);
     }
 }
 
@@ -1329,7 +1336,7 @@ const ConstResolver = struct {
 
     pub fn resolveIdent(self: ConstResolver, ref: Ast.SymbolIndex) ?ConstEval.Value {
         if (ref.isValid()) {
-            if (self.v.const_values.get(ref.index())) |i| return .{ .int = i };
+            if (self.v.out.const_values.get(ref.index())) |i| return .{ .int = i };
         }
         return null;
     }

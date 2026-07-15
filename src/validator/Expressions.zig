@@ -104,7 +104,7 @@ pub fn checkExprE(v: *Validator, expr: Ast.Expr, exp: Expectation) Allocator.Err
             .paren => null,
         };
         if (key) |k| {
-            try v.expr_types.put(v.arena, k, .{
+            try v.out.expr_types.put(v.arena, k, .{
                 .typ = typ,
                 .end_offset = exprSpan(expr).end,
             });
@@ -282,7 +282,7 @@ pub fn checkIdent(v: *Validator, e: *Ast.IdentExpr) Allocator.Error!InferResult 
 
     // Check symbol table
     if (e.ref.isValid()) {
-        if (v.symbol_types.get(e.ref.index())) |t| {
+        if (v.out.symbol_types.get(e.ref.index())) |t| {
             return InferResult.some(t, stage);
         }
     }
@@ -1268,7 +1268,7 @@ pub fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentE
             return InferResult.fail;
         }
 
-        if (v.symbol_types.get(idx)) |sym_type| {
+        if (v.out.symbol_types.get(idx)) |sym_type| {
             switch (sym_type) {
                 .function => |fn_type| {
                     const call_range = exprRange(.{ .call = e });
@@ -1452,15 +1452,15 @@ fn shadowedBuiltinValueCall(v: *Validator, e: *Ast.CallExpr) bool {
 // atomicCompareExchangeWeak with the same operand type return the
 // same *Struct pointer (lets downstream member-access / eq work).
 pub fn getOrSynthStruct(v: *Validator, name: []const u8, build: *const fn (*Validator, []const u8) Allocator.Error!*Types.Struct) Allocator.Error!*Types.Struct {
-    if (v.struct_types.get(name)) |st| return st;
+    if (v.out.struct_types.get(name)) |st| return st;
     const st = try build(v, name);
-    try v.struct_types.put(v.arena, st.name, st);
+    try v.out.struct_types.put(v.arena, st.name, st);
     return st;
 }
 
 pub fn synthesizeAtomicExchangeResult(v: *Validator, elem: *const Types.Scalar) Allocator.Error!Types.Type {
     const name = try std.fmt.allocPrint(v.arena, "__atomic_compare_exchange_result_{s}", .{elem.string()});
-    if (v.struct_types.get(name)) |st| return .{ .@"struct" = st };
+    if (v.out.struct_types.get(name)) |st| return .{ .@"struct" = st };
 
     const fields = try v.arena.alloc(Types.StructField, 2);
     fields[0] = .{ .name = "old_value", .typ = .{ .scalar = elem }, .offset = 0 };
@@ -1468,7 +1468,7 @@ pub fn synthesizeAtomicExchangeResult(v: *Validator, elem: *const Types.Scalar) 
     const st = try v.arena.create(Types.Struct);
     st.* = .{ .name = name, .fields = fields, .size_bytes = 0, .align_bytes = 0, .has_runtime_array = false };
     st.computeLayout();
-    try v.struct_types.put(v.arena, name, st);
+    try v.out.struct_types.put(v.arena, name, st);
     return .{ .@"struct" = st };
 }
 
@@ -1487,7 +1487,7 @@ pub fn frexpExpType(v: *Validator, operand: Types.Type) Allocator.Error!Types.Ty
 pub fn synthesizeFrexpResult(v: *Validator, operand: Types.Type) Allocator.Error!?Types.Type {
     if (!Types.isFloat(operand)) return null;
     const name = try std.fmt.allocPrint(v.arena, "__frexp_result_{s}", .{operand.string()});
-    if (v.struct_types.get(name)) |st| return .{ .@"struct" = st };
+    if (v.out.struct_types.get(name)) |st| return .{ .@"struct" = st };
 
     const fields = try v.arena.alloc(Types.StructField, 2);
     fields[0] = .{ .name = "fract", .typ = operand, .offset = 0 };
@@ -1495,14 +1495,14 @@ pub fn synthesizeFrexpResult(v: *Validator, operand: Types.Type) Allocator.Error
     const st = try v.arena.create(Types.Struct);
     st.* = .{ .name = name, .fields = fields, .size_bytes = 0, .align_bytes = 0, .has_runtime_array = false };
     st.computeLayout();
-    try v.struct_types.put(v.arena, name, st);
+    try v.out.struct_types.put(v.arena, name, st);
     return .{ .@"struct" = st };
 }
 
 pub fn synthesizeModfResult(v: *Validator, operand: Types.Type) Allocator.Error!?Types.Type {
     if (!Types.isFloat(operand)) return null;
     const name = try std.fmt.allocPrint(v.arena, "__modf_result_{s}", .{operand.string()});
-    if (v.struct_types.get(name)) |st| return .{ .@"struct" = st };
+    if (v.out.struct_types.get(name)) |st| return .{ .@"struct" = st };
 
     const fields = try v.arena.alloc(Types.StructField, 2);
     fields[0] = .{ .name = "fract", .typ = operand, .offset = 0 };
@@ -1510,7 +1510,7 @@ pub fn synthesizeModfResult(v: *Validator, operand: Types.Type) Allocator.Error!
     const st = try v.arena.create(Types.Struct);
     st.* = .{ .name = name, .fields = fields, .size_bytes = 0, .align_bytes = 0, .has_runtime_array = false };
     st.computeLayout();
-    try v.struct_types.put(v.arena, name, st);
+    try v.out.struct_types.put(v.arena, name, st);
     return .{ .@"struct" = st };
 }
 

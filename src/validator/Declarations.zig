@@ -163,13 +163,13 @@ pub fn collectTypeDeclarations(v: *Validator) Allocator.Error!void {
                     .align_bytes = 0,
                     .has_runtime_array = false,
                 };
-                try v.struct_types.put(v.arena, name, st);
+                try v.out.struct_types.put(v.arena, name, st);
             },
             .alias => |d| {
                 const name = v.symbolName(d.name);
                 if (name.len == 0) continue;
                 // Placeholder — resolved in phase 2
-                try v.alias_types.put(v.arena, name, null);
+                try v.out.alias_types.put(v.arena, name, null);
             },
             else => {},
         }
@@ -193,7 +193,7 @@ pub fn collectTypeDeclarations(v: *Validator) Allocator.Error!void {
 /// diagnostics, so genuinely-undefined or cyclic aliases still fail exactly
 /// once. Runs before `resolveStructLayouts` so struct fields see all aliases.
 pub fn resolveAliasTypes(v: *Validator) Allocator.Error!void {
-    const alias_count = v.alias_types.count();
+    const alias_count = v.out.alias_types.count();
     if (alias_count == 0) return;
     std.debug.assert(v.module.declarations.items.len > 0);
     std.debug.assert(v.module.source.len < std.math.maxInt(u32));
@@ -213,12 +213,12 @@ pub fn resolveAliasTypes(v: *Validator) Allocator.Error!void {
             };
             const name = v.symbolName(d.name);
             if (name.len == 0) continue;
-            if (v.alias_types.get(name)) |slot| {
+            if (v.out.alias_types.get(name)) |slot| {
                 if (slot != null) continue; // already resolved
             }
             const savepoint = v.diags.mark();
             if (try v.resolveType(d.typ)) |at| {
-                try v.alias_types.put(v.arena, name, at);
+                try v.out.alias_types.put(v.arena, name, at);
                 resolved_any = true;
             } else {
                 // Forward ref to a not-yet-resolved alias (or a genuine error):
@@ -238,7 +238,7 @@ pub fn resolveAliasTypes(v: *Validator) Allocator.Error!void {
         };
         const name = v.symbolName(d.name);
         if (name.len == 0) continue;
-        const slot = v.alias_types.get(name) orelse continue;
+        const slot = v.out.alias_types.get(name) orelse continue;
         if (slot != null) continue;
         _ = try v.resolveType(d.typ);
         v.addErrorR(v.symbolRange(d.name), v.fmtError("cannot resolve type alias '{s}'", .{name}));
@@ -262,7 +262,7 @@ pub fn resolveStructLayouts(v: *Validator) Allocator.Error!void {
 
 pub fn resolveOneStructLayout(v: *Validator, d: *Ast.StructDecl) Allocator.Error!void {
     const name = v.symbolName(d.name);
-    const st = v.struct_types.get(name) orelse return;
+    const st = v.out.struct_types.get(name) orelse return;
     const name_range = v.symbolRange(d.name);
 
     // Spec: struct must have at least 1 member.
@@ -387,7 +387,7 @@ pub fn validateStructMemberAttr(v: *Validator, attr: Ast.Attribute, member_type:
 // =========================================================================
 
 pub fn checkRecursiveStructs(v: *Validator) Allocator.Error!void {
-    var iter = v.struct_types.iterator();
+    var iter = v.out.struct_types.iterator();
     while (iter.next()) |entry| {
         if (try structContainsCycle(v, entry.key_ptr.*, entry.value_ptr.*)) {
             v.addErrorWithCodeR(findStructRange(v, entry.key_ptr.*), Diagnostic.Code.recursive_type, v.fmtError("struct '{s}' contains itself recursively", .{entry.key_ptr.*}));
@@ -403,7 +403,7 @@ pub fn structContainsCycle(v: *Validator, root_name: []const u8, start: *Types.S
     try worklist.append(v.arena, start);
 
     // Bounded iteration — struct count is finite and small.
-    const max_iterations = v.struct_types.count() + 1;
+    const max_iterations = v.out.struct_types.count() + 1;
     for (0..max_iterations) |_| {
         const current = worklist.pop() orelse return false;
         for (current.fields) |field| {
@@ -641,7 +641,7 @@ pub fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl, handling: AbstractHan
     if (d.name.isValid()) {
         if (d.initializer) |init| {
             if (v.tryExtractIntValue(init)) |val| {
-                try v.const_values.put(v.arena, d.name.index(), val);
+                try v.out.const_values.put(v.arena, d.name.index(), val);
             }
         }
     }
