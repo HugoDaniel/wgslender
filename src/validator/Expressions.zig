@@ -1,10 +1,13 @@
 //! Expression type-checking + inference.
 //!
 //! Owns the `checkExpr` family — literal/ident/binary/unary/call/index/member
-//! and the bitcast / type-constructor dispatch. Driven from `Statements.zig`
-//! and (for module-decl initializers) `Declarations.zig`. The walker reads
-//! and writes validator state via the `*Validator` receiver: `expr_types`
-//! (LSP hover cache), `enabled_features`, `expr_depth`, plus diagnostics.
+//! and the bitcast / type-constructor dispatch. Callers in `Statements.zig`
+//! and (for module-decl initializers) `Declarations.zig` reach these through
+//! `Validator`'s re-export aliases as `v.checkExpr(...)`; this module imports
+//! neither of them (the star import graph routes through `Validator`). The
+//! walker reads and writes validator state via the `*Validator` receiver:
+//! `expr_types` (LSP hover cache), `enabled_features`, `expr_depth`, plus
+//! diagnostics.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -404,9 +407,11 @@ fn binaryViaEngine(
 /// returning null (emitting nothing) when no overload matches. Exposed for the
 /// compound-assignment path — `v op= e` is defined as `v = v op e`, so its RHS
 /// resolves against the very same `Operators.binarySigs` the binary path uses,
-/// giving one source of truth for operand shapes. `Statements.checkCompoundAssign`
-/// owns the `op=` wording, range, and the follow-up assignability check, so it
-/// wants the result type or a plain null, not an emitted binary diagnostic. The
+/// giving one source of truth for operand shapes. `Statements.compoundAssignResultType`
+/// calls in here after mapping `op=` to its binary counterpart, and its caller
+/// `Statements.validateAssignStmt` owns the `op=` wording, range, and the follow-up
+/// assignability check — so this wants the result type or a plain null, not an
+/// emitted binary diagnostic. The
 /// value-dependent post-checks the div/mod/shift shells add (div/mod-by-zero,
 /// shift bit width) gate const-expression contexts a mutable assignment target
 /// never is, so they are intentionally not applied here.
