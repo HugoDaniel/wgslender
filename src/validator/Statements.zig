@@ -45,16 +45,23 @@ pub fn validateFunctions(v: *Validator) Allocator.Error!void {
 }
 
 pub fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
-    v.current_func = fn_decl;
-    v.in_loop = false;
-    v.in_switch = false;
-    v.break_exits_continuing = false;
-    v.has_return = false;
-    v.current_stage = determineShaderStage(fn_decl);
+    // Reset the per-function cursor at function entry. WGSL functions don't
+    // nest, so a flat reset is sound: in_loop/in_switch/in_continuing/
+    // break_exits_continuing → false, return_type → null, has_return → false
+    // (all via FnContext defaults). The depth counters are deliberately
+    // preserved, not zeroed — they are defer-balanced across the whole walk
+    // and asserted 0 at runPhases exit, so resetting them per function would
+    // mask an imbalance the asserts exist to catch.
+    v.fn_ctx = .{
+        .current_func = fn_decl,
+        .current_stage = determineShaderStage(fn_decl),
+        .expr_depth = v.fn_ctx.expr_depth,
+        .stmt_depth = v.fn_ctx.stmt_depth,
+    };
 
     // WGSL spec §11.2.3: @workgroup_size is valid only on compute entry points.
     for (fn_decl.attributes.items) |attr| {
-        if (std.mem.eql(u8, attr.name, "workgroup_size") and v.current_stage != .compute) {
+        if (std.mem.eql(u8, attr.name, "workgroup_size") and v.fn_ctx.current_stage != .compute) {
             v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@workgroup_size is only valid on compute entry points");
         }
     }
@@ -66,14 +73,14 @@ pub fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
 
     // Resolve return type
     if (fn_decl.return_type) |rt| {
-        v.return_type = try v.resolveType(rt);
-        if (v.return_type) |ret| {
+        v.fn_ctx.return_type = try v.resolveType(rt);
+        if (v.fn_ctx.return_type) |ret| {
             if (!ret.isConstructible()) {
                 v.addErrorWithCodeR(v.symbolRange(fn_decl.name), Diagnostic.Code.type_mismatch, v.fmtError("function '{s}' has non-constructible return type '{s}'", .{ v.symbolName(fn_decl.name), ret.string() }));
             }
         }
     } else {
-        v.return_type = null;
+        v.fn_ctx.return_type = null;
     }
 
     const param_types = try resolveFunctionParameters(v, fn_decl);
@@ -81,14 +88,14 @@ pub fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
 
     // Register function type in symbol_types so calls can resolve it
     if (fn_decl.name.isValid()) {
-        const fn_type = Types.functionType(v.arena, param_types, v.return_type) catch null;
+        const fn_type = Types.functionType(v.arena, param_types, v.fn_ctx.return_type) catch null;
         if (fn_type) |ft| {
             try v.setSymbolType(fn_decl.name, ft);
         }
     }
 
     // Validate entry point requirements
-    if (v.current_stage != .none) {
+    if (v.fn_ctx.current_stage != .none) {
         try v.validateEntryPoint(fn_decl);
     }
 
@@ -98,12 +105,12 @@ pub fn validateFunction(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Err
     }
 
     // Check for missing return
-    if (v.return_type != null and !v.has_return) {
+    if (v.fn_ctx.return_type != null and !v.fn_ctx.has_return) {
         v.addErrorWithCodeR(v.symbolRange(fn_decl.name), Diagnostic.Code.missing_return, v.fmtError("function '{s}' must return a value", .{v.symbolName(fn_decl.name)}));
     }
 
-    v.current_func = null;
-    v.return_type = null;
+    v.fn_ctx.current_func = null;
+    v.fn_ctx.return_type = null;
 }
 
 // Statement Validation ---------------------------------------------------
@@ -131,10 +138,10 @@ pub fn validateStmt(v: *Validator, stmt: Ast.Stmt) Allocator.Error!void {
 const max_stmt_depth: u32 = 127;
 
 pub fn validateCompoundStmt(v: *Validator, s: *Ast.CompoundStmt) Allocator.Error!void {
-    v.stmt_depth += 1;
-    defer v.stmt_depth -= 1;
+    v.fn_ctx.stmt_depth += 1;
+    defer v.fn_ctx.stmt_depth -= 1;
 
-    if (v.stmt_depth > max_stmt_depth) {
+    if (v.fn_ctx.stmt_depth > max_stmt_depth) {
         // Report once at the first stmt in the block (if any)
         const loc: LocRange = if (s.stmts.items.len > 0) getStmtRange(v, s.stmts.items[0]) else .{ .start = 0, .end = 1 };
         v.addErrorWithCodeR(loc, Diagnostic.Code.nesting_too_deep, v.fmtError("statement nesting depth exceeds maximum of {d}", .{max_stmt_depth}));
@@ -227,16 +234,16 @@ pub fn getStmtRange(v: *Validator, stmt: Ast.Stmt) LocRange {
 }
 
 pub fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!void {
-    v.has_return = true;
+    v.fn_ctx.has_return = true;
     const ret_range: LocRange = .{ .start = s.loc, .end = s.loc +| 6 }; // "return"
 
     // WGSL spec section 9.5.2: continuing block must not contain a return statement.
-    if (v.in_continuing) {
+    if (v.fn_ctx.in_continuing) {
         v.addErrorWithCodeR(ret_range, Diagnostic.Code.return_in_continuing, "'return' is not allowed inside a continuing block");
     }
 
     if (s.value == null) {
-        if (v.return_type) |rt| {
+        if (v.fn_ctx.return_type) |rt| {
             v.addErrorWithCodeR(ret_range, Diagnostic.Code.missing_return, v.fmtError("return must provide a value of type '{s}'", .{rt.string()}));
         }
         return;
@@ -249,9 +256,9 @@ pub fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!voi
         return;
     }
 
-    if (v.return_type) |rt| {
+    if (v.fn_ctx.return_type) |rt| {
         if (!Types.canConvertTo(expr_type, rt)) {
-            const related = if (v.current_func) |func| blk: {
+            const related = if (v.fn_ctx.current_func) |func| blk: {
                 if (func.return_type) |frt| {
                     const rt_r = astTypeRange(frt);
                     if (rt_r.start != 0) break :blk v.makeRelatedR(rt_r, v.fmtError("return type '{s}' declared here", .{rt.string()}));
@@ -261,7 +268,7 @@ pub fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!voi
             v.addErrorWithRelatedDataR(exprSpan(s.value.?), Diagnostic.Code.type_mismatch, v.fmtError("cannot return '{s}' from function expecting '{s}'", .{ expr_type.string(), rt.string() }), related, .{ .type_mismatch = .{ .actual = expr_type.string(), .expected = rt.string() } });
         }
     } else {
-        const fn_name = if (v.current_func) |f| v.symbolName(f.name) else "";
+        const fn_name = if (v.fn_ctx.current_func) |f| v.symbolName(f.name) else "";
         v.addErrorWithCodeR(exprSpan(s.value.?), Diagnostic.Code.invalid_return, v.fmtError("cannot return a value from void function '{s}'", .{fn_name}));
     }
 }
@@ -297,11 +304,11 @@ pub fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!voi
         }
     }
 
-    const prev_in_switch = v.in_switch;
-    v.in_switch = true;
+    const prev_in_switch = v.fn_ctx.in_switch;
+    v.fn_ctx.in_switch = true;
     // A `break` in a case body targets this switch (see break_exits_continuing).
-    const prev_bec = v.break_exits_continuing;
-    v.break_exits_continuing = false;
+    const prev_bec = v.fn_ctx.break_exits_continuing;
+    v.fn_ctx.break_exits_continuing = false;
 
     var default_count: u32 = 0;
     var seen_values: std.AutoHashMapUnmanaged(i64, u32) = .{};
@@ -342,31 +349,31 @@ pub fn validateSwitchStmt(v: *Validator, s: *Ast.SwitchStmt) Allocator.Error!voi
         v.addErrorWithCodeR(exprSpan(s.expr), Diagnostic.Code.missing_default_case, "switch statement must have a default clause");
     }
 
-    v.break_exits_continuing = prev_bec;
-    v.in_switch = prev_in_switch;
+    v.fn_ctx.break_exits_continuing = prev_bec;
+    v.fn_ctx.in_switch = prev_in_switch;
 }
 
 pub fn validateLoopStmt(v: *Validator, s: *Ast.LoopStmt) Allocator.Error!void {
-    const prev_in_loop = v.in_loop;
-    v.in_loop = true;
+    const prev_in_loop = v.fn_ctx.in_loop;
+    v.fn_ctx.in_loop = true;
 
     // A `break` in this loop's body targets this loop, not any enclosing
     // continuing block, so it is legal here.
-    const prev_body_bec = v.break_exits_continuing;
-    v.break_exits_continuing = false;
+    const prev_body_bec = v.fn_ctx.break_exits_continuing;
+    v.fn_ctx.break_exits_continuing = false;
     try validateCompoundStmt(v, s.body);
-    v.break_exits_continuing = prev_body_bec;
+    v.fn_ctx.break_exits_continuing = prev_body_bec;
 
     if (s.continuing) |cont| {
-        const prev_in_continuing = v.in_continuing;
-        v.in_continuing = true;
+        const prev_in_continuing = v.fn_ctx.in_continuing;
+        v.fn_ctx.in_continuing = true;
         // A plain `break` directly in the continuing block would exit THIS loop,
         // which WGSL forbids (a nested loop/switch below clears this again).
-        const prev_cont_bec = v.break_exits_continuing;
-        v.break_exits_continuing = true;
+        const prev_cont_bec = v.fn_ctx.break_exits_continuing;
+        v.fn_ctx.break_exits_continuing = true;
         try validateCompoundStmt(v, cont);
-        v.break_exits_continuing = prev_cont_bec;
-        v.in_continuing = prev_in_continuing;
+        v.fn_ctx.break_exits_continuing = prev_cont_bec;
+        v.fn_ctx.in_continuing = prev_in_continuing;
 
         // Spec: break if must be the last statement in a continuing block.
         for (cont.stmts.items, 0..) |stmt, i| {
@@ -383,7 +390,7 @@ pub fn validateLoopStmt(v: *Validator, s: *Ast.LoopStmt) Allocator.Error!void {
         v.addWarningR(.{ .start = loc, .end = loc +| 4 }, "loop has no exit path (break, return, or discard)");
     }
 
-    v.in_loop = prev_in_loop;
+    v.fn_ctx.in_loop = prev_in_loop;
 }
 
 pub fn validateWhileStmt(v: *Validator, s: *Ast.WhileStmt) Allocator.Error!void {
@@ -394,14 +401,14 @@ pub fn validateWhileStmt(v: *Validator, s: *Ast.WhileStmt) Allocator.Error!void 
         }
     }
 
-    const prev_in_loop = v.in_loop;
-    v.in_loop = true;
+    const prev_in_loop = v.fn_ctx.in_loop;
+    v.fn_ctx.in_loop = true;
     // A `break` in the body targets this loop (see break_exits_continuing).
-    const prev_bec = v.break_exits_continuing;
-    v.break_exits_continuing = false;
+    const prev_bec = v.fn_ctx.break_exits_continuing;
+    v.fn_ctx.break_exits_continuing = false;
     try validateCompoundStmt(v, s.body);
-    v.break_exits_continuing = prev_bec;
-    v.in_loop = prev_in_loop;
+    v.fn_ctx.break_exits_continuing = prev_bec;
+    v.fn_ctx.in_loop = prev_in_loop;
 }
 
 pub fn validateForStmt(v: *Validator, s: *Ast.ForStmt) Allocator.Error!void {
@@ -420,21 +427,21 @@ pub fn validateForStmt(v: *Validator, s: *Ast.ForStmt) Allocator.Error!void {
         try validateStmt(v, update);
     }
 
-    const prev_in_loop = v.in_loop;
-    v.in_loop = true;
+    const prev_in_loop = v.fn_ctx.in_loop;
+    v.fn_ctx.in_loop = true;
     // A `break` in the body targets this loop (see break_exits_continuing).
-    const prev_bec = v.break_exits_continuing;
-    v.break_exits_continuing = false;
+    const prev_bec = v.fn_ctx.break_exits_continuing;
+    v.fn_ctx.break_exits_continuing = false;
     try validateCompoundStmt(v, s.body);
-    v.break_exits_continuing = prev_bec;
-    v.in_loop = prev_in_loop;
+    v.fn_ctx.break_exits_continuing = prev_bec;
+    v.fn_ctx.in_loop = prev_in_loop;
 }
 
 pub fn validateBreakStmt(v: *Validator, s: *Ast.BreakStmt) void {
     const r: LocRange = .{ .start = s.loc, .end = s.loc +| 5 }; // "break"
-    if (!v.in_loop and !v.in_switch) {
+    if (!v.fn_ctx.in_loop and !v.fn_ctx.in_switch) {
         v.addErrorWithCodeR(r, Diagnostic.Code.break_outside_loop, "break statement must be inside a loop or switch");
-    } else if (v.break_exits_continuing) {
+    } else if (v.fn_ctx.break_exits_continuing) {
         v.addErrorWithCodeR(r, Diagnostic.Code.break_outside_loop, "'break' must not be used in a continuing block (use 'break if' instead)");
     }
 }
@@ -449,17 +456,17 @@ pub fn validateBreakIfStmt(v: *Validator, s: *Ast.BreakIfStmt) Allocator.Error!v
 }
 
 pub fn validateContinueStmt(v: *Validator, s: *Ast.ContinueStmt) void {
-    if (!v.in_loop) {
+    if (!v.fn_ctx.in_loop) {
         v.addErrorWithCodeR(.{ .start = s.loc, .end = s.loc +| 8 }, Diagnostic.Code.continue_outside_loop, "continue statement must be inside a loop"); // "continue"
     }
 }
 
 pub fn validateDiscardStmt(v: *Validator, s: *Ast.DiscardStmt) void {
-    if (v.current_stage != .fragment) {
-        v.addErrorWithCodeR(.{ .start = s.loc, .end = s.loc +| 7 }, Diagnostic.Code.discard_outside_fragment, v.fmtError("'discard' is only valid in fragment shaders, not {s}", .{v.current_stage.string()})); // "discard"
+    if (v.fn_ctx.current_stage != .fragment) {
+        v.addErrorWithCodeR(.{ .start = s.loc, .end = s.loc +| 7 }, Diagnostic.Code.discard_outside_fragment, v.fmtError("'discard' is only valid in fragment shaders, not {s}", .{v.fn_ctx.current_stage.string()})); // "discard"
     }
     // discard terminates the invocation, satisfying any return requirement.
-    v.has_return = true;
+    v.fn_ctx.has_return = true;
 }
 
 pub fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {

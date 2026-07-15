@@ -1093,9 +1093,9 @@ pub fn validateAddressSpace(v: *Validator, d: *Ast.VarDecl, var_type: Types.Type
     const r = v.symbolRange(d.name);
     const name = v.symbolName(d.name);
     // WGSL §8: `function` is only valid inside a function body. Module-scope
-    // `var<function> x: T;` is rejected here (v.current_func == null marks
+    // `var<function> x: T;` is rejected here (v.fn_ctx.current_func == null marks
     // module scope — set in validateFunction, cleared on return).
-    if (v.current_func == null and d.address_space == .function) {
+    if (v.fn_ctx.current_func == null and d.address_space == .function) {
         v.addErrorWithCodeR(r, Diagnostic.Code.invalid_address_space, v.fmtError("module-scope 'var {s}' cannot use 'function' address space (valid only inside a function body)", .{name}));
         return;
     }
@@ -1246,9 +1246,9 @@ pub fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) Allocato
     const param_range = v.symbolRange(param.name);
     for (param.attributes.items) |attr| {
         if (std.mem.eql(u8, attr.name, "location")) {
-            if (v.current_stage == .none) {
+            if (v.fn_ctx.current_stage == .none) {
                 v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@location is only valid on entry point parameters");
-            } else if (v.current_stage == .compute) {
+            } else if (v.fn_ctx.current_stage == .compute) {
                 v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "compute shaders cannot have user-defined inputs (@location)");
             } else if (param_type) |pt| {
                 validateLocationType(v, pt, param_range);
@@ -1258,7 +1258,7 @@ pub fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) Allocato
             // @builtin must only be applied to entry-point params, return, or struct
             // members (WGSL spec §11.1). Reject when outside an entry point, but
             // still run the name check below so code-actions can offer suggestions.
-            if (v.current_stage == .none) {
+            if (v.fn_ctx.current_stage == .none) {
                 v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@builtin is only valid on entry point function parameters");
             }
             if (attr.args.items.len > 0) {
@@ -1279,7 +1279,7 @@ pub fn validateParameterAttributes(v: *Validator, param: Ast.Parameter) Allocato
 /// site; parameters go through `validateParameterAttributes` and entry-point
 /// returns are fully validated by `validateEntryPointIO`.
 pub fn validateReturnAttributes(v: *Validator, fn_decl: *Ast.FunctionDecl) void {
-    if (v.current_stage != .none) return;
+    if (v.fn_ctx.current_stage != .none) return;
     for (fn_decl.return_attr.items) |attr| {
         if (std.mem.eql(u8, attr.name, "location")) {
             v.addErrorWithCodeR(attrRange(&attr), Diagnostic.Code.invalid_attribute, "@location is only valid on entry point function return types");
@@ -1320,7 +1320,7 @@ pub fn validateLocationArgExpr(v: *Validator, attr: *const Ast.Attribute) void {
 
 pub fn validateEntryPoint(v: *Validator, fn_decl: *Ast.FunctionDecl) Allocator.Error!void {
     const fn_range = v.symbolRange(fn_decl.name);
-    switch (v.current_stage) {
+    switch (v.fn_ctx.current_stage) {
         .vertex => {
             // Must return @builtin(position)
             if (!(try vertexHasPositionOutput(v, fn_decl))) {
@@ -1420,7 +1420,7 @@ pub fn validateEntryPointInputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Alloc
                         }
                     }
                     // Validate @interpolate on fragment inputs
-                    if (v.current_stage == .fragment) {
+                    if (v.fn_ctx.current_stage == .fragment) {
                         validateInterpolation(v, member.attributes, mt, v.symbolLoc(member.name));
                     }
                     validateInvariantAttr(v, member.attributes, v.symbolLoc(member.name));
@@ -1447,7 +1447,7 @@ pub fn validateEntryPointInputs(v: *Validator, fn_decl: *Ast.FunctionDecl) Alloc
                     // @location: reject on compute inputs (user-defined I/O forbidden),
                     // otherwise check the member type is numeric scalar/vector.
                     if (hasAttr(member.attributes, "location")) {
-                        if (v.current_stage == .compute) {
+                        if (v.fn_ctx.current_stage == .compute) {
                             v.addErrorWithCodeR(v.symbolRange(member.name), Diagnostic.Code.invalid_attribute, v.fmtError("compute shaders cannot have user-defined inputs (@location on struct member '{s}')", .{v.symbolName(member.name)}));
                         } else if (mt) |member_type| {
                             validateLocationType(v, member_type, v.symbolRange(member.name));
@@ -1526,7 +1526,7 @@ pub fn validateEntryPointStructOutputMember(v: *Validator, member: anytype, fn_r
         try checkBlendSrcAttr(v, member, bs, out_mt, blend_src_members);
     }
     // Validate @interpolate on vertex outputs
-    if (v.current_stage == .vertex) {
+    if (v.fn_ctx.current_stage == .vertex) {
         validateInterpolation(v, member.attributes, out_mt, v.symbolLoc(member.name));
     }
     validateInvariantAttr(v, member.attributes, v.symbolLoc(member.name));
@@ -1561,7 +1561,7 @@ pub fn validateEntryPointStructOutputMember(v: *Validator, member: anytype, fn_r
 
 pub fn checkBlendSrcAttr(v: *Validator, member: anytype, bs: anytype, out_mt: ?Types.Type, blend_src_members: *std.ArrayList(BlendSrcEntry)) Allocator.Error!void {
     const bs_range: LocRange = .{ .start = bs.loc, .end = bs.loc +| 9 };
-    if (v.current_stage != .fragment) {
+    if (v.fn_ctx.current_stage != .fragment) {
         v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, "@blend_src is only valid on fragment outputs");
     } else if (!hasAttr(member.attributes, "location")) {
         v.addErrorWithCodeR(bs_range, Diagnostic.Code.invalid_attribute, "@blend_src requires a @location attribute on the same member");
@@ -1595,7 +1595,7 @@ pub fn validateEntryPointDirectOutput(v: *Validator, fn_decl: *Ast.FunctionDecl,
         v.addErrorWithCodeR(.{ .start = bs_loc, .end = bs_loc +| 9 }, Diagnostic.Code.invalid_attribute, "@blend_src must only be applied to a struct member");
     }
     validateInvariantAttr(v, fn_decl.return_attr, fn_range.start);
-    if (v.current_stage == .vertex) {
+    if (v.fn_ctx.current_stage == .vertex) {
         validateInterpolation(v, fn_decl.return_attr, ret_type, fn_range.start);
     }
 }
@@ -1960,7 +1960,7 @@ pub fn validateBuiltinForStage(v: *Validator, builtin_name: []const u8, is_input
         return;
     }
 
-    const valid = switch (v.current_stage) {
+    const valid = switch (v.fn_ctx.current_stage) {
         .vertex => if (is_input)
             isVertexInput(builtin_name)
         else
@@ -1977,11 +1977,11 @@ pub fn validateBuiltinForStage(v: *Validator, builtin_name: []const u8, is_input
     };
 
     if (!valid) {
-        const stage_builtins = getStageBuiltins(v.current_stage, is_input);
+        const stage_builtins = getStageBuiltins(v.fn_ctx.current_stage, is_input);
         if (suggestName(builtin_name, stage_builtins, 3)) |s| {
-            v.addErrorWithCodeDataR(r, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders; did you mean '{s}'?", .{ builtin_name, v.current_stage.string(), s }), .{ .did_you_mean = s });
+            v.addErrorWithCodeDataR(r, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders; did you mean '{s}'?", .{ builtin_name, v.fn_ctx.current_stage.string(), s }), .{ .did_you_mean = s });
         } else {
-            v.addErrorWithCodeR(r, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders", .{ builtin_name, v.current_stage.string() }));
+            v.addErrorWithCodeR(r, Diagnostic.Code.invalid_builtin, v.fmtError("@builtin({s}) is not valid for {s} shaders", .{ builtin_name, v.fn_ctx.current_stage.string() }));
         }
     }
 }

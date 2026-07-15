@@ -315,6 +315,40 @@ pub const AnalysisResult = struct {
     }
 };
 
+/// Per-function cursor state — the mutable position of the walk inside the
+/// function currently being validated. `Statements.validateFunction` resets
+/// this at each function entry (WGSL functions don't nest); the loop/switch
+/// validators save and restore *individual* fields around nested constructs.
+///
+/// The grouping is namespacing only: never snapshot and restore the whole
+/// struct. `has_return` must persist across nested blocks (set deep in a
+/// branch, read at function end), so a whole-struct restore would silently
+/// revert it and break missing-return diagnostics.
+///
+/// `expr_depth`/`stmt_depth` are the exception to "per-function": they are
+/// balanced by `defer` across the *entire* walk and asserted 0 at `runPhases`
+/// exit. They are not per-function state and must never be zeroed by the
+/// per-function reset (doing so would mask an imbalance the asserts exist to
+/// catch).
+const FnContext = struct {
+    current_func: ?*Ast.FunctionDecl = null,
+    current_stage: ShaderStage = .none,
+    in_loop: bool = false,
+    in_switch: bool = false,
+    in_continuing: bool = false,
+    /// True when a plain `break` at the current position would exit the loop whose
+    /// `continuing` block encloses it — i.e. we are lexically inside a continuing
+    /// block with no intervening nested loop/switch/for/while (which would re-target
+    /// the break to itself). Distinct from `in_continuing`, which the
+    /// nesting-insensitive `return`-in-continuing rule uses: a nested break-target
+    /// body clears this flag while `in_continuing` stays set.
+    break_exits_continuing: bool = false,
+    return_type: ?Types.Type = null,
+    has_return: bool = false,
+    expr_depth: u32 = 0,
+    stmt_depth: u32 = 0,
+};
+
 // =========================================================================
 // Validator State
 // =========================================================================
@@ -324,23 +358,8 @@ module: *Ast.Module,
 diags: *Diagnostic,
 options: Options,
 
-// Current function context
-current_func: ?*Ast.FunctionDecl = null,
-current_stage: ShaderStage = .none,
-in_loop: bool = false,
-in_switch: bool = false,
-in_continuing: bool = false,
-/// True when a plain `break` at the current position would exit the loop whose
-/// `continuing` block encloses it — i.e. we are lexically inside a continuing
-/// block with no intervening nested loop/switch/for/while (which would re-target
-/// the break to itself). Distinct from `in_continuing`, which the
-/// nesting-insensitive `return`-in-continuing rule uses: a nested break-target
-/// body clears this flag while `in_continuing` stays set.
-break_exits_continuing: bool = false,
-return_type: ?Types.Type = null,
-has_return: bool = false,
-expr_depth: u32 = 0,
-stmt_depth: u32 = 0,
+// Current function context (see `FnContext`).
+fn_ctx: FnContext = .{},
 
 // Symbol type cache: maps SymbolIndex -> resolved Types.Type
 symbol_types: std.AutoHashMapUnmanaged(u32, Types.Type) = .{},
@@ -464,8 +483,8 @@ fn runPhases(v: *Validator) !void {
     // Post: every depth-tracked walk inside the validator must return to
     // baseline. Stale state would silently lower the effective limit on
     // the next call against a reused Validator instance.
-    std.debug.assert(v.expr_depth == 0);
-    std.debug.assert(v.stmt_depth == 0);
+    std.debug.assert(v.fn_ctx.expr_depth == 0);
+    std.debug.assert(v.fn_ctx.stmt_depth == 0);
 }
 
 /// Analyze a parsed WGSL module, retaining semantic state.

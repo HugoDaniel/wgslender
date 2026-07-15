@@ -42,9 +42,9 @@ pub fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!InferResult {
 }
 
 pub fn checkExprE(v: *Validator, expr: Ast.Expr, exp: Expectation) Allocator.Error!InferResult {
-    if (v.expr_depth >= max_expr_depth) return .fail;
-    v.expr_depth += 1;
-    defer v.expr_depth -= 1;
+    if (v.fn_ctx.expr_depth >= max_expr_depth) return .fail;
+    v.fn_ctx.expr_depth += 1;
+    defer v.fn_ctx.expr_depth -= 1;
     var result: InferResult = switch (expr) {
         .literal => |e| checkLiteral(v, e),
         .ident => |e| try checkIdent(v, e),
