@@ -106,7 +106,10 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `src/lint/MultiVisitor.zig` | Multi-listener AST walker — one traversal fans out to N subscribed rules |
 | `src/lint/rules/` | Individual rule modules (one file per rule, exporting `pub const rule: Rule`) |
 | `src/SourceMap.zig` | Source map v3 generation with VLQ encoding |
-| `src/Reflect.zig` | Shader reflection and WGSL memory layout computation (const-expr folding via `src/ConstEval.zig`, wrapping mode) |
+| `src/Reflect.zig` | Shader reflection **façade** — public data types (`ReflectResult`, `TypeInfo`, `BindingInfo`, …), the `reflect`/`reflectWithRenamer` driver, binding/entry-point extraction, `renderExprText`; re-exports the three seams below as `Reflect.{Layout,Json,CallGraph}`. Everyone spells `wgslender.Reflect.*` |
+| `src/reflect/Layout.zig` | Memory-layout seam: `LayoutComputer` engine + WGSL §6.2.10 size/align rules, `primitive_layouts`, struct/array/`TypeInfo` builders, shorthand parsers, type-to-string (const-expr folding via `src/ConstEval.zig`, wrapping mode). Duplicates the *numeric* rules of `Types.Struct.computeLayout` by design (AST domain vs resolved-`Types.Type` domain — cross-referenced, deliberately not unified) |
+| `src/reflect/Json.zig` | JSON-serialization seam: the `write*Json` family, v1/v2 subset filters, `prettyPrint`. Reads only the materialized public structs — wire-pinned by the npm suite |
+| `src/reflect/CallGraph.zig` | Call-graph + resource-attribution seam: `buildCallGraph`, body/stmt/expr walkers, `propagateEntryReachability`. Operates on `Ast.Module`; independent of layout and serialization |
 | `src/Compiler.zig` | WGSL → WASM binary shader compiler (BPE + WASM codegen) |
 | `src/WasmBinary.zig` | Low-level WASM binary format writer |
 | `src/wasm.zig` | WASM entry point (C-ABI exports for JS) |

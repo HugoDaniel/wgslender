@@ -28,6 +28,13 @@ pub const version = "1.1.0";
 // --- Stable ---
 pub const Minifier = @import("Minifier.zig");
 pub const Validator = @import("Validator.zig");
+/// Shader reflection. This is the stable façade: the `reflect` entry point
+/// below returns `Reflect.ReflectResult`, and the public data vocabulary
+/// (`TypeInfo`, `BindingInfo`, `EntryPointInfo`, …) plus the driver all live
+/// here. The three implementation seams — `Reflect.Layout` (memory layout),
+/// `Reflect.Json` (serialization), `Reflect.CallGraph` (reachability) — are
+/// re-exported sub-namespaces, reachable for tooling but not part of the
+/// committed surface; their shape may shift. See `docs/deferred/reflect-split.md`.
 pub const Reflect = @import("Reflect.zig");
 pub const Compiler = @import("Compiler.zig");
 pub const Linter = @import("lint/Linter.zig");
