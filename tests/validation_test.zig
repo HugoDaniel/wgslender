@@ -781,7 +781,7 @@ test "validation: declarations/atomic_valid" {
     try runValidationTest(arena.allocator(), validation_data.@"declarations/atomic_valid");
 }
 
-// --- uniformity/ (4 files) ---
+// --- uniformity/ (7 files) ---
 
 test "validation: uniformity/barrier_uniform" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -805,6 +805,24 @@ test "validation: uniformity/barrier_after_balanced_if" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try runValidationTest(arena.allocator(), validation_data.@"uniformity/barrier_after_balanced_if");
+}
+
+test "validation: uniformity/renamed_param_barrier" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"uniformity/renamed_param_barrier");
+}
+
+test "validation: uniformity/user_var_named_position" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"uniformity/user_var_named_position");
+}
+
+test "validation: uniformity/texture_dimensions_condition" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"uniformity/texture_dimensions_condition");
 }
 
 // --- builtins/ (4 files) ---

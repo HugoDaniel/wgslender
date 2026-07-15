@@ -33,24 +33,20 @@ const UniformityAnalyzer = struct {
 
     // Current function context
     current_func: ?*Ast.FunctionDecl = null,
-    current_stage: Validator.ShaderStage = .none,
 
     // Current uniformity state
     state: UniformityState = .uniform,
 
-    // Sources of non-uniformity
-    non_uniform_sources: std.ArrayList(NonUniformSource) = .empty,
+    // Parameter symbols classified non-uniform at function entry (a builtin
+    // input whose value differs across invocations). The body references these
+    // by resolved `SymbolIndex`, so a renamed builtin param still taints and a
+    // user variable that happens to share a builtin's name does not.
+    non_uniform_sources: std.ArrayList(Ast.SymbolIndex) = .empty,
 
     const UniformityState = enum(u8) {
         uniform,
         may_be_non_uniform,
         non_uniform,
-    };
-
-    const NonUniformSource = struct {
-        loc: u32,
-        reason: []const u8,
-        builtin_name: []const u8,
     };
 
     fn analyze(ua: *UniformityAnalyzer) Allocator.Error!void {
@@ -67,18 +63,6 @@ const UniformityAnalyzer = struct {
         ua.state = .uniform;
         ua.non_uniform_sources = .empty;
 
-        // Determine shader stage
-        ua.current_stage = .none;
-        for (fn_decl.attributes.items) |attr| {
-            if (std.mem.eql(u8, attr.name, "vertex")) {
-                ua.current_stage = .vertex;
-            } else if (std.mem.eql(u8, attr.name, "fragment")) {
-                ua.current_stage = .fragment;
-            } else if (std.mem.eql(u8, attr.name, "compute")) {
-                ua.current_stage = .compute;
-            }
-        }
-
         // Parameters may introduce non-uniformity
         try ua.analyzeParameters(fn_decl.parameters.items);
 
@@ -92,16 +76,17 @@ const UniformityAnalyzer = struct {
 
     fn analyzeParameters(ua: *UniformityAnalyzer, params: []const Ast.Parameter) Allocator.Error!void {
         for (params) |param| {
+            if (param.name == .none) continue;
             for (param.attributes.items) |attr| {
                 if (std.mem.eql(u8, attr.name, "builtin") and attr.args.items.len > 0) {
                     switch (attr.args.items[0]) {
                         .ident => |ident| {
+                            // Classify the builtin BY NAME here — the one place a
+                            // builtin name legitimately appears — and taint the
+                            // parameter *symbol*. The body then consults the
+                            // symbol via `e.ref`, never the spelling.
                             if (isNonUniformBuiltin(ident.name)) {
-                                try ua.non_uniform_sources.append(ua.arena, .{
-                                    .loc = ident.loc,
-                                    .reason = "builtin input is non-uniform",
-                                    .builtin_name = ident.name,
-                                });
+                                try ua.non_uniform_sources.append(ua.arena, param.name);
                             }
                         },
                         else => {},
@@ -274,31 +259,22 @@ const UniformityAnalyzer = struct {
     fn analyzeExprUniformity(ua: *UniformityAnalyzer, expr: Ast.Expr) bool {
         switch (expr) {
             .ident => |e| {
-                // Check if identifier refers to non-uniform source
-                for (ua.non_uniform_sources.items) |src| {
-                    if (std.mem.eql(u8, src.builtin_name, e.name)) {
-                        return true;
-                    }
-                }
-                if (isNonUniformBuiltin(e.name)) {
-                    return true;
+                // Non-uniform iff the ident resolves to a parameter symbol
+                // classified non-uniform at entry. Grounded in `e.ref` — the
+                // resolved SymbolIndex — not the spelling, so a user variable
+                // sharing a builtin's name stays uniform.
+                if (e.ref == .none) return false;
+                for (ua.non_uniform_sources.items) |sym| {
+                    if (sym == e.ref) return true;
                 }
                 return false;
             },
             .call => |e| {
-                // Some builtins produce non-uniform results
-                var callee_name: []const u8 = "";
-                if (e.func) |func| {
-                    switch (func) {
-                        .ident => |ident| callee_name = ident.name,
-                        else => {},
-                    }
-                }
-                if (Builtins.lookup(callee_name)) |builtin| {
-                    if (builtin.kind == .texture) {
-                        return true; // Simplified
-                    }
-                }
+                // A call result is uniform iff all of its arguments are uniform.
+                // (Builtins with a genuinely non-uniform result — subgroup ops —
+                // are handled in a later block; the §15 uniform-control-flow
+                // *requirements* of derivative/texture/barrier builtins are
+                // enforced at the call site in analyzeCallExpr, not here.)
                 for (e.args.items) |arg| {
                     if (ua.analyzeExprUniformity(arg)) {
                         return true;

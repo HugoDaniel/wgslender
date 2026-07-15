@@ -33,15 +33,20 @@ pub const @"declarations/override_workgroup_size" = @embedFile("testdata/validat
 pub const @"declarations/const_assert_true" = @embedFile("testdata/validation/declarations/const_assert_true.wgsl");
 
 // --- uniformity/ ---
-// Green pins committed in Block U0. The block's red inventory (renamed_param,
-// user_var_named_position, texture_dimensions_condition, let_propagation,
-// {storage,workgroup}_load, divergent_return, helper_*) lives as unregistered
-// `.wgsl` files carrying `@blocked-on: U1|U2|U3` headers — each later block
-// registers its own reds (reds-first per block; suite stays green between blocks).
+// Green pins committed in Block U0; U1's three reds registered below (they turn
+// green with the symbol-grounded sources of Block U1). The remaining red
+// inventory (let_propagation, {storage,workgroup}_load, divergent_return,
+// helper_*) lives as unregistered `.wgsl` files carrying `@blocked-on: U2|U3`
+// headers — each later block registers its own reds (reds-first per block; suite
+// stays green between blocks).
 pub const @"uniformity/barrier_uniform" = @embedFile("testdata/validation/uniformity/barrier_uniform.wgsl");
 pub const @"uniformity/derivatives_uniform" = @embedFile("testdata/validation/uniformity/derivatives_uniform.wgsl");
 pub const @"uniformity/barrier_non_uniform_if" = @embedFile("testdata/validation/uniformity/barrier_non_uniform_if.wgsl");
 pub const @"uniformity/barrier_after_balanced_if" = @embedFile("testdata/validation/uniformity/barrier_after_balanced_if.wgsl");
+// Block U1 reds — symbol-grounded sources kill the name matching.
+pub const @"uniformity/renamed_param_barrier" = @embedFile("testdata/validation/uniformity/renamed_param_barrier.wgsl");
+pub const @"uniformity/user_var_named_position" = @embedFile("testdata/validation/uniformity/user_var_named_position.wgsl");
+pub const @"uniformity/texture_dimensions_condition" = @embedFile("testdata/validation/uniformity/texture_dimensions_condition.wgsl");
 
 // --- builtins/ ---
 pub const @"builtins/vector_math" = @embedFile("testdata/validation/builtins/vector_math.wgsl");
