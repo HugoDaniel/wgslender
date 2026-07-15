@@ -205,7 +205,7 @@ fn triage(arena: std.mem.Allocator, io: std.Io, dir: *std.Io.Dir, mode: Mode) !v
 
         const source = makeSentinel(salloc, bytes) catch continue;
         var result = wgslender.validateWithOptions(salloc, source, .{}) catch continue;
-        defer result.deinit(salloc);
+        defer result.deinit();
         const diags = result.diagnostics.items();
 
         switch (mode) {
