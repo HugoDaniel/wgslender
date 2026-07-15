@@ -78,7 +78,7 @@ pub fn processDirectives(v: *Validator) Allocator.Error!void {
                             v.fmtError("unknown enable feature '{s}'", .{feature});
                         v.addErrorWithCodeR(.{ .start = 0, .end = 1 }, Diagnostic.Code.unknown_feature, msg);
                     }
-                    try v.enabled_features.put(v.arena, feature, {});
+                    try v.scratch.enabled_features.put(v.arena, feature, {});
                 }
             },
             .diagnostic => |d| {
@@ -754,10 +754,10 @@ pub fn validateOverrideId(v: *Validator, d: *Ast.OverrideDecl, name: []const u8)
             return;
         }
         const id: u32 = @intCast(id_val);
-        if (v.override_ids.get(id)) |existing| {
+        if (v.scratch.override_ids.get(id)) |existing| {
             v.addErrorWithRelatedR(ar, Diagnostic.Code.duplicate_override_id, v.fmtError("@id({d}) is already used by override '{s}'", .{ id, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("@id({d}) first used here", .{id})));
         } else {
-            try v.override_ids.put(v.arena, id, .{ .name = name, .loc = attr.loc });
+            try v.scratch.override_ids.put(v.arena, id, .{ .name = name, .loc = attr.loc });
         }
         return;
     }
@@ -835,7 +835,7 @@ pub fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
         .handle => .read,
         else => .read_write,
     };
-    try v.var_info.put(v.arena, d.name.index(), .{ .address_space = as_norm, .access_mode = am_norm });
+    try v.scratch.var_info.put(v.arena, d.name.index(), .{ .address_space = as_norm, .access_mode = am_norm });
 }
 
 pub fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u8, r: LocRange) Allocator.Error!void {
@@ -862,14 +862,14 @@ pub fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u
         const bv: u32 = if (binding_val.? >= 0 and binding_val.? <= std.math.maxInt(u32)) @intCast(binding_val.?) else 0;
         const key = (@as(u64, gv) << 32) | @as(u64, bv);
         // When multiple entry points exist, defer duplicate checks to per-entry-point pass
-        if (!v.multi_entry_point) {
-            if (v.binding_pairs.get(key)) |existing| {
+        if (!v.scratch.multi_entry_point) {
+            if (v.scratch.binding_pairs.get(key)) |existing| {
                 v.addErrorWithRelatedR(r, Diagnostic.Code.duplicate_binding, v.fmtError("@group({d}) @binding({d}) is already used by '{s}'", .{ group_val.?, binding_val.?, existing.name }), v.makeRelatedR(.{ .start = existing.loc, .end = existing.loc +| 1 }, v.fmtError("'{s}' declared here", .{existing.name})));
             }
         }
-        try v.binding_pairs.put(v.arena, key, .{ .name = name, .loc = r.start });
+        try v.scratch.binding_pairs.put(v.arena, key, .{ .name = name, .loc = r.start });
         // Collect binding info for pattern analysis
-        try v.binding_infos.append(v.arena, .{
+        try v.scratch.binding_infos.append(v.arena, .{
             .name = name,
             .loc = r.start,
             .group = gv,
@@ -881,12 +881,12 @@ pub fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u
 
 /// Check for suspicious binding patterns: gaps in binding numbers and unusually high values.
 pub fn checkSuspiciousBindingPatterns(v: *Validator) void {
-    if (v.binding_infos.items.len == 0) return;
+    if (v.scratch.binding_infos.items.len == 0) return;
 
     // Group bindings by @group value. Use a simple approach: find max group,
     // then iterate per group. Limit to groups 0..15 to avoid huge allocations.
     var max_group: u32 = 0;
-    for (v.binding_infos.items) |info| {
+    for (v.scratch.binding_infos.items) |info| {
         if (info.group > 15) {
             // High group number warning
             v.diags.add(v.arena, .{
@@ -915,7 +915,7 @@ pub fn checkSuspiciousBindingPatterns(v: *Validator) void {
         var min_binding: u32 = std.math.maxInt(u32);
         var max_binding: u32 = 0;
         var count: u32 = 0;
-        for (v.binding_infos.items) |info| {
+        for (v.scratch.binding_infos.items) |info| {
             if (info.group != group) continue;
             if (info.binding < min_binding) min_binding = info.binding;
             if (info.binding > max_binding) max_binding = info.binding;
@@ -928,7 +928,7 @@ pub fn checkSuspiciousBindingPatterns(v: *Validator) void {
             for (min_binding..max_binding + 1) |b| {
                 const binding: u32 = @intCast(b);
                 var found = false;
-                for (v.binding_infos.items) |info| {
+                for (v.scratch.binding_infos.items) |info| {
                     if (info.group == group and info.binding == binding) {
                         found = true;
                         break;
@@ -938,7 +938,7 @@ pub fn checkSuspiciousBindingPatterns(v: *Validator) void {
                     // Find the binding just before the gap to attach the warning to
                     var best_loc: u32 = 0;
                     var best_name: []const u8 = "";
-                    for (v.binding_infos.items) |info| {
+                    for (v.scratch.binding_infos.items) |info| {
                         if (info.group == group and info.binding < binding and info.binding >= best_loc) {
                             best_loc = info.loc;
                             best_name = info.name;
@@ -971,8 +971,8 @@ pub fn countEntryPoints(module: *const Ast.Module) u32 {
 /// set of bindings has no duplicates. WebGPU allows different entry points to
 /// share the same @group/@binding pair since they use separate pipeline layouts.
 pub fn validatePerEntryPointBindings(v: *Validator) Allocator.Error!void {
-    if (!v.multi_entry_point) return;
-    if (v.binding_infos.items.len < 2) return;
+    if (!v.scratch.multi_entry_point) return;
+    if (v.scratch.binding_infos.items.len < 2) return;
 
     // Build dependency graph using the same logic as DCE
     var deps: std.AutoHashMapUnmanaged(u32, std.ArrayList(u32)) = .empty;
@@ -1005,7 +1005,7 @@ pub fn validatePerEntryPointBindings(v: *Validator) Allocator.Error!void {
 
         // Check for duplicate bindings within this entry point's reachable set
         var ep_bindings: std.AutoHashMapUnmanaged(u64, BindingInfo) = .empty;
-        for (v.binding_infos.items) |info| {
+        for (v.scratch.binding_infos.items) |info| {
             if (!visited.contains(info.sym_idx)) continue;
             const key = (@as(u64, info.group) << 32) | @as(u64, info.binding);
             if (ep_bindings.get(key)) |existing| {

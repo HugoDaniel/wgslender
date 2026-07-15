@@ -209,7 +209,7 @@ pub fn checkIntLiteralRange(v: *Validator, e: *Ast.LiteralExpr, kind: IntLiteral
     }
 }
 pub fn checkF16Enabled(v: *Validator, loc: u32) void {
-    if (!v.enabled_features.contains("f16")) {
+    if (!v.scratch.enabled_features.contains("f16")) {
         v.addErrorWithCodeDataR(.{ .start = loc, .end = loc +| 1 }, Diagnostic.Code.feature_not_enabled, "'f16' requires 'enable f16;'", .{ .feature_not_enabled = "f16" });
     }
 }
@@ -715,7 +715,7 @@ pub fn addrOfOperandAsAm(v: *Validator, expr: Ast.Expr, er: LocRange) Allocator.
                 const sym = v.module.symbols.items[idx];
                 switch (sym.kind) {
                     .@"var" => {
-                        if (v.var_info.get(idx)) |info| {
+                        if (v.scratch.var_info.get(idx)) |info| {
                             return .{ .address_space = info.address_space, .access_mode = info.access_mode };
                         }
                         return null;

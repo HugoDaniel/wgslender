@@ -368,6 +368,26 @@ const Outputs = struct {
     expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
 };
 
+/// Phase-scoped working state — maps and flags each populated and consumed
+/// within `runPhases`, then discarded with the Validator. Unlike `Outputs`,
+/// none of this is copied into `AnalysisResult`: it exists only to carry
+/// information between phases of a single validation run.
+const Scratch = struct {
+    /// Override ID tracking for uniqueness validation.
+    override_ids: std.AutoHashMapUnmanaged(u32, LocName) = .{},
+    /// Binding pair tracking for uniqueness validation: key = (group << 32) | binding.
+    binding_pairs: std.AutoHashMapUnmanaged(u64, LocName) = .{},
+    /// Binding info collection for suspicious pattern analysis and per-entry-point validation.
+    binding_infos: std.ArrayList(BindingInfo) = .empty,
+    /// True when the module has >= 2 entry points (per-entry-point binding validation needed).
+    multi_entry_point: bool = false,
+    /// Enabled features from 'enable' directives.
+    enabled_features: std.StringHashMapUnmanaged(void) = .{},
+    /// Per-var declaration metadata: populated during validateVarDecl. See
+    /// `VarInfo` above for what's recorded and why.
+    var_info: std.AutoHashMapUnmanaged(u32, VarInfo) = .{},
+};
+
 // =========================================================================
 // Validator State
 // =========================================================================
@@ -383,23 +403,8 @@ fn_ctx: FnContext = .{},
 // Caches exported to AnalysisResult (see `Outputs`).
 out: Outputs = .{},
 
-// Override ID tracking for uniqueness validation
-override_ids: std.AutoHashMapUnmanaged(u32, LocName) = .{},
-// Binding pair tracking for uniqueness validation: key = (group << 32) | binding
-binding_pairs: std.AutoHashMapUnmanaged(u64, LocName) = .{},
-
-// Binding info collection for suspicious pattern analysis and per-entry-point validation
-binding_infos: std.ArrayList(BindingInfo) = .empty,
-
-// True when module has >= 2 entry points (per-entry-point binding validation needed)
-multi_entry_point: bool = false,
-
-// Enabled features from 'enable' directives
-enabled_features: std.StringHashMapUnmanaged(void) = .{},
-
-// Per-var declaration metadata: populated during validateVarDecl. See
-// `VarInfo` above for details on what's recorded and why.
-var_info: std.AutoHashMapUnmanaged(u32, VarInfo) = .{},
+// Phase-scoped working state (see `Scratch`).
+scratch: Scratch = .{},
 
 // =========================================================================
 // Public API
@@ -439,7 +444,7 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
 /// list would add machinery for zero flexibility.
 fn runPhases(v: *Validator) !void {
     // Pre-scan: detect multiple entry points for per-entry-point binding validation
-    v.multi_entry_point = countEntryPoints(v.module) >= 2;
+    v.scratch.multi_entry_point = countEntryPoints(v.module) >= 2;
 
     // Phase 0: Process directives (enable, diagnostic)
     try v.processDirectives();
@@ -844,7 +849,7 @@ pub fn lookupType(v: *Validator, name: []const u8) Allocator.Error!?Types.Type {
     if (std.mem.eql(u8, name, "u32")) return Types.U32;
     if (std.mem.eql(u8, name, "f32")) return Types.F32;
     if (std.mem.eql(u8, name, "f16")) {
-        if (!v.enabled_features.contains("f16")) {
+        if (!v.scratch.enabled_features.contains("f16")) {
             v.addErrorWithCodeDataR(.{ .start = 0, .end = 1 }, Diagnostic.Code.feature_not_enabled, "'f16' requires 'enable f16;'", .{ .feature_not_enabled = "f16" });
         }
         return Types.F16;
