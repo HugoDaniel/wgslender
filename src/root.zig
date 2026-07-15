@@ -27,6 +27,13 @@ pub const version = "1.1.0";
 
 // --- Stable ---
 pub const Minifier = @import("Minifier.zig");
+/// Semantic validator + analyzer. `validate` returns pass/fail + diagnostics;
+/// `analyze` additionally retains the resolved-type caches as
+/// `Validator.AnalysisResult` — the committed surface the LSP and lint rules
+/// read by field name. The orchestrator drives the `src/validator/*`
+/// submodules (Declarations / Expressions / Statements / TypeResolve /
+/// Uniformity) through a fixed phase sequence; the decomposition and its
+/// re-export contract are documented in `docs/deferred/validator-decomposition.md`.
 pub const Validator = @import("Validator.zig");
 /// Shader reflection. This is the stable façade: the `reflect` entry point
 /// below returns `Reflect.ReflectResult`, and the public data vocabulary

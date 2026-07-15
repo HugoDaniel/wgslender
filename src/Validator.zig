@@ -112,8 +112,6 @@ pub const Result = struct {
     }
 };
 
-/// Enriched analysis result that retains the validator's semantic state.
-/// Used by the LSP to power features like hover, go-to-definition, etc.
 /// Type information for an expression, keyed by the expression's start offset.
 pub const ExprTypeInfo = struct {
     typ: Types.Type,
@@ -188,6 +186,17 @@ pub const Expectation = union(enum) {
 /// function-scope `const` to concrete. Call sites pick the rule they want.
 pub const AbstractHandling = enum { keep, concretize };
 
+/// Enriched analysis result: the validator's retained semantic state, kept
+/// alive for consumers that outlive the run — the LSP (hover, go-to-definition,
+/// inlay hints) and the lint rules. This is the materialized form of the
+/// validator's output contract: the five type/const caches (`symbol_types`,
+/// `struct_types`, `alias_types`, `const_values`, `expr_types`) are exactly
+/// the `Outputs` group, copied out verbatim by `analyze` and *only* there;
+/// nothing in the validator's `Scratch` maps or `FnContext` cursor reaches
+/// here. `use_counts` aliases `module.use_counts`; `liveness` is filled lazily
+/// by whoever runs DCE. Stable surface: LSP handlers and lint `Context` read
+/// these fields by name, so the field names/layout are pinned (see the
+/// stability tiers in `root.zig`).
 pub const AnalysisResult = struct {
     /// True iff validation surfaced no errors (same semantics as `Result.valid`).
     valid: bool,
@@ -413,7 +422,9 @@ scratch: Scratch = .{},
 // Public API
 // =========================================================================
 
-/// Validate a parsed WGSL module.
+/// Validate a parsed WGSL module. Returns only pass/fail + diagnostics; the
+/// resolved-type caches (`Outputs`) are discarded with the run. Use `analyze`
+/// to retain them.
 pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result {
     // Pre: module came from a parse — its scope tree must be
     // rooted, and the source slice is what diagnostics will index into.
@@ -508,6 +519,9 @@ fn runPhases(v: *Validator) !void {
 
 /// Analyze a parsed WGSL module, retaining semantic state.
 /// Returns an enriched result with resolved types, struct layouts, etc.
+/// The copy-out below is the validator's output contract: it materializes the
+/// `Outputs` caches into the returned `AnalysisResult` — the only validator
+/// state that outlives the run (`Scratch`/`FnContext` are torn down here).
 ///
 /// If `module` was produced by `Incremental.reparse`, any non-owner
 /// decls may carry deferred `interior_pending` bias. We drain it up
