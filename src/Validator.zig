@@ -42,7 +42,6 @@ const Types = @import("Types.zig");
 const Builtins = @import("Builtins.zig");
 const Overload = @import("Overload.zig");
 const Diagnostic = @import("Diagnostic.zig");
-const Predeclared = @import("Predeclared.zig");
 const Dce = @import("Dce.zig");
 const Liveness = @import("Liveness.zig");
 const UseCounts = @import("UseCounts.zig");
@@ -331,6 +330,11 @@ pub const AnalysisResult = struct {
 /// catch).
 const FnContext = struct {
     current_func: ?*Ast.FunctionDecl = null,
+    /// The one field with a genuine cross-submodule read: `Statements`
+    /// (`validateFunction`) writes it at function entry, and `Declarations`'
+    /// phase-4 entry-point IO helpers read it ~14×. Left as a shared field
+    /// rather than threaded as an explicit `stage` param through those
+    /// signatures, which would sprawl the helper list for no readability gain.
     current_stage: ShaderStage = .none,
     in_loop: bool = false,
     in_switch: bool = false,
@@ -443,50 +447,54 @@ pub fn validate(arena: Allocator, module: *Ast.Module, options: Options) !Result
 /// list would add machinery for zero flexibility.
 fn runPhases(v: *Validator) !void {
     // Pre-scan: detect multiple entry points for per-entry-point binding validation
-    v.scratch.multi_entry_point = countEntryPoints(v.module) >= 2;
+    v.scratch.multi_entry_point = _Declarations.countEntryPoints(v.module) >= 2;
+
+    // Each phase entry point is called directly through its submodule handle
+    // rather than a `v.*` re-export alias: this driver is their only caller,
+    // so an alias would be pure indirection (see the re-export contract below).
 
     // Phase 0: Process directives (enable, diagnostic)
-    try v.processDirectives();
+    try _Declarations.processDirectives(v);
 
     // Phase 0.5: Reject reserved identifiers (WGSL spec: `_` alone, `__`-prefixed)
-    v.checkReservedIdentifiers();
+    _Declarations.checkReservedIdentifiers(v);
 
     // Phase 1: Collect type declarations (structs, aliases)
-    try v.collectTypeDeclarations();
+    try _Declarations.collectTypeDeclarations(v);
 
     // Phase 1.5: Resolve type aliases (order-independent forward refs)
-    try v.resolveAliasTypes();
+    try _Declarations.resolveAliasTypes(v);
 
     // Phase 2: Resolve struct layouts
-    try v.resolveStructLayouts();
+    try _Declarations.resolveStructLayouts(v);
 
     // Phase 2.5: Detect recursive struct definitions
-    try v.checkRecursiveStructs();
+    try _Declarations.checkRecursiveStructs(v);
 
     // Phase 3: Validate declarations
-    try v.validateDeclarations();
+    try _Declarations.validateDeclarations(v);
 
     // Phase 3.5: Register function signatures (enables forward references)
-    try v.registerFunctionSignatures();
+    try _Declarations.registerFunctionSignatures(v);
 
     // Phase 3.75: Detect recursive function calls
-    try v.checkRecursiveFunctions();
+    try _Declarations.checkRecursiveFunctions(v);
 
     // Phase 4: Validate functions and statements
-    try v.validateFunctions();
+    try _Statements.validateFunctions(v);
 
     // Phase 4.5: Per-entry-point binding validation + suspicious patterns
-    try v.validatePerEntryPointBindings();
-    v.checkSuspiciousBindingPatterns();
+    try _Declarations.validatePerEntryPointBindings(v);
+    _Declarations.checkSuspiciousBindingPatterns(v);
 
     // Phase 5: Uniformity analysis
-    try v.analyzeUniformity();
+    try _Uniformity.analyzeUniformity(v);
 
     // Phase 6: Scope-tree shadow detection (W0100)
-    v.detectShadowing();
+    _Statements.detectShadowing(v);
 
     // Phase 7: Ambiguous operator-precedence combinations (E0213)
-    v.checkOperatorPrecedence();
+    _Statements.checkOperatorPrecedence(v);
 
     // Remove duplicate diagnostics produced by overlapping phases
     v.diags.deduplicate();
@@ -543,24 +551,29 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
 }
 
 // =========================================================================
-// Top-level declaration validation (moved to validator/Declarations.zig)
+// Submodule re-export contract
 // =========================================================================
+//
+// Each validation phase and helper lives in a `validator/*.zig` submodule and
+// takes `v: *Validator` as its first parameter. The submodules do NOT import
+// each other; the sideways calls they make route through the `pub const` aliases
+// below, which make `foo` reachable both as `v.foo(...)` (Zig method sugar) and
+// as a `const foo = Validator.foo;` file-local alias in a sibling.
+//
+// Only the genuinely cross-submodule surface is re-exported. A function whose
+// only callers live in its own submodule is invoked there as a free call
+// (`validateStmt(v, ...)`), needs no alias, and has none — V3 removed the ~64
+// re-exports that were never reached from outside their defining module. Two
+// audiences remain: cross-submodule contract, and this file's own `test` blocks.
 
 const _Declarations = @import("validator/Declarations.zig");
-pub const processDirectives = _Declarations.processDirectives;
-pub const checkReservedIdentifiers = _Declarations.checkReservedIdentifiers;
-pub const collectTypeDeclarations = _Declarations.collectTypeDeclarations;
-pub const resolveAliasTypes = _Declarations.resolveAliasTypes;
-pub const resolveStructLayouts = _Declarations.resolveStructLayouts;
-pub const checkRecursiveStructs = _Declarations.checkRecursiveStructs;
-pub const validateDeclarations = _Declarations.validateDeclarations;
-pub const registerFunctionSignatures = _Declarations.registerFunctionSignatures;
-pub const checkRecursiveFunctions = _Declarations.checkRecursiveFunctions;
-pub const validatePerEntryPointBindings = _Declarations.validatePerEntryPointBindings;
-pub const checkSuspiciousBindingPatterns = _Declarations.checkSuspiciousBindingPatterns;
-pub const countEntryPoints = _Declarations.countEntryPoints;
+const _Statements = @import("validator/Statements.zig");
+const _Expressions = @import("validator/Expressions.zig");
+const _TypeResolve = @import("validator/TypeResolve.zig");
+const _Uniformity = @import("validator/Uniformity.zig");
 
-// Cross-phase helpers consumed by Statements.zig / Expressions.zig.
+// -- cross-submodule contract: Declarations helpers reached from
+//    Statements.zig / Expressions.zig (via `v.*` or a file-local alias).
 pub const determineShaderStage = _Declarations.determineShaderStage;
 pub const resolveFunctionParameters = _Declarations.resolveFunctionParameters;
 pub const validateReturnAttributes = _Declarations.validateReturnAttributes;
@@ -572,101 +585,35 @@ pub const validateVarDecl = _Declarations.validateVarDecl;
 pub const findStructDecl = _Declarations.findStructDecl;
 pub const isSwizzleName = _Declarations.isSwizzleName;
 pub const hasDuplicateSwizzleChars = _Declarations.hasDuplicateSwizzleChars;
+
+// -- consumed only by this file's `test` blocks (entry-point IO predicates).
 pub const isVertexInput = _Declarations.isVertexInput;
-pub const isVertexOutput = _Declarations.isVertexOutput;
 pub const isFragmentInput = _Declarations.isFragmentInput;
-pub const isFragmentOutput = _Declarations.isFragmentOutput;
 pub const isComputeInput = _Declarations.isComputeInput;
 
-// =========================================================================
-// Statement / control-flow / post-pass walkers (moved to validator/Statements.zig)
-// =========================================================================
+// Statements (`validator/Statements.zig`) re-exports nothing: its phase entries
+// (`validateFunctions`, `detectShadowing`, `checkOperatorPrecedence`) are called
+// directly by `runPhases`, and every per-statement validator is a free call
+// within the module (`validateStmt(v, ...)`).
 
-const _Statements = @import("validator/Statements.zig");
-pub const validateFunctions = _Statements.validateFunctions;
-pub const validateFunction = _Statements.validateFunction;
-pub const validateStmt = _Statements.validateStmt;
-pub const validateCompoundStmt = _Statements.validateCompoundStmt;
-pub const validateDeclStmt = _Statements.validateDeclStmt;
-pub const validateReturnStmt = _Statements.validateReturnStmt;
-pub const validateIfStmt = _Statements.validateIfStmt;
-pub const validateSwitchStmt = _Statements.validateSwitchStmt;
-pub const validateLoopStmt = _Statements.validateLoopStmt;
-pub const validateWhileStmt = _Statements.validateWhileStmt;
-pub const validateForStmt = _Statements.validateForStmt;
-pub const validateBreakStmt = _Statements.validateBreakStmt;
-pub const validateBreakIfStmt = _Statements.validateBreakIfStmt;
-pub const validateContinueStmt = _Statements.validateContinueStmt;
-pub const validateDiscardStmt = _Statements.validateDiscardStmt;
-pub const validateAssignStmt = _Statements.validateAssignStmt;
-pub const validateIncrDecrStmt = _Statements.validateIncrDecrStmt;
-pub const validateCallStmt = _Statements.validateCallStmt;
-pub const detectShadowing = _Statements.detectShadowing;
-pub const checkOperatorPrecedence = _Statements.checkOperatorPrecedence;
-pub const blockHasExit = _Statements.blockHasExit;
-pub const continuingHasBreakIf = _Statements.continuingHasBreakIf;
-pub const stmtTerminates = _Statements.stmtTerminates;
-pub const getStmtLoc = _Statements.getStmtLoc;
-pub const getStmtRange = _Statements.getStmtRange;
-
-
-
-// =========================================================================
-// Expression Type Checking (moved to src/validator/Expressions.zig)
-// =========================================================================
-
-const _Expressions = @import("validator/Expressions.zig");
+// -- cross-submodule contract: the checkExpr-family entry points reached from
+//    Statements.zig / Declarations.zig. The rest of the family (checkBinary,
+//    checkIdent, …) is internal to Expressions.zig and re-exported nowhere.
 pub const checkExpr = _Expressions.checkExpr;
 pub const checkExprE = _Expressions.checkExprE;
-pub const checkLiteral = _Expressions.checkLiteral;
-pub const checkIntLiteralRange = _Expressions.checkIntLiteralRange;
-pub const checkF16Enabled = _Expressions.checkF16Enabled;
-pub const checkFloatLiteralValue = _Expressions.checkFloatLiteralValue;
-pub const checkIdent = _Expressions.checkIdent;
-pub const checkBinary = _Expressions.checkBinary;
-pub const checkBinaryE = _Expressions.checkBinaryE;
-pub const checkUnary = _Expressions.checkUnary;
-pub const checkUnaryE = _Expressions.checkUnaryE;
 pub const checkCallExpr = _Expressions.checkCallExpr;
-pub const checkBitcastCall = _Expressions.checkBitcastCall;
-pub const checkIndex = _Expressions.checkIndex;
-pub const checkMember = _Expressions.checkMember;
 
-
-
-// =========================================================================
-// Phase 5: Uniformity Analysis (moved to src/validator/Uniformity.zig)
-// =========================================================================
-
-pub const analyzeUniformity = @import("validator/Uniformity.zig").analyzeUniformity;
-
-// =========================================================================
-// Type Resolution (moved to src/validator/TypeResolve.zig)
-// =========================================================================
-
-const _TypeResolve = @import("validator/TypeResolve.zig");
+// -- cross-submodule contract: type resolution reached from
+//    Declarations.zig / Expressions.zig. The per-kind resolvers
+//    (resolveVecType, …) are internal to TypeResolve.zig; `resolveType`
+//    dispatches to them as free calls.
 pub const resolveType = _TypeResolve.resolveType;
-pub const resolveIdentType = _TypeResolve.resolveIdentType;
-pub const resolveVecType = _TypeResolve.resolveVecType;
-pub const resolveMatType = _TypeResolve.resolveMatType;
-pub const resolveArrayType = _TypeResolve.resolveArrayType;
-pub const resolvePtrType = _TypeResolve.resolvePtrType;
-pub const resolveAtomicType = _TypeResolve.resolveAtomicType;
-pub const resolveSamplerType = _TypeResolve.resolveSamplerType;
-pub const resolveTextureType = _TypeResolve.resolveTextureType;
 pub const lookupType = _TypeResolve.lookupType;
 pub const suggestType = _TypeResolve.suggestType;
 pub const suggestIdentifier = _TypeResolve.suggestIdentifier;
 pub const suggestCallable = _TypeResolve.suggestCallable;
 pub const parseVectorShorthand = _TypeResolve.parseVectorShorthand;
 pub const parseMatrixShorthand = _TypeResolve.parseMatrixShorthand;
-pub const shorthandElement = _TypeResolve.shorthandElement;
-pub const astTextureKindToType = _TypeResolve.astTextureKindToType;
-pub const astTextureDimToType = _TypeResolve.astTextureDimToType;
-
-/// Extract the natural argument count from a type constructor name.
-/// See `Predeclared.arityOfTypeConstructor` — the canonical implementation.
-pub const arityOfTypeConstructor = Predeclared.arityOfTypeConstructor;
 
 // =========================================================================
 // Internal Helpers
