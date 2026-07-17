@@ -419,6 +419,8 @@ pub fn build(b: *std.Build) void {
     // Reflect tests
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/reflect_wgslreflect_test.zig", target, optimize, &.{w});
+    // Const-inventory (knob-lift Phase 0): module-scope const surface + liftability
+    _ = addTestStep(b, test_step, "tests/const_inventory_test.zig", target, optimize, &.{w});
     // Const-expression evaluator characterization pins — lock the divergent
     // Validator (saturating, int-only, depth 32) vs Reflect (wrapping, full
     // domain, depth 64) semantics that ConstEval extraction (C1/C2) unifies.
@@ -632,6 +634,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "lsp/wire/code_actions.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "lsp/wire/editing.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "lsp/wire/workspace_commands.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    _ = addTestStep(b, test_step, "tests/const_inventory_lsp_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // Native parity harness — asserts `lspkit/diagnostics.zig` and
     // `wire/diagnostics.zig` produce byte-equivalent JSON for every
     // `QuickFixHint` variant.

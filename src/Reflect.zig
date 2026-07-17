@@ -413,6 +413,36 @@ pub const OverrideInfo = struct {
     default: []const u8 = "",
 };
 
+/// A module-scope `const` declaration, surfaced for the knob-lift workflow
+/// (pacer plans/08). Unlike `OverrideInfo`, a plain `const` has no `@id`
+/// and no pipeline overridability — it is a compile-time value the author
+/// baked into the source. `liftable` reports whether that value can be
+/// replaced by a runtime uniform without invalidating the module. See
+/// `constInventory`.
+pub const ConstInfo = struct {
+    /// Declared name as written in source.
+    name: []const u8,
+    /// Scalar type spelled in source (e.g. `"f32"`); empty when the
+    /// declaration omitted the annotation (`const X = 0.55;`), in which
+    /// case the type is inferred from the initializer and not reported.
+    typ: []const u8 = "",
+    /// Initializer expression text as written in source (e.g. `"0.55"`).
+    /// Empty only on malformed declarations with no initializer.
+    value: []const u8 = "",
+    /// Byte range of the full declaration (`const` keyword through `;`).
+    decl_span: SpanInfo = .{},
+    /// `true` when this const is referenced from no const-required
+    /// position — array element counts, `@workgroup_size`, `const_assert`,
+    /// attribute arguments, `override` initializers, or (transitively) the
+    /// initializer of another const that is itself const-required. Such a
+    /// const can become a runtime uniform value with the module still
+    /// valid. `false` means the lift would break a const-expression and
+    /// the transform must refuse it. Function-body positions are not
+    /// scanned in v1 (integer const-contexts there are rare and the
+    /// transform re-validates the emitted WGSL — the hard gate).
+    liftable: bool = true,
+};
+
 // =========================================================================
 // Public API
 // =========================================================================
@@ -610,6 +640,179 @@ pub fn reflectWithRenamer(
 /// each `FunctionInfo` it builds.
 pub fn spanInfoFromAst(span: Ast.Span) SpanInfo {
     return .{ .start = span.start, .end = span.end };
+}
+
+// =========================================================================
+// Const inventory (knob-lift — pacer plans/08)
+// =========================================================================
+
+/// Inventory of module-scope `const` declarations for the knob-lift
+/// workflow: each const's name, scalar type, initializer text, declaration
+/// span, and whether it is `liftable` to a runtime uniform (see
+/// `ConstInfo`). Allocates from `arena`; `module` must be a bound parse
+/// (pass-2 complete). Declarations are reported in source order.
+///
+/// Liftability is decided in two steps. First, a scan of every
+/// const-required position collects the names referenced there: array
+/// element counts across all type annotations, `@workgroup_size` args,
+/// `const_assert` expressions, symbol-bearing attribute arguments, and
+/// `override` initializers. Second, a fixpoint propagates const-required
+/// -ness backward through const-to-const initializer references (a const
+/// feeding a const-required const is itself const-required). A const whose
+/// name survives both steps is liftable.
+pub fn constInventory(arena: Allocator, module: *Ast.Module) Allocator.Error![]ConstInfo {
+    // Drain any deferred incremental-splice bias before reading spans.
+    module.absorbInteriors();
+    var lc = LayoutComputer.init(arena, module, null);
+
+    // Step 1: names referenced from directly const-required positions.
+    var const_req: std.StringHashMapUnmanaged(void) = .empty;
+    for (module.declarations.items) |decl| switch (decl) {
+        .@"const" => |c| {
+            if (c.typ) |t| try collectArrayCountNames(arena, t, &const_req);
+        },
+        .override => |o| {
+            if (o.typ) |t| try collectArrayCountNames(arena, t, &const_req);
+            if (o.initializer) |e| try collectExprNames(arena, e, &const_req);
+            try collectAttrArgNames(arena, o.attributes.items, &const_req);
+        },
+        .@"var" => |v| {
+            if (v.typ) |t| try collectArrayCountNames(arena, t, &const_req);
+            try collectAttrArgNames(arena, v.attributes.items, &const_req);
+        },
+        .let => |l| {
+            if (l.typ) |t| try collectArrayCountNames(arena, t, &const_req);
+        },
+        .alias => |a| try collectArrayCountNames(arena, a.typ, &const_req),
+        .@"struct" => |s| for (s.members.items) |m| {
+            try collectArrayCountNames(arena, m.typ, &const_req);
+            try collectAttrArgNames(arena, m.attributes.items, &const_req);
+        },
+        .function => |f| {
+            try collectAttrArgNames(arena, f.attributes.items, &const_req);
+            for (f.parameters.items) |p| try collectArrayCountNames(arena, p.typ, &const_req);
+            if (f.return_type) |t| try collectArrayCountNames(arena, t, &const_req);
+        },
+        .const_assert => |ca| try collectExprNames(arena, ca.expr, &const_req),
+    };
+
+    // Step 2: propagate through const→const initializer references. A const
+    // whose name is already const-required drags in the names its own
+    // initializer reads. Fixpoint over the (small) const set.
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (module.declarations.items) |decl| switch (decl) {
+            .@"const" => |c| {
+                const name = lc.getSymbolName(c.name);
+                if (name.len == 0) continue;
+                if (!const_req.contains(name)) continue;
+                if (c.initializer) |e| {
+                    const before = const_req.count();
+                    try collectExprNames(arena, e, &const_req);
+                    if (const_req.count() != before) changed = true;
+                }
+            },
+            else => {},
+        };
+    }
+
+    // Materialize the inventory in source order.
+    var out: std.ArrayList(ConstInfo) = .empty;
+    for (module.declarations.items) |decl| switch (decl) {
+        .@"const" => |c| {
+            const name = lc.getSymbolName(c.name);
+            if (name.len == 0) continue;
+            var info = ConstInfo{
+                .name = name,
+                .decl_span = spanInfoFromAst(c.decl_span),
+                .liftable = !const_req.contains(name),
+            };
+            if (c.typ) |t| info.typ = lc.typeToStringMapped(t, false);
+            if (c.initializer) |expr| {
+                // Prefer the verbatim source slice; fall back to a renderer
+                // for nodes whose span was left empty (mirrors overrides).
+                const sp = expr.span();
+                if (sp.end > sp.start and sp.end <= module.source.len) {
+                    info.value = module.source[sp.start..sp.end];
+                } else {
+                    info.value = try renderExprText(arena, expr);
+                }
+            }
+            try out.append(arena, info);
+        },
+        else => {},
+    };
+    return out.items;
+}
+
+/// Add every identifier name reachable from a const-required expression to
+/// `names` — every ident is const-required in this context. Descends into
+/// `call` template types so an embedded `array<T, N>(…)` count is caught.
+fn collectExprNames(
+    arena: Allocator,
+    expr: Ast.Expr,
+    names: *std.StringHashMapUnmanaged(void),
+) Allocator.Error!void {
+    switch (expr) {
+        .ident => |e| try names.put(arena, e.name, {}),
+        .literal => {},
+        .binary => |e| {
+            try collectExprNames(arena, e.left, names);
+            try collectExprNames(arena, e.right, names);
+        },
+        .unary => |e| try collectExprNames(arena, e.operand, names),
+        .paren => |e| try collectExprNames(arena, e.expr, names),
+        .index => |e| {
+            try collectExprNames(arena, e.base, names);
+            try collectExprNames(arena, e.idx, names);
+        },
+        .member => |e| try collectExprNames(arena, e.base, names),
+        .call => |e| {
+            if (e.func) |f| try collectExprNames(arena, f, names);
+            if (e.template_type) |t| try collectArrayCountNames(arena, t, names);
+            for (e.args.items) |a| try collectExprNames(arena, a, names);
+        },
+    }
+}
+
+/// Walk a type annotation, collecting names referenced from any array
+/// element-count expression it contains (those counts are const-required).
+/// The type's own name idents are values, not const-required, so only the
+/// array `size` sub-expressions feed `names`. Recurses composite types.
+fn collectArrayCountNames(
+    arena: Allocator,
+    typ: Ast.Type,
+    names: *std.StringHashMapUnmanaged(void),
+) Allocator.Error!void {
+    switch (typ) {
+        .array => |t| {
+            if (t.size) |size| try collectExprNames(arena, size, names);
+            if (t.elem_type) |et| try collectArrayCountNames(arena, et, names);
+        },
+        .vec => |t| if (t.elem_type) |et| try collectArrayCountNames(arena, et, names),
+        .mat => |t| if (t.elem_type) |et| try collectArrayCountNames(arena, et, names),
+        .ptr => |t| try collectArrayCountNames(arena, t.elem_type, names),
+        .atomic => |t| try collectArrayCountNames(arena, t.elem_type, names),
+        .texture => |t| if (t.sampled_type) |et| try collectArrayCountNames(arena, et, names),
+        .ident, .sampler => {},
+    }
+}
+
+/// Collect names from attribute arguments that are symbol-bearing const
+/// expressions (`@workgroup_size`, `@group`, `@binding`, `@id`, `@align`,
+/// `@size`, `@location`, `@blend_src`). Enum-arg attributes (`@builtin`,
+/// `@interpolate`, `@diagnostic`) carry keyword idents, not const refs, and
+/// are skipped via `Ast.attributeArgsResolveSymbols`.
+fn collectAttrArgNames(
+    arena: Allocator,
+    attrs: []const Ast.Attribute,
+    names: *std.StringHashMapUnmanaged(void),
+) Allocator.Error!void {
+    for (attrs) |attr| {
+        if (!Ast.attributeArgsResolveSymbols(attr.name)) continue;
+        for (attr.args.items) |a| try collectExprNames(arena, a, names);
+    }
 }
 
 // =========================================================================

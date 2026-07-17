@@ -7,6 +7,19 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Added
 
+- **`wgslender/constInventory` LSP request + `Reflect.constInventory`.** A new
+  WASM-LSP custom request (and the `Reflect.constInventory(arena, module) →
+  []ConstInfo` façade behind it) surfaces every module-scope `const` with its
+  name, scalar type, initializer text, declaration span, and a `liftable`
+  flag. `liftable` is `false` when the const is referenced from a
+  const-required position — an array element count, `@workgroup_size`,
+  `const_assert`, a symbol-bearing attribute argument, an `override`
+  initializer, or (transitively) another const whose value is itself
+  const-required — so a consumer can tell which compile-time constants can be
+  promoted to runtime uniforms without invalidating the module. Result shape:
+  `{ uri, consts: [{ name, typ, value, liftable, span: { start, end } }] }`.
+  Function-body positions are not scanned yet (v1). No WASM export or reflect
+  wire change — the request rides the existing wasm LSP transport.
 - **npm CLI `lint` and `compile` subcommands.** `npx wgslender lint [file]`
   and `npx wgslender compile -o out.wasm [file]` now work — previously both
   fell through to `minify` (`compile` even wrote minified WGSL text to the

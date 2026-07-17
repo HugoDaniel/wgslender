@@ -41,6 +41,16 @@ pub const ReflectCommandResult = struct {
     version: wgslender.Reflect.JsonVersion,
 };
 
+/// Result of `wgslender/constInventory` (custom LSP request, pacer plans/08
+/// knob-lift). Carries the raw `ConstInfo` slice; the wire layer renders it
+/// to JSON so the schema stays in one place. `uri` and the slice (and every
+/// string inside it) are owned by the request arena passed to
+/// `runConstInventory`.
+pub const ConstInventoryCommandResult = struct {
+    uri: []const u8,
+    consts: []const wgslender.Reflect.ConstInfo,
+};
+
 /// Dispatch a `workspace/executeCommand` request. `args` matches the LSP
 /// `ExecuteCommandParams.arguments` shape: `null` when the client sent no
 /// arguments, otherwise a slice of `LSPAny` (= `std.json.Value`).
@@ -177,5 +187,28 @@ pub fn runReflect(
         .uri = try arena.dupe(u8, uri),
         .json = json_buf.items,
         .version = version,
+    };
+}
+
+/// Inventory the document's module-scope `const` declarations for the
+/// knob-lift workflow (pacer plans/08). Reuses the cached analysis module
+/// (a hot doc skips re-parse) and returns the raw `ConstInfo` slice,
+/// arena-allocated; the wire layer serialises it. Mirrors `runReflect`.
+pub fn runConstInventory(
+    handler: *Handler,
+    arena: std.mem.Allocator,
+    uri: []const u8,
+) CommandError!ConstInventoryCommandResult {
+    if (handler.documents.getPtr(uri) == null) return error.DocumentNotFound;
+
+    const analysis = handler.analyzeDocument(uri) catch return error.ReflectFailed;
+    const module = analysis.module orelse return error.ReflectFailed;
+
+    const consts = wgslender.Reflect.constInventory(arena, @constCast(module)) catch
+        return error.OutOfMemory;
+
+    return .{
+        .uri = try arena.dupe(u8, uri),
+        .consts = consts,
     };
 }

@@ -447,9 +447,11 @@ pub const Commands = @import("handler/commands.zig");
 pub const CommandError = Commands.CommandError;
 pub const MinifyCommandResult = Commands.MinifyCommandResult;
 pub const ReflectCommandResult = Commands.ReflectCommandResult;
+pub const ConstInventoryCommandResult = Commands.ConstInventoryCommandResult;
 pub const executeCommand = Commands.executeCommand;
 pub const runShowMinifiedOutput = Commands.runShowMinifiedOutput;
 pub const runReflect = Commands.runReflect;
+pub const runConstInventory = Commands.runConstInventory;
 
 /// Returns cached analysis result for a document, running analysis if needed.
 /// The returned pointer is owned by the Handler and valid until the document

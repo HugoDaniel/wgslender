@@ -108,6 +108,7 @@ const dispatch_table = [_]struct { method: []const u8, handler: HandlerFn }{
     .{ .method = "workspace/didChangeConfiguration", .handler = handleDidChangeConfiguration },
     .{ .method = "wgslender/recomputeMinifyInsights", .handler = handleRecomputeMinifyInsights },
     .{ .method = "wgslender/reflect", .handler = handleReflect },
+    .{ .method = "wgslender/constInventory", .handler = handleConstInventory },
     .{ .method = "textDocument/codeAction", .handler = handleCodeAction },
     .{ .method = "textDocument/hover", .handler = handleHover },
     .{ .method = "textDocument/definition", .handler = handleDefinition },
@@ -251,6 +252,9 @@ fn handleRecomputeMinifyInsights(root: std.json.ObjectMap, _: ?std.json.Value) v
 }
 fn handleReflect(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_workspace_commands.handleReflect(workspaceCommandsCtx(), root, id);
+}
+fn handleConstInventory(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_workspace_commands.handleConstInventory(workspaceCommandsCtx(), root, id);
 }
 fn handleExecuteCommand(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_workspace_commands.handleExecuteCommand(workspaceCommandsCtx(), root, id);

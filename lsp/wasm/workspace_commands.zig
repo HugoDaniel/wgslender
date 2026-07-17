@@ -77,6 +77,31 @@ pub fn handleReflect(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) vo
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
 
+pub fn handleConstInventory(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
+    if (id == null) return;
+    const params = root.getPtr("params") orelse return ctx.sendErrorCode(id, -32602, "missing params");
+    const td = json.objGet(params, "textDocument") orelse return ctx.sendErrorCode(id, -32602, "missing textDocument.uri");
+    const uri = json.strVal(json.objGet(td, "uri")) orelse return ctx.sendErrorCode(id, -32602, "missing textDocument.uri");
+
+    var arena = std.heap.ArenaAllocator.init(ctx.gpa);
+    defer arena.deinit();
+    const result = ctx.handler.runConstInventory(arena.allocator(), uri) catch |err| {
+        switch (err) {
+            error.UnknownCommand => ctx.sendErrorCode(id, -32601, "unknown command"),
+            error.InvalidParams => ctx.sendErrorCode(id, -32602, "invalid params"),
+            error.DocumentNotFound => ctx.sendErrorCode(id, -32602, "document not found"),
+            error.MinifyFailed => ctx.sendErrorCode(id, -32603, "const inventory failed"),
+            error.ReflectFailed => ctx.sendErrorCode(id, -32603, "const inventory failed"),
+            error.OutOfMemory => ctx.sendErrorCode(id, -32603, "out of memory"),
+        }
+        return;
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    wire_workspace.appendConstInventoryResult(&buf, ctx.gpa, result);
+    ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
+}
+
 pub fn handleExecuteCommand(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
     const params = root.getPtr("params") orelse {
         if (id != null) ctx.sendErrorCode(id, -32602, "missing params");
