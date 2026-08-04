@@ -1,1 +1,0 @@
-../../npm/wgslender/wasm_exec.js
