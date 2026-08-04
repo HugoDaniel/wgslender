@@ -59,7 +59,7 @@ console.log(info.entryPoints); // Entry point metadata
 zig build -Doptimize=ReleaseSafe   # → zig-out/bin/wgslender
 ```
 
-Requires [Zig master](https://ziglang.org/download/) (0.16.x).
+Requires [Zig 0.16.0](https://ziglang.org/download/).
 
 ### npm (Browser/Node.js)
 
@@ -464,7 +464,7 @@ cd npm/wgslender && npm test                # all 4 wrapper variants
 cd npm/wgslender-lsp && node test.js
 ```
 
-Requires [Zig master](https://ziglang.org/download/) (0.16.x) — install via `zigup master`.
+Requires [Zig 0.16.0](https://ziglang.org/download/) — install via `zigup 0.16.0`.
 
 ## Documentation
 

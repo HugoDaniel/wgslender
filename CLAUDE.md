@@ -269,7 +269,7 @@ await initialize({ wasmURL: '/wgslender.wasm' });
 
 ## Zig Notes
 
-- Requires Zig master (0.16.x) — install via `zigup master`
+- Requires Zig 0.16.0 — install via `zigup 0.16.0` (pinned in `build.zig.zon` `minimum_zig_version`)
 - Uses Zig 0.16's `std.process.Init` and `std.Io` APIs for the CLI
 - `ArrayListUnmanaged` inits with `.empty` (not `.{}`)
 - `SymbolIndex` uses `enum(u32)` with `none = maxInt(u32)`
