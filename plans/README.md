@@ -13,6 +13,12 @@ compile-time embedding proc-macros.
 | 3 | [03-c.md](03-c.md) | C via `libwgslender.a` (examples already exist — plan hardens + tests them) | `examples/c/` test harness |
 | 4 | [04-rust-package.md](04-rust-package.md) | Publishable Rust cargo workspace: full-ABI safe API + compile-time `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` proc-macros | `packages/rust/` |
 
+**Plan 4 is executed** — all ten blocks, landed in `packages/rust/`, gate green
+(`cd packages/rust && cargo xtask check`). Publishing to crates.io was explicitly
+out of its scope; what stands in the way is written up in
+[`packages/rust/README.md` § Publishing](../packages/rust/README.md#publishing).
+Plan 2 is therefore superseded.
+
 ## Other plans (not part of the embedding-example set)
 
 | Plan | File | Fixes |

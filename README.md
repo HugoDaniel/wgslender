@@ -67,6 +67,18 @@ Requires [Zig 0.16.0](https://ziglang.org/download/).
 npm install wgslender
 ```
 
+### Rust
+
+A cargo workspace lives in [`packages/rust/`](packages/rust/README.md): the
+whole C ABI behind a safe API, plus `include_wgsl!` / `include_wgsl_compressed!`
+/ `wgsl_module!` proc-macros that validate, minify and reflect shaders while
+`cargo build` runs. Not on crates.io yet — depend on it by path.
+
+```toml
+[dependencies]
+wgslender = { path = "../wgslender/packages/rust/wgslender" }
+```
+
 ### C Library
 
 ```bash
@@ -462,6 +474,9 @@ echo 'fn main() {}' | ./zig-out/bin/wgslender
 # NPM package tests
 cd packages/js-npm && npm test                # all 4 wrapper variants
 cd npm/wgslender-lsp && node test.js
+
+# Rust package gate (fmt, clippy, tests, doctests, docs)
+cd packages/rust && cargo xtask check
 ```
 
 Requires [Zig 0.16.0](https://ziglang.org/download/) — install via `zigup 0.16.0`.
@@ -472,6 +487,7 @@ Requires [Zig 0.16.0](https://ziglang.org/download/) — install via `zigup 0.16
 - [Why pre-validate WGSL?](docs/why-pre-validate-wgsl.md) - Benefits of build-time validation
 - [Why reflect WGSL?](docs/why-reflect-wgsl.md) - Benefits of shader reflection
 - [npm package docs](packages/js-npm/README.md) - JavaScript/TypeScript API
+- [Rust package docs](packages/rust/README.md) - Cargo workspace, compile-time embedding macros
 - [C API reference](docs/C-API.md) - C/FFI integration
 - [Building with wgslender](BUILDING_WITH_WGSLENDER.md) - Integration guide
 
