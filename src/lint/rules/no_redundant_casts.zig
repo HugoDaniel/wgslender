@@ -54,7 +54,7 @@ fn onExpr(opaque_ctx: *anyopaque, e: Ast.Expr) error{OutOfMemory}!void {
     const arg_kind = scalarKindOf(ctx, arg) orelse return;
     if (arg_kind != target) return;
 
-    try reportMatch(ctx, call, arg, target);
+    try reportMatch(ctx, e, arg, target);
 }
 
 /// For a call expression, return the scalar kind the constructor
@@ -98,12 +98,15 @@ fn exprKey(e: Ast.Expr) ?u32 {
 
 fn reportMatch(
     ctx: *Context,
-    call: *Ast.CallExpr,
+    call: Ast.Expr,
     arg: Ast.Expr,
     target: Types.ScalarKind,
 ) !void {
-    const start = call.loc;
-    const end = call.end_loc;
+    // Span, not `CallExpr.loc`/`end_loc`: those two bracket the argument
+    // list (`(x)`), so a fix built from them would leave the callee behind
+    // and rewrite `f32(x)` into `f32x`.
+    const start = exprStart(call);
+    const end = exprEnd(call);
     if (start == end) return;
 
     const arg_start = exprStart(arg);

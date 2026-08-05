@@ -1038,6 +1038,52 @@ test "no-redundant-casts: attaches fix that unwraps the argument" {
     try std.testing.expect(found);
 }
 
+test "no-redundant-casts: applying the fix removes the whole cast" {
+    // The fix text alone cannot catch a wrong range: replacing only `(x)`
+    // still yields the text "x", but leaves the `f32` callee behind and
+    // produces `f32x`. Apply the fix and read the result.
+    const source =
+        \\fn f() -> f32 {
+        \\  let x: f32 = 1.0;
+        \\  return f32(x);
+        \\}
+    ;
+    var r = try runLint(source, recommended_opts);
+    defer r.deinit(std.testing.allocator);
+
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const fixed = try wgslender.Linter.Fixer.apply(
+        arena_state.allocator(),
+        source,
+        r.lint.diagnostics.items(),
+    );
+
+    try std.testing.expectEqualStrings(
+        \\fn f() -> f32 {
+        \\  let x: f32 = 1.0;
+        \\  return x;
+        \\}
+    , fixed.fixed);
+}
+
+test "no-redundant-casts: reports at the cast, not at its open paren" {
+    var r = try runLint(
+        \\fn f() -> f32 {
+        \\  let x: f32 = 1.0;
+        \\  return f32(x);
+        \\}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    for (r.lint.diagnostics.items()) |d| {
+        if (!std.mem.eql(u8, d.code, "W0201")) continue;
+        // `  return f32(x);` — column 10 is the `f`, column 13 the `(`.
+        try std.testing.expectEqual(@as(u32, 10), d.range.start.column);
+        return;
+    }
+    return error.DiagnosticNotFound;
+}
+
 // =========================================================================
 // prefer-mix (W0203)
 // =========================================================================
