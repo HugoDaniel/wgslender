@@ -61,11 +61,16 @@ report_unused_disable_directives: ?bool = null,
 /// that drive the CLI minifier.
 lsp_minify: MinifySettings.Partial = .{},
 /// LSP-only feature toggles. `null` = unset → caller falls back to its
-/// own default (today: both default to `true`). Both flow from the
-/// `lsp.inlayHints.enabled` / `lsp.diagnostics.enabled` JSON keys, in
-/// either `wgslender.json` or the LSP `workspace/configuration` payload.
+/// own default (today: all three default to `true`). Each flows from the
+/// `lsp.inlayHints.enabled` / `lsp.diagnostics.enabled` /
+/// `lsp.lint.enabled` JSON keys, in either `wgslender.json` or the LSP
+/// `workspace/configuration` payload.
 lsp_inlay_hints_enabled: ?bool = null,
 lsp_diagnostics_enabled: ?bool = null,
+/// Gates the general lint packs (`lint_extends`, defaulting to
+/// `@wgslender/recommended`) in the LSP diagnostics path. Independent of
+/// `lsp_diagnostics_enabled`, which gates the validator's own output too.
+lsp_lint_enabled: ?bool = null,
 
 pub const config_file_names = [_][]const u8{
     "wgslender.json",

@@ -892,6 +892,7 @@ pub const lint_specs = [_]OptionSpec{
 pub const lsp_toggle_specs = [_]OptionSpec{
     .{ .field = "lsp_inlay_hints_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "inlayHints.enabled", .summary = "Enable LSP inlay hints (struct sizes, type echoes)" },
     .{ .field = "lsp_diagnostics_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "diagnostics.enabled", .summary = "Publish diagnostics from the LSP server" },
+    .{ .field = "lsp_lint_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "lint.enabled", .summary = "Run the configured lint packs in LSP diagnostics" },
 };
 
 /// All spec entries that drive the JSON parser today. Any new bool /

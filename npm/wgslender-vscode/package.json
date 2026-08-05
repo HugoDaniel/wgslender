@@ -112,6 +112,11 @@
           "default": true,
           "description": "Publish wgslender diagnostics (validation errors, lint warnings, minify hints)."
         },
+        "wgslender.lsp.lint.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run the configured lint packs (`extends`, defaulting to @wgslender/recommended) as part of diagnostics. Turning this off leaves validation errors but removes all lint warnings, including unused-symbol and dead-code."
+        },
         "wgslender.lsp.minifyMode": {
           "type": "string",
           "enum": ["off", "insights", "strict"],

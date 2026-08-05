@@ -34,7 +34,7 @@ pub fn validateDocument(handler: *Handler, source: []const u8) ![]LspDiagnostic 
     return diags;
 }
 
-/// Validate a document using the analysis cache and append unused symbol warnings.
+/// Validate a document using the analysis cache and append lint output.
 /// This is used by publishDiagnostics to produce a complete diagnostic set.
 /// Phase 7: when the doc's effective minifier-mode requires lint output,
 /// the cached `MinifyEstimator.EstimateResult` is threaded into the
@@ -44,12 +44,16 @@ pub fn validateDocumentFull(handler: *Handler, uri: []const u8) ![]LspDiagnostic
     return validateDocumentInner(handler, uri, .{ .include_minify_lints = true });
 }
 
-/// Phase 7 cheap path: validator + unused/dead-code warnings, without
-/// the M-rule lint block. The push-on-`didChange` path on both transports
-/// uses this so a 100-keystroke burst never enters the (potentially
-/// estimator-heavy) minify lint pipeline. The full path runs from the
-/// debounce timer (native) or the `wgslender/recomputeMinifyInsights`
-/// notification (WASM), each call warming the cache exactly once.
+/// Phase 7 cheap path: validator plus the general lint packs, without the
+/// M-rule block. The push-on-`didChange` path on both transports uses this
+/// so a 100-keystroke burst never enters the (potentially estimator-heavy)
+/// minify lint pipeline. The full path runs from the debounce timer
+/// (native) or the `wgslender/recomputeMinifyInsights` notification
+/// (WASM), each call warming the cache exactly once.
+///
+/// The split is about the `MinifyEstimator` dependency, not about lint in
+/// general: the configured packs carry no estimator cost, so they run on
+/// both paths and unused/dead-code warnings keep up with every keystroke.
 pub fn validateDocumentCheap(handler: *Handler, uri: []const u8) ![]LspDiagnostic {
     return validateDocumentInner(handler, uri, .{ .include_minify_lints = false });
 }
@@ -128,37 +132,53 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
         try diags.append(handler.gpa, convertDiagnostic(handler.gpa, source, &entry));
     }
 
-    // Append unused symbol warnings, dead code warnings, and unused binding warnings
-    Handler.appendUnusedWarnings(handler.gpa, analysis, &diags);
-    Handler.appendDeadCodeWarnings(handler.gpa, analysis, &diags);
-    Handler.appendUnusedBindingWarnings(handler.gpa, analysis, &diags);
-
-    // Phase 5a — when the document's effective minifier-mode escalates to
-    // strict (workspace setting or per-document magic comment), surface the
-    // `@wgslender/minify` lint pack alongside the validator's diagnostics.
+    // Lint. Two independent contributions, resolved into one `extends`
+    // list and one `Linter.run`:
+    //
+    //   * the general packs (`lint_extends`, defaulting to
+    //     `@wgslender/recommended`) — cheap, no estimator dependency, so
+    //     they run on the keystroke path as well as the debounced one;
+    //   * `@wgslender/minify` — only when the document's effective
+    //     minifier-mode escalates to strict (workspace setting or
+    //     per-document magic comment), and only on the full path, since
+    //     M0500 pulls in the `MinifyEstimator`.
+    //
+    // W0001/W0002/W0003 come from `no-unused-vars` / `no-dead-code` /
+    // `no-unused-binding` here — the hand-coded passes that used to emit
+    // them unconditionally were exact duplicates once the packs run.
+    //
     // The Linter owns its own arena; `convertDiagnostic` dupes every
     // borrowed slice into the handler's allocator, so the arena teardown
     // immediately after the loop is safe.
     const eff_minify = handler.effectiveMinifyFor(uri);
-    if (options.include_minify_lints and eff_minify.lintsActive()) {
-        var minify_arena = std.heap.ArenaAllocator.init(handler.gpa);
-        defer minify_arena.deinit();
-        const overrides = try buildMinifyRuleOverrides(
+    const minify_active = options.include_minify_lints and eff_minify.lintsActive();
+    const lint_active = handler.lintEnabled();
+
+    if (lint_active or minify_active) {
+        var lint_arena = std.heap.ArenaAllocator.init(handler.gpa);
+        defer lint_arena.deinit();
+        const arena = lint_arena.allocator();
+
+        const extends = try buildExtendsList(handler, arena, lint_active, minify_active);
+        const overrides = try buildRuleOverrides(
             handler,
-            minify_arena.allocator(),
+            arena,
             eff_minify,
             handler.mangleExternalBindings(),
+            minify_active,
         );
 
         // Phase 7 cache hand-off: warm the per-document estimator cache
         // once and let M-rules read the same pointer. `getMinifyEstimate`
         // returns null on parse-failure paths; in that case the rule
         // falls back to its own estimate (matching CLI lint behaviour).
-        const cached_estimate: ?*const MinifyEstimator.EstimateResult =
-            handler.getMinifyEstimate(uri, handler.estimatorOptionsFor(uri)) catch null;
+        const cached_estimate: ?*const MinifyEstimator.EstimateResult = if (minify_active)
+            handler.getMinifyEstimate(uri, handler.estimatorOptionsFor(uri)) catch null
+        else
+            null;
 
         var lint_result = try wgslender.Linter.run(handler.gpa, analysis, .{
-            .extends = &.{"@wgslender/minify"},
+            .extends = extends,
             .rules = overrides,
             .cached_minify_estimate = cached_estimate,
         });
@@ -190,11 +210,48 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
 /// When both apply to M0100, severity is taken from (1) and options are
 /// taken from (2). The Linter consumes a flat list, so we accumulate
 /// per-rule first and emit the merged entries last.
-fn buildMinifyRuleOverrides(
+/// Resolve the `extends` list for one `Linter.run`.
+///
+/// General packs come from the config layers (project first, then
+/// workspace — the Linter merges left-to-right, so a later pack wins on
+/// a shared rule id), falling back to `@wgslender/recommended` when
+/// neither layer configures one. `@wgslender/minify` is appended rather
+/// than run as a second, separate lint pass.
+fn buildExtendsList(
+    handler: *const Handler,
+    arena: std.mem.Allocator,
+    lint_active: bool,
+    minify_active: bool,
+) ![]const []const u8 {
+    var list: std.ArrayList([]const u8) = .empty;
+    if (lint_active) {
+        inline for (.{ &handler.project_config, &handler.workspace_config }) |cfg| {
+            for (cfg.lint_extends) |name| try list.append(arena, name);
+        }
+        if (list.items.len == 0) try list.append(arena, default_lint_pack);
+    }
+    if (minify_active) try list.append(arena, "@wgslender/minify");
+    return list.toOwnedSlice(arena);
+}
+
+const default_lint_pack = "@wgslender/recommended";
+
+/// Severity the LSP wants for a rule when the user hasn't said otherwise.
+/// Only departures from the pack's own default belong here.
+const lsp_severity_defaults = [_]struct { id: []const u8, severity: WgslDiagnostic.Severity }{
+    // `@wgslender/recommended` makes dead code a warning, which is right
+    // for a CLI gate but noisy in an editor, where half-written code is
+    // unreachable all the time. The hand-coded pass this replaced emitted
+    // it as a hint; keep that. An explicit user `rules` entry still wins.
+    .{ .id = "no-dead-code", .severity = .hint },
+};
+
+fn buildRuleOverrides(
     handler: *const Handler,
     arena: std.mem.Allocator,
     eff: MinifySettings.Effective,
     mangle_external_bindings: bool,
+    include_minify_gates: bool,
 ) ![]wgslender.Linter.Options.RuleOverride {
     const Acc = struct {
         id: []const u8,
@@ -202,6 +259,13 @@ fn buildMinifyRuleOverrides(
         options: ?std.json.Value = null,
     };
     var by_id: std.StringHashMapUnmanaged(Acc) = .empty;
+
+    // LSP-side severity defaults first, so user config overwrites them.
+    for (lsp_severity_defaults) |d| {
+        const gop = try by_id.getOrPut(arena, d.id);
+        if (!gop.found_existing) gop.value_ptr.* = .{ .id = d.id };
+        gop.value_ptr.severity = d.severity;
+    }
 
     // Severities (project + workspace, workspace wins on duplicate id).
     var sev_map: std.StringHashMapUnmanaged(WgslDiagnostic.Severity) = .empty;
@@ -213,8 +277,12 @@ fn buildMinifyRuleOverrides(
         gop.value_ptr.severity = kv.value_ptr.*;
     }
 
+    // The two M-rule option gates only apply when the minify pack is in
+    // `extends`. An override *enables* a rule (ESLint semantics), so
+    // stamping them unconditionally would leak minify hints into the
+    // default diagnostic set.
     // M0100 mangleExternalBindings gate.
-    if (mangle_external_bindings) {
+    if (include_minify_gates and mangle_external_bindings) {
         const m0100_id: []const u8 = "minify/external-binding-blocks-rename";
         var obj: std.json.ObjectMap = .empty;
         try obj.put(arena, "mangleExternalBindings", .{ .bool = true });
@@ -225,14 +293,14 @@ fn buildMinifyRuleOverrides(
 
     // M0500 maxBytes gate. JSON integers are i64, so widen `u32`
     // through that signed path before stamping the option value.
-    if (eff.budget_bytes) |budget| {
+    if (include_minify_gates) if (eff.budget_bytes) |budget| {
         const m0500_id: []const u8 = "minify/shader-exceeds-size-budget";
         var obj: std.json.ObjectMap = .empty;
         try obj.put(arena, "maxBytes", .{ .integer = @as(i64, budget) });
         const gop = try by_id.getOrPut(arena, m0500_id);
         if (!gop.found_existing) gop.value_ptr.* = .{ .id = m0500_id };
         gop.value_ptr.options = .{ .object = obj };
-    }
+    };
 
     var overrides: std.ArrayList(wgslender.Linter.Options.RuleOverride) = .empty;
     var it = by_id.iterator();
@@ -304,6 +372,23 @@ const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
 /// if either offset doesn't resolve, which preserves graceful degradation
 /// for malformed entries (in practice every Validator/Linter site sets a
 /// valid `offset`).
+/// Diagnostics that mark code as *superfluous* rather than wrong get the
+/// LSP `Unnecessary` tag, which editors render faded rather than
+/// underlined. Keyed by code so it applies however the diagnostic was
+/// produced — these three used to come from hand-coded passes that set
+/// the tag inline, and now come from the lint rules that superseded them.
+fn tagsForCode(code: []const u8) []const Handler.DiagnosticTag {
+    const unnecessary_codes = [_][]const u8{
+        WgslDiagnostic.Code.lint_no_unused_vars, // W0001
+        WgslDiagnostic.Code.lint_no_dead_code, // W0002
+        WgslDiagnostic.Code.lint_no_unused_binding, // W0003
+    };
+    for (unnecessary_codes) |c| {
+        if (std.mem.eql(u8, code, c)) return &.{.unnecessary};
+    }
+    return &.{};
+}
+
 pub fn convertDiagnostic(
     gpa: std.mem.Allocator,
     source: []const u8,
@@ -324,6 +409,7 @@ pub fn convertDiagnostic(
     }
     return .{
         .range = Handler.offsetRangeToLspRange(source, entry.range.start.offset, entry.range.end.offset) orelse zero_range,
+        .tags = tagsForCode(entry.code),
         .severity = switch (entry.severity) {
             .@"error" => .@"error",
             .warning => .warning,
@@ -529,6 +615,83 @@ test "producePullReport: type-mismatch source yields populated Full with result_
         },
         .unchanged => return error.TestUnexpectedResult,
     }
+}
+
+// =========================================================================
+// General lint packs over LSP (plan 05, Block 1)
+// =========================================================================
+
+fn countCode(diags: []const LspDiagnostic, code: []const u8) usize {
+    var n: usize = 0;
+    for (diags) |d| {
+        if (std.mem.eql(u8, d.code, code)) n += 1;
+    }
+    return n;
+}
+
+test "validateDocumentFull: @wgslender/recommended runs by default" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    // `x = x;` — no-self-assign (W0214), in @wgslender/recommended and with
+    // no hand-coded LSP equivalent. Default (non-strict-minify) mode.
+    try handler.openDocument(
+        test_pull_uri,
+        "@compute @workgroup_size(1) fn main() { var x = 1.0; x = x; }",
+        1,
+    );
+
+    const diags = try validateDocumentFull(&handler, test_pull_uri);
+    defer Handler.freeDiagnostics(std.testing.allocator, diags);
+
+    try std.testing.expectEqual(@as(usize, 1), countCode(diags, "W0214"));
+}
+
+test "validateDocumentCheap: general packs run on the cheap path too" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument(
+        test_pull_uri,
+        "@compute @workgroup_size(1) fn main() { var x = 1.0; x = x; }",
+        1,
+    );
+
+    const diags = try validateDocumentCheap(&handler, test_pull_uri);
+    defer Handler.freeDiagnostics(std.testing.allocator, diags);
+
+    try std.testing.expectEqual(@as(usize, 1), countCode(diags, "W0214"));
+}
+
+test "validateDocumentFull: exactly one W0001 per unused local" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    // Both the hand-coded pass and no-unused-vars emit W0001 off the same
+    // predicate — enabling the pack must not double-report.
+    try handler.openDocument(
+        test_pull_uri,
+        "@compute @workgroup_size(1) fn main() { var unused_local = 1.0; }",
+        1,
+    );
+
+    const diags = try validateDocumentFull(&handler, test_pull_uri);
+    defer Handler.freeDiagnostics(std.testing.allocator, diags);
+
+    try std.testing.expectEqual(@as(usize, 1), countCode(diags, "W0001"));
+}
+
+test "validateDocumentFull: lint.enabled=false silences the packs" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    handler.workspace_config.lsp_lint_enabled = false;
+    try handler.openDocument(
+        test_pull_uri,
+        "@compute @workgroup_size(1) fn main() { var x = 1.0; x = x; }",
+        1,
+    );
+
+    const diags = try validateDocumentFull(&handler, test_pull_uri);
+    defer Handler.freeDiagnostics(std.testing.allocator, diags);
+
+    try std.testing.expectEqual(@as(usize, 0), countCode(diags, "W0214"));
 }
 
 test "producePullReport: matching previousResultId yields Unchanged" {

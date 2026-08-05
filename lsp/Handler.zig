@@ -410,6 +410,15 @@ pub fn diagnosticsEnabled(self: *const Handler) bool {
         true;
 }
 
+/// Whether the general lint packs run in the diagnostics path, layered
+/// workspace → project → true. Distinct from `diagnosticsEnabled`, which
+/// gates the validator's own output as well; this only silences lint.
+pub fn lintEnabled(self: *const Handler) bool {
+    return self.workspace_config.lsp_lint_enabled orelse
+        self.project_config.lsp_lint_enabled orelse
+        true;
+}
+
 /// Resolve the single `mangleExternalBindings` knob, layered workspace →
 /// project → false. The same value drives the LSP M0100 hint gate, the
 /// estimator cache key, and `runShowMinifiedOutput` — and the local CLI
