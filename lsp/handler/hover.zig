@@ -210,7 +210,12 @@ fn resolveExprSymbol(expr: Ast.Expr) ?Ast.SymbolIndex {
 }
 
 /// Format a function signature with parameter names and resolved types.
-fn formatFunctionSignature(buf: *[1024]u8, module: *const Ast.Module, sym_idx: Ast.SymbolIndex, fn_type: *const wgslender.Types.Function) ?[]const u8 {
+///
+/// Shared with `signature_help.zig`, which needs the same
+/// validator-resolved rendering (raw `Ast.Type` can't spell out
+/// pointers, textures, samplers or arrays). Returns only the label —
+/// callers wanting per-parameter names collect those themselves.
+pub fn formatFunctionSignature(buf: *[1024]u8, module: *const Ast.Module, sym_idx: Ast.SymbolIndex, fn_type: *const wgslender.Types.Function) ?[]const u8 {
     // Find the FunctionDecl matching this symbol
     const func_decl = for (module.declarations.items) |decl| {
         switch (decl) {
@@ -231,7 +236,9 @@ fn formatFunctionSignature(buf: *[1024]u8, module: *const Ast.Module, sym_idx: A
             const sep = std.fmt.bufPrint(buf[pos..], ", ", .{}) catch return null;
             pos += sep.len;
         }
-        const p_name = module.symbols.items[param.name.index()].original_name;
+        // A parameter whose symbol failed to bind has an invalid index —
+        // guard before indexing rather than reading out of bounds.
+        const p_name = if (param.name.isValid()) module.symbols.items[param.name.index()].original_name else "_";
         const p_type_str = if (pi < fn_type.parameters.len) fn_type.parameters[pi].string() else "?";
         const p = std.fmt.bufPrint(buf[pos..], "{s}: {s}", .{ p_name, p_type_str }) catch return null;
         pos += p.len;

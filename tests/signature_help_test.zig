@@ -134,3 +134,70 @@ test "signature help: position past end returns null" {
     const result = try ctx.handler.computeSignatureHelp("test://file.wgsl", .{ .line = 99, .character = 0 });
     try std.testing.expect(result == null);
 }
+
+// =========================================================================
+// Real signatures (plan 05, Block 2)
+// =========================================================================
+
+test "signature help: builtin label is the spec signature, not an arity range" {
+    const source: [:0]const u8 = "fn f() { let x = clamp(); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const call_pos = std.mem.indexOf(u8, source, "clamp(") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(call_pos + 6)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeSignatureHelp("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.label);
+    // The WGSL spec signature: "fn clamp(e: T, low: T, high: T) -> T"
+    try std.testing.expect(std.mem.indexOf(u8, result.?.label, "clamp") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.label, "->") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.label, "low") != null);
+    // ...and specifically not the synthesized arity range.
+    try std.testing.expect(std.mem.indexOf(u8, result.?.label, "args)") == null);
+}
+
+// Struct parameters are `.ident` in the AST, so the hand-rolled switch already
+// renders them — the `"?"` fallback only bites texture/sampler/pointer/array.
+test "signature help: texture and sampler parameters show their types, not \"?\"" {
+    const source: [:0]const u8 =
+        \\@group(0) @binding(0) var t: texture_2d<f32>;
+        \\@group(0) @binding(1) var s: sampler;
+        \\fn tap(tex: texture_2d<f32>, smp: sampler, uv: vec2f) -> vec4f {
+        \\  return textureSampleLevel(tex, smp, uv, 0.0);
+        \\}
+        \\@fragment fn f() -> @location(0) vec4f { return tap(t, s, vec2f(0.0)); }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const call_pos = std.mem.indexOf(u8, source, "tap(t,") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(call_pos + 4)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeSignatureHelp("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer {
+        std.testing.allocator.free(result.?.label);
+        std.testing.allocator.free(result.?.parameters);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, result.?.label, "texture_2d") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.label, "sampler") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.label, "?") == null);
+    try std.testing.expectEqual(@as(usize, 3), result.?.parameters.len);
+}
+
+test "signature help: pointer parameter shows its type, not \"?\"" {
+    const source: [:0]const u8 =
+        \\fn bump(p: ptr<function, f32>) { *p = *p + 1.0; }
+        \\fn f() { var v = 0.0; bump(&v); }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const call_pos = std.mem.indexOf(u8, source, "bump(&v") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(call_pos + 5)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeSignatureHelp("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer {
+        std.testing.allocator.free(result.?.label);
+        std.testing.allocator.free(result.?.parameters);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, result.?.label, "ptr") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.label, "?") == null);
+}
