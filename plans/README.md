@@ -13,6 +13,12 @@ compile-time embedding proc-macros.
 | 3 | [03-c.md](03-c.md) | C via `libwgslender.a` (examples already exist — plan hardens + tests them) | `examples/c/` test harness |
 | 4 | [04-rust-package.md](04-rust-package.md) | Publishable Rust cargo workspace: full-ABI safe API + compile-time `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` proc-macros | `packages/rust/` |
 
+## Other plans (not part of the embedding-example set)
+
+| Plan | File | Fixes |
+|------|------|-------|
+| 5 | [05-lsp-validation-integration.md](05-lsp-validation-integration.md) | Five gaps where LSP handlers (signature help, semantic tokens, completion, code actions) bypass validator-resolved data, plus general lint packs never surfacing over LSP |
+
 ## Suggested execution order
 
 The plans are **independent** — any order works, one plan (or one block) per session.
