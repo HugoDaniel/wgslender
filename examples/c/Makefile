@@ -13,4 +13,7 @@ all: $(EXAMPLES)
 clean:
 	rm -f $(EXAMPLES)
 
-.PHONY: all clean
+test: all
+	./run_tests.sh
+
+.PHONY: all clean test
