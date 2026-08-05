@@ -1249,13 +1249,22 @@ test "offsetRangeToLspRange: range spans a 4-byte char" {
 }
 
 
+/// Mapper over an empty document, for the `convertDiagnostic` unit tests
+/// below: their entries carry zero offsets, so every range resolves to
+/// 0:0 regardless of the document. Caller deinits.
+fn testEmptyMapper() !Handler.PositionMapper {
+    return Handler.PositionMapper.init(std.testing.allocator, "");
+}
+
 test "convertDiagnostic OOM on message dupe yields empty message" {
     // FailingAllocator that fails on the first allocation (the message dupe).
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     const alloc = failing.allocator();
 
     const entry = WgslDiagnostic.Entry{ .message = "some error" };
-    const result = convertDiagnostic(alloc, "", &entry);
+    var pm = try testEmptyMapper();
+    defer pm.deinit(std.testing.allocator);
+    const result = convertDiagnostic(alloc, &pm, &entry);
 
     // OOM fallback: message should be empty, not a dangling borrowed slice.
     try std.testing.expectEqual(@as(usize, 0), result.message.len);
@@ -1278,7 +1287,9 @@ test "convertDiagnostic OOM on related message dupe yields empty message" {
         .message = "main error",
         .related = &related,
     };
-    const result = convertDiagnostic(alloc, "", &entry);
+    var pm = try testEmptyMapper();
+    defer pm.deinit(std.testing.allocator);
+    const result = convertDiagnostic(alloc, &pm, &entry);
 
     // The related array was allocated (alloc #0), but the dupe (#1) failed.
     if (result.related.len > 0) {
@@ -1301,7 +1312,9 @@ test "convertDiagnostic with message and related round-trips through freeDiagnos
         .code = "E0100",
         .related = &related,
     };
-    const result = convertDiagnostic(std.testing.allocator, "", &entry);
+    var pm = try testEmptyMapper();
+    defer pm.deinit(std.testing.allocator);
+    const result = convertDiagnostic(std.testing.allocator, &pm, &entry);
 
     // Verify all strings were duped (owned, not borrowed).
     try std.testing.expectEqualStrings("duplicate definition", result.message);

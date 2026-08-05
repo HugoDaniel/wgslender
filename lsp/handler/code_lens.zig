@@ -45,6 +45,11 @@ pub fn computeCodeLens(handler: *Handler, uri: []const u8) ![]CodeLensInfo {
     const module = analysis.module orelse return &.{};
     const source = module.source;
 
+    // One line index for the request: this loop converts one offset per
+    // result, and `Handler.offsetRangeToLspRange` scans from byte 0.
+    var pm = try Handler.PositionMapper.init(handler.gpa, source);
+    defer pm.deinit(handler.gpa);
+
     var lenses: std.ArrayList(CodeLensInfo) = .empty;
     defer lenses.deinit(handler.gpa);
 
@@ -63,7 +68,7 @@ pub fn computeCodeLens(handler: *Handler, uri: []const u8) ![]CodeLensInfo {
         const refs = Edits.findReferences(handler.gpa, module, name_ref, false) catch continue;
         defer handler.gpa.free(refs);
 
-        const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
+        const range = pm.range(sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
         var buf: [64]u8 = undefined;
         const title = std.fmt.bufPrint(&buf, "{d} reference{s}", .{ refs.len, if (refs.len == 1) "" else "s" }) catch continue;
         try lenses.append(handler.gpa, .{
@@ -85,7 +90,7 @@ pub fn computeCodeLens(handler: *Handler, uri: []const u8) ![]CodeLensInfo {
                 if (!f.name.isValid()) continue;
                 const sym = module.symbols.items[f.name.index()];
                 if (!sym.flags.is_entry_point) continue;
-                const range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
+                const range = pm.range(sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
 
                 if (binding_summary) |summary| {
                     const title = try handler.gpa.dupe(u8, summary);

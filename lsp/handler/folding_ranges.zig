@@ -17,6 +17,11 @@ pub fn computeFoldingRanges(handler: *Handler, uri: []const u8) ![]FoldingRangeI
     const module = analysis.module orelse return &.{};
     const source = module.source;
 
+    // One line index for the request: this loop converts two offsets per
+    // declaration, and `Handler.offsetToLspPosition` scans from byte 0.
+    var pm = try Handler.PositionMapper.init(handler.gpa, source);
+    defer pm.deinit(handler.gpa);
+
     var ranges: std.ArrayList(FoldingRangeInfo) = .empty;
     defer ranges.deinit(handler.gpa);
 
@@ -26,10 +31,10 @@ pub fn computeFoldingRanges(handler: *Handler, uri: []const u8) ![]FoldingRangeI
                 if (f.body == null) continue;
                 if (!f.name.isValid()) continue;
                 const sym = module.symbols.items[f.name.index()];
-                const start_pos = Handler.offsetToLspPosition(source, sym.loc) orelse continue;
+                const start_pos = pm.position(sym.loc) orelse continue;
                 // Find closing brace by scanning source
                 if (findClosingBrace(source, sym.loc)) |end_offset| {
-                    const end_pos = Handler.offsetToLspPosition(source, end_offset) orelse continue;
+                    const end_pos = pm.position(end_offset) orelse continue;
                     if (end_pos.line > start_pos.line) {
                         try ranges.append(handler.gpa, .{ .start_line = start_pos.line, .end_line = end_pos.line, .kind = .region });
                     }
@@ -38,9 +43,9 @@ pub fn computeFoldingRanges(handler: *Handler, uri: []const u8) ![]FoldingRangeI
             .@"struct" => |s| {
                 if (!s.name.isValid()) continue;
                 const sym = module.symbols.items[s.name.index()];
-                const start_pos = Handler.offsetToLspPosition(source, sym.loc) orelse continue;
+                const start_pos = pm.position(sym.loc) orelse continue;
                 if (findClosingBrace(source, sym.loc)) |end_offset| {
-                    const end_pos = Handler.offsetToLspPosition(source, end_offset) orelse continue;
+                    const end_pos = pm.position(end_offset) orelse continue;
                     if (end_pos.line > start_pos.line) {
                         try ranges.append(handler.gpa, .{ .start_line = start_pos.line, .end_line = end_pos.line, .kind = .region });
                     }

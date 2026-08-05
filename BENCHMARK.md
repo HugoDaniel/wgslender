@@ -237,6 +237,36 @@ Future work: add `tests/incremental_bench_test.zig` alongside
 - `Handler.changeDocumentIncremental` + `analyzeDocument` round-trip
   latency, semantic vs trivia-only.
 
+### LSP request handlers — offset→position conversion
+
+`zig build bench-lsp -Doptimize=ReleaseFast` times the request handlers
+that convert one byte offset per result. Numbers below are ms per call on
+an M-series Mac, 50 iterations, analysis cache warm (so they measure the
+request *on top of* a cache hit, not the parse).
+
+Before, every conversion ran `Handler.offsetToLspPosition`, which scans
+from byte 0 — so a handler emitting N results on an S-byte document did
+O(N × S) work. `lsp/PositionMapper.zig` indexes line starts once per
+request and each conversion becomes a binary search plus a scan of the
+target line.
+
+| Request (sceneW.wgsl, 70 KB) | Results | Before | After |
+|---|---|---|---|
+| `semanticTokens` | 7,887 tokens | 227.53 ms | **2.88 ms** |
+| `documentSymbols` | 142 symbols | 14.03 ms | **0.23 ms** |
+| `codeLens` | 80 lenses | 6.52 ms | **2.79 ms** |
+| `diagnostics` (`validateDocumentFull`) | 70 diags | 4.09 ms | **0.85 ms** |
+| `foldingRanges` | 70 ranges | 3.67 ms | **0.13 ms** |
+
+`semanticTokens` runs on every keystroke, which is what made it the worst
+of these. `codeLens` keeps a larger residue than the others because its
+remaining cost is `Edits.findReferences` per declaration, not position
+conversion.
+
+Correctness is not gated by this benchmark. `tests/lsp_position_mapper_test.zig`
+asserts the mapper agrees with the linear helpers at every offset of a
+corpus that includes all 70,035 offsets of `sceneW.wgsl`.
+
 ### Arena growth under sustained edits
 
 Symbol-free hot-path reparses extend `prev.arena` in place rather than

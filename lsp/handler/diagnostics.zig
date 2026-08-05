@@ -24,11 +24,14 @@ pub fn validateDocument(handler: *Handler, source: []const u8) ![]LspDiagnostic 
     var result = try wgslender.validateWithOptions(handler.gpa, source_z, .{});
     defer result.deinit();
 
+    var pm = try Handler.PositionMapper.init(handler.gpa, source_z);
+    defer pm.deinit(handler.gpa);
+
     const entries = result.diagnostics.diagnostics.items;
     const diags = try handler.gpa.alloc(LspDiagnostic, entries.len);
 
     for (entries, 0..) |entry, i| {
-        diags[i] = convertDiagnostic(handler.gpa, source_z, &entry);
+        diags[i] = convertDiagnostic(handler.gpa, &pm, &entry);
     }
 
     return diags;
@@ -120,6 +123,11 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
     const analysis = try handler.analyzeDocument(uri);
     const source: []const u8 = if (analysis.module) |m| m.source else handler.getDocumentSource(uri) orelse "";
 
+    // One line index for the whole diagnostic set — validator entries,
+    // their related-information spans, and every lint entry below.
+    var pm = try Handler.PositionMapper.init(handler.gpa, source);
+    defer pm.deinit(handler.gpa);
+
     const entries = analysis.diagnostics.diagnostics.items;
     var diags: std.ArrayList(LspDiagnostic) = .empty;
     errdefer {
@@ -129,7 +137,7 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
 
     try diags.ensureTotalCapacity(handler.gpa, entries.len + 8);
     for (entries) |entry| {
-        try diags.append(handler.gpa, convertDiagnostic(handler.gpa, source, &entry));
+        try diags.append(handler.gpa, convertDiagnostic(handler.gpa, &pm, &entry));
     }
 
     // Lint. Two independent contributions, resolved into one `extends`
@@ -184,7 +192,7 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
         });
         defer lint_result.deinit(handler.gpa);
         for (lint_result.diagnostics.items()) |entry| {
-            try diags.append(handler.gpa, convertDiagnostic(handler.gpa, source, &entry));
+            try diags.append(handler.gpa, convertDiagnostic(handler.gpa, &pm, &entry));
         }
     }
 
@@ -366,11 +374,12 @@ const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
 
 /// Convert a wgslender `Diagnostic.Entry` (1-based line/column, byte
 /// `offset` field) to an LSP `Diagnostic` (0-based line, UTF-16 code-unit
-/// `character`). The `source` argument is the document the diagnostic was
-/// produced against — used by `offsetRangeToLspRange` to count UTF-16
-/// units across multi-byte UTF-8 sequences. Falls back to a zero-range
-/// if either offset doesn't resolve, which preserves graceful degradation
-/// for malformed entries (in practice every Validator/Linter site sets a
+/// `character`). The `pm` argument maps the document the diagnostic was
+/// produced against; it counts UTF-16 units across multi-byte UTF-8
+/// sequences, and being line-indexed it costs one scan per diagnostic
+/// *set* rather than one per entry. Falls back to a zero-range if either
+/// offset doesn't resolve, which preserves graceful degradation for
+/// malformed entries (in practice every Validator/Linter site sets a
 /// valid `offset`).
 /// Diagnostics that mark code as *superfluous* rather than wrong get the
 /// LSP `Unnecessary` tag, which editors render faded rather than
@@ -391,7 +400,7 @@ fn tagsForCode(code: []const u8) []const Handler.DiagnosticTag {
 
 pub fn convertDiagnostic(
     gpa: std.mem.Allocator,
-    source: []const u8,
+    pm: *const Handler.PositionMapper,
     entry: *const WgslDiagnostic.Entry,
 ) LspDiagnostic {
     const zero_range: Range = .{ .start = .{ .line = 0, .character = 0 }, .end = .{ .line = 0, .character = 0 } };
@@ -400,7 +409,7 @@ pub fn convertDiagnostic(
         if (gpa.alloc(LspRelatedInfo, entry.related.len)) |rel| {
             for (entry.related, 0..) |r, ri| {
                 rel[ri] = .{
-                    .range = Handler.offsetRangeToLspRange(source, r.range.start.offset, r.range.end.offset) orelse zero_range,
+                    .range = pm.range(r.range.start.offset, r.range.end.offset) orelse zero_range,
                     .message = gpa.dupe(u8, r.message) catch "",
                 };
             }
@@ -408,7 +417,7 @@ pub fn convertDiagnostic(
         } else |_| {}
     }
     return .{
-        .range = Handler.offsetRangeToLspRange(source, entry.range.start.offset, entry.range.end.offset) orelse zero_range,
+        .range = pm.range(entry.range.start.offset, entry.range.end.offset) orelse zero_range,
         .tags = tagsForCode(entry.code),
         .severity = switch (entry.severity) {
             .@"error" => .@"error",
@@ -446,29 +455,44 @@ pub fn freeDiagnostics(gpa: std.mem.Allocator, diags: []LspDiagnostic) void {
     gpa.free(diags);
 }
 
+/// Mapper over an empty document, for the `convertDiagnostic` unit tests
+/// below: their entries carry zero offsets, so every range resolves to
+/// 0:0 regardless of the document. Caller deinits.
+fn testEmptyMapper() !Handler.PositionMapper {
+    return Handler.PositionMapper.init(std.testing.allocator, "");
+}
+
 test "convertDiagnostic preserves code" {
     const entry = WgslDiagnostic.Entry{ .code = "E0200" };
-    const result = convertDiagnostic(std.testing.allocator, "", &entry);
+    var pm = try testEmptyMapper();
+    defer pm.deinit(std.testing.allocator);
+    const result = convertDiagnostic(std.testing.allocator, &pm, &entry);
     try std.testing.expectEqualStrings("E0200", result.code);
 }
 
 test "convertDiagnostic builds spec_url from spec_ref" {
     const entry = WgslDiagnostic.Entry{ .code = "E0700", .spec_ref = "uniformity" };
-    const result = convertDiagnostic(std.testing.allocator, "", &entry);
+    var pm = try testEmptyMapper();
+    defer pm.deinit(std.testing.allocator);
+    const result = convertDiagnostic(std.testing.allocator, &pm, &entry);
     defer std.testing.allocator.free(result.spec_url);
     try std.testing.expectEqualStrings("https://www.w3.org/TR/WGSL/#uniformity", result.spec_url);
 }
 
 test "convertDiagnostic omits code and spec_url when empty" {
     const entry = WgslDiagnostic.Entry{};
-    const result = convertDiagnostic(std.testing.allocator, "", &entry);
+    var pm = try testEmptyMapper();
+    defer pm.deinit(std.testing.allocator);
+    const result = convertDiagnostic(std.testing.allocator, &pm, &entry);
     try std.testing.expectEqual(@as(usize, 0), result.code.len);
     try std.testing.expectEqual(@as(usize, 0), result.spec_url.len);
 }
 
 test "convertDiagnostic omits spec_url when code empty" {
     const entry = WgslDiagnostic.Entry{ .spec_ref = "uniformity" };
-    const result = convertDiagnostic(std.testing.allocator, "", &entry);
+    var pm = try testEmptyMapper();
+    defer pm.deinit(std.testing.allocator);
+    const result = convertDiagnostic(std.testing.allocator, &pm, &entry);
     try std.testing.expectEqual(@as(usize, 0), result.spec_url.len);
 }
 

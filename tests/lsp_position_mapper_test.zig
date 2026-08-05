@@ -43,6 +43,8 @@ const corpus = [_][]const u8{
     // A `\n` immediately following a `\r\n` pair: the second break must
     // still open its own line.
     "a\r\n\nb",
+    // `\n\r` is NOT a pair — two breaks, two new lines.
+    "a\n\rb",
     "// " ++ cjk ++ cjk ++ "\nconst x = 1;",
     "let a = 1; /*" ++ emoji ++ "*/ let b = 2;\n" ++ cjk ++ latin1 ++ "\n",
     "fn f() {\r\n  // a" ++ latin1 ++ cjk ++ emoji ++ "\n  let x = 1;\n}",

@@ -30,6 +30,11 @@ pub fn computeDocumentSymbols(handler: *Handler, uri: []const u8) ![]DocumentSym
     const module = analysis.module orelse return &.{};
     const source = module.source;
 
+    // One line index for the request: this loop converts one offset per
+    // result, and `Handler.offsetRangeToLspRange` scans from byte 0.
+    var pm = try Handler.PositionMapper.init(handler.gpa, source);
+    defer pm.deinit(handler.gpa);
+
     var symbols: std.ArrayList(DocumentSymbolInfo) = .empty;
     defer symbols.deinit(handler.gpa);
 
@@ -50,7 +55,7 @@ pub fn computeDocumentSymbols(handler: *Handler, uri: []const u8) ![]DocumentSym
         };
 
         // Selection range = the name identifier
-        const sel_range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
+        const sel_range = pm.range(sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse continue;
 
         // Enclosing range: from this decl's name to next decl's name (or EOF)
         const range_end: u32 = if (di + 1 < module.declarations.items.len) blk: {
@@ -58,7 +63,7 @@ pub fn computeDocumentSymbols(handler: *Handler, uri: []const u8) ![]DocumentSym
             if (next_ref.isValid()) break :blk module.symbols.items[next_ref.index()].loc;
             break :blk @as(u32, @intCast(source.len));
         } else @as(u32, @intCast(source.len));
-        const range = Handler.offsetRangeToLspRange(source, sym.loc, range_end) orelse continue;
+        const range = pm.range(sym.loc, range_end) orelse continue;
 
         // Children for structs
         var children: []const DocumentSymbolInfo = &.{};
@@ -68,7 +73,7 @@ pub fn computeDocumentSymbols(handler: *Handler, uri: []const u8) ![]DocumentSym
             for (st.members.items) |member| {
                 if (!member.name.isValid()) continue;
                 const m_sym = module.symbols.items[member.name.index()];
-                const m_sel = Handler.offsetRangeToLspRange(source, m_sym.loc, m_sym.loc + @as(u32, @intCast(m_sym.original_name.len))) orelse continue;
+                const m_sel = pm.range(m_sym.loc, m_sym.loc + @as(u32, @intCast(m_sym.original_name.len))) orelse continue;
                 ch.append(handler.gpa, .{
                     .name = m_sym.original_name,
                     .kind = .field,

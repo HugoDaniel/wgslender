@@ -60,6 +60,11 @@ pub fn computeIncomingCalls(handler: *Handler, uri: []const u8, target_name: []c
     const module = analysis.module orelse return &.{};
     const source = module.source;
 
+    // One line index for the request: every call site found in the walk
+    // needs a range, and `offsetRangeToLspRange` scans from byte 0.
+    var pm = try Handler.PositionMapper.init(handler.gpa, source);
+    defer pm.deinit(handler.gpa);
+
     var calls: std.ArrayList(IncomingCall) = .empty;
     defer calls.deinit(handler.gpa);
 
@@ -75,10 +80,10 @@ pub fn computeIncomingCalls(handler: *Handler, uri: []const u8, target_name: []c
                 // Scan for calls to target in this function body
                 var call_locs: std.ArrayList(Range) = .empty;
                 defer call_locs.deinit(handler.gpa);
-                findCallsInCompound(handler.gpa, module, f.body.?, target_name, source, &call_locs);
+                findCallsInCompound(handler.gpa, module, f.body.?, target_name, &pm, &call_locs);
 
                 if (call_locs.items.len > 0) {
-                    const sel_range = Handler.offsetRangeToLspRange(source, caller_sym.loc, caller_sym.loc + @as(u32, @intCast(caller_sym.original_name.len))) orelse continue;
+                    const sel_range = pm.range(caller_sym.loc, caller_sym.loc + @as(u32, @intCast(caller_sym.original_name.len))) orelse continue;
                     try calls.append(handler.gpa, .{
                         .from = .{
                             .name = caller_sym.original_name,
@@ -102,6 +107,11 @@ pub fn computeOutgoingCalls(handler: *Handler, uri: []const u8, caller_name: []c
     const module = analysis.module orelse return &.{};
     const source = module.source;
 
+    // One line index for the request: every call site found in the walk
+    // needs a range, and `offsetRangeToLspRange` scans from byte 0.
+    var pm = try Handler.PositionMapper.init(handler.gpa, source);
+    defer pm.deinit(handler.gpa);
+
     // Find the caller function
     for (module.declarations.items) |decl| {
         switch (decl) {
@@ -119,7 +129,7 @@ pub fn computeOutgoingCalls(handler: *Handler, uri: []const u8, caller_name: []c
                     calls_map.deinit(handler.gpa);
                 }
 
-                collectOutgoingCalls(handler.gpa, module, f.body.?, source, &calls_map);
+                collectOutgoingCalls(handler.gpa, module, f.body.?, &pm, &calls_map);
 
                 var results: std.ArrayList(OutgoingCall) = .empty;
                 defer results.deinit(handler.gpa);
@@ -130,7 +140,7 @@ pub fn computeOutgoingCalls(handler: *Handler, uri: []const u8, caller_name: []c
                     // Find callee symbol for range info
                     for (module.symbols.items) |callee_sym| {
                         if (std.mem.eql(u8, callee_sym.original_name, callee_name) and callee_sym.kind == .function) {
-                            const sel_range = Handler.offsetRangeToLspRange(source, callee_sym.loc, callee_sym.loc + @as(u32, @intCast(callee_sym.original_name.len))) orelse break;
+                            const sel_range = pm.range(callee_sym.loc, callee_sym.loc + @as(u32, @intCast(callee_sym.original_name.len))) orelse break;
                             results.append(handler.gpa, .{
                                 .to = .{
                                     .name = callee_name,
@@ -158,11 +168,11 @@ fn findCallsInCompound(
     module: *const Ast.Module,
     compound: *const Ast.CompoundStmt,
     target_name: []const u8,
-    source: [:0]const u8,
+    pm: *const Handler.PositionMapper,
     locations: *std.ArrayList(Range),
 ) void {
     for (compound.stmts.items) |stmt| {
-        findCallsInStmt(gpa, module, stmt, target_name, source, locations);
+        findCallsInStmt(gpa, module, stmt, target_name, pm, locations);
     }
 }
 
@@ -171,54 +181,54 @@ fn findCallsInStmt(
     module: *const Ast.Module,
     stmt: Ast.Stmt,
     target_name: []const u8,
-    source: [:0]const u8,
+    pm: *const Handler.PositionMapper,
     locations: *std.ArrayList(Range),
 ) void {
     switch (stmt) {
-        .compound => |c| findCallsInCompound(gpa, module, c, target_name, source, locations),
+        .compound => |c| findCallsInCompound(gpa, module, c, target_name, pm, locations),
         .@"return" => |r| {
-            if (r.value) |v| findCallsInExprTree(gpa, module, v, target_name, source, locations);
+            if (r.value) |v| findCallsInExprTree(gpa, module, v, target_name, pm, locations);
         },
         .@"if" => |i| {
-            findCallsInExprTree(gpa, module, i.condition, target_name, source, locations);
-            findCallsInCompound(gpa, module, i.body, target_name, source, locations);
-            if (i.else_branch) |eb| findCallsInStmt(gpa, module, eb, target_name, source, locations);
+            findCallsInExprTree(gpa, module, i.condition, target_name, pm, locations);
+            findCallsInCompound(gpa, module, i.body, target_name, pm, locations);
+            if (i.else_branch) |eb| findCallsInStmt(gpa, module, eb, target_name, pm, locations);
         },
         .@"for" => |f| {
-            if (f.init_stmt) |init_s| findCallsInStmt(gpa, module, init_s, target_name, source, locations);
-            if (f.condition) |cond| findCallsInExprTree(gpa, module, cond, target_name, source, locations);
-            if (f.update) |upd| findCallsInStmt(gpa, module, upd, target_name, source, locations);
-            findCallsInCompound(gpa, module, f.body, target_name, source, locations);
+            if (f.init_stmt) |init_s| findCallsInStmt(gpa, module, init_s, target_name, pm, locations);
+            if (f.condition) |cond| findCallsInExprTree(gpa, module, cond, target_name, pm, locations);
+            if (f.update) |upd| findCallsInStmt(gpa, module, upd, target_name, pm, locations);
+            findCallsInCompound(gpa, module, f.body, target_name, pm, locations);
         },
         .@"while" => |w| {
-            findCallsInExprTree(gpa, module, w.condition, target_name, source, locations);
-            findCallsInCompound(gpa, module, w.body, target_name, source, locations);
+            findCallsInExprTree(gpa, module, w.condition, target_name, pm, locations);
+            findCallsInCompound(gpa, module, w.body, target_name, pm, locations);
         },
         .loop => |l| {
-            findCallsInCompound(gpa, module, l.body, target_name, source, locations);
-            if (l.continuing) |cont| findCallsInCompound(gpa, module, cont, target_name, source, locations);
+            findCallsInCompound(gpa, module, l.body, target_name, pm, locations);
+            if (l.continuing) |cont| findCallsInCompound(gpa, module, cont, target_name, pm, locations);
         },
         .assign => |a| {
-            findCallsInExprTree(gpa, module, a.left, target_name, source, locations);
-            findCallsInExprTree(gpa, module, a.right, target_name, source, locations);
+            findCallsInExprTree(gpa, module, a.left, target_name, pm, locations);
+            findCallsInExprTree(gpa, module, a.right, target_name, pm, locations);
         },
-        .call => |c| findCallsInExprTree(gpa, module, .{ .call = c.call }, target_name, source, locations),
+        .call => |c| findCallsInExprTree(gpa, module, .{ .call = c.call }, target_name, pm, locations),
         .decl => |d| {
             switch (d.decl) {
                 .let => |l| {
-                    if (l.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, source, locations);
+                    if (l.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, pm, locations);
                 },
                 .@"var" => |v| {
-                    if (v.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, source, locations);
+                    if (v.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, pm, locations);
                 },
                 .@"const" => |cc| {
-                    if (cc.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, source, locations);
+                    if (cc.initializer) |e| findCallsInExprTree(gpa, module, e, target_name, pm, locations);
                 },
                 else => {},
             }
         },
-        .incr_decr => |i| findCallsInExprTree(gpa, module, i.expr, target_name, source, locations),
-        .break_if => |b| findCallsInExprTree(gpa, module, b.condition, target_name, source, locations),
+        .incr_decr => |i| findCallsInExprTree(gpa, module, i.expr, target_name, pm, locations),
+        .break_if => |b| findCallsInExprTree(gpa, module, b.condition, target_name, pm, locations),
         else => {},
     }
 }
@@ -228,7 +238,7 @@ fn findCallsInExprTree(
     module: *const Ast.Module,
     expr: Ast.Expr,
     target_name: []const u8,
-    source: [:0]const u8,
+    pm: *const Handler.PositionMapper,
     locations: *std.ArrayList(Range),
 ) void {
     switch (expr) {
@@ -237,28 +247,28 @@ fn findCallsInExprTree(
                 switch (func) {
                     .ident => |id| {
                         if (std.mem.eql(u8, id.name, target_name)) {
-                            if (Handler.offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len)))) |range| {
+                            if (pm.range(id.loc, id.loc + @as(u32, @intCast(id.name.len)))) |range| {
                                 locations.append(gpa, range) catch {};
                             }
                         }
                     },
                     else => {},
                 }
-                findCallsInExprTree(gpa, module, func, target_name, source, locations);
+                findCallsInExprTree(gpa, module, func, target_name, pm, locations);
             }
-            for (e.args.items) |arg| findCallsInExprTree(gpa, module, arg, target_name, source, locations);
+            for (e.args.items) |arg| findCallsInExprTree(gpa, module, arg, target_name, pm, locations);
         },
         .binary => |e| {
-            findCallsInExprTree(gpa, module, e.left, target_name, source, locations);
-            findCallsInExprTree(gpa, module, e.right, target_name, source, locations);
+            findCallsInExprTree(gpa, module, e.left, target_name, pm, locations);
+            findCallsInExprTree(gpa, module, e.right, target_name, pm, locations);
         },
-        .unary => |e| findCallsInExprTree(gpa, module, e.operand, target_name, source, locations),
+        .unary => |e| findCallsInExprTree(gpa, module, e.operand, target_name, pm, locations),
         .index => |e| {
-            findCallsInExprTree(gpa, module, e.base, target_name, source, locations);
-            findCallsInExprTree(gpa, module, e.idx, target_name, source, locations);
+            findCallsInExprTree(gpa, module, e.base, target_name, pm, locations);
+            findCallsInExprTree(gpa, module, e.idx, target_name, pm, locations);
         },
-        .paren => |e| findCallsInExprTree(gpa, module, e.expr, target_name, source, locations),
-        .member => |e| findCallsInExprTree(gpa, module, e.base, target_name, source, locations),
+        .paren => |e| findCallsInExprTree(gpa, module, e.expr, target_name, pm, locations),
+        .member => |e| findCallsInExprTree(gpa, module, e.base, target_name, pm, locations),
         .ident, .literal => {},
     }
 }
@@ -267,11 +277,11 @@ fn collectOutgoingCalls(
     gpa: std.mem.Allocator,
     module: *const Ast.Module,
     compound: *const Ast.CompoundStmt,
-    source: [:0]const u8,
+    pm: *const Handler.PositionMapper,
     calls_map: *std.StringHashMapUnmanaged(std.ArrayList(Range)),
 ) void {
     for (compound.stmts.items) |stmt| {
-        collectOutgoingCallsStmt(gpa, module, stmt, source, calls_map);
+        collectOutgoingCallsStmt(gpa, module, stmt, pm, calls_map);
     }
 }
 
@@ -279,48 +289,48 @@ fn collectOutgoingCallsStmt(
     gpa: std.mem.Allocator,
     module: *const Ast.Module,
     stmt: Ast.Stmt,
-    source: [:0]const u8,
+    pm: *const Handler.PositionMapper,
     calls_map: *std.StringHashMapUnmanaged(std.ArrayList(Range)),
 ) void {
     switch (stmt) {
-        .compound => |c| collectOutgoingCalls(gpa, module, c, source, calls_map),
+        .compound => |c| collectOutgoingCalls(gpa, module, c, pm, calls_map),
         .@"return" => |r| {
-            if (r.value) |v| collectOutgoingCallsExpr(gpa, module, v, source, calls_map);
+            if (r.value) |v| collectOutgoingCallsExpr(gpa, module, v, pm, calls_map);
         },
         .@"if" => |i| {
-            collectOutgoingCallsExpr(gpa, module, i.condition, source, calls_map);
-            collectOutgoingCalls(gpa, module, i.body, source, calls_map);
-            if (i.else_branch) |eb| collectOutgoingCallsStmt(gpa, module, eb, source, calls_map);
+            collectOutgoingCallsExpr(gpa, module, i.condition, pm, calls_map);
+            collectOutgoingCalls(gpa, module, i.body, pm, calls_map);
+            if (i.else_branch) |eb| collectOutgoingCallsStmt(gpa, module, eb, pm, calls_map);
         },
         .@"for" => |f| {
-            if (f.init_stmt) |init_s| collectOutgoingCallsStmt(gpa, module, init_s, source, calls_map);
-            if (f.condition) |cond| collectOutgoingCallsExpr(gpa, module, cond, source, calls_map);
-            if (f.update) |upd| collectOutgoingCallsStmt(gpa, module, upd, source, calls_map);
-            collectOutgoingCalls(gpa, module, f.body, source, calls_map);
+            if (f.init_stmt) |init_s| collectOutgoingCallsStmt(gpa, module, init_s, pm, calls_map);
+            if (f.condition) |cond| collectOutgoingCallsExpr(gpa, module, cond, pm, calls_map);
+            if (f.update) |upd| collectOutgoingCallsStmt(gpa, module, upd, pm, calls_map);
+            collectOutgoingCalls(gpa, module, f.body, pm, calls_map);
         },
         .@"while" => |w| {
-            collectOutgoingCallsExpr(gpa, module, w.condition, source, calls_map);
-            collectOutgoingCalls(gpa, module, w.body, source, calls_map);
+            collectOutgoingCallsExpr(gpa, module, w.condition, pm, calls_map);
+            collectOutgoingCalls(gpa, module, w.body, pm, calls_map);
         },
         .loop => |l| {
-            collectOutgoingCalls(gpa, module, l.body, source, calls_map);
-            if (l.continuing) |cont| collectOutgoingCalls(gpa, module, cont, source, calls_map);
+            collectOutgoingCalls(gpa, module, l.body, pm, calls_map);
+            if (l.continuing) |cont| collectOutgoingCalls(gpa, module, cont, pm, calls_map);
         },
         .assign => |a| {
-            collectOutgoingCallsExpr(gpa, module, a.left, source, calls_map);
-            collectOutgoingCallsExpr(gpa, module, a.right, source, calls_map);
+            collectOutgoingCallsExpr(gpa, module, a.left, pm, calls_map);
+            collectOutgoingCallsExpr(gpa, module, a.right, pm, calls_map);
         },
-        .call => |c| collectOutgoingCallsExpr(gpa, module, .{ .call = c.call }, source, calls_map),
+        .call => |c| collectOutgoingCallsExpr(gpa, module, .{ .call = c.call }, pm, calls_map),
         .decl => |d| {
             switch (d.decl) {
                 .let => |l| {
-                    if (l.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, source, calls_map);
+                    if (l.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, pm, calls_map);
                 },
                 .@"var" => |v| {
-                    if (v.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, source, calls_map);
+                    if (v.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, pm, calls_map);
                 },
                 .@"const" => |cc| {
-                    if (cc.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, source, calls_map);
+                    if (cc.initializer) |e| collectOutgoingCallsExpr(gpa, module, e, pm, calls_map);
                 },
                 else => {},
             }
@@ -333,7 +343,7 @@ fn collectOutgoingCallsExpr(
     gpa: std.mem.Allocator,
     module: *const Ast.Module,
     expr: Ast.Expr,
-    source: [:0]const u8,
+    pm: *const Handler.PositionMapper,
     calls_map: *std.StringHashMapUnmanaged(std.ArrayList(Range)),
 ) void {
     switch (expr) {
@@ -345,7 +355,7 @@ fn collectOutgoingCallsExpr(
                         if (id.ref.isValid()) {
                             const sym = module.symbols.items[id.ref.index()];
                             if (sym.kind == .function) {
-                                if (Handler.offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len)))) |range| {
+                                if (pm.range(id.loc, id.loc + @as(u32, @intCast(id.name.len)))) |range| {
                                     const gop = calls_map.getOrPut(gpa, id.name) catch return;
                                     if (!gop.found_existing) gop.value_ptr.* = .empty;
                                     gop.value_ptr.append(gpa, range) catch {};
@@ -355,21 +365,21 @@ fn collectOutgoingCallsExpr(
                     },
                     else => {},
                 }
-                collectOutgoingCallsExpr(gpa, module, func, source, calls_map);
+                collectOutgoingCallsExpr(gpa, module, func, pm, calls_map);
             }
-            for (e.args.items) |arg| collectOutgoingCallsExpr(gpa, module, arg, source, calls_map);
+            for (e.args.items) |arg| collectOutgoingCallsExpr(gpa, module, arg, pm, calls_map);
         },
         .binary => |e| {
-            collectOutgoingCallsExpr(gpa, module, e.left, source, calls_map);
-            collectOutgoingCallsExpr(gpa, module, e.right, source, calls_map);
+            collectOutgoingCallsExpr(gpa, module, e.left, pm, calls_map);
+            collectOutgoingCallsExpr(gpa, module, e.right, pm, calls_map);
         },
-        .unary => |e| collectOutgoingCallsExpr(gpa, module, e.operand, source, calls_map),
+        .unary => |e| collectOutgoingCallsExpr(gpa, module, e.operand, pm, calls_map),
         .index => |e| {
-            collectOutgoingCallsExpr(gpa, module, e.base, source, calls_map);
-            collectOutgoingCallsExpr(gpa, module, e.idx, source, calls_map);
+            collectOutgoingCallsExpr(gpa, module, e.base, pm, calls_map);
+            collectOutgoingCallsExpr(gpa, module, e.idx, pm, calls_map);
         },
-        .paren => |e| collectOutgoingCallsExpr(gpa, module, e.expr, source, calls_map),
-        .member => |e| collectOutgoingCallsExpr(gpa, module, e.base, source, calls_map),
+        .paren => |e| collectOutgoingCallsExpr(gpa, module, e.expr, pm, calls_map),
+        .member => |e| collectOutgoingCallsExpr(gpa, module, e.base, pm, calls_map),
         .ident, .literal => {},
     }
 }
