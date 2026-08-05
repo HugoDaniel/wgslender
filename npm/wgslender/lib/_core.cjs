@@ -99,6 +99,29 @@ function createWrapper({ loadWasm }) {
     return _readResultJson(resultPtr);
   }
 
+  function minifyAndReflect(source, options) {
+    _ensureInit();
+    if (typeof source !== 'string') throw new TypeError('source must be a string');
+
+    const opts = Object.assign({
+      minifyWhitespace: true,
+      minifyIdentifiers: true,
+      minifySyntax: true,
+      treeShaking: true,
+      mangleExternalBindings: false,
+      preserveUniformStructTypes: false,
+    }, options);
+
+    const src = _writeString(source);
+    const optsJson = _writeString(JSON.stringify(opts));
+    const resultPtr = _wasm.wgslender_minify_and_reflect(src.ptr, src.len, optsJson.ptr, optsJson.len);
+    _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+    _wasm.wgslender_dealloc(optsJson.ptr, optsJson.allocLen);
+
+    if (!resultPtr) throw new Error('Minify+reflect failed: WASM returned null');
+    return _readResultJson(resultPtr);
+  }
+
   function compile(source, options) {
     _ensureInit();
     if (typeof source !== 'string') throw new TypeError('source must be a string');
@@ -451,6 +474,7 @@ function createWrapper({ loadWasm }) {
     minify,
     compile,
     reflect,
+    minifyAndReflect,
     getBindGroups,
     validate,
     lint,

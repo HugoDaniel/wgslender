@@ -53,7 +53,7 @@ async function runSuite(wgslender, opts) {
   console.log(`\n=== ${variantName} ===\n`);
 
   const {
-    initialize, minify, reflect, validate, isInitialized, getBindGroups,
+    initialize, minify, reflect, minifyAndReflect, validate, isInitialized, getBindGroups,
     findReferences, rename, renameApply,
     stableIdAtOffset, locateStableId, renameByStableId,
     locateDeclaration, locateType,
@@ -272,6 +272,35 @@ alias Color = vec3f;`;
     assert(grid[1][0].name === 'tex', 'getBindGroups: separate group buckets');
     const grid2 = getBindGroups(r.bindings);
     assert(grid2[0][0].name === 'u', 'getBindGroups: accepts bindings[] directly');
+  }
+
+  // --- MinifyAndReflect: Happy Path ---
+  console.log('\n--- MinifyAndReflect: Happy Path ---');
+  {
+    const input = `@group(0) @binding(0) var<uniform> uniforms: f32;
+@compute @workgroup_size(1) fn main() { let x = uniforms; }`;
+    const r = minifyAndReflect(input, { minifyWhitespace: true, minifyIdentifiers: true });
+    assert(r.minify && r.reflect, 'returns { minify, reflect }');
+    assert(r.minify.errors.length === 0 && r.minify.code.length > 0, 'minify half succeeds');
+    assert(r.reflect.bindings.length === 1 && r.reflect.entryPoints.length === 1,
+      'reflect half finds the binding and entry point');
+  }
+  {
+    const input = `struct MyStruct { a: f32, b: vec2f }
+@group(0) @binding(0) var<uniform> u: MyStruct;
+fn helper() -> f32 { return u.a; }
+@compute @workgroup_size(1) fn main() { let x = helper(); }`;
+    const r = minifyAndReflect(input, { minifyWhitespace: true, minifyIdentifiers: true });
+    const minifiedReflect = reflect(r.minify.code);
+    assert(r.reflect.bindings[0].name === minifiedReflect.bindings[0].name,
+      'reflect half uses the same renamed names as a reparse of minify.code');
+    assert(r.reflect.bindings[0].nameMapped === 'u',
+      'reflect half keeps the original name in nameMapped');
+  }
+  {
+    const r = minifyAndReflect('fn { broken }');
+    assert(r.minify.errors.length > 0, 'parse error surfaces in minify.errors');
+    assert((r.reflect.errors || []).length > 0, 'parse error surfaces in reflect.errors');
   }
 
   // --- Validate: Happy Path ---

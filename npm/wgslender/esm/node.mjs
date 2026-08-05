@@ -36,6 +36,7 @@ export const initialize = wgslender.initialize;
 export const minify = wgslender.minify;
 export const compile = wgslender.compile;
 export const reflect = wgslender.reflect;
+export const minifyAndReflect = wgslender.minifyAndReflect;
 export const getBindGroups = wgslender.getBindGroups;
 export const validate = wgslender.validate;
 export const lint = wgslender.lint;

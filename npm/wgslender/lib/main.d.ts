@@ -531,6 +531,25 @@ export function compile(source: string, options?: CompileOptions): CompileResult
 export function reflect(source: string): ReflectResult;
 
 /**
+ * Result of a combined `minifyAndReflect()` call.
+ */
+export interface MinifyAndReflectResult {
+  minify: MinifyResult;
+  reflect: ReflectResult;
+}
+
+/**
+ * Minify and reflect WGSL source in a single pass, sharing the parsed
+ * module and renamer between the two so `reflect`'s names line up with
+ * the minified `code` — equivalent to `reflect(minify(source, options).code)`
+ * but without reparsing the minified output.
+ * @param source - WGSL source code to minify and reflect
+ * @param options - Minification options (defaults to full minification)
+ * @returns Combined minify + reflect result
+ */
+export function minifyAndReflect(source: string, options?: MinifyOptions): MinifyAndReflectResult;
+
+/**
  * Pivot `bindings[]` into a `{[group]: {[binding]: BindingInfo}}` grid
  * keyed by integer group / binding indices. Holes are left undefined.
  *

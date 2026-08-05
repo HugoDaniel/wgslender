@@ -7,6 +7,13 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Added
 
+- **npm `minifyAndReflect(source, options?)`.** Wires the existing
+  `wgslender_minify_and_reflect` WASM export (previously reachable only from
+  Zig/C-ABI) into `_core.cjs` and all four JS entry shims. Returns
+  `{ minify: MinifyResult, reflect: ReflectResult }` from a single WASM call
+  that shares one parsed module and renamer, so `reflect`'s names are
+  guaranteed consistent with `minify`'s output without a second parse. No
+  WASM rebuild — the export already existed.
 - **`wgslender/constInventory` LSP request + `Reflect.constInventory`.** A new
   WASM-LSP custom request (and the `Reflect.constInventory(arena, module) →
   []ConstInfo` façade behind it) surfaces every module-scope `const` with its
