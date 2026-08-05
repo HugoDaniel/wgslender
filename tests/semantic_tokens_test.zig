@@ -335,6 +335,8 @@ test "semantic tokens: struct member names stay colored" {
 
 const emoji = "\xF0\x9F\x8E\x89"; // 🎉 U+1F389 — 4 bytes, 2 UTF-16 code units.
 const cjk = "\xE4\xB8\xAD"; // 中 U+4E2D — 3 bytes, 1 UTF-16 code unit.
+const acute_e = "\xC3\xA9"; // é U+00E9 — 2 bytes, 1 UTF-16 code unit.
+const bold_a = "\xF0\x9D\x90\x80"; // 𝐀 U+1D400 — 4 bytes, 2 UTF-16 code units.
 
 test "semantic tokens: an ASCII comment's length is its byte length" {
     const source: [:0]const u8 = "// hello\nfn f() {}";
@@ -372,4 +374,55 @@ test "semantic tokens: a block comment's length counts UTF-16 code units" {
     try std.testing.expectEqual(@as(u32, 7), tok.token_type); // comment
     // "/*" (2) + 🎉 (2) + 中 (1) + "*/" (2) = 7 units, over 11 bytes.
     try std.testing.expectEqual(@as(u32, 7), tok.length);
+}
+
+test "semantic tokens: a non-ASCII identifier is one whole token" {
+    // WGSL §2.4 identifiers are XID_Start XID_Continue*, so `h` + é + `llo`
+    // is a single token: 6 bytes, 5 codepoints, 5 UTF-16 code units.
+    const name = "h" ++ acute_e ++ "llo";
+    const source: [:0]const u8 = "fn " ++ name ++ "() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const data = try ctx.handler.computeSemanticTokens("test://file.wgsl");
+    defer std.testing.allocator.free(data);
+
+    const off: u32 = @intCast(std.mem.indexOf(u8, source, name).?);
+    const tok = tokenAtOffset(data, source, off) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 1), tok.token_type); // function
+    try std.testing.expectEqual(@as(u32, 5), tok.length);
+}
+
+test "semantic tokens: an identifier outside the BMP costs two code units" {
+    // 𝐀 is a surrogate pair in UTF-16 — the one case where a codepoint
+    // count would be wrong too.
+    const name = bold_a ++ "x";
+    const source: [:0]const u8 = "fn " ++ name ++ "() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const data = try ctx.handler.computeSemanticTokens("test://file.wgsl");
+    defer std.testing.allocator.free(data);
+
+    const off: u32 = @intCast(std.mem.indexOf(u8, source, name).?);
+    const tok = tokenAtOffset(data, source, off) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 1), tok.token_type); // function
+    try std.testing.expectEqual(@as(u32, 3), tok.length); // 𝐀 (2) + x (1), over 5 bytes.
+}
+
+test "semantic tokens: a token after non-ASCII text starts at the right column" {
+    // The length fix must not disturb the delta encoding: `fn` sits on the
+    // line after a comment holding a surrogate pair.
+    const source: [:0]const u8 = "// " ++ emoji ++ "\nfn " ++ cjk ++ "f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const data = try ctx.handler.computeSemanticTokens("test://file.wgsl");
+    defer std.testing.allocator.free(data);
+
+    const fn_off: u32 = @intCast(std.mem.indexOf(u8, source, "fn").?);
+    const kw = tokenAtOffset(data, source, fn_off) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 0), kw.token_type); // keyword
+    try std.testing.expectEqual(@as(u32, 2), kw.length);
+
+    const name_off: u32 = @intCast(std.mem.indexOf(u8, source, cjk ++ "f").?);
+    const name = tokenAtOffset(data, source, name_off) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 2), name.length); // 中 (1) + f (1)
 }

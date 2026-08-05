@@ -300,10 +300,16 @@ fn tokenLength(source: [:0]const u8, start: u32, tag: Lexer.Tag) u32 {
     };
 }
 
+/// The identifier token beginning at `start`.
+///
+/// Defers to the lexer's own scanner rather than re-deriving the identifier
+/// grammar: WGSL §2.4 identifiers are `XID_Start XID_Continue*`, so an
+/// ASCII-only scan stops dead at the first non-ASCII byte. That truncated
+/// the name used for symbol and builtin lookup, and — since a zero-length
+/// name is skipped outright — dropped every identifier *starting* with a
+/// non-ASCII character.
 fn identAt(source: [:0]const u8, start: u32) []const u8 {
-    var end = start;
-    while (end < source.len and (std.ascii.isAlphanumeric(source[end]) or source[end] == '_')) end += 1;
-    return source[start..end];
+    return source[start..Lexer.scanIdentEnd(source, start)];
 }
 
 /// The declaration that contained the previously resolved token.
