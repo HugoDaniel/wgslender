@@ -19,6 +19,12 @@ out of its scope; what stands in the way is written up in
 [`packages/rust/README.md` § Publishing](../packages/rust/README.md#publishing).
 Plan 2 is therefore superseded.
 
+**Plan 3 is executed** — all five blocks, landed in `examples/c/`: a table-driven
+smoke suite over all ten examples (`make -C examples/c test`) and a glibc
+cross-compile check (`make -C examples/c lint-portability`).
+
+**Plan 1 is the only embedding-example plan left.**
+
 ## Other plans (not part of the embedding-example set)
 
 | Plan | File | Fixes |
