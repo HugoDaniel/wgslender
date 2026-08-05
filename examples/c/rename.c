@@ -7,8 +7,8 @@
  *
  * Build:
  *   zig build lib
- *   cc examples/c/rename.c -I include -L zig-out/lib -lwgslender -o rename_demo
- *   ./rename_demo
+ *   cc examples/c/rename.c -Iinclude zig-out/lib/libwgslender.a -o rename
+ *   ./rename
  */
 
 #include <stdio.h>

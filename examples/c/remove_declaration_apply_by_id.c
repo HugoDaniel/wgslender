@@ -14,14 +14,28 @@
 #include <string.h>
 #include "wgslender.h"
 
+/* Bounded substring search. strnstr is BSD-only and absent from glibc. */
+static const char *find_sub(const char *hay, size_t hay_len, const char *needle) {
+    size_t n = strlen(needle);
+    if (n == 0 || hay_len < n) return NULL;
+    for (size_t i = 0; i + n <= hay_len; i++)
+        if (memcmp(hay + i, needle, n) == 0) return hay + i;
+    return NULL;
+}
+
 /* Extract the value of a `"stableId":"..."` field from a JSON blob
- * (smoke-test helper, not a JSON parser). Returns bytes copied. */
+ * (smoke-test helper, not a JSON parser). Returns bytes copied.
+ *
+ * Every search here is bounded by json_len, because the C ABI hands back a
+ * pointer and a length and promises no terminator: the buffer is allocated at
+ * exactly its own size. A str* function would read past the end of it. */
 static uint32_t extract_id(const uint8_t *json, uint32_t json_len, char *out, uint32_t cap) {
     const char *needle = "\"stableId\":\"";
-    const char *start = strnstr((const char *)json, needle, json_len);
+    const char *text = (const char *)json;
+    const char *start = find_sub(text, json_len, needle);
     if (!start) return 0;
     start += strlen(needle);
-    const char *end = strchr(start, '"');
+    const char *end = memchr(start, '"', (size_t)(text + json_len - start));
     if (!end) return 0;
     uint32_t n = (uint32_t)(end - start);
     if (n + 1 > cap) n = cap - 1;
