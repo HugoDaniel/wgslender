@@ -15,7 +15,10 @@
 //! [`wgslender`]: https://crates.io/crates/wgslender
 
 use proc_macro::TokenStream;
+use syn::parse::ParseStream;
 use syn::parse_macro_input;
+
+use crate::parse::Embedding;
 
 mod expand;
 mod parse;
@@ -102,7 +105,43 @@ mod parse;
 /// ```
 #[proc_macro]
 pub fn include_wgsl(input: TokenStream) -> TokenStream {
-    let invocation = parse_macro_input!(input as parse::Invocation);
+    embed(input, Embedding::Text)
+}
+
+/// Embed a WGSL file compressed, inflating it on first use.
+///
+/// Expands to a [`CompressedWgsl`], normally a `static`: the shader is
+/// validated and minified like [`include_wgsl!`](include_wgsl), then run
+/// through DEFLATE, so the binary carries the stream instead of the text. Nothing
+/// inflates until something calls `as_str`, and then only once.
+///
+/// Everything [`include_wgsl!`](include_wgsl) documents — where the path
+/// points, the options, what a compile error looks like — holds here too, with
+/// two differences:
+///
+/// - `sort_declarations` and `scope_local_rename` default to **on**. Both exist
+///   to make minified text repeat itself, which costs a reader nothing and
+///   saves DEFLATE a good deal. Name either one to turn it back off.
+/// - The expansion mentions [`CompressedWgsl`] by the path
+///   `::wgslender::CompressedWgsl`, so the crate has to be reachable under the
+///   name `wgslender` where the macro is written — renaming the dependency in
+///   `Cargo.toml` breaks it. [`include_wgsl!`](include_wgsl) expands to a plain
+///   literal and has no such requirement.
+///
+/// The worked example is on the facade's re-export, which is the only place
+/// this expansion can compile.
+///
+/// [`CompressedWgsl`]: wgslender_core::CompressedWgsl
+#[cfg(feature = "compress")]
+#[proc_macro]
+pub fn include_wgsl_compressed(input: TokenStream) -> TokenStream {
+    embed(input, Embedding::Compressed)
+}
+
+/// Both macros: one pipeline, differing in what it hands back.
+fn embed(input: TokenStream, embedding: Embedding) -> TokenStream {
+    let parser = |stream: ParseStream| parse::Invocation::parse(stream, embedding);
+    let invocation = parse_macro_input!(input with parser);
     expand::expand(&invocation)
         .unwrap_or_else(syn::Error::into_compile_error)
         .into()

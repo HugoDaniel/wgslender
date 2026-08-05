@@ -8,11 +8,18 @@ authors.workspace = true
 repository.workspace = true
 description = "Safe Rust API over the wgslender WGSL minifier C library. Implementation detail of the `wgslender` crate."
 
+[features]
+# `CompressedWgsl`: shader text stored DEFLATE-compressed, inflated on first
+# use. Off by default — a caller who embeds plain text pays nothing for it.
+compress = ["dep:miniz_oxide"]
+
 [dependencies]
 wgslender-sys.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+miniz_oxide = { workspace = true, optional = true }
 
 [lints]
 workspace = true

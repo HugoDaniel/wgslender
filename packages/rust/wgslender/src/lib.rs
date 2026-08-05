@@ -39,7 +39,7 @@
 //! | shrink a shader | [`minify`], [`minify_with`], [`minify_and_reflect`] |
 //! | check one | [`validate`], [`lint`], [`lint_fix`] |
 //! | describe one | [`reflect`], [`reflect_json`] |
-//! | embed one in the binary | `include_wgsl!`, with the default `macros` feature |
+//! | embed one in the binary | `include_wgsl!`, or `include_wgsl_compressed!` to store it deflated |
 //! | embed one as WebAssembly | [`compile`] |
 //! | edit one by symbol | [`refactor`] |
 //!
@@ -50,6 +50,13 @@
 //! pipeline, and the bytes in the binary are the small ones. Its own page has
 //! the worked example, the option table, and the one surprising rule: paths are
 //! relative to the crate root, not to the file the macro is written in.
+//!
+//! `include_wgsl_compressed!`, behind the `compress` feature, goes one step
+//! further: the binary carries a deflate stream, and a `CompressedWgsl`
+//! inflates it on first use — once, or never, if nothing ever creates the
+//! pipeline. On this crate's own demo fixture that is 968 bytes of source
+//! stored as 274. `cargo run --features compress --example embed_compressed`
+//! prints the three numbers.
 //!
 //! ## What counts as an error
 //!
@@ -64,9 +71,10 @@
 //! | Feature | Default | What it adds |
 //! |---|---|---|
 //! | `macros` | on | [`include_wgsl!`](include_wgsl), and with it a proc-macro dependency that runs the library at compile time. |
+//! | `compress` | off | `CompressedWgsl`, and — if `macros` is also on — `include_wgsl_compressed!`. Pulls in `miniz_oxide` for DEFLATE. |
 //!
 //! Turning `macros` off (`default-features = false`) leaves every function
-//! above intact; it only removes the macro and the crates behind it.
+//! above intact; it only removes the macros and the crates behind them.
 //!
 //! ## Edition support
 //!
@@ -111,3 +119,23 @@ pub use wgslender_core::*;
 /// ```
 #[cfg(feature = "macros")]
 pub use wgslender_macros::include_wgsl;
+
+/// Embed a WGSL file compressed, inflating it on first use.
+///
+/// The same compile-time pipeline as [`include_wgsl!`](include_wgsl), storing
+/// DEFLATE-compressed bytes instead of text. Needs the `compress` feature,
+/// which is off by default. Its full documentation comes with it, below.
+///
+/// # Examples
+///
+/// ```
+/// // A `static`, because the constructor is `const` and nothing inflates until
+/// // something asks.
+/// static SHADER: wgslender::CompressedWgsl =
+///     wgslender::include_wgsl_compressed!("tests/fixtures/demo.wgsl");
+///
+/// assert!(SHADER.compressed_len() < SHADER.len(), "the binary carries the smaller half");
+/// assert!(SHADER.as_str().contains("@compute"));
+/// ```
+#[cfg(all(feature = "macros", feature = "compress"))]
+pub use wgslender_macros::include_wgsl_compressed;

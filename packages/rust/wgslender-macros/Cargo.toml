@@ -11,6 +11,12 @@ description = "Compile-time WGSL embedding macros. Implementation detail of the 
 [lib]
 proc-macro = true
 
+[features]
+# `include_wgsl_compressed!`. The compressor lives in wgslender-core next to the
+# decompressor, so this feature only asks core for it — nothing here needs to
+# know what DEFLATE is.
+compress = ["wgslender-core/compress"]
+
 [dependencies]
 wgslender-core.workspace = true
 

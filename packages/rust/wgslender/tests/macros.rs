@@ -129,6 +129,50 @@ fn compile_time_output_matches_the_run_time_call() {
     assert_eq!(KEPT, kept_at_run_time);
 }
 
+/// The compressed macro: the same pipeline, a different container.
+///
+/// Behind the `compress` feature, which is off by default — with it off there
+/// is no macro here to call and no type for it to build.
+#[cfg(feature = "compress")]
+mod compressed {
+    /// Deflated while this file was compiled; inflated once, on first use.
+    static SHADER: wgslender::CompressedWgsl =
+        wgslender::include_wgsl_compressed!("tests/fixtures/demo.wgsl");
+
+    /// What the compressed macro should be storing. Compressing turns
+    /// wgslender's two compression-friendly passes on by default, so the
+    /// comparison spells them out — if the defaults ever drift, this stops
+    /// matching.
+    const EQUIVALENT: &str = wgslender::include_wgsl!(
+        "tests/fixtures/demo.wgsl",
+        sort_declarations = true,
+        scope_local_rename = true
+    );
+
+    #[test]
+    fn it_inflates_to_what_the_plain_macro_embeds() {
+        assert_eq!(SHADER.as_str(), EQUIVALENT);
+    }
+
+    #[test]
+    fn the_length_is_the_shader_it_inflates_to() {
+        assert_eq!(SHADER.len(), EQUIVALENT.len());
+        assert!(!SHADER.is_empty());
+    }
+
+    /// The whole point: fewer bytes in the binary than the text would take.
+    #[test]
+    fn the_stored_bytes_are_fewer_than_the_text() {
+        assert!(
+            SHADER.compressed_len() < SHADER.len(),
+            "{} compressed bytes for {} bytes of shader — grow the fixture \
+             rather than weakening this",
+            SHADER.compressed_len(),
+            SHADER.len(),
+        );
+    }
+}
+
 /// The point of a `&'static str`: it goes wherever a string literal goes.
 #[test]
 fn the_expansion_is_usable_wherever_a_literal_is() {

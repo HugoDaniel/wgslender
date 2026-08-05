@@ -26,6 +26,10 @@ proc-macro2 = "1.0.104"
 quote = "1.0.42"
 syn = { version = "2.0.114", default-features = false, features = ["parsing", "printing", "proc-macro"] }
 
+# DEFLATE, in Rust, so that embedding a compressed shader needs no C toolchain
+# beyond the one already building the library.
+miniz_oxide = "0.9.1"
+
 trybuild = "1.0.116"
 
 [workspace.lints.rust]

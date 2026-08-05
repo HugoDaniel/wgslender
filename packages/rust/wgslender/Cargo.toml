@@ -11,6 +11,9 @@ description = "Minify, validate, lint, reflect, compile and refactor WGSL shader
 [features]
 default = ["macros"]
 macros = ["dep:wgslender-macros"]
+# `CompressedWgsl`, plus `include_wgsl_compressed!` when there are macros at all
+# — the `?` keeps this from dragging the proc-macro in behind the caller's back.
+compress = ["wgslender-core/compress", "wgslender-macros?/compress"]
 
 [dependencies]
 wgslender-core.workspace = true
@@ -18,6 +21,12 @@ wgslender-macros = { workspace = true, optional = true }
 
 [dev-dependencies]
 trybuild.workspace = true
+
+# Not a `#![cfg(...)]`: an example whose `main` is compiled away is an example
+# with no `main`. Cargo skips the target instead.
+[[example]]
+name = "embed_compressed"
+required-features = ["macros", "compress"]
 
 [lints]
 workspace = true

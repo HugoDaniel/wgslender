@@ -108,6 +108,20 @@ const CHECK: &[Step] = &[
         ],
         env: &[],
     },
+    Step {
+        label: "clippy, every feature",
+        program: Program::Cargo,
+        args: &[
+            "clippy",
+            "--workspace",
+            "--all-targets",
+            "--all-features",
+            "--",
+            "-D",
+            "warnings",
+        ],
+        env: &[],
+    },
     // `cargo test` runs the doctests along with everything else, so there is no
     // separate `--doc` step: it would only run them a second time.
     Step {
@@ -116,10 +130,31 @@ const CHECK: &[Step] = &[
         args: &["test", "--workspace"],
         env: &[],
     },
+    // The default features are one point in the matrix. An optional feature
+    // nothing ever compiles is an optional feature that has stopped working.
+    Step {
+        label: "tests and doctests, every feature",
+        program: Program::Cargo,
+        args: &["test", "--workspace", "--all-features"],
+        env: &[],
+    },
+    // And the other end: a caller who wants the library and none of the
+    // conveniences must still get a crate that builds.
+    Step {
+        label: "no features at all",
+        program: Program::Cargo,
+        args: &[
+            "check",
+            "--workspace",
+            "--all-targets",
+            "--no-default-features",
+        ],
+        env: &[],
+    },
     Step {
         label: "documentation",
         program: Program::Cargo,
-        args: &["doc", "--workspace", "--no-deps"],
+        args: &["doc", "--workspace", "--no-deps", "--all-features"],
         env: &[(
             "RUSTDOCFLAGS",
             "-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links",
@@ -129,6 +164,10 @@ const CHECK: &[Step] = &[
 
 /// Type-checking with the declared minimum toolchain, which is a promise the
 /// current toolchain cannot keep on its behalf.
+///
+/// With every feature on: an optional dependency is a promise about the
+/// minimum too, and the ones that carry no `rust-version` of their own can
+/// only be found out about by trying.
 const MSRV_CHECK: &[Step] = &[Step {
     label: "minimum supported rust version",
     program: Program::Rustup,
@@ -139,6 +178,7 @@ const MSRV_CHECK: &[Step] = &[Step {
         "check",
         "--workspace",
         "--all-targets",
+        "--all-features",
     ],
     env: &[],
 }];

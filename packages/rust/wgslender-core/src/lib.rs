@@ -57,6 +57,8 @@
 
 mod buffer;
 mod compile;
+#[cfg(feature = "compress")]
+mod compress;
 mod error;
 mod lint;
 mod minify;
@@ -67,6 +69,8 @@ mod validate;
 mod wire_enum;
 
 pub use crate::compile::{CompiledShader, compile};
+#[cfg(feature = "compress")]
+pub use crate::compress::CompressedWgsl;
 pub use crate::error::Error;
 pub use crate::lint::{
     LintConfig, LintFixOutcome, LintReport, Pack, RuleSetting, Value, lint, lint_fix,

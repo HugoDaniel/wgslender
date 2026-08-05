@@ -15,6 +15,38 @@ pub(crate) enum Minification {
     Verbatim,
 }
 
+/// What the macro puts in the binary.
+///
+/// Chosen by which entry point was called, and consulted twice: it picks the
+/// minification defaults here, and the shape of the expansion in
+/// [`crate::expand`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Embedding {
+    /// The shader text, as a `&'static str`.
+    Text,
+    /// A deflate stream that inflates back to it, as a `CompressedWgsl`.
+    #[cfg(feature = "compress")]
+    Compressed,
+}
+
+impl Embedding {
+    /// Where this embedding starts before the invocation's own options apply.
+    ///
+    /// Compressing defaults `sort_declarations` and `scope_local_rename` on:
+    /// both exist to group similar text together, which is worth nothing to a
+    /// reader and a good deal to DEFLATE. Either can still be turned back off
+    /// by naming it.
+    fn defaults(self) -> MinifyOptions {
+        match self {
+            Self::Text => MinifyOptions::default(),
+            #[cfg(feature = "compress")]
+            Self::Compressed => MinifyOptions::default()
+                .sort_declarations(true)
+                .scope_local_rename(true),
+        }
+    }
+}
+
 /// Whether the shader is type-checked before it is embedded.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Checking {
@@ -41,6 +73,8 @@ pub(crate) struct Invocation {
     pub(crate) minification: Minification,
     /// How, when minifying.
     pub(crate) options: MinifyOptions,
+    /// What the expansion hands back.
+    pub(crate) embedding: Embedding,
 }
 
 /// Generates the setter lookup and the list of names the error message offers,
@@ -91,14 +125,20 @@ enum Depends {
     OnValidation,
 }
 
-impl Parse for Invocation {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
+impl Invocation {
+    /// Reads `("path" [, key = value]*)`.
+    ///
+    /// Takes the embedding rather than implementing [`Parse`], because the same
+    /// grammar means slightly different things depending on which macro is
+    /// being expanded, and [`Parse`] has nowhere to say which.
+    pub(crate) fn parse(input: ParseStream, embedding: Embedding) -> syn::Result<Self> {
         let mut invocation = Self {
             path: input.parse()?,
             checking: Checking::Validate,
             strictness: Strictness::Default,
             minification: Minification::Minify,
-            options: MinifyOptions::default(),
+            options: embedding.defaults(),
+            embedding,
         };
         let mut dependents: Vec<(Ident, Depends)> = Vec::new();
 
@@ -115,9 +155,7 @@ impl Parse for Invocation {
         invocation.reject_contradictions(&dependents)?;
         Ok(invocation)
     }
-}
 
-impl Invocation {
     /// Rejects keys that cannot mean anything given the rest of the invocation.
     fn reject_contradictions(&self, dependents: &[(Ident, Depends)]) -> syn::Result<()> {
         for (key, depends) in dependents {

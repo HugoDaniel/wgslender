@@ -8,9 +8,11 @@ use std::path::{Path, PathBuf};
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::LitStr;
+#[cfg(feature = "compress")]
+use wgslender_core::CompressedWgsl;
 use wgslender_core::{Diagnostic, Error, Validation, minify_with, validate};
 
-use crate::parse::{Checking, Invocation, Minification};
+use crate::parse::{Checking, Embedding, Invocation, Minification};
 
 /// The whole macro, as an expression.
 pub(crate) fn expand(invocation: &Invocation) -> syn::Result<TokenStream> {
@@ -19,6 +21,11 @@ pub(crate) fn expand(invocation: &Invocation) -> syn::Result<TokenStream> {
     check(invocation, &source)?;
     let text = embed(invocation, &source)?;
     let tracked = tracking_path(&invocation.path, &absolute)?;
+    let value = match invocation.embedding {
+        Embedding::Text => quote! { #text },
+        #[cfg(feature = "compress")]
+        Embedding::Compressed => compressed(&invocation.path, &text)?,
+    };
 
     Ok(quote! {
         {
@@ -26,8 +33,33 @@ pub(crate) fn expand(invocation: &Invocation) -> syn::Result<TokenStream> {
             // records a dependency on the shader, and editing the shader
             // rebuilds whatever embedded it.
             const _: &[u8] = ::core::include_bytes!(#tracked);
-            #text
+            #value
         }
+    })
+}
+
+/// The text as the two parts `CompressedWgsl` puts back together.
+///
+/// The type is named `::wgslender::…`, the facade's path, because that is where
+/// the expansion lands and this crate's own name means nothing there. Renaming
+/// the `wgslender` dependency therefore breaks this expansion — the documented
+/// limitation of embedding compressed.
+#[cfg(feature = "compress")]
+fn compressed(path: &LitStr, text: &str) -> syn::Result<TokenStream> {
+    let Ok(text_len) = u32::try_from(text.len()) else {
+        return Err(syn::Error::new_spanned(
+            path,
+            format!(
+                "this shader comes to {} bytes, and a compressed embedding \
+                 records the inflated length in a u32 — {} at most",
+                text.len(),
+                u32::MAX,
+            ),
+        ));
+    };
+    let deflate = proc_macro2::Literal::byte_string(&CompressedWgsl::__deflate(text));
+    Ok(quote! {
+        ::wgslender::CompressedWgsl::__from_parts(#deflate, #text_len)
     })
 }
 
@@ -139,12 +171,14 @@ fn library_failed(path: &LitStr, what: &str, err: &Error) -> syn::Error {
 #[cfg(test)]
 mod tests {
     use quote::quote;
+    use syn::parse::{ParseStream, Parser as _};
 
     use super::expand;
-    use crate::parse::Invocation;
+    use crate::parse::{Embedding, Invocation};
 
     fn expanded(invocation: proc_macro2::TokenStream) -> String {
-        let invocation: Invocation = match syn::parse2(invocation) {
+        let parser = |stream: ParseStream| Invocation::parse(stream, Embedding::Text);
+        let invocation = match parser.parse2(invocation) {
             Ok(invocation) => invocation,
             Err(err) => panic!("the invocation did not parse: {err}"),
         };
