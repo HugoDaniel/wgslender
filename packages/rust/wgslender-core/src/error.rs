@@ -1,5 +1,7 @@
 //! The crate's error type.
 
+use crate::validate::Diagnostic;
+
 /// Everything a wgslender call can fail with.
 ///
 /// The enum is `#[non_exhaustive]`: later releases add variants for the
@@ -26,4 +28,14 @@ pub enum Error {
     /// The input is longer than the C ABI's `u32` length fields can describe.
     #[error("source exceeds u32 length limit ({0} bytes)")]
     SourceTooLarge(usize),
+
+    /// The shader did not parse, so [`compile`](crate::compile) produced no
+    /// module.
+    ///
+    /// This is the one place where a shader's own problems are an `Err` rather
+    /// than an `Ok` full of diagnostics, and the reason is that there is
+    /// nothing else to return: an empty module is not an answer, it is
+    /// something a caller would embed by mistake.
+    #[error("shader does not compile: {}", .0.first().map_or("no diagnostics", |d| d.message.as_str()))]
+    Compile(Vec<Diagnostic>),
 }

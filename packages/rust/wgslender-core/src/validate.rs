@@ -1,83 +1,26 @@
 //! Semantic validation, and the diagnostic types the linter shares with it.
 
-use core::fmt;
-
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use wgslender_sys::{WGSLENDER_OPT_STRICT, wgslender_validate_c};
 
 use crate::buffer::{checked_len, take_json};
 use crate::error::Error;
+use crate::wire_enum::wire_enum;
 
-/// How serious a [`Diagnostic`] is.
-///
-/// `Unknown` catches severities added to the library after this crate was
-/// built, so a newer libwgslender cannot turn a diagnostic into a parse
-/// failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum Severity {
-    /// The shader is rejected.
-    Error,
-    /// Legal, but almost certainly not what the author meant.
-    Warning,
-    /// Neutral commentary.
-    Info,
-    /// Extra context attached to another diagnostic.
-    Note,
-    /// A suggestion an editor can act on.
-    Hint,
-    /// A severity this crate does not know about.
-    Unknown,
-}
-
-impl Severity {
-    /// The wire spelling, or `"unknown"`.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Error => "error",
-            Self::Warning => "warning",
-            Self::Info => "info",
-            Self::Note => "note",
-            Self::Hint => "hint",
-            Self::Unknown => "unknown",
-        }
-    }
-}
-
-impl fmt::Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-// Hand-written rather than derived: serde's `#[serde(other)]` catch-all is
-// only available to internally and adjacently tagged enums, and this one is
-// deserialized from a bare string.
-impl<'de> Deserialize<'de> for Severity {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct Visitor;
-
-        impl serde::de::Visitor<'_> for Visitor {
-            type Value = Severity;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a diagnostic severity")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Severity, E> {
-                Ok(match value {
-                    "error" => Severity::Error,
-                    "warning" => Severity::Warning,
-                    "info" => Severity::Info,
-                    "note" => Severity::Note,
-                    "hint" => Severity::Hint,
-                    _ => Severity::Unknown,
-                })
-            }
-        }
-
-        deserializer.deserialize_str(Visitor)
+wire_enum! {
+    /// How serious a [`Diagnostic`] is.
+    pub enum Severity: "a diagnostic severity" {
+        /// The shader is rejected.
+        Error => "error",
+        /// Legal, but almost certainly not what the author meant.
+        Warning => "warning",
+        /// Neutral commentary.
+        Info => "info",
+        /// Extra context attached to another diagnostic.
+        Note => "note",
+        /// A suggestion an editor can act on.
+        Hint => "hint",
+        _ => Unknown => "unknown",
     }
 }
 

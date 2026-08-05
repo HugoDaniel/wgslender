@@ -160,13 +160,17 @@ pub struct WgslenderLintFixResult {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct WgslenderCompileResult {
-    /// Generated WASM module, null when `wasm_len` is zero.
+    /// Generated WASM module, null when the source did not parse.
     pub wasm_ptr: *const u8,
     /// Length in bytes of the buffer at `wasm_ptr`.
     pub wasm_len: u32,
-    /// Size in bytes of the minified WGSL the module expands to.
+    /// Size in bytes of the source **as it was passed in** — not of the module,
+    /// and not of the minified text the module expands to.
     pub original_size: u32,
-    /// JSON array of error objects.
+    /// JSON array of diagnostic objects, in the same shape
+    /// [`wgslender_validate_c`] uses. Non-empty exactly when the source did not
+    /// parse, which is the only way compilation fails: the compiler does not
+    /// type-check.
     pub errors_json_ptr: *const u8,
     /// Length in bytes of the buffer at `errors_json_ptr`.
     pub errors_json_len: u32,

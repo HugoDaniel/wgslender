@@ -64,6 +64,11 @@ impl LibBuffer {
     pub(crate) fn into_string(self) -> Result<String, Error> {
         Ok(core::str::from_utf8(self.as_bytes())?.to_owned())
     }
+
+    /// Copy the bytes out as they are; the buffer is freed on return.
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
 }
 
 /// Parse a JSON buffer the library returned, releasing it either way.

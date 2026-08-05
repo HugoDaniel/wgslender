@@ -9,7 +9,7 @@
 
 mod common;
 
-use wgslender_core::{MinifyOptions, minify, minify_with};
+use wgslender_core::{MinifyOptions, minify, minify_and_reflect, minify_with};
 
 /// One minification scenario.
 struct Case {
@@ -133,6 +133,70 @@ fn minification_table() {
         };
         (case.check)(case.source, &minified);
     }
+}
+
+/// `minify_and_reflect` is the only call that reports what minification cost.
+#[test]
+#[cfg(not(miri))]
+fn minify_and_reflect_reports_both_sizes_and_the_reflection() {
+    let Ok(shader) = minify_and_reflect(common::DEMO, &MinifyOptions::default()) else {
+        panic!("minify_and_reflect failed on the demo fixture")
+    };
+    assert!(shader.errors.is_empty(), "{:?}", shader.errors);
+    assert_eq!(shader.original_size as usize, common::DEMO.len());
+    assert_eq!(
+        shader.minified_size as usize,
+        shader.code.len(),
+        "the reported size is the size of the code it reports"
+    );
+    assert!(shader.minified_size < shader.original_size);
+    assert_eq!(shader.reflection.version, 2);
+    assert_eq!(shader.reflection.bindings.len(), 4);
+}
+
+/// The reason to reflect and minify in one call: the reflection knows what each
+/// name *became*, which no separate `reflect` of the original could tell you.
+#[test]
+#[cfg(not(miri))]
+fn minify_and_reflect_maps_names_to_their_minified_spelling() {
+    let Ok(shader) = minify_and_reflect(common::DEMO, &MinifyOptions::default()) else {
+        panic!("minify_and_reflect failed on the demo fixture")
+    };
+    let Some(params) = shader.reflection.bindings.first() else {
+        panic!("expected the uniform binding first")
+    };
+    assert_eq!(
+        params.name, "params",
+        "the reflection keeps the written name"
+    );
+    assert_ne!(
+        params.ty, params.ty_mapped,
+        "the struct type was renamed by minification"
+    );
+    assert!(
+        shader.code.contains(&format!(
+            "var<uniform> {}:{}",
+            params.name_mapped, params.ty_mapped
+        )),
+        "the mapped spellings must be the ones in the code: {}",
+        shader.code
+    );
+}
+
+/// Minification degrades rather than failing, and this is the only call that
+/// lets you see that it did.
+#[test]
+#[cfg(not(miri))]
+fn minify_and_reflect_surfaces_parse_errors() {
+    let Ok(shader) = minify_and_reflect(common::UNPARSEABLE, &MinifyOptions::default()) else {
+        panic!("minify_and_reflect must not fail on unparseable input")
+    };
+    assert!(!shader.errors.is_empty(), "the parser's complaints");
+    assert_eq!(shader.code, common::UNPARSEABLE, "returned unchanged");
+    assert_eq!(
+        shader.errors, shader.reflection.errors,
+        "both halves of the envelope report the same parse errors"
+    );
 }
 
 /// The whole reason [`MinifyOptions`] derives `Default`: an empty option set is

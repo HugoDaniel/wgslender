@@ -29,9 +29,15 @@
 //! A shader the library rejects is not a Rust `Err`. [`validate`] hands back an
 //! `Ok(Validation)` whose `valid` is false, and [`lint`] an `Ok(LintReport)`
 //! full of diagnostics — the shader failing is the answer, not a failure to
-//! answer. [`Error`] is for the call itself going wrong: an allocation the
-//! library could not make, a payload that is not the JSON this crate expects,
-//! a source too long for the ABI's `u32` lengths.
+//! answer. [`minify`] and [`reflect`] go further and degrade: an unparseable
+//! shader comes back unchanged, or as an empty reflection carrying the parse
+//! errors. [`Error`] is otherwise for the call itself going wrong: an
+//! allocation the library could not make, a payload that is not the JSON this
+//! crate expects, a source too long for the ABI's `u32` lengths.
+//!
+//! [`compile`] is the exception, and deliberately so: a shader that does not
+//! parse yields [`Error::Compile`], because the alternative is handing back an
+//! empty module that a caller would embed by mistake.
 //!
 //! ## Memory
 //!
@@ -45,18 +51,26 @@
 //! [`wgslender`]: https://crates.io/crates/wgslender
 
 mod buffer;
+mod compile;
 mod error;
 mod lint;
 mod minify;
 mod options;
+mod reflect;
 mod validate;
+mod wire_enum;
 
+pub use crate::compile::{CompiledShader, compile};
 pub use crate::error::Error;
 pub use crate::lint::{
     LintConfig, LintFixOutcome, LintReport, Pack, RuleSetting, Value, lint, lint_fix,
 };
-pub use crate::minify::{minify, minify_with};
+pub use crate::minify::{MinifiedShader, minify, minify_and_reflect, minify_with};
 pub use crate::options::MinifyOptions;
+pub use crate::reflect::{
+    AccessMode, AddressSpace, Binding, EntryPoint, Field, Reflection, ShaderStage, StructLayout,
+    reflect, reflect_json,
+};
 pub use crate::validate::{Diagnostic, Severity, Strictness, Validation, validate};
 
 /// The version of the linked wgslender library, as `major.minor.patch`.

@@ -7,6 +7,9 @@
 /// Four binding kinds, a struct, a helper function and one compute entry point.
 pub(crate) const DEMO: &str = include_str!("../fixtures/demo.wgsl");
 
+/// Two entry points that carry no workgroup size: one vertex, one fragment.
+pub(crate) const RENDER: &str = include_str!("../fixtures/render.wgsl");
+
 /// Type-checks against nothing: `undeclared_variable` is never declared.
 pub(crate) const INVALID: &str = include_str!("../fixtures/invalid.wgsl");
 
