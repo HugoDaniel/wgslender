@@ -197,10 +197,10 @@ swapped in place but the validator never re-runs. For interactive
 workloads dominated by comment-writing or whitespace reflow this turns a
 full-module revalidate into a pointer swap.
 
-Empirical numbers aren't committed here yet — Zig 0.16 stripped the
-convenient time-measurement APIs (`std.time.Instant`, `Timer`) we'd use
-for a portable test-time benchmark. The correctness bounds are
-nevertheless gated by the test suite:
+Empirical numbers aren't committed here yet. (Timing is available —
+`std.Io.Clock.now(.awake, io)` is what `zig build bench-lsp` uses; nobody
+has wired an incremental-reparse harness to it.) The correctness bounds
+are gated by the test suite:
 
 - `tests/incremental_corpus_test.zig` verifies the fast path on every
   compute.toys shader, plus a composition test that runs 20 successive
@@ -230,8 +230,8 @@ no anchor, kind mismatch, error subtree) and doubles as the correctness
 oracle — so the existing suite above covers the splice paths without any
 test changes (the invariant is stated over the output, not the code path).
 
-Future work: once a portable wall-clock primitive lands in Zig 0.16 (or
-we vendor one), add `tests/incremental_bench_test.zig` measuring:
+Future work: add `tests/incremental_bench_test.zig` alongside
+`tests/lsp_bench.zig` (same `std.Io.Clock` harness shape), measuring:
 - `parseFull` on bridge.wgsl (~28 KB),
 - `classifyEdit` on a trivia-only edit,
 - `Handler.changeDocumentIncremental` + `analyzeDocument` round-trip

@@ -608,6 +608,24 @@ pub fn build(b: *std.Build) void {
     // agree with the linear helpers at every offset of every corpus
     // source (including the 70 KB sceneW.wgsl), `null`s included.
     _ = addTestStep(b, test_step, "tests/lsp_position_mapper_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // bench-lsp: wall-clock timings for the per-result LSP handlers.
+    // Deliberately NOT on `test_step` — timings are noisy and the corpus
+    // shaders are large; correctness for the same code is gated by
+    // tests/lsp_position_mapper_test.zig. Wants -Doptimize=ReleaseFast.
+    {
+        const bench = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/lsp_bench.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{ w, .{ .name = "Handler", .module = handler_mod } },
+            }),
+        });
+        const run_bench = b.addRunArtifact(bench);
+        run_bench.has_side_effects = true; // always re-run; it prints timings
+        const bench_step = b.step("bench-lsp", "Benchmark LSP request handlers (use -Doptimize=ReleaseFast)");
+        bench_step.dependOn(&run_bench.step);
+    }
     // End-to-end publishDiagnostics JSON payload tests — drive WGSL
     // sources through validateDocument + bridge + writeNotification and
     // assert the serialized code / codeDescription.href / relatedInformation
