@@ -246,9 +246,11 @@ test "semantic tokens: control flow keywords" {
 // Scope-correct identifier resolution (plan 05, Block 3)
 // =========================================================================
 
-/// Decode the delta-encoded token stream and return the token type of the
-/// token starting at `offset`, or null if no token starts there.
-fn tokenTypeAtOffset(data: []const u32, source: [:0]const u8, offset: u32) ?u32 {
+const SemanticToken = struct { length: u32, token_type: u32, modifiers: u32 };
+
+/// Decode the delta-encoded token stream and return the token starting at
+/// `offset`, or null if no token starts there.
+fn tokenAtOffset(data: []const u32, source: [:0]const u8, offset: u32) ?SemanticToken {
     const want = Handler.offsetToLspPosition(source, offset) orelse return null;
     var line: u32 = 0;
     var char: u32 = 0;
@@ -258,9 +260,17 @@ fn tokenTypeAtOffset(data: []const u32, source: [:0]const u8, offset: u32) ?u32 
         const delta_char = data[i + 1];
         line += delta_line;
         char = if (delta_line == 0) char + delta_char else delta_char;
-        if (line == want.line and char == want.character) return data[i + 3];
+        if (line == want.line and char == want.character) {
+            return .{ .length = data[i + 2], .token_type = data[i + 3], .modifiers = data[i + 4] };
+        }
     }
     return null;
+}
+
+/// Token type of the token starting at `offset`, or null if none starts there.
+fn tokenTypeAtOffset(data: []const u32, source: [:0]const u8, offset: u32) ?u32 {
+    const tok = tokenAtOffset(data, source, offset) orelse return null;
+    return tok.token_type;
 }
 
 test "semantic tokens: a local reference is not resolved to a same-named parameter" {
@@ -313,4 +323,53 @@ test "semantic tokens: struct member names stay colored" {
     // The member name in `s.field` must still emit a token.
     const member_off: u32 = @intCast(std.mem.lastIndexOf(u8, source, "field").?);
     try std.testing.expect(tokenTypeAtOffset(data, source, member_off) != null);
+}
+
+// =========================================================================
+// Token lengths are UTF-16 code units, not bytes
+//
+// `length` is the one place the protocol carries a width rather than a
+// range, and it is counted in the negotiated `positionEncoding` — utf-16
+// here. Byte lengths overshoot on every non-ASCII token.
+// =========================================================================
+
+const emoji = "\xF0\x9F\x8E\x89"; // 🎉 U+1F389 — 4 bytes, 2 UTF-16 code units.
+const cjk = "\xE4\xB8\xAD"; // 中 U+4E2D — 3 bytes, 1 UTF-16 code unit.
+
+test "semantic tokens: an ASCII comment's length is its byte length" {
+    const source: [:0]const u8 = "// hello\nfn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const data = try ctx.handler.computeSemanticTokens("test://file.wgsl");
+    defer std.testing.allocator.free(data);
+
+    const tok = tokenAtOffset(data, source, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 7), tok.token_type); // comment
+    try std.testing.expectEqual(@as(u32, 8), tok.length);
+}
+
+test "semantic tokens: a comment's length counts UTF-16 code units" {
+    const source: [:0]const u8 = "// a " ++ emoji ++ " " ++ cjk ++ "\nfn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const data = try ctx.handler.computeSemanticTokens("test://file.wgsl");
+    defer std.testing.allocator.free(data);
+
+    const tok = tokenAtOffset(data, source, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 7), tok.token_type); // comment
+    // "// a " (5) + 🎉 (2) + " " (1) + 中 (1) = 9 units, over 13 bytes.
+    try std.testing.expectEqual(@as(u32, 9), tok.length);
+}
+
+test "semantic tokens: a block comment's length counts UTF-16 code units" {
+    const source: [:0]const u8 = "/*" ++ emoji ++ cjk ++ "*/ fn f() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const data = try ctx.handler.computeSemanticTokens("test://file.wgsl");
+    defer std.testing.allocator.free(data);
+
+    const tok = tokenAtOffset(data, source, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 7), tok.token_type); // comment
+    // "/*" (2) + 🎉 (2) + 中 (1) + "*/" (2) = 7 units, over 11 bytes.
+    try std.testing.expectEqual(@as(u32, 7), tok.length);
 }

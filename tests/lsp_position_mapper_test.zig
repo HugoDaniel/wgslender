@@ -177,6 +177,49 @@ test "PositionMapper does not rescan from byte 0" {
     try std.testing.expectEqual(@as(u32, 0), pos.character);
 }
 
+test "PositionMapper.utf16Len counts code units, not bytes or codepoints" {
+    const cases = [_]struct { bytes: []const u8, units: u32 }{
+        .{ .bytes = "", .units = 0 },
+        .{ .bytes = "hello", .units = 5 },
+        .{ .bytes = latin1, .units = 1 }, // 2 bytes
+        .{ .bytes = cjk, .units = 1 }, // 3 bytes
+        .{ .bytes = emoji, .units = 2 }, // 4 bytes, 1 codepoint, surrogate pair
+        .{ .bytes = "a" ++ emoji ++ cjk ++ latin1 ++ "z", .units = 6 }, // 11 bytes
+        .{ .bytes = "\n\r\t", .units = 3 }, // control bytes are one unit each
+        // Total on malformed input: a byte that can't lead a sequence, and
+        // a lead byte whose sequence is truncated, each count as one.
+        .{ .bytes = "\xFF", .units = 1 },
+        .{ .bytes = "a\xFFb", .units = 3 },
+        .{ .bytes = emoji[0..2], .units = 2 },
+        .{ .bytes = "a" ++ cjk[0..1], .units = 2 },
+    };
+    for (cases, 0..) |c, i| {
+        errdefer std.debug.print("case {d}\n", .{i});
+        try std.testing.expectEqual(c.units, PositionMapper.utf16Len(c.bytes));
+    }
+}
+
+test "PositionMapper.utf16Len agrees with the character delta on one line" {
+    // The width of a span and the distance between its endpoints' positions
+    // are the same quantity; the token stream carries the former.
+    const source = "let " ++ cjk ++ emoji ++ latin1 ++ " = 1;";
+    var pm = try PositionMapper.init(std.testing.allocator, source);
+    defer pm.deinit(std.testing.allocator);
+
+    var start: u32 = 0;
+    while (start <= source.len) : (start += 1) {
+        const start_pos = pm.position(start) orelse continue;
+        var end: u32 = start;
+        while (end <= source.len) : (end += 1) {
+            const end_pos = pm.position(end) orelse continue;
+            try std.testing.expectEqual(
+                end_pos.character - start_pos.character,
+                PositionMapper.utf16Len(source[start..end]),
+            );
+        }
+    }
+}
+
 test "PositionMapper: malformed byte on the target line still rejects" {
     // Within a line the mapper runs the unchanged scan, so a bad byte
     // *before the offset on the same line* still returns null.

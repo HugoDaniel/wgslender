@@ -134,6 +134,39 @@ pub fn scanToPosition(source: []const u8, start_i: u32, start_line: u32, offset:
     return .{ .line = line, .character = col };
 }
 
+/// Width of `bytes` in UTF-16 code units.
+///
+/// Positions are not the only thing the protocol counts in the negotiated
+/// encoding: a semantic token carries a bare `length`, which is the one
+/// place a width travels without a matching end position. Byte lengths
+/// overshoot there on every non-ASCII token.
+///
+/// Total, unlike the scans above. A byte that cannot begin a UTF-8
+/// sequence, or one whose sequence runs off the end, counts as a single
+/// unit — the width a decoder's U+FFFD substitution occupies. Callers hand
+/// over lexer spans and need *some* width; returning null the way a
+/// malformed position does would silently drop the token's highlight
+/// instead of nudging it.
+pub fn utf16Len(bytes: []const u8) u32 {
+    var units: u32 = 0;
+    var i: usize = 0;
+    while (i < bytes.len) {
+        const seq_len = std.unicode.utf8ByteSequenceLength(bytes[i]) catch {
+            units += 1;
+            i += 1;
+            continue;
+        };
+        if (i + seq_len > bytes.len) {
+            units += 1;
+            i += 1;
+            continue;
+        }
+        units += if (seq_len == 4) 2 else 1;
+        i += seq_len;
+    }
+    return units;
+}
+
 /// Walk `character` UTF-16 code units forward from `start_i` (a line
 /// start), returning the byte offset. This is the body of
 /// `Handler.lspPositionToOffset`'s column loop with the seed lifted out.
