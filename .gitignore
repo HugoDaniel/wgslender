@@ -3,6 +3,7 @@
 /dist/
 zig-out/
 .zig-cache/
+/packages/rust/target/
 
 # C example binaries (built from examples/c/Makefile)
 /examples/c/minify

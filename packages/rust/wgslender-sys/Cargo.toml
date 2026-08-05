@@ -1,0 +1,14 @@
+[package]
+name = "wgslender-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Raw FFI declarations for the wgslender WGSL minifier C library."
+links = "wgslender"
+build = "build.rs"
+
+[lints]
+workspace = true

@@ -1,0 +1,30 @@
+[workspace]
+resolver = "3"
+members = ["wgslender-sys"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "CC0-1.0"
+authors = ["Hugo Daniel <mail@hugodaniel.pt>"]
+repository = "https://github.com/HugoDaniel/wgslender"
+
+[workspace.dependencies]
+wgslender-sys = { path = "wgslender-sys", version = "0.1.0" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
+todo = "warn"
+missing_safety_doc = "deny"
