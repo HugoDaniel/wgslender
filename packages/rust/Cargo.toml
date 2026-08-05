@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["wgslender-core", "wgslender-sys"]
+members = ["wgslender", "wgslender-core", "wgslender-sys", "xtask"]
 
 [workspace.package]
 version = "0.1.0"

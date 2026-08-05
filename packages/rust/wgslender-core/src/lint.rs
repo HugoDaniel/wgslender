@@ -35,6 +35,14 @@ pub enum Pack {
 
 impl Pack {
     /// The name the library knows this pack by.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wgslender_core::Pack;
+    ///
+    /// assert_eq!(Pack::Recommended.as_str(), "@wgslender/recommended");
+    /// ```
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -133,6 +141,21 @@ pub struct LintConfig {
 
 impl LintConfig {
     /// Add a shareable pack.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wgslender_core::{LintConfig, Pack, lint};
+    ///
+    /// // The empty config runs nothing, so a pack is what gives the linter an
+    /// // opinion at all.
+    /// let source = "fn unused_helper(x: f32) -> f32 { return x; }\n";
+    /// assert_eq!(lint(source, &LintConfig::default())?.warning_count, 0);
+    ///
+    /// let config = LintConfig::default().extend(Pack::Recommended);
+    /// assert!(lint(source, &config)?.warning_count > 0);
+    /// # Ok::<(), wgslender_core::Error>(())
+    /// ```
     #[must_use]
     pub fn extend(mut self, pack: Pack) -> Self {
         self.extends.push(pack);
@@ -144,6 +167,17 @@ impl LintConfig {
     /// An id no rule answers to is **silently ignored** — the library does not
     /// report unknown rule names, so a typo here reads as a rule that never
     /// fires.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wgslender_core::{LintConfig, Pack, RuleSetting};
+    ///
+    /// let config = LintConfig::default()
+    ///     .extend(Pack::Recommended)
+    ///     .rule("no-unused-vars", RuleSetting::Off);
+    /// # let _ = config;
+    /// ```
     #[must_use]
     pub fn rule(mut self, id: impl Into<String>, setting: RuleSetting) -> Self {
         self.rules.insert(id.into(), setting);
@@ -151,6 +185,30 @@ impl LintConfig {
     }
 
     /// Report `wgslender-disable` comments that suppress nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wgslender_core::{LintConfig, Pack, lint};
+    ///
+    /// // Nothing in here self-assigns, so the directive silences nothing.
+    /// let source = "\
+    /// // wgslender-disable no-self-assign
+    ///
+    /// @compute @workgroup_size(1)
+    /// fn main() {}
+    /// ";
+    ///
+    /// let config = LintConfig::default()
+    ///     .extend(Pack::Recommended)
+    ///     .report_unused_disable_directives(true);
+    /// let report = lint(source, &config)?;
+    /// assert!(
+    ///     report.diagnostics.iter().any(|d| d.code.as_deref() == Some("W0209")),
+    ///     "the dead directive is the finding"
+    /// );
+    /// # Ok::<(), wgslender_core::Error>(())
+    /// ```
     #[must_use]
     pub fn report_unused_disable_directives(mut self, enabled: bool) -> Self {
         self.report_unused_disable_directives = Some(enabled);

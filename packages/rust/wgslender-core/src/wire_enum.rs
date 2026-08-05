@@ -18,14 +18,19 @@
 /// the same shape a `match` uses for its wildcard. Generates `as_str`,
 /// `Display` and a `Deserialize` that maps an unrecognised string to the
 /// catch-all rather than failing.
+///
+/// The first variant is matched apart from the rest only so that `as_str` can
+/// carry an example written in terms of a real variant of the enum at hand.
 macro_rules! wire_enum {
     (
         $(#[$meta:meta])*
         $vis:vis enum $name:ident : $expecting:literal {
+            $(#[$first_meta:meta])*
+            $first:ident => $first_wire:literal,
             $(
                 $(#[$variant_meta:meta])*
                 $variant:ident => $wire:literal,
-            )+
+            )*
             _ => $unknown:ident => $unknown_wire:literal $(,)?
         }
     ) => {
@@ -33,10 +38,12 @@ macro_rules! wire_enum {
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         #[non_exhaustive]
         $vis enum $name {
+            $(#[$first_meta])*
+            $first,
             $(
                 $(#[$variant_meta])*
                 $variant,
-            )+
+            )*
             #[doc = concat!(
                 "A ", $expecting, " this version of the crate does not know.\n\n",
                 "The wire may grow spellings; an unfamiliar one parses to this \
@@ -47,10 +54,22 @@ macro_rules! wire_enum {
 
         impl $name {
             /// The spelling the library uses on the wire.
+            #[doc = ""]
+            #[doc = "# Examples"]
+            #[doc = ""]
+            #[doc = "```"]
+            #[doc = concat!("use wgslender_core::", stringify!($name), ";")]
+            #[doc = ""]
+            #[doc = concat!(
+                "assert_eq!(", stringify!($name), "::", stringify!($first),
+                ".as_str(), \"", $first_wire, "\");",
+            )]
+            #[doc = "```"]
             #[must_use]
             pub fn as_str(self) -> &'static str {
                 match self {
-                    $( Self::$variant => $wire, )+
+                    Self::$first => $first_wire,
+                    $( Self::$variant => $wire, )*
                     Self::$unknown => $unknown_wire,
                 }
             }
@@ -84,7 +103,8 @@ macro_rules! wire_enum {
                         E: ::serde::de::Error,
                     {
                         ::core::result::Result::Ok(match value {
-                            $( $wire => $name::$variant, )+
+                            $first_wire => $name::$first,
+                            $( $wire => $name::$variant, )*
                             _ => $name::$unknown,
                         })
                     }

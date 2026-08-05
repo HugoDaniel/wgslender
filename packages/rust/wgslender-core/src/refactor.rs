@@ -66,11 +66,36 @@ impl StableId {
     ///
     /// Any string is accepted: whether it names a symbol is a question for
     /// [`locate_stable_id`], which answers `Ok(None)` when it does not.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wgslender_core::refactor::{StableId, locate_stable_id};
+    ///
+    /// let source = "@compute @workgroup_size(1)\nfn main() {}\n";
+    /// let stored = StableId::new("v1:fn:main");
+    /// assert!(locate_stable_id(source, &stored)?.is_some());
+    ///
+    /// // Accepted, and then not found — the two are different questions.
+    /// let nonsense = StableId::new("not an id at all");
+    /// assert!(locate_stable_id(source, &nonsense)?.is_none());
+    /// # Ok::<(), wgslender_core::Error>(())
+    /// ```
     pub fn new(id: impl Into<String>) -> Self {
         Self(id.into())
     }
 
     /// The ID as the library spells it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wgslender_core::refactor::StableId;
+    ///
+    /// let id = StableId::new("v1:var:params");
+    /// assert_eq!(id.as_str(), "v1:var:params");
+    /// assert_eq!(id.to_string(), id.as_str(), "Display spells it the same way");
+    /// ```
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
