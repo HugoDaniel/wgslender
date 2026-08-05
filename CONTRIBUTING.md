@@ -22,7 +22,7 @@ zig build test         # full test suite
 The npm wrapper has its own test suite:
 
 ```bash
-cd npm/wgslender && npm test
+cd packages/js-npm && npm test
 ```
 
 ## Project layout
@@ -55,7 +55,7 @@ Atomic commits are strongly preferred — one logical change per commit.
 
 ## Pull requests
 
-- Run `zig build test` and `cd npm/wgslender && npm test` locally before
+- Run `zig build test` and `cd packages/js-npm && npm test` locally before
   pushing.
 - Keep refactors and behavior changes in separate commits.
 - If you change wire formats, public APIs, or the CLI surface, mention

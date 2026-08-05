@@ -39,8 +39,8 @@ echo 'fn main() {}' | ./zig-out/bin/wgslender          # From stdin
 ./zig-out/bin/wgslender compile shader.wgsl -o shader.wasm
 
 # NPM package
-cd npm/wgslender && npm test                # Run all 4 wrapper variants
-cd npm/wgslender && npm pack --dry-run      # Check package contents
+cd packages/js-npm && npm test                # Run all 4 wrapper variants
+cd packages/js-npm && npm pack --dry-run      # Check package contents
 ```
 
 ## Architecture
@@ -126,7 +126,7 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `lsp/wasm.zig` | LSP server WASM entry point |
 | `lsp/Handler.zig` | LSP request/notification handler; delegates to `lsp/handler/*` |
 | `lsp/handler/` | Per-feature LSP handlers (completion, hover, definition, code_actions, incremental_sync, semantic_tokens, … one file per feature) |
-| `npm/wgslender` | NPM package |
+| `packages/js-npm` | NPM package |
 
 ### Key Design Decisions
 
@@ -154,7 +154,7 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 5. If the rule reads `Symbol.is_live`, set `meta.requires_dce = true` so the Linter runs `Dce.mark` before the rule.
 6. Register a diagnostic code in `src/Diagnostic.zig` `Code` struct (W02xx for new lint rules).
 7. Add unit tests to `tests/lint_rules_test.zig` following the `runLint` + `hasCodeContaining` pattern.
-8. If the rule's pack changes, run `zig build gen-npm` to regenerate `npm/wgslender/configs.js` + `configs.d.ts` from `src/lint/configs.zig` (do **not** hand-edit them — `tests/npm_generated_test.zig` byte-compares them against the generator and fails with "run `zig build gen-npm`" on drift), then commit the regenerated files.
+8. If the rule's pack changes, run `zig build gen-npm` to regenerate `packages/js-npm/configs.js` + `configs.d.ts` from `src/lint/configs.zig` (do **not** hand-edit them — `tests/npm_generated_test.zig` byte-compares them against the generator and fails with "run `zig build gen-npm`" on drift), then commit the regenerated files.
 
 Rules see a `Context` with `.module`, `.source`, `.symbols`, `.arena`, and `.report()`. A rule is either a **listener** (a pure per-node observer folded into one shared `MultiVisitor.walk`) or a **run** pass (table scans over `ctx.module.symbols.items`, subtree folds, block-sequential or context-sensitive walks); see the taxonomy in `src/lint/MultiVisitor.zig`. Either style may use `src/lint/span.zig` for expression positions — the Linter doesn't prescribe traversal shape. Severity is config-resolved; `ctx.report()` stamps `code`, `source`, and effective severity automatically.
 
@@ -201,7 +201,7 @@ matching and `usage_text` edits are only for outliers.
    `usage_minify_outliers`; mark its spec `.cli_simple = false` (an empty
    `summary` also opts it out of `printHelp`).
 6. Update tests and README.md; if the npm API exposes the option, mirror it
-   in the package's TypeScript types (`npm/wgslender/*.d.ts`). A new
+   in the package's TypeScript types (`packages/js-npm/*.d.ts`). A new
    `minifier_options_specs` row also feeds `lspSettingsSchema` — run `zig
    build gen-npm` to regenerate `configs.{js,d.ts}` (see the lint-rule step 8
    note; the freshness test enforces it).

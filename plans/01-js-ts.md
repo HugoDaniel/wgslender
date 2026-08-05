@@ -1,7 +1,7 @@
 # Plan 01 — JS/TS example: using WGSLender from JavaScript/TypeScript
 
 **Creates:** `examples/js-ts/` — a small, self-contained npm project that consumes the
-real `npm/wgslender` package (via a `file:` dependency) from **TypeScript**, with three
+real `packages/js-npm` package (via a `file:` dependency) from **TypeScript**, with three
 runnable subexamples (**minify**, **validate**, **reflect**) and a `node:test` suite
 that proves each one works.
 
@@ -12,8 +12,8 @@ node v26.6.0 / npm 11.18.0, zig 0.16.0.
 
 ## Verified current state (do not re-derive)
 
-- The npm package lives at `npm/wgslender/` (version `1.1.0`), with the WASM artifact
-  **committed** at `npm/wgslender/wgslender.wasm`. `cd npm/wgslender && npm test` is
+- The npm package lives at `packages/js-npm/` (version `1.1.0`), with the WASM artifact
+  **committed** at `packages/js-npm/wgslender.wasm`. `cd packages/js-npm && npm test` is
   green today (175 passed × 4 wrapper variants).
 - Public API (all return **parsed JS objects**, never JSON strings):
   - `initialize(options?) => Promise<void>` — in Node, no options needed (the node
@@ -28,10 +28,10 @@ node v26.6.0 / npm 11.18.0, zig 0.16.0.
     storage, textures, samplers, structs, entryPoints, overrides, functions, aliases, errors? }`.
   - `getBindGroups(reflectResultOrBindings) => Record<group, Record<binding, BindingInfo>>` — pure JS.
   - Plus lint/compile/refactor functions not covered by this plan.
-- Package `exports` map (`npm/wgslender/package.json:14-31`): `.` has `browser`/`node`/`default`
+- Package `exports` map (`packages/js-npm/package.json:14-31`): `.` has `browser`/`node`/`default`
   conditions (node → `import: ./esm/node.mjs`, `require: ./lib/main.js`); subpaths
   `./configs` (has a `types` condition) and `./wasm`. Top-level `"types": "lib/main.d.ts"`.
-- **Known typing defects in `npm/wgslender/lib/main.d.ts`** (found by code inspection,
+- **Known typing defects in `packages/js-npm/lib/main.d.ts`** (found by code inspection,
   confirmed at the cited lines):
   1. `initialize(options: InitializeOptions)` declares the parameter **required**
      (`main.d.ts:481`) while the implementation treats it as optional
@@ -47,9 +47,9 @@ node v26.6.0 / npm 11.18.0, zig 0.16.0.
      (no `node.d.mts` exists). Whether this errors depends on the TS version — Block 0
      tests it empirically.
 - WASM freshness rule: the examples run against the **committed**
-  `npm/wgslender/wgslender.wasm`. If Zig-side wire formats changed since it was built,
-  refresh it first: `zig build wasm && cp zig-out/bin/wgslender.wasm npm/wgslender/wgslender.wasm`
-  (then re-run `cd npm/wgslender && npm test`).
+  `packages/js-npm/wgslender.wasm`. If Zig-side wire formats changed since it was built,
+  refresh it first: `zig build wasm && cp zig-out/bin/wgslender.wasm packages/js-npm/wgslender.wasm`
+  (then re-run `cd packages/js-npm && npm test`).
 
 ## Ground rules
 
@@ -65,7 +65,7 @@ node v26.6.0 / npm 11.18.0, zig 0.16.0.
 
 ```
 examples/js-ts/
-  package.json          private; deps: wgslender file:../../npm/wgslender; devDeps: typescript, @types/node
+  package.json          private; deps: wgslender file:../../packages/js-npm; devDeps: typescript, @types/node
   .npmrc                package-lock=false
   tsconfig.json         nodenext + strict, src/ → dist/
   shaders/
@@ -101,7 +101,7 @@ runtime code fail the type-check, which blocks a TypeScript example.
          "pretest": "npm run build",
          "test": "node --test test/"
        },
-       "dependencies": { "wgslender": "file:../../npm/wgslender" },
+       "dependencies": { "wgslender": "file:../../packages/js-npm" },
        "devDependencies": { "typescript": "^5.6", "@types/node": "^26" }
      }
      ```
@@ -140,7 +140,7 @@ runtime code fail the type-check, which blocks a TypeScript example.
    - `TS2353`/`TS2345` (unknown property `strict`) on the validate options.
    - Possibly `TS7016` (no declaration file for `esm/node.mjs`) — depends on TS version;
      note which reds actually appeared.
-3. **Green — fix the package typings** (edit `npm/wgslender/`):
+3. **Green — fix the package typings** (edit `packages/js-npm/`):
    - `lib/main.d.ts`: make it `initialize(options?: InitializeOptions)`.
    - `lib/main.d.ts` `ValidateOptions`: add `strict?: boolean` ("enables strict mode:
      warnings are treated as errors"); annotate the existing `strictMode` and
@@ -149,9 +149,9 @@ runtime code fail the type-check, which blocks a TypeScript example.
      them (that would break existing consumers' compiles).
    - `lib/main.d.ts`: add `export function getVersion(): string;`.
    - Only if step 2 produced TS7016: add a `types` condition **first** inside
-     `exports["."]` in `npm/wgslender/package.json`:
+     `exports["."]` in `packages/js-npm/package.json`:
      `"types": "./lib/main.d.ts"` (before `browser`/`node`/`default`).
-4. Verify: `npx tsc --noEmit` is clean; `cd ../../npm/wgslender && npm test` still
+4. Verify: `npx tsc --noEmit` is clean; `cd ../../packages/js-npm && npm test` still
    175×4 green; `npm pack --dry-run` still lists the same files.
 5. Commit (two atomic commits):
    - `fix(npm): align main.d.ts with runtime API (optional initialize, strict, getVersion)`
@@ -326,7 +326,7 @@ Replace the Block 0 smoke content of `src/minify.mts` with the real subexample:
    `| js-ts | TypeScript + npm package (WASM) | cd examples/js-ts && npm install && npm test |`.
 3. Final verification from a clean slate:
    `rm -rf examples/js-ts/node_modules examples/js-ts/dist && cd examples/js-ts && npm install && npm test`
-   → all green. Also re-run `cd npm/wgslender && npm test` once more (the d.ts edits
+   → all green. Also re-run `cd packages/js-npm && npm test` once more (the d.ts edits
    from Block 0 must not have drifted anything).
 4. Commit: `docs(examples): js-ts README + examples index`
 
@@ -351,6 +351,6 @@ honestly.
 - [ ] `npx tsc --noEmit` clean under `strict` + `nodenext` — the TS example compiles
       against the **fixed** package types with zero `any`-casts or `@ts-ignore`.
 - [ ] `npm test` green: 3 script-runner cases + all direct-API table cases.
-- [ ] `cd npm/wgslender && npm test` still 175×4 green.
+- [ ] `cd packages/js-npm && npm test` still 175×4 green.
 - [ ] Reflect expectations pinned from the CLI oracle, not guessed.
 - [ ] All commits atomic + conventional; no CI files added.

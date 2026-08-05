@@ -550,7 +550,7 @@ pub fn build(b: *std.Build) void {
     // The generator's parse/merge/emit logic is tested corpus-free.
     _ = addTestStep(b, test_step, "tools/gen_xid.zig", target, optimize, &.{});
 
-    // gen-npm: regenerate npm/wgslender/configs.{js,d.ts} from the Zig config
+    // gen-npm: regenerate packages/js-npm/configs.{js,d.ts} from the Zig config
     // pack tables (src/lint/configs.zig) + option specs (src/options.zig).
     // setCwd(.) so the output paths resolve against the repo root; writes both
     // files in place (a side-effecting step, always re-runs).
@@ -563,7 +563,7 @@ pub fn build(b: *std.Build) void {
     const gen_npm_exe = b.addExecutable(.{ .name = "gen-npm", .root_module = gen_npm_mod });
     const run_gen_npm = b.addRunArtifact(gen_npm_exe);
     run_gen_npm.setCwd(b.path("."));
-    const gen_npm_step = b.step("gen-npm", "Regenerate npm/wgslender/configs.{js,d.ts} from the Zig config tables");
+    const gen_npm_step = b.step("gen-npm", "Regenerate packages/js-npm/configs.{js,d.ts} from the Zig config tables");
     gen_npm_step.dependOn(&run_gen_npm.step);
     // The generator's pure emit logic runs corpus-free in the suite.
     _ = addTestStep(b, test_step, "tools/gen_npm.zig", target, optimize, &.{w});

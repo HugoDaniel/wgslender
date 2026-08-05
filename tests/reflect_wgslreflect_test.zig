@@ -658,7 +658,7 @@ test "wgsl_reflect: alias struct (array<Ship, a_bicycle.num_wheels>)" {
 //             requires TypeInfo links from FieldInfo (we currently emit a
 //             struct-name reference).
 // PORT-DEFER: "entry functions" `getBindGroups()` parity — covered on the
-//             JS side by the new `getBindGroups()` helper in npm/wgslender.
+//             JS side by the new `getBindGroups()` helper in packages/js-npm.
 // PORT-DEFER: "enable", "requires", "f16 matN×M" — passthrough exists but
 //             a few mat shapes need direct ports (f16 vec parity already
 //             ported above).

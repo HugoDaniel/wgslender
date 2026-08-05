@@ -252,7 +252,7 @@ for (const d of report.diagnostics) {
 const { fixed } = lintAndFix(source, { extends: [strict.name] });
 ```
 
-See [npm/wgslender/README.md](npm/wgslender/README.md) for full API documentation.
+See [packages/js-npm/README.md](packages/js-npm/README.md) for full API documentation.
 
 ### Refactoring API
 
@@ -460,7 +460,7 @@ echo 'fn main() {}' | ./zig-out/bin/wgslender
 ./zig-out/bin/wgslender compile shader.wgsl -o shader.wasm
 
 # NPM package tests
-cd npm/wgslender && npm test                # all 4 wrapper variants
+cd packages/js-npm && npm test                # all 4 wrapper variants
 cd npm/wgslender-lsp && node test.js
 ```
 
@@ -471,7 +471,7 @@ Requires [Zig 0.16.0](https://ziglang.org/download/) — install via `zigup 0.16
 - [Why minify WGSL?](docs/why-minify-wgsl.md) - Benefits of shader minification
 - [Why pre-validate WGSL?](docs/why-pre-validate-wgsl.md) - Benefits of build-time validation
 - [Why reflect WGSL?](docs/why-reflect-wgsl.md) - Benefits of shader reflection
-- [npm package docs](npm/wgslender/README.md) - JavaScript/TypeScript API
+- [npm package docs](packages/js-npm/README.md) - JavaScript/TypeScript API
 - [C API reference](docs/C-API.md) - C/FFI integration
 - [Building with wgslender](BUILDING_WITH_WGSLENDER.md) - Integration guide
 

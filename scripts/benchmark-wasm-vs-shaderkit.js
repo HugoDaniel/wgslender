@@ -17,7 +17,7 @@ globalThis.performance ??= require('perf_hooks').performance;
 globalThis.crypto ??= require('crypto');
 
 // Load wasm_exec.js
-require('../npm/wgslender/wasm_exec.js');
+require('../packages/js-npm/wasm_exec.js');
 
 const { minify: shaderkitMinify } = require('shaderkit');
 

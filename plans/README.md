@@ -54,7 +54,7 @@ has moved significantly:
 - `zig build lib` → `zig-out/lib/libwgslender.a` + `zig-out/include/wgslender.h` — works.
 - `make -C examples/c` builds all 10 C examples; `./minify`, `./validate`, `./reflect`
   run correctly (only a harmless `ld` macOS-version warning).
-- `cd npm/wgslender && npm test` — **175 passed, 0 failed** in each of the 4 wrapper
+- `cd packages/js-npm && npm test` — **175 passed, 0 failed** in each of the 4 wrapper
   variants (node-cjs, node-esm, browser CJS shim, browser ESM shim).
 - Library version: `1.1.0` (`src/root.zig:11`).
 - There is **no** automated testing of `examples/c/` anywhere (verified exhaustively:

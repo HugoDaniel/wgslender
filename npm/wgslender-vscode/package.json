@@ -251,7 +251,7 @@
     "mocha": "^10.3.0",
     "typescript": "^5.3.3",
     "vscode-languageclient": "^9.0.1",
-    "wgslender": "file:../wgslender",
+    "wgslender": "file:../../packages/js-npm",
     "wgslender-lsp": "file:../wgslender-lsp"
   }
 }

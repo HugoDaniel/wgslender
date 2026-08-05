@@ -1,6 +1,6 @@
 //! Generator for the npm package's `configs.js` + `configs.d.ts` mirrors.
 //!
-//! `npm/wgslender/configs.{js,d.ts}` re-export the built-in lint config packs
+//! `packages/js-npm/configs.{js,d.ts}` re-export the built-in lint config packs
 //! and the LSP settings schema so JS callers can inspect them without reaching
 //! into the Zig source. Historically these were hand-maintained and drifted
 //! (the `@wgslender/minify` pack was missing entirely). This tool derives them
@@ -31,8 +31,8 @@ const Severity = wgslender.Diagnostic.Severity;
 const Configs = wgslender.Linter.Configs;
 const options = wgslender.OptionsSpec;
 
-const js_out_path = "npm/wgslender/configs.js";
-const dts_out_path = "npm/wgslender/configs.d.ts";
+const js_out_path = "packages/js-npm/configs.js";
+const dts_out_path = "packages/js-npm/configs.d.ts";
 
 /// Strip the `@wgslender/` namespace from a pack name to get its JS export
 /// identifier: `@wgslender/recommended` → `recommended`.
@@ -67,7 +67,7 @@ fn schemaLeaf(comptime spec: options.OptionSpec) []const u8 {
     };
 }
 
-/// Render the full contents of `npm/wgslender/configs.js`.
+/// Render the full contents of `packages/js-npm/configs.js`.
 pub fn emitConfigsJs(alloc: Allocator) Allocator.Error![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     const w = &out;
@@ -105,7 +105,7 @@ pub fn emitConfigsJs(alloc: Allocator) Allocator.Error![]u8 {
     return out.items;
 }
 
-/// Render the full contents of `npm/wgslender/configs.d.ts`.
+/// Render the full contents of `packages/js-npm/configs.d.ts`.
 pub fn emitConfigsDts(alloc: Allocator) Allocator.Error![]u8 {
     var out: std.ArrayListUnmanaged(u8) = .empty;
     const w = &out;

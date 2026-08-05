@@ -36,7 +36,7 @@ All notable changes to wgslender are recorded here. The project follows
   reports syntax errors to stderr and exits 1 without writing output. No WASM
   rebuild — both call the existing `wgslender_lint` / `wgslender_compile`
   exports.
-- **Generated npm config mirrors.** `npm/wgslender/configs.{js,d.ts}` are now
+- **Generated npm config mirrors.** `packages/js-npm/configs.{js,d.ts}` are now
   generated from the Zig source of truth by `zig build gen-npm` (pack tables
   from `src/lint/configs.zig`, `lspSettingsSchema` minifier knobs from
   `src/options.zig`), and a freshness test (`tests/npm_generated_test.zig`)
@@ -47,6 +47,11 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Changed
 
+- **npm package moved to `packages/js-npm/`** (was `npm/wgslender/`). Published
+  package name (`wgslender`) and public API are unchanged; only the in-repo
+  path moved, so this affects local dev commands (`cd packages/js-npm && npm
+  test`) and the `wgslender-vscode` extension's local `file:` dependency, not
+  npm consumers.
 - **Lint JSON schema (⚠ behavior):** the WASM/C-ABI `lint` / `lintAndFix`
   JSON payload changed from a bare diagnostics array `[...]` to a canonical
   per-file result object

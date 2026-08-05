@@ -11,7 +11,7 @@
 //!     stops finding new pairs and emits the remainder uncompressed.
 //!   - The generated WASM exports `memory` and `generate() → i32`. Callers
 //!     read `output_len` bytes from offset 0 of `memory` after `generate`
-//!     returns; that contract is what `npm/wgslender` and the runtime
+//!     returns; that contract is what `packages/js-npm` and the runtime
 //!     test harness drive.
 //!
 //! Pipeline:
