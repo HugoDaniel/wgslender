@@ -20,6 +20,7 @@ wgslender-core.workspace = true
 wgslender-macros = { workspace = true, optional = true }
 
 [dev-dependencies]
+bytemuck.workspace = true
 trybuild.workspace = true
 
 # Not a `#![cfg(...)]`: an example whose `main` is compiled away is an example
@@ -27,6 +28,10 @@ trybuild.workspace = true
 [[example]]
 name = "embed_compressed"
 required-features = ["macros", "compress"]
+
+[[example]]
+name = "wgsl_module"
+required-features = ["macros"]
 
 [lints]
 workspace = true

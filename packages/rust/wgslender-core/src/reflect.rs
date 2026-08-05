@@ -54,6 +54,20 @@ wire_enum! {
     }
 }
 
+/// Where a resource is bound: a `@group`/`@binding` pair, as one value.
+///
+/// Not a wire type — [`Binding`] carries the two numbers separately, the way
+/// the envelope spells them, and [`Binding::slot`] pairs them up. It exists
+/// because a host program passes the pair around together, and because a
+/// generated bind-group table needs something `const`-constructible to name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct BindingSlot {
+    /// The `@group` index.
+    pub group: u32,
+    /// The `@binding` index.
+    pub binding: u32,
+}
+
 /// One `@group`/`@binding` resource.
 ///
 /// `name` is what the shader source calls it and `name_mapped` is what it is
@@ -91,6 +105,30 @@ pub struct Binding {
     pub layout: Option<StructLayout>,
 }
 
+impl Binding {
+    /// The slot this resource is bound to.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use wgslender_core::{BindingSlot, reflect};
+    ///
+    /// let reflection = reflect("@group(1) @binding(2) var<uniform> scale: f32;")?;
+    /// assert_eq!(
+    ///     reflection.bindings[0].slot(),
+    ///     BindingSlot { group: 1, binding: 2 },
+    /// );
+    /// # Ok::<(), wgslender_core::Error>(())
+    /// ```
+    #[must_use]
+    pub fn slot(&self) -> BindingSlot {
+        BindingSlot {
+            group: self.group,
+            binding: self.binding,
+        }
+    }
+}
+
 /// How a struct is laid out in memory, per WGSL's host-shareable rules.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -125,6 +163,101 @@ pub struct Field {
     pub size: u32,
     /// The alignment this member requires.
     pub alignment: u32,
+    /// The member's type, structured.
+    ///
+    /// [`ty`](Self::ty) is the type as the shader spells it, which is a string
+    /// and needs parsing to be acted on. This is the same type taken apart —
+    /// what a code generator reads.
+    #[serde(default)]
+    pub type_info: Option<TypeInfo>,
+}
+
+/// A type, taken apart: what it is made of and what it costs in memory.
+///
+/// The kinds a struct member can have. Everything the library may grow to
+/// describe — and everything that can only be a resource rather than a member,
+/// such as a texture or a sampler — arrives as [`Unknown`](TypeInfo::Unknown)
+/// rather than failing the parse, so a shader using one still reflects.
+///
+/// Every size and alignment here is the library's own answer under WGSL's
+/// host-shareable layout rules (§6.2.10), not something recomputed on this
+/// side.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[non_exhaustive]
+pub enum TypeInfo {
+    /// `f32`, `u32`, `i32`, `bool`, `f16`.
+    Scalar {
+        /// The type's WGSL name.
+        name: String,
+        /// Size in bytes.
+        size: u32,
+        /// Required alignment.
+        alignment: u32,
+    },
+    /// `vecN<T>` — `N` components of `format`, with no padding between them.
+    Vec {
+        /// How many components: 2, 3 or 4.
+        width: u8,
+        /// The component type.
+        format: Box<TypeInfo>,
+        /// Size in bytes. A `vec3` is 12 bytes, aligned to 16.
+        size: u32,
+        /// Required alignment.
+        alignment: u32,
+    },
+    /// `matCxR<T>` — `cols` columns of `rows` components, `stride` apart.
+    Mat {
+        /// How many columns.
+        cols: u8,
+        /// How many rows, which is the height of one column.
+        rows: u8,
+        /// The component type.
+        format: Box<TypeInfo>,
+        /// Size in bytes, which is `cols * stride`.
+        size: u32,
+        /// Required alignment, which is one column's alignment.
+        alignment: u32,
+        /// The distance between two columns, which exceeds the column's own
+        /// size whenever the column is a `vec3`.
+        stride: u32,
+    },
+    /// `array<T>` or `array<T, N>`.
+    Array {
+        /// The element type.
+        format: Box<TypeInfo>,
+        /// How many elements, or `None` for a runtime-sized array.
+        count: Option<u32>,
+        /// Size in bytes, or `None` for a runtime-sized array.
+        size: Option<u32>,
+        /// The distance between two elements, which exceeds the element's own
+        /// size whenever the element needs more alignment than it has size.
+        stride: u32,
+        /// Required alignment.
+        alignment: u32,
+    },
+    /// A named struct, whose members are under that name in
+    /// [`Reflection::structs`].
+    Struct {
+        /// The struct's name, and the key its layout is filed under.
+        name: String,
+        /// Size in bytes, including the tail padding.
+        size: u32,
+        /// Required alignment.
+        alignment: u32,
+    },
+    /// `atomic<T>`, which occupies exactly what `T` does.
+    Atomic {
+        /// The type made atomic.
+        format: Box<TypeInfo>,
+        /// Size in bytes.
+        size: u32,
+        /// Required alignment.
+        alignment: u32,
+    },
+    /// A kind this crate does not describe.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A function a pipeline can be built around.

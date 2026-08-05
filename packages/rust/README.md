@@ -32,7 +32,7 @@ until a shader inflates to nonsense, and in one file they cannot.
 
 | Feature | Default | What it adds |
 |---|---|---|
-| `macros` | on | `include_wgsl!`, and the proc-macro crate behind it. |
+| `macros` | on | `include_wgsl!` and `wgsl_module!`, and the proc-macro crate behind them. |
 | `compress` | off | `CompressedWgsl`, plus `include_wgsl_compressed!` when `macros` is on too. Pulls in `miniz_oxide`. |
 
 ## Compile-time embedding
@@ -80,6 +80,46 @@ Two differences from `include_wgsl!`:
   reachable under the name `wgslender` where the macro is written. Renaming the
   dependency in `Cargo.toml` breaks it. `include_wgsl!` expands to a literal and
   has no such requirement.
+
+## Generated Rust
+
+```rust
+wgslender::wgsl_module!(pub scene, "shaders/scene.wgsl");
+
+let uniforms = scene::Scene::new(view, projection, 1);
+queue.write_buffer(&buffer, 0, bytemuck::bytes_of(&uniforms));
+```
+
+`wgsl_module!` reflects the shader while `cargo build` runs and generates what a
+host program binds against: `SOURCE` (validated and minified), a
+`bindings::NAME` slot per resource, `ENTRY_NAME` and `ENTRY_NAME_WORKGROUP_SIZE`
+per entry point, and a `#[repr(C)]` struct per host-shareable struct with the
+shader's own alignment.
+
+**The gaps WGSL's layout leaves become explicit `_padN` fields**, so a generated
+struct has no padding the caller cannot account for and can go to the GPU as
+bytes. `bytemuck = true` puts `#[derive(Pod, Zeroable)]` on them, which needs
+your crate to depend on `bytemuck` with its `derive` feature.
+
+**Each struct proves its own layout.** Beside every one, the expansion emits a
+`const _: ()` block asserting its size, alignment and every field offset against
+what wgslender computed from the shader — so a mistake in the mapping fails the
+build of the crate that asked for it, rather than drawing the wrong thing.
+
+What it refuses, by name and with the numbers, rather than guessing: a field
+whose layout no Rust type has. A `mat3x3f` is three twelve-byte columns sixteen
+bytes apart, and `[[f32; 3]; 3]` is not that; `array<vec3f, N>` is the same
+story. Mapped as of v1: `f32`, `u32`, `i32`, vectors and matrices of them,
+fixed-size arrays whose stride is their element size, nested structs, and
+`atomic` of any of those. A runtime-sized array becomes an associated constant —
+`Instances::ITEMS_OFFSET` — because how many elements follow is the host's
+business at run time.
+
+Like `include_wgsl_compressed!`, the expansion names `::wgslender::BindingSlot`,
+so renaming the dependency in `Cargo.toml` breaks it.
+
+`cargo run -p wgslender --example wgsl_module` prints a generated module's
+layout.
 
 ## Prerequisites
 
@@ -143,8 +183,8 @@ Each feature configuration is walked because an optional feature nothing ever
 compiles is an optional feature that has quietly stopped working — and the two
 ends of the matrix are where that shows up: everything on, and nothing on.
 
-The test step includes the macro's UI goldens, which pin what the compiler
-prints when `include_wgsl!` refuses. trybuild runs those by compiling a
+The test step includes the macros' UI goldens, which pin what the compiler
+prints when `include_wgsl!` or `wgsl_module!` refuses. trybuild runs those by compiling a
 generated package under `target/tests/trybuild/`, so they cost a cargo build of
 their own. Regenerate them, then read the diff, with:
 
@@ -171,11 +211,11 @@ cargo xtask deny    # cargo deny check
 ```sh
 cargo run -p wgslender --example minify         # what shrank, and by how much
 cargo run -p wgslender --example reflect_types  # bindings, struct layouts, entry points
+cargo run -p wgslender --example wgsl_module    # a generated module's layout
 cargo run -p wgslender --features compress --example embed_compressed
 ```
 
 ## Not here yet
 
-`wgsl_module!` — Rust types generated from a shader's reflection — is planned
-but not written; see `plans/04-rust-package.md`. Nothing here is published to
-crates.io yet.
+Nothing here is published to crates.io; see `plans/04-rust-package.md` for what
+that would take.

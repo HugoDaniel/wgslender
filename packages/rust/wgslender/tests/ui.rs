@@ -25,4 +25,8 @@ fn ui() {
     cases.compile_fail("tests/ui/unknown_option.rs");
     cases.compile_fail("tests/ui/contradiction.rs");
     cases.compile_fail("tests/ui/strict_warning.rs");
+
+    cases.compile_fail("tests/ui/module_padded_matrix.rs");
+    cases.compile_fail("tests/ui/module_padded_array.rs");
+    cases.compile_fail("tests/ui/module_bytemuck_elsewhere.rs");
 }

@@ -1,0 +1,5 @@
+error: `bytemuck` names derives for the structs a macro generates, and this one generates none; it is `wgsl_module!`'s option
+  --> tests/ui/module_bytemuck_elsewhere.rs:10:5
+   |
+10 |     bytemuck = true
+   |     ^^^^^^^^

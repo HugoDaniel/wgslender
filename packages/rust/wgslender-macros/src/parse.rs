@@ -27,6 +27,21 @@ pub(crate) enum Embedding {
     /// A deflate stream that inflates back to it, as a `CompressedWgsl`.
     #[cfg(feature = "compress")]
     Compressed,
+    /// A module of constants and structs, with the text inside it.
+    Module,
+}
+
+/// Whether the generated structs carry bytemuck's derives.
+///
+/// Only [`Embedding::Module`] generates structs, so only that form accepts the
+/// key that chooses this.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Bytemuck {
+    /// Add `#[derive(Pod, Zeroable)]`, which needs the caller to depend on
+    /// bytemuck themselves.
+    Derive,
+    /// Leave the structs deriving what everything else derives.
+    Skip,
 }
 
 impl Embedding {
@@ -38,12 +53,17 @@ impl Embedding {
     /// by naming it.
     fn defaults(self) -> MinifyOptions {
         match self {
-            Self::Text => MinifyOptions::default(),
+            Self::Text | Self::Module => MinifyOptions::default(),
             #[cfg(feature = "compress")]
             Self::Compressed => MinifyOptions::default()
                 .sort_declarations(true)
                 .scope_local_rename(true),
         }
+    }
+
+    /// Whether this form generates the structs `bytemuck` would derive on.
+    fn generates_structs(self) -> bool {
+        matches!(self, Self::Module)
     }
 }
 
@@ -75,6 +95,10 @@ pub(crate) struct Invocation {
     pub(crate) options: MinifyOptions,
     /// What the expansion hands back.
     pub(crate) embedding: Embedding,
+    /// Whether generated structs carry bytemuck's derives. Meaningless unless
+    /// the embedding generates structs, which is why the key is refused
+    /// elsewhere rather than ignored.
+    pub(crate) bytemuck: Bytemuck,
 }
 
 /// Generates the setter lookup and the list of names the error message offers,
@@ -113,6 +137,9 @@ passthrough_options! {
 /// The keys handled here rather than handed to [`MinifyOptions`].
 const OWN_KEYS: &[&str] = &["minify", "validate", "strict", "keep_names"];
 
+/// The keys only a form that generates Rust types can mean anything by.
+const MODULE_KEYS: &[&str] = &["bytemuck"];
+
 /// What a key needs the macro to be doing for it to mean anything.
 ///
 /// Tracked so that an invocation which contradicts itself — tuning a
@@ -139,6 +166,7 @@ impl Invocation {
             minification: Minification::Minify,
             options: embedding.defaults(),
             embedding,
+            bytemuck: Bytemuck::Skip,
         };
         let mut dependents: Vec<(Ident, Depends)> = Vec::new();
 
@@ -208,9 +236,16 @@ fn set(
             invocation.options = mem::take(&mut invocation.options).keep_names(names);
             dependents.push((key, Depends::OnMinification));
         }
+        "bytemuck" if invocation.embedding.generates_structs() => {
+            invocation.bytemuck = if bool_value(input)? {
+                Bytemuck::Derive
+            } else {
+                Bytemuck::Skip
+            };
+        }
         name => {
             let Some(setter) = passthrough_setter(name) else {
-                return Err(unknown_option(&key));
+                return Err(unknown_option(&key, invocation.embedding));
             };
             let value = bool_value(input)?;
             invocation.options = setter(mem::take(&mut invocation.options), value);
@@ -234,8 +269,26 @@ fn name_list(input: ParseStream) -> syn::Result<Vec<String>> {
 }
 
 /// Names the key that does not exist, then the ones that do.
-fn unknown_option(key: &Ident) -> syn::Error {
+///
+/// A key that exists for another form is worth its own sentence: `bytemuck`
+/// under `include_wgsl!` is not a typo, it is a key aimed at structs that macro
+/// does not generate, and saying "unknown option" would send the author looking
+/// for a spelling mistake.
+fn unknown_option(key: &Ident, embedding: Embedding) -> syn::Error {
+    if MODULE_KEYS.contains(&key.to_string().as_str()) {
+        return syn::Error::new(
+            key.span(),
+            format!(
+                "`{key}` names derives for the structs a macro generates, and this one generates \
+                 none; it is `wgsl_module!`'s option",
+            ),
+        );
+    }
+
     let mut valid = OWN_KEYS.to_vec();
+    if embedding.generates_structs() {
+        valid.extend_from_slice(MODULE_KEYS);
+    }
     valid.extend_from_slice(PASSTHROUGH_KEYS);
     syn::Error::new(
         key.span(),
@@ -248,9 +301,9 @@ fn unknown_option(key: &Ident) -> syn::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{OWN_KEYS, PASSTHROUGH_KEYS, passthrough_setter};
+    use super::{MODULE_KEYS, OWN_KEYS, PASSTHROUGH_KEYS, passthrough_setter};
 
-    /// The two lists that make up the "valid options are …" message must not
+    /// The lists that make up the "valid options are …" message must not
     /// overlap, or the message would offer the same key twice.
     #[test]
     fn the_key_sets_are_disjoint() {
@@ -258,6 +311,12 @@ mod tests {
             assert!(
                 !PASSTHROUGH_KEYS.contains(key),
                 "`{key}` is claimed by both key sets"
+            );
+        }
+        for key in MODULE_KEYS {
+            assert!(
+                !OWN_KEYS.contains(key) && !PASSTHROUGH_KEYS.contains(key),
+                "`{key}` is claimed by more than one key set"
             );
         }
     }

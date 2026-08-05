@@ -14,17 +14,45 @@ use wgslender_core::{Diagnostic, Error, Validation, minify_with, validate};
 
 use crate::parse::{Checking, Embedding, Invocation, Minification};
 
-/// The whole macro, as an expression.
-pub(crate) fn expand(invocation: &Invocation) -> syn::Result<TokenStream> {
+/// The file, read and checked and minified: what every form of the macro needs
+/// before it can decide what to emit.
+pub(crate) struct Prepared {
+    /// The file as written, which is what reflection reads: the names a host
+    /// program binds against are the source's, not minification's.
+    pub(crate) source: String,
+    /// What goes in the binary — minified, or the source again.
+    pub(crate) text: String,
+    /// The absolute path, for the `include_bytes!` that tracks the file.
+    pub(crate) tracked: String,
+}
+
+/// Resolve, read, check, minify.
+pub(crate) fn prepare(invocation: &Invocation) -> syn::Result<Prepared> {
     let absolute = resolve(&invocation.path)?;
     let source = read(&invocation.path, &absolute)?;
     check(invocation, &source)?;
     let text = embed(invocation, &source)?;
     let tracked = tracking_path(&invocation.path, &absolute)?;
+    Ok(Prepared {
+        source,
+        text,
+        tracked,
+    })
+}
+
+/// The whole macro, as an expression.
+pub(crate) fn expand(invocation: &Invocation) -> syn::Result<TokenStream> {
+    let Prepared { text, tracked, .. } = prepare(invocation)?;
     let value = match invocation.embedding {
         Embedding::Text => quote! { #text },
         #[cfg(feature = "compress")]
         Embedding::Compressed => compressed(&invocation.path, &text)?,
+        Embedding::Module => {
+            return Err(syn::Error::new_spanned(
+                &invocation.path,
+                "a module is not an expression; this is `wgsl_module!`'s work",
+            ));
+        }
     };
 
     Ok(quote! {
@@ -164,7 +192,7 @@ fn render(path: &str, diagnostic: &Diagnostic) -> String {
 }
 
 /// The call into the library went wrong, which is not the shader's fault.
-fn library_failed(path: &LitStr, what: &str, err: &Error) -> syn::Error {
+pub(crate) fn library_failed(path: &LitStr, what: &str, err: &Error) -> syn::Error {
     syn::Error::new_spanned(path, format!("could not {what} this shader: {err}"))
 }
 

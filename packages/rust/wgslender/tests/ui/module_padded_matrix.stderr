@@ -1,0 +1,6 @@
+error: cannot generate a Rust field for `Transform.basis` (`mat3x3f`): 3 columns of 12 bytes, 16 bytes apart — a padded column stride has no Rust equivalent, and this macro will not guess (v1)
+       it generates the matrices whose column stride is their column size: mat2x2f, mat4x2f, mat2x4f, mat4x4f and the like
+ --> tests/ui/module_padded_matrix.rs:9:37
+  |
+9 | wgslender::wgsl_module!(pub padded, "../../../../wgslender/tests/fixtures/padded_matrix.wgsl");
+  |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

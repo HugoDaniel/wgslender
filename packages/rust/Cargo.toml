@@ -32,6 +32,12 @@ miniz_oxide = "0.9.1"
 
 trybuild = "1.0.116"
 
+# Only ever a dev-dependency: `wgsl_module!` can put bytemuck's derives on the
+# structs it generates, and the promise that they *derive* — that the explicit
+# padding leaves no implicit padding behind — is worth a test rather than a
+# sentence in the documentation.
+bytemuck = { version = "1.25.2", features = ["derive"] }
+
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_docs = "warn"

@@ -1,0 +1,6 @@
+error: cannot generate a Rust field for `Points.at` (`array<vec3f, 4>`): 4 elements of 12 bytes, 16 bytes apart — a padded element stride has no Rust equivalent, and this macro will not guess (v1)
+       it generates the arrays whose stride is their element size
+ --> tests/ui/module_padded_array.rs:7:37
+  |
+7 | wgslender::wgsl_module!(pub padded, "../../../../wgslender/tests/fixtures/padded_array.wgsl");
+  |                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

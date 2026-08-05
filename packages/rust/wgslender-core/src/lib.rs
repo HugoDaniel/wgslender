@@ -78,8 +78,8 @@ pub use crate::lint::{
 pub use crate::minify::{MinifiedShader, minify, minify_and_reflect, minify_with};
 pub use crate::options::MinifyOptions;
 pub use crate::reflect::{
-    AccessMode, AddressSpace, Binding, EntryPoint, Field, Reflection, ShaderStage, StructLayout,
-    reflect, reflect_json,
+    AccessMode, AddressSpace, Binding, BindingSlot, EntryPoint, Field, Reflection, ShaderStage,
+    StructLayout, TypeInfo, reflect, reflect_json,
 };
 pub use crate::validate::{Diagnostic, Severity, Strictness, Validation, validate};
 

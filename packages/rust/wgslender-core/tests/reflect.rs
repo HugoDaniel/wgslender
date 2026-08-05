@@ -9,7 +9,10 @@
 
 mod common;
 
-use wgslender_core::{AccessMode, AddressSpace, Reflection, ShaderStage, reflect, reflect_json};
+use wgslender_core::{
+    AccessMode, AddressSpace, Binding, BindingSlot, Reflection, ShaderStage, TypeInfo, reflect,
+    reflect_json,
+};
 
 /// One reflection scenario.
 struct Case {
@@ -24,6 +27,8 @@ struct Case {
 fn cases() -> Vec<Case> {
     let mut cases = binding_cases();
     cases.extend(layout_cases());
+    cases.extend(type_info_cases());
+    cases.extend(composite_type_info_cases());
     cases.extend(entry_point_cases());
     cases.extend(degenerate_cases());
     cases
@@ -72,6 +77,36 @@ fn binding_cases() -> Vec<Case> {
                         ("samp", None, false),
                     ],
                     "a runtime-sized array has no layout, and a uniform has no access mode"
+                );
+            },
+        },
+        Case {
+            name: "a binding hands out the slot it is bound to",
+            source: common::DEMO,
+            check: |reflection| {
+                let slots: Vec<BindingSlot> =
+                    reflection.bindings.iter().map(Binding::slot).collect();
+                assert_eq!(
+                    slots,
+                    vec![
+                        BindingSlot {
+                            group: 0,
+                            binding: 0
+                        },
+                        BindingSlot {
+                            group: 0,
+                            binding: 1
+                        },
+                        BindingSlot {
+                            group: 1,
+                            binding: 0
+                        },
+                        BindingSlot {
+                            group: 1,
+                            binding: 1
+                        },
+                    ],
+                    "the pair a host program binds against, as one value"
                 );
             },
         },
@@ -133,6 +168,186 @@ fn layout_cases() -> Vec<Case> {
                         ("time", "f32", 8, 4),
                         ("frame", "u32", 12, 4),
                     ]
+                );
+            },
+        },
+    ]
+}
+
+/// A field's type, structured — what a code generator reads instead of parsing
+/// `f.ty` back into a type.
+///
+/// The shader below is never compiled by anything: reflection parses, it does
+/// not type-check, so a struct nothing binds still reports its layout.
+const SHAPES: &str = "\
+struct Material {
+    tint: vec3f,
+    strength: f32,
+}
+
+struct Frame {
+    view: mat4x4f,
+    material: Material,
+    weights: array<f32, 4>,
+    counter: atomic<u32>,
+    tail: array<vec4f>,
+}
+";
+
+/// The field of `Frame` by that name, or a panic naming what was there instead.
+fn shape(reflection: &Reflection, field: &str) -> TypeInfo {
+    let Some(frame) = reflection.structs.get("Frame") else {
+        panic!("expected a Frame entry in structs")
+    };
+    let Some(found) = frame.fields.iter().find(|f| f.name == field) else {
+        panic!("no field {field:?} in Frame")
+    };
+    let Some(info) = found.type_info.clone() else {
+        panic!("field {field:?} came back without a type")
+    };
+    info
+}
+
+fn type_info_cases() -> Vec<Case> {
+    vec![
+        Case {
+            name: "a scalar names itself",
+            source: common::DEMO,
+            check: |reflection| {
+                let Some(params) = reflection.structs.get("Params") else {
+                    panic!("expected a Params entry in structs")
+                };
+                let Some(time) = params.fields.iter().find(|f| f.name == "time") else {
+                    panic!("no time field")
+                };
+                let Some(TypeInfo::Scalar {
+                    name,
+                    size,
+                    alignment,
+                }) = time.type_info.as_ref()
+                else {
+                    panic!("expected a scalar, got {:?}", time.type_info)
+                };
+                assert_eq!((name.as_str(), *size, *alignment), ("f32", 4, 4));
+            },
+        },
+        Case {
+            name: "a vector carries its width and its component type",
+            source: common::DEMO,
+            check: |reflection| {
+                let Some(params) = reflection.structs.get("Params") else {
+                    panic!("expected a Params entry in structs")
+                };
+                let Some(resolution) = params.fields.iter().find(|f| f.name == "resolution") else {
+                    panic!("no resolution field")
+                };
+                let Some(TypeInfo::Vec {
+                    width,
+                    format,
+                    size,
+                    alignment,
+                }) = resolution.type_info.as_ref()
+                else {
+                    panic!("expected a vector, got {:?}", resolution.type_info)
+                };
+                assert_eq!((*width, *size, *alignment), (2, 8, 8));
+                assert!(
+                    matches!(format.as_ref(), TypeInfo::Scalar { name, .. } if name == "f32"),
+                    "got {format:?}"
+                );
+            },
+        },
+    ]
+}
+
+/// The kinds that are made of other kinds.
+fn composite_type_info_cases() -> Vec<Case> {
+    vec![
+        Case {
+            name: "a matrix carries the distance between its columns",
+            source: SHAPES,
+            check: |reflection| {
+                let TypeInfo::Mat {
+                    cols,
+                    rows,
+                    size,
+                    alignment,
+                    stride,
+                    ..
+                } = shape(reflection, "view")
+                else {
+                    panic!("expected a matrix")
+                };
+                assert_eq!((cols, rows), (4, 4));
+                assert_eq!((size, alignment, stride), (64, 16, 16));
+            },
+        },
+        Case {
+            name: "a nested struct is a reference to a layout in the map",
+            source: SHAPES,
+            check: |reflection| {
+                let TypeInfo::Struct {
+                    name,
+                    size,
+                    alignment,
+                } = shape(reflection, "material")
+                else {
+                    panic!("expected a struct reference")
+                };
+                assert_eq!((name.as_str(), size, alignment), ("Material", 16, 16));
+                assert!(
+                    reflection.structs.contains_key("Material"),
+                    "the name is a key in structs, which is what makes it a reference"
+                );
+            },
+        },
+        Case {
+            name: "a fixed-size array knows how many, a runtime-sized one does not",
+            source: SHAPES,
+            check: |reflection| {
+                let TypeInfo::Array {
+                    count,
+                    size,
+                    stride,
+                    ..
+                } = shape(reflection, "weights")
+                else {
+                    panic!("expected an array")
+                };
+                assert_eq!((count, size, stride), (Some(4), Some(16), 4));
+
+                let TypeInfo::Array {
+                    count,
+                    size,
+                    stride,
+                    ..
+                } = shape(reflection, "tail")
+                else {
+                    panic!("expected an array")
+                };
+                assert_eq!(
+                    (count, size, stride),
+                    (None, None, 16),
+                    "how long the tail is, is the host's business at run time"
+                );
+            },
+        },
+        Case {
+            name: "an atomic wraps the type it makes atomic",
+            source: SHAPES,
+            check: |reflection| {
+                let TypeInfo::Atomic {
+                    format,
+                    size,
+                    alignment,
+                } = shape(reflection, "counter")
+                else {
+                    panic!("expected an atomic")
+                };
+                assert_eq!((size, alignment), (4, 4));
+                assert!(
+                    matches!(format.as_ref(), TypeInfo::Scalar { name, .. } if name == "u32"),
+                    "got {format:?}"
                 );
             },
         },

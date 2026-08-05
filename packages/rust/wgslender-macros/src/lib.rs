@@ -20,6 +20,7 @@ use syn::parse_macro_input;
 
 use crate::parse::Embedding;
 
+mod codegen;
 mod expand;
 mod parse;
 
@@ -138,7 +139,83 @@ pub fn include_wgsl_compressed(input: TokenStream) -> TokenStream {
     embed(input, Embedding::Compressed)
 }
 
-/// Both macros: one pipeline, differing in what it hands back.
+/// Generate a Rust module from what a WGSL file declares.
+///
+/// ```text
+/// wgsl_module!(pub demo, "shaders/demo.wgsl");
+/// ```
+///
+/// Expands to a module holding the shader, the slot of every resource, a Rust
+/// struct for every host-shareable struct, and the name of every entry point:
+///
+/// ```text
+/// pub mod demo {
+///     pub const SOURCE: &str = "…";                  // validated and minified
+///     pub mod bindings {
+///         pub const PARAMS: ::wgslender::BindingSlot = …;
+///     }
+///     pub struct Params { pub resolution: [f32; 2], pub time: f32, pub _pad0: [u8; 4] }
+///     pub const ENTRY_MAIN: &str = "main";
+///     pub const ENTRY_MAIN_WORKGROUP_SIZE: [u32; 3] = [8, 8, 1];
+/// }
+/// ```
+///
+/// # The layout is proved, not promised
+///
+/// Every generated struct is `#[repr(C)]` with the alignment WGSL requires, and
+/// every gap the shader's layout leaves is an explicit `_padN` field rather
+/// than padding the compiler inserts — so the whole struct can be handed to the
+/// GPU as bytes. Beside each one, the expansion emits a `const _: ()` block
+/// asserting its own size, alignment and field offsets against the numbers
+/// wgslender computed from the shader. A mistake in the mapping is a failed
+/// build, not a wrong pixel.
+///
+/// # What it will not generate
+///
+/// A field whose layout no Rust type has is refused by name, with the numbers:
+/// a `mat3x3f` is three twelve-byte columns sixteen bytes apart, and
+/// `[[f32; 3]; 3]` is not that. The same goes for `array<vec3f, N>`. Mapped, as
+/// of v1: `f32`, `u32`, `i32`, vectors and matrices of them, fixed-size arrays
+/// whose stride is their element size, nested structs, and `atomic` of any of
+/// those — which occupies exactly what it makes atomic, the atomicity being the
+/// GPU's business.
+///
+/// A runtime-sized array cannot be a Rust field, so it becomes an associated
+/// constant instead: `Instances::ITEMS_OFFSET` is where the caller starts
+/// writing elements.
+///
+/// # Options
+///
+/// Everything [`include_wgsl!`](include_wgsl) accepts, plus:
+///
+/// | Key | Value | Default | Meaning |
+/// |---|---|---|---|
+/// | `bytemuck` | bool | `false` | Add `#[derive(::bytemuck::Pod, ::bytemuck::Zeroable)]`. Your crate must depend on `bytemuck` with its `derive` feature. |
+///
+/// # Where the name comes from
+///
+/// The module's name and visibility are yours — `wgsl_module!(pub demo, …)` —
+/// and everything inside it is the shader's, spelled the way Rust spells it: a
+/// binding called `params` becomes `bindings::PARAMS`, an entry point called
+/// `main` becomes `ENTRY_MAIN`, and a field called `type` becomes `r#type`.
+///
+/// # The one requirement
+///
+/// The expansion names `::wgslender::BindingSlot`, so the crate has to be
+/// reachable under the name `wgslender` where the macro is written — renaming
+/// the dependency in `Cargo.toml` breaks it.
+///
+/// The worked example is on the facade's re-export, which is the only place
+/// this expansion can compile.
+#[proc_macro]
+pub fn wgsl_module(input: TokenStream) -> TokenStream {
+    let module = parse_macro_input!(input as codegen::Module);
+    codegen::expand(&module)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Both embedding macros: one pipeline, differing in what it hands back.
 fn embed(input: TokenStream, embedding: Embedding) -> TokenStream {
     let parser = |stream: ParseStream| parse::Invocation::parse(stream, embedding);
     let invocation = parse_macro_input!(input with parser);

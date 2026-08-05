@@ -13,10 +13,11 @@ use wgslender::refactor::{
     Applied, ByteRange, Edit, IncludeDeclaration, RefactorError, Reference, StableId,
 };
 use wgslender::{
-    AccessMode, AddressSpace, Binding, CompiledShader, Diagnostic, EntryPoint, Error, Field,
-    LintConfig, LintFixOutcome, LintReport, MinifiedShader, MinifyOptions, Pack, Reflection,
-    RuleSetting, Severity, ShaderStage, Strictness, StructLayout, Validation, Value, compile, lint,
-    lint_fix, minify, minify_and_reflect, minify_with, reflect, reflect_json, validate, version,
+    AccessMode, AddressSpace, Binding, BindingSlot, CompiledShader, Diagnostic, EntryPoint, Error,
+    Field, LintConfig, LintFixOutcome, LintReport, MinifiedShader, MinifyOptions, Pack, Reflection,
+    RuleSetting, Severity, ShaderStage, Strictness, StructLayout, TypeInfo, Validation, Value,
+    compile, lint, lint_fix, minify, minify_and_reflect, minify_with, reflect, reflect_json,
+    validate, version,
 };
 
 /// Small enough that the expectations stay obvious, complete enough that every
@@ -236,8 +237,10 @@ struct Surface {
     value: Value,
     reflection: Reflection,
     binding: Binding,
+    binding_slot: BindingSlot,
     entry_point: EntryPoint,
     field: Field,
+    type_info: TypeInfo,
     struct_layout: StructLayout,
     shader_stage: ShaderStage,
     address_space: AddressSpace,

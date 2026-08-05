@@ -40,6 +40,7 @@
 //! | check one | [`validate`], [`lint`], [`lint_fix`] |
 //! | describe one | [`reflect`], [`reflect_json`] |
 //! | embed one in the binary | `include_wgsl!`, or `include_wgsl_compressed!` to store it deflated |
+//! | generate Rust from one | `wgsl_module!` |
 //! | embed one as WebAssembly | [`compile`] |
 //! | edit one by symbol | [`refactor`] |
 //!
@@ -58,6 +59,16 @@
 //! stored as 274. `cargo run --features compress --example embed_compressed`
 //! prints the three numbers.
 //!
+//! ## Generated Rust
+//!
+//! `wgsl_module!` goes further still: it reflects the shader at compile time
+//! and generates the module a host program binds against — the slot of every
+//! resource, and a `#[repr(C)]` struct per buffer with the shader's padding
+//! made explicit, so the whole thing can be written to the GPU as bytes. Each
+//! struct carries a `const _: ()` proof of its own size, alignment and field
+//! offsets, which means a mis-mapping is a failed build rather than a wrong
+//! pixel. `cargo run --example wgsl_module` prints one.
+//!
 //! ## What counts as an error
 //!
 //! A shader the library rejects is not a Rust `Err`. [`validate`] answers
@@ -70,7 +81,7 @@
 //!
 //! | Feature | Default | What it adds |
 //! |---|---|---|
-//! | `macros` | on | [`include_wgsl!`](include_wgsl), and with it a proc-macro dependency that runs the library at compile time. |
+//! | `macros` | on | [`include_wgsl!`](include_wgsl) and [`wgsl_module!`](wgsl_module), and with them a proc-macro dependency that runs the library at compile time. |
 //! | `compress` | off | `CompressedWgsl`, and — if `macros` is also on — `include_wgsl_compressed!`. Pulls in `miniz_oxide` for DEFLATE. |
 //!
 //! Turning `macros` off (`default-features = false`) leaves every function
@@ -139,3 +150,31 @@ pub use wgslender_macros::include_wgsl;
 /// ```
 #[cfg(all(feature = "macros", feature = "compress"))]
 pub use wgslender_macros::include_wgsl_compressed;
+
+/// Generate a Rust module from what a WGSL file declares.
+///
+/// The shader, the slot of every resource, a `#[repr(C)]` struct for every
+/// buffer it takes, and the name of every entry point — worked out at compile
+/// time by the same library [`reflect`] calls, and each struct carrying a proof
+/// of its own layout. Its full documentation comes with it, below.
+///
+/// # Examples
+///
+/// ```
+/// // Any path relative to your own crate root. This one is this crate's own
+/// // test fixture, because a macro that reads files has to read a real one.
+/// wgslender::wgsl_module!(pub demo, "tests/fixtures/demo.wgsl");
+///
+/// // What a pipeline is built from.
+/// assert!(demo::SOURCE.contains("@compute"));
+/// assert_eq!(demo::ENTRY_MAIN, "main");
+/// assert_eq!(demo::ENTRY_MAIN_WORKGROUP_SIZE, [8, 8, 1]);
+/// assert_eq!(demo::bindings::PARAMS, wgslender::BindingSlot { group: 0, binding: 0 });
+///
+/// // What the uniform buffer holds, laid out as the GPU will read it.
+/// let params = demo::Params::new([1920.0, 1080.0], 0.5);
+/// assert_eq!(size_of_val(&params), 16);
+/// assert_eq!(params.resolution, [1920.0, 1080.0]);
+/// ```
+#[cfg(feature = "macros")]
+pub use wgslender_macros::wgsl_module;
