@@ -268,6 +268,161 @@ test "completion: dot resolves the base to the enclosing function's local" {
     try std.testing.expect(!hasItem(items, "fa"));
 }
 
+// =========================================================================
+// Scope-aware general completion (plan 05, Block 5)
+// =========================================================================
+
+/// Completion at the byte offset of `needle`'s first occurrence.
+fn completeAt(handler: *Handler, source: [:0]const u8, needle: []const u8) ![]Handler.CompletionItem {
+    const idx = std.mem.indexOf(u8, source, needle) orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(idx)) orelse return error.TestUnexpectedResult;
+    return handler.computeCompletion("test://file.wgsl", pos);
+}
+
+test "completion: another function's locals are not offered" {
+    const source: [:0]const u8 =
+        \\fn a() { let only_in_a = 1.0; }
+        \\fn b() {
+        \\  /*HERE*/
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAt(ctx.handler, source, "/*HERE*/");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(!hasItem(items, "only_in_a"));
+    // Module-level names stay visible.
+    try std.testing.expect(hasItem(items, "a"));
+    try std.testing.expect(hasItem(items, "b"));
+}
+
+test "completion: an enclosing block's locals are offered" {
+    const source: [:0]const u8 =
+        \\fn c() {
+        \\  let y = 1.0;
+        \\  if (true) {
+        \\    /*HERE*/
+        \\  }
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAt(ctx.handler, source, "/*HERE*/");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "y"));
+}
+
+test "completion: locals declared after the cursor are not offered" {
+    const source: [:0]const u8 =
+        \\fn d() {
+        \\  let before = 1.0;
+        \\  /*HERE*/
+        \\  let after = 2.0;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAt(ctx.handler, source, "/*HERE*/");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "before"));
+    try std.testing.expect(!hasItem(items, "after"));
+}
+
+test "completion: the enclosing function's parameters are always offered" {
+    const source: [:0]const u8 =
+        \\fn e(param_x: f32, param_y: f32) -> f32 {
+        \\  /*HERE*/
+        \\  return param_x;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAt(ctx.handler, source, "/*HERE*/");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "param_x"));
+    try std.testing.expect(hasItem(items, "param_y"));
+}
+
+test "completion: a for-loop init declaration is offered inside the body" {
+    // ForStmt.init_stmt is a bare Stmt, not wrapped in a CompoundStmt, so a
+    // nested-compound walk alone would miss it.
+    const source: [:0]const u8 =
+        \\fn g() {
+        \\  for (var i = 0; i < 4; i++) {
+        \\    /*HERE*/
+        \\  }
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAt(ctx.handler, source, "/*HERE*/");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "i"));
+}
+
+test "completion: a switch case body sees the enclosing function's locals" {
+    const source: [:0]const u8 =
+        \\fn h(k: i32) {
+        \\  let outer = 1.0;
+        \\  switch (k) {
+        \\    case 0: { let inner = 2.0; /*HERE*/ }
+        \\    default: {}
+        \\  }
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAt(ctx.handler, source, "/*HERE*/");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "outer"));
+    try std.testing.expect(hasItem(items, "inner"));
+    try std.testing.expect(hasItem(items, "k"));
+}
+
+test "completion: a loop continuing block sees the loop body's locals" {
+    const source: [:0]const u8 =
+        \\fn i_fn() {
+        \\  loop {
+        \\    let body_local = 1.0;
+        \\    continuing { /*HERE*/ break if true; }
+        \\  }
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAt(ctx.handler, source, "/*HERE*/");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "body_local"));
+}
+
+test "completion: a sibling block's locals are not offered after it closes" {
+    const source: [:0]const u8 =
+        \\fn f(cond: bool) {
+        \\  if (cond) { let block_local = 1.0; }
+        \\  /*HERE*/
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAt(ctx.handler, source, "/*HERE*/");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(!hasItem(items, "block_local"));
+    try std.testing.expect(hasItem(items, "cond"));
+}
+
+test "completion: at module level no function locals are offered" {
+    const source: [:0]const u8 =
+        \\fn a() { let hidden = 1.0; }
+        \\/*HERE*/
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAt(ctx.handler, source, "/*HERE*/");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(!hasItem(items, "hidden"));
+    try std.testing.expect(hasItem(items, "a"));
+}
+
 test "completion: dot on a vector base offers swizzle components" {
     const source: [:0]const u8 =
         \\fn f() { var v: vec3f; let s = v.; }
