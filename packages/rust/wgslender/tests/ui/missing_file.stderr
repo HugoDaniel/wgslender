@@ -1,0 +1,6 @@
+error: cannot read $WORKSPACE/target/tests/trybuild/wgslender/tests/fixtures/no_such_shader.wgsl: No such file or directory (os error 2)
+       a relative path is resolved against CARGO_MANIFEST_DIR, the root of the package being compiled — not against the file this macro was written in
+ --> tests/ui/missing_file.rs:7:47
+  |
+7 | const SHADER: &str = wgslender::include_wgsl!("tests/fixtures/no_such_shader.wgsl");
+  |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

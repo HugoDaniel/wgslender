@@ -1,0 +1,5 @@
+error: `keep_names` has no effect together with `minify = false`
+  --> tests/ui/contradiction.rs:11:5
+   |
+11 |     keep_names = ["luminance"]
+   |     ^^^^^^^^^^

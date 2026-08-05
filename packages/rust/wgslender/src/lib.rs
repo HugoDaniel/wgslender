@@ -39,8 +39,17 @@
 //! | shrink a shader | [`minify`], [`minify_with`], [`minify_and_reflect`] |
 //! | check one | [`validate`], [`lint`], [`lint_fix`] |
 //! | describe one | [`reflect`], [`reflect_json`] |
+//! | embed one in the binary | `include_wgsl!`, with the default `macros` feature |
 //! | embed one as WebAssembly | [`compile`] |
 //! | edit one by symbol | [`refactor`] |
+//!
+//! ## Compile-time embedding
+//!
+//! `include_wgsl!` does the validating and the minifying while `cargo build`
+//! runs, so a shader with a mistake in it fails the build rather than the
+//! pipeline, and the bytes in the binary are the small ones. Its own page has
+//! the worked example, the option table, and the one surprising rule: paths are
+//! relative to the crate root, not to the file the macro is written in.
 //!
 //! ## What counts as an error
 //!
@@ -52,7 +61,12 @@
 //!
 //! ## Cargo features
 //!
-//! None. Everything above is always available.
+//! | Feature | Default | What it adds |
+//! |---|---|---|
+//! | `macros` | on | [`include_wgsl!`](include_wgsl), and with it a proc-macro dependency that runs the library at compile time. |
+//!
+//! Turning `macros` off (`default-features = false`) leaves every function
+//! above intact; it only removes the macro and the crates behind it.
 //!
 //! ## Edition support
 //!
@@ -64,8 +78,9 @@
 //! ## Crates
 //!
 //! This is the crate to depend on. [`wgslender-core`](wgslender_core) holds the
-//! implementation and `wgslender-sys` the raw FFI declarations; both are named
-//! separately so that the `unsafe` has somewhere to live, not so that anyone
+//! implementation, `wgslender-sys` the raw FFI declarations and
+//! `wgslender-macros` the proc-macro; they are named separately so that the
+//! `unsafe` and the proc-macro each have somewhere to live, not so that anyone
 //! has to reach for them.
 //!
 //! [wgslender]: https://github.com/HugoDaniel/wgslender
@@ -77,3 +92,22 @@
 /// surfaces drift. It carries [`wgslender_core::refactor`] along with the flat
 /// items, so that module reads as `wgslender::refactor`.
 pub use wgslender_core::*;
+
+/// Embed a WGSL file, validated and minified at compile time.
+///
+/// Named here rather than written here: the macro has to live in a crate of its
+/// own, because a `proc-macro = true` crate can export nothing but macros. Its
+/// full documentation comes with it, below.
+///
+/// # Examples
+///
+/// ```
+/// // Any path relative to your own crate root. This one is this crate's own
+/// // test fixture, because a doctest has to point somewhere real.
+/// const SHADER: &str = wgslender::include_wgsl!("tests/fixtures/demo.wgsl");
+///
+/// assert!(SHADER.contains("@compute"));
+/// assert!(SHADER.len() < 500);
+/// ```
+#[cfg(feature = "macros")]
+pub use wgslender_macros::include_wgsl;

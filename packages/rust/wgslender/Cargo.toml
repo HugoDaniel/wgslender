@@ -8,8 +8,16 @@ authors.workspace = true
 repository.workspace = true
 description = "Minify, validate, lint, reflect, compile and refactor WGSL shaders."
 
+[features]
+default = ["macros"]
+macros = ["dep:wgslender-macros"]
+
 [dependencies]
 wgslender-core.workspace = true
+wgslender-macros = { workspace = true, optional = true }
+
+[dev-dependencies]
+trybuild.workspace = true
 
 [lints]
 workspace = true

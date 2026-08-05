@@ -1,0 +1,6 @@
+error: ../../../../wgslender/tests/fixtures/warning.wgsl is not valid WGSL
+       ../../../../wgslender/tests/fixtures/warning.wgsl:11:17: error[W0103]: code is unreachable
+ --> tests/ui/strict_warning.rs:8:5
+  |
+8 |     "../../../../wgslender/tests/fixtures/warning.wgsl",
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

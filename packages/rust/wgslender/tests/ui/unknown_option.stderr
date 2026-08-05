@@ -1,0 +1,5 @@
+error: unknown option `minify_idents`; valid options are minify, validate, strict, keep_names, minify_whitespace, minify_identifiers, minify_syntax, tree_shaking, mangle_external_bindings, preserve_uniform_struct_types, sort_declarations, scope_local_rename
+  --> tests/ui/unknown_option.rs:12:5
+   |
+12 |     minify_idents = true
+   |     ^^^^^^^^^^^^^

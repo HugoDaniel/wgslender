@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["wgslender", "wgslender-core", "wgslender-sys", "xtask"]
+members = ["wgslender", "wgslender-core", "wgslender-macros", "wgslender-sys", "xtask"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,11 +12,21 @@ repository = "https://github.com/HugoDaniel/wgslender"
 
 [workspace.dependencies]
 wgslender-core = { path = "wgslender-core", version = "0.1.0" }
+wgslender-macros = { path = "wgslender-macros", version = "0.1.0" }
 wgslender-sys = { path = "wgslender-sys", version = "0.1.0" }
 
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.19"
+
+# The macros crate parses a literal and a handful of `key = value` pairs, so
+# syn's default features — derive machinery and the full expression grammar —
+# are all weight it never uses.
+proc-macro2 = "1.0.104"
+quote = "1.0.42"
+syn = { version = "2.0.114", default-features = false, features = ["parsing", "printing", "proc-macro"] }
+
+trybuild = "1.0.116"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

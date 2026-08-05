@@ -14,12 +14,38 @@ let reflection = wgslender::reflect(source)?;
 |---|---|
 | `wgslender` | **The crate to depend on.** A facade: it re-exports `wgslender-core` under a stable name and holds the examples. |
 | `wgslender-core` | The safe API over the entire C ABI. Every `unsafe` block in the wrapper lives here. |
+| `wgslender-macros` | The proc-macros. A `proc-macro = true` crate can export nothing else, which is the only reason it is separate. |
 | `wgslender-sys` | Raw FFI declarations, plus the build script that builds and links `libwgslender.a`. |
 | `xtask` | The local gate (below). Zero dependencies, never published. |
 
 ```
-wgslender ──► wgslender-core ──► wgslender-sys ──(build.rs)──► zig build lib
+wgslender ──┬──► wgslender-core ──► wgslender-sys ──(build.rs)──► zig build lib
+            └──► wgslender-macros ──► wgslender-core (at compile time)
 ```
+
+## Cargo features
+
+| Feature | Default | What it adds |
+|---|---|---|
+| `macros` | on | `include_wgsl!`, and the proc-macro crate behind it. |
+
+## Compile-time embedding
+
+```rust
+const SHADER: &str = wgslender::include_wgsl!("shaders/blur.wgsl");
+```
+
+The macro validates and minifies while `cargo build` runs — it links the same
+library everything else here does, into the compiler's address space — so a
+shader with an error in it fails the build, and the bytes in the binary are the
+minified ones.
+
+**Its paths are relative to `CARGO_MANIFEST_DIR`, the root of the package being
+compiled, not to the file the macro was written in.** A proc-macro is handed
+tokens and cannot ask on stable Rust which file they came from, so the package
+root is the only anchor there is. The expansion carries an `include_bytes!` of
+the resolved path that nothing reads, so that editing a shader rebuilds whatever
+embedded it.
 
 ## Prerequisites
 
@@ -76,6 +102,15 @@ It runs, stopping at the first failure:
 There is no separate `--doc` step: `cargo test --workspace` already runs the
 doctests, and a second pass would only run them twice.
 
+The test step includes the macro's UI goldens, which pin what the compiler
+prints when `include_wgsl!` refuses. trybuild runs those by compiling a
+generated package under `target/tests/trybuild/`, so they cost a cargo build of
+their own. Regenerate them, then read the diff, with:
+
+```sh
+TRYBUILD=overwrite cargo test -p wgslender --test ui
+```
+
 Two optional tasks need a tool that may not be installed. Each prints how to
 install it and exits **non-zero** rather than reporting a pass, because a check
 that did not run has not passed:
@@ -99,6 +134,5 @@ cargo run -p wgslender --example reflect_types  # bindings, struct layouts, entr
 
 ## Not here yet
 
-The compile-time proc-macros — `include_wgsl!`, `include_wgsl_compressed!`,
-`wgsl_module!` — are planned but not written; see `plans/04-rust-package.md`.
-Nothing here is published to crates.io yet.
+`include_wgsl_compressed!` and `wgsl_module!` are planned but not written; see
+`plans/04-rust-package.md`. Nothing here is published to crates.io yet.

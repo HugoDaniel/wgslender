@@ -1,0 +1,6 @@
+error: ../../../../wgslender/tests/fixtures/invalid.wgsl is not valid WGSL
+       ../../../../wgslender/tests/fixtures/invalid.wgsl:6:13: error[E0100]: use of undeclared identifier 'undeclared_variable'
+ --> tests/ui/invalid_wgsl.rs:7:47
+  |
+7 | const SHADER: &str = wgslender::include_wgsl!("../../../../wgslender/tests/fixtures/invalid.wgsl");
+  |                                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
