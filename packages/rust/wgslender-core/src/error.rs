@@ -1,5 +1,6 @@
 //! The crate's error type.
 
+use crate::refactor::RefactorError;
 use crate::validate::Diagnostic;
 
 /// Everything a wgslender call can fail with.
@@ -38,4 +39,12 @@ pub enum Error {
     /// something a caller would embed by mistake.
     #[error("shader does not compile: {}", .0.first().map_or("no diagnostics", |d| d.message.as_str()))]
     Compile(Vec<Diagnostic>),
+
+    /// A [`refactor`](crate::refactor) could not be performed.
+    ///
+    /// Also an `Err` about the request rather than about the shader: asking to
+    /// rename a symbol that is not there, or to a name WGSL will not accept, is
+    /// a question with no useful answer.
+    #[error("refactor failed: {0}")]
+    Refactor(#[from] RefactorError),
 }

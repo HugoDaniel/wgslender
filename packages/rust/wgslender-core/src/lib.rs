@@ -39,6 +39,11 @@
 //! parse yields [`Error::Compile`], because the alternative is handing back an
 //! empty module that a caller would embed by mistake.
 //!
+//! The [`refactor`] module draws the line somewhere else again, because its
+//! failures are about the *request*: renaming a symbol that is not there, or to
+//! a name WGSL will not accept, yields [`Error::Refactor`]. Its questions —
+//! "where is this symbol", "does this ID still resolve" — answer `Ok(None)`.
+//!
 //! ## Memory
 //!
 //! Results come back as buffers the library allocated and the caller must
@@ -56,6 +61,7 @@ mod error;
 mod lint;
 mod minify;
 mod options;
+pub mod refactor;
 mod reflect;
 mod validate;
 mod wire_enum;
