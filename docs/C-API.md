@@ -2,6 +2,11 @@
 
 A C-callable static library for WGSL minification, reflection, and validation.
 
+The reference usage is [`examples/c/`](../examples/c/) — ten programs covering
+minify, validate, reflect, lint, rename, refactor and compile, kept honest by
+`make -C examples/c test`. Prefer copying from there over copying from here:
+those compile and run on every change.
+
 ## Building
 
 ```bash
@@ -53,6 +58,14 @@ Returned by `wgslender_minify_c` and `wgslender_minify_json_c`.
 | `code_len` | `uint32_t` | Length in bytes |
 | `error` | `bool` | `true` if minification failed |
 
+**Both minify entry points return plain text**, not a JSON envelope: no
+`errors[]`, no original/minified size counters, no source map — measure the
+sizes yourself. This differs from the WASM/npm surface, where `minify()` hands
+back the envelope. In C the envelope exists only behind
+`wgslender_minify_and_reflect_c` — declared in `wgslender.h`, demonstrated in
+[`examples/c/minify_and_reflect.c`](../examples/c/minify_and_reflect.c), and
+not yet written up below.
+
 ### `WgslenderValidateResult`
 
 Returned by `wgslender_validate_c`.
@@ -88,7 +101,10 @@ WgslenderResult wgslender_minify_c(
 
 ### `wgslender_minify_json_c`
 
-Minify WGSL source with JSON-encoded options (same keys as `wgslender.json` config files). Supports all options including `keepNames`, `sortDeclarations`, `scopeLocalRename`, and `sourceMap`.
+Minify WGSL source with JSON-encoded options (same keys as `wgslender.json` config files). Supports all options including `keepNames`, `sortDeclarations`, `scopeLocalRename`, and `sourceMap`. The bitflag word is frozen at the options it shipped with, so anything added since is reachable only this way.
+
+**Malformed options JSON does not fail** — it falls back to the defaults
+silently, so a typo'd key is a minification that quietly ignores you.
 
 ```c
 WgslenderResult wgslender_minify_json_c(

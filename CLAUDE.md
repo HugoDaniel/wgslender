@@ -14,9 +14,11 @@ zig build              # Native CLI → zig-out/bin/wgslender
 zig build wasm         # WASM → zig-out/bin/wgslender.wasm
 zig build lsp          # Native LSP → zig-out/bin/wgslender-lsp
 zig build lsp-wasm     # WASM LSP → zig-out/bin/wgslender-lsp.wasm
+zig build lib          # C static library → zig-out/lib/libwgslender.a
 
 # Test
 zig build test         # Run all tests
+make -C examples/c test # Build + smoke-test the C examples (needs zig build lib)
 
 # Run
 ./zig-out/bin/wgslender shader.wgsl                    # Basic minification

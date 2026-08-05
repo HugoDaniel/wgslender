@@ -82,7 +82,15 @@ wgslender = { path = "../wgslender/packages/rust/wgslender" }
 ### C Library
 
 ```bash
-zig build -Doptimize=ReleaseSafe   # Produces static library
+zig build lib   # → zig-out/lib/libwgslender.a + zig-out/include/wgslender.h
+```
+
+Ten worked examples live in [`examples/c/`](examples/c/), covering minify,
+validate, reflect, lint, rename, refactor and compile. They are tested:
+
+```bash
+make -C examples/c test              # build + smoke-test all ten
+make -C examples/c lint-portability  # compile them against glibc headers
 ```
 
 ### LSP Server
