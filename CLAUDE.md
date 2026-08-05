@@ -124,8 +124,17 @@ Source → Lexer → Parser → AST → Validator → Diagnostics
 | `cli/main.zig` | CLI |
 | `lsp/main.zig` | LSP server entry point (native, stdio transport) |
 | `lsp/wasm.zig` | LSP server WASM entry point |
+| `lsp/NativeServer.zig` | Native (stdio) callback dispatcher — thin lsp-kit-shaped wrapper that forwards each request/notification into `Handler` and converts Handler↔lsp-kit types; owns the `handler_mutex` and the debounce timer thread |
 | `lsp/Handler.zig` | LSP request/notification handler; delegates to `lsp/handler/*` |
 | `lsp/handler/` | Per-feature LSP handlers (completion, hover, definition, code_actions, incremental_sync, semantic_tokens, … one file per feature) |
+| `lsp/native/` | Native-transport adapters — the per-feature bodies `NativeServer` dispatches into (lifecycle, document_sync, diagnostics, navigation, symbols, editing, code_actions, call_hierarchy, workspace_commands) |
+| `lsp/wasm/` | WASM-transport adapters — same per-feature split as `lsp/native/`, but lsp-kit-free: pure Handler calls + manual JSON built from `wire.*`; bound into the `Ctx` by `lsp/wasm.zig` |
+| `lsp/wire_root.zig` | Public surface for the manual-JSON codec tree; registered as the single `wire` module (`wire.primitives`, `wire.diagnostics`, …) |
+| `lsp/wire/` | Per-feature manual-JSON codecs — pure encoder/decoder pairs, no I/O. Driven directly by the WASM transport; native parity tests use them to assert byte-equivalence with the lsp-kit writers |
+| `lsp/lspkit_root.zig` | Public surface for the lsp-kit codec tree; registered as the single `lspkit` module (`lspkit.primitives`, `lspkit.diagnostics`, …) |
+| `lsp/lspkit/` | Per-feature bridges between transport-agnostic `Handler` types and lsp-kit's JSON-shaped types — pure functions, no I/O, consumed by the native adapters |
+| `lsp/Debouncer.zig` | Idle-debounce bookkeeping for the native timer — pure "fire URI X at time Y" map; re-arming a pending URI replaces its deadline. WASM debounces JS-side and doesn't use it |
+| `lsp/uri.zig` | `file://` URI → filesystem path conversion (posix-only, `%XX`-decoding) — used by the native entry to pick a `wgslender.json` discovery root from `workspaceFolders`/`rootUri` |
 | `packages/js-npm` | NPM package |
 
 ### Key Design Decisions
