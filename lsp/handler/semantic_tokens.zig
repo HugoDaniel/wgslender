@@ -59,6 +59,12 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
     const doc = handler.documents.getPtr(uri) orelse return &.{};
     const source = doc.source;
 
+    // One line index for the whole request: this pass converts one offset
+    // per token, and the from-byte-0 scan in `Handler.offsetToLspPosition`
+    // made that quadratic (~224 ms on a 70 KB shader, per keystroke).
+    var pm = try Handler.PositionMapper.init(handler.gpa, source);
+    defer pm.deinit(handler.gpa);
+
     // Tokenize
     const source_z = try handler.gpa.dupeZ(u8, source);
     defer handler.gpa.free(source_z);
@@ -126,7 +132,7 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
         // Emit any comments that appear before this token
         while (comment_idx < comment_ranges.items.len and comment_ranges.items[comment_idx].start < tok_start) {
             const cr = comment_ranges.items[comment_idx];
-            emitSemanticToken(handler.gpa, source, &data, &prev_line, &prev_char, cr.start, cr.end - cr.start, @intFromEnum(SemanticTokenType.comment), 0);
+            emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, cr.start, cr.end - cr.start, @intFromEnum(SemanticTokenType.comment), 0);
             comment_idx += 1;
         }
 
@@ -160,16 +166,16 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
             .keyword_var,
             .keyword_while,
             => {
-                emitSemanticToken(handler.gpa, source, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.keyword), 0);
+                emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.keyword), 0);
             },
             .true_literal, .false_literal => {
-                emitSemanticToken(handler.gpa, source, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.keyword), MOD_READONLY);
+                emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.keyword), MOD_READONLY);
             },
             .int_literal, .float_literal => {
-                emitSemanticToken(handler.gpa, source, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.number), 0);
+                emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.number), 0);
             },
             .at => {
-                emitSemanticToken(handler.gpa, source, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.decorator), 0);
+                emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.decorator), 0);
             },
             .ident => {
                 const name = identAt(source_z, tok_start);
@@ -177,7 +183,7 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
 
                 // Check if it's a builtin function
                 if (Builtins.lookup(name) != null) {
-                    emitSemanticToken(handler.gpa, source, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.function), MOD_DEFAULT_LIBRARY);
+                    emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.function), MOD_DEFAULT_LIBRARY);
                     continue;
                 }
 
@@ -195,14 +201,14 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
                         var mods: u32 = 0;
                         if (sym.kind == .@"const" or sym.kind == .override) mods |= MOD_READONLY;
                         if (sym.loc == tok_start) mods |= MOD_DECLARATION;
-                        emitSemanticToken(handler.gpa, source, &data, &prev_line, &prev_char, tok_start, tok_len, tok_type, mods);
+                        emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, tok_start, tok_len, tok_type, mods);
                         continue;
                     }
                 }
 
                 // Check if it's a builtin type name
                 if (isBuiltinTypeName(name)) {
-                    emitSemanticToken(handler.gpa, source, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.type_name), MOD_DEFAULT_LIBRARY);
+                    emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, tok_start, tok_len, @intFromEnum(SemanticTokenType.type_name), MOD_DEFAULT_LIBRARY);
                     continue;
                 }
 
@@ -215,7 +221,7 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
     // Emit any trailing comments
     while (comment_idx < comment_ranges.items.len) {
         const cr = comment_ranges.items[comment_idx];
-        emitSemanticToken(handler.gpa, source, &data, &prev_line, &prev_char, cr.start, cr.end - cr.start, @intFromEnum(SemanticTokenType.comment), 0);
+        emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, cr.start, cr.end - cr.start, @intFromEnum(SemanticTokenType.comment), 0);
         comment_idx += 1;
     }
 
@@ -224,7 +230,7 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
 
 fn emitSemanticToken(
     gpa: std.mem.Allocator,
-    source: []const u8,
+    pm: *const Handler.PositionMapper,
     data: *std.ArrayList(u32),
     prev_line: *u32,
     prev_char: *u32,
@@ -233,7 +239,7 @@ fn emitSemanticToken(
     token_type: u32,
     modifiers: u32,
 ) void {
-    const pos = Handler.offsetToLspPosition(source, start) orelse return;
+    const pos = pm.position(start) orelse return;
     const delta_line = pos.line - prev_line.*;
     const delta_char = if (delta_line == 0) pos.character - prev_char.* else pos.character;
     data.appendSlice(gpa, &.{ delta_line, delta_char, length, token_type, modifiers }) catch return;

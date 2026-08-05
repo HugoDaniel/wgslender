@@ -604,6 +604,10 @@ pub fn build(b: *std.Build) void {
     // diagnostic ranges count UTF-16 code units (matching the
     // `positionEncoding: utf-16` we advertise in initialize).
     _ = addTestStep(b, test_step, "tests/lsp_position_encoding_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // PositionMapper differential gate: the line-index conversions must
+    // agree with the linear helpers at every offset of every corpus
+    // source (including the 70 KB sceneW.wgsl), `null`s included.
+    _ = addTestStep(b, test_step, "tests/lsp_position_mapper_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // End-to-end publishDiagnostics JSON payload tests — drive WGSL
     // sources through validateDocument + bridge + writeNotification and
     // assert the serialized code / codeDescription.href / relatedInformation

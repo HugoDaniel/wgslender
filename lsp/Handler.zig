@@ -700,6 +700,11 @@ pub const isSafeCastTarget = CodeActions.isSafeCastTarget;
 // Position / Offset Conversion
 // =========================================================================
 
+/// Line-indexed offset↔position conversion. Build one per request when a
+/// handler converts one offset per result; it owns the seedable scan
+/// primitives the free functions below delegate to.
+pub const PositionMapper = @import("PositionMapper.zig");
+
 /// Convert an LSP 0-based line:character position to a byte offset in source.
 /// `pos.character` is interpreted as a count of UTF-16 code units (the LSP
 /// default and what we advertise in `capabilities_json`). Handles LF, CR,
@@ -725,60 +730,20 @@ pub fn lspPositionToOffset(source: []const u8, pos: Position) ?usize {
         i += 1;
     }
     if (line != pos.line) return null;
-
-    var col: u32 = 0;
-    var snapped = false;
-    while (col < pos.character and i < source.len) {
-        if (source[i] == '\r' or source[i] == '\n') return null;
-        const seq_len = std.unicode.utf8ByteSequenceLength(source[i]) catch return null;
-        if (i + seq_len > source.len) return null;
-        const units: u32 = if (seq_len == 4) 2 else 1;
-        if (col + units > pos.character) {
-            // pos.character lands mid-surrogate-pair — snap to the
-            // boundary before the pair. LSP spec is silent on mid-pair
-            // positions; this matches what most servers do.
-            snapped = true;
-            break;
-        }
-        col += units;
-        i += seq_len;
-    }
-    if (col != pos.character and !snapped) return null;
-    return i;
+    return PositionMapper.scanToCharacter(source, i, pos.character);
 }
 
 /// Convert a byte offset to an LSP 0-based Position. Columns are emitted
 /// in UTF-16 code units to match the encoding advertised in
-/// `capabilities_json`. Uses a simple linear scan (suitable for typical
-/// shader sizes). Returns `null` if `offset` is past end-of-source or
-/// lands mid-UTF-8-sequence.
+/// `capabilities_json`. Returns `null` if `offset` is past end-of-source
+/// or lands mid-UTF-8-sequence.
+///
+/// This is the one-shot form: it scans from byte 0, so it is O(offset).
+/// Handlers that convert more than a couple of offsets per request must
+/// build a `PositionMapper` instead — the scan is shared, only the seed
+/// differs.
 pub fn offsetToLspPosition(source: []const u8, offset: u32) ?Position {
-    if (offset > source.len) return null;
-    var line: u32 = 0;
-    var col: u32 = 0;
-    var i: u32 = 0;
-    while (i < offset) {
-        const c = source[i];
-        if (c == '\n') {
-            line += 1;
-            col = 0;
-            i += 1;
-            continue;
-        }
-        if (c == '\r') {
-            line += 1;
-            col = 0;
-            i += 1;
-            if (i < offset and i < source.len and source[i] == '\n') i += 1;
-            continue;
-        }
-        const seq_len = std.unicode.utf8ByteSequenceLength(c) catch return null;
-        if (i + seq_len > source.len) return null;
-        if (i + seq_len > offset) return null;
-        col += if (seq_len == 4) 2 else 1;
-        i += @intCast(seq_len);
-    }
-    return .{ .line = line, .character = col };
+    return PositionMapper.scanToPosition(source, 0, 0, offset);
 }
 
 /// Convert a byte offset range to an LSP Range.
