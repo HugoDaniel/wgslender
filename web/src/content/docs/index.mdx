@@ -1,9 +1,9 @@
 ---
-title: Welcome to Starlight
-description: Get started building your docs site with Starlight.
+title: WGSLender
+description: The shader toolkit that gives you a WGSL minifier, validator, linter, reflection engine, language server, and a binary shader compiler.
 template: splash # Remove or comment out this line to display the site sidebar on this page.
 hero:
-  tagline: Congrats on setting up a new Starlight project!
+  tagline: The WGSL devtools for your shader proclivities.
   image:
     file: ../../assets/houston.webp
   actions:
@@ -18,9 +18,25 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## Next steps
+## A WGSL toolkit? What does it have?
 
 <CardGrid stagger>
+	<Card title="A minifier" icon="pencil">
+		A customizable state of the art WGSL minifier.
+	</Card>
+	<Card title="A validator" icon="document">
+		No need for a WebGPU context. Check and validate your shader code at light speed anywhere (terminal, editor, web, etc...).
+	</Card>
+	<Card title="Discoverability" icon="setting">
+		A WGSL reflection tool for your code. Powerful insights on WGSL at the reach of a function call.
+	</Card>
+	<Card title="A terminal tool" icon="add-document">
+		Build your shader code pipeline with WGSlender CLI tool that performs actions while you keep working.
+	</Card>
+	<Card title="LSP" icon="open-book">
+		Hook it all in your favourite editor (vscode, helix, codemirror, etc) with the WGSLender LSP.
+	</Card>
+<!--
 	<Card title="Update content" icon="pencil">
 		Edit `src/content/docs/index.mdx` to see this page change.
 	</Card>
@@ -37,4 +53,5 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 	<Card title="Read the docs" icon="open-book">
 		Learn more in [the Starlight Docs](https://starlight.astro.build/).
 	</Card>
+-->
 </CardGrid>
