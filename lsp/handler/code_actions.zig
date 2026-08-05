@@ -17,6 +17,7 @@ const LspDiagnostic = Handler.LspDiagnostic;
 const LspTextEdit = Handler.LspTextEdit;
 const LspCodeAction = Handler.LspCodeAction;
 const WgslDiagnostic = wgslender.Diagnostic;
+const Ast = wgslender.Ast;
 
 /// Parse a WGSL numeric type name into a `(shape, scalar)` pair, or null if the
 /// name is not a recognized scalar/short-vector/long-vector form.
@@ -385,6 +386,13 @@ fn findVertexReturnTarget(handler: *Handler, diag_range: Range) VertexReturnTarg
     var it = handler.documents.iterator();
     while (it.next()) |entry| {
         const source = entry.value_ptr.source;
+        // `analyzeDocument` mutates the document value in place, so the
+        // iterator stays valid. A failed analysis just means the struct
+        // lookup below falls back to scanning source text.
+        const module: ?*const Ast.Module = if (handler.analyzeDocument(entry.key_ptr.*)) |a|
+            a.module
+        else |_|
+            null;
         const name_start = Handler.lspPositionToOffset(source, diag_range.start) orelse continue;
         if (name_start >= source.len) continue;
 
@@ -419,7 +427,7 @@ fn findVertexReturnTarget(handler: *Handler, diag_range: Range) VertexReturnTarg
             return makePlainTarget(handler.gpa, source, id_start) orelse .none;
         }
 
-        if (findStructBodyInsertPoint(handler.gpa, source, type_name)) |insert_at| {
+        if (findStructBodyInsertPoint(handler.gpa, module, source, type_name)) |insert_at| {
             return .{ .struct_body = .{ .name = type_name, .insert_at = insert_at } };
         }
         // Fall through: unrecognized type name, no matching struct — best effort
@@ -445,7 +453,54 @@ fn makePlainTarget(gpa: std.mem.Allocator, source: []const u8, offset: usize) ?V
     return .{ .plain = range };
 }
 
-fn findStructBodyInsertPoint(gpa: std.mem.Allocator, source: []const u8, struct_name: []const u8) ?Range {
+/// Locate the insertion point for a new member: the offset of the struct's
+/// closing `}`.
+///
+/// The AST is authoritative — `StructDecl.decl_span` runs from the `struct`
+/// keyword through that brace, so no scanning is needed and text that
+/// merely *looks* like a declaration (a `struct Foo` inside a comment)
+/// can't misdirect it. Falls back to the source scan when there's no
+/// module or the declaration isn't in it, which is the mid-typing case
+/// this quick fix is most often invoked in.
+fn findStructBodyInsertPoint(gpa: std.mem.Allocator, module: ?*const Ast.Module, source: []const u8, struct_name: []const u8) ?Range {
+    if (module) |m| {
+        if (structCloseBraceOffset(m, source, struct_name)) |close_off| {
+            return offsetToEmptyRange(gpa, source, close_off);
+        }
+    }
+    return findStructBodyInsertPointByScan(gpa, source, struct_name);
+}
+
+/// Offset of `struct_name`'s closing `}`, or null if the module has no such
+/// declaration (or its span doesn't land on a brace, which would mean the
+/// span and the source have drifted apart).
+fn structCloseBraceOffset(module: *const Ast.Module, source: []const u8, struct_name: []const u8) ?u32 {
+    for (module.declarations.items) |decl| {
+        const s = switch (decl) {
+            .@"struct" => |s| s,
+            else => continue,
+        };
+        if (!s.name.isValid()) continue;
+        if (!std.mem.eql(u8, module.symbols.items[s.name.index()].original_name, struct_name)) continue;
+        if (s.decl_span.end == 0 or s.decl_span.end > source.len) return null;
+        const close_off = s.decl_span.end - 1;
+        if (source[close_off] != '}') return null;
+        return close_off;
+    }
+    return null;
+}
+
+fn offsetToEmptyRange(gpa: std.mem.Allocator, source: []const u8, offset: u32) ?Range {
+    var line_index = WgslDiagnostic.LineIndex.init(gpa, source) catch return null;
+    defer line_index.deinit(gpa);
+    const pos = line_index.byteOffsetToLineColumn(offset);
+    return .{
+        .start = .{ .line = pos.line, .character = pos.col },
+        .end = .{ .line = pos.line, .character = pos.col },
+    };
+}
+
+fn findStructBodyInsertPointByScan(gpa: std.mem.Allocator, source: []const u8, struct_name: []const u8) ?Range {
     // Scan source for `struct <name>` followed by `{`. Accept any whitespace or
     // attribute list between `struct` and the name (keep it simple: find each
     // occurrence of `struct` and check that the next identifier matches).

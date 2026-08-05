@@ -891,6 +891,29 @@ test "code action: E0600 struct declared AFTER the function still resolves" {
     try std.testing.expect(std.mem.indexOf(u8, fixed, "@builtin(position) position: vec4f,") != null);
 }
 
+test "code action: E0600 a commented `struct <Name>` doesn't misdirect the insert point" {
+    // `struct Foo` appears verbatim in a comment placed before a *different*
+    // struct's declaration. A source scan matches the commented occurrence
+    // and then walks forward to the next `{` — which opens Bar's body.
+    const source: [:0]const u8 =
+        \\// struct Foo helper
+        \\struct Bar { x: f32, }
+        \\struct Foo { @location(0) y: f32, }
+        \\@vertex fn vs() -> Foo { return Foo(1.0); }
+    ;
+    const result = try getCodeActions(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "Add @builtin(position) member to 'Foo'") orelse
+        return error.TestUnexpectedResult;
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    // Bar is untouched; the new member lands in Foo.
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "struct Bar { x: f32, }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "struct Foo { @location(0) y: f32, @builtin(position) position: vec4f, }") != null);
+}
+
 test "code action: E0600 multi-member struct — insertion preserves all existing members" {
     const source: [:0]const u8 =
         \\struct Out { @location(0) color: vec4f, @location(1) uv: vec2f, }
