@@ -1,0 +1,18 @@
+[package]
+name = "wgslender-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Safe Rust API over the wgslender WGSL minifier C library. Implementation detail of the `wgslender` crate."
+
+[dependencies]
+wgslender-sys.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

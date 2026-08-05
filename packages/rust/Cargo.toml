@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["wgslender-sys"]
+members = ["wgslender-core", "wgslender-sys"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,7 +11,12 @@ authors = ["Hugo Daniel <mail@hugodaniel.pt>"]
 repository = "https://github.com/HugoDaniel/wgslender"
 
 [workspace.dependencies]
+wgslender-core = { path = "wgslender-core", version = "0.1.0" }
 wgslender-sys = { path = "wgslender-sys", version = "0.1.0" }
+
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.19"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
