@@ -1,24 +1,29 @@
 # plans/ — WGSLender embedding example plans
 
-Three independent, executable plans. Each one builds a fully worked, fully **tested**
+Independent, executable plans. Plans 1–3 each build a fully worked, fully **tested**
 example of consuming WGSLender from another language, covering the three main parts
-of the library: **minify**, **validate**, and **reflect**.
+of the library: **minify**, **validate**, and **reflect**. Plan 4 goes further: a
+publishable Rust cargo workspace (`packages/rust/`) covering the **entire** C ABI plus
+compile-time embedding proc-macros.
 
 | Plan | File | Target | Creates |
 |------|------|--------|---------|
 | 1 | [01-js-ts.md](01-js-ts.md) | JS/TS via the npm package (WASM) | `examples/js-ts/` |
-| 2 | [02-rust.md](02-rust.md) | Rust via the C static library (FFI) | `examples/rust/` |
+| 2 | [02-rust.md](02-rust.md) | Rust via the C static library (FFI) — **superseded by plan 4 if 4 executes** | `examples/rust/` |
 | 3 | [03-c.md](03-c.md) | C via `libwgslender.a` (examples already exist — plan hardens + tests them) | `examples/c/` test harness |
+| 4 | [04-rust-package.md](04-rust-package.md) | Publishable Rust cargo workspace: full-ABI safe API + compile-time `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` proc-macros | `packages/rust/` |
 
 ## Suggested execution order
 
 The plans are **independent** — any order works, one plan (or one block) per session.
-Suggested order if executing all three:
+Suggested order if executing all:
 
 1. **03-c** first — cheapest, and it creates the automated test harness over the
    already-existing `examples/c/` suite, hardening the same `libwgslender.a` that
-   plan 02 links against.
-2. **02-rust** — links the same static archive; reuses the fixtures/oracle patterns.
+   the Rust plans link against.
+2. **04-rust-package** — the real Rust deliverable (supersedes 02; see its
+   "Relationship to plan 02" section). Execute 02 only if you deliberately want the
+   small raw-FFI example *instead of* the package.
 3. **01-js-ts** — fully independent (npm package + committed WASM artifact).
 
 ## Conventions shared by all three plans (read once, they are restated per plan)
