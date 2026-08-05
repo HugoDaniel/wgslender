@@ -9,6 +9,14 @@ rust-version = "1.85"
 license = "CC0-1.0"
 authors = ["Hugo Daniel <mail@hugodaniel.pt>"]
 repository = "https://github.com/HugoDaniel/wgslender"
+# One README for the family. An inherited `readme` resolves against the
+# workspace root, and `cargo package` copies the file into each crate, so the
+# four of them cannot describe the same library four differing ways.
+readme = "README.md"
+# Five is the crates.io maximum, so these are the five words someone with this
+# problem would actually type.
+keywords = ["wgsl", "webgpu", "shader", "minifier", "wgpu"]
+categories = ["compression", "game-development", "wasm"]
 
 [workspace.dependencies]
 wgslender-core = { path = "wgslender-core", version = "0.1.0" }
@@ -31,6 +39,10 @@ syn = { version = "2.0.114", default-features = false, features = ["parsing", "p
 miniz_oxide = "0.9.1"
 
 trybuild = "1.0.116"
+
+# Properties, for the questions a table cannot ask: that no input panics, and
+# that minifying twice is minifying once. A dev-dependency only.
+proptest = "1.11.0"
 
 # Only ever a dev-dependency: `wgsl_module!` can put bytemuck's derives on the
 # structs it generates, and the promise that they *derive* — that the explicit

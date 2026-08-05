@@ -7,6 +7,25 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Minify, validate, lint, reflect, compile and refactor WGSL shaders."
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# The examples and the fixtures they read, because an example that will not
+# build is worse than no example. Not the integration tests, and emphatically
+# not `tests/ui/`: those goldens pin what *this* compiler version prints, and
+# they belong to the repository's gate rather than to anyone's dependency.
+include = [
+    "src/**/*.rs",
+    "examples/**/*.rs",
+    "tests/fixtures/demo.wgsl",
+    "tests/fixtures/layouts.wgsl",
+]
+
+# docs.rs builds with the default features unless told otherwise, and the two
+# feature-gated macros are half of what there is to read about.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 default = ["macros"]

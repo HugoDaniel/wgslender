@@ -6,6 +6,52 @@
 //!
 //! ## Quick start
 //!
+#![cfg_attr(
+    feature = "macros",
+    doc = r#"A shader ships inside the binary. Doing the work while the binary is
+being built means it ships *small*, and that a mistake in it stops `cargo
+build` rather than the pipeline:
+
+```
+// Validated and minified as this crate compiles. The path is relative to your
+// crate root; this one is this crate's own test fixture, because a doctest has
+// to point somewhere real.
+const SHADER: &str = wgslender::include_wgsl!("tests/fixtures/demo.wgsl");
+
+assert!(SHADER.contains("@compute"));
+assert!(SHADER.len() < 500, "968 bytes of source went in");
+```
+
+With the `compress` feature it ships smaller still: the binary carries a
+deflate stream, and nothing inflates until something creates the pipeline.
+
+```text
+static SHADER: wgslender::CompressedWgsl =
+    wgslender::include_wgsl_compressed!("shaders/blur.wgsl");
+
+device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    source: wgpu::ShaderSource::Wgsl(SHADER.as_str().into()),
+    label: None,
+});
+```
+
+That last block is a sketch rather than a doctest: this crate does not depend
+on wgpu, and one that pretended to would be a different program. Everything up
+to the `create_shader_module` call is real, and
+`cargo run --features compress --example embed_compressed` runs it.
+
+## At run time
+
+The same work, called rather than expanded:
+"#
+)]
+// Without the macros there is nothing to expand, so the run-time API *is* the
+// quick start and needs its own lead-in.
+#![cfg_attr(
+    not(feature = "macros"),
+    doc = "Everything the library does, called directly:"
+)]
+//!
 //! ```
 //! let source = "\
 //! @group(0) @binding(0) var<storage, read_write> data: array<f32>;

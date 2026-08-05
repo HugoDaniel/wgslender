@@ -7,8 +7,15 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Raw FFI declarations for the wgslender WGSL minifier C library."
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 links = "wgslender"
 build = "build.rs"
+
+# Spelled out rather than filtered: a list of what to ship cannot accidentally
+# grow, and a list of what to leave out can.
+include = ["src/**/*.rs", "build.rs"]
 
 [lints]
 workspace = true

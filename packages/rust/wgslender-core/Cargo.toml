@@ -7,6 +7,16 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Safe Rust API over the wgslender WGSL minifier C library. Implementation detail of the `wgslender` crate."
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+include = ["src/**/*.rs"]
+
+# `CompressedWgsl` is feature-gated, and a type missing from the documentation
+# is a type nobody finds.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 # `CompressedWgsl`: shader text stored DEFLATE-compressed, inflated on first
@@ -20,6 +30,9 @@ serde_json.workspace = true
 thiserror.workspace = true
 
 miniz_oxide = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
 
 [lints]
 workspace = true

@@ -183,10 +183,21 @@ Each feature configuration is walked because an optional feature nothing ever
 compiles is an optional feature that has quietly stopped working — and the two
 ends of the matrix are where that shows up: everything on, and nothing on.
 
-The test step includes the macros' UI goldens, which pin what the compiler
-prints when `include_wgsl!` or `wgsl_module!` refuses. trybuild runs those by compiling a
-generated package under `target/tests/trybuild/`, so they cost a cargo build of
-their own. Regenerate them, then read the diff, with:
+The test step includes two suites that cost more than the rest.
+
+`wgslender-core/tests/props.rs` asks proptest for inputs nobody would have
+thought to write down: that no string panics on the way through the FFI
+boundary, that minifying twice is minifying once, and that what the minifier
+writes the validator takes back — the last two across the whole option space
+rather than one setting of it. A failing case is recorded in
+`wgslender-core/tests/props.proptest-regressions` and replayed first from then
+on, so a seed found once is a seed kept. That file belongs in a commit; it is
+absent because nothing has failed.
+
+The macros' UI goldens pin what the compiler prints when `include_wgsl!` or
+`wgsl_module!` refuses. trybuild runs those by compiling a generated package
+under `target/tests/trybuild/`, so they cost a cargo build of their own.
+Regenerate them, then read the diff, with:
 
 ```sh
 TRYBUILD=overwrite cargo test -p wgslender --test ui
@@ -206,6 +217,17 @@ cargo xtask deny    # cargo deny check
 1.85, the Edition 2024 floor, declared as `rust-version` and checked by
 `cargo xtask msrv`. Raising it is a breaking change.
 
+`rust-toolchain.toml` pins the *development* toolchain to 1.92.0, which is a
+different promise: the version this workspace is worked on with, not the oldest
+one it compiles under. Both are checked, because only checking the first would
+let the second rot.
+
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md), one file for all four crates: they carry the same
+version number and are released together, so a changelog each would be four
+copies of one list.
+
 ## Examples
 
 ```sh
@@ -215,7 +237,46 @@ cargo run -p wgslender --example wgsl_module    # a generated module's layout
 cargo run -p wgslender --features compress --example embed_compressed
 ```
 
-## Not here yet
+## Publishing
 
-Nothing here is published to crates.io; see `plans/04-rust-package.md` for what
-that would take.
+Nothing here is on crates.io. The workspace is publish-*ready* — metadata,
+`include` lists, docs.rs configuration and a changelog are all in place — and
+one thing stands in the way, which is a decision rather than a step.
+
+**`wgslender-sys/build.rs` reaches `../../..` for the Zig sources.** That path
+exists in this repository and in no `.crate` tarball, so a published
+`wgslender-sys` would fail its first build with the message the script already
+prints: *expected the wgslender sources at … but found no build.zig there*.
+There are two ways out, and they trade different things away:
+
+1. **Vendor the Zig sources into the crate at package time.** An `xtask vendor`
+   copies them in and `build.rs` prefers the vendored tree when it finds one.
+   Measured: `zig build lib` needs `src/`, `include/`, `build.zig`,
+   `build.zig.zon` **and** `external/lsp-kit/` — the last because the LSP step's
+   `b.lazyDependency` is a *path* dependency, which Zig opens while it is
+   configuring even though nothing asks for it. Without it the build stops at
+   `unable to open '…/external/lsp-kit'`. That is ~3.3 MB of sources, well
+   inside the 10 MB crate limit. The cost is that **every consumer needs Zig
+   0.16.0 on `PATH`** — a Rust crate that will not build on a machine with a
+   Rust toolchain on it, which is a real thing to ask.
+2. **Ship prebuilt static libraries per target.** No Zig on the consumer's
+   machine, and a different can of worms: a `.crate` per platform or a fat
+   archive, glibc versions, and a supply chain in which the bytes people link
+   are not the bytes they can read.
+
+Until one is chosen, `WGSLENDER_LIB_DIR` is the supported way to build against
+a library you produced yourself.
+
+The names `wgslender`, `wgslender-sys` and `wgslender-macros` were free on
+crates.io on 2026-08-05; `wgslender-core` was never checked. **Re-verify all
+four immediately before publishing** — a name that was free is not a name that
+is reserved. Publish order, versions in lock-step: `wgslender-sys` →
+`wgslender-core` → `wgslender-macros` → `wgslender`.
+
+`cargo package -p <crate> --no-verify --list` prints what a tarball would
+carry. `--no-verify` because the verification build is exactly the step that
+cannot work yet. Note that only `wgslender-sys` can be *packaged* today: the
+other three carry `path` + `version` dependencies, and cargo rewrites those to
+registry dependencies while packaging, so it goes looking for a
+`wgslender-core` that is not there yet. That is the same constraint as the
+publish order, met one step earlier.

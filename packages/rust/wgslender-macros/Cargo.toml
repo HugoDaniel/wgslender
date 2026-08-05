@@ -7,6 +7,17 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 description = "Compile-time WGSL embedding macros. Implementation detail of the `wgslender` crate."
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+# The shaders come along: they are what the unit tests in `src/codegen.rs`
+# expand, so a copy of this crate without them is a copy that cannot be tested.
+include = ["src/**/*.rs", "wgsl/*.wgsl"]
+
+# Same reason as the facade: `include_wgsl_compressed!` is behind a feature.
+[package.metadata.docs.rs]
+all-features = true
 
 [lib]
 proc-macro = true
