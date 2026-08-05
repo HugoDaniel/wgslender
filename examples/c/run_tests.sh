@@ -47,7 +47,8 @@ expect() {
 	pass=$((pass + 1))
 }
 
-expect minify "wgslender " "Original (" "Minified (" "@vertex" "@fragment"
+expect minify "wgslender " "Original (" "Minified (" "@vertex" "@fragment" \
+	"With keepNames (" "default -> renamed, keepNames -> kept"
 expect validate "--- valid shader ---" "valid: true" "valid: false" "--- strict mode ---" '"diagnostics"'
 expect reflect '"version":2' '"bindings"' '"entryPoints"' '"structs"'
 expect minify_and_reflect '"minify"' '"reflect"'
