@@ -140,15 +140,17 @@ pub struct WgslenderLintResult {
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct WgslenderLintFixResult {
-    /// Number of diagnostics with error severity that remain after fixing.
+    /// Number of diagnostics with error severity in the source as passed in.
     pub error_count: u32,
-    /// Number of diagnostics with warning severity that remain after fixing.
+    /// Number of diagnostics with warning severity in the source as passed in.
     pub warning_count: u32,
     /// Rewritten source, null on allocation failure.
     pub fixed_ptr: *const u8,
     /// Length in bytes of the buffer at `fixed_ptr`.
     pub fixed_len: u32,
-    /// JSON lint report for the diagnostics that remain, null on allocation failure.
+    /// JSON lint report for the source **as it was passed in**, null on
+    /// allocation failure. The library lints once and fixes from that run, so
+    /// this describes the original rather than `fixed_ptr`.
     pub json_ptr: *const u8,
     /// Length in bytes of the buffer at `json_ptr`.
     pub json_len: u32,

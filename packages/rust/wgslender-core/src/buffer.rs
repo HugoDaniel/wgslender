@@ -1,15 +1,26 @@
-//! Ownership of the byte buffers libwgslender hands back.
+//! The bytes that cross the FFI boundary, in both directions.
 //!
-//! The C ABI frees with `wgslender_free_c(ptr, len)` — a *sized* free — so
-//! ownership cannot be a bare pointer. Pointer and length travel together in
-//! [`LibBuffer`] or the free is wrong.
+//! Inbound, the C ABI frees with `wgslender_free_c(ptr, len)` — a *sized* free
+//! — so ownership cannot be a bare pointer. Pointer and length travel together
+//! in [`LibBuffer`] or the free is wrong. Outbound, every length the library
+//! accepts is a `u32`, which [`checked_len`] enforces.
 
 use core::ptr::NonNull;
 use core::slice;
 
+use serde::de::DeserializeOwned;
 use wgslender_sys::{WgslenderResult, wgslender_free_c};
 
 use crate::error::Error;
+
+/// The length of `text` as the C ABI wants it.
+///
+/// # Errors
+///
+/// [`Error::SourceTooLarge`] if the text does not fit in a `u32`.
+pub(crate) fn checked_len(text: &str) -> Result<u32, Error> {
+    u32::try_from(text.len()).map_err(|_| Error::SourceTooLarge(text.len()))
+}
 
 /// Bytes owned by libwgslender, released on drop.
 #[derive(Debug)]
@@ -53,6 +64,30 @@ impl LibBuffer {
     pub(crate) fn into_string(self) -> Result<String, Error> {
         Ok(core::str::from_utf8(self.as_bytes())?.to_owned())
     }
+}
+
+/// Parse a JSON buffer the library returned, releasing it either way.
+///
+/// # Errors
+///
+/// [`Error::Internal`] if the pointer is null, which is how every JSON-bearing
+/// result struct reports that it could not allocate its payload;
+/// [`Error::Wire`] if the payload is not the JSON `T` expects.
+///
+/// # Safety
+///
+/// Behavior is undefined if any of the following conditions are violated:
+///
+/// * `ptr` and `len` must be the pointer/length pair of one buffer from a
+///   single wgslender result struct.
+/// * That buffer must not have been freed, nor adopted anywhere else.
+pub(crate) unsafe fn take_json<T: DeserializeOwned>(ptr: *const u8, len: u32) -> Result<T, Error> {
+    // SAFETY: forwarded verbatim from this function's own contract.
+    let buffer = unsafe { LibBuffer::adopt(ptr, len) };
+    let Some(buffer) = buffer else {
+        return Err(Error::Internal);
+    };
+    Ok(serde_json::from_slice(buffer.as_bytes())?)
 }
 
 impl Drop for LibBuffer {

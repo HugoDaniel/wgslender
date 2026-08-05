@@ -2,7 +2,7 @@
 
 use wgslender_sys::{WGSLENDER_OPT_DEFAULT, wgslender_minify_c, wgslender_minify_json_c};
 
-use crate::buffer::take_text;
+use crate::buffer::{checked_len, take_text};
 use crate::error::Error;
 use crate::options::MinifyOptions;
 
@@ -72,9 +72,4 @@ pub fn minify_with(source: &str, options: &MinifyOptions) -> Result<String, Erro
         wgslender_minify_json_c(source.as_ptr(), source_len, options.as_ptr(), options_len)
     };
     take_text(result)
-}
-
-/// A byte length as the `u32` the C ABI takes.
-fn checked_len(text: &str) -> Result<u32, Error> {
-    u32::try_from(text.len()).map_err(|_| Error::SourceTooLarge(text.len()))
 }

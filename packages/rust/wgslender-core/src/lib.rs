@@ -24,6 +24,15 @@
 //! arena per call — so these are plain functions rather than methods on a
 //! context object.
 //!
+//! ## What counts as an error
+//!
+//! A shader the library rejects is not a Rust `Err`. [`validate`] hands back an
+//! `Ok(Validation)` whose `valid` is false, and [`lint`] an `Ok(LintReport)`
+//! full of diagnostics — the shader failing is the answer, not a failure to
+//! answer. [`Error`] is for the call itself going wrong: an allocation the
+//! library could not make, a payload that is not the JSON this crate expects,
+//! a source too long for the ABI's `u32` lengths.
+//!
 //! ## Memory
 //!
 //! Results come back as buffers the library allocated and the caller must
@@ -37,12 +46,18 @@
 
 mod buffer;
 mod error;
+mod lint;
 mod minify;
 mod options;
+mod validate;
 
 pub use crate::error::Error;
+pub use crate::lint::{
+    LintConfig, LintFixOutcome, LintReport, Pack, RuleSetting, Value, lint, lint_fix,
+};
 pub use crate::minify::{minify, minify_with};
 pub use crate::options::MinifyOptions;
+pub use crate::validate::{Diagnostic, Severity, Strictness, Validation, validate};
 
 /// The version of the linked wgslender library, as `major.minor.patch`.
 ///
