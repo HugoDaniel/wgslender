@@ -62,8 +62,8 @@ console.log(result.code);
 
 ### `initialize(options)`
 
-Initialize the WASM module. Must be called before `minify()`, `reflect()`, or
-`validate()`.
+Initialize the WASM module. Must be called before `minify()`, `reflect()`,
+`minifyAndReflect()`, or `validate()`.
 
 ```typescript
 interface InitializeOptions {
@@ -173,6 +173,41 @@ Memory layouts follow the WGSL specification:
 - `vec3` has alignment=16 but size=12
 - Struct members are aligned to their natural alignment
 - Struct size is rounded up to struct alignment
+
+### `minifyAndReflect(source, options?)`
+
+Minify and reflect in a single WASM call. Equivalent to calling `minify()`
+followed by `reflect(result.code)`, except the two passes share one parsed
+module and renamer instead of reparsing the minified output — so `reflect`'s
+names are guaranteed to match `minify`'s renaming, and you save a second
+parse.
+
+```typescript
+interface MinifyAndReflectResult {
+  minify: MinifyResult;
+  reflect: ReflectResult;
+}
+
+function minifyAndReflect(source: string, options?: MinifyOptions): MinifyAndReflectResult;
+```
+
+`options` accepts the same `MinifyOptions` as `minify()`.
+
+**Example:**
+
+```javascript
+const { minify: minified, reflect: info } = minifyAndReflect(`
+  struct Uniforms { time: f32, resolution: vec2<u32> }
+  @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+  @compute @workgroup_size(8, 8) fn main() { let t = uniforms.time; }
+`, { minifyIdentifiers: true });
+
+console.log(minified.code);
+// struct a{time:f32,resolution:vec2<u32>}@group(0) @binding(0) var<uniform> uniforms:a;@compute @workgroup_size(8,8) fn main(){let t=uniforms.time;}
+
+console.log(info.bindings[0].name, info.bindings[0].typeMapped);
+// "uniforms" "a"  — external bindings keep their name by default; the type is renamed
+```
 
 ### `validate(source, options?)`
 
