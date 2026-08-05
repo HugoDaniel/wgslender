@@ -47,6 +47,16 @@ fn lookupSymbolByName(module: *const Ast.Module, name: []const u8) Ast.SymbolInd
     return .none;
 }
 
+/// Find the AST node at `offset` within a single declaration.
+///
+/// `find` walks every declaration; callers that already know which one
+/// covers the offset (via `Ast.Decl.declSpan`) can skip straight to it.
+/// `semantic_tokens.zig` does exactly that, because it resolves one node
+/// per identifier token rather than one per request.
+pub fn findInDeclaration(module: *const Ast.Module, decl: Ast.Decl, offset: u32) NodeAtPosition {
+    return findInDecl(module, decl, offset);
+}
+
 fn findInDecl(module: *const Ast.Module, decl: Ast.Decl, offset: u32) NodeAtPosition {
     switch (decl) {
         .function => |f| {

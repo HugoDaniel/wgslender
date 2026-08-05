@@ -241,3 +241,76 @@ test "semantic tokens: control flow keywords" {
     }
     try std.testing.expect(keyword_count >= 4); // fn, if, return, else, discard
 }
+
+// =========================================================================
+// Scope-correct identifier resolution (plan 05, Block 3)
+// =========================================================================
+
+/// Decode the delta-encoded token stream and return the token type of the
+/// token starting at `offset`, or null if no token starts there.
+fn tokenTypeAtOffset(data: []const u32, source: [:0]const u8, offset: u32) ?u32 {
+    const want = Handler.offsetToLspPosition(source, offset) orelse return null;
+    var line: u32 = 0;
+    var char: u32 = 0;
+    var i: usize = 0;
+    while (i + 4 < data.len) : (i += 5) {
+        const delta_line = data[i];
+        const delta_char = data[i + 1];
+        line += delta_line;
+        char = if (delta_line == 0) char + delta_char else delta_char;
+        if (line == want.line and char == want.character) return data[i + 3];
+    }
+    return null;
+}
+
+test "semantic tokens: a local reference is not resolved to a same-named parameter" {
+    // `a`'s parameter `x` precedes `b`'s local `x` in module.symbols, so a
+    // whole-module name scan returns the parameter for both.
+    const source: [:0]const u8 =
+        \\fn a(x: f32) -> f32 { return x; }
+        \\fn b() { let x = 1.0; let y = x; }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const data = try ctx.handler.computeSemanticTokens("test://file.wgsl");
+    defer std.testing.allocator.free(data);
+
+    // The reference under test: the final `x` in `let y = x;`.
+    const ref_off: u32 = @intCast(std.mem.lastIndexOf(u8, source, "x;").?);
+    const tok_type = tokenTypeAtOffset(data, source, ref_off) orelse
+        return error.TestUnexpectedResult;
+    // 4 = variable (a `let`), not 3 = parameter.
+    try std.testing.expectEqual(@as(u32, 4), tok_type);
+}
+
+test "semantic tokens: a parameter reference stays a parameter" {
+    const source: [:0]const u8 =
+        \\fn a(x: f32) -> f32 { return x; }
+        \\fn b() { let x = 1.0; let y = x; }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const data = try ctx.handler.computeSemanticTokens("test://file.wgsl");
+    defer std.testing.allocator.free(data);
+
+    // `return x;` inside `a` — that `x` really is the parameter.
+    const ref_off: u32 = @intCast(std.mem.indexOf(u8, source, "return x").? + 7);
+    const tok_type = tokenTypeAtOffset(data, source, ref_off) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 3), tok_type); // parameter
+}
+
+test "semantic tokens: struct member names stay colored" {
+    const source: [:0]const u8 =
+        \\struct S { field: f32 }
+        \\fn f() -> f32 { var s: S; return s.field; }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const data = try ctx.handler.computeSemanticTokens("test://file.wgsl");
+    defer std.testing.allocator.free(data);
+
+    // The member name in `s.field` must still emit a token.
+    const member_off: u32 = @intCast(std.mem.lastIndexOf(u8, source, "field").?);
+    try std.testing.expect(tokenTypeAtOffset(data, source, member_off) != null);
+}

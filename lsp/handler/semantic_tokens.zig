@@ -6,6 +6,7 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Handler = @import("../Handler.zig");
+const NodeAtOffset = @import("node_at_offset.zig");
 const Ast = wgslender.Ast;
 const Lexer = wgslender.Lexer;
 const Builtins = wgslender.Builtins;
@@ -76,6 +77,7 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
 
     var prev_line: u32 = 0;
     var prev_char: u32 = 0;
+    var decl_cursor: DeclCursor = .{};
 
     // First, scan for comments and collect them
     var comment_ranges: std.ArrayList(struct { start: u32, end: u32 }) = .empty;
@@ -181,7 +183,7 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
 
                 // Try to resolve via AST
                 if (module) |m| {
-                    if (resolveIdentSymbol(m, tok_start, name)) |sym| {
+                    if (resolveIdentSymbol(m, &decl_cursor, tok_start, name)) |sym| {
                         const tok_type: u32 = switch (sym.kind) {
                             .function => @intFromEnum(SemanticTokenType.function),
                             .@"struct" => @intFromEnum(SemanticTokenType.@"struct"),
@@ -292,21 +294,81 @@ fn identAt(source: [:0]const u8, start: u32) []const u8 {
     return source[start..end];
 }
 
-fn resolveIdentSymbol(module: *const Ast.Module, loc: u32, name: []const u8) ?Ast.Symbol {
-    // Search symbols for one matching this location and name
-    for (module.symbols.items) |sym| {
-        if (sym.original_name.len == 0) continue;
-        if (std.mem.eql(u8, sym.original_name, name)) {
-            // For declarations, loc matches exactly
-            if (sym.loc == loc) return sym;
+/// The declaration that contained the previously resolved token.
+///
+/// `NodeAtOffset.find` does no span pruning — it recurses every
+/// declaration's whole subtree and only tests containment at leaf
+/// identifiers. That is fine at one call per request (hover, definition),
+/// but semantic tokens resolve one node per identifier token, which would
+/// make the pass O(tokens × AST nodes). Tokens arrive in increasing source
+/// order, so the declaration covering the previous one almost always
+/// covers the next: remembering it turns the common case into a single
+/// `Ast.Decl.declSpan` containment test.
+const DeclCursor = struct {
+    idx: usize = 0,
+
+    fn find(self: *DeclCursor, module: *const Ast.Module, loc: u32) NodeAtOffset.NodeAtPosition {
+        const decls = module.declarations.items;
+        if (self.idx < decls.len and spanContains(decls[self.idx].declSpan(), loc)) {
+            return NodeAtOffset.findInDeclaration(module, decls[self.idx], loc);
         }
+        for (decls, 0..) |decl, i| {
+            if (!spanContains(decl.declSpan(), loc)) continue;
+            self.idx = i;
+            return NodeAtOffset.findInDeclaration(module, decl, loc);
+        }
+        // No declaration claims this offset — `const_assert` has an empty
+        // `declSpan`, and directives aren't declarations at all. Rare
+        // enough to pay for the unpruned walk.
+        return NodeAtOffset.find(module, loc);
     }
-    // For references, we need to walk the AST — too expensive for per-token resolution.
-    // Fall back to name-based lookup (less precise but reasonable for highlighting).
+};
+
+fn spanContains(span: Ast.Span, offset: u32) bool {
+    return !span.isEmpty() and offset >= span.start and offset < span.end;
+}
+
+/// Resolve the symbol an identifier token refers to.
+///
+/// The AST is the scope-correct source of truth: `Ast.Ident.ref` was bound
+/// by `AstVisit` Pass 2, so it names the declaration actually visible at
+/// that offset. A whole-module name scan cannot do this — with two
+/// same-named symbols it returns whichever comes first in
+/// `module.symbols.items`, so a local reference could be colored as some
+/// other function's parameter.
+///
+/// The name scan survives as a fallback because semantic tokens are
+/// recomputed on every keystroke, including versions where parser error
+/// recovery has dropped the half-typed statement containing this token —
+/// there the AST has no node at this offset and only the name is left to
+/// go on. Approximate coloring beats none while typing.
+fn resolveIdentSymbol(module: *const Ast.Module, cursor: *DeclCursor, loc: u32, name: []const u8) ?Ast.Symbol {
+    const ref: Ast.SymbolIndex = switch (cursor.find(module, loc)) {
+        // `findInExpr` already falls back to a by-name lookup for idents
+        // whose `ref` never bound, so an invalid one here means the name
+        // scan has run and failed — repeating it would be pure cost.
+        .ident => |id| return symbolAt(module, id.ref),
+        .decl_name => |dn| return symbolAt(module, dn.sym_idx),
+        // An unbound type ref is a builtin (`f32`) or an unknown type;
+        // either way no user symbol carries the name.
+        .type_ref => |tr| return symbolAt(module, tr.ref),
+        // The member name in `s.field` is an `.ident` lexer token too, and
+        // `member_ref` is populated by the validator, which the LSP always
+        // runs. Dropping it here would uncolor every member access.
+        .member_access => |ma| ma.ref,
+        .binary_expr, .none => .none,
+    };
+    if (ref.isValid()) return module.symbols.items[ref.index()];
+
     for (module.symbols.items) |sym| {
         if (std.mem.eql(u8, sym.original_name, name)) return sym;
     }
     return null;
+}
+
+fn symbolAt(module: *const Ast.Module, ref: Ast.SymbolIndex) ?Ast.Symbol {
+    if (!ref.isValid()) return null;
+    return module.symbols.items[ref.index()];
 }
 
 fn isBuiltinTypeName(name: []const u8) bool {
