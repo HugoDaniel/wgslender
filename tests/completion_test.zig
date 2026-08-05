@@ -219,3 +219,63 @@ test "completion: includes texture builtins" {
     try std.testing.expect(hasItem(items, "textureStore"));
     try std.testing.expect(hasItem(items, "textureDimensions"));
 }
+
+// =========================================================================
+// Member ("dot") completion (plan 05, Block 4)
+// =========================================================================
+
+/// Completion at the byte offset just past `needle`'s last occurrence.
+fn completeAfter(handler: *Handler, source: [:0]const u8, needle: []const u8) ![]Handler.CompletionItem {
+    const idx = std.mem.lastIndexOf(u8, source, needle) orelse return error.TestUnexpectedResult;
+    const off: u32 = @intCast(idx + needle.len);
+    const pos = Handler.offsetToLspPosition(source, off) orelse return error.TestUnexpectedResult;
+    return handler.computeCompletion("test://file.wgsl", pos);
+}
+
+test "completion: dot on an incomplete statement still offers fields" {
+    // The real dot-completion state: the editor fires completion the instant
+    // `.` is typed, when nothing follows it. Parser error recovery drops that
+    // statement, so the base identifier is not in the AST at that offset —
+    // resolution has to survive that.
+    const source: [:0]const u8 =
+        \\struct S { a: f32 }
+        \\fn f() {
+        \\  var p: S;
+        \\  p.
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAfter(ctx.handler, source, "p.");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "a"));
+}
+
+test "completion: dot resolves the base to the enclosing function's local" {
+    // `one`'s `p` precedes `two`'s in module.symbols, so a whole-module name
+    // scan hands back struct A's fields inside `two`.
+    const source: [:0]const u8 =
+        \\struct A { fa: f32 }
+        \\struct B { fb: f32 }
+        \\fn one() { var p: A; let q = p.; }
+        \\fn two() { var p: B; let r = p.; }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAfter(ctx.handler, source, "p.");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "fb"));
+    try std.testing.expect(!hasItem(items, "fa"));
+}
+
+test "completion: dot on a vector base offers swizzle components" {
+    const source: [:0]const u8 =
+        \\fn f() { var v: vec3f; let s = v.; }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const items = try completeAfter(ctx.handler, source, "v.");
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "x"));
+    try std.testing.expect(hasItem(items, "rgba"[0..1]));
+}

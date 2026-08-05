@@ -6,6 +6,7 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Handler = @import("../Handler.zig");
+const NodeAtOffset = @import("node_at_offset.zig");
 const Position = Handler.Position;
 const Builtins = wgslender.Builtins;
 const Lexer = wgslender.Lexer;
@@ -76,12 +77,28 @@ fn memberCompletion(handler: *Handler, uri: []const u8, source: []const u8, dot_
     const analysis = handler.analyzeDocument(uri) catch return &.{};
     const module = analysis.module orelse return &.{};
 
-    // Find the symbol for base_name and its type
+    // Resolve the base identifier's type. The AST knows which declaration
+    // is actually visible here, so a shadowed local resolves correctly —
+    // but only when the base identifier survived parsing.
     var base_type: ?wgslender.Types.Type = null;
-    for (module.symbols.items, 0..) |sym, idx| {
-        if (std.mem.eql(u8, sym.original_name, base_name)) {
-            base_type = analysis.symbol_types.get(@intCast(idx));
-            break;
+    switch (NodeAtOffset.find(module, start)) {
+        .ident => |id| {
+            if (id.ref.isValid()) base_type = analysis.symbol_types.get(id.ref.index());
+        },
+        else => {},
+    }
+
+    // Fall back to a whole-module name match. This is load-bearing, not
+    // vestigial: the state completion actually fires in is `p.` with
+    // nothing after the dot, and error recovery drops that whole statement
+    // — so the AST has no node at this offset at all. The name match can
+    // pick the wrong same-named symbol, but wrong fields beat no fields.
+    if (base_type == null) {
+        for (module.symbols.items, 0..) |sym, idx| {
+            if (std.mem.eql(u8, sym.original_name, base_name)) {
+                base_type = analysis.symbol_types.get(@intCast(idx));
+                break;
+            }
         }
     }
 
