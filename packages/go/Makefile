@@ -6,10 +6,16 @@
 
 GO ?= go
 
-# Fuzzing runs one package at a time (`go test -fuzz` refuses a multi-package
-# pattern), so it needs an explicit target.
+# Fuzzing runs one target in one package at a time (`go test -fuzz` refuses a
+# multi-package pattern, and a pattern matching two targets in one). The
+# targets, and where they live:
+#
+#	FuzzMinify     ./wgslender          (default)
+#	FuzzEveryCall  ./wgslender
+#	FuzzDecode     ./internal/wasmabi
 FUZZPKG  ?= ./wgslender
 FUZZTIME ?= 30s
+FUZZ     ?= FuzzMinify
 
 .PHONY: check fmt vet build test lint fuzz bench
 
@@ -51,9 +57,9 @@ lint:
 	}
 	golangci-lint run
 
-## fuzz: opt-in. Override FUZZPKG/FUZZTIME to aim it.
+## fuzz: opt-in. Override FUZZ/FUZZPKG/FUZZTIME to aim it.
 fuzz:
-	$(GO) test -run '^$$' -fuzz . -fuzztime $(FUZZTIME) $(FUZZPKG)
+	$(GO) test -run '^$$' -fuzz '^$(FUZZ)$$' -fuzztime $(FUZZTIME) $(FUZZPKG)
 
 ## bench: opt-in. -count=6 is what benchstat wants to see, and -cpu 1,8 is what
 ## makes the pool's whole reason for existing visible: the parallel rows are

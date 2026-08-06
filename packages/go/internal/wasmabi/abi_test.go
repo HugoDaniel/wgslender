@@ -199,6 +199,49 @@ func TestLayoutDecodeRejectsShortMemory(t *testing.T) {
 	}
 }
 
+// FuzzDecode hands the envelope decoder arbitrary bytes standing where guest
+// memory would be. The header words are lengths the guest wrote and the
+// decoder must not trust: whatever they claim, no input may do worse than an
+// error, and a decode that does succeed must describe itself — every payload
+// as long as its header word says, the dealloc total exactly the header plus
+// the payloads. A decoder that read the wrong word here would free the wrong
+// length, which is undefined behaviour inside the guest's allocator, not a
+// bug report.
+func FuzzDecode(f *testing.F) {
+	layouts := []Layout{PackLenPrefixed, PackValidate, PackLint, PackLintFix, PackCompile}
+
+	f.Add([]byte{}, uint32(0), uint8(0))
+	f.Add([]byte(envelope([]uint32{2}, []byte("{}"))), uint32(0), uint8(0))
+	f.Add(append(make([]byte, 16),
+		envelope([]uint32{3, 1, 2, 4}, []byte("abc"), []byte(`[{}]`))...), uint32(16), uint8(3))
+	f.Add([]byte{0xff, 0xff, 0xff, 0xff}, uint32(4294967295), uint8(4))
+
+	f.Fuzz(func(t *testing.T, mem []byte, ptr uint32, which uint8) {
+		l := layouts[int(which)%len(layouts)]
+		res, total, err := l.decode(fakeMemory(mem), ptr)
+		if err != nil {
+			return
+		}
+		if len(res.Words) != l.Words {
+			t.Fatalf("decoded %d words, the layout has %d", len(res.Words), l.Words)
+		}
+		if len(res.Payloads) != len(l.Payloads) {
+			t.Fatalf("decoded %d payloads, the layout has %d", len(res.Payloads), len(l.Payloads))
+		}
+		sum := uint64(4 * l.Words)
+		for i, w := range l.Payloads {
+			if uint64(len(res.Payloads[i])) != uint64(res.Words[w]) {
+				t.Fatalf("payload %d is %d bytes, header word %d says %d",
+					i, len(res.Payloads[i]), w, res.Words[w])
+			}
+			sum += uint64(res.Words[w])
+		}
+		if uint64(total) != sum {
+			t.Fatalf("dealloc length = %d, the envelope is %d bytes", total, sum)
+		}
+	})
+}
+
 // TestGuestSurface pins the shape of the embedded artifact. None of it is
 // negotiable from the Go side: a change here means `zig build wasm` produced
 // something this package was not written against, and the failure should say so
