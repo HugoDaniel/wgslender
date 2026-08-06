@@ -10,7 +10,7 @@ Also creates `cmd/wgslgen`, a `go:generate`-able codegen tool — the Go analog 
 Rust `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` macros (Go has no
 compile-time macros; `go generate` + golden files is the idiom).
 
-**Status:** executing, block-per-session. **Blocks 0 through 5 landed** —
+**Status:** executing, block-per-session. **Blocks 0 through 6 landed** —
 `git log -- packages/go` is the authority on what is actually done, not this line.
 Originally verified against `main @ 9726727`
 on 2026-08-06 (macOS arm64, go 1.26.5, zig 0.16.0) by running a throwaway wazero
@@ -171,6 +171,21 @@ So: compile-once is clearly worth the `OnceValues`; instantiation is cheap enoug
 pooling — or even instantiate-per-call — is affordable; and the parallel win is real
 rather than speculative. Block 6 still measures before landing the pool, but it starts
 from this prior rather than from nothing.
+
+**Confirmed in Block 6, and the prior was slightly pessimistic.** Measured through
+the public API rather than the raw ABI (`benchstat`, n=6, `-cpu 1,8`, 884-byte
+shader): one minify is **87 µs** serial, and eight-way parallel minification went
+from **94.7 µs/op to 12.2 µs/op (−87%, 7.2×)** once the pool landed. Serial cost did
+not move (`Minify/Small` 88.4 µs → 87.1 µs, p=0.065). Two facts the prior did not
+contain:
+
+- **`api.Module.ExportedFunction` is not a lookup.** It builds a call engine with a
+  cloned execution stack every time it is called, and there are six guest calls
+  behind one minify (2 allocs, the export, 3 deallocs). Caching the handles per
+  instance took a minify from **58.4 KiB/op to 2.6 KiB/op (−95%)** and 32 allocs to
+  25. This is independent of pooling and would have been worth doing either way.
+- **`WithCloseOnContextDone` costs 4.5×**, not "a bit" as its doc says: every
+  benchmark rose by 250–350% (87 µs → 387 µs serial). Rejected — see Block 6 below.
 
 ### Wire contracts (from the Zig writers — `src/api_json.zig`, `src/Diagnostic.zig`,
 ### `src/reflect/Json.zig`; the npm `main.d.ts` lies in places, encode from Zig)
@@ -919,6 +934,43 @@ Mastery: CONCURRENCY (Pool discipline), ZERO_ALLOC (benchmark discipline).
    retired, which is the behaviour the ABI layer already needs for traps.
 6. Commit: `perf(packages/go): instance pooling with benchstat evidence` (or a
    `docs:` commit recording why the mutex stays).
+
+**Executed.** The pool landed; the numbers are in the measured-costs section above.
+Four things the plan did not anticipate:
+
+- **`sync.Pool` is unusable here, and not for a performance reason.** wazero threads
+  every instance onto a list rooted in the runtime — anonymous ones included
+  (`internal/wasm/store_module_list.go:61`, `registerModule` appends to
+  `s.moduleList` regardless of name) — and only `Close` unlinks it. An instance a
+  `sync.Pool` discards at GC is therefore *still reachable*, so it is never
+  collected and its linear memory never comes back. Every GC would have leaked a few
+  megabytes, permanently. The pool is two channels instead: `idle` holds instances,
+  `permits` holds the right to build one, and their sum is invariant so neither can
+  block on send.
+- **Reuse must beat creation explicitly.** A single channel of instances-or-empty-slots
+  is FIFO, so purely sequential calls take an empty slot every time and build the
+  whole pool. `acquire` does a non-blocking receive on `idle` *before* the blocking
+  select, because that select would otherwise choose at random between an idle
+  instance and a permit. Pinned by `TestPoolGrowsOnlyUnderContention`.
+- **Cancellation is honoured at the queue, not inside the call.** `acquire` checks
+  `ctx.Err()` before its selects — a select whose cases are both ready picks at
+  random, so a caller who has already given up has to be turned away explicitly
+  rather than by a `case <-ctx.Done()`. Interrupting a *running* call needs
+  `WithCloseOnContextDone`, which costs 4.5× on every call and is rejected; the
+  package documents that a cancelled context stops a call from starting and nothing
+  more.
+- **An instance is retired on error *or* size.** `memoryLimit` is 8 MiB: guest memory
+  only grows (a fresh instance settles at ~1.8 MB and rises ~70 bytes per byte of
+  source), so without a cap one outsized shader leaves the whole pool holding its
+  high-water mark for the life of the process.
+
+Six mutations, each confirmed to compile before being believed: dropping the
+`ctx.Err()` check (4 failures), dropping reuse-before-create (8 instances where 1 is
+wanted), never retiring on error (idle+permit assertions), ignoring `oversized`,
+leaking the result envelope (the leak test catches it at iteration 312 of 10,000),
+and releasing an instance one line before the call that uses it — which does not
+produce wrong answers but kills the process with a split stack overflow raised from
+inside the guest.
 
 ### Block 7 — `cmd/wgslgen`: minified + compressed embedding
 

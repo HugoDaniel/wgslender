@@ -9,8 +9,6 @@ import (
 	"math"
 	"slices"
 	"testing"
-
-	"github.com/tetratelabs/wazero/api"
 )
 
 // guestExports is the ABI surface this package is written against, sorted.
@@ -234,16 +232,16 @@ func TestGuestSurface(t *testing.T) {
 // guest allocator: an empty input still needs a real, non-null allocation,
 // because a null pointer is how the guest reports failure.
 func TestWriteBufferAllocatesOneByteForEmpty(t *testing.T) {
-	got, err := exec(t.Context(), func(ctx context.Context, mod api.Module) (region, error) {
-		alloc, err := lookup(mod, allocFn)
+	got, err := exec(t.Context(), func(ctx context.Context, inst *instance) (region, error) {
+		alloc, err := inst.fn(allocFn)
 		if err != nil {
 			return region{}, err
 		}
-		dealloc, err := lookup(mod, deallocFn)
+		dealloc, err := inst.fn(deallocFn)
 		if err != nil {
 			return region{}, err
 		}
-		r, err := writeBuffer(ctx, mod, alloc, nil)
+		r, err := writeBuffer(ctx, inst, alloc, nil)
 		if err != nil {
 			return region{}, err
 		}
@@ -263,36 +261,136 @@ func TestWriteBufferAllocatesOneByteForEmpty(t *testing.T) {
 }
 
 // TestCallErrorRetiresInstance pins the recovery rule: a failed call throws its
-// instance away rather than reusing a guest whose heap may be inconsistent, and
-// the next caller transparently gets a fresh one.
+// instance away rather than returning a guest whose heap may be inconsistent to
+// the pool, and the next caller transparently gets a fresh one.
 func TestCallErrorRetiresInstance(t *testing.T) {
 	a, err := shared()
 	if err != nil {
 		t.Fatalf("compiling the embedded wasm: %v", err)
 	}
 
+	// Start from an empty pool, so the failing call has to build the instance
+	// it then throws away and nothing else can be mistaken for it.
+	exclusivePool(t, a)
+
 	if _, err := Version(t.Context()); err != nil {
-		t.Fatalf("priming the instance: %v", err)
+		t.Fatalf("priming an instance: %v", err)
 	}
-	a.mu.Lock()
-	live := a.mod != nil
-	a.mu.Unlock()
-	if !live {
-		t.Fatal("no instance after a successful call")
+	if n := len(a.idle); n != 1 {
+		t.Fatalf("%d idle instances after one successful call, want 1", n)
 	}
 
 	if _, err := Call(t.Context(), "wgslender_not_an_export", PackLenPrefixed); err == nil {
 		t.Fatal("Call on a missing export returned no error")
 	}
-	a.mu.Lock()
-	retired := a.mod == nil
-	a.mu.Unlock()
-	if !retired {
-		t.Error("a failed call left its instance in place; a trapped guest may have a corrupt heap")
+	if n := len(a.idle); n != 0 {
+		t.Errorf("%d idle instances after a failed call, want 0; "+
+			"a trapped guest may have a corrupt heap and must not be reused", n)
+	}
+	if n := len(a.permits); n != cap(a.permits) {
+		t.Errorf("%d creation permits after a failed call, want %d; "+
+			"retiring an instance has to give its permit back or the pool shrinks for good",
+			n, cap(a.permits))
 	}
 
 	if _, err := Version(t.Context()); err != nil {
 		t.Errorf("Version after a failed call: %v", err)
+	}
+}
+
+// exclusivePool empties the pool for the duration of the test and puts it back
+// into its start-of-process state afterwards: no instances, every permit
+// available.
+//
+// Resetting rather than restoring is what makes it safe to use: the pool is
+// only a cache, so throwing its contents away is always correct, and a test
+// that leaves it in an unexpected state cannot strand a later one. Instances
+// are closed rather than dropped, because a dropped instance is never
+// collected. This is only sound because the tests in this package do not run
+// in parallel — nothing else is competing for the channels it reads.
+func exclusivePool(t *testing.T, a *abi) {
+	t.Helper()
+	reset := func() {
+		for len(a.idle) > 0 {
+			(<-a.idle).close(context.Background())
+		}
+		for len(a.permits) > 0 {
+			<-a.permits
+		}
+		for range cap(a.permits) {
+			a.permits <- struct{}{}
+		}
+	}
+	reset()
+	t.Cleanup(reset)
+}
+
+// TestPoolGrowsOnlyUnderContention pins that instances are built lazily and
+// reused in preference to being built. A program that never calls the engine
+// from two goroutines at once should end up holding exactly one guest, however
+// much room the pool leaves for more — an instance costs a couple of megabytes
+// that never come back.
+func TestPoolGrowsOnlyUnderContention(t *testing.T) {
+	a, err := shared()
+	if err != nil {
+		t.Fatalf("compiling the embedded wasm: %v", err)
+	}
+	exclusivePool(t, a)
+
+	for range 100 {
+		if _, err := Version(t.Context()); err != nil {
+			t.Fatalf("Version: %v", err)
+		}
+	}
+
+	if n := len(a.idle); n != 1 {
+		t.Errorf("%d instances exist after 100 calls that never overlap, want 1", n)
+	}
+	if n, want := len(a.permits), cap(a.permits)-1; n != want {
+		t.Errorf("%d creation permits left, want %d", n, want)
+	}
+}
+
+// TestOversizedInstanceIsRetired pins the memory rule: an instance that has
+// grown past memoryLimit is closed rather than pooled, so one outlier shader
+// cannot leave the pool holding its high-water mark for the rest of the
+// process.
+func TestOversizedInstanceIsRetired(t *testing.T) {
+	a, err := shared()
+	if err != nil {
+		t.Fatalf("compiling the embedded wasm: %v", err)
+	}
+	exclusivePool(t, a)
+
+	inst, err := a.instantiate(t.Context())
+	if err != nil {
+		t.Fatalf("instantiating: %v", err)
+	}
+	if inst.oversized() {
+		t.Fatalf("a fresh instance already holds %d bytes, over the %d-byte limit",
+			inst.mod.Memory().Size(), memoryLimit)
+	}
+
+	// Grow it past the limit the only way the guest offers: ask for the memory.
+	// The allocation is never freed, which is the point — this is what an
+	// instance looks like after one outsized shader has been through it.
+	alloc, err := inst.fn(allocFn)
+	if err != nil {
+		t.Fatalf("looking up %s: %v", allocFn, err)
+	}
+	if _, err := call1(t.Context(), alloc, allocFn, memoryLimit); err != nil {
+		t.Fatalf("allocating %d guest bytes: %v", memoryLimit, err)
+	}
+	if !inst.oversized() {
+		t.Fatalf("after allocating %d bytes the instance holds %d, still under the limit",
+			memoryLimit, inst.mod.Memory().Size())
+	}
+
+	// Released as healthy: size alone has to be enough to retire it.
+	<-a.permits
+	a.release(t.Context(), inst, true)
+	if n := len(a.idle); n != 0 {
+		t.Errorf("%d idle instances, want 0: an oversized instance was returned to the pool", n)
 	}
 }
 

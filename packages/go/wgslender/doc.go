@@ -15,10 +15,23 @@
 //
 // # Contexts and concurrency
 //
-// Every function that reaches the engine takes a [context.Context] first.
-// All of them are safe to call from multiple goroutines, though calls are
-// serialised: the engine is a single-threaded allocator and running two calls
-// through it at once corrupts its heap.
+// Every function that reaches the engine takes a [context.Context] first, and
+// all of them are safe to call from any number of goroutines.
+//
+// Behind them is a small pool of WebAssembly instances — one per processor, up
+// to eight, built on demand. One instance is one single-threaded allocator, so
+// each call has an instance to itself while it runs and the pool is what lets
+// independent calls still run at the same time. A program that never calls
+// from two goroutines at once never builds more than one instance; each holds
+// a couple of megabytes, and one that grows unusually large after an unusually
+// large shader is discarded rather than kept.
+//
+// Cancelling a context stops a call from starting: it will not queue for an
+// instance, and it returns an error wrapping [context.Canceled] or
+// [context.DeadlineExceeded]. It does not interrupt a call already running.
+// wazero can be asked to check for cancellation inside the guest, but that
+// costs four and a half times the run time of every call, which is a poor
+// trade against work measured in tens of microseconds.
 //
 // # Text
 //

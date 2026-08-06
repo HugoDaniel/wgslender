@@ -35,9 +35,9 @@ vet:
 build:
 	$(GO) build ./...
 
-## test: -race is not optional here; the package hands one single-threaded
-## wasm instance to arbitrarily many goroutines and the detector is what keeps
-## that honest. -count=1 defeats the test cache.
+## test: -race is not optional here; the package hands a pool of
+## single-threaded wasm instances to arbitrarily many goroutines and the
+## detector is what keeps that honest. -count=1 defeats the test cache.
 test:
 	$(GO) test -race -count=1 ./...
 
@@ -55,6 +55,10 @@ lint:
 fuzz:
 	$(GO) test -run '^$$' -fuzz . -fuzztime $(FUZZTIME) $(FUZZPKG)
 
-## bench: opt-in. -count=6 is what benchstat wants to see.
+## bench: opt-in. -count=6 is what benchstat wants to see, and -cpu 1,8 is what
+## makes the pool's whole reason for existing visible: the parallel rows are
+## flat at 1 and should be several times faster at 8.
+##
+##	make bench > new.txt && benchstat old.txt new.txt
 bench:
-	$(GO) test -run '^$$' -bench . -benchmem -count=6 ./...
+	$(GO) test -run '^$$' -bench . -benchmem -count=6 -cpu 1,8 ./...
