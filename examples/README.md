@@ -7,6 +7,7 @@ verification story.
 | Example | What it shows | Run it |
 |---|---|---|
 | [`c/`](c/) | The C ABI over `libwgslender.a`: minify (bitflags and JSON options), validate, reflect, lint, lint-fix, rename, refactor-by-stable-id, compile | `zig build lib && make -C examples/c test` |
+| [`js-ts/`](js-ts/) | TypeScript over the npm package (WASM): minify, validate, reflect — with the struct layout and strict-mode promotion spelled out | `cd examples/js-ts && npm install && npm test` |
 
 `make -C examples/c lint-portability` additionally compiles every C example
 against glibc headers through `zig cc -target x86_64-linux-gnu`, so a
