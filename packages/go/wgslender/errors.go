@@ -91,3 +91,14 @@ func checkUTF8(name, s string) error {
 	}
 	return fmt.Errorf("%w: %s", ErrInvalidUTF8, name)
 }
+
+// checkEngineUTF8 distrusts text the engine produced that is not valid UTF-8.
+// It wraps [ErrInternal], not [ErrInvalidUTF8]: that sentinel tells a caller
+// to fix an argument, and every argument was checked on the way in — bytes
+// broken on the way out are the engine's splice landing inside a rune.
+func checkEngineUTF8(name, s string) error {
+	if utf8.ValidString(s) {
+		return nil
+	}
+	return fmt.Errorf("%w: the engine's %s is not valid UTF-8", ErrInternal, name)
+}

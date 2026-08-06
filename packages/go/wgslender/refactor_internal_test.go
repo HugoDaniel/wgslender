@@ -68,6 +68,36 @@ func TestRefactorErrorKeepsWhatItCannotName(t *testing.T) {
 	}
 }
 
+// checkEngineUTF8 guards text the ENGINE produced — the spliced source that
+// LintFix and the refactor Apply family hand back. Its failure is the
+// engine's, not the caller's, so it must wrap ErrInternal, and it must NOT
+// wrap ErrInvalidUTF8: that sentinel documents itself as refusing an
+// argument, and a caller branching on it would go fix input this package
+// already accepted. The path cannot be provoked through the public API — the
+// engine would have to mis-splice — which is why it is pinned here, from
+// inside.
+func TestCheckEngineUTF8WrapsErrInternal(t *testing.T) {
+	t.Parallel()
+
+	if err := checkEngineUTF8("fixed source", "fn main() {}"); err != nil {
+		t.Fatalf("valid UTF-8 refused: %v", err)
+	}
+
+	err := checkEngineUTF8("fixed source", "fn \xff() {}")
+	if err == nil {
+		t.Fatal("invalid UTF-8 from the engine must be an error")
+	}
+	if !errors.Is(err, ErrInternal) {
+		t.Errorf("got %v, want it to wrap ErrInternal: the engine broke the bytes, not the caller", err)
+	}
+	if errors.Is(err, ErrInvalidUTF8) {
+		t.Errorf("got %v, which wraps ErrInvalidUTF8 and so blames the caller's arguments", err)
+	}
+	if !strings.Contains(err.Error(), "fixed source") {
+		t.Errorf("got %q, which does not name what was corrupted", err)
+	}
+}
+
 // "not found" is the locate family's way of saying the question was
 // answerable and the answer is no. It is handled before the map is consulted,
 // so reaching the map with it would turn an ordinary absence into a failure.

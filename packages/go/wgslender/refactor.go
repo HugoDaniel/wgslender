@@ -478,7 +478,7 @@ func appliedFrom(ctx context.Context, fn string, args ...wasmabi.Arg) (Applied, 
 	// same reason it does not in LintFix: the rewrite is a splice at byte
 	// offsets, and one computed in the middle of a multi-byte rune would hand
 	// back bytes that are no longer UTF-8 though every byte of the input was.
-	if err := checkUTF8("rewritten source", w.Source); err != nil {
+	if err := checkEngineUTF8("rewritten source", w.Source); err != nil {
 		return Applied{}, err
 	}
 	return Applied{Source: w.Source, Edits: w.Edits}, nil

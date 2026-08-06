@@ -73,7 +73,7 @@ func LintFix(ctx context.Context, source string, cfg *LintConfig) (LintFixOutcom
 	// a splice at byte offsets, and a rule that computed one in the middle of a
 	// multi-byte rune would hand back bytes that are no longer UTF-8 even
 	// though every byte of the input was.
-	if err := checkUTF8("fixed source", fixed); err != nil {
+	if err := checkEngineUTF8("fixed source", fixed); err != nil {
 		return LintFixOutcome{}, err
 	}
 	report, err := decodeLintReport(res.Words[1], res.Words[2], res.Payloads[1])
