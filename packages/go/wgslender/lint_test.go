@@ -58,7 +58,7 @@ func TestLint(t *testing.T) {
 			name:   "a single enabled rule finds the unused helper",
 			source: unusedWGSL,
 			config: &wgslender.LintConfig{
-				Rules: map[string]wgslender.RuleSetting{"no-unused-vars": wgslender.Warn()},
+				Rules: map[string]wgslender.RuleSetting{"no-unused-vars": wgslender.RuleWarn()},
 			},
 			check: func(t *testing.T, got wgslender.LintReport) {
 				if got.WarningCount != 1 {
@@ -86,7 +86,7 @@ func TestLint(t *testing.T) {
 			name:   "a rule raised to error is counted as an error",
 			source: unusedWGSL,
 			config: &wgslender.LintConfig{
-				Rules: map[string]wgslender.RuleSetting{"no-unused-vars": wgslender.Error()},
+				Rules: map[string]wgslender.RuleSetting{"no-unused-vars": wgslender.RuleError()},
 			},
 			check: func(t *testing.T, got wgslender.LintReport) {
 				if got.ErrorCount != 1 || got.WarningCount != 0 {
@@ -100,7 +100,7 @@ func TestLint(t *testing.T) {
 			source: unusedWGSL,
 			config: &wgslender.LintConfig{
 				Extends: []wgslender.Pack{wgslender.PackRecommended},
-				Rules:   map[string]wgslender.RuleSetting{"no-unused-vars": wgslender.Off()},
+				Rules:   map[string]wgslender.RuleSetting{"no-unused-vars": wgslender.RuleOff()},
 			},
 			check: func(t *testing.T, got wgslender.LintReport) {
 				wantCounts(t, got, 0, 0, 0)
@@ -111,7 +111,7 @@ func TestLint(t *testing.T) {
 			source: unusedWGSL,
 			config: &wgslender.LintConfig{
 				Rules: map[string]wgslender.RuleSetting{
-					"no-unused-vars": wgslender.WarnWith(map[string]any{}),
+					"no-unused-vars": wgslender.RuleWarnWith(map[string]any{}),
 				},
 			},
 			check: func(t *testing.T, got wgslender.LintReport) {
@@ -124,7 +124,7 @@ func TestLint(t *testing.T) {
 			name:   "an unknown rule id is silently ignored",
 			source: unusedWGSL,
 			config: &wgslender.LintConfig{
-				Rules: map[string]wgslender.RuleSetting{"no-such-rule": wgslender.Error()},
+				Rules: map[string]wgslender.RuleSetting{"no-such-rule": wgslender.RuleError()},
 			},
 			check: func(t *testing.T, got wgslender.LintReport) {
 				if got.ErrorCount != 0 {
@@ -183,7 +183,7 @@ func TestLint(t *testing.T) {
 			name:   "a disable comment silences the rule it names",
 			source: unusedWithDirectiveWGSL,
 			config: &wgslender.LintConfig{
-				Rules: map[string]wgslender.RuleSetting{"no-unused-vars": wgslender.Warn()},
+				Rules: map[string]wgslender.RuleSetting{"no-unused-vars": wgslender.RuleWarn()},
 			},
 			check: func(t *testing.T, got wgslender.LintReport) {
 				wantCounts(t, got, 0, 0, 0)
@@ -257,8 +257,8 @@ func TestLintConfigJSON(t *testing.T) {
 			config: wgslender.LintConfig{
 				Extends: []wgslender.Pack{wgslender.PackRecommended, wgslender.PackStrict},
 				Rules: map[string]wgslender.RuleSetting{
-					"no-magic-numbers": wgslender.Off(),
-					"no-shadow":        wgslender.Error(),
+					"no-magic-numbers": wgslender.RuleOff(),
+					"no-shadow":        wgslender.RuleError(),
 				},
 				ReportUnusedDisableDirectives: wgslender.Set(true),
 			},
@@ -270,7 +270,7 @@ func TestLintConfigJSON(t *testing.T) {
 			name: "rule options travel as a severity/options pair",
 			config: wgslender.LintConfig{
 				Rules: map[string]wgslender.RuleSetting{
-					"max-params": wgslender.WarnWith(map[string]any{"max": 4}),
+					"max-params": wgslender.RuleWarnWith(map[string]any{"max": 4}),
 				},
 			},
 			want: `{"rules":{"max-params":["warn",{"max":4}]}}`,
@@ -278,7 +278,7 @@ func TestLintConfigJSON(t *testing.T) {
 		{
 			name: "a setting with no options stays a bare word",
 			config: wgslender.LintConfig{
-				Rules: map[string]wgslender.RuleSetting{"no-shadow": wgslender.WarnWith(nil)},
+				Rules: map[string]wgslender.RuleSetting{"no-shadow": wgslender.RuleWarnWith(nil)},
 			},
 			want: `{"rules":{"no-shadow":"warn"}}`,
 		},

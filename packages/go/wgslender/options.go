@@ -142,8 +142,9 @@ func (s ruleSeverity) String() string {
 	}
 }
 
-// A RuleSetting says what one lint rule should do. Build one with [Off],
-// [Warn], [Error], [WarnWith] or [ErrorWith]; the zero value is [Off].
+// A RuleSetting says what one lint rule should do. Build one with [RuleOff],
+// [RuleWarn], [RuleError], [RuleWarnWith] or [RuleErrorWith]; the zero value
+// is [RuleOff].
 type RuleSetting struct {
 	severity ruleSeverity
 	// opts is the rule's own options object, nil when there is none. Which
@@ -152,27 +153,27 @@ type RuleSetting struct {
 	opts map[string]any
 }
 
-// Off does not run the rule, overriding whatever a pack said about it.
-func Off() RuleSetting { return RuleSetting{severity: ruleOff} }
+// RuleOff does not run the rule, overriding whatever a pack said about it.
+func RuleOff() RuleSetting { return RuleSetting{severity: ruleOff} }
 
-// Warn runs the rule, reporting at warning severity.
-func Warn() RuleSetting { return RuleSetting{severity: ruleWarn} }
+// RuleWarn runs the rule, reporting at warning severity.
+func RuleWarn() RuleSetting { return RuleSetting{severity: ruleWarn} }
 
-// Error runs the rule, reporting at error severity.
+// RuleError runs the rule, reporting at error severity.
 //
 // Reporting at error severity is a statement about the shader, not about the
 // call: [Lint] still returns a report rather than a Go error.
-func Error() RuleSetting { return RuleSetting{severity: ruleError} }
+func RuleError() RuleSetting { return RuleSetting{severity: ruleError} }
 
-// WarnWith runs the rule at warning severity with its own options. A nil map
-// means the same as [Warn].
-func WarnWith(opts map[string]any) RuleSetting {
+// RuleWarnWith runs the rule at warning severity with its own options. A nil
+// map means the same as [RuleWarn].
+func RuleWarnWith(opts map[string]any) RuleSetting {
 	return RuleSetting{severity: ruleWarn, opts: opts}
 }
 
-// ErrorWith runs the rule at error severity with its own options. A nil map
-// means the same as [Error].
-func ErrorWith(opts map[string]any) RuleSetting {
+// RuleErrorWith runs the rule at error severity with its own options. A nil
+// map means the same as [RuleError].
+func RuleErrorWith(opts map[string]any) RuleSetting {
 	return RuleSetting{severity: ruleError, opts: opts}
 }
 
@@ -193,7 +194,7 @@ func (r RuleSetting) MarshalJSON() ([]byte, error) {
 //
 //	cfg := &wgslender.LintConfig{
 //		Extends: []wgslender.Pack{wgslender.PackRecommended},
-//		Rules:   map[string]wgslender.RuleSetting{"no-magic-numbers": wgslender.Off()},
+//		Rules:   map[string]wgslender.RuleSetting{"no-magic-numbers": wgslender.RuleOff()},
 //	}
 //
 // Rules win over anything Extends said.
