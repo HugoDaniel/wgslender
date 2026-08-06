@@ -90,6 +90,29 @@ func ExampleMinify_options() {
 	// struct e{resolution:vec2f,time:f32}@group(0) @binding(0) var<uniform> params:e;@group(1) @binding(2) var<storage,read_write> data:array<vec4f>;fn luminance(a:vec3f)->f32{return dot(a,vec3f(.2126,.7152,.0722));}@compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) a:vec3u){let b=vec2f(a.xy)/params.resolution;let c=luminance(vec3f(b,params.time));data[a.x]=vec4f(c,c,c,1.);}
 }
 
+// ExampleMinifyAndReflect minifies and reflects in one pass. The reflection
+// describes the *original* source with each name's minified form alongside,
+// which is what lets a host keep talking about the shader in its author's
+// vocabulary while binding whatever survived.
+func ExampleMinifyAndReflect() {
+	shader, err := wgslender.MinifyAndReflect(context.Background(), exampleShader, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(shader.OriginalSize, "bytes ->", shader.MinifiedSize)
+	for _, b := range shader.Reflection.Bindings {
+		fmt.Printf("%s: %s -> %s: %s\n", b.Name, b.Type, b.NameMapped, b.TypeMapped)
+	}
+
+	// The binding names survive — the host binds against them — but the
+	// struct type behind params is internal to the shader, so Params is now f.
+
+	// Output:
+	// 497 bytes -> 375
+	// params: Params -> params: f
+	// data: array<vec4f> -> data: array<vec4f>
+}
+
 // ExampleValidate type-checks a shader that does not.
 func ExampleValidate() {
 	// A shader's own problems are data, not errors: the call succeeds and the
