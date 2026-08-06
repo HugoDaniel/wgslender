@@ -17,6 +17,10 @@ zig-out/
 /examples/c/remove_declaration_apply_by_id
 /examples/c/change_type_apply_by_id
 
+# JS/TS example (npm install + tsc output)
+/examples/js-ts/node_modules/
+/examples/js-ts/dist/
+
 # Test artifacts
 *.test
 coverage.out

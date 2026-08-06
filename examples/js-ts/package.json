@@ -1,0 +1,17 @@
+{
+  "name": "wgslender-example-js-ts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "pretest": "npm run build",
+    "test": "node --test test/"
+  },
+  "dependencies": {
+    "wgslender": "file:../../packages/js-npm"
+  },
+  "devDependencies": {
+    "typescript": "^5.6",
+    "@types/node": "^26"
+  }
+}
