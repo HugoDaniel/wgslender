@@ -257,6 +257,12 @@ pub const AnalysisResult = struct {
         const sym = module.symbols.items[sym_idx];
         if (self.useCount(sym_idx) > 0) return false;
         if (sym.original_name.len == 0) return false;
+        // A `_` symbol only exists because the parser accepted `_` in a
+        // declaration-name position so `checkReservedIdentifiers` could
+        // report it (E0105). It is not a real declaration, and stacking
+        // "declared but never used" on top of "reserved" is noise about a
+        // name the user cannot use either way.
+        if (std.mem.eql(u8, sym.original_name, "_")) return false;
         if (sym.flags.is_entry_point) return false;
         if (sym.flags.is_api_facing) return false;
         if (sym.flags.is_external_binding) return false;

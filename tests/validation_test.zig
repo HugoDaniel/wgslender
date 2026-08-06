@@ -111,7 +111,29 @@ fn runValidation(allocator: std.mem.Allocator, source_bytes: []const u8) !wgslen
     var parser = try wgslender.Parser.init(allocator, source, tokens);
     const module = try parser.parse();
 
-    return wgslender.Validator.validate(allocator, module, .{});
+    var result = try wgslender.Validator.validate(allocator, module, .{});
+
+    // Fold parse errors into the result, exactly as the public
+    // `validateWithOptions` does. Without this the helper silently
+    // discarded `parser.errors`, so `result.valid` reflected only
+    // *validator* diagnostics — and every fixture here containing a
+    // phony assignment (which did not parse) asserted "valid" against a
+    // source carrying three parse errors. A helper that cannot see a
+    // whole class of error is worse than a failing test.
+    wgslender.Parser.mergeErrorsInto(parser.errors.items, result.diagnostics, allocator);
+    if (parser.errors.items.len > 0) result.valid = false;
+    return result;
+}
+
+test "harness: runValidation reports parse errors, not just validator errors" {
+    // Guard for the helper above. It used to hand `parser.parse()`'s module
+    // to the validator and drop `parser.errors` on the floor, so a source
+    // that did not even parse could still come back `valid == true`. Every
+    // "expected valid" fixture in this file rides on that not being true.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try runValidation(arena.allocator(), "fn f( { }");
+    try std.testing.expect(!result.valid);
 }
 
 // =========================================================================

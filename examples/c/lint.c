@@ -15,7 +15,7 @@ int main(void) {
     const char *source =
         "@compute @workgroup_size(1) fn main() {\n"
         "    let unused = 42;\n"
-        "    let _ = 3.14;\n"
+        "    _ = 3.14;\n"
         "}\n";
 
     const char *config = "{\"extends\":[\"@wgslender/recommended\"]}";

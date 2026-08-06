@@ -52,8 +52,12 @@ expect minify "wgslender " "Original (" "Minified (" "@vertex" "@fragment" \
 expect validate "--- valid shader ---" "valid: true" "valid: false" "--- strict mode ---" '"diagnostics"'
 expect reflect '"version":2' '"bindings"' '"entryPoints"' '"structs"'
 expect minify_and_reflect '"minify"' '"reflect"'
-expect lint "lint:" "diagnostics:" "W0001"
-expect lint_fix "fixed source"
+# The demo shaders must be VALID WGSL: "0 errors" pins that, so a demo that
+# quietly starts failing to parse cannot pass as a linting demo. lint_fix
+# additionally pins the fixed text and fixableCount — "fixed source" alone
+# was printed even when nothing was fixed, and for a long time nothing was.
+expect lint "lint:" "diagnostics:" "W0001" "0 errors"
+expect lint_fix "fixed source" "0 errors" '"fixableCount":1' "_ = x;"
 expect rename "rename_apply JSON" '"edits"'
 expect compile "magic: 00 61 73 6d"
 expect change_type_apply_by_id "stable id: v1:" '"edits"'

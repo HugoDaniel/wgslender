@@ -411,3 +411,16 @@ test "phony: renaming through a phony assignment rewrites the RHS" {
     // output would still contain the original name and be broken.
     try std.testing.expect(std.mem.indexOf(u8, out.code, "helper") == null);
 }
+
+test "phony: a rejected `_` declaration does not also draw an unused warning" {
+    // `_` becomes a symbol only so `checkReservedIdentifiers` can report
+    // E0105. Stacking W0001 "declared but never used" on top is noise
+    // about a name the user cannot use either way.
+    var r = try validate(
+        \\@compute @workgroup_size(1) fn main() { let _ = 3.14; }
+        \\
+    );
+    defer r.deinit();
+    try std.testing.expect(hasCode(r, Diagnostic.Code.reserved_identifier));
+    try std.testing.expect(!hasCode(r, "W0001"));
+}
