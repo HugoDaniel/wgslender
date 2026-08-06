@@ -179,14 +179,39 @@ func diagnostics(ws []wireDiagnostic) []Diagnostic {
 	return out
 }
 
+// Two ways of pointing at something, shared by reflection and the refactor
+// operations. Reflection hands them out; the refactor operations take them
+// back.
+
+// A StableID names a symbol in a way that survives reparsing, such as
+// "v1:fn:main/block#0/let:y". It is what the refactor operations take instead
+// of a byte offset, which moves the moment anyone edits the file.
+type StableID string
+
+// A Span is a half-open byte range of source, from Start up to but not
+// including End. Offsets are UTF-8 bytes, which is what Go's own string
+// indexing uses, so source[s.Start:s.End] is the text it covers.
+//
+// In reflection the zero Span means the engine did not record one: it omits a
+// span it could not determine, and its own test for presence is End > Start,
+// so no real span is ever zero. Elsewhere absence is reported some other way —
+// the locate operations use a second return — and a zero Span is not
+// meaningful on its own.
+type Span struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
 // The reflection vocabulary, produced by [Reflect] and [MinifyAndReflect].
 //
-// These types are decoded straight out of the engine's document, which is why —
-// alone in this package — they carry JSON tags instead of being copied out of a
-// hidden mirror of themselves. The reflect envelope's shape *is* the shape a Go
-// caller wants, key for key, so a mirror would be forty fields of pure
-// transcription and forty chances to misspell one. The single place the wire
-// and Go genuinely differ is [TypeInfo], which decodes itself.
+// These types are decoded straight out of the engine's document, which is why
+// they carry JSON tags instead of being copied out of a hidden mirror of
+// themselves. The reflect envelope's shape *is* the shape a Go caller wants,
+// key for key, so a mirror would be forty fields of pure transcription and
+// forty chances to misspell one. The single place the wire and Go genuinely
+// differ is [TypeInfo], which decodes itself. ([Edit] and [Reference] are
+// tagged for the same reason; [Diagnostic] is mirrored because its wire shape
+// is not the shape a caller wants.)
 //
 // Two conventions run through all of it:
 //
@@ -275,21 +300,6 @@ const (
 	TextureDepthMultisampled TextureKind = "depth_multisampled"
 	TextureExternal          TextureKind = "external"
 )
-
-// A StableID names a symbol in a way that survives reparsing, such as
-// "v1:fn:main/block#0/let:y". It is what the refactor operations take instead
-// of a byte offset, which moves the moment anyone edits the file.
-type StableID string
-
-// A Span is a half-open byte range of the original source.
-//
-// The zero Span means the engine did not record one: it omits a span it could
-// not determine, and its own test for presence is End > Start, so no real span
-// is ever zero.
-type Span struct {
-	Start int `json:"start"`
-	End   int `json:"end"`
-}
 
 // A Reflection is everything the engine can say about a shader's interface:
 // what it binds, what it declares and how it is laid out in memory.

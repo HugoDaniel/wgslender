@@ -36,8 +36,35 @@
 // [Reflection.Errors] — and the call itself succeeds. A returned error means
 // the call could not be made or could not be trusted.
 //
-// [Compile] is the one exception, and it is an exception because it has
-// nothing to report: every other function still has an answer for a shader it
+// The exceptions are the calls that have nothing to report when they fail.
+// [Compile] is one: every other function still has an answer for a shader it
 // could not read, while a compiler with nothing to compile has no module to
-// hand back. Source that does not parse is a *[CompileError] there.
+// hand back, so source that does not parse is a *[CompileError] there. The
+// refactor operations are the rest — a rename that cannot be performed has no
+// edits, and an empty edit list would say the opposite, that there was nothing
+// to do. Their reasons are sentinels: [ErrSymbolNotFound],
+// [ErrInvalidIdentifier], [ErrNotRemovable] and their kin.
+//
+// # Refactoring
+//
+// Twelve operations work on a shader's symbols rather than on its text as a
+// whole: finding where a symbol is mentioned, renaming it, retyping it,
+// removing it.
+//
+// Address the symbol either by a byte offset into the source or by a
+// [StableID]. An offset is what a cursor gives you, and it stops being right
+// the moment anything before it changes; a StableID names the symbol itself
+// and survives edits elsewhere in the file. [StableIDAtOffset] turns one into
+// the other, and [Reflect] hands out IDs for everything it describes.
+//
+// The ones that change something come in pairs. The plain form — [Rename],
+// [ChangeType], [RemoveDeclaration] — returns [Edit] values and changes
+// nothing, which is what an editor wants, having its own buffer to splice into
+// and its own undo stack to record. The Apply form does the splicing and hands
+// back the rewritten source, which is what a script wants.
+//
+// None of them type-check what they produce. A rename can collide, a removed
+// function leaves its callers behind, and a replacement type is spliced in
+// verbatim whether or not it is a type. Run [Validate] on the result when that
+// matters.
 package wgslender

@@ -33,9 +33,43 @@ var invalidWGSL string
 //go:embed testdata/warning.wgsl
 var warningWGSL string
 
-// unparseableWGSL is not WGSL at all — the parser gives up on it, which is the
-// only input class that makes minification a no-op.
+// unparseableWGSL is not WGSL at all — the parser reports errors on it, which
+// is the only input class that makes minification a no-op.
 const unparseableWGSL = "fn main( { let ; }"
+
+// unrecoverableWGSL is the narrower thing the refactor family cares about:
+// source the parser abandons rather than one it merely complains about.
+//
+// The two are not the same input class, which is easy to miss. The parser
+// recovers from unparseableWGSL well enough to hand back a module, so a
+// refactor over it answers normally — no symbol at that offset — instead of
+// reporting [wgslender.ErrParse]. A dangling `if` is one of the shapes it
+// cannot rebuild anything from, and that is what makes the parse-error branch
+// reachable at all.
+const unrecoverableWGSL = "fn f() { if }"
+
+// annotatedWGSL carries a let with an explicit type, which is what ChangeType
+// needs and every binding in the other fixtures lacks.
+const annotatedWGSL = `@compute @workgroup_size(1)
+fn main() {
+    let x: f32 = 1.0;
+}
+`
+
+// multibyteWGSL puts a two-byte rune inside an identifier and four-byte runes
+// before it, so a byte offset and a rune offset disagree in both directions:
+// where the declaration starts, and how long its name is.
+const multibyteWGSL = `// 🎨🎨 a comment before anything else
+fn héllo(x: f32) -> f32 {
+    return x * 2.0;
+}
+
+@compute @workgroup_size(1)
+fn main() {
+    let v = héllo(1.0);
+    _ = v;
+}
+`
 
 // layoutWGSL is the npm suite's own reflection shader (packages/js-npm/test/
 // _suite.cjs), kept here verbatim because the layout number it pins — 24 bytes

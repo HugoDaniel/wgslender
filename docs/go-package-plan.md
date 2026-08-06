@@ -10,7 +10,7 @@ Also creates `cmd/wgslgen`, a `go:generate`-able codegen tool — the Go analog 
 Rust `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` macros (Go has no
 compile-time macros; `go generate` + golden files is the idiom).
 
-**Status:** executing, block-per-session. **Blocks 0, 1, 2, 3 and 4 landed** —
+**Status:** executing, block-per-session. **Blocks 0 through 5 landed** —
 `git log -- packages/go` is the authority on what is actually done, not this line.
 Originally verified against `main @ 9726727`
 on 2026-08-06 (macOS arm64, go 1.26.5, zig 0.16.0) by running a throwaway wazero
@@ -354,6 +354,32 @@ Response envelopes:
   | `"id too long"` | **not reachable** — a 5000-char id returns `"not found"`, not this |
 
   So Block 5's unit table for the last two rows is load-bearing, exactly as planned.
+
+  **Amended in Block 5 — three of those rows are wrong.** Re-probed op by op
+  through the live wasm; **all seven strings are reachable from integration**, so
+  the unit table is not load-bearing for coverage (it is still worth having for
+  the *unknown*-reason branch, which no shader can produce). Corrections:
+
+  | string | actually |
+  |---|---|
+  | `"parse error"` | **not** "any op on unparseable source". The parser recovers from most bad input and hands back a module, so a refactor over `"fn main( { let ; }"` answers normally — `symbol not found`, or an empty reference list. This branch needs source `Parser.parse` *abandons*, i.e. `analyzeOrNull` returning `module == null`: `"fn f() { if }"` does it, as does ~200-deep block nesting. All twelve ops then report it. |
+  | `"not a removable declaration"` | **reachable** — a struct member (`v1:struct:S/member:x`) or a function parameter (`v1:fn:f/param:x`). Fns, vars, aliases, overrides, entry points and local `let`s all remove cleanly, which is what the original probe happened to try. |
+  | `"id too long"` | **reachable** — from the *producing* side, not the lookup side. `stableIdAtOffset` on a source with a ~2000-char identifier returns it (1000 chars still fits). The original probe only tried *looking up* a long id, where the answer is `"not found"`. |
+
+  Also found while probing, and pinned by the Go tests:
+
+  - `include_declaration` is `!= 0`, so `Declarations` must be converted
+    explicitly — `WithDeclaration` is the zero value and maps to **1**.
+  - `stableIdAtOffset` does **not** resolve struct members (returns `null` at the
+    member's own offset), yet the member ID that `Reflect` hands out works in
+    `locateStableId`, `locateType`, `renameByStableId` and `changeType`.
+    `locateDeclaration` is the other half of the asymmetry: it answers
+    `"not found"` for a member.
+  - `changeType` on a **function** id retargets its *return type*.
+  - `Edits.isValidWgslIdentifier` (`src/Edits.zig:59`) is **ASCII-only**, where the
+    lexer accepts any XID_Start rune. So the engine will find and rename `héllo`
+    but refuses to rename anything *to* `wörld` — a limit of the renamer, not of
+    WGSL. Pinned by `TestRenameRefusesNonASCIINames`.
 
 ### Sibling API surfaces to mirror
 
@@ -838,6 +864,33 @@ end-to-end assertion available to any later block that wants one.
    already exists — Block 1 created it for `ErrInvalidUTF8` and the two
    re-exported ABI sentinels).
 4. Commit: `feat(packages/go): refactor and stable-id operations`.
+
+**Executed.** The provocation table above was wrong in three places; the
+amendment there is the record. Beyond it:
+
+- **`ByteRange` was not added.** `Span` already existed for reflection, means
+  exactly the same thing, and its JSON tags already match the locate wire
+  (`{"start","end"}`) — a second identical type would have been a second concept
+  for one idea. `Edit` and `Reference` **embed** it, so `e.Start` and `e.Span`
+  both work and the flat wire decodes straight in. `Span` and `StableID` moved
+  out of the reflection section of `types.go` into a shared one.
+- **One sentinel more than the plan listed: `ErrInvalidOffset`.** The plan says
+  offsets are "validated >= 0" without saying what that failure is. It covers a
+  negative offset and one beyond u32 — the two an offset into a Go string could
+  not have produced. An offset merely *past the end* is deliberately **not** one:
+  the engine answers "nothing there", which is true and is what an editor probing
+  blindly wants.
+- The `"not found"` reason is handled before the sentinel map rather than in it,
+  so the map stays a map of *failures*. `refactor_internal_test.go` pins both
+  halves: `notFoundReason` maps to no sentinel, and an unrecognised reason stays
+  an error carrying the engine's words.
+- Five mutations verified the pins bite (each restored, restoration diffed):
+  passing `Declarations` through as a raw number (8 failures), routing absence
+  through the failure map (7), letting an apply failure hand back the echoed
+  original (5), dropping an unrecognised reason (2), truncating an unsendable
+  offset (3). One of them first reported *zero* failures because the mutation did
+  not compile and `grep -c '--- FAIL'` saw nothing — the false-green trap; check
+  the build, not just the grep.
 
 ### Block 6 — concurrency + performance ([PERF])
 
