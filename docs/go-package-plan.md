@@ -10,7 +10,7 @@ Also creates `cmd/wgslgen`, a `go:generate`-able codegen tool — the Go analog 
 Rust `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` macros (Go has no
 compile-time macros; `go generate` + golden files is the idiom).
 
-**Status:** executing, block-per-session. **Blocks 0, 1 and 2 landed** —
+**Status:** executing, block-per-session. **Blocks 0, 1, 2 and 3 landed** —
 `git log -- packages/go` is the authority on what is actually done, not this line.
 Originally verified against `main @ 9726727`
 on 2026-08-06 (macOS arm64, go 1.26.5, zig 0.16.0) by running a throwaway wazero
@@ -282,6 +282,40 @@ Response envelopes:
   TypeInfo kinds: scalar, vec, mat, array, struct, atomic, sampler, texture, ptr. A
   struct's TypeInfo is just `{kind:"struct",name,size,alignment}` — the fields live in
   `layout` / `structs`.
+
+  Found while *executing* Block 3, by reading `src/reflect/Json.zig` end to end and
+  re-probing the live wasm. The inventory above was written from a partial dump and
+  is short in six places; all six are now decoded and pinned:
+
+  - **`format` carries two different JSON types under one key.** On vec / mat / array
+    / atomic / ptr it is a nested TypeInfo *object*; on texture it is a format-name
+    *string* (`"rgba8unorm"`). A single flat struct with `Format *TypeInfo` fails to
+    decode any storage texture. Go dispatches on `kind` in `TypeInfo.UnmarshalJSON`
+    and lands the two in `Format` and `TexFormat`. **This is the only genuine
+    wire↔Go shape mismatch in the whole reflect envelope** — which is why Go decodes
+    reflection straight into the public types (json tags) instead of through the
+    mirror-struct pattern Blocks 1–2 use.
+  - **Binding has an optional `relations[]`** — the samplers a texture is used with,
+    and back again. Not in the inventory at all.
+  - **A struct field has an optional `layout`** (the nested StructLayout) when the
+    member is itself a struct, so StructLayout is mutually recursive with Field.
+  - **ArrayInfo has an optional `elementLayout`** (struct elements) **and an optional
+    `array`** (the next dimension in) — it is recursive, and `depth` counts
+    outward-in.
+  - **Function has optional `nameMapped` and `stableId`**; an IO entry has an
+    optional `interpolate:{type[,sampling]}`.
+  - **`declSpan`/`typeSpan` are omitted, not nulled**, when the engine has none — its
+    own presence test is `end > start` (`SpanInfo.present`), so a zero `Span` is
+    exactly the absent one and no real span can be zero.
+
+  Two corrections to Block 3's own step list, both confirmed against the live wasm:
+
+  - ✗ Step 3 says "`NameMapped` keeps the original". **It is the other way round**:
+    `name` is what the author wrote and `nameMapped` is what minification produced
+    (`tex` → `d`). Pinned by a test that asserts `NameMapped` appears in `.Code` as a
+    whole identifier and `Name` does not.
+  - the `layout.size === 24` npm pin and demoWGSL's `Params` (16) are both now in one
+    table, keyed by fixture, so crossing them cannot pass.
 - refactor: edits `{"edits":[{"start","end","newText"}][,"error"]}`; apply
   `{"ok","source","edits"[,"error"]}` (failure echoes the original source);
   references `{"references":[{"start","end","isWrite"}][,"error"]}` (no symbol ⇒

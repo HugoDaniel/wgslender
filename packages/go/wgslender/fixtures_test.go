@@ -37,6 +37,60 @@ var warningWGSL string
 // only input class that makes minification a no-op.
 const unparseableWGSL = "fn main( { let ; }"
 
+// layoutWGSL is the npm suite's own reflection shader (packages/js-npm/test/
+// _suite.cjs), kept here verbatim because the layout number it pins — 24 bytes
+// — belongs to *this* struct and not to demoWGSL's Params, which lays out to
+// 16. Reflection numbers are only meaningful next to the source that produced
+// them, so the two live in different fixtures on purpose.
+const layoutWGSL = `struct Inputs {
+    time: f32,
+    resolution: vec2<u32>,
+    brightness: f32,
+}
+
+@group(0) @binding(0) var<uniform> inputs: Inputs;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) id: vec3<u32>) {
+    let t = inputs.time * inputs.brightness;
+    _ = t;
+    _ = id;
+}
+`
+
+// overridesWGSL carries everything demoWGSL and renderWGSL between them do not:
+// pipeline-overridable constants with and without an @id, a type alias, a
+// storage texture (whose TypeInfo names a format as a *string* where every
+// other kind names one as a nested TypeInfo), a fixed-size array, and a
+// workgroup size that depends on an override.
+const overridesWGSL = `override grid: u32 = 8u;
+@id(42) override scale: f32 = 1.5;
+alias Index = u32;
+
+@group(0) @binding(0) var out_tex: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(1) var<storage, read> idx: array<Index, 4>;
+
+@compute @workgroup_size(grid)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+    textureStore(out_tex, id.xy, vec4f(scale * f32(idx[0])));
+}
+`
+
+// holesWGSL leaves gaps in the bind-group grid: group 0 has bindings 0 and 2
+// but no 1, and group 2 exists while group 1 does not. Anything that models
+// bind groups as dense arrays gets this wrong.
+const holesWGSL = `@group(0) @binding(0) var<uniform> a: f32;
+@group(0) @binding(2) var<uniform> b: f32;
+@group(2) @binding(5) var<uniform> c: f32;
+
+@compute @workgroup_size(1)
+fn main() {
+    _ = a;
+    _ = b;
+    _ = c;
+}
+`
+
 // unusedWGSL is valid and warning-free, but declares a helper nothing ever
 // calls, so no-unused-vars has something to find.
 const unusedWGSL = `@group(0) @binding(0) var<storage, read_write> counters: array<u32>;

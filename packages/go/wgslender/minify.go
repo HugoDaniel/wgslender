@@ -8,8 +8,11 @@ import (
 	"git.hugodaniel.com/hugo/wgslender/packages/go/internal/wasmabi"
 )
 
-// minifyFn is the guest export behind [Minify].
-const minifyFn = "wgslender_minify_json"
+// The guest exports behind [Minify] and [MinifyAndReflect].
+const (
+	minifyFn        = "wgslender_minify_json"
+	minifyReflectFn = "wgslender_minify_and_reflect"
+)
 
 // A MinifyResult is the outcome of minifying one shader.
 //
@@ -64,6 +67,49 @@ func Minify(ctx context.Context, source string, opts *MinifyOptions) (MinifyResu
 		return MinifyResult{}, fmt.Errorf("wgslender: decoding the minify envelope: %w", err)
 	}
 	return w.result(), nil
+}
+
+// A MinifiedShader is what [MinifyAndReflect] produced: the minified shader,
+// and a description of the interface it presents.
+//
+// [MinifyResult] is embedded, so Code, Errors and the sizes are reached
+// directly.
+type MinifiedShader struct {
+	MinifyResult
+	// Reflection describes the *original* source, with each name's minified
+	// form alongside it in the NameMapped fields. That pairing is the reason
+	// to call this instead of [Minify] and [Reflect] separately: it is what
+	// lets a host look up the buffer layout it knows by its author's name and
+	// bind it under the name that survived.
+	Reflection Reflection
+}
+
+// MinifyAndReflect minifies a shader and reflects over it in one pass. A nil
+// opts means wgslender's defaults; see [MinifyOptions].
+//
+// The two halves report parse failures independently — [MinifyResult.Errors]
+// and [Reflection.Errors] — and say the same thing when they do.
+func MinifyAndReflect(ctx context.Context, source string, opts *MinifyOptions) (MinifiedShader, error) {
+	if err := checkUTF8("source", source); err != nil {
+		return MinifiedShader{}, err
+	}
+	encoded, err := opts.encode()
+	if err != nil {
+		return MinifiedShader{}, err
+	}
+	res, err := wasmabi.Call(ctx, minifyReflectFn, wasmabi.PackLenPrefixed,
+		wasmabi.Buffer([]byte(source)), wasmabi.Buffer(encoded))
+	if err != nil {
+		return MinifiedShader{}, err
+	}
+	var w struct {
+		Minify  wireMinify `json:"minify"`
+		Reflect Reflection `json:"reflect"`
+	}
+	if err := json.Unmarshal(res.Payloads[0], &w); err != nil {
+		return MinifiedShader{}, fmt.Errorf("wgslender: decoding the minify-and-reflect envelope: %w", err)
+	}
+	return MinifiedShader{MinifyResult: w.Minify.result(), Reflection: w.Reflect}, nil
 }
 
 // wireMinify is the engine's minify envelope, written by minifyJsonToJson in
