@@ -342,6 +342,28 @@ test "no-dead-code: suppresses body locals inside an unused function" {
     }
 }
 
+test "no-dead-code: a referenced-but-dead function does not suppress its locals" {
+    // The discriminating case for the suppression, and the reason it is
+    // expressed as "would no-unused-vars report this function?" rather than
+    // as its own hand-rolled test: `helper` is referenced by `outer`, so
+    // W0001 never fires on it, so there is no single diagnostic for the
+    // locals to collapse into. They must still be reported.
+    var r = try runLint(
+        \\@compute @workgroup_size(1) fn main() {}
+        \\fn helper() -> f32 {
+        \\  let scratch = 1.0;
+        \\  return scratch;
+        \\}
+        \\fn outer() -> f32 { return helper(); }
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0001", "outer"));
+    if (!hasCodeContaining(r, "W0002", "scratch")) {
+        dump("locals of a referenced-but-dead fn should still get W0002", r);
+        return error.TestUnexpectedResult;
+    }
+}
+
 test "no-dead-code: still fires on transitively-dead module decls" {
     // `helper` is referenced (use_count > 0) and unreachable (is_live ==
     // false) — exactly W0002's territory. The only decl that could

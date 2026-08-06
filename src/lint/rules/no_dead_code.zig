@@ -12,6 +12,12 @@
 //! can never diverge on what counts as dead or how it reads. This rule
 //! layers one extra suppression on top (unused-function body locals, see
 //! below); the LSP hint pass reports every match.
+//!
+//! That suppression asks `AnalysisResult.isUnusedReportable` — the same
+//! predicate `no-unused-vars` reports from — instead of re-deriving "is
+//! this function unused". It used to re-derive it, which meant two copies
+//! of one rule's definition, and the copy tested two flags that a function
+//! symbol never carries.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -56,13 +62,14 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
         // needs the one diagnostic on the function name. Module-scope
         // dead chains still fire — those pinpoint distinct dead decls
         // worth cleaning up individually.
+        //
+        // Ask the shared predicate rather than re-deriving it. The
+        // question here is precisely "will no-unused-vars report this
+        // function?", and no_unused_vars.zig answers it with this same
+        // call — so the two cannot drift into disagreeing about which
+        // diagnostic the user gets.
         if (enclosing_fn.get(@intCast(i))) |fn_idx| {
-            const fn_sym = module.symbols.items[fn_idx];
-            if (ctx.useCount(fn_idx) == 0 and
-                !fn_sym.flags.is_entry_point and
-                !fn_sym.flags.is_api_facing and
-                !fn_sym.flags.is_external_binding and
-                fn_sym.original_name.len > 0) continue;
+            if (ctx.isUnusedReportable(fn_idx)) continue;
         }
 
         const name_len: u32 = @intCast(sym.original_name.len);
