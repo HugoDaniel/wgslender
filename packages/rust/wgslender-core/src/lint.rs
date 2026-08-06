@@ -72,6 +72,22 @@ impl Serialize for Pack {
 ///
 /// The `*With` variants carry that rule's own options object, which the wire
 /// spells as a `["warn", { … }]` pair.
+///
+/// [`Value`] is `serde_json::Value` re-exported, but depending on this crate
+/// does not give you `serde_json` itself — so `json!` and `Map` are out of
+/// reach and [`FromStr`](core::str::FromStr) is the way to build one:
+///
+/// ```
+/// use core::str::FromStr as _;
+/// use wgslender_core::{LintConfig, RuleSetting, Value};
+///
+/// let config = LintConfig::default().rule(
+///     "max-params",
+///     RuleSetting::WarnWith(Value::from_str(r#"{"max":2}"#)?),
+/// );
+/// # let _ = config;
+/// # Ok::<(), wgslender_core::Error>(())
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RuleSetting {
