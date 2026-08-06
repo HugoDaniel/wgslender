@@ -8,6 +8,11 @@ package wgslender_test
 // them worth running: `go test` checks the output against what is written here,
 // so an engine that starts answering differently fails the package's own tests
 // instead of quietly changing what the documentation claims.
+//
+// One rule keeps that true: the Output comment must be a comment block of its
+// own, blank line before it, `// Output:` first. Commentary sharing the block
+// pushes the marker off the front, and go/doc then reads the whole block as
+// prose — the example still compiles, and silently never runs again.
 
 import (
 	"context"
@@ -55,7 +60,7 @@ func ExampleMinify() {
 	// The @group/@binding variables keep their names: the host binds against
 	// them, so renaming them would break the pipeline that uses this shader.
 	// Everything else is fair game.
-	//
+
 	// Output:
 	// 497 bytes -> 375
 	// struct f{resolution:vec2f,time:f32}@group(0) @binding(0) var<uniform> params:f;@group(1) @binding(2) var<storage,read_write> data:array<vec4f>;fn c(d:vec3f)->f32{return dot(d,vec3f(.2126,.7152,.0722));}@compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) b:vec3u){let e=vec2f(b.xy)/params.resolution;let a=c(vec3f(e,params.time));data[b.x]=vec4f(a,a,a,1.);}
@@ -80,7 +85,7 @@ func ExampleMinify_options() {
 	// luminance kept its name, and the short names restart in every scope —
 	// both functions open with a — which is ScopeLocalRename making the bytes
 	// repeat for the compressor.
-	//
+
 	// Output:
 	// struct e{resolution:vec2f,time:f32}@group(0) @binding(0) var<uniform> params:e;@group(1) @binding(2) var<storage,read_write> data:array<vec4f>;fn luminance(a:vec3f)->f32{return dot(a,vec3f(.2126,.7152,.0722));}@compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) a:vec3u){let b=vec2f(a.xy)/params.resolution;let c=luminance(vec3f(b,params.time));data[a.x]=vec4f(c,c,c,1.);}
 }
@@ -234,7 +239,7 @@ func ExampleFindReferences() {
 		fmt.Printf("%s at %d..%d (%s)\n", exampleShader[r.Start:r.End], r.Start, r.End, kind)
 	}
 	// The declaration comes first and is the write; the call site is the read.
-	//
+
 	// Output:
 	// luminance at 179..188 (write)
 	// luminance at 416..425 (read)
@@ -298,7 +303,7 @@ func ExampleStableIDAtOffset() {
 	fmt.Printf("%s at %d..%d\n", edited[span.Start:span.End], span.Start, span.End)
 	// The span is the FindReferences declaration span from the example above,
 	// moved by exactly the length of the comment.
-	//
+
 	// Output:
 	// v1:fn:luminance
 	// luminance at 203..212
