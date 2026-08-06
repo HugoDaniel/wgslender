@@ -40,7 +40,7 @@ func ReflectJSON(ctx context.Context, source string) ([]byte, error) {
 	if err := checkUTF8("source", source); err != nil {
 		return nil, err
 	}
-	res, err := wasmabi.Call(ctx, reflectFn, wasmabi.PackLenPrefixed, wasmabi.Buffer([]byte(source)))
+	res, err := wasmabi.Call(ctx, reflectFn, wasmabi.PackLenPrefixed, wasmabi.Text(source))
 	if err != nil {
 		return nil, err
 	}

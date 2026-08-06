@@ -58,7 +58,7 @@ func Minify(ctx context.Context, source string, opts *MinifyOptions) (MinifyResu
 		return MinifyResult{}, err
 	}
 	res, err := wasmabi.Call(ctx, minifyFn, wasmabi.PackLenPrefixed,
-		wasmabi.Buffer([]byte(source)), wasmabi.Buffer(encoded))
+		wasmabi.Text(source), wasmabi.Buffer(encoded))
 	if err != nil {
 		return MinifyResult{}, err
 	}
@@ -98,7 +98,7 @@ func MinifyAndReflect(ctx context.Context, source string, opts *MinifyOptions) (
 		return MinifiedShader{}, err
 	}
 	res, err := wasmabi.Call(ctx, minifyReflectFn, wasmabi.PackLenPrefixed,
-		wasmabi.Buffer([]byte(source)), wasmabi.Buffer(encoded))
+		wasmabi.Text(source), wasmabi.Buffer(encoded))
 	if err != nil {
 		return MinifiedShader{}, err
 	}

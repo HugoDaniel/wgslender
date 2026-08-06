@@ -273,33 +273,45 @@ func TestGuestSurface(t *testing.T) {
 
 // TestWriteBufferAllocatesOneByteForEmpty exercises the rule against the real
 // guest allocator: an empty input still needs a real, non-null allocation,
-// because a null pointer is how the guest reports failure.
-func TestWriteBufferAllocatesOneByteForEmpty(t *testing.T) {
-	got, err := exec(t.Context(), func(ctx context.Context, inst *instance) (region, error) {
-		alloc, err := inst.fn(allocFn)
-		if err != nil {
-			return region{}, err
-		}
-		dealloc, err := inst.fn(deallocFn)
-		if err != nil {
-			return region{}, err
-		}
-		r, err := writeBuffer(ctx, inst, alloc, nil)
-		if err != nil {
-			return region{}, err
-		}
-		// Freeing with r.size is the whole point: give the allocator back the
-		// length it handed out, not the zero length of the input.
-		return r, freeRegions(ctx, dealloc, r)
-	})
-	if err != nil {
-		t.Fatalf("writeBuffer(nil): %v", err)
-	}
-	if got.ptr == 0 {
-		t.Error("writeBuffer(nil) returned a null pointer, which the guest uses to signal failure")
-	}
-	if got.size != 1 {
-		t.Errorf("writeBuffer(nil).size = %d, want 1", got.size)
+// because a null pointer is how the guest reports failure. Both empty shapes —
+// a nil Buffer and an empty Text — must follow the rule.
+func TestWriteArgAllocatesOneByteForEmpty(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		arg  Arg
+	}{
+		{"nil buffer", Buffer(nil)},
+		{"empty text", Text("")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := exec(t.Context(), func(ctx context.Context, inst *instance) (region, error) {
+				alloc, err := inst.fn(allocFn)
+				if err != nil {
+					return region{}, err
+				}
+				dealloc, err := inst.fn(deallocFn)
+				if err != nil {
+					return region{}, err
+				}
+				r, err := writeArg(ctx, inst, alloc, tc.arg)
+				if err != nil {
+					return region{}, err
+				}
+				// Freeing with r.size is the whole point: give the allocator
+				// back the length it handed out, not the zero length of the
+				// input.
+				return r, freeRegions(ctx, dealloc, r)
+			})
+			if err != nil {
+				t.Fatalf("writeArg: %v", err)
+			}
+			if got.ptr == 0 {
+				t.Error("writeArg returned a null pointer, which the guest uses to signal failure")
+			}
+			if got.size != 1 {
+				t.Errorf("writeArg size = %d, want 1", got.size)
+			}
+		})
 	}
 }
 

@@ -166,7 +166,7 @@ func FindReferences(ctx context.Context, source string, offset int, d Declaratio
 		return nil, err
 	}
 	payload, err := refactorCall(ctx, findReferencesFn,
-		wasmabi.Buffer([]byte(source)), at, wasmabi.Scalar(d.include()))
+		wasmabi.Text(source), at, wasmabi.Scalar(d.include()))
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ func Rename(ctx context.Context, source string, offset int, newName string) ([]E
 		return nil, err
 	}
 	return editsFrom(ctx, renameFn,
-		wasmabi.Buffer([]byte(source)), at, wasmabi.Buffer([]byte(newName)))
+		wasmabi.Text(source), at, wasmabi.Text(newName))
 }
 
 // RenameApply renames the symbol at a byte offset and returns the rewritten
@@ -228,7 +228,7 @@ func RenameApply(ctx context.Context, source string, offset int, newName string)
 		return Applied{}, err
 	}
 	return appliedFrom(ctx, renameApplyFn,
-		wasmabi.Buffer([]byte(source)), at, wasmabi.Buffer([]byte(newName)))
+		wasmabi.Text(source), at, wasmabi.Text(newName))
 }
 
 // StableIDAtOffset names the symbol at a byte offset in a way that survives
@@ -248,7 +248,7 @@ func StableIDAtOffset(ctx context.Context, source string, offset int) (StableID,
 	if err != nil {
 		return "", false, err
 	}
-	payload, err := refactorCall(ctx, stableIDAtOffsetFn, wasmabi.Buffer([]byte(source)), at)
+	payload, err := refactorCall(ctx, stableIDAtOffsetFn, wasmabi.Text(source), at)
 	if err != nil {
 		return "", false, err
 	}
@@ -308,7 +308,7 @@ func locate(ctx context.Context, fn, source string, id StableID) (Span, bool, er
 	if err := checkUTF8("stable id", string(id)); err != nil {
 		return Span{}, false, err
 	}
-	payload, err := refactorCall(ctx, fn, wasmabi.Buffer([]byte(source)), wasmabi.Buffer([]byte(id)))
+	payload, err := refactorCall(ctx, fn, wasmabi.Text(source), wasmabi.Text(string(id)))
 	if err != nil {
 		return Span{}, false, err
 	}
@@ -345,7 +345,7 @@ func RenameByID(ctx context.Context, source string, id StableID, newName string)
 	if err := checkUTF8("new name", newName); err != nil {
 		return nil, err
 	}
-	return editsByID(ctx, renameByIDFn, source, id, wasmabi.Buffer([]byte(newName)))
+	return editsByID(ctx, renameByIDFn, source, id, wasmabi.Text(newName))
 }
 
 // RemoveDeclaration produces the single edit that deletes a declaration.
@@ -380,7 +380,7 @@ func ChangeType(ctx context.Context, source string, id StableID, newType string)
 	if err := checkUTF8("new type", newType); err != nil {
 		return nil, err
 	}
-	return editsByID(ctx, changeTypeFn, source, id, wasmabi.Buffer([]byte(newType)))
+	return editsByID(ctx, changeTypeFn, source, id, wasmabi.Text(newType))
 }
 
 // ChangeTypeApply replaces a symbol's type annotation and returns the
@@ -390,7 +390,7 @@ func ChangeTypeApply(ctx context.Context, source string, id StableID, newType st
 	if err := checkUTF8("new type", newType); err != nil {
 		return Applied{}, err
 	}
-	return appliedByID(ctx, changeTypeApplyFn, source, id, wasmabi.Buffer([]byte(newType)))
+	return appliedByID(ctx, changeTypeApplyFn, source, id, wasmabi.Text(newType))
 }
 
 // editsByID and appliedByID are the shared bodies of the ID-addressed
@@ -421,7 +421,7 @@ func idArgs(source string, id StableID, rest []wasmabi.Arg) ([]wasmabi.Arg, erro
 		return nil, err
 	}
 	args := make([]wasmabi.Arg, 0, 2+len(rest))
-	args = append(args, wasmabi.Buffer([]byte(source)), wasmabi.Buffer([]byte(id)))
+	args = append(args, wasmabi.Text(source), wasmabi.Text(string(id)))
 	return append(args, rest...), nil
 }
 

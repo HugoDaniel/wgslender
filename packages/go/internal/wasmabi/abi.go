@@ -272,6 +272,9 @@ const (
 	// KindBuffer is a byte slice, which the guest receives as two i32s: a
 	// pointer into linear memory and a length.
 	KindBuffer
+	// KindText is a string, passed exactly like KindBuffer but written into
+	// guest memory straight from the string's own bytes.
+	KindText
 )
 
 // An Arg is one entry in a guest call's argument list.
@@ -279,6 +282,7 @@ type Arg struct {
 	kind   ArgKind
 	scalar uint32
 	buf    []byte
+	str    string
 }
 
 // Scalar returns an argument passed to the guest verbatim as one i32.
@@ -288,6 +292,19 @@ func Scalar(v uint32) Arg { return Arg{kind: KindScalar, scalar: v} }
 // the call and freed after it. It fills two of the guest's i32 parameters,
 // pointer then length.
 func Buffer(b []byte) Arg { return Arg{kind: KindBuffer, buf: b} }
+
+// Text is [Buffer] for a string. Converting the string to a byte slice first
+// would copy it once on the host only for the guest copy to happen anyway;
+// this writes the guest copy straight from the string.
+func Text(s string) Arg { return Arg{kind: KindText, str: s} }
+
+// dataLen is the byte length the guest will be told about.
+func (a Arg) dataLen() int {
+	if a.kind == KindText {
+		return len(a.str)
+	}
+	return len(a.buf)
+}
 
 // region is one guest allocation, recorded with the length it was made with —
 // which is the length dealloc must be given back, not the length of whatever
@@ -308,10 +325,10 @@ func Call(ctx context.Context, fn string, l Layout, args ...Arg) (Result, error)
 	// costs nothing more than an error — in particular, so it does not travel
 	// through exec and retire a perfectly healthy instance.
 	for _, arg := range args {
-		if arg.kind != KindBuffer {
+		if arg.kind == KindScalar {
 			continue
 		}
-		if _, err := bufferSize(len(arg.buf)); err != nil {
+		if _, err := bufferSize(arg.dataLen()); err != nil {
 			return Result{}, err
 		}
 	}
@@ -344,12 +361,12 @@ func invoke(ctx context.Context, inst *instance, fn string, l Layout, args []Arg
 			params = append(params, uint64(arg.scalar))
 			continue
 		}
-		r, err := writeBuffer(ctx, inst, alloc, arg.buf)
+		r, err := writeArg(ctx, inst, alloc, arg)
 		if err != nil {
 			return Result{}, err
 		}
 		inputs = append(inputs, r)
-		params = append(params, uint64(r.ptr), uint64(len(arg.buf)))
+		params = append(params, uint64(r.ptr), uint64(arg.dataLen()))
 	}
 
 	ptr, err := call1(ctx, target, fn, params...)
@@ -376,18 +393,19 @@ func invoke(ctx context.Context, inst *instance, fn string, l Layout, args []Arg
 	return res, nil
 }
 
-// writeBuffer copies b into a fresh guest allocation and returns the region to
-// free afterwards.
+// writeArg copies a Buffer or Text argument into a fresh guest allocation and
+// returns the region to free afterwards.
 //
-// An empty slice still allocates one byte. Zig's allocator may return any
+// Empty data still allocates one byte. Zig's allocator may return any
 // pointer at all for a zero-length request — including 0, which is the value
 // this ABI reserves for "allocation failed" — so asking for zero bytes risks an
 // answer the host cannot tell from an error. Asking for one byte cannot. The
 // length passed to the guest stays 0; the length passed to dealloc must be the
 // 1 that was allocated. The npm package does the same (_writeString in
 // packages/js-npm/lib/_core.cjs).
-func writeBuffer(ctx context.Context, inst *instance, alloc api.Function, b []byte) (region, error) {
-	size, err := bufferSize(len(b))
+func writeArg(ctx context.Context, inst *instance, alloc api.Function, arg Arg) (region, error) {
+	n := arg.dataLen()
+	size, err := bufferSize(n)
 	if err != nil {
 		return region{}, err
 	}
@@ -401,8 +419,16 @@ func writeBuffer(ctx context.Context, inst *instance, alloc api.Function, b []by
 	if ptr == 0 {
 		return region{}, fmt.Errorf("%w: allocating %d guest bytes", ErrInternal, size)
 	}
-	if len(b) > 0 && !inst.mod.Memory().Write(ptr, b) {
-		return region{}, fmt.Errorf("wgslender: writing %d bytes at %#x is out of range", len(b), ptr)
+	if n > 0 {
+		ok := false
+		if arg.kind == KindText {
+			ok = inst.mod.Memory().WriteString(ptr, arg.str)
+		} else {
+			ok = inst.mod.Memory().Write(ptr, arg.buf)
+		}
+		if !ok {
+			return region{}, fmt.Errorf("wgslender: writing %d bytes at %#x is out of range", n, ptr)
+		}
 	}
 	return region{ptr: ptr, size: size}, nil
 }

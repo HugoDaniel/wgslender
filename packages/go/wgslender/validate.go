@@ -36,7 +36,7 @@ func Validate(ctx context.Context, source string, s Strictness) (Validation, err
 		return Validation{}, err
 	}
 	res, err := wasmabi.Call(ctx, validateFn, wasmabi.PackValidate,
-		wasmabi.Buffer([]byte(source)), wasmabi.Scalar(s.flags()))
+		wasmabi.Text(source), wasmabi.Scalar(s.flags()))
 	if err != nil {
 		return Validation{}, err
 	}

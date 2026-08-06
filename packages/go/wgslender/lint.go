@@ -93,7 +93,7 @@ func lintCall(ctx context.Context, fn string, l wasmabi.Layout, source string, c
 	if err != nil {
 		return wasmabi.Result{}, err
 	}
-	return wasmabi.Call(ctx, fn, l, wasmabi.Buffer([]byte(source)), wasmabi.Buffer(encoded))
+	return wasmabi.Call(ctx, fn, l, wasmabi.Text(source), wasmabi.Buffer(encoded))
 }
 
 // decodeLintReport assembles a report from the two counts the envelope header

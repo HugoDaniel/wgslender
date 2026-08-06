@@ -116,7 +116,7 @@ func Compile(ctx context.Context, source string, opts *MinifyOptions) (CompiledS
 		return CompiledShader{}, err
 	}
 	res, err := wasmabi.Call(ctx, compileFn, wasmabi.PackCompile,
-		wasmabi.Buffer([]byte(source)), wasmabi.Buffer(encoded))
+		wasmabi.Text(source), wasmabi.Buffer(encoded))
 	if err != nil {
 		return CompiledShader{}, err
 	}
