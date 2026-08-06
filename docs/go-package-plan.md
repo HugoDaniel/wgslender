@@ -10,7 +10,7 @@ Also creates `cmd/wgslgen`, a `go:generate`-able codegen tool — the Go analog 
 Rust `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` macros (Go has no
 compile-time macros; `go generate` + golden files is the idiom).
 
-**Status:** executing, block-per-session. **Blocks 0 through 6 landed** —
+**Status:** executing, block-per-session. **Blocks 0 through 7 landed** —
 `git log -- packages/go` is the authority on what is actually done, not this line.
 Originally verified against `main @ 9726727`
 on 2026-08-06 (macOS arm64, go 1.26.5, zig 0.16.0) by running a throwaway wazero
@@ -987,6 +987,55 @@ The `include_wgsl!` / `include_wgsl_compressed!` analog via `go:generate`.
    Generated code compiles — the golden test builds it with `go build` in a temp
    module or type-checks via `go/types`.
 3. Commit: `feat(packages/go): wgslgen embed generator`.
+
+**Executed.** The tool is `packages/go/cmd/wgslgen`, and the plan's four flags were
+not enough — reading `packages/rust/wgslender-macros/src/lib.rs` (on the unmerged
+`rust-examples` branch) settled the surface:
+
+- **The generator validates, and that is the point.** `include_wgsl!` defaults to
+  `validate = true` and fails the build on a diagnostic; a Go tool that only minified
+  would be strictly worse than its Rust sibling, because minification does not care.
+  `testdata/broken.wgsl` proves it: the validator rejects it with `E0100`, and
+  `Minify` shortens it 265 → 73 bytes reporting **no errors at all**. So `-validate`
+  (default true), `-strict`, `-keep-names`, and one flag per `MinifyOptions` boolean.
+  A shader that does not *parse* is refused either way, since the minifier hands back
+  the source verbatim and there is nothing to embed.
+- **The minify flags are tri-state, so `flag.Bool` cannot express them.** Absent means
+  "wgslender decides", which is not false; `flag.Bool` would have this tool pinning a
+  stale copy of the engine's defaults. `optBool` implements `flag.Value` over
+  `wgslender.Opt[bool]` and records only what was given. Its `String` tolerates a nil
+  target because the flag package calls it on a zero value of the type to decide
+  whether to print a default.
+- **`-var` is required rather than derived.** A name derived from the filename is one
+  every caller has to predict, and `2d-blur.wgsl` has no good answer. The error
+  suggests one instead.
+- **Warnings are reported and not fatal**, mirroring the validator's own reading;
+  `-strict` is what promotes them, and `-strict -validate=false` is refused rather
+  than resolved.
+
+The plan's "the golden test builds it with `go build` in a temp module" is what makes
+the goldens mean anything, and it needs to be `go test`: the round-trip is a run-time
+claim about `sync.OnceValue` and DEFLATE, not a typing one. The three goldens are
+written into one temp module with a generated `_test.go` asserting
+`BlurCompressed() == Blur`.
+
+Two findings worth keeping:
+
+- **A golden comparison cannot check its own golden.** `TestGeneratedCodeBuildsAndRoundTrips`
+  reads the files on disk, so it is the only thing standing behind `-update`: mutating
+  the accessor *and* regenerating the goldens leaves `TestGolden` green and that test
+  the sole failure. The two are a pair, not redundant.
+- **`format.Source` was unpinnable from the output.** The templates are written out
+  gofmt-clean, so making `formatGo` a pass-through changed nothing any golden could
+  see — the mutation survived. What it protects is a *template edit*, so the pin is
+  now a unit test on `formatGo` itself.
+
+Nine mutations, each confirmed to compile before being believed: never validating (5
+failures), `formatGo` as a pass-through (survived until the pin above existed),
+`optBool.Set` not recording (`TestGolden/named`), an accessor that does not round-trip
+with goldens regenerated (the temp-module test alone), `-o` also writing to stdout,
+dropping the `-strict`/`-validate` guard, `unexport` leaving the stream constant
+exported, warnings reported only when fatal, and a usage error exiting zero.
 
 ### Block 8 — `wgslgen -module`, examples, docs, wrap-up
 
