@@ -10,7 +10,6 @@ E0204 32 fp=32 tp=0 unk=0
 E0206 1 fp=1 tp=0 unk=0
 E0209 1 fp=1 tp=0 unk=0
 E0210 3 fp=3 tp=0 unk=0
-E0212 4 fp=4 tp=0 unk=0
 E0300 1 fp=1 tp=0 unk=0
 E0502 49 fp=5 tp=0 unk=44
 E0804 1 fp=1 tp=0 unk=0
