@@ -240,8 +240,8 @@ If types like `MyStruct` aren't being renamed:
 
 **Tint tests** (`tests/testdata/tint/`):
 - 11,952 WGSL shaders from Google's Dawn Tint project (`test/tint` sparse checkout), pinned to the dawn revision in `scripts/tint-testdata.rev`
-- Semantic-preservation test (`tests/tint_test.zig`, `zig build tint-test`) exercises all 11,952 (8,114 run; f16/subgroups/`diagnostic(...)` shaders skipped)
-- Two validator goldens produced by one walk (`tests/inference_corpus_pinning_test.zig`) over 9,399 processed shaders (2,553 excluded):
+- Semantic-preservation test (`tests/tint_test.zig`, `zig build tint-test`) exercises all 11,952 (8,604 run; f16/subgroups/`diagnostic(...)` shaders skipped)
+- Two validator goldens produced by one walk (`tests/inference_corpus_pinning_test.zig`) over 8,726 processed shaders (3,226 excluded):
   - `tests/inference/corpus_golden.txt` — per-code diagnostic histogram
   - `tests/inference/triage_golden.txt` — that histogram split by Tint's own verdict into fp/tp/unk (`tests/tint_oracle.zig` classifies each shader's sibling `.expected.wgsl`; fp = a code we emit on a shader Tint accepts = false-positive candidate)
 - Triage tool (`tools/tint_triage.zig`): `zig build tint-triage -- --code E0200 --bucket fp [--max-per-code N]` prints a `path<TAB>line:col<TAB>message` false-positive worklist; `-- --tsv report.tsv` writes a per-shader report; no args prints the summary table. Reports only; the golden test is the gate.
@@ -262,6 +262,17 @@ If types like `MyStruct` aren't being renamed:
 **No Hoisting**: Declarations must precede use in text order
 
 **No Recursion**: Functions cannot call themselves
+
+**Phony Assignment** (`_ = expr;`, §9.3): `_` is a grammar token, not an identifier —
+it lexes as `.underscore` and never becomes a `Symbol`. Modeled as its own
+`Ast.Stmt.phony` variant, NOT an `AssignStmt` with a `_` left-hand side. The RHS is a
+fully evaluated expression: it counts as a use, keeps symbols live through DCE, and
+attributes bindings to entry points. `_ = tex;` is the only way to force a resource
+into the bind-group layout when nothing reads it — never optimize it away.
+The one place `_` *does* become a symbol is a declaration-name position
+(`let _ = …`, which is invalid): the parser accepts it (`isDeclNameLike`) purely so
+`Declarations.checkReservedIdentifiers` can report E0105 at the `_` instead of
+derailing into a cascade.
 
 ## NPM Package
 

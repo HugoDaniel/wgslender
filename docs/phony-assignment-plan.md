@@ -1,7 +1,29 @@
 # Plan: phony assignment (`_ = expr;`) — parser support, and the 50 fixtures waiting on it
 
-**Status:** ready to execute · **Written:** 2026-08-06 against `main` @ `24c6f51`
+**Status:** ✅ **EXECUTED 2026-08-06**, Route A, all 8 blocks · **Written:** against `main` @ `24c6f51`
 · **Companion:** [postmortem-binding-classification.md](postmortem-binding-classification.md) §3
+
+| Block | Commit | Outcome |
+|---|---|---|
+| — | `b3d4304` | `fix(validator): E0215 on '&builtin_function'` — a vacuous test exposed en route |
+| 1 | `c92b100` | Parser accepts `_ = expr;`. New `Ast.Stmt` variant → compile errors at 17 sites |
+| 2 | `ce320a1` | RHS binds as a use (AstVisit / Dce / Minifier / MultiVisitor / CallGraph / Uniformity) |
+| 3 | `39fbba4` | Printing, minification, CST round-trip + `phony_stmt` shape pin |
+| 4 | `57dc28f` | RHS type-checked; `let _ = …` cascade 6 errors → 1; §3.C dead branch made reachable |
+| 5 | `3e2b245` | `phony_stmt` registered as a hot-path anchor; 3 `else`-fallthrough LSP walkers filled |
+| 6 | `217a46a` | Corpus goldens: **two lines removed, nothing added**. +214 tint shaders pass |
+| 7 | `8508247` | Fixture audit — the finding was a test *helper* that swallowed parse errors |
+| 8 | *(this)* | wasm rebuilt, all downstream suites green, docs updated |
+
+**Outcomes against the plan's predictions.** Route A was right: 50 fixtures valid, zero
+rewrites. The Block 6 diff the plan budgeted a session for turned out to be two removed
+lines — the four E0212s were *our* false positives, since `_ = f();` is the sanctioned
+way to consume a `@must_use` result. The plan's §3.C guess ("either make the branch
+reachable or delete it") resolved as *reachable*. What the plan did NOT predict is in
+Block 7: the vacuity it warned about was not in the fixtures but in
+`validation_test.zig`'s `runValidation` helper, which discarded `parser.errors`
+outright — so six fixtures asserted `valid` against sources with three parse errors and
+could not have failed.
 
 > **Line numbers rot.** Symbols are named where possible; re-verify any `file:line`
 > with a grep before editing against it.

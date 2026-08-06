@@ -160,16 +160,29 @@ and because each test asserts on a specific lint code that parse errors do not e
 That is luck, not design. The risk is vacuity: a test asserting *absence* (`0 W0200`)
 passes trivially if the fixture degrades enough that the rule never runs.
 
-Only the fixture added in this work was fixed. The other 50 are untouched and remain a
-standing hazard — see [phony-assignment-plan.md](phony-assignment-plan.md), which
-recommends fixing the parser rather than the fixtures, since that makes all 50 valid
-with no rewrites and closes the same gap for 737 corpus shaders.
+**RESOLVED 2026-08-06.** [phony-assignment-plan.md](phony-assignment-plan.md) was
+executed, Route A: the parser now accepts `_ = expr;`, so all 50 fixtures became valid
+WGSL with zero rewrites. The audit that followed found the vacuity risk was worse than
+described here — it was not that the fixtures *might* be vacuous, it was that
+`tests/validation_test.zig`'s own `runValidation` helper discarded `parser.errors`
+entirely, so six fixtures asserted `expect(result.valid)` against sources carrying
+three parse errors each and could not have failed. The helper now folds parse errors
+in, matching the public `validateWithOptions`, with a guard test.
+
+Mechanically re-checked by disabling `AstVisit`'s `.phony` arm and re-running each
+file: only `validation_test` noticed. The 33 `_ = x;` lines in `lint_warnings_test` and
+`lint_rules_test` are inert with respect to what those tests assert — the `let x = u;`
+initializer was already doing the laundering.
 
 A related finding surfaced while writing that plan: the validator's
-"identifier `_` is reserved" branch in `checkReservedIdentifiers` is **dead code** —
-`_` lexes as its own token, `eatIdent` never returns it, so no symbol named `_` is ever
-built for the check to find. Same shape as the `is_api_facing` finding above, and its
-comment likewise documents an intent the parser never implemented.
+"identifier `_` is reserved" branch in `checkReservedIdentifiers` was **dead code** —
+`_` lexed as its own token, `eatIdent` never returned it, so no symbol named `_` was
+ever built for the check to find. Same shape as the `is_api_facing` finding above, and
+its comment likewise documented an intent the parser never implemented. It is now
+reachable: the parser deliberately accepts `_` in declaration-name positions
+(`isDeclNameLike`) and keeps parsing, so the symbol reaches the validator and one
+message is emitted at the `_` — where `let _ = 3.14;` used to produce a six-error
+cascade whose first entry landed on the *previous line*.
 
 > **Practice:** for an assertion of absence, prove the fixture can produce the thing.
 > The new naming-convention test was verified by temporarily disabling the fix
@@ -286,8 +299,8 @@ so the assertion cannot pass off text the example printed earlier.
 |---|---|
 | `version` typed `string`, an object under ESM | Pre-existing; fixing it changes the published type surface for a value everyone reads through `String()`. Its own decision. |
 | `strictMode` / `diagnosticFilters` still declared | Deleting them breaks consumers' compiles. Kept, `@deprecated`, with the working name documented. |
-| Phony assignment `_ = expr;` unparsed | Real parser gap, 737 tint shaders use it. Open since plan 04. |
-| The other 50 `_ = x;` test fixtures | Planned: [phony-assignment-plan.md](phony-assignment-plan.md). Fix the parser, then audit — not rewrite. |
+| ~~Phony assignment `_ = expr;` unparsed~~ | **Fixed 2026-08-06** — parser accepts it; +214 tint shaders now pass semantic preservation. |
+| ~~The other 50 `_ = x;` test fixtures~~ | **Done** — all 50 valid unmodified; audit found the `runValidation` helper was swallowing parse errors. |
 | Renaming `is_external_binding` | Its **name is the trap** — something like `needs_binding_alias` would make the confusion impossible to write. ~15 sites; deferred as its own change. |
 | `no_dead_code`'s function-branch flags | Fixed (`441f374`), but note the shape: it was a *forked copy* of a shared predicate, and the dead clauses are what advertised the fork. |
 
