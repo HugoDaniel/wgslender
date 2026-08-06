@@ -74,4 +74,8 @@ for (const e of result.entryPoints as EntryPointInfo[]) {
     const source_ = i.builtin ? `@builtin(${i.builtin})` : `@location(${i.location})`;
     console.log(`    in  ${i.name}: ${i.type}  ${source_}`);
   }
+  // Bindings reachable through this entry point's call graph — the set you
+  // would actually bind for this pipeline. Note `samp` is absent: the demo
+  // declares the sampler but never uses it, so nothing reaches it.
+  console.log(`    uses ${e.resources.join(', ')}`);
 }

@@ -77,6 +77,7 @@ const scriptCases = [
       /\s+8\s+time: f32/,
       /\s+12\s+frame: u32/,
       /entry main \[compute\] workgroup_size=8,8,1/,
+      /uses params, tex, data/,
     ],
   },
 ];
@@ -321,6 +322,18 @@ describe('wgslender API', () => {
       assert.equal(e.name, 'main');
       assert.equal(e.stage, 'compute');
       assert.deepEqual(e.workgroupSize, [8, 8, 1]);
+    });
+
+    test('entry-point resources include handle-space bindings', () => {
+      // Regression pin: textures and samplers were absent from this list
+      // entirely, so a bind-group layout built from it lost them silently.
+      // `tex` is reached via textureLoad; `samp` is declared but unused, so
+      // its absence here is correct and is the other half of the assertion.
+      const used = r.entryPoints[0].resources;
+      assert.ok(used.includes('tex'), `expected tex in ${JSON.stringify(used)}`);
+      assert.ok(used.includes('params'));
+      assert.ok(used.includes('data'));
+      assert.ok(!used.includes('samp'));
     });
 
     test('getBindGroups indexes bindings by group and binding', () => {
