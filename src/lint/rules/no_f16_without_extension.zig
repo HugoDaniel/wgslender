@@ -148,6 +148,7 @@ fn siteInStmt(ctx: *Context, stmt: Ast.Stmt) error{OutOfMemory}!?Site {
             if (siteInExpr(ctx, s.left)) |x| return x;
             if (siteInExpr(ctx, s.right)) |x| return x;
         },
+        .phony => |s| return siteInExpr(ctx, s.expr),
         .incr_decr => |s| return siteInExpr(ctx, s.expr),
         .call => |s| {
             if (s.call.func) |f| if (siteInExpr(ctx, f)) |x| return x;

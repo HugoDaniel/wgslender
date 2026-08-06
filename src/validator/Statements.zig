@@ -128,6 +128,8 @@ pub fn validateStmt(v: *Validator, stmt: Ast.Stmt) Allocator.Error!void {
         .break_if => |s| try validateBreakIfStmt(v, s),
         .@"continue" => |s| validateContinueStmt(v, s),
         .discard => |s| validateDiscardStmt(v, s),
+        // TODO(block-4): type-check the discarded expression.
+        .phony => {},
         .assign => |s| try validateAssignStmt(v, s),
         .incr_decr => |s| try validateIncrDecrStmt(v, s),
         .call => |s| try validateCallStmt(v, s),
@@ -733,6 +735,7 @@ pub fn walkStmtForPrecedence(v: *Validator, stmt: Ast.Stmt) void {
             walkExprForPrecedence(v, s.left);
             walkExprForPrecedence(v, s.right);
         },
+        .phony => |s| walkExprForPrecedence(v, s.expr),
         .incr_decr => |s| walkExprForPrecedence(v, s.expr),
         .call => |s| walkExprForPrecedence(v, .{ .call = s.call }),
         .decl => |s| switch (s.decl) {

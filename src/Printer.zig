@@ -1066,6 +1066,10 @@ fn dispatchStmt(self: *Printer, s: Ast.Stmt, stack: *std.ArrayList(StmtWork)) er
         },
         .@"continue" => try self.emit("continue;"),
         .discard => try self.emit("discard;"),
+        .phony => |stmt| {
+            try self.printPhonyBody(stmt);
+            try self.emit(";");
+        },
         .assign => |stmt| {
             try self.printExpr(stmt.left);
             try self.emitSpace();
@@ -1172,8 +1176,19 @@ fn printForInit(self: *Printer, s: Ast.Stmt) !void {
             try self.emitSpace();
             try self.printExpr(stmt.right);
         },
+        .phony => |stmt| try self.printPhonyBody(stmt),
         else => {},
     }
+}
+
+/// `_ = expr` without a terminator — shared by the statement, for-init and
+/// for-update forms, which differ only in what follows.
+fn printPhonyBody(self: *Printer, stmt: *Ast.PhonyStmt) !void {
+    try self.emit("_");
+    try self.emitSpace();
+    try self.emit("=");
+    try self.emitSpace();
+    try self.printExpr(stmt.expr);
 }
 
 fn printForUpdate(self: *Printer, s: Ast.Stmt) !void {
@@ -1189,6 +1204,7 @@ fn printForUpdate(self: *Printer, s: Ast.Stmt) !void {
             try self.emitSpace();
             try self.printExpr(stmt.right);
         },
+        .phony => |stmt| try self.printPhonyBody(stmt),
         .call => |stmt| try self.printExpr(.{ .call = stmt.call }),
         else => {},
     }

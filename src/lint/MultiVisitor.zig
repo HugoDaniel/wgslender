@@ -138,6 +138,8 @@ fn walkStmt(arena: Allocator, stmt: Ast.Stmt, listeners: []const Listener) Alloc
             try walkExpr(arena, s.left, listeners);
             try walkExpr(arena, s.right, listeners);
         },
+        // TODO(block-2): fan the phony RHS out to listeners.
+        .phony => {},
         .incr_decr => |s| try walkExpr(arena, s.expr, listeners),
         .call => |s| {
             if (s.call.func) |f| try walkExpr(arena, f, listeners);

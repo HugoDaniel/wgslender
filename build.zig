@@ -407,6 +407,9 @@ pub fn build(b: *std.Build) void {
     // so a swapped precedence level is caught even though the flat printer would
     // emit identical text (Block 1.1 precedence-table collapse).
     _ = addTestStep(b, test_step, "tests/parser_precedence_test.zig", target, optimize, &.{w});
+    // Phony assignment (WGSL §9.3 `_ = expr`) — grammar, use-counting,
+    // printing, validation and incremental behaviour of the `.phony` stmt.
+    _ = addTestStep(b, test_step, "tests/phony_assignment_test.zig", target, optimize, &.{w});
     // Numeric-literal text fidelity — AST literal value must equal the lexer's
     // byte-exact `source[token.start..token.end]` (no hand-rolled re-scanner).
     _ = addTestStep(b, test_step, "tests/parser_token_text_test.zig", target, optimize, &.{w});

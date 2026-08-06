@@ -228,6 +228,8 @@ fn processOneStmt(ctx: *Context, s: Ast.Stmt, stack: *std.ArrayList(Work)) error
             stmt.left = try visitExpr(ctx, stmt.left);
             stmt.right = try visitExpr(ctx, stmt.right);
         },
+        // TODO(block-2): walk `stmt.expr` so the RHS counts as a use.
+        .phony => {},
         .incr_decr => |stmt| {
             stmt.expr = try visitExpr(ctx, stmt.expr);
         },

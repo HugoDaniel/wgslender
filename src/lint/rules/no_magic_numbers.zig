@@ -109,6 +109,7 @@ fn checkStmt(ctx: *Context, stmt: Ast.Stmt) error{OutOfMemory}!void {
             try checkExpr(ctx, s.left);
             try checkExpr(ctx, s.right);
         },
+        .phony => |s| try checkExpr(ctx, s.expr),
         .incr_decr => |s| try checkExpr(ctx, s.expr),
         .call => |s| {
             if (s.call.func) |f| try checkExpr(ctx, f);

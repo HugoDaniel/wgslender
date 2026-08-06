@@ -245,6 +245,7 @@ fn findInStmt(module: *const Ast.Module, stmt: Ast.Stmt, offset: u32) ?NodeAtPos
             if (findInExpr(module, a.left, offset)) |r| return r;
             return findInExpr(module, a.right, offset);
         },
+        .phony => |p| return findInExpr(module, p.expr, offset),
         .incr_decr => |i| return findInExpr(module, i.expr, offset),
         .call => |c| return findInExpr(module, .{ .call = c.call }, offset),
         .decl => |d| {

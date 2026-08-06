@@ -1825,6 +1825,7 @@ fn stmtCstKind(stmt: Ast.Stmt) Cst.Kind {
         .@"continue" => .continue_stmt,
         .discard => .discard_stmt,
         .assign => .assign_stmt,
+        .phony => .phony_stmt,
         .incr_decr => .incr_decr_stmt,
         .call => .call_stmt,
         .decl => .decl_stmt,
@@ -1898,6 +1899,7 @@ fn setStmtSpan(stmt: Ast.Stmt, span: Ast.Span) void {
         .@"continue" => |s| s.span = span,
         .discard => |s| s.span = span,
         .assign => |s| s.span = span,
+        .phony => |s| s.span = span,
         .incr_decr => |s| s.span = span,
         .call => |s| s.span = span,
         .decl => |s| s.span = span,
@@ -2117,6 +2119,8 @@ fn parseForStmt(self: *Parser) !*Ast.ForStmt {
 }
 
 fn parseForUpdateStmt(self: *Parser) !?Ast.Stmt {
+    if (self.currentTag() == .underscore) return self.parsePhonyStmt(.none);
+
     self.expr_context = "in for update";
     // Capture the byte offset BEFORE parsing the LHS — Parser-built
     // expression nodes carry empty spans, so we cannot recover the
@@ -2247,7 +2251,47 @@ fn parseLoopBody(self: *Parser, out_continuing: *?*Ast.CompoundStmt) !*Ast.Compo
     return stmt;
 }
 
+/// Which token closes a phony assignment. A statement-position phony ends
+/// at its own `;`; the one in a `for` update clause is closed by the `)`
+/// that `parseForStmt` consumes, so it must not eat a terminator itself.
+const PhonyTerminator = enum { semicolon, none };
+
+/// WGSL §9.3 `'_' '=' expression` — evaluate and discard. Call with the
+/// cursor on `.underscore`.
+///
+/// `_` is not an identifier and never becomes a `Symbol`; it is matched
+/// here as a grammar token so `parseExpression` never sees it. Handling it
+/// at this level is also what lets the error for `_ +=` name the real
+/// problem instead of reporting "expected expression in statement" against
+/// the `_`.
+fn parsePhonyStmt(self: *Parser, terminator: PhonyTerminator) !?Ast.Stmt {
+    const loc = self.currentStart();
+    self.advance(); // `_`
+
+    // §9.3 spells the phony form with a plain `=`. Compound operators are
+    // not part of it — `_ += x` has no value to read back.
+    if (self.currentTag() != .eq) {
+        try self.addError("expected '=' after '_' in phony assignment");
+        return null;
+    }
+    self.advance();
+
+    self.expr_context = "in phony assignment";
+    const expr = (try self.parseExpression()) orelse return null;
+    if (terminator == .semicolon) _ = try self.expect(.semicolon);
+
+    const node = try self.arena.create(Ast.PhonyStmt);
+    node.* = .{
+        .loc = loc,
+        .expr = expr,
+        .span = .{ .start = loc, .end = self.prevTokenEnd() },
+    };
+    return .{ .phony = node };
+}
+
 fn parseExpressionOrAssignment(self: *Parser) !?Ast.Stmt {
+    if (self.currentTag() == .underscore) return self.parsePhonyStmt(.semicolon);
+
     self.expr_context = "in statement";
     const left = (try self.parseExpression()) orelse return null;
 

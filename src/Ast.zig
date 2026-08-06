@@ -1056,6 +1056,7 @@ pub const Stmt = union(enum) {
     @"continue": *ContinueStmt,
     discard: *DiscardStmt,
     assign: *AssignStmt,
+    phony: *PhonyStmt,
     incr_decr: *IncrDecrStmt,
     call: *CallStmt,
     decl: *DeclStmt,
@@ -1076,6 +1077,7 @@ pub const Stmt = union(enum) {
             .@"continue" => |s| s.span,
             .discard => |s| s.span,
             .assign => |s| s.span,
+            .phony => |s| s.span,
             .incr_decr => |s| s.span,
             .call => |s| s.span,
             .decl => |s| s.span,
@@ -1164,6 +1166,27 @@ pub const AssignStmt = struct {
     op: AssignOp,
     left: Expr,
     right: Expr,
+    span: Span = .empty,
+};
+
+/// Phony assignment — WGSL §9.3, `'_' '=' expression`. Evaluates `expr`
+/// and discards the value.
+///
+/// This is deliberately NOT an `AssignStmt` with a `_`-shaped `left`.
+/// `_` is a statement-level grammar token, not an lhs_expression: giving
+/// it an `Expr` variant would put a non-expression case into every
+/// expression switch and every identifier-resolution path. It carries no
+/// `SymbolIndex` for the same reason — `_` names nothing, and the lexer
+/// gives it its own `.underscore` tag rather than lexing it as an ident.
+///
+/// The RHS is a fully evaluated expression: it counts as a *use* of every
+/// symbol it mentions (`AstVisit`), keeps them live (`Dce`), and attributes
+/// bindings to entry points (`reflect/CallGraph`). `_ = tex;` exists
+/// precisely to have that effect on the pipeline layout.
+pub const PhonyStmt = struct {
+    /// Byte offset of the `_` token.
+    loc: u32 = 0,
+    expr: Expr,
     span: Span = .empty,
 };
 
@@ -1360,7 +1383,10 @@ pub fn stmtCanBeRemovedIfUnused(stmt: Stmt, symbols: []const Symbol) bool {
     return switch (stmt) {
         .decl => |s| declCanBeRemovedIfUnused(s.decl, symbols),
         .@"return" => |s| if (s.value) |v| exprCanBeRemovedIfUnused(v, symbols) else true,
-        .call, .assign, .incr_decr => false,
+        // A phony assignment is never removable on "its symbols are unused"
+        // grounds: it declares nothing, and its whole purpose is the effect
+        // its evaluation has elsewhere (statically-used bindings, §9.3).
+        .call, .assign, .phony, .incr_decr => false,
         .@"if", .@"for", .@"while", .loop, .@"switch" => false,
         .@"break", .break_if, .@"continue", .discard => false,
         .compound => false,
@@ -1617,6 +1643,10 @@ fn shiftStmtSpans(stmt: *Stmt, splice_end_old: u32, delta: i64) void {
             shiftNodeOffsets(s, splice_end_old, delta);
             shiftExprSpans(s.left, splice_end_old, delta);
             shiftExprSpans(s.right, splice_end_old, delta);
+        },
+        .phony => |s| {
+            shiftNodeOffsets(s, splice_end_old, delta);
+            shiftExprSpans(s.expr, splice_end_old, delta);
         },
         .incr_decr => |s| {
             shiftNodeOffsets(s, splice_end_old, delta);

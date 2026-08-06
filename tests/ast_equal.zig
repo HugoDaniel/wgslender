@@ -144,6 +144,7 @@ pub const Err = error{
     DiscardLocMismatch,
     AssignOpMismatch,
     AssignLocMismatch,
+    PhonyLocMismatch,
     IncrDecrOpMismatch,
     IncrDecrLocMismatch,
     TestExpectedEqual,
@@ -608,6 +609,11 @@ fn expectStmtEqual(e: Ast.Stmt, a: Ast.Stmt) Err!void {
             if (es.loc != as_.loc) return error.AssignLocMismatch;
             try expectExprEqual(es.left, as_.left);
             try expectExprEqual(es.right, as_.right);
+        },
+        .phony => |es| {
+            const as_ = a.phony;
+            if (es.loc != as_.loc) return error.PhonyLocMismatch;
+            try expectExprEqual(es.expr, as_.expr);
         },
         .incr_decr => |es| {
             const as_ = a.incr_decr;

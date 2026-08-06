@@ -98,6 +98,7 @@ pub const Kind = enum(u16) {
     continue_stmt,
     discard_stmt,
     assign_stmt,
+    phony_stmt,
     incr_decr_stmt,
     call_stmt,
     decl_stmt,

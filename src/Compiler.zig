@@ -1000,6 +1000,14 @@ const OpEmitter = struct {
                         try self.emitExpr(stmt.right);
                         try self.emitByte(';');
                     },
+                    .phony => |stmt| {
+                        try self.emitStr("_");
+                        try self.emitSpace();
+                        try self.emitStr("=");
+                        try self.emitSpace();
+                        try self.emitExpr(stmt.expr);
+                        try self.emitByte(';');
+                    },
                     .incr_decr => |stmt| {
                         try self.emitExpr(stmt.expr);
                         if (stmt.increment) try self.emitStr("++") else try self.emitStr("--");

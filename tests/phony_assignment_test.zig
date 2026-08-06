@@ -1,0 +1,125 @@
+//! Phony assignment — WGSL §9.3 `'_' '=' expression`.
+//!
+//! The statement evaluates its right-hand side and discards the value. It
+//! exists for two jobs the language offers no substitute for:
+//!
+//!   1. Silencing an unused-value diagnostic without inventing a variable.
+//!   2. Forcing a resource into the pipeline layout — `_ = tex;` makes a
+//!      binding statically used, so it survives into the bind-group layout
+//!      even when nothing reads it.
+//!
+//! `_` is NOT an identifier. It lexes as its own `.underscore` token and
+//! `eatIdent` does not accept it, so no `Symbol` is ever built for it. That
+//! is deliberate: the left-hand side of a phony assignment is a grammar
+//! position, not a name, and `Ast.PhonyStmt` has no `SymbolIndex` field to
+//! reflect that.
+
+const std = @import("std");
+const wgslender = @import("wgslender");
+
+const Ast = wgslender.Ast;
+const Incremental = wgslender.Incremental;
+
+/// Parse `src`, assert it produced no parse errors, and return the result.
+/// Caller owns the result (`defer r.deinit()`).
+fn parseClean(src: [:0]const u8) !Incremental.ReparseResult {
+    var r = try Incremental.parseFull(std.testing.allocator, src);
+    errdefer r.deinit();
+    if (r.errors.len != 0) {
+        for (r.errors) |e| std.debug.print("unexpected parse error @{d}: {s}\n", .{ e.pos, e.message });
+        return error.UnexpectedParseErrors;
+    }
+    return r;
+}
+
+/// Return the statements of the first function declaration named `name`.
+fn bodyOf(r: *const Incremental.ReparseResult, name: []const u8) ![]const Ast.Stmt {
+    for (r.module.declarations.items) |d| {
+        if (d != .function) continue;
+        const fd = d.function;
+        if (!fd.name.isValid()) continue;
+        if (!std.mem.eql(u8, r.module.symbols.items[fd.name.index()].original_name, name)) continue;
+        const body = fd.body orelse return error.NoBody;
+        return body.stmts.items;
+    }
+    return error.NoSuchFunction;
+}
+
+test "phony: `_ = x;` parses as a phony statement" {
+    var r = try parseClean(
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = 1.0; _ = x; }
+        \\
+    );
+    defer r.deinit();
+
+    const stmts = try bodyOf(&r, "main");
+    try std.testing.expectEqual(@as(usize, 2), stmts.len);
+    try std.testing.expect(stmts[1] == .phony);
+    try std.testing.expect(stmts[1].phony.expr == .ident);
+    try std.testing.expectEqualStrings("x", stmts[1].phony.expr.ident.name);
+}
+
+test "phony: the `_` token position is recorded on the node" {
+    const src =
+        \\fn f() { _ = 1; }
+        \\
+    ;
+    var r = try parseClean(src);
+    defer r.deinit();
+
+    const stmts = try bodyOf(&r, "f");
+    try std.testing.expectEqual(@as(usize, 1), stmts.len);
+    // `loc` points at the `_`, not at the `=`.
+    try std.testing.expectEqual(@as(u8, '_'), src[stmts[0].phony.loc]);
+}
+
+test "phony: span covers `_` through the semicolon" {
+    const src =
+        \\fn f() { _ = 1 + 2; }
+        \\
+    ;
+    var r = try parseClean(src);
+    defer r.deinit();
+
+    const stmts = try bodyOf(&r, "f");
+    const span = stmts[0].span();
+    try std.testing.expectEqualStrings("_ = 1 + 2;", src[span.start..span.end]);
+}
+
+test "phony: accepts an arbitrary expression, not just an identifier" {
+    var r = try parseClean(
+        \\@group(0) @binding(0) var<storage, read> buf: array<f32>;
+        \\fn f() { _ = buf[0] * 2.0; }
+        \\
+    );
+    defer r.deinit();
+
+    const stmts = try bodyOf(&r, "f");
+    try std.testing.expect(stmts[0] == .phony);
+    try std.testing.expect(stmts[0].phony.expr == .binary);
+}
+
+test "phony: legal in a for-init and a for-update (§9.4.3)" {
+    var r = try parseClean(
+        \\fn f() { for (_ = 1; false; _ = 2) {} }
+        \\
+    );
+    defer r.deinit();
+
+    const stmts = try bodyOf(&r, "f");
+    try std.testing.expect(stmts[0] == .@"for");
+    const fs = stmts[0].@"for";
+    try std.testing.expect(fs.init_stmt.? == .phony);
+    try std.testing.expect(fs.update.? == .phony);
+}
+
+test "phony: only `=` is accepted — compound operators are rejected" {
+    // §9.3 spells the phony form with a plain `=`; `_ += x` is not WGSL.
+    var r = try Incremental.parseFull(std.testing.allocator,
+        \\fn f() { let x = 1.0; _ += x; }
+        \\
+    );
+    defer r.deinit();
+    try std.testing.expect(r.errors.len > 0);
+}

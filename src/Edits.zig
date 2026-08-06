@@ -214,6 +214,7 @@ const SymbolFinder = struct {
                 if (self.findInExpr(a.left)) |s| return s;
                 if (self.findInExpr(a.right)) |s| return s;
             },
+            .phony => |p| return self.findInExpr(p.expr),
             .incr_decr => |i| return self.findInExpr(i.expr),
             .call => |c| return self.findInExpr(.{ .call = c.call }),
             .decl => |d| return self.findInDecl(d.decl),
@@ -399,6 +400,9 @@ fn collectInStmt(
             try collectInExpr(gpa, a.left, target, refs, true);
             try collectInExpr(gpa, a.right, target, refs, false);
         },
+        // The phony RHS is a read, never a write — `_` is the write target
+        // and it is not a symbol.
+        .phony => |p| try collectInExpr(gpa, p.expr, target, refs, false),
         .incr_decr => |i| try collectInExpr(gpa, i.expr, target, refs, true),
         .call => |c| try collectInExpr(gpa, .{ .call = c.call }, target, refs, false),
         .decl => |d| try collectInDecl(gpa, d.decl, target, refs, false),

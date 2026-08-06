@@ -886,6 +886,7 @@ fn findSlotInStmt(stmt_ptr: *Ast.Stmt, target: Ast.Span, kind: Cst.Kind) ?AstSlo
             if (findSlotInExprField(&s.right, s.right, target, kind)) |m| return bareSlot(m);
             return null;
         },
+        .phony => |s| return bareSlot(findSlotInExprField(&s.expr, s.expr, target, kind)),
         .incr_decr => |s| return bareSlot(findSlotInExprField(&s.expr, s.expr, target, kind)),
         .call => |s| {
             if (s.call.func) |f| if (findSlotInExprField(&s.call.func.?, f, target, kind)) |m| return bareSlot(m);
@@ -950,6 +951,7 @@ fn matchesStmtKind(s: Ast.Stmt, k: Cst.Kind) bool {
     return switch (k) {
         .return_stmt => s == .@"return",
         .assign_stmt => s == .assign,
+        .phony_stmt => s == .phony,
         .incr_decr_stmt => s == .incr_decr,
         .call_stmt => s == .call,
         .break_stmt => s == .@"break",

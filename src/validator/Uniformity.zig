@@ -464,6 +464,8 @@ const UniformityAnalyzer = struct {
                 try ua.recordDecl(s.decl, cf);
                 return simpleNext(cf);
             },
+            // TODO(block-2): treat the phony RHS as an evaluated expression.
+            .phony => return simpleNext(cf),
             .incr_decr => |s| {
                 try ua.checkCalls(s.expr, cf);
                 return simpleNext(cf);
