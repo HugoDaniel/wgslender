@@ -11,6 +11,7 @@ package wgslender_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -109,6 +110,54 @@ func ExampleReflect() {
 	// struct Params is 16 bytes
 	//   resolution: vec2f at 0
 	//   time: f32 at 8
+}
+
+// ExampleLint runs wgslender's recommended rules. The config is spelled out
+// because a nil *LintConfig runs no rules at all — the engine has no default
+// rule set, so wgslender's opinion has to be asked for by name.
+func ExampleLint() {
+	const shader = `@group(0) @binding(0) var<storage, read_write> data: array<f32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+    let unused = 3.14159;
+    data[id.x] = f32(id.x) * 2.0;
+}
+`
+	report, err := wgslender.Lint(context.Background(), shader, &wgslender.LintConfig{
+		Extends: []wgslender.Pack{wgslender.PackRecommended},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("errors:", report.ErrorCount, "warnings:", report.WarningCount)
+	for _, d := range report.Diagnostics {
+		fmt.Printf("%d:%d %s: %s\n", d.Line, d.Column, d.Code, d.Message)
+	}
+	// Output:
+	// errors: 0 warnings: 1
+	// 5:9 W0001: 'unused' is declared but never used
+}
+
+// ExampleCompile turns a shader into a binary module, and shows the one place
+// in this package where a shader's own problem is a Go error: a compiler with
+// nothing to compile has no module to hand back.
+func ExampleCompile() {
+	shader, err := wgslender.Compile(context.Background(), exampleShader, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("input:", shader.OriginalSize, "bytes; module:", len(shader.WASM), "bytes")
+
+	_, err = wgslender.Compile(context.Background(), "fn broken( {}", nil)
+	if cerr, ok := errors.AsType[*wgslender.CompileError](err); ok {
+		for _, d := range cerr.Diagnostics {
+			fmt.Printf("%d:%d %s\n", d.Line, d.Column, d.Message)
+		}
+	}
+	// Output:
+	// input: 497 bytes; module: 546 bytes
+	// 1:12 expected ')'
 }
 
 // ExampleBindGroups arranges the bindings the way a WebGPU host consumes
