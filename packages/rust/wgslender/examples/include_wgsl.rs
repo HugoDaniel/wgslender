@@ -55,6 +55,13 @@ fn what_arrives() {
         println!("{label:<32}{:>6} bytes", text.len());
     }
 
+    // The claim on the next line, enforced rather than merely printed: this
+    // example is run by the repository's gate, and a claim that can only turn
+    // into the word `false` is a claim the gate cannot check.
+    assert_eq!(
+        AS_WRITTEN, CHECKED_ONLY,
+        "`minify = false` changed the text it was told not to change"
+    );
     println!(
         "\nThe first two are byte-identical: {}.",
         AS_WRITTEN == CHECKED_ONLY

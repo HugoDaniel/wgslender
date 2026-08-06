@@ -281,6 +281,8 @@ fn compressible() -> MinifyOptions {
 fn sibling_scopes(count: usize) -> String {
     let mut source =
         String::from("@group(0) @binding(0) var<storage, read_write> data: array<f32>;\n\n");
+    // The discarded `Result`s below belong to `fmt::Write`, not to anything that
+    // happens here: writing into a `String` has no failure to report.
     for n in 0..count {
         let _ = write!(
             source,

@@ -65,6 +65,12 @@ fn mechanics() -> Result<(), Error> {
     println!("\nthe first eight bytes: {}", head.join(" "));
     println!("  00 61 73 6d   the magic number — \\0asm");
     println!("  01 00 00 00   the binary format version, 1");
+    // Enforced, not just printed. The gate runs this example, and a header that
+    // stopped being a wasm header would otherwise print `false` and pass.
+    assert!(
+        compiled.wasm.starts_with(b"\0asm"),
+        "compile did not produce a wasm module"
+    );
     println!(
         "  starts_with(b\"\\0asm\"): {}",
         compiled.wasm.starts_with(b"\0asm")

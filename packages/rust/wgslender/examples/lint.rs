@@ -209,8 +209,10 @@ fn fixing() -> Result<(), Error> {
     );
 
     // An autofix that emitted invalid WGSL would be the failure worth catching,
-    // so the example checks rather than assumes.
+    // so the example checks rather than assumes — and asserts, because the gate
+    // runs this and a printed `false` would sail past it.
     let verdict = validate(&outcome.fixed_source, Strictness::Default)?;
+    assert!(verdict.valid, "an autofix produced invalid WGSL");
     println!(
         "\nthe fixed source still validates: {} ({} errors)",
         verdict.valid, verdict.error_count

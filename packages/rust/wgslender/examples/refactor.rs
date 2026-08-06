@@ -17,12 +17,15 @@
 //! comment, where every call in this module answers `None` or "symbol not
 //! found". `find("fn luminance") + 3` is the offset of the declaration.
 
-use wgslender::refactor::{
-    ByteRange, Edit, IncludeDeclaration, RefactorError, StableId, change_type, find_references,
-    locate_declaration, locate_stable_id, locate_type, remove_declaration,
-    remove_declaration_apply, rename, rename_apply, rename_by_id, stable_id_at_offset,
+// The module rather than its functions: `refactor::rename` at a call site says
+// which half of the crate the call belongs to, and the two halves answer a bad
+// input differently. The types come in by name — they read as types wherever
+// they appear.
+use wgslender::{
+    Error, Strictness,
+    refactor::{self, ByteRange, Edit, IncludeDeclaration, RefactorError, StableId},
+    validate,
 };
-use wgslender::{Error, Strictness, validate};
 
 /// The package's own fixture, and one of the two files it publishes.
 const DEMO: &str = include_str!("../tests/fixtures/demo.wgsl");
@@ -60,7 +63,7 @@ fn by_offset() -> Result<(), Error> {
     );
 
     for include in [IncludeDeclaration::Yes, IncludeDeclaration::No] {
-        let references = find_references(DEMO, cursor, include)?;
+        let references = refactor::find_references(DEMO, cursor, include)?;
         println!(
             "\nfind_references(demo, {cursor}, {include:?}) -> {}",
             plural(references.len(), "reference")
@@ -88,7 +91,11 @@ fn by_offset() -> Result<(), Error> {
          an offset that names no symbol is an empty list, not a failure."
     );
 
-    let nothing = find_references(DEMO, 0, IncludeDeclaration::Yes)?;
+    let nothing = refactor::find_references(DEMO, 0, IncludeDeclaration::Yes)?;
+    assert!(
+        nothing.is_empty(),
+        "byte 0 is inside a comment and names no symbol"
+    );
     println!(
         "find_references(demo, 0, Yes) -> {}",
         plural(nothing.len(), "reference")
@@ -101,14 +108,14 @@ fn by_stable_id() -> Result<(), Error> {
     heading("2. by stable id — the same symbol, named");
 
     let cursor = declaration_of("fn luminance", DEMO);
-    let Some(id) = stable_id_at_offset(DEMO, cursor)? else {
+    let Some(id) = refactor::stable_id_at_offset(DEMO, cursor)? else {
         println!("no symbol at {cursor} — the offset is wrong, see the module comment");
         return Ok(());
     };
     println!("stable_id_at_offset(demo, {cursor}) -> {id}");
 
-    let name = locate_stable_id(DEMO, &id)?;
-    let declaration = locate_declaration(DEMO, &id)?;
+    let name = refactor::locate_stable_id(DEMO, &id)?;
+    let declaration = refactor::locate_declaration(DEMO, &id)?;
     println!("\nlocate_stable_id     {}", describe(DEMO, name));
     println!("locate_declaration   {}", describe(DEMO, declaration));
 
@@ -127,14 +134,20 @@ fn by_stable_id() -> Result<(), Error> {
     let elsewhere = "@compute @workgroup_size(1)\nfn main() {}\n";
     println!(
         "  locate_stable_id(another shader, {id}) -> {:?}",
-        locate_stable_id(elsewhere, &id)?
+        refactor::locate_stable_id(elsewhere, &id)?
     );
 
-    // The offsets moved; the id did not.
+    // The offsets moved; the id did not — which is the section's whole claim, so
+    // it is asserted rather than left to a reader comparing two printed numbers.
     let shifted = format!("// a line that was not there before\n{DEMO}");
+    let moved = refactor::locate_stable_id(&shifted, &id)?;
+    assert!(
+        moved.is_some_and(|range| Some(range) != name),
+        "the id should still find the symbol, at its new offset"
+    );
     println!(
         "  locate_stable_id(demo with a line prepended, {id}) -> {}",
-        describe(&shifted, locate_stable_id(&shifted, &id)?)
+        describe(&shifted, moved)
     );
     Ok(())
 }
@@ -143,10 +156,18 @@ fn by_stable_id() -> Result<(), Error> {
 fn edits() -> Result<(), Error> {
     heading("3. the edits");
 
+    renaming()?;
+    retyping()?;
+    removal()
+}
+
+/// Rename, both ways: a list of edits to splice yourself, and the same rename
+/// applied for you.
+fn renaming() -> Result<(), Error> {
     let cursor = declaration_of("fn luminance", DEMO);
     let id = StableId::new("v1:fn:luminance");
 
-    let planned = rename_by_id(DEMO, &id, "relative_luminance")?;
+    let planned = refactor::rename_by_id(DEMO, &id, "relative_luminance")?;
     println!(
         "rename_by_id(demo, {id}, \"relative_luminance\") -> {} edits",
         planned.len()
@@ -155,7 +176,7 @@ fn edits() -> Result<(), Error> {
         println!("  {:>3}..{:<4}-> {:?}", edit.start, edit.end, edit.new_text);
     }
 
-    let applied = rename_apply(DEMO, cursor, "relative_luminance")?;
+    let applied = refactor::rename_apply(DEMO, cursor, "relative_luminance")?;
     println!(
         "\nrename_apply(demo, {cursor}, \"relative_luminance\") -> {} bytes, was {}",
         applied.source.len(),
@@ -169,6 +190,12 @@ fn edits() -> Result<(), Error> {
     for edit in planned.iter().rev() {
         buffer.replace_range(edit.start as usize..edit.end as usize, &edit.new_text);
     }
+    // Both routes reach the same text, or the `_apply` forms are not the
+    // shortcut this section says they are.
+    assert_eq!(
+        buffer, applied.source,
+        "hand-spliced edits diverged from rename_apply"
+    );
     println!(
         "the same edits applied back to front by hand: {} bytes, identical: {}",
         buffer.len(),
@@ -188,19 +215,23 @@ fn edits() -> Result<(), Error> {
          {drift} bytes stale by the time it was used. Either iterate in reverse, or use\n\
          the `_apply` form and let the library do it."
     );
+    Ok(())
+}
 
+/// Retyping a variable, from an id a tool stored earlier rather than a cursor.
+fn retyping() -> Result<(), Error> {
     // A literal id, which is what a tool that stored one earlier would hold.
     let params = StableId::new("v1:var:params");
     println!("\nthe type edit, from a stored id: {params}");
     println!(
         "  locate_stable_id   {}",
-        describe(DEMO, locate_stable_id(DEMO, &params)?)
+        describe(DEMO, refactor::locate_stable_id(DEMO, &params)?)
     );
     println!(
         "  locate_type        {}",
-        describe(DEMO, locate_type(DEMO, &params)?)
+        describe(DEMO, refactor::locate_type(DEMO, &params)?)
     );
-    let retype = change_type(DEMO, &params, "Uniforms")?;
+    let retype = refactor::change_type(DEMO, &params, "Uniforms")?;
     for edit in &retype {
         println!(
             "  change_type        {:>3}..{:<4}-> {:?}",
@@ -214,19 +245,18 @@ fn edits() -> Result<(), Error> {
          produced anyway. Validate the result unless the string came from your own\n\
          code."
     );
-
-    removal()
+    Ok(())
 }
 
 /// Removal, and the whitespace it leaves behind.
 fn removal() -> Result<(), Error> {
     let cursor = declaration_of("fn unused_helper", REMOVABLE);
-    let Some(id) = stable_id_at_offset(REMOVABLE, cursor)? else {
+    let Some(id) = refactor::stable_id_at_offset(REMOVABLE, cursor)? else {
         println!("\nno symbol at {cursor} in the removable source");
         return Ok(());
     };
 
-    let edits = remove_declaration(REMOVABLE, &id)?;
+    let edits = refactor::remove_declaration(REMOVABLE, &id)?;
     println!("\nremove_declaration(a shader with an unused helper, {id})");
     for edit in &edits {
         println!(
@@ -238,7 +268,7 @@ fn removal() -> Result<(), Error> {
         );
     }
 
-    let applied = remove_declaration_apply(REMOVABLE, &id)?;
+    let applied = refactor::remove_declaration_apply(REMOVABLE, &id)?;
     println!(
         "\nremove_declaration_apply -> {} bytes, was {}. Verbatim, with the line\n\
          numbers this example is adding and the file is not:",
@@ -271,6 +301,10 @@ fn removal() -> Result<(), Error> {
         blanks.join(", ")
     );
     let verdict = validate(&applied.source, Strictness::Default)?;
+    assert!(
+        verdict.valid,
+        "removing an uncalled helper left the shader invalid"
+    );
     println!("  validate(the result) -> valid: {}", verdict.valid);
     Ok(())
 }
@@ -282,22 +316,22 @@ fn failures() -> Result<(), Error> {
     let cursor = declaration_of("fn luminance", DEMO);
     attempt(
         "rename(demo, the declaration, \"fn\")",
-        rename(DEMO, cursor, "fn"),
+        refactor::rename(DEMO, cursor, "fn"),
     );
-    attempt("rename(demo, 0, \"x\")", rename(DEMO, 0, "x"));
+    attempt("rename(demo, 0, \"x\")", refactor::rename(DEMO, 0, "x"));
     attempt(
         "rename_by_id(demo, \"v1:fn:nope\", \"x\")",
-        rename_by_id(DEMO, &StableId::new("v1:fn:nope"), "x"),
+        refactor::rename_by_id(DEMO, &StableId::new("v1:fn:nope"), "x"),
     );
 
     println!(
         "\nAnd the same \"it is not there\" condition, asked as a question instead:\n\
          \x20 locate_stable_id(demo, \"v1:fn:nope\")  -> {:?}\n\
          \x20 locate_type(demo, \"v1:fn:luminance\")  -> {:?}",
-        locate_stable_id(DEMO, &StableId::new("v1:fn:nope"))?,
+        refactor::locate_stable_id(DEMO, &StableId::new("v1:fn:nope"))?,
         // `luminance` returns f32, so this one *is* found — the `None` above is
         // the absence, not this call being incapable of an answer.
-        locate_type(DEMO, &StableId::new("v1:fn:luminance"))?
+        refactor::locate_type(DEMO, &StableId::new("v1:fn:luminance"))?
             .map(|range| slice(DEMO, range).to_owned()),
     );
 
