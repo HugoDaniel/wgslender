@@ -2,6 +2,8 @@
 dist/
 # generated types
 .astro/
+# wasm binaries copied in by scripts/sync-wasm.mjs — the packages own them
+public/*.wasm
 
 # dependencies
 node_modules/

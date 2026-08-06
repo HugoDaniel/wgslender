@@ -1,0 +1,175 @@
+---
+/**
+ * The playground island.
+ *
+ * The shader is server-rendered into a `<pre>` so the page is readable
+ * without JavaScript and there is no layout jump when the editor takes over.
+ * The `<script>` below is wiring only — every piece of logic lives in
+ * `src/scripts/playground/`, where Node can test it.
+ */
+import { sampleShader } from '../scripts/playground/sample-shader';
+---
+
+<section class="playground">
+	<div class="pane">
+		<header class="pane-head">
+			<h2 class="pane-title">shader.wgsl</h2>
+			<p class="pane-status" data-status>Starting the language server…</p>
+		</header>
+		<div class="pane-body editor" data-editor><pre class="fallback">{sampleShader}</pre></div>
+	</div>
+
+	<div class="pane">
+		<header class="pane-head">
+			<h2 class="pane-title">Output</h2>
+		</header>
+		<div class="pane-body prose" data-panels>
+			<p><strong>Two wasm modules, one page.</strong></p>
+			<p>
+				<code>wgslender-lsp.wasm</code> answers everything positional — the squiggles, hovers,
+				completions and jumps on the left. It runs in this tab, synchronously, with no server
+				behind it.
+			</p>
+			<p>
+				<code>wgslender.wasm</code> is the library API you would call from your own build:
+				<code>minify</code>, <code>reflect</code>, <code>lint</code>. Its panels land here.
+			</p>
+		</div>
+	</div>
+</section>
+
+<script>
+	import { EditorState } from '@codemirror/state';
+	import { lintGutter } from '@codemirror/lint';
+	import { EditorView, basicSetup } from 'codemirror';
+
+	import { sampleShader, sampleUri } from '../scripts/playground/sample-shader';
+	import { playgroundTheme } from '../scripts/playground/editor-theme';
+	import { createSession } from '../scripts/playground/lsp-session';
+	import { initPlayground } from '../scripts/playground/wasm';
+	import { wgsl } from '../scripts/playground/wgsl-language';
+
+	const host = document.querySelector<HTMLElement>('[data-editor]');
+	const status = document.querySelector<HTMLElement>('[data-status]');
+
+	function setStatus(message: string, failed = false) {
+		if (!status) return;
+		status.textContent = message;
+		status.classList.toggle('failed', failed);
+	}
+
+	async function boot(mount: HTMLElement) {
+		// Both wasm downloads start now; only the language server is on the
+		// critical path for showing an editor.
+		const { lsp } = initPlayground();
+		await lsp;
+
+		const session = await createSession(sampleUri);
+		mount.replaceChildren();
+		new EditorView({
+			parent: mount,
+			state: EditorState.create({
+				doc: sampleShader,
+				extensions: [basicSetup, lintGutter(), wgsl(), playgroundTheme, session.extension],
+			}),
+		});
+		setStatus('wgslender-lsp ready — it re-checks as you type');
+	}
+
+	if (host) {
+		boot(host).catch((error) => {
+			setStatus(`Language server failed to start: ${error?.message ?? error}`, true);
+		});
+	}
+</script>
+
+<style>
+	.playground {
+		display: grid;
+		grid-template-columns: 1fr 1fr;
+		gap: 1rem;
+		margin-block: 1.5rem;
+	}
+
+	@media (max-width: 768px) {
+		.playground {
+			grid-template-columns: 1fr;
+		}
+	}
+
+	.pane {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
+		border: 1px solid var(--sl-color-hairline);
+		border-radius: 0.5rem;
+		overflow: hidden;
+		background-color: var(--sl-color-bg);
+	}
+
+	.pane-head {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: 0.5rem;
+		padding: 0.5rem 0.75rem;
+		border-bottom: 1px solid var(--sl-color-hairline);
+		background-color: var(--sl-color-bg-nav);
+	}
+
+	.pane-title {
+		margin: 0;
+		font-family: var(--sl-font-system-mono);
+		font-size: var(--sl-text-xs);
+		font-weight: 600;
+		color: var(--sl-color-white);
+	}
+
+	.pane-status {
+		margin: 0;
+		font-size: var(--sl-text-xs);
+		color: var(--sl-color-gray-3);
+	}
+
+	.pane-status.failed {
+		color: var(--sl-color-red-high);
+	}
+
+	.pane-body {
+		height: min(65vh, 34rem);
+	}
+
+	/* CodeMirror scrolls itself. A second scroller on the wrapper would fight
+	   it: `scrollIntoView`, hover and click coordinates all resolve against
+	   the editor's own scroller, and would drift by the wrapper's offset. */
+	.editor {
+		overflow: hidden;
+	}
+
+	/* Matches the CodeMirror metrics in editor-theme.ts, so swapping the
+	   fallback for the real editor does not move the text. */
+	.editor .fallback {
+		height: 100%;
+		margin: 0;
+		padding: 0.25rem 0.75rem;
+		border: 0;
+		border-radius: 0;
+		overflow: auto;
+		font-family: var(--sl-font-system-mono);
+		font-size: var(--sl-text-code-sm);
+		line-height: 1.6;
+		background-color: var(--sl-color-bg);
+	}
+
+	.prose {
+		padding: 0.75rem 1rem;
+		overflow: auto;
+		font-size: var(--sl-text-sm);
+		color: var(--sl-color-gray-2);
+	}
+
+	.prose p {
+		margin-block: 0 0.75rem;
+	}
+</style>

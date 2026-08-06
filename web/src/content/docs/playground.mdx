@@ -1,0 +1,14 @@
+---
+title: Playground
+description: Edit WGSL in the browser against the real wgslender language server, minifier and reflection engine — all compiled to WebAssembly, all running in this tab.
+template: splash
+tableOfContents: false
+---
+
+import PlaygroundEditor from '../../components/PlaygroundEditor.astro';
+
+Everything on this page runs in your browser. There is no server, no upload, and no WebGPU
+context — the shader below is checked by the same code the CLI and the editor extension use,
+compiled to WebAssembly.
+
+<PlaygroundEditor />
