@@ -10,8 +10,8 @@
 //
 // There is none to do. The embedded module is compiled on first use and reused
 // for the lifetime of the process: the first call pays roughly 130 ms, later
-// calls do not. This is the one place the API deliberately diverges from the
-// npm package, which makes the caller await an explicit initialize().
+// calls do not. The npm package instead makes the caller await an explicit
+// initialize(); Go's lazy initialisation makes that ceremony unnecessary.
 //
 // # Contexts and concurrency
 //
@@ -19,4 +19,19 @@
 // All of them are safe to call from multiple goroutines, though calls are
 // serialised: the engine is a single-threaded allocator and running two calls
 // through it at once corrupts its heap.
+//
+// # Text
+//
+// WGSL is defined over UTF-8, and a Go string is only bytes, so every string
+// this package is given — shader source, identifiers, type text — must be valid
+// UTF-8. One that is not is refused with [ErrInvalidUTF8] rather than answered,
+// because the engine would copy the stray bytes into a reply that no JSON
+// decoder can read back faithfully.
+//
+// # Errors
+//
+// A shader's own problems are data, not errors. Source that does not parse,
+// does not type-check or trips a lint rule is reported in the result — as
+// [MinifyResult.Errors] and its kin — and the call itself succeeds. A returned
+// error means the call could not be made or could not be trusted.
 package wgslender

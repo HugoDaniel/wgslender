@@ -10,7 +10,9 @@ Also creates `cmd/wgslgen`, a `go:generate`-able codegen tool — the Go analog 
 Rust `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` macros (Go has no
 compile-time macros; `go generate` + golden files is the idiom).
 
-**Status:** ready to execute, block-per-session. Re-verified against `main @ 9726727`
+**Status:** executing, block-per-session. **Block 0 landed (`ef93631`), Block 1 landed** —
+`git log -- packages/go` is the authority on what is actually done, not this line.
+Originally verified against `main @ 9726727`
 on 2026-08-06 (macOS arm64, go 1.26.5, zig 0.16.0) by running a throwaway wazero
 harness over the shipped wasm — every ABI, wire, and Go-language claim below was
 observed, not inferred. Working tree is clean apart from untracked `docs/obsidian/`.
@@ -774,7 +776,9 @@ Block 3 is the largest of the blocks — see the corrected reflect key inventory
    integration can't provoke (`"not a removable declaration"`, `"id too long"` —
    confirmed unreachable, see the provocation table in § Wire contracts) — same trick
    as the Rust unit tests.
-3. GREEN: refactor.go, errors.go.
+3. GREEN: refactor.go, and the refactor sentinels added to `errors.go` (which
+   already exists — Block 1 created it for `ErrInvalidUTF8` and the two
+   re-exported ABI sentinels).
 4. Commit: `feat(packages/go): refactor and stable-id operations`.
 
 ### Block 6 — concurrency + performance ([PERF])
@@ -860,9 +864,21 @@ The `wgsl_module!` analog: typed structs with layout proofs.
 - No existing file is modified by this plan. No `build.zig` changes (a `gen-go`-style
   copy step was considered and rejected — a two-line `cp` documented in README plus
   the parity test is less machinery than a build-graph edit).
-- The Go API deliberately diverges from npm in three places (all documented):
+- The Go API deliberately diverges from npm in four places (all documented):
   no `initialize()` (lazy init), refactor errors are Go errors rather than `error`
-  fields on results, and minify errors are flattened `[]string` (Rust parity).
+  fields on results, minify errors are flattened `[]string` (Rust parity), and
+  **non-UTF-8 input is refused** rather than silently mangled (see below).
+- **`ErrInvalidUTF8` — found by Block 1's fuzzer, not predicted by this plan.**
+  `Diagnostic.appendJsonEscaped` (`src/Diagnostic.zig:259`) passes every byte
+  ≥ 0x20 through verbatim, so a source that is not valid UTF-8 produces a reply
+  that is not valid UTF-8 either; `encoding/json` then substitutes U+FFFD without
+  complaint and the caller gets back bytes that are not theirs (`"let\x95"` →
+  `MinifiedSize` 4, `len(Code)` 6). Rust cannot reach this — `&str` is UTF-8 by
+  construction — and npm does the substituting via `TextDecoder`. Go's `string`
+  has no such guarantee, so the binding checks at the boundary: every
+  caller-supplied text argument is `utf8.ValidString`-checked before the call
+  (`checkUTF8` in `wgslender/errors.go`). Later blocks must apply it to *their*
+  string arguments too — source, new names, stable IDs, type text.
 - `MinifyOptions` deliberately omits `sourceMapInline` even though `Config` parses it,
   because the wasm minify path ignores it (see § Wire contracts). Recorded here so a
   later reader doesn't "restore" a knob that would silently do nothing.
