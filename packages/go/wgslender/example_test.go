@@ -161,6 +161,38 @@ func ExampleCompile() {
 	// 1:12 expected ')'
 }
 
+// ExampleLintFix applies every available autofix in one pass. The report it
+// returns describes the source **as it was handed in**, not the fixed one —
+// run Lint on the result to see what is left.
+func ExampleLintFix() {
+	// The cast is redundant — i * 2u is already a u32 — and the rule that says
+	// so carries an autofix.
+	const shader = `@group(0) @binding(0) var<storage, read_write> counters: array<u32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(local_invocation_index) i: u32) {
+    let doubled = u32(i * 2u);
+    counters[i] = doubled;
+}
+`
+	cfg := &wgslender.LintConfig{Extends: []wgslender.Pack{wgslender.PackRecommended}}
+	outcome, err := wgslender.LintFix(context.Background(), shader, cfg)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println("fixable:", outcome.Report.FixableCount)
+	fmt.Print(outcome.Fixed)
+	// Output:
+	// fixable: 1
+	// @group(0) @binding(0) var<storage, read_write> counters: array<u32>;
+	//
+	// @compute @workgroup_size(64)
+	// fn main(@builtin(local_invocation_index) i: u32) {
+	//     let doubled = i * 2u;
+	//     counters[i] = doubled;
+	// }
+}
+
 // ExampleFindReferences lists every mention of a symbol, given any byte
 // offset inside one of them. Offsets are plain string indexes, so
 // strings.Index is all it takes to point at a name.
