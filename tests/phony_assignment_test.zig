@@ -183,3 +183,71 @@ test "phony: DCE keeps a binding referenced only by a phony assignment" {
     defer out.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, out.code, "@binding(0)") != null);
 }
+
+// -------------------------------------------------------------------------
+// Block 3 — printing and minification.
+// -------------------------------------------------------------------------
+
+/// Minify `src` with the given options and return the code. Caller must
+/// `deinit` the returned result.
+fn minifyWith(src: [:0]const u8, opts: wgslender.Minifier.Options) !wgslender.Minifier.Result {
+    return wgslender.minifyWithOptions(std.testing.allocator, src, opts);
+}
+
+test "phony: minifies to `_=x;`" {
+    var out = try wgslender.minify(std.testing.allocator,
+        \\@compute @workgroup_size(1)
+        \\fn main() { let x = 1.0; _ = x; }
+        \\
+    );
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, out.code, "_=") != null);
+}
+
+test "phony: survives a print → reparse round-trip" {
+    var opts = wgslender.Minifier.defaultOptions();
+    opts.minify_identifiers = false;
+    var out = try minifyWith(
+        \\@group(0) @binding(0) var<uniform> u: vec4f;
+        \\@compute @workgroup_size(1)
+        \\fn main() { _ = u; }
+        \\
+    , opts);
+    defer out.deinit(std.testing.allocator);
+
+    // Re-parse the printed text: the statement must come back as a phony,
+    // not as an error-recovered fragment that happens to print the same.
+    const round: [:0]const u8 = try std.testing.allocator.dupeZ(u8, out.code);
+    defer std.testing.allocator.free(round);
+    var r = try parseClean(round);
+    defer r.deinit();
+    const stmts = try bodyOf(&r, "main");
+    try std.testing.expectEqual(@as(usize, 1), stmts.len);
+    try std.testing.expect(stmts[0] == .phony);
+}
+
+test "phony: for-init and for-update forms print without a stray semicolon" {
+    var opts = wgslender.Minifier.defaultOptions();
+    opts.minify_identifiers = false;
+    var out = try minifyWith(
+        \\@compute @workgroup_size(1)
+        \\fn main() { for (_ = 1; false; _ = 2) {} }
+        \\
+    , opts);
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, out.code, "for(_=1;false;_=2)") != null);
+}
+
+test "phony: the minifier does not drop a pure phony assignment" {
+    // `_ = 1;` has no observable effect and is a legitimate future
+    // optimization — but dropping it is a semantics decision of its own,
+    // and wrong for `_ = tex;`. Pin today's behaviour so the change is
+    // deliberate when it comes. See the plan's §9.
+    var out = try wgslender.minify(std.testing.allocator,
+        \\@compute @workgroup_size(1)
+        \\fn main() { _ = 1; }
+        \\
+    );
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, out.code, "_=1;") != null);
+}

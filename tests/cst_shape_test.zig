@@ -140,3 +140,14 @@ test "cst shape: malformed param list produces error_tree but sibling decls surv
     }
     try std.testing.expect(decls_or_errors >= 2);
 }
+
+test "cst shape: phony assignment lowers to phony_stmt, not error_tree" {
+    // The round-trip test alone cannot catch a regression here: a phony
+    // statement swallowed into an `error_tree` still concatenates back to
+    // the source byte-for-byte. Name the node explicitly.
+    try expectShape(
+        std.testing.allocator,
+        "fn f() { _ = x; }",
+        "(module (fn_decl (compound_stmt (phony_stmt (ident_expr)))))",
+    );
+}

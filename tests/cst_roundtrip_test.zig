@@ -209,3 +209,11 @@ test "cst roundtrip: compute.toys corpus" {
 
     std.debug.print("cst roundtrip: verified on {d} compute.toys shaders\n", .{n_shaders});
 }
+
+test "cst roundtrip: phony assignment with interior trivia" {
+    try expectRoundtrip(std.testing.allocator, "fn f() {\n  _  /*c*/ =  x ; // t\n}\n");
+}
+
+test "cst roundtrip: phony assignment in for-init and for-update" {
+    try expectRoundtrip(std.testing.allocator, "fn f() { for ( _ = 1 ; false ; _ = 2 ) {} }\n");
+}
