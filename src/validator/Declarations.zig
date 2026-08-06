@@ -128,9 +128,16 @@ pub fn processDirectives(v: *Validator) Allocator.Error!void {
 // =========================================================================
 
 /// WGSL spec (§2.4): identifiers consisting of a single `_`, or beginning
-/// with `__`, are reserved. The former is only allowed as the left-hand side
-/// of a phony assignment — the parser does not build a `Symbol` for that
-/// case, so every surviving `_` symbol here is an invalid declaration.
+/// with `__`, are reserved. The former is only allowed as the left-hand
+/// side of a phony assignment, which the parser matches as a grammar token
+/// (`Ast.PhonyStmt`) and never turns into a `Symbol` — so every `_` symbol
+/// that reaches here came from a declaration-name position and is invalid.
+///
+/// The parser deliberately *accepts* `_` there (`Parser.isDeclNameLike`)
+/// rather than rejecting it inline: continuing the declaration parse keeps
+/// the diagnostic on the `_` itself, where it used to derail into a
+/// six-error cascade misattributed to the previous line. This function is
+/// the single owner of the message; the parser emits nothing.
 pub fn checkReservedIdentifiers(v: *Validator) void {
     for (v.module.symbols.items, 0..) |sym, i| {
         switch (sym.kind) {

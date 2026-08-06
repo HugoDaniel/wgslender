@@ -605,6 +605,25 @@ fn peekIdentLike(self: *const Parser, offset: u32) bool {
     return tag == .ident or tag == .reserved_ident;
 }
 
+/// True where a *declaration name* may appear. Wider than `isIdentLike`
+/// by `.underscore`: `let _ = …`, `fn f(_: f32)` and `struct S { _: f32 }`
+/// are all invalid WGSL (§2.4), but they parse further as named
+/// declarations so the diagnostic lands on the `_` itself instead of
+/// derailing into a cascade. `eatIdent` accepts the token and
+/// `Declarations.checkReservedIdentifiers` reports it.
+///
+/// Deliberately NOT used for member access: `x._` stays a parse error
+/// rather than becoming a member named `_`, since `_` is not a name and
+/// there is no declaration there to attach the reserved-identifier
+/// diagnostic to.
+fn isDeclNameLike(self: *const Parser) bool {
+    return self.isIdentLike() or self.currentTag() == .underscore;
+}
+
+fn peekDeclNameLike(self: *const Parser, offset: u32) bool {
+    return self.peekIdentLike(offset) or self.peekTag(offset) == .underscore;
+}
+
 /// Check if current token is an identifier (or reserved word used as identifier).
 /// Emits a diagnostic for reserved words but returns the text for error recovery.
 fn eatIdent(self: *Parser) Allocator.Error!?[]const u8 {
@@ -616,6 +635,20 @@ fn eatIdent(self: *Parser) Allocator.Error!?[]const u8 {
             std.fmt.allocPrint(self.arena, "'{s}' is a reserved word and cannot be used as an identifier", .{text}) catch "use of reserved word";
         try self.errors.append(self.arena, .{ .message = msg, .pos = self.currentStart(), .code = "E0004" });
         return text;
+    }
+    if (self.currentTag() == .underscore) {
+        // §2.4: `_` is reserved and may appear ONLY as the left-hand side
+        // of a phony assignment — which `parsePhonyStmt` matches as a
+        // grammar token, never reaching here. So every `_` that arrives at
+        // a name position is an invalid declaration (`let _ = …`).
+        //
+        // Accept the text and keep parsing the rest of the declaration, so
+        // a `_` symbol reaches the validator and
+        // `Declarations.checkReservedIdentifiers` reports it — one message,
+        // owned by one place. Returning null instead used to abort the
+        // declaration mid-parse and produce a six-error cascade whose first
+        // entry was misattributed to the *previous* line.
+        return self.currentText();
     }
     if (self.currentTag() == .ident) {
         return self.currentText();
@@ -800,7 +833,7 @@ fn parseDeclaration(self: *Parser) !?Ast.Decl {
 
     switch (self.currentTag()) {
         .keyword_const => {
-            if (self.peekIdentLike(1)) {
+            if (self.peekDeclNameLike(1)) {
                 const decl: Ast.Decl = .{ .@"const" = try self.parseConstDecl(decl_start) };
                 try self.cstClose(marker, .const_decl);
                 return decl;
@@ -1088,7 +1121,7 @@ fn parseParameters(self: *Parser) !std.ArrayList(Ast.Parameter) {
     var params: std.ArrayList(Ast.Parameter) = .empty;
     for (0..self.token_tags.len) |_| {
         const param_attrs = try self.parseAttributes();
-        if (!self.isIdentLike()) break;
+        if (!self.isDeclNameLike()) break;
         const text = (try self.eatIdent()).?;
         const loc = self.currentStart();
         self.advance();
@@ -1116,7 +1149,7 @@ fn parseStructDecl(self: *Parser, decl_start: u32) !*Ast.StructDecl {
     _ = try self.expect(.l_brace);
     while (self.currentTag() != .r_brace and self.currentTag() != .eof) {
         const member_attrs = try self.parseAttributes();
-        if (!self.isIdentLike()) break;
+        if (!self.isDeclNameLike()) break;
         const member_loc = self.currentStart();
         const text = (try self.eatIdent()).?;
         self.advance();

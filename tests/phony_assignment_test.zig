@@ -251,3 +251,127 @@ test "phony: the minifier does not drop a pure phony assignment" {
     defer out.deinit(std.testing.allocator);
     try std.testing.expect(std.mem.indexOf(u8, out.code, "_=1;") != null);
 }
+
+// -------------------------------------------------------------------------
+// Block 4 — validation, and `_` used where a name is expected.
+// -------------------------------------------------------------------------
+
+const Diagnostic = wgslender.Diagnostic;
+
+/// Validate `src` and return the diagnostics. Caller owns the result.
+fn validate(src: [:0]const u8) !wgslender.Validator.Result {
+    return wgslender.validateWithOptions(std.testing.allocator, src, .{});
+}
+
+fn countErrors(r: wgslender.Validator.Result) usize {
+    var n: usize = 0;
+    for (r.diagnostics.items()) |d| {
+        if (d.severity == .@"error") n += 1;
+    }
+    return n;
+}
+
+fn hasCode(r: wgslender.Validator.Result, code: []const u8) bool {
+    for (r.diagnostics.items()) |d| {
+        if (std.mem.eql(u8, d.code, code)) return true;
+    }
+    return false;
+}
+
+test "phony: the RHS is type-checked — an undeclared name is reported" {
+    var r = try validate(
+        \\fn f() { _ = nope; }
+        \\
+    );
+    defer r.deinit();
+    try std.testing.expect(hasCode(r, "E0100"));
+}
+
+test "phony: a type error in the RHS is reported" {
+    var r = try validate(
+        \\fn f() { _ = 1.0 + vec2f(1.0, 2.0) * mat2x3f(); }
+        \\
+    );
+    defer r.deinit();
+    try std.testing.expect(countErrors(r) > 0);
+}
+
+test "phony: `let _ = x;` produces exactly one diagnostic, not a cascade" {
+    // Six errors before this block, the first of them misattributed to
+    // the *previous* line. `let _` is genuinely invalid WGSL (§2.4: `_`
+    // may only appear as the left-hand side of a phony assignment) and
+    // should be rejected — but with one message that names the problem.
+    var r = try validate(
+        \\fn f() {
+        \\  let _ = 3.14;
+        \\}
+        \\
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 1), countErrors(r));
+    try std.testing.expect(hasCode(r, Diagnostic.Code.reserved_identifier));
+}
+
+test "phony: `var _ : f32;` is rejected the same way" {
+    var r = try validate(
+        \\fn f() { var _ : f32; }
+        \\
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(usize, 1), countErrors(r));
+    try std.testing.expect(hasCode(r, Diagnostic.Code.reserved_identifier));
+}
+
+test "phony: the `_` diagnostic points at the `_`, not the previous line" {
+    var r = try validate(
+        \\fn f() {
+        \\  let _ = 3.14;
+        \\}
+        \\
+    );
+    defer r.deinit();
+    for (r.diagnostics.items()) |d| {
+        if (!std.mem.eql(u8, d.code, Diagnostic.Code.reserved_identifier)) continue;
+        try std.testing.expectEqual(@as(u32, 2), d.range.start.line);
+        try std.testing.expectEqual(@as(u32, 7), d.range.start.column);
+        return;
+    }
+    return error.NoReservedIdentifierDiagnostic;
+}
+
+test "phony: `_` is rejected in every declaration-name position" {
+    // Before this block only `let`/`var` reached the validator at all;
+    // parameters, struct members, `const`, `alias` and `fn` names each
+    // derailed into their own multi-error cascade. `Parser.isDeclNameLike`
+    // routes all of them through `eatIdent` so one message covers them.
+    const cases = [_][:0]const u8{
+        "fn f(_ : f32) {}\n",
+        "struct S { _: f32 }\n",
+        "const _ = 1;\n",
+        "alias _ = f32;\n",
+        "fn _() {}\n",
+        "fn f() { let _ = 3.14; }\n",
+        "fn f() { var _ : f32; }\n",
+    };
+    for (cases) |src| {
+        var r = try validate(src);
+        defer r.deinit();
+        std.testing.expectEqual(@as(usize, 1), countErrors(r)) catch |e| {
+            std.debug.print("case: {s}", .{src});
+            for (r.diagnostics.items()) |d| std.debug.print("  [{s}] {s}\n", .{ d.code, d.message });
+            return e;
+        };
+        try std.testing.expect(hasCode(r, Diagnostic.Code.reserved_identifier));
+    }
+}
+
+test "phony: `_` in member position stays a parse error, not a member named `_`" {
+    // `isDeclNameLike` deliberately does not cover member access: there is
+    // no declaration there to hang the reserved-identifier message on.
+    var r = try Incremental.parseFull(std.testing.allocator,
+        \\fn f() { let v = vec2f(); _ = v._; }
+        \\
+    );
+    defer r.deinit();
+    try std.testing.expect(r.errors.len > 0);
+}

@@ -128,8 +128,7 @@ pub fn validateStmt(v: *Validator, stmt: Ast.Stmt) Allocator.Error!void {
         .break_if => |s| try validateBreakIfStmt(v, s),
         .@"continue" => |s| validateContinueStmt(v, s),
         .discard => |s| validateDiscardStmt(v, s),
-        // TODO(block-4): type-check the discarded expression.
-        .phony => {},
+        .phony => |s| try validatePhonyStmt(v, s),
         .assign => |s| try validateAssignStmt(v, s),
         .incr_decr => |s| try validateIncrDecrStmt(v, s),
         .call => |s| try validateCallStmt(v, s),
@@ -469,6 +468,14 @@ pub fn validateDiscardStmt(v: *Validator, s: *Ast.DiscardStmt) void {
     }
     // discard terminates the invocation, satisfying any return requirement.
     v.fn_ctx.has_return = true;
+}
+
+/// WGSL §9.3 `_ = expr` — the value is discarded, but the expression is
+/// still evaluated and must type-check like any other. There is no
+/// left-hand side to compare against: `_` is a grammar token, not a
+/// declared name, so nothing here consults the symbol table.
+pub fn validatePhonyStmt(v: *Validator, s: *Ast.PhonyStmt) Allocator.Error!void {
+    _ = try v.checkExpr(s.expr);
 }
 
 pub fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!void {
