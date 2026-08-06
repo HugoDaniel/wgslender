@@ -12,13 +12,18 @@
 
 use std::env;
 use std::fmt::Write as _;
-use std::process::{Command, ExitCode};
+use std::fs;
+use std::path::Path;
+use std::process::{Command, ExitCode, Stdio};
 
 /// The workspace root, one directory above this crate.
 ///
 /// Baked in at build time so that the gate runs the same way from wherever the
 /// user happened to be standing.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
+
+/// The directory the `EXAMPLES` table below claims to describe in full.
+const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../wgslender/examples");
 
 /// The oldest toolchain the crates' `rust-version` promises to support.
 const MSRV: &str = "1.85.0";
@@ -27,9 +32,10 @@ const USAGE: &str = "\
 usage: cargo xtask <task>
 
 tasks:
-  check   formatting, clippy, tests, doctests and the doc build — the full gate
-  msrv    type-check the workspace with the declared minimum toolchain
-  deny    audit dependencies with cargo-deny
+  check      formatting, clippy, tests, the doc build and the examples — the full gate
+  examples   run every example, and check the table listing them is complete
+  msrv       type-check the workspace with the declared minimum toolchain
+  deny       audit dependencies with cargo-deny
 ";
 
 /// Which binary a step runs.
@@ -162,6 +168,70 @@ const CHECK: &[Step] = &[
     },
 ];
 
+/// One runnable example, and the features it needs beyond the defaults.
+struct Example {
+    /// The file stem under `wgslender/examples/`, which is also what Cargo is
+    /// given as `--example`.
+    name: &'static str,
+    /// Passed as `--features`. Empty for everything the default features build;
+    /// a row asks for exactly what its example needs, which incidentally proves
+    /// the feature gating still gates.
+    features: &'static [&'static str],
+}
+
+/// Every example the facade crate ships.
+///
+/// The gate already *compiles* these — the clippy and check steps pass
+/// `--all-targets` — which proves only that they build. This table is what
+/// makes them run. An example that panics on its first unwrap, or that prints
+/// nothing at all, has demonstrated nothing, and until this table existed it
+/// passed the gate anyway.
+///
+/// Hand-written rather than globbed, so that adding an example is a deliberate
+/// row. [`examples_are_all_listed`] is what stops the list from rotting.
+const EXAMPLES: &[Example] = &[
+    Example {
+        name: "minify",
+        features: &[],
+    },
+    Example {
+        name: "reflect_types",
+        features: &[],
+    },
+    Example {
+        name: "wgsl_module",
+        features: &[],
+    },
+    Example {
+        name: "embed_compressed",
+        features: &["compress"],
+    },
+    Example {
+        name: "validate",
+        features: &[],
+    },
+    Example {
+        name: "lint",
+        features: &[],
+    },
+    Example {
+        name: "compile",
+        features: &[],
+    },
+    Example {
+        name: "refactor",
+        features: &[],
+    },
+    Example {
+        name: "minify_options",
+        features: &[],
+    },
+    Example {
+        name: "include_wgsl",
+        features: &[],
+    },
+];
+
 /// Type-checking with the declared minimum toolchain, which is a promise the
 /// current toolchain cannot keep on its behalf.
 ///
@@ -196,6 +266,40 @@ enum Availability {
     Missing,
 }
 
+/// Whether everything a gate ran passed.
+///
+/// A named pair rather than a `bool`, for the same reason [`Availability`] is
+/// one: at a call site `false` reads as easily as "did not run" as it does as
+/// "ran and said no", and those are different answers.
+#[derive(Clone, Copy)]
+enum Outcome {
+    Passed,
+    Failed,
+}
+
+impl Outcome {
+    /// Runs `next` only after a pass, so that the first failure is the last
+    /// thing printed and the one the user reads.
+    fn and_then(self, next: impl FnOnce() -> Self) -> Self {
+        match self {
+            Self::Passed => next(),
+            Self::Failed => Self::Failed,
+        }
+    }
+
+    /// The exit code, plus the one `all green` — which belongs to the whole
+    /// task, not to each gate inside it.
+    fn report(self) -> ExitCode {
+        match self {
+            Self::Passed => {
+                println!("\nall green");
+                ExitCode::SUCCESS
+            }
+            Self::Failed => ExitCode::FAILURE,
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let task = args.next();
@@ -205,7 +309,10 @@ fn main() -> ExitCode {
     }
 
     match task.as_deref() {
-        Some("check") => run(CHECK),
+        // The examples go last: they are the slowest step, and the least likely
+        // to fail once the rest is green.
+        Some("check") => run(CHECK).and_then(examples).report(),
+        Some("examples") => examples().report(),
         Some("msrv") => msrv(),
         Some("deny") => deny(),
         Some(unknown) => {
@@ -220,7 +327,7 @@ fn main() -> ExitCode {
 }
 
 /// Runs steps in order, stopping at the first one that fails.
-fn run(steps: &[Step]) -> ExitCode {
+fn run(steps: &[Step]) -> Outcome {
     for step in steps {
         println!("\n=== {} ===\n$ {}", step.label, step.command_line());
 
@@ -234,17 +341,146 @@ fn run(steps: &[Step]) -> ExitCode {
             Ok(status) if status.success() => {}
             Ok(status) => {
                 eprintln!("\nxtask: {} failed ({status})", step.label);
-                return ExitCode::FAILURE;
+                return Outcome::Failed;
             }
             Err(err) => {
                 eprintln!("\nxtask: could not run {}: {err}", step.command_line());
-                return ExitCode::FAILURE;
+                return Outcome::Failed;
             }
         }
     }
 
-    println!("\nall green");
-    ExitCode::SUCCESS
+    Outcome::Passed
+}
+
+/// Runs every example in [`EXAMPLES`], in order, stopping at the first failure.
+///
+/// An example has to exit zero *and* print something. The second half is the
+/// point: these are documentation that happens to execute, and one that runs in
+/// silence is documentation that says nothing.
+fn examples() -> Outcome {
+    println!("\n=== examples ===");
+
+    if let Outcome::Failed = examples_are_all_listed() {
+        return Outcome::Failed;
+    }
+
+    for example in EXAMPLES {
+        let features = example.features.join(",");
+        let mut args = vec!["run", "--package", "wgslender", "--example", example.name];
+        if !features.is_empty() {
+            args.push("--features");
+            args.push(&features);
+        }
+        println!("$ cargo {}", args.join(" "));
+
+        let mut command = Program::Cargo.command();
+        command
+            .current_dir(WORKSPACE_ROOT)
+            .args(&args)
+            // Cargo's progress goes to stderr, so letting that through means a
+            // cold build still looks like something is happening. Only what the
+            // example itself prints gets captured, which is what makes the
+            // emptiness check below mean anything.
+            .stderr(Stdio::inherit());
+
+        let output = match command.output() {
+            Ok(output) => output,
+            Err(err) => {
+                eprintln!("\nxtask: could not run the {} example: {err}", example.name);
+                return Outcome::Failed;
+            }
+        };
+
+        // Text, because text is what an example prints. Lossy, because a gate
+        // that hits a mangled byte should say what it saw rather than refuse to
+        // say anything.
+        let printed = String::from_utf8_lossy(&output.stdout);
+
+        if !output.status.success() {
+            // Whatever it managed to print before it failed, which is usually
+            // where the failure is.
+            if !printed.trim().is_empty() {
+                println!("{}", printed.trim_end());
+            }
+            eprintln!(
+                "\nxtask: the {} example failed ({})",
+                example.name, output.status
+            );
+            return Outcome::Failed;
+        }
+
+        if printed.trim().is_empty() {
+            eprintln!(
+                "\nxtask: the {} example printed nothing — an example that says \
+                 nothing demonstrates nothing",
+                example.name
+            );
+            return Outcome::Failed;
+        }
+
+        println!("  {} lines", printed.lines().count());
+    }
+
+    Outcome::Passed
+}
+
+/// Fails if `wgslender/examples/` holds an example [`EXAMPLES`] does not.
+///
+/// The table is the thing that runs, so a file missing from it is an example
+/// that silently stops being checked the moment it is written. Directory-style
+/// examples (`foo/main.rs`) count too, because Cargo builds those as well.
+///
+/// `std::fs`, rather than a crate that walks directories: xtask has no
+/// dependencies on purpose, and a gate that fails to build is a gate that stops
+/// being run.
+fn examples_are_all_listed() -> Outcome {
+    let dir = Path::new(EXAMPLES_DIR);
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) => {
+            eprintln!("\nxtask: could not read {}: {err}", dir.display());
+            return Outcome::Failed;
+        }
+    };
+
+    let mut unlisted = Vec::new();
+    for entry in entries {
+        let path = match entry {
+            Ok(entry) => entry.path(),
+            Err(err) => {
+                eprintln!("\nxtask: could not read {}: {err}", dir.display());
+                return Outcome::Failed;
+            }
+        };
+
+        let name = if path.extension().is_some_and(|extension| extension == "rs") {
+            path.file_stem()
+        } else if path.join("main.rs").is_file() {
+            path.file_name()
+        } else {
+            continue;
+        };
+        let Some(name) = name.and_then(|name| name.to_str()) else {
+            continue;
+        };
+
+        if !EXAMPLES.iter().any(|example| example.name == name) {
+            unlisted.push(name.to_owned());
+        }
+    }
+
+    if unlisted.is_empty() {
+        return Outcome::Passed;
+    }
+
+    unlisted.sort();
+    eprintln!(
+        "\nxtask: missing from the EXAMPLES table in xtask/src/main.rs, so the \
+         gate would never run them: {}",
+        unlisted.join(", ")
+    );
+    Outcome::Failed
 }
 
 /// A missing tool exits non-zero rather than reporting a pass: a check that did
@@ -256,7 +492,7 @@ fn missing(hint: &str) -> ExitCode {
 
 fn msrv() -> ExitCode {
     match msrv_toolchain() {
-        Availability::Present => run(MSRV_CHECK),
+        Availability::Present => run(MSRV_CHECK).report(),
         Availability::Missing => missing(&format!(
             "rustup has no {MSRV} toolchain — install it with \
              `rustup toolchain install {MSRV}`"
@@ -266,7 +502,7 @@ fn msrv() -> ExitCode {
 
 fn deny() -> ExitCode {
     match cargo_deny() {
-        Availability::Present => run(DENY),
+        Availability::Present => run(DENY).report(),
         Availability::Missing => missing(
             "cargo-deny is not installed — install it with `cargo install --locked cargo-deny`",
         ),
