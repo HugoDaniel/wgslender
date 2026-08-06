@@ -40,6 +40,8 @@ type CompileError struct {
 	Diagnostics []Diagnostic
 }
 
+// Error reports the first parse error, and how many followed it. The rest are
+// in [CompileError.Diagnostics], with their positions.
 func (e *CompileError) Error() string {
 	if len(e.Diagnostics) == 0 {
 		// The engine never does this — it withholds a module only when it has

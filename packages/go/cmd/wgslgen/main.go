@@ -27,12 +27,34 @@
 //
 //	var Blur = sync.OnceValue(func() string { … })
 //
+// # Describing the shader
+//
+// With -module the same file also carries what the shader declares: where each
+// resource is bound, what the entry points are called, and a Go struct for
+// every struct the shader declares, padded so that its fields land at the
+// offsets the GPU will read them from.
+//
+//	//go:generate wgslgen -module -var Blur -o blur_shader.go blur.wgsl
+//
+// That writes a second file beside the first — blur_shader_test.go — which
+// checks each struct's size and field offsets against the shader. Go cannot
+// constrain a struct's layout in the language, so the claim the struct makes
+// about memory is checked by `go test` instead of by the compiler.
+//
+// A WGSL type Go has no shape for is neither guessed at nor dropped. It becomes
+// padding of exactly its size, so every field after it stays where the shader
+// put it, plus a constant saying where it begins — a runtime-sized array, whose
+// length is the host's to choose, and a matrix or array whose elements are
+// spaced further apart than they are wide, which a Go array cannot express.
+//
 // # Flags
 //
 //	-var name     the Go identifier to embed the shader as. Required.
 //	-pkg name     the package clause to write. Defaults to $GOPACKAGE.
 //	-o file       where to write. Defaults to standard output.
 //	-compress     store a DEFLATE stream inflated on first use.
+//	-module       also generate the bindings, entry points and structs.
+//	-prefix name  put this on the front of every name -module generates.
 //	-validate     type-check the shader, refusing one that does not. Default true.
 //	-strict       treat warnings as errors while validating.
 //	-keep-names   comma-separated identifiers minification must not rename.
@@ -108,6 +130,12 @@ type config struct {
 	// compress stores the shader as a DEFLATE stream instead of a string
 	// constant.
 	compress bool
+	// module adds what the shader declares — its bindings, entry points and
+	// structs — to the generated file, and writes the layout proof beside it.
+	// prefix goes on the front of every name that produces, for a package that
+	// generates from more than one shader.
+	module bool
+	prefix string
 	// validate type-checks the shader; strict promotes its warnings to errors.
 	validate bool
 	strict   bool
@@ -200,6 +228,11 @@ tool supplies the package name through GOPACKAGE:
 
 	//go:generate wgslgen -var Blur -o blur_shader.go blur.wgsl
 
+With -module the generated file also carries what the shader declares — its
+bindings, its entry points and a Go struct for each of its structs — and a
+second file beside it checking that the structs are laid out the way the GPU
+will read them.
+
 Flags:
 `
 
@@ -233,6 +266,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	fs.StringVar(&cfg.pkgName, "pkg", os.Getenv("GOPACKAGE"), "the package clause to write (default $GOPACKAGE)")
 	fs.StringVar(&cfg.output, "o", "", "where to write the Go file (default standard output)")
 	fs.BoolVar(&cfg.compress, "compress", false, "store a DEFLATE stream, inflated on first use")
+	fs.BoolVar(&cfg.module, "module", false, "also generate the shader's bindings, entry points and structs, with a layout proof beside them")
+	fs.StringVar(&cfg.prefix, "prefix", "", "put this on the front of every name -module generates")
 	fs.BoolVar(&cfg.validate, "validate", true, "type-check the shader, refusing one that does not")
 	fs.BoolVar(&cfg.strict, "strict", false, "treat warnings as errors while validating")
 	keepNames := fs.String("keep-names", "", "comma-separated identifiers minification must not rename")
@@ -268,46 +303,69 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return usageError(stderr, fs, "-pkg %s is not a Go identifier", cfg.pkgName)
 	case cfg.strict && !cfg.validate:
 		return usageError(stderr, fs, "-strict says how to validate and -validate=false says not to")
+	case cfg.module && cfg.output == "":
+		// -module writes the layout proof beside the file it generates, and
+		// standard output has no beside.
+		return usageError(stderr, fs, "-module needs -o: it writes a second file, the layout proof, next to the first")
+	case cfg.prefix != "" && !cfg.module:
+		return usageError(stderr, fs, "-prefix names what -module generates, and -module was not given")
+	case cfg.prefix != "" && (!token.IsIdentifier(cfg.prefix) || !token.IsExported(cfg.prefix)):
+		return usageError(stderr, fs, "-prefix %s does not begin an exported Go identifier", cfg.prefix)
 	}
 	cfg.opts.KeepNames = splitNames(*keepNames)
 
-	file, err := embed(ctx, cfg, stderr)
+	out, err := embed(ctx, cfg, stderr)
 	if err != nil {
 		return err
 	}
 	if cfg.output == "" {
-		_, err := stdout.Write(file)
+		_, err := stdout.Write(out.file)
 		return err
 	}
-	return os.WriteFile(cfg.output, file, 0o644)
+	if err := os.WriteFile(cfg.output, out.file, 0o644); err != nil {
+		return err
+	}
+	if out.proof == nil {
+		return nil
+	}
+	return os.WriteFile(proofPath(cfg.output), out.proof, 0o644)
 }
 
-// embed reads the shader, decides whether to accept it, and renders the Go file
-// to write. Nothing is written anywhere until it has returned.
-func embed(ctx context.Context, cfg config, stderr io.Writer) ([]byte, error) {
+// A generated is what one run produces: the file -o names, and the layout proof
+// that goes beside it when -module asked for structs.
+type generated struct {
+	file  []byte
+	proof []byte
+}
+
+// embed reads the shader, decides whether to accept it, and renders the Go
+// files to write. Nothing is written anywhere until it has returned, so a
+// shader this refuses leaves no half-generated package behind.
+func embed(ctx context.Context, cfg config, stderr io.Writer) (generated, error) {
+	none := generated{}
 	b, err := os.ReadFile(cfg.input)
 	if err != nil {
-		return nil, err
+		return none, err
 	}
 	source := string(b)
 
 	if cfg.validate {
 		v, err := wgslender.Validate(ctx, source, cfg.strictness())
 		if err != nil {
-			return nil, err
+			return none, err
 		}
 		// Warnings are reported whether or not they are fatal. Under -strict
 		// they arrive as errors and this is the refusal; otherwise they are the
 		// engine's opinion, and one nobody ever sees is worth nothing.
 		reportDiagnostics(stderr, cfg.input, v.Diagnostics)
 		if !v.Valid {
-			return nil, fmt.Errorf("%s: %s", cfg.input, plural(v.ErrorCount, "error"))
+			return none, fmt.Errorf("%s: %s", cfg.input, plural(v.ErrorCount, "error"))
 		}
 	}
 
 	m, err := wgslender.Minify(ctx, source, &cfg.opts)
 	if err != nil {
-		return nil, err
+		return none, err
 	}
 	if len(m.Errors) > 0 {
 		// Reachable only under -validate=false: the validator reports these
@@ -316,9 +374,34 @@ func embed(ctx context.Context, cfg config, stderr io.Writer) ([]byte, error) {
 		for _, e := range m.Errors {
 			fmt.Fprintf(stderr, "%s: error: %s\n", cfg.input, e)
 		}
-		return nil, fmt.Errorf("%s: %s", cfg.input, plural(len(m.Errors), "error"))
+		return none, fmt.Errorf("%s: %s", cfg.input, plural(len(m.Errors), "error"))
 	}
-	return render(cfg, m)
+
+	if !cfg.module {
+		file, err := render(cfg, m, nil)
+		return generated{file: file}, err
+	}
+
+	// Reflection reads the shader as written: the names a host binds against
+	// are the ones in the source, not the ones minification produced.
+	r, err := wgslender.Reflect(ctx, source)
+	if err != nil {
+		return none, err
+	}
+	decls, proof, notes, err := generateModule(cfg, r)
+	if err != nil {
+		return none, fmt.Errorf("%s: %w", cfg.input, err)
+	}
+	file, err := render(cfg, m, decls)
+	if err != nil {
+		return none, err
+	}
+	proof, err = formatGo(proof)
+	if err != nil {
+		return none, err
+	}
+	reportNotes(stderr, cfg.input, notes)
+	return generated{file: file, proof: proof}, nil
 }
 
 // reportDiagnostics writes what the validator said, in the file:line:column

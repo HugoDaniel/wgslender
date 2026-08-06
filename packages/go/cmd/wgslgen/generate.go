@@ -82,8 +82,13 @@ var {{.Var}} = sync.OnceValue(func() string {
 const {{.Stream}} = {{.Quoted}}
 `))
 
-// render builds the Go file for one minified shader.
-func render(cfg config, m wgslender.MinifyResult) ([]byte, error) {
+// render builds the Go file for one minified shader, followed by whatever
+// -module had to say about it.
+//
+// The order is not a preference. The compressed form opens with an import
+// block, and Go wants every import directly after the package clause, so the
+// shader has to come first.
+func render(cfg config, m wgslender.MinifyResult, decls []byte) ([]byte, error) {
 	data := templateData{
 		Var:          cfg.varName,
 		Stream:       unexport(cfg.varName) + "Deflate",
@@ -108,7 +113,16 @@ func render(cfg config, m wgslender.MinifyResult) ([]byte, error) {
 	if err := tmpl.Execute(&b, data); err != nil {
 		return nil, fmt.Errorf("rendering the generated file, which is a bug in wgslgen: %w", err)
 	}
+	b.Write(decls)
 	return formatGo(b.Bytes())
+}
+
+// proofPath is where the layout proof for out goes: beside it, named the way Go
+// names a test file. An extension other than .go keeps its own, so that a
+// generated pair can be pinned as testdata under a name go build ignores.
+func proofPath(out string) string {
+	ext := filepath.Ext(out)
+	return strings.TrimSuffix(out, ext) + "_test" + ext
 }
 
 // formatGo runs the generated text through go/format, so that a package using

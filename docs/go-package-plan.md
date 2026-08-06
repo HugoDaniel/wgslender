@@ -10,7 +10,7 @@ Also creates `cmd/wgslgen`, a `go:generate`-able codegen tool — the Go analog 
 Rust `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` macros (Go has no
 compile-time macros; `go generate` + golden files is the idiom).
 
-**Status:** executing, block-per-session. **Blocks 0 through 7 landed** —
+**Status:** 🏁 **executed — all nine blocks (0 through 8) landed.**
 `git log -- packages/go` is the authority on what is actually done, not this line.
 Originally verified against `main @ 9726727`
 on 2026-08-06 (macOS arm64, go 1.26.5, zig 0.16.0) by running a throwaway wazero
@@ -1063,9 +1063,94 @@ The `wgsl_module!` analog: typed structs with layout proofs.
    current).
 5. Commit: `feat(packages/go): wgslgen module codegen, examples, docs`.
 
----
+**Executed.** `-module` is a flag on the existing tool rather than a second tool: it
+appends the shader's interface to the file `-var` already produced, and writes the
+layout proof beside it. Four decisions the plan did not settle, each of them read out
+of the reflection rather than reasoned about:
 
-## Behavior/repo changes to flag (none silent)
+- **Nothing is refused for having no Go type.** This is the one place the Go binding
+  deliberately does *more* than its Rust sibling, which refuses the whole invocation
+  by name (`tests/ui/module_padded_matrix.stderr`). Rust has to: a proc macro's
+  natural failure is a compile error, and a partially expanded module with a field
+  silently missing would be a landmine. wgslgen writes a file a person reads, so the
+  answer can be visible instead: a member Go cannot spell becomes **padding of
+  exactly its reflected size** — so every member after it stays put — plus a
+  `<Struct><Member>Offset` constant, a comment saying why, and a `note:` on stderr.
+  A `mat3x3f` in a uniform struct is common enough that refusing it would make
+  `-module` useless for the shaders most likely to want it.
+- **The layout proof is a generated `_test.go`, so `-module` requires `-o`.** Go does
+  have a compile-time equality assert (`[1]struct{}{}[unsafe.Sizeof(T{})-N]`, which
+  fails to index when the difference is not zero), and it was rejected: its error is
+  `invalid argument: index 4 out of bounds`, which names neither the struct nor the
+  shader. The proof file's derived name inserts `_test` **before the extension**
+  (`layouts_gen.go` → `layouts_gen_test.go`), which is also what lets the golden pair
+  be pinned as `module.golden` / `module_test.golden`.
+- **Names come from the shader, and `-prefix` is the way out.** Go has no module
+  namespace to put them in, so two shaders generated into one package can collide on
+  a struct they both call `Params`. Collisions are refused by name rather than left
+  to the Go compiler, whose complaint would be about an identifier nobody wrote.
+  Exporting every generated name also settles the keyword problem for free: every Go
+  keyword is lower case, so `range`, `map` and `func` — all of them ordinary WGSL
+  member names, all verified accepted by the parser — are `Range`, `Map` and `Func`.
+- **Structs are emitted in declaration order**, recovered from each struct's first
+  member's `NameOffset`, because reflection hands them over as a map. Sorting by name
+  would be one line and would put the file in an order matching nothing the author
+  can see.
+
+Facts that came out of probing the live engine, none of them in the plan:
+
+- **`format` is a nested `TypeInfo` on vec/mat/array/atomic**, and the component
+  chain has to be walked to know a stride. `mat3x3f` reflects as `stride: 16` with
+  `rows: 3`; `array<vec3f, 4>` as `stride: 16` with an element of `size: 12`. Both
+  are the padded case, reached by two different rules.
+- **A struct that is nothing but a runtime-sized array has `size: 0`** (`Trail`), and
+  its member has `size: 0` with `count: null`. It generates `type Trail struct{}`
+  and the proof asserts `unsafe.Sizeof(Trail{}) == 0`.
+- **Entry-point IO structs are in `Structs` too** (`VertexOut` with
+  `@builtin(position)`), with layouts computed. They are generated like any other:
+  a struct the shader merely declares is still one a host may want to describe.
+- **`bool` reflects as a scalar of size 4** even though WGSL bools are not
+  host-shareable. It is unmapped, like `f16`, and takes the padding path.
+- **Go inserts no padding of its own** on top of what is written, and that is not a
+  hope: every generated type is built from 4-byte scalars, so every field's Go
+  alignment is 4 and every WGSL offset for such a member is a multiple of 4. What Go
+  *cannot* be told is a struct's own alignment — WGSL aligns `Scene` to 16, Go
+  computes 4 from the fields — so the proof checks sizes and offsets and says nothing
+  about alignment, which is documented in the generated struct's own doc comment.
+
+Two testing notes:
+
+- **`t.Chdir` is what makes a golden of a generated header possible.** The header
+  records the command line verbatim, so a temporary directory anywhere on it is a
+  golden that never matches twice. Each case copies its fixture into a directory of
+  its own and runs there, so every path on the command line is short and relative.
+- **The generated proof is checked by running it.** `TestGeneratedModuleProvesItsLayout`
+  writes the pair into a temp module and runs `go test`; `TestLayoutProofCatchesAWrongLayout`
+  widens one `_ [4]byte` to `_ [8]byte` and insists it fails. Without the second, a
+  proof that asserted nothing would pass exactly as loudly as one that asserted
+  everything.
+
+Ten mutations, each confirmed to compile before being believed (two did not on the
+first attempt and were rewritten — `unicode` left unused, `ext` declared and unused):
+padding never emitted, no trailing pad to the struct size, the matrix stride check
+disabled, structs sorted by name, `claim` never colliding, `export` lowercasing,
+`-prefix` dropped on a nested struct type, the proof file never written, `proofPath`
+returning the module's own path, and the member-collision check disabled. The
+strongest was the third: disabling the stride check made the *generated* proof fail
+(`TestTransformLayout`), which is the whole point of generating it.
+
+That last mutation exists because reading the finished code found a hole the tests had
+not. `claim` covers the module's namespace, so `params` and `Params` as two structs
+are refused — but a **field** name lives in its own struct's namespace, and
+`struct Params { count: u32, Count: u32 }` was generating a Go struct with two `Count`
+fields. It is the same class of mistake, and it was being left to the Go compiler,
+whose complaint would have been about a field nobody wrote.
+
+The docs pass renamed the plan's `Example_minify` to **`ExampleMinify`** and its
+siblings, so that each example appears beside the function it demonstrates rather
+than under the package. A `go/doc` sweep over the package found exactly one
+undocumented exported declaration (`CompileError.Error`); the enum constants are
+covered by their types' block comments, which is idiomatic and was left alone.
 
 - **New checked-in build artifact**: `packages/go/internal/wasmabi/wgslender.wasm`
   (766 KB duplicate of js-npm's). The rebuild rule extends: *whenever the wire

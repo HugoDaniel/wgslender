@@ -79,6 +79,19 @@ whole C ABI behind a safe API, plus `include_wgsl!` / `include_wgsl_compressed!`
 wgslender = { path = "../wgslender/packages/rust/wgslender" }
 ```
 
+### Go
+
+A pure-Go module lives in [`packages/go/`](packages/go/README.md): the whole API
+over a `wgslender.wasm` embedded in the package and run by
+[wazero](https://wazero.io), so it needs no cgo, no C toolchain and no Zig.
+Plus `wgslgen`, a `go:generate` tool that embeds a shader minified and checked,
+and can describe it as Go structs with their layouts proved. Not published yet
+— depend on it by `replace` directive.
+
+```go
+import "git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+```
+
 ### C Library
 
 ```bash
@@ -485,6 +498,9 @@ cd npm/wgslender-lsp && node test.js
 
 # Rust package gate (fmt, clippy, tests, doctests, docs)
 cd packages/rust && cargo xtask check
+
+# Go package gate (gofmt, vet, build, test -race)
+make -C packages/go check
 ```
 
 Requires [Zig 0.16.0](https://ziglang.org/download/) — install via `zigup 0.16.0`.
@@ -496,6 +512,7 @@ Requires [Zig 0.16.0](https://ziglang.org/download/) — install via `zigup 0.16
 - [Why reflect WGSL?](docs/why-reflect-wgsl.md) - Benefits of shader reflection
 - [npm package docs](packages/js-npm/README.md) - JavaScript/TypeScript API
 - [Rust package docs](packages/rust/README.md) - Cargo workspace, compile-time embedding macros
+- [Go package docs](packages/go/README.md) - Pure-Go module over wazero, `wgslgen` code generator
 - [C API reference](docs/C-API.md) - C/FFI integration
 - [Building with wgslender](BUILDING_WITH_WGSLENDER.md) - Integration guide
 
