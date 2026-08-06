@@ -138,8 +138,13 @@ Phony assignment — `_ = expr;`, standard WGSL — **is not accepted by the par
 was already known and open (found during plan 04; the lexer has an `underscore` token
 the parser never uses; 737 tint corpus shaders use the syntax).
 
-What was *not* known: **49 fixtures across `tests/*.zig` use `_ = x;`**. Every one of
-those tests runs against a source with parse errors:
+What was *not* known: **51 fixtures across `tests/*.zig` use `_ = x;`** (50 after the
+one fixed here). Every one of those tests runs against a source with parse errors:
+
+> **Corrected 2026-08-06.** This section first said 49/48. That came from the narrow
+> grep `_ = [a-z]`, which misses every right-hand side not starting with a lowercase
+> letter — `_ = 1;`, `_ = big[0];`, `_ = takes(&buf);`, `_ = u[0].a;`. Accurate
+> inventory and the fix plan: [phony-assignment-plan.md](phony-assignment-plan.md).
 
 ```
 $ wgslender validate --format json phony.wgsl
@@ -155,8 +160,16 @@ and because each test asserts on a specific lint code that parse errors do not e
 That is luck, not design. The risk is vacuity: a test asserting *absence* (`0 W0200`)
 passes trivially if the fixture degrades enough that the rule never runs.
 
-Only the fixture added in this work was fixed. The other 48 are untouched and remain a
-standing hazard.
+Only the fixture added in this work was fixed. The other 50 are untouched and remain a
+standing hazard — see [phony-assignment-plan.md](phony-assignment-plan.md), which
+recommends fixing the parser rather than the fixtures, since that makes all 50 valid
+with no rewrites and closes the same gap for 737 corpus shaders.
+
+A related finding surfaced while writing that plan: the validator's
+"identifier `_` is reserved" branch in `checkReservedIdentifiers` is **dead code** —
+`_` lexes as its own token, `eatIdent` never returns it, so no symbol named `_` is ever
+built for the check to find. Same shape as the `is_api_facing` finding above, and its
+comment likewise documents an intent the parser never implemented.
 
 > **Practice:** for an assertion of absence, prove the fixture can produce the thing.
 > The new naming-convention test was verified by temporarily disabling the fix
@@ -274,7 +287,7 @@ so the assertion cannot pass off text the example printed earlier.
 | `version` typed `string`, an object under ESM | Pre-existing; fixing it changes the published type surface for a value everyone reads through `String()`. Its own decision. |
 | `strictMode` / `diagnosticFilters` still declared | Deleting them breaks consumers' compiles. Kept, `@deprecated`, with the working name documented. |
 | Phony assignment `_ = expr;` unparsed | Real parser gap, 737 tint shaders use it. Open since plan 04. |
-| The other 48 `_ = x;` test fixtures | Mechanical but wide; worth a dedicated sweep once the parser accepts the syntax, which would fix them all at once. |
+| The other 50 `_ = x;` test fixtures | Planned: [phony-assignment-plan.md](phony-assignment-plan.md). Fix the parser, then audit — not rewrite. |
 | Renaming `is_external_binding` | Its **name is the trap** — something like `needs_binding_alias` would make the confusion impossible to write. ~15 sites; deferred as its own change. |
 | `no_dead_code`'s function-branch flags | Fixed (`441f374`), but note the shape: it was a *forked copy* of a shared predicate, and the dead clauses are what advertised the fork. |
 
