@@ -228,8 +228,11 @@ fn processOneStmt(ctx: *Context, s: Ast.Stmt, stack: *std.ArrayList(Work)) error
             stmt.left = try visitExpr(ctx, stmt.left);
             stmt.right = try visitExpr(ctx, stmt.right);
         },
-        // TODO(block-2): walk `stmt.expr` so the RHS counts as a use.
-        .phony => {},
+        // The discarded value is still evaluated (§9.3): its operands are
+        // real uses. `_ = tex;` exists precisely to make a binding count.
+        .phony => |stmt| {
+            stmt.expr = try visitExpr(ctx, stmt.expr);
+        },
         .incr_decr => |stmt| {
             stmt.expr = try visitExpr(ctx, stmt.expr);
         },

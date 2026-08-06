@@ -123,3 +123,63 @@ test "phony: only `=` is accepted — compound operators are rejected" {
     defer r.deinit();
     try std.testing.expect(r.errors.len > 0);
 }
+
+// -------------------------------------------------------------------------
+// Block 2 — the RHS is a real evaluated expression.
+//
+// Every one of the 49 Class-A fixtures in the repo depends on this and on
+// nothing else in the feature: they write `let x = u; _ = x;` purely so the
+// binding counts as used. `_ = tex;` in real shaders depends on it for a
+// stronger reason — it is the only way to force a resource into the
+// bind-group layout when nothing reads it (§9.3).
+// -------------------------------------------------------------------------
+
+/// Look up a symbol by name and return its Pass-2 use count.
+fn useCountOf(r: *const Incremental.ReparseResult, name: []const u8) !u32 {
+    for (r.module.symbols.items, 0..) |sym, i| {
+        if (!std.mem.eql(u8, sym.original_name, name)) continue;
+        return r.module.use_counts.get(@enumFromInt(@as(u32, @intCast(i))));
+    }
+    return error.NoSuchSymbol;
+}
+
+test "phony: the RHS counts as a use of the symbols it names" {
+    var r = try parseClean(
+        \\fn f() { let x = 1.0; _ = x; }
+        \\
+    );
+    defer r.deinit();
+
+    try std.testing.expectEqual(@as(u32, 1), try useCountOf(&r, "x"));
+}
+
+test "phony: identifiers in the RHS are bound to their declarations" {
+    var r = try parseClean(
+        \\fn f() { let x = 1.0; _ = x; }
+        \\
+    );
+    defer r.deinit();
+
+    const stmts = try bodyOf(&r, "f");
+    // An unbound ident would leave `ref` invalid and E0100 would not fire
+    // (the parse succeeded), so a silently-unwalked RHS is invisible
+    // without this assertion.
+    try std.testing.expect(stmts[1].phony.expr.ident.ref.isValid());
+}
+
+test "phony: DCE keeps a binding referenced only by a phony assignment" {
+    // The reason `_ = tex;` exists. If DCE cannot see through the phony
+    // RHS it drops the declaration and emits a shader that references an
+    // undeclared name — silently wrong output, not a diagnostic.
+    var r = try parseClean(
+        \\@group(0) @binding(0) var<uniform> u: vec4f;
+        \\@compute @workgroup_size(1)
+        \\fn main() { _ = u; }
+        \\
+    );
+    defer r.deinit();
+
+    var out = try wgslender.minify(std.testing.allocator, r.source);
+    defer out.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, out.code, "@binding(0)") != null);
+}

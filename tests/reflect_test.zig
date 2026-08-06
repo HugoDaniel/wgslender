@@ -2630,3 +2630,42 @@ test "reflect: storage texture lands in textures[] subset" {
     const tex_end = tex_key + (std.mem.indexOf(u8, buf.items[tex_key..], "],").?);
     try std.testing.expect(std.mem.indexOf(u8, buf.items[tex_key..tex_end], "\"name\":\"img\"") != null);
 }
+
+test "reflect: a binding referenced only by a phony assignment is attributed" {
+    // `_ = tex;` is the idiomatic way to force a resource into the
+    // bind-group layout when nothing reads it (WGSL §9.3). If the
+    // call-graph walker cannot see through the phony RHS, the binding is
+    // extracted but never attributed to the entry point — the same
+    // failure mode as the handle-space bug fixed in bb5def5, arriving by
+    // a different route.
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> u: f32;
+        \\@group(0) @binding(1) var tex: texture_2d<f32>;
+        \\@group(0) @binding(2) var samp: sampler;
+        \\@compute @workgroup_size(1) fn cs() { _ = u; _ = tex; _ = samp; }
+    );
+    const ep = findEntryByName(result.entry_points.items, "cs") orelse return error.TestExpectedEntry;
+    try std.testing.expectEqual(@as(usize, 3), ep.resources.items.len);
+    try std.testing.expectEqualStrings("u", ep.resources.items[0]);
+    try std.testing.expectEqualStrings("tex", ep.resources.items[1]);
+    try std.testing.expectEqualStrings("samp", ep.resources.items[2]);
+}
+
+test "reflect: phony-only resources flow transitively through a helper" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var tex: texture_2d<f32>;
+        \\fn touch() { _ = tex; }
+        \\@compute @workgroup_size(1) fn cs() { touch(); }
+    );
+    const ep = findEntryByName(result.entry_points.items, "cs") orelse return error.TestExpectedEntry;
+    try std.testing.expectEqual(@as(usize, 1), ep.resources.items.len);
+    try std.testing.expectEqualStrings("tex", ep.resources.items[0]);
+}

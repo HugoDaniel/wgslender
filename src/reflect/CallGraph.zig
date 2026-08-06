@@ -118,8 +118,9 @@ fn walkStmt(
             try walkExpr(arena, module, s.left, info, result);
             try walkExpr(arena, module, s.right, info, result);
         },
-        // TODO(block-2): attribute resources named by the phony RHS.
-        .phony => {},
+        // `_ = tex;` is the idiomatic way to force a resource into the
+        // bind-group layout, so the RHS must attribute like any other read.
+        .phony => |s| try walkExpr(arena, module, s.expr, info, result),
         .incr_decr => |s| try walkExpr(arena, module, s.expr, info, result),
         .call => |s| {
             // CallStmt wraps a CallExpr directly.

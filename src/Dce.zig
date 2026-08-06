@@ -300,8 +300,7 @@ pub fn collectStmtRefs(
                 try collectExprRefs(arena, as_.left, refs);
                 try collectExprRefs(arena, as_.right, refs);
             },
-            // TODO(block-2): collect refs from the phony RHS.
-            .phony => {},
+            .phony => |ps| try collectExprRefs(arena, ps.expr, refs),
             .incr_decr => |ids| try collectExprRefs(arena, ids.expr, refs),
             .call => |cs| {
                 if (cs.call.func) |f| try collectExprRefs(arena, f, refs);

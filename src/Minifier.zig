@@ -414,8 +414,7 @@ fn countStmtUsage(arena: Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmana
                 try countExprUsage(arena, as_.left, uses);
                 try countExprUsage(arena, as_.right, uses);
             },
-            // TODO(block-2): count uses in the phony RHS.
-            .phony => {},
+            .phony => |ps| try countExprUsage(arena, ps.expr, uses),
             .incr_decr => |ids| try countExprUsage(arena, ids.expr, uses),
             .call => |cs| {
                 if (cs.call.func) |f| try countExprUsage(arena, f, uses);
