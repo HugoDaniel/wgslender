@@ -33,10 +33,10 @@ test "call hierarchy: prepare on non-function returns null" {
 }
 
 test "call hierarchy: incoming calls" {
-    const source: [:0]const u8 = "fn target() {} fn caller_a() { target(); } fn caller_b() { target(); }";
+    const source: [:0]const u8 = "fn callee() {} fn caller_a() { callee(); } fn caller_b() { callee(); }";
     const ctx = try setup(source);
     defer teardown(ctx);
-    const calls = try ctx.handler.computeIncomingCalls("test://file.wgsl", "target");
+    const calls = try ctx.handler.computeIncomingCalls("test://file.wgsl", "callee");
     defer {
         for (calls) |c| std.testing.allocator.free(c.from_ranges);
         std.testing.allocator.free(calls);
@@ -123,10 +123,10 @@ test "call hierarchy: nonexistent function returns empty" {
 }
 
 test "call hierarchy: incoming calls from nested expressions" {
-    const source: [:0]const u8 = "fn target() -> f32 { return 1.0; } fn caller() { let x = target() + target(); }";
+    const source: [:0]const u8 = "fn callee() -> f32 { return 1.0; } fn caller() { let x = callee() + callee(); }";
     const ctx = try setup(source);
     defer teardown(ctx);
-    const calls = try ctx.handler.computeIncomingCalls("test://file.wgsl", "target");
+    const calls = try ctx.handler.computeIncomingCalls("test://file.wgsl", "callee");
     defer {
         for (calls) |c| std.testing.allocator.free(c.from_ranges);
         std.testing.allocator.free(calls);

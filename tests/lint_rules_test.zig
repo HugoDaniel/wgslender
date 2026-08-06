@@ -789,7 +789,7 @@ test "no-large-local-arrays: threshold boundary (1024 passes)" {
 }
 
 test "no-large-local-arrays: module-scope arrays are not flagged" {
-    var r = try runLint("var<workgroup> shared: array<f32, 65536>;\n@compute @workgroup_size(1) fn main() { shared[0] = 1.0; }", large_array_opts);
+    var r = try runLint("var<workgroup> tile: array<f32, 65536>;\n@compute @workgroup_size(1) fn main() { tile[0] = 1.0; }", large_array_opts);
     defer r.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0204"));
 }

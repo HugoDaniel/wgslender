@@ -99,7 +99,7 @@ test "references: struct used in multiple type positions" {
     const source: [:0]const u8 =
         \\struct Vec2 { x: f32, y: f32 }
         \\fn make() -> Vec2 { return Vec2(0.0, 0.0); }
-        \\fn use(v: Vec2) -> f32 { return v.x; }
+        \\fn consume(v: Vec2) -> f32 { return v.x; }
         \\const ZERO: Vec2 = Vec2(0.0, 0.0);
     ;
     const ctx = try setup(source);

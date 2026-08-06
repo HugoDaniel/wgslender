@@ -336,12 +336,12 @@ test "IP-read-03: Edits.findReferences returns current coords after an edit" {
     const gpa = std.testing.allocator;
     const src: [:0]const u8 =
         \\fn f() {}
-        \\fn use() { let a = 1; let b = a; let c = a; }
+        \\fn consume() { let a = 1; let b = a; let c = a; }
     ;
     var base = try Incremental.parseFull(gpa, src);
     defer base.deinit();
 
-    // Insert inside f to bump `use()`'s bias.
+    // Insert inside f to bump `consume()`'s bias.
     const close_f = std.mem.indexOfScalarPos(u8, base.source, 0, '}').?;
     var cur = try stepEdit(gpa, &base, .{
         .start = @intCast(close_f),
@@ -351,9 +351,9 @@ test "IP-read-03: Edits.findReferences returns current coords after an edit" {
     defer cur.deinit();
 
     // Find the symbol `a` in `use` and collect its references.
-    const use_idx = findDeclBySymbolName(cur.module, "use").?;
-    const use_decl = cur.module.declarations.items[use_idx];
-    const body = use_decl.function.body.?;
+    const consume_idx = findDeclBySymbolName(cur.module, "consume").?;
+    const consume_decl = cur.module.declarations.items[consume_idx];
+    const body = consume_decl.function.body.?;
 
     // Extract `a`'s SymbolIndex from the first decl_stmt.
     const first_stmt = body.stmts.items[0];

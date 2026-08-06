@@ -921,10 +921,10 @@ test "C-M7: parenthesize if-condition preserves per-symbol use_count" {
 }
 
 // =========================================================================
-// C-M8 — append a probe `let __probe_99 = 0;` inside the last function
+// C-M8 — append a probe `let probe_99 = 0;` inside the last function
 // body (before its closing `}`). Pure add-path; no sub. Every existing
 // per-name use_count sum must be unchanged; the oracle gains exactly
-// one new symbol (`__probe_99`) with `use_count == 0`.
+// one new symbol (`probe_99`) with `use_count == 0`.
 // =========================================================================
 
 test "C-M8: body-probe append preserves existing per-symbol use_count" {
@@ -953,7 +953,7 @@ test "C-M8: body-probe append preserves existing per-symbol use_count" {
             try runCorpusEdit(self.gpa, label, &base, .{
                 .start = close_off,
                 .end = close_off,
-                .new_text = " let __probe_99 = 0;",
+                .new_text = " let probe_99 = 0;",
             });
             self.n_hits += 1;
         }
