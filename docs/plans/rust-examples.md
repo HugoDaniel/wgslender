@@ -13,14 +13,20 @@ compile-checked assertion, not something a reader can run to see what the librar
 *says*.
 
 **Status:** **executed** — all seven blocks, 2026-08-06, on the `rust-examples`
-worktree branch off `main @ 3e65c1a`. Block 1 `e30211c` (the gate task that runs
+worktree branch off `main @ eb59249`. Block 1 `e30211c` (the gate task that runs
 them), 2 `93289fb` (`validate`), 3 `35ab316` (`lint`), 4 `1ab8f6a` (`compile`),
 5 `db4490f` (`refactor`), 6 `f098dfb` (`minify_options`, `include_wgsl`, and the
 `reflect_json` footnote), 7 `53cd631` (this documentation pass). `cd packages/rust
 && cargo xtask check` is green across all eight steps — ten examples run, not
 merely compiled — and `cargo xtask msrv` with it.
 
-Every number below was measured against `main @ 3e65c1a`, 2026-08-06, macOS arm64,
+Two commits follow the seven blocks, from auditing the finished examples against
+`~/llm/mastery/rust`: `14aee3e` (assert the invariants they had only printed, one
+`use` per crate in `refactor.rs`, split its 77-line `edits`, comment a discarded
+`Result`) and `b6375cc` (the five copies of `heading` had drifted into two
+implementations). Neither changes a byte of any example's output.
+
+Every number below was measured against `main @ eb59249`, 2026-08-06, macOS arm64,
 library version `1.1.0`. Do not re-derive them; do re-run the examples if HEAD has
 moved. Where execution diverged from the plan it was because the plan's own ground
 rule — numbers come from the library — pointed somewhere else:
