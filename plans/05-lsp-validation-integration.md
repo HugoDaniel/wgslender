@@ -9,14 +9,42 @@
 `tests/{completion,signature_help,semantic_tokens}_test.zig`,
 `CLAUDE.md` (module map). No new files, no new packages.
 
-**Status:** ready to execute, **after the environment prep below**.
-Originally verified against `main @ 363a71f`; re-verified 2026-08-05 against
-worktree `worktree-lsp-work @ 017cb1d` (= `origin/main`). `git diff 363a71f
-017cb1d -- lsp/ src/` is only `src/Compiler.zig` + `CLAUDE.md`, so every code
-citation below applies unchanged to either baseline. Note `origin/main` is 9
-commits *behind* local `main`, which additionally carries the
-`npm/wgslender` → `packages/js-npm` move and the `packages/rust` work —
-neither is touched by this plan.
+**Status: EXECUTED** 2026-08-05 — all seven blocks, in the suggested order,
+one atomic commit each:
+
+| Block | Commit | Subject |
+|---|---|---|
+| 7 | `3484cce` | docs: add lsp/native, lsp/wasm, lsp/wire, lsp/lspkit, NativeServer, Debouncer, uri to the module map |
+| 2 | `aa017d5` | feat(lsp): signature help uses real builtin/function signatures |
+| 3 | `1cd61b7` | fix(lsp): semantic tokens resolve identifiers via NodeAtOffset, not whole-module name match |
+| 6 | `5cbbd0f` | fix(lsp): struct insert-point quick fix looks up the AST declaration, not source text |
+| 4 | `bcf42b1` | fix(lsp): member completion prefers NodeAtOffset for base type, falling back to name match on incomplete parses |
+| 5 | `58b9de1` | fix(lsp): general completion is scope-aware for locals |
+| 1 | `b4a902b` | feat(lsp): surface configured lint packs in diagnostics, not just @wgslender/minify |
+
+Two implementation notes worth carrying forward, both places where the
+executed code chose the option the plan left open:
+
+- **Block 1 step 2c took option (ii).** W0001/W0002/W0003 are now emitted by
+  `no-unused-vars` / `no-dead-code` / `no-unused-binding` and the hand-coded
+  passes are no longer called from the diagnostics path. But
+  `lsp/handler/unused_warnings.zig` was **not** deleted — the three
+  `Handler.append*` exports survive because `tests/unused_warnings_test.zig`
+  still drives them directly. Dedup is pinned by
+  `diagnostics.zig`'s "validateDocumentFull: exactly one W0001 per unused
+  local" test.
+- **Block 3 needed the perf mitigation the plan budgeted for.** The
+  `NodeAtOffset.find` per-token cost was mitigated with a `DeclCursor`
+  (`resolveIdentSymbol(module, cursor, loc, name)`), not a bare `find` call
+  per identifier.
+
+Original baseline, retained for reading the citations below: verified against
+`main @ 363a71f`, re-verified 2026-08-05 against worktree
+`worktree-lsp-work @ 017cb1d` (= `origin/main`). `git diff 363a71f 017cb1d --
+lsp/ src/` is only `src/Compiler.zig` + `CLAUDE.md`, so every code citation
+applies unchanged to either baseline. **Line numbers have since rotted** —
+four later LSP commits (`44ad300`, `e8075b3`, `41f8e7f`, `a756203`, all
+perf/Unicode work outside this plan's scope) moved them.
 
 **Origin:** a deep-dive into "does the LSP use the validator properly and
 thoroughly?" found the core wiring solid — full `Validator.runPhases` on
@@ -665,20 +693,25 @@ lookup).
 
 ## Definition of done
 
-- [ ] Environment prep done: `external/lsp-kit` populated so
+- [x] Environment prep done: `external/lsp-kit` populated so
       `zig build lsp` / `lsp-wasm` / `test` actually run.
-- [ ] All seven blocks committed, each atomic and conventional.
-- [ ] `zig build && zig build wasm && zig build lsp && zig build lsp-wasm &&
+- [x] All seven blocks committed, each atomic and conventional.
+- [x] `zig build && zig build wasm && zig build lsp && zig build lsp-wasm &&
       zig build test` green after every block.
-- [ ] `@wgslender/recommended` diagnostics visible over LSP by default
+- [x] `@wgslender/recommended` diagnostics visible over LSP by default
       (Block 1), with a working `lint.enabled: false` opt-out, **and exactly
-      one W0001 for a single unused local** (no duplication).
-- [ ] Signature help shows real builtin spec signatures and real
+      one W0001 for a single unused local** (no duplication) — pinned by
+      `diagnostics.zig`'s "validateDocumentFull: exactly one W0001 per unused
+      local".
+- [x] Signature help shows real builtin spec signatures and real
       struct/array/pointer/atomic parameter types (Block 2).
-- [ ] Semantic tokens, member completion, and general completion resolve
+- [x] Semantic tokens, member completion, and general completion resolve
       through scope-correct AST data (Blocks 3-5), with member completion's
-      incomplete-parse fallback covered by a regression test.
-- [ ] `CLAUDE.md`'s LSP module map lists every file and subdirectory under
+      incomplete-parse fallback covered by a regression test
+      ("completion: dot on an incomplete statement still offers fields").
+      Block 5's three least-common nested-compound shapes each got a fixture:
+      for-loop init, switch case body, and `loop`'s `continuing` block.
+- [x] `CLAUDE.md`'s LSP module map lists every file and subdirectory under
       `lsp/` (Block 7).
-- [ ] No CI files added; every test entry point remains a local, on-demand
+- [x] No CI files added; every test entry point remains a local, on-demand
       command.

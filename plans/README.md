@@ -36,7 +36,17 @@ plan 4 and never ran.
 
 | Plan | File | Fixes |
 |------|------|-------|
-| 5 | [05-lsp-validation-integration.md](05-lsp-validation-integration.md) | Five gaps where LSP handlers (signature help, semantic tokens, completion, code actions) bypass validator-resolved data, plus general lint packs never surfacing over LSP |
+| 5 | [05-lsp-validation-integration.md](05-lsp-validation-integration.md) | Five gaps where LSP handlers (signature help, semantic tokens, completion, code actions) bypass validator-resolved data, plus general lint packs never surfacing over LSP — **executed** |
+
+**Plan 5 is executed** — all seven blocks, landed across `lsp/handler/`
+(`3484cce`…`b4a902b`, 2026-08-05). Editors now receive the configured lint
+packs (defaulting to `@wgslender/recommended`) with a `lsp.lint.enabled`
+opt-out; signature help, semantic tokens, and both completion paths resolve
+through validator-resolved data instead of whole-module name matches. Its
+own "Explicitly not done" list is the remaining follow-up surface.
+
+**Every plan in this directory is now executed** (plan 2 excepted — superseded
+by plan 4 and never run).
 
 ## Suggested execution order
 
