@@ -10,19 +10,23 @@ Also creates `cmd/wgslgen`, a `go:generate`-able codegen tool — the Go analog 
 Rust `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` macros (Go has no
 compile-time macros; `go generate` + golden files is the idiom).
 
-**Status:** ready to execute, block-per-session. Verified against `main @ a0f890f`,
-2026-08-06, macOS arm64, go 1.26.5, zig 0.16.0. Working tree at planning time had
-unrelated dirt (`src/reflect/CallGraph.zig`, `tests/reflect_test.zig`, `docs/obsidian/`
-untracked) — none of it touches this plan's inputs.
+**Status:** ready to execute, block-per-session. Re-verified against `main @ 9726727`
+on 2026-08-06 (macOS arm64, go 1.26.5, zig 0.16.0) by running a throwaway wazero
+harness over the shipped wasm — every ABI, wire, and Go-language claim below was
+observed, not inferred. Working tree is clean apart from untracked `docs/obsidian/`.
 
 **Why wazero and not cgo:** Go has no `build.rs`. A cgo binding cannot run `zig build
 lib` at `go build` time, so it would need prebuilt `libwgslender.a` per platform
 checked in or downloaded — the exact vendoring decision that deferred the Rust
 crates.io publish (`packages/rust/README.md § Publishing`). The wasm route dissolves
-the problem: one 766 KB artifact, every GOOS/GOARCH, `CGO_ENABLED=0` friendly.
-Cost: wasm-interpreter/JIT speed instead of native — fine for a minifier; a cgo
-fast-path can be added later behind a build tag if a profile ever demands it
-(**explicitly deferred**, see § Deferred).
+the problem: one 766 KB artifact, every GOOS/GOARCH, no cgo required
+(`CGO_ENABLED=0` builds fine). Cost: wasm-JIT speed instead of native — measured at
+~60 µs to minify a 445-byte shader, which is fine for a minifier; a cgo fast-path can
+be added later behind a build tag if a profile ever demands it (**explicitly
+deferred**, see § Deferred).
+
+wazero is pure Go but **not** dependency-free at the module level: `v1.12.0` requires
+`golang.org/x/sys v0.44.0` (also pure Go). The go.sum will have two entries, not one.
 
 ---
 
@@ -30,28 +34,49 @@ fast-path can be added later behind a build tag if a profile ever demands it
 
 ### Environment
 
-- `go version go1.26.5 darwin/arm64` at `/opt/homebrew/bin/go`. `golangci-lint` and
-  `gofumpt` are **not** installed — the mandatory gate uses `gofmt`/`go vet`/`go test
-  -race` only; golangci-lint is an opt-in target that fails loudly when missing
-  (mirrors `cargo xtask msrv`'s "a check that did not run has not passed").
-- wazero latest is **v1.12.0** (checked via module proxy 2026-08-06). Still v1 —
-  Go-1-style compatibility promise holds.
+- `go version go1.26.5 darwin/arm64` at `/opt/homebrew/bin/go`. `golangci-lint`,
+  `gofumpt` and `staticcheck` are all **not** installed — the mandatory gate uses
+  `gofmt`/`go vet`/`go test -race` only; golangci-lint is an opt-in target that fails
+  loudly when missing (mirrors `cargo xtask msrv`'s "a check that did not run has not
+  passed").
+- Go-1.26 features this plan leans on, each compiled and run on this toolchain:
+  `errors.AsType[T]` ✓, `sync.WaitGroup.Go` ✓, `omitzero` honouring a generic type's
+  `IsZero() bool` ✓ (see the `Opt[T]` note below), `for b.Loop()`.
+- wazero latest is **v1.12.0** (module proxy, 2026-08-06; published 2026-05-28).
+  Still v1 — Go-1-style compatibility promise holds. Pulls in `golang.org/x/sys
+  v0.44.0` as its only requirement.
 - git remote: `https://git.hugodaniel.com/hugo/wgslender.git` (self-hosted; serves
   `?go-get=1` meta tags if it's Gitea/Forgejo — untested, see § Deferred: publishing).
   Repo is not pushed; consumers today use the module in-repo.
 
+The `Opt[T]` codec was proved out standalone before it went into the plan:
+
+```go
+type Opt[T any] struct{ v T; set bool }
+func (o Opt[T]) IsZero() bool                 { return !o.set }
+func (o Opt[T]) MarshalJSON() ([]byte, error) { return json.Marshal(o.v) }
+// MinifyOptions{}                                        -> {}
+// {MinifyWhitespace: Set(true), TreeShaking: Set(false)} -> {"minifyWhitespace":true,"treeShaking":false}
+```
+
+One nuance to document: `omitzero` on `KeepNames []string` omits a **nil** slice but
+emits an explicitly-empty one as `"keepNames":[]`. Harmless (the Zig side treats an
+empty list as "no names"), but the options-codec test should pin both.
+
 ### The wasm artifact and its ABI (empirically probed with wazero v1.12.0, this session)
 
 - `packages/js-npm/wgslender.wasm`: **766,743 bytes**, byte-identical to current
-  `zig-out/bin/wgslender.wasm`. Built by `zig build wasm` (`build.zig:48-66`):
-  `wasm32-freestanding`, `ReleaseSmall` (hardcoded on the module — `-Doptimize=` flags
-  do not reach it), `entry = .disabled`, `rdynamic = true`.
-- **Zero imports.** No WASI, no `env`, no start function. wazero instantiates it with a
-  plain `wazero.NewModuleConfig()` and nothing else. Verified end-to-end this session:
+  `zig-out/bin/wgslender.wasm` (sha256 `b354a731ec1f…f322ddd` on both). Built by `zig
+  build wasm` (`build.zig:48-66`): `wasm32-freestanding`, `ReleaseSmall` (hardcoded on
+  the module — `-Doptimize=` flags do not reach it), `entry = .disabled`,
+  `rdynamic = true`.
+- **Zero imports.** Confirmed via `CompiledModule.ImportedFunctions()` = 0 and
+  `ImportedMemories()` = 0. No WASI, no `env`, no start function. wazero instantiates
+  it with a plain `wazero.NewModuleConfig()` and nothing else. Verified end-to-end:
   `wgslender_version` / `wgslender_version_len` through wazero returned `"1.1.0"` read
-  from linear memory.
-- Exports: one memory (`memory`) + 23 functions, all-i32 params/results
-  (`src/wasm.zig`, all `callconv(.c)`):
+  from linear memory (a static pointer into linear memory, `src/root.zig:11`).
+- Exports: one memory (`memory`, 19 pages / 1,245,184 B at instantiate) + exactly 23
+  functions, all-i32 params/results (`src/wasm.zig`, all `callconv(.c)`):
 
 ```
 wgslender_alloc(len) -> ptr                 // 0 = OOM
@@ -115,10 +140,35 @@ fast path is C-only); everything goes through JSON options. The wasm `version` s
 
 Envelopes are allocated from `wasm_allocator` (not the per-call arena) so they survive
 the call; the host owns them. Not freeing = permanent leak inside linear memory (the
-module never shrinks).
+module never shrinks). Balanced frees do hold: 500 sequential minifies moved
+`Memory().Size()` by **zero** bytes.
 
-7. One instance = one single-threaded allocator. **Not goroutine-safe** — serialize
-   calls per instance (JS gets this for free; Go must enforce it).
+7. One instance = one single-threaded allocator. **Not goroutine-safe**, and this is
+   not a theoretical hazard — 16 goroutines × 60 unsynchronized minifies on one
+   instance produced **959 failures out of 960**, as guest traps (`invalid table
+   access`, `out of bounds memory access`), not as wrong answers. Serialize calls per
+   instance; JS gets this for free, Go must enforce it. Two consequences for the
+   design:
+   - the mutex is a correctness requirement, not a performance choice;
+   - **a call that returns an error must retire its instance.** A trapped guest may
+     have a corrupted heap, and corruption is not self-announcing — after the storm
+     above the same instance went on serving *plausible* results. Never return a
+     trapped instance to a pool or reuse it behind the mutex.
+
+Measured costs on this machine (445-byte shader, wazero v1.12.0, arm64):
+
+| operation | cost |
+|---|---|
+| `CompileModule` (once, behind `sync.OnceValues`) | **~127 ms** |
+| `InstantiateModule` | **~32 µs** |
+| one `minify_json` round trip | **~57 µs** |
+| 320 minifies, serial | 18.3 ms |
+| 320 minifies, 8 goroutines × own instance | 2.8 ms (**~6.4×**) |
+
+So: compile-once is clearly worth the `OnceValues`; instantiation is cheap enough that
+pooling — or even instantiate-per-call — is affordable; and the parallel win is real
+rather than speculative. Block 6 still measures before landing the pool, but it starts
+from this prior rather than from nothing.
 
 ### Wire contracts (from the Zig writers — `src/api_json.zig`, `src/Diagnostic.zig`,
 ### `src/reflect/Json.zig`; the npm `main.d.ts` lies in places, encode from Zig)
@@ -131,13 +181,26 @@ Options JSON (camelCase; keys derived from `src/options.zig` spec table):
   sourceMapSources` (booleans unless noted). Zig defaults when absent:
   whitespace/identifiers/syntax/treeShaking **true**, everything else **false**,
   keepNames empty. **`{}` (or empty buffer) = wgslender's own defaults** — options
-  are overrides. Malformed options JSON **silently degrades to defaults**.
+  are overrides. Malformed options JSON **silently degrades to defaults** (all three
+  of `""`, `{}` and `{not json` produce byte-identical output —
+  `Config.parseJson(...) catch Config{}`, `src/api_json.zig:110`).
   `compile` forces sortDeclarations + scopeLocalRename on internally.
+  `sourceMapInline` exists in `src/options.zig`'s `source_map_specs` and `Config`
+  parses it, but the **wasm minify path never reads it** — only `source_map` and
+  `source_map_sources` are applied (`src/api_json.zig:112-113`). Inline data-URI
+  emission is a CLI concern. Leave it off `MinifyOptions`; this is deliberate, not an
+  oversight.
 - lint/lint_fix config: `extends: ["@wgslender/…"]`, `rules: {id: "off"|"warn"|
   "error" | ["warn"|"error", {opts}]}` (**object only** — an array is silently
-  ignored), `reportUnusedDisableDirectives: bool`. **`{}`/empty = run NO rules** —
-  the opposite convention from minify. Unknown rule ids are silently ignored.
-- validate takes a `u32` flag word (bit0 strict), find_references a `0|1` int.
+  ignored — `{"rules":["no-unused-vars"]}` yields zero diagnostics),
+  `reportUnusedDisableDirectives: bool`. **`{}`/empty = run NO rules** — the opposite
+  convention from minify. Unknown rule ids are silently ignored (an `"error"`-severity
+  override on a nonexistent rule produces no diagnostic and no failure). Per-rule
+  option objects (`["warn",{…}]`) parse fine; the *option names* are per-rule and must
+  be read out of the rule source, never guessed.
+- validate takes a `u32` flag word (bit0 strict). find_references'
+  `include_declaration` is tested `!= 0`, so any non-zero value means "include" — the
+  Go binding should still send exactly 0 or 1.
 
 Response envelopes:
 
@@ -168,11 +231,55 @@ Response envelopes:
   empty.
 - reflect v2 (`src/reflect/Json.zig:36-103`): `{"version":2,"bindings","uniforms",
   "storage","textures","samplers","structs","entryPoints","overrides","functions",
-  "aliases"[,"errors"]}`. Wire facts the npm .d.ts gets wrong: texture TypeInfo is
-  **flat** `{kind:"texture",dim,texKind[,format][,access][,sampleType]}`; ArrayInfo's
-  nested key is **`array`** (not `nested`); entry-point input/output fields are
-  **omitted when absent**, not null. TypeInfo kinds: scalar, vec, mat, array, struct,
-  atomic, sampler, texture, ptr.
+  "aliases"[,"errors"]}`. Every one of those keys is **always present** except
+  `errors`, which appears only when non-empty. Empty source ⇒ all arrays `[]`,
+  `structs` `{}`, no `errors`.
+
+  The envelope is **much richer than a naive `{group,binding,name,type}` sketch**, and
+  Block 3 must budget for that. Observed key sets (dumped from the live wasm, not from
+  the .d.ts):
+
+  - **Binding**: `group, binding, name, nameMapped, nameOffset, stableId,
+    declSpan{start,end}, typeSpan{start,end}, addressSpace, type, typeMapped,
+    typeInfo` + optional `accessMode` (storage), optional **`layout`** (a full
+    StructLayout, present when the binding's type is a struct — the npm suite pins
+    `bindings[0].layout.size === 24`), optional **`array`** (an ArrayInfo
+    `{depth,elementCount,elementStride,totalSize,elementType,elementTypeMapped}`).
+  - **StructLayout**: `size, alignment, fields[]`; each field `name, nameMapped,
+    nameOffset, stableId, typeSpan, type, typeMapped, offset, size, alignment,
+    typeInfo`.
+  - **EntryPoint**: `name, nameOffset, stableId, declSpan, stage, workgroupSize,
+    inputs[], outputs[], resources[]` + `overrides[]` **only when non-empty**.
+  - **Override**: `name, nameMapped, nameOffset, stableId, declSpan, id, type,
+    typeInfo, default` — `default` is rendered expression *text* (`"8u"`).
+  - **Alias**: `name, nameMapped, nameOffset, stableId, declSpan, type, typeMapped,
+    typeInfo`.
+  - **Function**: `name, nameOffset, declSpan, inUse, calls[], directResources[],
+    directOverrides[]`. Entry points appear here too. Populated even when the source
+    failed to parse (with `inUse:false`).
+
+  Corrected wire facts (the previous revision of this plan got the last two wrong):
+
+  - texture TypeInfo is **flat**: `{kind:"texture",dim,texKind[,format][,access]
+    [,sampleType]}` ✓.
+  - the **binding-level** key holding ArrayInfo is `array` (not `nested`) ✓ — but note
+    that is a *separate* key from the array's `typeInfo`, which spells its element
+    type as **`format`** and adds `count` / `stride` / `size` / `alignment`. Two
+    different array views, both present on the same binding.
+  - ✗ **`inputs`/`outputs` are NOT omitted when absent** — both arrays are always
+    emitted, `[]` when empty. What *is* omitted is each IO entry's `location` and
+    `builtin` (exactly one of the two is present). A fragment return value has
+    `"name":""` rather than no name.
+  - ✗ **`workgroupSize` is `null`, not omitted**, on non-compute entry points
+    (`src/reflect/Json.zig:588`). Same for `overrides[].id` when there's no `@id`.
+    Decode as `*[3]int` / `*int`, not as an absent field. An override-driven size
+    like `@workgroup_size(grid)` folds to **`[0,1,1]`** — worth pinning.
+  - the `uniforms`/`storage`/`textures`/`samplers` subset views **duplicate the whole
+    binding object**, they are not indices into `bindings`.
+
+  TypeInfo kinds: scalar, vec, mat, array, struct, atomic, sampler, texture, ptr. A
+  struct's TypeInfo is just `{kind:"struct",name,size,alignment}` — the fields live in
+  `layout` / `structs`.
 - refactor: edits `{"edits":[{"start","end","newText"}][,"error"]}`; apply
   `{"ok","source","edits"[,"error"]}` (failure echoes the original source);
   references `{"references":[{"start","end","isWrite"}][,"error"]}` (no symbol ⇒
@@ -184,7 +291,20 @@ Response envelopes:
 - Exact wire error strings (pin these; they are the sentinel-error contract):
   `"parse error"`, `"symbol not found"`, `"invalid identifier"`, `"not found"`,
   `"id too long"`, `"not a removable declaration"`,
-  `"no type annotation or invalid replacement"`.
+  `"no type annotation or invalid replacement"`. Which are reachable from
+  integration, probed one by one:
+
+  | string | how to provoke |
+  |---|---|
+  | `"symbol not found"` | offset on whitespace, or an unknown stable id |
+  | `"invalid identifier"` | rename to a keyword (`"fn"`) |
+  | `"no type annotation or invalid replacement"` | `changeType` on an **inferred `let`** (`let y = helper(1.0)`) — no annotation to replace |
+  | `"parse error"` | any refactor op on unparseable source |
+  | `"not found"` | locate-family on an absent id |
+  | `"not a removable declaration"` | **not reachable** — fns, struct members and vars all removed cleanly |
+  | `"id too long"` | **not reachable** — a 5000-char id returns `"not found"`, not this |
+
+  So Block 5's unit table for the last two rows is load-bearing, exactly as planned.
 
 ### Sibling API surfaces to mirror
 
@@ -247,8 +367,9 @@ Decisions those files forced:
 - **Start with one instance + `sync.Mutex`; pool only after a benchmark says so**
   (CONCURRENCY: profile before RWMutex/Pool; Block 6 is the [PERF] block with
   benchstat evidence).
-- **Deps: wazero (runtime) + google/go-cmp (tests only).** Nothing else. stdlib
-  `encoding/json`, `compress/flate` cover the rest.
+- **Deps: wazero (runtime) + google/go-cmp (tests only).** Nothing else *chosen* —
+  the go.mod will additionally carry `golang.org/x/sys` as wazero's own requirement.
+  stdlib `encoding/json`, `compress/flate` cover the rest.
 - No logging anywhere in the library. No goroutines in the library (Block 6's pool
   spawns none either).
 
@@ -311,10 +432,15 @@ packages/go/
   function: lock → write inputs → call → copy outputs out of linear memory → free
   inputs+envelope → unlock. All copies happen under the lock; nothing returned
   aliases wasm memory (Pool-discipline rule: copy outputs before releasing).
-- Block 6 upgrades to a `sync.Pool` of instances if — and only if — benchmarks show
-  the mutex is the bottleneck under parallel load. Pool entries whose linear memory
-  grew past a threshold are dropped instead of Put back (memory never shrinks;
-  don't let one 100 MB shader pin pages forever).
+- **Any error out of a wasm call retires the instance.** A trap can leave the guest
+  heap inconsistent without saying so, so the recovery is to discard and re-instantiate
+  (~32 µs), never to keep using it. This holds in both the mutex and the pool designs
+  and is the reason the ABI layer, not the callers, owns instance lifetime.
+- Block 6 upgrades to a `sync.Pool` of instances if — and only if — benchmarks confirm
+  the mutex is the bottleneck under parallel load. The prior is favourable (~6.4× on
+  8-way parallel, § measured costs), but the benchmark still decides. Pool entries
+  whose linear memory grew past a threshold are dropped instead of Put back (memory
+  never shrinks; don't let one 100 MB shader pin pages forever).
 - ctx: passed through to `api.Function.Call`. v1 does not enable
   `WithCloseOnContextDone`; Block 6 decides whether cancellation mid-call is worth
   the instance-discard bookkeeping.
@@ -398,9 +524,43 @@ type Diagnostic struct {
 type Reflection struct { Version int; Bindings []Binding; Uniforms, Storage, Textures,
     Samplers []Binding; Structs map[string]StructLayout; EntryPoints []EntryPoint
     Overrides []Override; Functions []Function; Aliases []Alias; Errors []string }
+
+type Span struct{ Start, End int }
+type Binding struct {
+    Group, Binding uint32
+    Name, NameMapped string; NameOffset int; StableID StableID
+    DeclSpan, TypeSpan Span
+    AddressSpace, AccessMode string        // AccessMode empty unless storage
+    Type, TypeMapped string
+    Layout *StructLayout                   // struct-typed bindings only
+    Array  *ArrayInfo                      // array-typed bindings only
+    TypeInfo TypeInfo
+}
+type StructLayout struct { Size, Alignment int; Fields []Field }
+type Field struct { Name, NameMapped string; NameOffset int; StableID StableID
+    TypeSpan Span; Type, TypeMapped string; Offset, Size, Alignment int; TypeInfo TypeInfo }
+type ArrayInfo struct { Depth, ElementCount, ElementStride, TotalSize int
+    ElementType, ElementTypeMapped string }
+type EntryPoint struct {
+    Name string; NameOffset int; StableID StableID; DeclSpan Span
+    Stage string                           // "compute" | "vertex" | "fragment"
+    WorkgroupSize *[3]int                  // wire NULL on non-compute — pointer, not omitted
+    Overrides []string                     // omitted from the wire when empty
+    Inputs, Outputs []IOVar                // ALWAYS present; [] when empty
+    Resources []string
+}
+type IOVar struct { Name string; Location *int; Builtin string  // exactly one is set
+                    Type string; TypeInfo TypeInfo }            // Name is "" for a fragment return
+type Override struct { Name, NameMapped string; NameOffset int; StableID StableID
+    DeclSpan Span; ID *int; Type string; TypeInfo TypeInfo; Default string }  // Default is expr TEXT
+type Alias struct { Name, NameMapped string; NameOffset int; StableID StableID
+    DeclSpan Span; Type, TypeMapped string; TypeInfo TypeInfo }
+type Function struct { Name string; NameOffset int; DeclSpan Span; InUse bool
+    Calls, DirectResources, DirectOverrides []string }
+
 type TypeInfo struct { Kind string; /* flat superset: Name, Width, Cols, Rows, Format *TypeInfo,
     Size, Alignment, Stride, Count *int, Dim, TexKind, SampleType, Access, AddressSpace,
-    Comparison … all omitzero */ }
+    Comparison … all omitzero. Arrays spell their element type as Format, not Nested. */ }
 func BindGroups(bindings []Binding) map[uint32]map[uint32]Binding   // npm getBindGroups analog
 
 // Refactor family. Offsets are UTF-8 byte offsets (int in Go; validated >= 0).
@@ -474,15 +634,22 @@ Mastery: GO_MASTERY (package design), CONCURRENCY (Mutex, OnceValues).
      with `src/root.zig`'s version string read from the repo (skip if the file is
      absent, so the test survives a future extraction).
    - `TestWasmMatchesNpm` — sha256 of the embedded wasm == sha256 of
-     `../../js-npm/wgslender.wasm` (path relative to the test file; skip-if-absent).
-     This is the **freshness gate**: whenever the wire changes and js-npm's wasm is
-     rebuilt, this test fails until the Go copy is refreshed too.
+     `../../js-npm/wgslender.wasm` (relative to `packages/go/wgslender/`, so it
+     resolves to `packages/js-npm/wgslender.wasm`; skip-if-absent). This is the
+     **freshness gate**: whenever the wire changes and js-npm's wasm is rebuilt, this
+     test fails until the Go copy is refreshed too. Requires `internal/wasmabi` to
+     expose the embedded bytes (or a `Checksum() [32]byte`) — `internal/` is importable
+     from anywhere inside this module, including an external `_test` package.
 4. GREEN: `internal/wasmabi/abi.go` — embed, compile-once via `sync.OnceValues`,
    single instance + mutex, `call` helper (alloc inputs with the `max(len,1)` rule,
    invoke, fresh-memory reads, free inputs, return envelope bytes + free with exact
-   totals), `Version()`.
+   totals), **discard the instance on any call error**, `Version()`.
 5. White-box `abi_test.go`: envelope header decode against hand-built byte slices;
    free-length arithmetic for all five layouts; empty-string alloc rule.
+6. Sanity assertions worth encoding while the ABI is fresh: the compiled module has
+   0 imported functions and 0 imported memories, and exports exactly 23 functions +
+   1 memory. Cheap, and they turn any future `zig build wasm` surface change into a
+   named failure instead of a mysterious one.
 6. Commit: `feat(packages/go): scaffold pure-Go module with wazero ABI core`.
 
 ### Block 1 — Minify + options codec
@@ -513,6 +680,13 @@ Mastery: TYPE_DRIVEN (Opt pattern), TESTING (tables, fuzz, golden).
    leave a `t.Skip` marker RED as the block boundary).
 7. Commit: `feat(packages/go): minify with tri-state options codec`.
 
+Probed values to use as pins (445-byte demo shader, defaults): `""`, `{}` and
+`{not json` all produce identical 161-byte output; `{"keepNames":["helper"]}` → 171 B
+with `helper` intact; `{"mangleExternalBindings":true}` → the `@group/@binding` name is
+gone; `{"treeShaking":false,"minifyIdentifiers":false}` → 181 B. `{"sourceMap":true}`
+yields a `sourceMap` object with keys `mappings, names, sources, version` and
+`"version":3`.
+
 ### Block 2 — Validate + Lint + LintFix + Diagnostic
 
 Mastery: ERRORS (report-vs-error line), TESTING.
@@ -539,19 +713,34 @@ Mastery: ERRORS (report-vs-error line), TESTING.
 
 ### Block 3 — Reflect + MinifyAndReflect + BindGroups
 
+Block 3 is the largest of the blocks — see the corrected reflect key inventory in
+§ Wire contracts. Budget for ~10 wire structs, not 3.
+
 1. RED — reflect table (npm pins): uniform binding group/binding/name/addressSpace +
-   `Layout.Size == 24` for `{f32, vec2<u32>, f32}`; sampler → `AddressSpace ==
+   `Layout.Size == 24`. **That pin belongs to the npm suite's own inline shader**
+   (`struct Inputs { time: f32, resolution: vec2<u32>, brightness: f32 }`,
+   `_suite.cjs:186`), *not* to `demo.wgsl` — the Rust fixture's `Params { resolution:
+   vec2f, time: f32, frame: u32 }` lays out to **16** bytes, and silently crossing the
+   two is the obvious way to write a wrong test. Also: sampler → `AddressSpace ==
    "handle"`, no Layout; compute entry stage + workgroup size; struct field
-   names/count; `""` → empty slices; broken → Errors populated; `Version == 2`;
-   subset views populated; **wire-fact pins**: texture TypeInfo flat with `TexKind`,
-   nested array key `array`, IO fields omitted-not-null (decode a hand-written JSON
-   fixture for these, so the pin survives shader-corpus drift).
-2. RED — MinifyAndReflect: names in Reflection match a re-Reflect of `.Code`;
-   `NameMapped` keeps the original; parse error surfaces in both halves' errors.
-3. RED — BindGroups grid incl. holes (`grid[0][1]` absent; separate groups).
-4. GREEN: reflect.go + Reflection/TypeInfo decoding. `ReflectJSON` returns the raw
+   names/count; `""` → all-empty envelope with no `errors` key; broken → Errors
+   populated *and* `functions` still populated with `InUse:false`; `Version == 2`;
+   subset views populated (and carrying whole binding objects, not indices).
+2. RED — **wire-fact pins**, decoded from hand-written JSON fixtures so they survive
+   shader-corpus drift: texture TypeInfo flat with `TexKind`; binding-level `array`
+   key distinct from the array TypeInfo's `format`/`count`/`stride`; `inputs`/
+   `outputs` present-but-empty rather than absent; `workgroupSize: null` on a
+   vertex/fragment entry point decoding to a nil `*[3]int`; `@workgroup_size(grid)`
+   → `[0,1,1]`; `overrides[].id: null`; a fragment return decoding to `Name == ""`.
+3. RED — MinifyAndReflect: names in Reflection match a re-Reflect of `.Code`;
+   `NameMapped` keeps the original; parse error surfaces in both halves' errors —
+   note the asymmetry is real and was re-confirmed: `minify.errors` is
+   `[{"message":…}]` objects while `reflect.errors` is `["…"]` bare strings, for the
+   same four parse errors.
+4. RED — BindGroups grid incl. holes (`grid[0][1]` absent; separate groups).
+5. GREEN: reflect.go + Reflection/TypeInfo decoding. `ReflectJSON` returns the raw
    envelope for everything the typed view flattens.
-5. Commit: `feat(packages/go): typed reflection with bind-group helper`.
+6. Commit: `feat(packages/go): typed reflection with bind-group helper`.
 
 ### Block 4 — Compile
 
@@ -566,19 +755,25 @@ Mastery: ERRORS (report-vs-error line), TESTING.
 
 ### Block 5 — refactor family
 
-1. RED — tables mirroring `packages/rust/…/tests/refactor.rs` + npm pins: 4 refs for
-   `helper` with exactly 1 write; `WithoutDeclaration` drops the decl; no symbol →
-   empty + nil error; rename → 4 edits spelling `helper`→`scale`; keyword target →
-   `errors.Is(err, ErrInvalidIdentifier)`; missing symbol → `ErrSymbolNotFound`;
-   RenameApply failure echoes original source; exact stable-id strings
-   (`"v1:fn:compute/block#0/let:y"`, binding `"v1:var:u"`); id survives a prepended
-   comment; `LocateStableID` after deleting the symbol → `ok=false, err=nil`;
-   unknown-version id `"v2:…"` → `ok=false`; `ChangeTypeApply` struct-member case
-   produces exactly `struct S { x: i32, y: f32 }`; `RemoveDeclarationApply` single
-   deletion edit with empty NewText; UTF-8 byte-offset pin (multibyte source).
+1. RED — tables mirroring `packages/rust/…/tests/refactor.rs` + npm pins: refs for
+   `helper` with exactly 1 write (the declaration itself is the `isWrite:true` entry);
+   `WithoutDeclaration` drops the decl; no symbol → empty + nil error (also true for a
+   wildly out-of-range offset — no trap, no error, just `[]`); rename → edits spelling
+   `helper`→`scale`; keyword target (`"fn"`) → `errors.Is(err, ErrInvalidIdentifier)`;
+   missing symbol → `ErrSymbolNotFound`; RenameApply failure echoes original source
+   with `"ok":false`; exact stable-id strings — probed forms: `"v1:fn:helper"`,
+   `"v1:var:u"`, `"v1:struct:Params/member:a"`, `"v1:fn:helper/param:x"`,
+   `"v1:fn:cs_main/block#0/let:y"`, `"v1:override:grid"`, `"v1:alias:F"`; id survives a
+   prepended comment; `LocateStableID` after deleting the symbol → `ok=false,
+   err=nil`; unknown-version id `"v2:…"` → `ok=false`; `ChangeTypeApply` struct-member
+   case; `ChangeType` on an inferred `let` → `ErrNoTypeAnnotation`;
+   `RemoveDeclarationApply` single deletion edit with empty NewText; UTF-8
+   byte-offset pin — a source whose first line is `// 🎨🎨 comment` puts `fn héllo` at
+   **byte** 23 (rune 19), and the reference spans come back as byte offsets.
 2. Unit table for the wire-string → sentinel map, including the two branches
-   integration can't provoke (`"not a removable declaration"`, `"id too long"`) —
-   same trick as the Rust unit tests.
+   integration can't provoke (`"not a removable declaration"`, `"id too long"` —
+   confirmed unreachable, see the provocation table in § Wire contracts) — same trick
+   as the Rust unit tests.
 3. GREEN: refactor.go, errors.go.
 4. Commit: `feat(packages/go): refactor and stable-id operations`.
 
@@ -588,17 +783,25 @@ Mastery: CONCURRENCY (Pool discipline), ZERO_ALLOC (benchmark discipline).
 
 1. RED — `-race` stress test: N goroutines × M mixed ops via `sync.WaitGroup.Go`,
    all results independently correct (this already passes with the mutex — it pins
-   correctness before the optimization).
+   correctness before the optimization). This test has teeth: the same shape *without*
+   the mutex failed 959/960 calls when probed directly against the raw ABI, so a
+   regression that drops the lock cannot slip through quietly.
 2. Benchmarks first: `BenchmarkMinify{Small,Large}`, `BenchmarkParallelMinify`
    (`b.RunParallel`), all `for b.Loop()` + `b.ReportAllocs()`. Record baseline with
-   `-count=6 -benchmem` + benchstat.
+   `-count=6 -benchmem` + benchstat. Rough expectations from the raw-ABI probe:
+   ~57 µs/minify serial for a 445-byte shader, ~6.4× throughput at 8-way parallel with
+   per-goroutine instances, ~32 µs to instantiate, ~127 ms one-time compile.
 3. Implement the instance pool (`sync.Pool` of instances; discard oversized-memory
-   instances instead of Put; compile-once shared). Re-run benchstat; the pool lands
-   **only if** parallel throughput materially improves; either way the evidence goes
-   in the commit message.
-4. Leak test: 10k sequential minifies → `Memory().Size()` stabilizes (frees are
-   balanced; growth plateaus).
-5. Decide `WithCloseOnContextDone` here with a cancellation test if adopted.
+   instances instead of Put; **discard trapped instances unconditionally**;
+   compile-once shared). Re-run benchstat; the pool lands **only if** parallel
+   throughput materially improves; either way the evidence goes in the commit message.
+4. Leak test: 10k sequential minifies → `Memory().Size()` stabilizes. The prior is
+   strong — 500 sequential minifies moved it by exactly 0 bytes — so a *failure* here
+   means a genuine unbalanced free, not noise; treat it as a bug, not a threshold to
+   tune.
+5. Decide `WithCloseOnContextDone` here with a cancellation test if adopted. Note it
+   interacts with the discard rule: a context-closed module is dead and must be
+   retired, which is the behaviour the ABI layer already needs for traps.
 6. Commit: `perf(packages/go): instance pooling with benchstat evidence` (or a
    `docs:` commit recording why the mutex stays).
 
@@ -660,6 +863,9 @@ The `wgsl_module!` analog: typed structs with layout proofs.
 - The Go API deliberately diverges from npm in three places (all documented):
   no `initialize()` (lazy init), refactor errors are Go errors rather than `error`
   fields on results, and minify errors are flattened `[]string` (Rust parity).
+- `MinifyOptions` deliberately omits `sourceMapInline` even though `Config` parses it,
+  because the wasm minify path ignores it (see § Wire contracts). Recorded here so a
+  later reader doesn't "restore" a knob that would silently do nothing.
 
 ## Deferred / out of scope
 
