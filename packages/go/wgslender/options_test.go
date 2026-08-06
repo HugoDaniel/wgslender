@@ -98,6 +98,45 @@ func TestOptGet(t *testing.T) {
 	}
 }
 
+// TestOptAbsentIsNull pins what an absent Opt looks like when it does reach
+// JSON. omitzero keeps one out of the document entirely, which is the shape
+// every field in this package uses — but Opt is exported, and a third party
+// embedding it without the tag must get "nothing" (null), not T's zero value
+// wearing its clothes. And a null read back must leave the Opt absent, or a
+// document could not survive a round trip.
+func TestOptAbsentIsNull(t *testing.T) {
+	got, err := json.Marshal(wgslender.Opt[bool]{})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(got) != "null" {
+		t.Errorf("Marshal(absent Opt) = %s, want null", got)
+	}
+	if got, err := json.Marshal(wgslender.Set(false)); err != nil || string(got) != "false" {
+		t.Errorf("Marshal(Set(false)) = %s, %v, want false", got, err)
+	}
+
+	var read struct {
+		A wgslender.Opt[bool] `json:"a,omitzero"`
+	}
+	if err := json.Unmarshal([]byte(`{"a":null}`), &read); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if v, ok := read.A.Get(); ok {
+		t.Errorf("a null unmarshalled as set (value %v), want absent", v)
+	}
+
+	// A null must also clear an Opt that was set before decoding into it,
+	// exactly as it would have been cleared by Set never having run.
+	read.A = wgslender.Set(true)
+	if err := json.Unmarshal([]byte(`{"a":null}`), &read); err != nil {
+		t.Fatalf("Unmarshal over a set Opt: %v", err)
+	}
+	if _, ok := read.A.Get(); ok {
+		t.Error("a null left a previously set Opt set, want absent")
+	}
+}
+
 // TestOptRoundTrip keeps Opt honest as a JSON type in both directions. Nothing
 // in this package decodes into one today, but a type that marshals and does not
 // unmarshal fails by quietly producing zero values, which is the failure mode

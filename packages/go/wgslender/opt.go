@@ -35,16 +35,27 @@ func (o Opt[T]) Get() (T, bool) { return o.v, o.set }
 // omitzero fields.
 func (o Opt[T]) IsZero() bool { return !o.set }
 
-// MarshalJSON encodes the value alone. A field holding an absent Opt should be
-// tagged omitzero so this is never reached for one; if it is, the value encodes
-// as T's zero value, which is the closest thing to "nothing" JSON has room for
-// in a field that insisted on being present.
-func (o Opt[T]) MarshalJSON() ([]byte, error) { return json.Marshal(o.v) }
+// MarshalJSON encodes a set value alone, and an absent Opt as null. A field
+// holding an absent Opt should be tagged omitzero so the null is never
+// reached — this package's own fields all are — but a field that insists on
+// being present says "nothing" the way JSON spells it, not as T's zero value
+// passing for a choice.
+func (o Opt[T]) MarshalJSON() ([]byte, error) {
+	if !o.set {
+		return []byte("null"), nil
+	}
+	return json.Marshal(o.v)
+}
 
-// UnmarshalJSON decodes a present value, marking it set. A key that never
-// appears in the document leaves the Opt absent, because Unmarshal does not
-// call this at all for a missing key.
+// UnmarshalJSON decodes a present value, marking it set, and reads null as
+// absence — whatever the Opt held before. A key that never appears in the
+// document also leaves the Opt absent, because Unmarshal does not call this at
+// all for a missing key.
 func (o *Opt[T]) UnmarshalJSON(b []byte) error {
+	if string(b) == "null" {
+		*o = Opt[T]{}
+		return nil
+	}
 	if err := json.Unmarshal(b, &o.v); err != nil {
 		return err
 	}
