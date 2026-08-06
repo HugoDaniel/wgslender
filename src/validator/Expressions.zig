@@ -804,8 +804,26 @@ pub fn checkUnaryE(v: *Validator, e: *Ast.UnaryExpr, exp: Expectation) Allocator
     };
     const or_ = try checkExprE(v, e.operand, operand_exp);
     const stage = or_.stage;
-    const operand_type = or_.typ orelse return .{ .typ = null, .stage = stage };
     const er = exprRange(.{ .unary = e });
+
+    // `&max` — a builtin name used as a value. `checkIdent` deliberately
+    // types builtins as null ("resolved at the call site"), so this would
+    // otherwise fall out of the `orelse` below with no diagnostic at all:
+    // the `.builtin` arm of `addrOfOperandAsAm`'s symbol-kind switch is
+    // unreachable for builtins, which never enter the symbol table.
+    if (e.op == .addr) {
+        const root = stripParens(e.operand);
+        if (root == .ident and Builtins.isBuiltin(root.ident.name)) {
+            v.addErrorWithCodeR(
+                er,
+                Diagnostic.Code.addr_of_requires_reference,
+                v.fmtError("cannot take the address of function '{s}'", .{root.ident.name}),
+            );
+            return InferResult.fail;
+        }
+    }
+
+    const operand_type = or_.typ orelse return .{ .typ = null, .stage = stage };
 
     switch (e.op) {
         // `-` `!` `~` are value operators: their operand shapes resolve through
