@@ -408,8 +408,16 @@ export interface TextureInfo {
  */
 export interface ValidateOptions {
   /**
-   * Treat warnings as errors.
+   * Treat warnings as errors: every warning is promoted, so `errorCount`
+   * absorbs what `warningCount` would otherwise have reported.
    * @default false
+   */
+  strict?: boolean;
+
+  /**
+   * @deprecated Never implemented — reading this has no runtime effect.
+   * Use {@link ValidateOptions.strict} instead, which is the name the
+   * wrapper actually reads.
    */
   strictMode?: boolean;
 
@@ -417,6 +425,10 @@ export interface ValidateOptions {
    * Map of diagnostic rule names to their severity override.
    * Rules: "derivative_uniformity", "subgroup_uniformity"
    * Severities: "error", "warning", "info", "off"
+   *
+   * @deprecated Never implemented — passing this has no runtime effect. The
+   * validate ABI takes a single flags word and cannot carry per-rule
+   * severities; use {@link lint} for configurable rule severities.
    */
   diagnosticFilters?: Record<string, "error" | "warning" | "info" | "off">;
 }
@@ -476,9 +488,14 @@ export interface InitializeOptions {
 
 /**
  * Initialize the WASM module. Must be called before minify().
+ *
+ * Idempotent, and safe to call with no arguments: in Node the wrappers locate
+ * `wgslender.wasm` themselves. `options` is only needed in the browser, or to
+ * share a pre-compiled module.
+ *
  * @param options - Initialization options
  */
-export function initialize(options: InitializeOptions): Promise<void>;
+export function initialize(options?: InitializeOptions): Promise<void>;
 
 /**
  * Minify WGSL source code.
@@ -752,7 +769,18 @@ export function changeTypeApplyByStableId(
 export function isInitialized(): boolean;
 
 /**
- * Get the version of the minifier.
+ * Get the version of the minifier, or `"unknown"` before {@link initialize}
+ * has resolved.
+ */
+export function getVersion(): string;
+
+/**
+ * The version of the minifier.
+ *
+ * Prefer {@link getVersion}. Under ESM this is a surrogate object with
+ * `toString`/`valueOf` rather than a bare string — `export const` snapshots
+ * its value at module-evaluation time, which is before the version is
+ * knowable — so read it as `String(version)`.
  */
 export const version: string;
 

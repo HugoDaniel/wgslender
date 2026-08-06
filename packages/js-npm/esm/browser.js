@@ -71,6 +71,7 @@ export const removeDeclarationApplyByStableId = wgslender.removeDeclarationApply
 export const changeTypeByStableId = wgslender.changeTypeByStableId;
 export const changeTypeApplyByStableId = wgslender.changeTypeApplyByStableId;
 export const isInitialized = wgslender.isInitialized;
+export const getVersion = wgslender.getVersion;
 
 // `version` is a getter on `wgslender`. ESM `export const` snapshots
 // values at evaluation time, so wrap in a thenable-string surrogate
