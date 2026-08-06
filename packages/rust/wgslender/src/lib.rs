@@ -80,15 +80,21 @@ The same work, called rather than expanded:
 //!
 //! ## What is here
 //!
-//! | To | Call |
-//! |---|---|
-//! | shrink a shader | [`minify`], [`minify_with`], [`minify_and_reflect`] |
-//! | check one | [`validate`], [`lint`], [`lint_fix`] |
-//! | describe one | [`reflect`], [`reflect_json`] |
-//! | embed one in the binary | `include_wgsl!`, or `include_wgsl_compressed!` to store it deflated |
-//! | generate Rust from one | `wgsl_module!` |
-//! | embed one as WebAssembly | [`compile`] |
-//! | edit one by symbol | [`refactor`] |
+//! | To | Call | Run |
+//! |---|---|---|
+//! | shrink a shader | [`minify`], [`minify_with`], [`minify_and_reflect`] | `minify`, `minify_options` |
+//! | check one | [`validate`], [`lint`], [`lint_fix`] | `validate`, `lint` |
+//! | describe one | [`reflect`], [`reflect_json`] | `reflect_types` |
+//! | embed one in the binary | `include_wgsl!`, or `include_wgsl_compressed!` to store it deflated | `include_wgsl`, `embed_compressed` |
+//! | generate Rust from one | `wgsl_module!` | `wgsl_module` |
+//! | embed one as WebAssembly | [`compile`] | `compile` |
+//! | edit one by symbol | [`refactor`] | `refactor` |
+//!
+//! The last column is a runnable example, one `cargo run --example minify` per
+//! name — `embed_compressed` wants `--features compress`, the rest build with
+//! the defaults. There is no row without one, and the repository's gate runs
+//! all ten, so a name in that column is a program that worked this morning
+//! rather than a snippet that once did.
 //!
 //! ## Compile-time embedding
 //!

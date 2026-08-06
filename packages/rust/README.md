@@ -175,9 +175,20 @@ It runs, stopping at the first failure:
 | tests and doctests, every feature | `cargo test --workspace --all-features` |
 | no features at all | `cargo check --workspace --all-targets --no-default-features` |
 | documentation | `cargo doc --workspace --no-deps --all-features` with `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links"` |
+| examples | `cargo run -p wgslender --example …`, once for each of the ten |
 
 There is no separate `--doc` step: `cargo test --workspace` already runs the
 doctests, and a second pass would only run them twice.
+
+The examples go last because they are the slowest step and the least likely to
+fail. They also prove something the steps above cannot: `--all-targets` builds
+every example, which says only that they compile. This one **runs** them, and
+holds each to a non-zero-exit-and-non-empty-output bar — an example that
+panicked on its first line, or that printed nothing at all, used to pass the
+gate. It is also where a new example is caught: the step compares
+`wgslender/examples/` against the table listing them and fails on anything
+unlisted, so an example cannot be added and then quietly never run.
+`cargo xtask examples` runs that step alone.
 
 Each feature configuration is walked because an optional feature nothing ever
 compiles is an optional feature that has quietly stopped working — and the two
@@ -230,12 +241,27 @@ copies of one list.
 
 ## Examples
 
+Ten of them, one per thing the library does. At run time:
+
 ```sh
-cargo run -p wgslender --example minify         # what shrank, and by how much
-cargo run -p wgslender --example reflect_types  # bindings, struct layouts, entry points
-cargo run -p wgslender --example wgsl_module    # a generated module's layout
+cargo run -p wgslender --example minify          # what shrank, and by how much
+cargo run -p wgslender --example minify_options  # what each option costs
+cargo run -p wgslender --example validate        # accepted, and accepted-but-strict
+cargo run -p wgslender --example lint            # packs, overrides, autofixes
+cargo run -p wgslender --example reflect_types   # bindings, layouts, entry points
+cargo run -p wgslender --example refactor        # find, rename and edit by symbol
+cargo run -p wgslender --example compile         # a shader as a wasm module
+```
+
+And while the binary is being built:
+
+```sh
+cargo run -p wgslender --example include_wgsl    # embedding at compile time
+cargo run -p wgslender --example wgsl_module     # a generated module's layout
 cargo run -p wgslender --features compress --example embed_compressed
 ```
+
+`cargo xtask examples` runs all ten, and is the last step of the gate above.
 
 ## Publishing
 
