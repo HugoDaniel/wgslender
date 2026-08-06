@@ -16,9 +16,29 @@ two panels, live debounced minification, option pills, a stats bar, one screen,
 no framework. This is that, upgraded from `<textarea>` to a real editor, because
 wgslender — unlike miniray — has a language server to show off.
 
-**Status:** ready to execute — nothing below has landed. Verify with
-`git log --oneline -- web/` (last commit touching `web/` should be the starter
-scaffold).
+**Status:** Block 1 executed 2026-08-06 (`cb313d7` wasm refresh, `37a25e4`
+deps + tests). Blocks 2-5 pending. Outcomes worth carrying forward:
+
+- Installed versions: `@codemirror/lsp-client` 6.2.5, `codemirror` 6.0.2,
+  `@codemirror/{state 6.7.1, view 6.43.8, language 6.12.4, lint 6.9.7,
+  autocomplete 6.20.3}`. Both `file:` packages sit in `dependencies` (they are
+  imported by client code), not `devDependencies`.
+- The checked-in LSP wasm **was** stale (889,523 → 891,897 bytes);
+  `packages/js-npm/wgslender.wasm` rebuilt byte-identical.
+- Every predicted code held: `W0001` on the unused helper from `didOpen`,
+  `E0206` on a bad member access, clearing on revert.
+  `wgslender.showMinifiedOutput` returns `gz_count` well under `byte_count`.
+- **Sizes are UTF-8 bytes, not JS string units.** The sample's comments contain
+  an em dash, so `minify().originalSize !== source.length`. The stats bar must
+  use `new TextEncoder().encode(src).length`.
+- Without tree shaking the dead helper survives under a *renamed* identifier
+  (`fn o(a:f32)->f32{return a*a*a;}`) — assert on its body, not its name.
+- A fresh worktree has an empty `external/lsp-kit` (submodule); `zig build`
+  panics with "unable to find module 'lsp'" until it is rsync'd in from the
+  main checkout.
+- `pnpm build` was **already failing** on the starter `index.mdx`, which used
+  an HTML comment (`<!-- -->`) that MDX rejects. Converted to `{/* */}` in
+  Block 1 so the gate means something.
 
 Facts below were verified against the worktree and against the actual npm
 tarball of `@codemirror/lsp-client` on 2026-08-06. File:line references are
