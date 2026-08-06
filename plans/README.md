@@ -8,7 +8,7 @@ compile-time embedding proc-macros.
 
 | Plan | File | Target | Creates |
 |------|------|--------|---------|
-| 1 | [01-js-ts.md](01-js-ts.md) | JS/TS via the npm package (WASM) | `examples/js-ts/` |
+| 1 | [01-js-ts.md](01-js-ts.md) | JS/TS via the npm package (WASM) — **executed** | `examples/js-ts/` |
 | 2 | [02-rust.md](02-rust.md) | Rust via the C static library (FFI) — **superseded by plan 4 if 4 executes** | `examples/rust/` |
 | 3 | [03-c.md](03-c.md) | C via `libwgslender.a` (examples already exist — plan hardens + tests them) | `examples/c/` test harness |
 | 4 | [04-rust-package.md](04-rust-package.md) | Publishable Rust cargo workspace: full-ABI safe API + compile-time `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` proc-macros | `packages/rust/` |
@@ -23,7 +23,14 @@ Plan 2 is therefore superseded.
 smoke suite over all ten examples (`make -C examples/c test`) and a glibc
 cross-compile check (`make -C examples/c lint-portability`).
 
-**Plan 1 is the only embedding-example plan left.**
+**Plan 1 is executed** — all six blocks, landed in `examples/js-ts/`: a TypeScript
+project consuming the real npm package through a `file:` dependency, with three
+subexamples and a 27-case suite (`cd examples/js-ts && npm install && npm test`).
+It also fixed three `main.d.ts` declarations that contradicted the runtime, and
+added the `getVersion` re-export the ESM wrappers were missing.
+
+**All four embedding-example plans are now executed.** Plan 2 was superseded by
+plan 4 and never ran.
 
 ## Other plans (not part of the embedding-example set)
 
@@ -78,7 +85,9 @@ has moved significantly:
 - `make -C examples/c` builds all 10 C examples; `./minify`, `./validate`, `./reflect`
   run correctly (only a harmless `ld` macOS-version warning).
 - `cd packages/js-npm && npm test` — **175 passed, 0 failed** in each of the 4 wrapper
-  variants (node-cjs, node-esm, browser CJS shim, browser ESM shim).
+  variants (node-cjs, node-esm, browser CJS shim, browser ESM shim). *(Stale as of
+  plan 1's execution: the same command reports 182 × 4. The suite grew; nothing
+  regressed.)*
 - Library version: `1.1.0` (`src/root.zig:11`).
 - There is **no** automated testing of `examples/c/` anywhere (verified exhaustively:
   no reference in `build.zig`, no Makefile `test` target, no script, no CI).
