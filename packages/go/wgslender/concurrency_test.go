@@ -30,6 +30,10 @@ type stressOp struct {
 // and interleaving one family with itself would not exercise that.
 func stressOps(t *testing.T) []stressOp {
 	t.Helper()
+	// Resolved here, on the test goroutine, because offsetOf can Fatal and
+	// the closures below run inside worker goroutines, where Fatal is not
+	// allowed to be called.
+	lum := offsetOf(t, demoWGSL, "luminance")
 	return []stressOp{
 		{"Version", func(ctx context.Context) (string, error) {
 			return wgslender.Version(ctx)
@@ -84,7 +88,7 @@ func stressOps(t *testing.T) []stressOp {
 				len(c.WASM), c.OriginalSize, sha256.Sum256(c.WASM)), nil
 		}},
 		{"RenameApply", func(ctx context.Context) (string, error) {
-			a, err := wgslender.RenameApply(ctx, demoWGSL, offsetOf(t, demoWGSL, "luminance"), "lum")
+			a, err := wgslender.RenameApply(ctx, demoWGSL, lum, "lum")
 			if err != nil {
 				return "", err
 			}

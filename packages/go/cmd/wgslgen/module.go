@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"go/token"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"unicode"
@@ -176,11 +177,7 @@ func (m *module) entryPoints(es []wgslender.EntryPoint) error {
 // name would be simpler and would put the generated file in an order that
 // matches nothing the author can see.
 func (m *module) structs(byName map[string]wgslender.StructLayout) error {
-	names := make([]string, 0, len(byName))
-	for name := range byName {
-		names = append(names, name)
-	}
-	slices.SortFunc(names, func(a, b string) int {
+	names := slices.SortedFunc(maps.Keys(byName), func(a, b string) int {
 		return declaredBefore(byName[a], byName[b], a, b)
 	})
 

@@ -358,7 +358,8 @@ func invoke(ctx context.Context, inst *instance, fn string, l Layout, args []Arg
 	// reclaims all of its linear memory at once. That is why the failure paths
 	// below free nothing: there is nothing left to free.
 	params := make([]uint64, 0, 2*len(args))
-	inputs := make([]region, 0, len(args))
+	// +1: the free path appends the result envelope's region to this slice.
+	inputs := make([]region, 0, len(args)+1)
 	for _, arg := range args {
 		if arg.kind == KindScalar {
 			params = append(params, uint64(arg.scalar))
