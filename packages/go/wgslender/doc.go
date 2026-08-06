@@ -35,4 +35,9 @@
 // [MinifyResult.Errors], [Validation.Diagnostics], [LintReport.Diagnostics] or
 // [Reflection.Errors] — and the call itself succeeds. A returned error means
 // the call could not be made or could not be trusted.
+//
+// [Compile] is the one exception, and it is an exception because it has
+// nothing to report: every other function still has an answer for a shader it
+// could not read, while a compiler with nothing to compile has no module to
+// hand back. Source that does not parse is a *[CompileError] there.
 package wgslender

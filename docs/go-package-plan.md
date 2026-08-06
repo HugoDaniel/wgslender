@@ -10,7 +10,7 @@ Also creates `cmd/wgslgen`, a `go:generate`-able codegen tool — the Go analog 
 Rust `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` macros (Go has no
 compile-time macros; `go generate` + golden files is the idiom).
 
-**Status:** executing, block-per-session. **Blocks 0, 1, 2 and 3 landed** —
+**Status:** executing, block-per-session. **Blocks 0, 1, 2, 3 and 4 landed** —
 `git log -- packages/go` is the authority on what is actually done, not this line.
 Originally verified against `main @ 9726727`
 on 2026-08-06 (macOS arm64, go 1.26.5, zig 0.16.0) by running a throwaway wazero
@@ -187,6 +187,19 @@ Options JSON (camelCase; keys derived from `src/options.zig` spec table):
   of `""`, `{}` and `{not json` produce byte-identical output —
   `Config.parseJson(...) catch Config{}`, `src/api_json.zig:110`).
   `compile` forces sortDeclarations + scopeLocalRename on internally.
+  **Amended during Block 4** — that understates it. Of the eleven options,
+  `compile` reads **four**: `minifyIdentifiers`, `treeShaking`,
+  `mangleExternalBindings`, `keepNames`. The other seven —
+  `minifyWhitespace`, `minifySyntax`, `sortDeclarations`, `scopeLocalRename`,
+  `preserveUniformStructTypes`, `sourceMap`, `sourceMapSources` — produce a
+  **byte-identical module** whatever they are set to, because the compiler
+  hardcodes its printer config (`src/Compiler.zig:1743-1745`:
+  `minify_syntax=false, sort_declarations=true, scope_local_rename=true`) and
+  forces `preserve_uniform_struct_types=false` (`:281`). Consequence, verified
+  by round-tripping the module: `compile`'s regenerated text equals
+  `Minify(src, {sortDeclarations:true, scopeLocalRename:true,
+  minifySyntax:false})` **exactly**, and differs from `Minify(src, {})` — e.g.
+  `0.2126` where default minification writes `.2126`.
   `sourceMapInline` exists in `src/options.zig`'s `source_map_specs` and `Config`
   parses it, but the **wasm minify path never reads it** — only `source_map` and
   `source_map_sources` are applied (`src/api_json.zig:112-113`). Inline data-URI
@@ -788,6 +801,17 @@ Block 3 is the largest of the blocks — see the corrected reflect key inventory
    `errors.AsType[*CompileError]` with non-empty Diagnostics.
 2. GREEN: compile.go.
 3. Commit: `feat(packages/go): binary shader compiler binding`.
+
+**Executed.** Corrections learned in the doing, beyond the options amendment
+above: "options change the generated module" is only true of four of the eleven
+(see § Wire contracts), so the options row became a table of *which* — the seven
+that are silently ignored are the part a caller cannot guess from the type.
+`wasm_len == 0` and non-empty diagnostics coincide today, so the error is keyed
+on the diagnostics (Rust does the same) and an empty module with nothing said
+about it is a separate `ErrInternal` rather than a success with an unusable
+`WASM` field. Also worth knowing for Block 6: the produced module round-trips
+through `Validate` cleanly, which makes "compile → generate → validate" a cheap
+end-to-end assertion available to any later block that wants one.
 
 ### Block 5 — refactor family
 
