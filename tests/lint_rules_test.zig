@@ -593,12 +593,15 @@ test "naming-convention: texture and sampler bindings are excluded too" {
     // Same api-surface reasoning as the uniform case above: a binding's name
     // is part of the contract with the host, so the rule must exempt every
     // binding, not just the uniform/storage ones.
+    // NB: no `_ = c;` to consume the value — phony assignment does not parse
+    // (see docs/postmortem-binding-classification.md). Writing to a storage
+    // binding keeps the fixture real WGSL.
     var r = try runLint(
         \\@group(0) @binding(0) var BadTexture: texture_2d<f32>;
         \\@group(0) @binding(1) var BadSampler: sampler;
+        \\@group(0) @binding(2) var<storage, read_write> sink: vec4f;
         \\@compute @workgroup_size(1) fn main() {
-        \\  let c = textureSampleLevel(BadTexture, BadSampler, vec2f(0.0), 0.0);
-        \\  _ = c;
+        \\  sink = textureSampleLevel(BadTexture, BadSampler, vec2f(0.0), 0.0);
         \\}
     , naming_opts);
     defer r.deinit(std.testing.allocator);
