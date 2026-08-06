@@ -235,7 +235,10 @@ func (a *abi) acquire(ctx context.Context) (*instance, error) {
 // ~32 µs, so there is nothing to gamble for.
 func (a *abi) release(ctx context.Context, inst *instance, healthy bool) {
 	if !healthy || inst.oversized() {
-		inst.close(ctx)
+		// Severed from the caller's cancellation: retiring must finish — a
+		// half-closed instance would stay on wazero's module list forever —
+		// and the caller whose ctx expired mid-call is exactly who retires.
+		inst.close(context.WithoutCancel(ctx))
 		a.permits <- struct{}{}
 		return
 	}
