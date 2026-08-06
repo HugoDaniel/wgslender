@@ -80,14 +80,20 @@ export interface MinifyOptions {
 
 /**
  * Error information from minification.
+ *
+ * Only `message` crosses the JSON boundary: `writeMinifyJson` in
+ * `src/api_json.zig` serializes the message alone, even though the Zig
+ * `Parser.ParseError` behind it carries a byte offset. Use `validate()` when
+ * you need positioned diagnostics — its `DiagnosticInfo` has real line and
+ * column numbers.
  */
 export interface MinifyError {
   /** Error message */
   message: string;
-  /** Line number (1-indexed, 0 if unknown) */
-  line: number;
-  /** Column number (1-indexed, 0 if unknown) */
-  column: number;
+  /** Not currently emitted — see above. */
+  line?: number;
+  /** Not currently emitted — see above. */
+  column?: number;
 }
 
 /**
@@ -386,15 +392,23 @@ export type TypeInfo =
   | { kind: "array"; format: TypeInfo; count: number | null; size: number | null; stride: number; alignment: number }
   | { kind: "struct"; name: string; size: number; alignment: number }
   | { kind: "atomic"; format: TypeInfo; size: number; alignment: number }
-  | { kind: "texture"; texture: TextureInfo }
+  | ({ kind: "texture" } & TextureInfo)
   | { kind: "sampler"; comparison: boolean }
   | { kind: "ptr"; addressSpace: string; format: TypeInfo; access: string };
 
+/**
+ * Texture details, spread directly onto the `kind: "texture"` variant of
+ * `TypeInfo` — the fields sit at the top level of that object, not under a
+ * nested `texture` key.
+ */
 export interface TextureInfo {
   /** "1d" | "2d" | "2d_array" | "3d" | "cube" | "cube_array" | "multisampled_2d" | … */
   dim: string;
-  /** "sampled" | "depth" | "external" | "storage" | "multisampled" */
-  kind: string;
+  /**
+   * "sampled" | "depth" | "external" | "storage" | "multisampled".
+   * Named `texKind` because `kind` is the `TypeInfo` discriminant.
+   */
+  texKind: string;
   /** Texel format for storage textures (e.g. "rgba8unorm"); empty otherwise. */
   format?: string;
   /** Access mode for storage textures: "read" | "write" | "read_write". */
