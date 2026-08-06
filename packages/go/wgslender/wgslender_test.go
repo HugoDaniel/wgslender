@@ -27,6 +27,8 @@ var (
 )
 
 func TestVersion(t *testing.T) {
+	t.Parallel()
+
 	got, err := wgslender.Version(t.Context())
 	if err != nil {
 		t.Fatalf("Version: %v", err)
@@ -63,6 +65,8 @@ func TestVersion(t *testing.T) {
 // this test fails until packages/go/internal/wasmabi/wgslender.wasm is
 // refreshed too.
 func TestWasmMatchesNpm(t *testing.T) {
+	t.Parallel()
+
 	npm, err := os.ReadFile(npmWasmPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		t.Skipf("%s absent; nothing to compare against", npmWasmPath)

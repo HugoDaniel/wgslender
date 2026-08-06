@@ -13,6 +13,8 @@ import (
 // Config{} in src/api_json.zig). A typo here would not fail, it would silently
 // minify with the defaults.
 func TestMinifyOptionsJSON(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name string
 		opts wgslender.MinifyOptions
@@ -72,6 +74,7 @@ func TestMinifyOptionsJSON(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := json.Marshal(tt.opts)
 			if err != nil {
 				t.Fatalf("Marshal: %v", err)
@@ -86,6 +89,8 @@ func TestMinifyOptionsJSON(t *testing.T) {
 // TestOptGet pins the accessor, which is the only way out of an Opt and so the
 // only way a caller can tell "set to false" from "never set".
 func TestOptGet(t *testing.T) {
+	t.Parallel()
+
 	var absent wgslender.Opt[bool]
 	if v, ok := absent.Get(); ok || v {
 		t.Errorf("zero Opt.Get() = (%v, %v), want (false, false)", v, ok)
@@ -105,6 +110,8 @@ func TestOptGet(t *testing.T) {
 // wearing its clothes. And a null read back must leave the Opt absent, or a
 // document could not survive a round trip.
 func TestOptAbsentIsNull(t *testing.T) {
+	t.Parallel()
+
 	got, err := json.Marshal(wgslender.Opt[bool]{})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -142,6 +149,8 @@ func TestOptAbsentIsNull(t *testing.T) {
 // unmarshal fails by quietly producing zero values, which is the failure mode
 // worth spending four lines to rule out.
 func TestOptRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	var got struct {
 		A wgslender.Opt[bool] `json:"a,omitzero"`
 		B wgslender.Opt[int]  `json:"b,omitzero"`

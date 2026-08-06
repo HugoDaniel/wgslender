@@ -17,6 +17,8 @@ import (
 // packages/js-npm/test/_suite.cjs), so a divergence between the three shows up
 // as a failure here rather than as three packages that quietly disagree.
 func TestMinify(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name   string
 		source string
@@ -223,6 +225,7 @@ func TestMinify(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got, err := wgslender.Minify(t.Context(), tt.source, tt.opts)
 			if err != nil {
 				t.Fatalf("Minify: %v", err)
@@ -236,6 +239,8 @@ func TestMinify(t *testing.T) {
 // They are the only numbers in the envelope, and both are easy to believe
 // without checking.
 func TestMinifyReportsSizes(t *testing.T) {
+	t.Parallel()
+
 	got, err := wgslender.Minify(t.Context(), demoWGSL, nil)
 	if err != nil {
 		t.Fatalf("Minify: %v", err)
@@ -256,6 +261,8 @@ func TestMinifyReportsSizes(t *testing.T) {
 // "wgslender's own defaults apply". Nil, the zero struct and an empty JSON
 // object all have to mean the same thing.
 func TestMinifyNilOptionsAreTheDefaults(t *testing.T) {
+	t.Parallel()
+
 	viaNil, err := wgslender.Minify(t.Context(), demoWGSL, nil)
 	if err != nil {
 		t.Fatalf("Minify(nil): %v", err)
@@ -272,6 +279,8 @@ func TestMinifyNilOptionsAreTheDefaults(t *testing.T) {
 // TestMinifySourceMap pins the one optional field in the envelope: absent
 // unless asked for, and a v3 source map when it is.
 func TestMinifySourceMap(t *testing.T) {
+	t.Parallel()
+
 	const src = "fn foo() -> f32 { return 1.0; }\nfn bar() -> f32 { return foo(); }"
 
 	without, err := wgslender.Minify(t.Context(), src, nil)
@@ -312,6 +321,8 @@ func TestMinifySourceMap(t *testing.T) {
 // could break it — renaming, syntax rewriting, tree shaking — are individually
 // switchable.
 func TestMinifyIsIdempotent(t *testing.T) {
+	t.Parallel()
+
 	sources := map[string]string{
 		"demo":    demoWGSL,
 		"render":  renderWGSL,
@@ -335,6 +346,7 @@ func TestMinifyIsIdempotent(t *testing.T) {
 	for name, source := range sources {
 		for i, opts := range combos {
 			t.Run(fmt.Sprintf("%s/combo%d", name, i), func(t *testing.T) {
+				t.Parallel()
 				once, err := wgslender.Minify(t.Context(), source, &opts)
 				if err != nil {
 					t.Fatalf("Minify: %v", err)
@@ -361,6 +373,8 @@ func TestMinifyIsIdempotent(t *testing.T) {
 // would mean returning a shader whose bytes are not the caller's — refusing it
 // is the only answer that stays true.
 func TestMinifyRejectsInvalidUTF8(t *testing.T) {
+	t.Parallel()
+
 	// Valid UTF-8 above ASCII must still go through: the check rejects
 	// malformed encodings, not non-English shaders.
 	if _, err := wgslender.Minify(t.Context(), "// 🎨 palette\nfn main() {}", nil); err != nil {
