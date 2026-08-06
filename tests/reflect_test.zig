@@ -2424,6 +2424,74 @@ test "reflect: shadowed local var doesn't pollute resources" {
     try std.testing.expectEqualStrings("u1", ep.resources.items[0]);
 }
 
+test "reflect: handle-space bindings are attributed as resources" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Textures and samplers are bindings like any other: a host building a
+    // bind-group layout from `resources` must see them, or it builds a
+    // layout with the textures missing.
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var tex: texture_2d<f32>;
+        \\@group(0) @binding(1) var samp: sampler;
+        \\@group(0) @binding(2) var<storage, read_write> out: array<vec4f>;
+        \\@compute @workgroup_size(1) fn cs() {
+        \\  out[0] = textureSampleLevel(tex, samp, vec2f(0.0), 0.0);
+        \\}
+    );
+    const ep = findEntryByName(result.entry_points.items, "cs") orelse return error.TestExpectedEntry;
+    // Order is first-observed during the walk: the assignment target comes
+    // before the call arguments.
+    try std.testing.expectEqual(@as(usize, 3), ep.resources.items.len);
+    try std.testing.expectEqualStrings("out", ep.resources.items[0]);
+    try std.testing.expectEqualStrings("tex", ep.resources.items[1]);
+    try std.testing.expectEqualStrings("samp", ep.resources.items[2]);
+}
+
+test "reflect: handle-space bindings flow transitively through a helper" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@group(1) @binding(0) var tex: texture_2d<f32>;
+        \\fn load(c: vec2i) -> vec4f { return textureLoad(tex, c, 0); }
+        \\@group(0) @binding(0) var<storage, read_write> out: array<vec4f>;
+        \\@compute @workgroup_size(1) fn cs() { out[0] = load(vec2i(0, 0)); }
+    );
+    const helper = findFunction(result.functions.items, "load") orelse return error.TestExpectedFunction;
+    try std.testing.expectEqual(@as(usize, 1), helper.direct_resources.items.len);
+    try std.testing.expectEqualStrings("tex", helper.direct_resources.items[0]);
+
+    const ep = findEntryByName(result.entry_points.items, "cs") orelse return error.TestExpectedEntry;
+    try std.testing.expectEqual(@as(usize, 2), ep.resources.items.len);
+    try std.testing.expectEqualStrings("out", ep.resources.items[0]);
+    try std.testing.expectEqualStrings("tex", ep.resources.items[1]);
+}
+
+test "reflect: a module-scope var with no @group is not a resource" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // The other half of the claim. `private`/`workgroup` vars live at module
+    // scope and are not bindings; widening resource attribution past
+    // uniform/storage must not sweep them in.
+    const result = try reflectSource(alloc,
+        \\var<private> scratch: f32;
+        \\var<workgroup> shared_tile: array<f32, 4>;
+        \\@group(0) @binding(0) var<uniform> u: f32;
+        \\@compute @workgroup_size(1) fn cs() {
+        \\  scratch = u;
+        \\  shared_tile[0] = scratch;
+        \\}
+    );
+    const ep = findEntryByName(result.entry_points.items, "cs") orelse return error.TestExpectedEntry;
+    try std.testing.expectEqual(@as(usize, 1), ep.resources.items.len);
+    try std.testing.expectEqualStrings("u", ep.resources.items[0]);
+}
+
 test "reflect: functions JSON output" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

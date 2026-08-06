@@ -152,7 +152,7 @@ fn walkExpr(
 ) Allocator.Error!void {
     switch (expr) {
         .literal => {},
-        .ident => |id| try recordIdent(arena, module, id, info),
+        .ident => |id| try recordIdent(arena, module, id, info, result),
         .paren => |p| try walkExpr(arena, module, p.expr, info, result),
         .unary => |u| try walkExpr(arena, module, u.operand, info, result),
         .binary => |b| {
@@ -175,11 +175,34 @@ fn walkExpr(
     }
 }
 
+/// Is this symbol one of the `@group/@binding` declarations that were
+/// already extracted into `result.bindings`?
+///
+/// Matching on the declaration's byte offset — not its name — is what keeps
+/// a function-local `var` that shadows a binding out of the resource list:
+/// same name, different declaration site, different `loc`.
+///
+/// The obvious-looking predicate, `sym.flags.is_external_binding`, is the
+/// wrong one and was the source of a real bug: the parser sets that flag
+/// from the *address space* (`uniform`/`storage` only, `Parser.zig`), so
+/// every texture and sampler failed it and no entry point ever listed one.
+/// Widening the flag was not an option — it also drives rename policy, the
+/// validator and five lint rules. Deferring to the extracted bindings makes
+/// "is a resource" mean "is a binding we reported", which is the property
+/// callers actually rely on.
+fn isBindingSymbol(sym: *const Ast.Symbol, result: *const ReflectResult) bool {
+    for (result.bindings.items) |b| {
+        if (b.name_offset == sym.loc) return true;
+    }
+    return false;
+}
+
 fn recordIdent(
     arena: Allocator,
     module: *Ast.Module,
     id: *Ast.IdentExpr,
     info: *FunctionInfo,
+    result: *const ReflectResult,
 ) Allocator.Error!void {
     if (!id.ref.isValid()) return;
     const idx = id.ref.index();
@@ -187,11 +210,10 @@ fn recordIdent(
     const sym = &module.symbols.items[idx];
     switch (sym.kind) {
         .@"var" => {
-            // Only module-scope `@group/@binding var<>` declarations
-            // are resources. Function-local `var` shadows the same
-            // `kind` but never appears as a resource — the parser
-            // flags binding-eligible symbols via `is_external_binding`.
-            if (sym.flags.is_external_binding) {
+            // Only module-scope `@group/@binding var<>` declarations are
+            // resources. `private`/`workgroup` module vars and every
+            // function-local `var` share this `kind` and must not appear.
+            if (isBindingSymbol(sym, result)) {
                 try appendUnique(arena, &info.direct_resources, sym.original_name);
             }
         },
