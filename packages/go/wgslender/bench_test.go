@@ -52,7 +52,9 @@ var benchShaders = []struct {
 // Without this the first iteration would carry the ~130 ms one-time compilation
 // of the embedded module, which at any realistic benchtime swamps everything
 // being measured — a 57 µs call reported as 867 µs, all of it setup. b.Loop
-// resets the timer when the loop starts, so the warm-up costs nothing.
+// resets the timer when the loop starts, so in the serial benchmarks the
+// warm-up costs nothing; b.RunParallel never resets, so the parallel ones
+// call b.ResetTimer themselves after warming.
 func warm(b *testing.B, call func(context.Context) error) {
 	b.Helper()
 	if err := call(b.Context()); err != nil {
@@ -121,6 +123,7 @@ func BenchmarkParallelMinify(b *testing.B) {
 	warm(b, minify)
 	b.ReportAllocs()
 	b.SetBytes(int64(len(demoWGSL)))
+	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			if err := minify(ctx); err != nil {
@@ -154,6 +157,7 @@ func BenchmarkParallelMixed(b *testing.B) {
 		warm(b, call)
 	}
 	b.ReportAllocs()
+	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
 		for pb.Next() {
