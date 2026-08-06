@@ -377,10 +377,34 @@ func TestMinifyRejectsInvalidUTF8(t *testing.T) {
 }
 
 // TestMinifiedOutputStillValidates is the other half of the idempotence
-// property: a minifier that produced a fixed point of broken code would pass
-// the test above. Validate arrives in the next block.
+// property: a minifier that produced a fixed point of broken code would satisfy
+// the test above perfectly well. This one says the fixed point is a shader.
 func TestMinifiedOutputStillValidates(t *testing.T) {
-	t.Skip("needs Validate (Block 2 of docs/go-package-plan.md)")
+	t.Parallel()
+
+	sources := map[string]string{
+		"demo":   demoWGSL,
+		"render": renderWGSL,
+		"helper": "fn helper() -> f32 { return 1.0; }\n" +
+			"@compute @workgroup_size(1) fn main() { let x = helper(); }",
+	}
+
+	for name, source := range sources {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got, err := wgslender.Minify(t.Context(), source, nil)
+			if err != nil {
+				t.Fatalf("Minify: %v", err)
+			}
+			report, err := wgslender.Validate(t.Context(), got.Code, wgslender.DefaultStrictness)
+			if err != nil {
+				t.Fatalf("Validate: %v", err)
+			}
+			if !report.Valid {
+				t.Errorf("minified output does not validate: %+v\n%s", report.Diagnostics, got.Code)
+			}
+		})
+	}
 }
 
 // FuzzMinify asserts that no byte string can make the minifier lie. Valid

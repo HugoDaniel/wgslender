@@ -36,3 +36,45 @@ var warningWGSL string
 // unparseableWGSL is not WGSL at all — the parser gives up on it, which is the
 // only input class that makes minification a no-op.
 const unparseableWGSL = "fn main( { let ; }"
+
+// unusedWGSL is valid and warning-free, but declares a helper nothing ever
+// calls, so no-unused-vars has something to find.
+const unusedWGSL = `@group(0) @binding(0) var<storage, read_write> counters: array<u32>;
+
+fn unused_helper(x: f32) -> f32 {
+    return x * 2.0;
+}
+
+@compute @workgroup_size(1)
+fn main(@builtin(local_invocation_index) i: u32) {
+    counters[i] = i;
+}
+`
+
+// unusedWithDirectiveWGSL is unusedWGSL with a file-level comment switching
+// no-unused-vars off.
+const unusedWithDirectiveWGSL = `// wgslender-disable no-unused-vars
+
+@group(0) @binding(0) var<storage, read_write> counters: array<u32>;
+
+fn unused_helper(x: f32) -> f32 {
+    return x * 2.0;
+}
+
+@compute @workgroup_size(1)
+fn main(@builtin(local_invocation_index) i: u32) {
+    counters[i] = i;
+}
+`
+
+// deadDirectiveWGSL is clean, but carries a directive for a rule that never
+// fires — exactly what ReportUnusedDisableDirectives exists to surface.
+const deadDirectiveWGSL = `// wgslender-disable no-self-assign
+
+@group(0) @binding(0) var<storage, read_write> counters: array<u32>;
+
+@compute @workgroup_size(1)
+fn main(@builtin(local_invocation_index) i: u32) {
+    counters[i] = i;
+}
+`

@@ -10,7 +10,7 @@ Also creates `cmd/wgslgen`, a `go:generate`-able codegen tool — the Go analog 
 Rust `include_wgsl!` / `include_wgsl_compressed!` / `wgsl_module!` macros (Go has no
 compile-time macros; `go generate` + golden files is the idiom).
 
-**Status:** executing, block-per-session. **Block 0 landed (`ef93631`), Block 1 landed** —
+**Status:** executing, block-per-session. **Blocks 0, 1 and 2 landed** —
 `git log -- packages/go` is the authority on what is actually done, not this line.
 Originally verified against `main @ 9726727`
 on 2026-08-06 (macOS arm64, go 1.26.5, zig 0.16.0) by running a throwaway wazero
@@ -879,6 +879,11 @@ The `wgsl_module!` analog: typed structs with layout proofs.
   caller-supplied text argument is `utf8.ValidString`-checked before the call
   (`checkUTF8` in `wgslender/errors.go`). Later blocks must apply it to *their*
   string arguments too — source, new names, stable IDs, type text.
+  Block 2 added the mirror case on the *output* side: `LintFix` re-checks the
+  rewritten source, because a fix is a byte-offset splice and a rule that
+  computed one mid-rune would produce non-UTF-8 output from UTF-8 input. Any
+  later op that returns engine-rewritten text (the refactor family in Block 5)
+  owes the same check.
 - `MinifyOptions` deliberately omits `sourceMapInline` even though `Config` parses it,
   because the wasm minify path ignores it (see § Wire contracts). Recorded here so a
   later reader doesn't "restore" a knob that would silently do nothing.

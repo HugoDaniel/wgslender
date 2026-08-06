@@ -32,6 +32,7 @@
 //
 // A shader's own problems are data, not errors. Source that does not parse,
 // does not type-check or trips a lint rule is reported in the result — as
-// [MinifyResult.Errors] and its kin — and the call itself succeeds. A returned
-// error means the call could not be made or could not be trusted.
+// [MinifyResult.Errors], [Validation.Diagnostics] or [LintReport.Diagnostics] —
+// and the call itself succeeds. A returned error means the call could not be
+// made or could not be trusted.
 package wgslender
