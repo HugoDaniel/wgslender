@@ -16,8 +16,9 @@ two panels, live debounced minification, option pills, a stats bar, one screen,
 no framework. This is that, upgraded from `<textarea>` to a real editor, because
 wgslender — unlike miniray — has a language server to show off.
 
-**Status:** Block 1 executed 2026-08-06 (`cb313d7` wasm refresh, `37a25e4`
-deps + tests). Blocks 2-5 pending. Outcomes worth carrying forward:
+**Status:** Blocks 1-2 executed 2026-08-06 — `cb313d7` wasm refresh, `37a25e4`
+deps + tests, `283771a` the editor island, `d18ae43` the browser smoke check.
+Blocks 3-5 pending. Outcomes worth carrying forward:
 
 - Installed versions: `@codemirror/lsp-client` 6.2.5, `codemirror` 6.0.2,
   `@codemirror/{state 6.7.1, view 6.43.8, language 6.12.4, lint 6.9.7,
@@ -39,6 +40,37 @@ deps + tests). Blocks 2-5 pending. Outcomes worth carrying forward:
 - `pnpm build` was **already failing** on the starter `index.mdx`, which used
   an HTML comment (`<!-- -->`) that MDX rejects. Converted to `{/* */}` in
   Block 1 so the gate means something.
+
+From Block 2:
+
+- pnpm 10.31 **does** run `pre`/`post` scripts (the `enable-pre-post-scripts`
+  default flipped back), so the planned `predev`/`prebuild` hooks work as
+  written. Verified by probe, not assumed.
+- `template: splash` instead of the planned bare `tableOfContents: false`.
+  Starlight's content column is 45rem with a sidebar and 67.5rem without
+  (`components/Page.astro:57`, `html:not([data-has-sidebar])`), and two panes
+  do not fit in 45rem. The sidebar entry still lists the page.
+- Two files beyond the target layout: `editor-theme.ts` (CodeMirror builds its
+  DOM at runtime, so Astro's scoped styles cannot reach it — it needs
+  `EditorView.theme()`, and that is presentation, not syntax) and
+  `scripts/smoke.mjs`. `@lezer/highlight` became a direct dependency because
+  the theme imports `tags` from it.
+- `syntaxHighlighting(style)` without `fallback` outranks the one `basicSetup`
+  installs — they land in different facets (`language/dist/index.js:1734`), so
+  no `Prec` juggling is needed.
+- **`refreshInsights()` is not debounced inside `lsp-session.ts`.** Block 3
+  wants one timer driving panels + insights + this notification; two debounce
+  points would stack. The caller owns the timer.
+- The editor pane must not scroll. CodeMirror owns its own scroller, and a
+  second one on the wrapper offsets every coordinate `scrollIntoView`, hover
+  and click resolve against. Found by the smoke check, fixed in `283771a`.
+- **Hover is wired but was not observed in a browser.** The server answers
+  `textDocument/hover` at both declarations and uses (probed directly), and
+  `hoverTooltips()` is in the same `languageServerExtensions()` array that
+  produced working completions and diagnostics — but synthetic CDP mouse
+  events never satisfied CodeMirror's `posAtCoords` bounds check, so no
+  tooltip could be provoked headlessly. Worth ten seconds of a human's time
+  before Block 5 signs off.
 
 Facts below were verified against the worktree and against the actual npm
 tarball of `@codemirror/lsp-client` on 2026-08-06. File:line references are
@@ -409,6 +441,12 @@ types; `Ctrl-Space` after `.` completes struct fields; both themes look native;
 mobile width collapses to one column.
 
 **Gate:** `pnpm test` (Block 1 suite still green) + `pnpm build`.
+
+**Executed** (`283771a`, `d18ae43`): `pnpm test` 17/17, `pnpm build` green,
+`pnpm smoke` 10/10. Everything above verified in a real browser except hover
+and the two themes — see Status. `web/tests/wgsl-language.test.mjs` pins the
+mode (nested comments across lines, suffixed literals, builtin vs user call vs
+member access); `web/scripts/smoke.mjs` pins the wiring.
 
 ---
 
