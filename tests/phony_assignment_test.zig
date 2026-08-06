@@ -375,3 +375,39 @@ test "phony: `_` in member position stays a parse error, not a member named `_`"
     defer r.deinit();
     try std.testing.expect(r.errors.len > 0);
 }
+
+// -------------------------------------------------------------------------
+// Block 5 — LSP-facing walkers.
+//
+// `call_hierarchy` and `inlay_hints` switch over `Ast.Stmt` with an `else`
+// fall-through, so neither produced a compile error when `.phony` was
+// added — they silently returned nothing for `_ = f();`. Per
+// `reference_parity_gate_coverage`, absence of a compile error is not
+// coverage.
+// -------------------------------------------------------------------------
+
+test "phony: a call in the RHS is visible to find-references" {
+    // Same walker family as call-hierarchy: `Edits`/reference collection
+    // must see through the phony RHS or rename would corrupt the call.
+    var r = try parseClean(
+        \\fn helper() -> f32 { return 1.0; }
+        \\@compute @workgroup_size(1)
+        \\fn main() { _ = helper(); }
+        \\
+    );
+    defer r.deinit();
+    try std.testing.expectEqual(@as(u32, 1), try useCountOf(&r, "helper"));
+}
+
+test "phony: renaming through a phony assignment rewrites the RHS" {
+    var out = try wgslender.minify(std.testing.allocator,
+        \\fn helper() -> f32 { return 1.0; }
+        \\@compute @workgroup_size(1)
+        \\fn main() { _ = helper(); }
+        \\
+    );
+    defer out.deinit(std.testing.allocator);
+    // `helper` is renamed; if the phony RHS were not rewritten in step the
+    // output would still contain the original name and be broken.
+    try std.testing.expect(std.mem.indexOf(u8, out.code, "helper") == null);
+}

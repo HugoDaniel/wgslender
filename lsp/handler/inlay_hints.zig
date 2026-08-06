@@ -265,6 +265,9 @@ fn collectInlayHintsFromStmt(
         .assign => |a| {
             try collectExprTypeHints(handler, module, &analysis.expr_types, pm, a.right, range_start, range_end, hints, 0);
         },
+        .phony => |p| {
+            try collectExprTypeHints(handler, module, &analysis.expr_types, pm, p.expr, range_start, range_end, hints, 0);
+        },
         .@"return" => |r| {
             if (r.value) |v| try collectExprTypeHints(handler, module, &analysis.expr_types, pm, v, range_start, range_end, hints, 0);
         },

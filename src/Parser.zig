@@ -4472,6 +4472,17 @@ test "reparseAnchor: assignment statement produces assign_stmt root" {
     try std.testing.expectEqualStrings("x = 1;", root.text());
 }
 
+test "reparseAnchor: phony assignment produces phony_stmt root" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var builder = Cst.Builder.init(std.testing.allocator);
+    defer builder.deinit();
+    var tree = try runReparseAnchor(arena.allocator(), "_ = 1;", .statement, &builder);
+    const root = tree.rootCursor();
+    try std.testing.expectEqual(Cst.Kind.phony_stmt, root.kind());
+    try std.testing.expectEqualStrings("_ = 1;", root.text());
+}
+
 test "reparseAnchor: at start_nt_pos=0 includes leading trivia in anchor" {
     // When the anchor is the first non-trivia token of the source, any
     // leading trivia (block comment, whitespace) is attributed to the

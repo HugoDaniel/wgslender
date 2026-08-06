@@ -212,6 +212,7 @@ fn findCallsInStmt(
             findCallsInExprTree(gpa, module, a.left, target_name, pm, locations);
             findCallsInExprTree(gpa, module, a.right, target_name, pm, locations);
         },
+        .phony => |p| findCallsInExprTree(gpa, module, p.expr, target_name, pm, locations),
         .call => |c| findCallsInExprTree(gpa, module, .{ .call = c.call }, target_name, pm, locations),
         .decl => |d| {
             switch (d.decl) {
@@ -320,6 +321,7 @@ fn collectOutgoingCallsStmt(
             collectOutgoingCallsExpr(gpa, module, a.left, pm, calls_map);
             collectOutgoingCallsExpr(gpa, module, a.right, pm, calls_map);
         },
+        .phony => |p| collectOutgoingCallsExpr(gpa, module, p.expr, pm, calls_map),
         .call => |c| collectOutgoingCallsExpr(gpa, module, .{ .call = c.call }, pm, calls_map),
         .decl => |d| {
             switch (d.decl) {

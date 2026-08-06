@@ -80,6 +80,7 @@ pub fn isReparseAnchor(k: Cst.Kind) bool {
         .continue_stmt,
         .discard_stmt,
         .assign_stmt,
+        .phony_stmt,
         .incr_decr_stmt,
         .call_stmt,
         .decl_stmt,
@@ -132,6 +133,7 @@ pub fn isHotPathAnchor(k: Cst.Kind) bool {
         // Statements that do not open a scope and do not declare anything.
         .return_stmt,
         .assign_stmt,
+        .phony_stmt,
         .incr_decr_stmt,
         .call_stmt,
         .break_stmt,
@@ -166,6 +168,7 @@ pub fn isSymbolFreeAnchor(k: Cst.Kind) bool {
         // Statements that neither open a scope nor declare symbols.
         .return_stmt,
         .assign_stmt,
+        .phony_stmt,
         .incr_decr_stmt,
         .call_stmt,
         .break_stmt,
@@ -184,6 +187,7 @@ pub fn isStmtKind(k: Cst.Kind) bool {
     return switch (k) {
         .return_stmt,
         .assign_stmt,
+        .phony_stmt,
         .incr_decr_stmt,
         .call_stmt,
         .break_stmt,

@@ -810,3 +810,67 @@ test "S-E0102-MANY: removing some of several E0102 refs to the same symbol decre
         true,
     );
 }
+
+// =========================================================================
+// S-PHONY: phony assignment (`_ = expr`) on the hot path.
+//
+// `AnchorKind.statement` already reparses one, since `parseStatement`
+// dispatches on the token. What the hot path needs is `phony_stmt`
+// registered in `Anchor.zig`'s three predicate lists — without that, an
+// edit inside a phony assignment promotes to the enclosing compound and
+// falls off the add/sub path (correct, but slower and untested).
+// =========================================================================
+
+test "S-PHONY-01: swap the operand of a phony assignment" {
+    const src: [:0]const u8 = "const x: i32 = 1; const y: i32 = 2; fn f() { _ = x; }";
+    const new_src: []const u8 = "const x: i32 = 1; const y: i32 = 2; fn f() { _ = y; }";
+    const needle: []const u8 = "_ = x;";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = pos, .end = pos + @as(u32, @intCast(needle.len)), .new_text = "_ = y;" },
+        new_src,
+        true,
+    );
+}
+
+test "S-PHONY-02: swap the RHS ident in place (ident_expr anchor)" {
+    // Kind-preserving: ident_expr -> ident_expr, so this stays on the
+    // add/sub path. (Growing it to `x + y` would change the anchor kind
+    // to binary_expr and fall back — that is general behaviour, not
+    // phony-specific; `g = x` behaves identically.)
+    const src: [:0]const u8 = "const x: i32 = 1; const y: i32 = 2; fn f() { _ = x; }";
+    const new_src: []const u8 = "const x: i32 = 1; const y: i32 = 2; fn f() { _ = y; }";
+    const needle: []const u8 = "x;";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    try runEdit(
+        std.testing.allocator,
+        src,
+        .{ .start = pos, .end = pos + 1, .new_text = "y" },
+        new_src,
+        true,
+    );
+}
+
+test "S-PHONY-03: a phony assignment replacing an assignment keeps counts honest" {
+    // Kind changes (assign_stmt → phony_stmt), so this must NOT claim the
+    // hot path — the anchor kind guard has to reject it and fall back.
+    const src: [:0]const u8 = "var<private> g: i32; const x: i32 = 1; fn f() { g = x; }";
+    const new_src: []const u8 = "var<private> g: i32; const x: i32 = 1; fn f() { _ = x; }";
+    const needle: []const u8 = "g = x;";
+    const pos: u32 = @intCast(std.mem.indexOf(u8, src, needle).?);
+    var base = try Incremental.parseFull(std.testing.allocator, src);
+    defer base.deinit();
+    var updated = try Incremental.reparse(std.testing.allocator, &base, .{
+        .start = pos,
+        .end = pos + @as(u32, @intCast(needle.len)),
+        .new_text = "_ = x;",
+    });
+    defer updated.deinit();
+
+    try std.testing.expectEqualStrings(new_src, updated.source);
+    var oracle = try Incremental.parseFull(std.testing.allocator, updated.source);
+    defer oracle.deinit();
+    try expectUseCountsMatch(updated.module, oracle.module);
+}
