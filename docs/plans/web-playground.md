@@ -1,30 +1,28 @@
 # Plan — `web/`: a playground page that runs the toolkit in the browser
 
-**Creates:** one new Starlight page (`/playground/`) hosting an interactive WGSL
-editor, one Astro island component wrapping CodeMirror 6, a set of framework-free
-playground modules, and a `node --test` suite that drives both WASM packages
-headlessly. The page showcases, live and offline: LSP features (diagnostics,
-hover, completion, go-to-definition, rename, signature help, minify-insight
-inlay hints), minification with options and byte stats, validation, and
-reflection JSON.
+**Creates:** one Starlight page (`/playground/`) hosting a CodeMirror 6 editor
+wired to `wgslender-lsp.wasm`, three result panels driven by `wgslender.wasm`,
+a handful of framework-free TypeScript modules, and a `node --test` suite that
+drives both wasm builds headlessly. The page demonstrates, live and offline:
+validation + lint diagnostics, hover / completion / go-to-definition / rename /
+format / signature help, minify-insight inlay hints, option-driven minification
+with byte **and gzip** stats, and reflection JSON.
 
-**Motivation:** the landing page (`web/`) currently *claims* five capabilities
-in its CardGrid (`web/src/content/docs/index.mdx:23-38`) and demonstrates none.
-Every capability already runs in the browser — `packages/js-npm/wgslender.wasm`
-and `npm/wgslender-lsp/wgslender-lsp.wasm` are checked in and wrapped — so the
-only missing piece is a page that connects them to an editor. The reference
-experience is miniray's playground (`~/Dev/miniray/web/`): two panels, live
-debounced minification, option pills, a stats bar, one screen, no framework.
-This plan is that experience, upgraded from `<textarea>` to a real editor
-because wgslender — unlike miniray — has a language server to show off.
+**Motivation:** `web/src/content/docs/index.mdx:23-38` claims five capabilities
+and demonstrates none, and its hero still links to the Starlight starter guide.
+Every capability already runs in a browser — both wasm builds are checked in and
+wrapped. The reference experience is miniray's playground (`~/Dev/miniray/web/`):
+two panels, live debounced minification, option pills, a stats bar, one screen,
+no framework. This is that, upgraded from `<textarea>` to a real editor, because
+wgslender — unlike miniray — has a language server to show off.
 
 **Status:** ready to execute — nothing below has landed. Verify with
-`git log --oneline -- web/` before starting; the last commit touching `web/`
-should predate this plan (the starter scaffold).
+`git log --oneline -- web/` (last commit touching `web/` should be the starter
+scaffold).
 
-Every fact below was verified against the worktree on 2026-08-06. File:line
-references are evidence, not decoration — re-check them only if HEAD has moved
-past the commits that produced them.
+Facts below were verified against the worktree and against the actual npm
+tarball of `@codemirror/lsp-client` on 2026-08-06. File:line references are
+evidence, not decoration.
 
 ---
 
@@ -32,187 +30,205 @@ past the commits that produced them.
 
 ### `web/` is an untouched Starlight starter
 
-Full inventory (excluding lockfile): `astro.config.mjs` (title "My Docs",
+`astro.config.mjs` (title `'My Docs'`, social link → withastro/starlight,
 starter sidebar), `package.json` (astro `^7.0.2`, `@astrojs/starlight`
-`^0.41.6`, sharp; pnpm, `pnpm-workspace.yaml` allows esbuild+sharp builds),
-`src/content/docs/index.mdx` (splash hero + capability CardGrid, actions still
-point at the Starlight example guide), `src/content/docs/guides/example.md`,
-`src/content/docs/reference/example.md`, `src/content.config.ts`, `tsconfig.json`,
-`public/favicon.svg`, `src/assets/houston.webp`, `AGENTS.md`.
+`^0.41.6`, sharp; pnpm, `pnpm-workspace.yaml` has only an `allowBuilds` block),
+`src/content/docs/{index.mdx,guides/example.md,reference/example.md}`,
+`src/content.config.ts`, `tsconfig.json`, `public/favicon.svg`,
+`src/assets/houston.webp`, `.gitignore`, `README.md` (starter text),
+`AGENTS.md`. **`web/CLAUDE.md` is a symlink to `web/AGENTS.md`** — edit the
+one file. Its rule: start the dev server with `astro dev --background`, manage
+with `astro dev stop|status|logs`.
 
-`web/AGENTS.md` rule: start the dev server with `astro dev --background`,
-manage with `astro dev stop|status|logs`. Follow it in every block.
+Local node is **v26.7.0**: `node --test <dir>` is broken there, use a glob
+(`node --test 'tests/*.test.mjs'`) — same trap hit by `examples/js-ts`.
 
-### The two packages exist on disk and are NOT on the npm registry
+### The two packages are on disk, not on the registry
 
-Confirmed earlier this session: `wgslender` 1.1.0 (`packages/js-npm/`) and
-`wgslender-lsp` 1.1.0 (`npm/wgslender-lsp/`) are unpublished. **Therefore the
-web package must depend on them via `file:` protocol** — from `web/`:
+`wgslender` 1.1.0 (`packages/js-npm/`, ships `wgslender.wasm`, 767 KB) and
+`wgslender-lsp` 1.1.0 (`npm/wgslender-lsp/`, ships `wgslender-lsp.wasm`,
+890 KB) are unpublished, so `web/package.json` must use `file:` deps:
 
 ```json
 "wgslender": "file:../packages/js-npm",
 "wgslender-lsp": "file:../npm/wgslender-lsp"
 ```
 
-Both packages ship their `.wasm` beside the JS (confirmed present on disk).
+Both expose the binary as a `./wasm` export condition
+(`packages/js-npm/package.json` `"./wasm": "./wgslender.wasm"`, same shape in
+`npm/wgslender-lsp/package.json`), so `createRequire(import.meta.url)
+.resolve('wgslender/wasm')` yields a real path in Node.
 
-### `wgslender` (minifier package) browser API surface
+`wgslender-lsp.initialize()` with no arguments resolves its wasm **via
+`fetch`**, which fails on `file:` URLs under Node — Node callers must pass
+`wasmModule` compiled from `fs.readFile` bytes.
 
-From `packages/js-npm/lib/main.d.ts` and the exports map
-(`packages/js-npm/package.json:14-31`):
+### `@codemirror/lsp-client` is 6.2.5 — stable, and its surface is known
 
-- `initialize({ wasmURL?, wasmModule? }): Promise<void>` — must run first.
-- `minify(source, opts?) → { code, errors[], originalSize, minifiedSize }`
-  with options `minifyWhitespace | minifyIdentifiers | minifySyntax |
-  mangleExternalBindings | treeShaking | keepNames | sortDeclarations |
-  scopeLocalRename | …` (`main.d.ts:1-105`).
-- `validate(source, opts?)`, `lint(source, opts?)`, `reflect(source) →
-  ReflectResult` (v2: `bindings`, `uniforms`, `storage`, `textures`,
-  `samplers`, `structs`, `entryPoints`, `overrides`, `functions`, `aliases`),
-  plus `compile`, refactor helpers, `getVersion` (`main.d.ts:498-875`).
-- Browser ESM entry: `esm/browser.js`; the raw wasm is importable as the
-  `wgslender/wasm` subpath (`"./wasm": "./wgslender.wasm"`).
-- In Node, `import { initialize, minify } from 'wgslender'` works with no
-  arguments — the package's own tests run under plain `node` (`npm test`).
+Verified by unpacking the tarball. It exports `LSPClient`, `LSPPlugin`,
+`languageServerSupport(client, uri, languageID)`,
+`languageServerExtensions()` = `[serverCompletion(), hoverTooltips(),
+keymap.of([...formatKeymap, ...renameKeymap, ...jumpToDefinitionKeymap,
+...findReferencesKeymap]), signatureHelp(), serverDiagnostics()]`, plus the
+individual commands (`formatDocument`, `renameSymbol`, `jumpToDefinition`,
+`jumpToTypeDefinition`, `findReferences`, `showSignatureHelp`) and
+`client.request(method, params)` / `client.notification(method, params)` for
+anything custom. Its `Transport` type is exactly `{send, subscribe,
+unsubscribe}` — the shape `wgslender-lsp`'s `createTransport()` returns.
 
-### `wgslender-lsp` API surface
+Four consequences that shape this plan:
 
-From `npm/wgslender-lsp/index.mjs` + `index.d.ts`:
+1. **Push diagnostics are handled for us.** `serverDiagnostics()` registers a
+   `textDocument/publishDiagnostics` notification handler that dispatches
+   `setDiagnostics` into the view. It drops a payload whose `params.version`
+   mismatches the client's file version — our server never emits `version`
+   (`lsp/wasm/diagnostics.zig:52-57`), so the check is a no-op. No fallback
+   renderer needed.
+2. **No inlay hints, no semantic tokens, no code lens.** Those are ours to
+   write, over `client.request(...)`. The minify-insight hints — the flagship
+   demo — were always going to be custom anyway.
+3. **It does not advertise `workspace.configuration`** (default capabilities
+   cover completion, hover, formatting, rename, signatureHelp, definition,
+   declaration, implementation, typeDefinition, references, diagnostic,
+   window.showMessage — nothing under `workspace`). Our server only sends the
+   `workspace/configuration` request when the client advertised it
+   (`lsp/wasm/lifecycle.zig:47-49`), so it never asks and nothing hangs — but
+   it also means **settings cannot be pushed through lsp-client's config path**.
+   Use the executeCommand route instead (below).
+4. **Synchronous responses are safe.** `requestInner` pushes the pending
+   request onto `this.requests` *before* calling `transport.send`, and
+   `createTransport().send()` fans the `sendMessage()` return array out to
+   subscribers inline (`npm/wgslender-lsp/index.mjs:95-102`). A response that
+   arrives during `send` still finds its request.
 
-- `initialize({ wasmURL?, wasmModule? })` — default resolves
-  `./wgslender-lsp.wasm` next to the module **via `fetch`**, which fails on
-  `file:` URLs in Node. Node callers pass `wasmModule` compiled from
-  `fs.readFile` instead (resolve the bytes via
-  `createRequire(import.meta.url).resolve('wgslender-lsp/wasm')`).
-- `sendMessage(json: string): string[]` — synchronous in-process JSON-RPC;
-  the return array carries responses AND server-initiated notifications.
-- `createTransport(): { send, subscribe, unsubscribe }` — explicitly
-  "Compatible with @codemirror/lsp-client Transport" (`index.d.ts:8-13`);
-  README's own integration sketch is `README.md:452-466`.
+`codemirror` (the meta-package with `basicSetup`) is 6.0.2.
 
-### What the WASM LSP actually serves
+### What the WASM LSP serves
 
-Dispatch table at `lsp/wasm.zig:100-133`: `initialize`, `shutdown`, document
-sync (`didOpen/didChange/didClose/didSave`), `workspace/didChangeConfiguration`,
-`textDocument/` `codeAction`, `hover`, `definition`, `references`,
-`documentHighlight`, `rename`, `prepareRename`, `completion`, `signatureHelp`,
-`documentSymbol`, `foldingRange`, `typeDefinition`, `inlayHint`, `codeLens`,
-`formatting`, `semanticTokens/full`, `selectionRange`, `prepareCallHierarchy`,
-`diagnostic` (pull), `workspace/executeCommand`, and three custom requests:
-`wgslender/reflect`, `wgslender/recomputeMinifyInsights`,
-`wgslender/constInventory`.
+Dispatch table, `lsp/wasm.zig:99-134`: `initialize`, `initialized`,
+`shutdown`, `exit`, `textDocument/did{Open,Change,Close,Save}`,
+`workspace/didChangeConfiguration`, `textDocument/` `codeAction`, `hover`,
+`definition`, `references`, `documentHighlight`, `rename`, `prepareRename`,
+`completion`, `signatureHelp`, `documentSymbol`, `foldingRange`,
+`typeDefinition`, `inlayHint`, `codeLens`, `formatting`,
+`semanticTokens/full`, `selectionRange`, `prepareCallHierarchy`,
+`callHierarchy/{incoming,outgoing}Calls`, `diagnostic` (pull),
+`workspace/executeCommand`, and three custom methods: `wgslender/reflect`,
+`wgslender/constInventory`, `wgslender/recomputeMinifyInsights`.
 
-Two flow facts that shape the design:
+Advertised capabilities (`lsp/Handler.zig:152-154`): `textDocumentSync.change
+= 2` (**incremental** — lsp-client sends ranged changes, and the WASM handler
+accepts both ranged and full-text forms, `lsp/wasm/document_sync.zig:47-66`),
+`positionEncoding = "utf-16"` (matches CodeMirror's JS-string offsets
+natively), and `executeCommandProvider.commands = ["wgslender.setMinifyMode",
+"wgslender.toggleMinifyMode", "wgslender.recomputeMinifyInsights"]`.
 
-1. **Diagnostics are pushed synchronously.** `handleDidOpen` and
-   `handleDidChange` call `emitDiagnostics` inline
-   (`lsp/wasm/document_sync.zig:35`), so every `didOpen`/`didChange` batch
-   returned by `sendMessage` already contains the
-   `textDocument/publishDiagnostics` notification. There is no server-side
-   debounce in the WASM build (`lsp/Debouncer.zig` header: "WASM debounces
-   JS-side") — pacing is the client's job.
-2. **Settings arrive by round-trip, not by push.** `didChangeConfiguration`
-   only triggers a server→client `workspace/configuration` request for the
-   `wgslender` section (`lsp/wasm/lifecycle.zig:47-65`), and only if the
-   client advertised `workspace.configuration` in `initialize`. The client
-   must answer that request with a `wgslender.json`-shaped object
-   (`lsp/Handler.zig:56-60` — same schema, e.g.
-   `{ "lsp": { "minifyMode": "insights" } }`). This is how the playground
-   turns on minify-insight inlay hints.
+Four flow facts that shape the design:
 
-`wgslender/reflect` takes `{ textDocument: { uri }, format?: "v1"|"v2",
-pretty?: bool }` (`lsp/wasm/workspace_commands.zig:37-60`). The playground
-does not need it — it calls `reflect()` on the minifier wasm it already
-loaded — but it is the fallback if Block 3 ever wants reflection without
-that wasm.
+1. **Diagnostics are pushed synchronously.** `handleDidOpen` /
+   `handleDidChange` call the emitters inline
+   (`lsp/wasm/document_sync.zig:34,69`), so every `sendMessage` batch for those
+   notifications already carries `publishDiagnostics`. There is no server-side
+   debounce in the WASM build (`lsp/Debouncer.zig`: "WASM debounces JS-side")
+   — pacing is the client's job.
+2. **The edit hot path publishes *cheap* diagnostics.** `didChange` runs
+   `emitDiagnosticsCheap` = validator + the general lint packs, **without** the
+   minify-lint / estimator pass. The comment at
+   `lsp/wasm/document_sync.zig:66-68` states the contract: *the JS client
+   schedules `wgslender/recomputeMinifyInsights` after typing settles*. That
+   notification (`{textDocument:{uri}}`, `lsp/wire/primitives.zig:58-62`)
+   refreshes the estimator and re-emits full diagnostics
+   (`lsp/wasm/workspace_commands.zig:31-35`). The playground must implement
+   that half of the protocol.
+3. **Minify mode flips by command, not by settings.**
+   `workspace/executeCommand` with `wgslender.setMinifyMode` +
+   `["insights"|"strict"|"off"]` sets it server-side
+   (`lsp/handler/commands.zig:62-71`), and the WASM adapter republishes every
+   open document afterwards (`lsp/wasm/workspace_commands.zig:161-164`). Modes
+   come from `MinifySettings.Mode` (`src/MinifySettings.zig:11-22`). Inlay
+   hints are on by default (`Handler.inlayHintsEnabled()` → `true`), and the
+   minify-size lane only fires when the effective mode is `insights`/`strict`.
+4. **`wgslender.showMinifiedOutput` is routed in WASM even though it is not in
+   the advertised command list** (`lsp/wasm/workspace_commands.zig:123-148`).
+   Args `[uri]`; result `{uri, minified_text, byte_count, gz_count}`
+   (`lsp/wire/workspace_commands.zig:17-31`). **`gz_count` is a real gzip
+   count from the server** — that is where the stats bar's gzip column comes
+   from, backing the README's 5-29 % compression claim without shipping a JS
+   gzip.
+
+`wgslender/reflect` takes `{textDocument:{uri}, format?: "v1"|"v2",
+pretty?: bool}` (`lsp/wasm/workspace_commands.zig:37-78`).
+
+### `wgslender` (minifier package) browser API
+
+`initialize({wasmURL?|wasmModule?})` then `minify(source, opts) → {code,
+errors, originalSize, minifiedSize}`. Options (`packages/js-npm/lib/main.d.ts:1-77`):
+`minifyWhitespace|minifyIdentifiers|minifySyntax` (default true),
+`mangleExternalBindings|treeShaking|preserveUniformStructTypes|keepNames|
+sortDeclarations|scopeLocalRename|sourceMap` — `sortDeclarations` and
+`scopeLocalRename` are the compression-friendly pair (default false, documented
+5-29 % gzip savings). Also `reflect(source)` → v2 shape (`bindings`, `uniforms`,
+`storage`, `textures`, `samplers`, `structs`, `entryPoints`, `overrides`,
+`functions`, `aliases`), `validate`, `lint(source, {extends, rules})` with the
+packs `@wgslender/{recommended,style,performance,portability,strict}`,
+`compile`, `getVersion` (`main.d.ts:498-875`).
+
+### Diagnostic codes the sample shader will produce
+
+`W0001` unused var (`src/Diagnostic.zig:897`), `W0003` unused binding
+(`:899`), `E0206` no-such-member (`:805`). LSP lint is **on by default** with
+`@wgslender/recommended` (`lsp/handler/diagnostics.zig:163,235-245`), so an
+unused function warns without any client configuration.
 
 ### What to take from miniray, and what not to
 
-`~/Dev/miniray/web/src/components/miniray-minifier/` +
-`~/Dev/miniray/web/src/main.js`:
-
-- **Take:** the shape. Two-panel grid collapsing to one column under 768px;
-  300 ms input debounce; option pills (`label` + checkbox,
-  `:has(input:checked)` highlight); preset `<select>`; stats bar
-  ("Original / Minified / Savings %"); copy button with a 1.5 s "Copied!"
-  flash; error block with `white-space: pre-wrap`; loading state until wasm
-  arrives; a default shader in the editor on load so the page demos itself.
-- **Take:** the state discipline — one plain state object, pure render from
-  state, event handlers mutate then re-render.
-- **Leave:** boreDOM (wgslender's page has Astro), the `<textarea>` editor
-  (CodeMirror replaces it — an LSP demo needs a real editor), the Go wasm
-  polling loop, and miniray's custom `--color-*` tokens (Starlight already
-  ships a theme; use `--sl-*` variables so dark/light mode is free).
-
-### Known traps, written down before they bite
-
-- **Vite + `file:` deps:** pnpm symlinks the two packages from outside
-  `web/`; Vite's dev-server fs allow-list may refuse to serve the linked
-  `.wasm`. Fix lives in `web/astro.config.mjs`:
-  `vite: { server: { fs: { allow: ['..'] } } }` — apply only if the probe in
-  Block 1 actually hits the error. Likewise add the two packages to
-  `vite.optimizeDeps.exclude` if prebundling breaks `import.meta.url`-relative
-  wasm resolution.
-- **Stale wasm binaries:** the checked-in `.wasm` files predate whatever has
-  landed on `main` since they were built. Block 1 rebuilds both
-  (`zig build wasm -Doptimize=ReleaseSafe`, `zig build lsp-wasm
-  -Doptimize=ReleaseSafe`) and copies them into the package dirs, exactly as
-  `packages/js-npm/package.json:58` (`prepublishOnly`) does. If bytes change,
-  commit that separately — see Behavior changes.
-- **`@codemirror/lsp-client` is young (0.x).** Its capability coverage
-  (push-diagnostics rendering, inlay hints, semantic tokens) must be probed
-  at execution time, not assumed. Every LSP feature in this plan therefore
-  has a written fallback that uses only `createTransport`'s `subscribe` (raw
-  message tap) or `sendMessage` (direct request) — both of which are
-  wgslender-lsp API and cannot be broken by the client library.
-- **WGSL syntax highlighting has no official CodeMirror package.** The
-  deterministic baseline is a small `StreamLanguage.define` mode written in
-  this repo (keyword lists sourced from `src/Lexer.zig` — remember `private`,
-  `uniform`, `storage`, `read_write` are *not* reserved words). Semantic
-  tokens from the LSP are an enhancement on top, not the baseline, so the
-  editor colors code even before wasm finishes loading.
+**Take:** two-panel grid collapsing to one column under 768 px; 300 ms input
+debounce; option pills (`label` wrapping a checkbox, `:has(input:checked)`
+highlight); stats bar; copy button with a 1.5 s "Copied!" flash; a default
+shader on load so the page demos itself; one plain state object with pure
+render-from-state.
+**Leave:** boreDOM, the `<textarea>`, the Go wasm polling loop, and miniray's
+`--color-*` tokens — Starlight already ships a theme, so use `--sl-*`
+variables and get dark/light for free.
 
 ---
 
-## Ground rules
+## Design rules
 
+- **Two wasms, one job each.** `wgslender-lsp.wasm` owns everything
+  *positional* (diagnostics, hover, completion, definition, rename, format,
+  inlay hints) plus insights and gzip counts. `wgslender.wasm` owns everything
+  *option-driven* (the minify pills, reflection tables) — the LSP's minify
+  command takes no options, and `minify()`/`reflect()` are the API a visitor
+  would actually call from JS. Say this in the page copy; it is the honest
+  story of the toolkit.
+- **lsp-client for the standard features, our code for the wgslender ones.**
+  Never reimplement what `languageServerExtensions()` already does. Inlay
+  hints, the minify/reflect panels and the insights toggle go through
+  `client.request` / `client.notification`.
 - **No UI framework.** One `.astro` component, plain TypeScript modules,
-  CodeMirror 6 as the only editor dependency. This mirrors miniray's
-  minimalism and keeps the island small.
-- **Style = Starlight's tokens.** Scoped styles in the component using
-  `--sl-color-*`, `--sl-font-*` custom properties only. No new palette, no
-  global CSS file. The page must look native next to every other Starlight
-  page in both themes.
-- **Logic lives outside the DOM.** Everything testable under Node —
-  LSP message flow, minify/reflect panel models, debounce policy, stats
-  math — goes in `web/src/scripts/playground/` as pure modules. The `.astro`
-  `<script>` is wiring only. This is what makes TDD possible for a web page.
-- **TDD, reds first, Node-shaped.** Each block's tests are written and
-  observed failing before the implementation. The gate is
-  `cd web && pnpm test` (`node --test tests/`) plus `pnpm build`
-  (`astro build` — catches SSR/import/resolution errors that Node tests
-  can't). Browser behavior is verified by hand against
-  `astro dev --background` at the end of each block. **No CI** — the gate is
-  local and on-demand, deliberately.
-- **Probe, don't trust.** `@codemirror/lsp-client`'s abilities, Vite's
-  handling of `?url` wasm imports, and exact package versions are confirmed
-  by running them, and divergences get recorded in this file's Status
-  section, following `docs/plans/rust-examples.md`'s convention.
-- Conventional commits, one block ≈ one commit (Block 1 may be two: deps vs
-  rebuilt wasm).
+  CodeMirror 6 as the only editor dependency.
+- **Starlight tokens only.** Scoped styles using `--sl-color-*` / `--sl-font-*`.
+  No new palette, no global CSS. The page must look native in both themes.
+- **Logic outside the DOM.** Anything testable under Node — LSP message flow,
+  panel models, debounce policy, stats math — lives in
+  `web/src/scripts/playground/` as pure modules; the `.astro` `<script>` is
+  wiring only. That is what makes a web page TDD-able.
+- **TDD, reds first.** Tests are written and observed failing before the
+  implementation. Gate per block: `cd web && pnpm test`
+  (`node --test 'tests/*.test.mjs'`) plus `pnpm build` (catches SSR/import
+  errors Node tests can't), then a hand pass in the browser. **No CI** — the
+  gate is local and on demand, deliberately.
+- Conventional commits, one block ≈ one commit (Block 1 may be two: wasm
+  refresh, then deps + tests).
 
 ### Out of scope
 
-- Publishing any package (separate, undecided — see session notes).
-- The binary-shader `compile` demo — the page's copy may *mention*
-  `npx wgslender shader.wgsl`, but a compile-to-wasm playground panel is a
-  follow-up plan.
-- A WebGPU canvas preview of the shader. This page demos the *toolchain*,
-  not shader art; compute.toys already exists.
-- Multi-file workspaces, call hierarchy UI, code lens UI, folding UI —
-  the LSP serves them, the playground doesn't surface them (yet).
-- Touching the site's title/branding/sidebar beyond adding the playground
-  entry and fixing the hero's dead starter links.
+- Publishing any package (an open, user-owned decision).
+- The binary-shader `compile` panel and any WebGPU canvas preview. This page
+  demos the *toolchain*; compute.toys already exists for shader art.
+- Multi-file workspaces, call hierarchy / code lens / folding UI, source maps.
+- Site branding beyond the two-line truth fix in Block 5.
 
 ---
 
@@ -220,20 +236,22 @@ that wasm.
 
 ```
 web/
-  package.json                 # + file: deps, codemirror deps, "test" script
-  astro.config.mjs             # + sidebar entry; vite.fs.allow only if probed necessary
+  package.json                 # + file: deps, codemirror deps, test/sync scripts
+  astro.config.mjs             # + sidebar entry, title fix
+  scripts/sync-wasm.mjs        # Block 1: copy both .wasm into public/
   tests/
-    lsp-flow.test.mjs          # Block 1: headless LSP session over sendMessage
-    panels.test.mjs            # Block 3: minify/reflect/diagnostic panel models
+    lsp-flow.test.mjs          # Block 1 (grows in Block 4): headless LSP session
+    panels.test.mjs            # Block 3: minify/reflect/diagnostic models
   src/
     components/
-      PlaygroundEditor.astro   # Block 2–4: markup + scoped styles + wiring script
+      PlaygroundEditor.astro   # Blocks 2-4: markup + scoped styles + boot script
     scripts/playground/
-      sample-shader.ts         # Block 1: the default shader (shared by tests + UI)
+      sample-shader.ts         # Block 1: the default shader (tests + UI share it)
       wgsl-language.ts         # Block 2: StreamLanguage WGSL mode
-      lsp-client.ts            # Block 2: transport + client + config round-trip
-      panels.ts                # Block 3: pure panel-model builders (testable)
-      wasm.ts                  # Block 2: init both wasms via ?url imports
+      lsp-session.ts           # Block 2: transport, client, protocol extras
+      wasm.ts                  # Block 2: init both wasms from /public URLs
+      panels.ts                # Block 3: pure panel-model builders
+      insights.ts              # Block 4: inlay-hint ViewPlugin + mode toggle
     content/docs/
       playground.mdx           # Block 2: the page (grows through Block 5)
 ```
@@ -242,108 +260,133 @@ web/
 
 ## Block 1 — packages wired, wasm fresh, headless LSP session green
 
-*Fresh-session context: `web/` is a pristine Starlight starter using pnpm; the
-two local packages (`../packages/js-npm`, `../npm/wgslender-lsp`, both 1.1.0,
-unpublished) each contain a checked-in `.wasm`. Everything you need to know
-about their APIs is in "Verified current state" above.*
+*Fresh-session context: `web/` is a pristine Starlight starter on pnpm; the two
+local packages (`../packages/js-npm`, `../npm/wgslender-lsp`, both 1.1.0,
+unpublished) each ship a checked-in `.wasm`. Everything about their APIs and
+the LSP wire protocol is in "Verified current state" above.*
 
-**Red.** Add `"test": "node --test tests/"` to `web/package.json` and write
-`web/tests/lsp-flow.test.mjs` first. It must:
+**Write the sample shader first** — `src/scripts/playground/sample-shader.ts`,
+exporting `export const sampleShader = String.raw\`…\``. It is the fixture for
+every test and the editor's initial document, so it must earn every panel:
 
-1. `import { initialize, sendMessage } from 'wgslender-lsp'` and
-   `import { initialize as initMinifier, minify, reflect } from 'wgslender'`.
-2. Initialize the LSP with a `wasmModule` compiled from
-   `createRequire(import.meta.url).resolve('wgslender-lsp/wasm')` bytes
-   (the `fetch(file:)` trap above).
-3. Run a full session: `initialize` (advertise
-   `capabilities.workspace.configuration: true`) → `initialized` → `didOpen`
-   with the sample shader → **assert the returned batch contains a
-   `publishDiagnostics` for the file with a `W`-code on the dead helper** →
-   `didChange` introducing `uniforms.tim` → assert an `E`-code appears →
-   `textDocument/hover` over `uniforms` returns contents.
-4. Assert `minify(sample)` shrinks the shader and drops the dead helper from
-   `code`, and `reflect(sample)` reports the uniform + storage bindings and
-   the fragment entry point.
+- a uniform struct with mixed field types (reflection layout: offsets, size,
+  align) and a storage buffer of a second struct;
+- an `override` declaration (reflection `overrides`);
+- a texture + sampler pair, both actually sampled (so they appear as bindings
+  without adding a W0003);
+- one helper function called from an entry point (hover / definition / rename
+  targets) and one uncalled helper (W0001 + visible tree-shaking);
+- a `@vertex` and a `@fragment` entry point (reflection `entryPoints`, stage +
+  IO).
 
-Also create `web/src/scripts/playground/sample-shader.ts` now — the tests and
-the UI must share one shader. It needs, by construction: a uniform struct
-(reflection layout), a storage binding (reflect subsets), a used helper
-function (hover/definition targets), an *unused* helper (lint W-code +
-visible tree-shaking in the minify panel), and a fragment entry point.
-Adapt miniray's default shader (`~/Dev/miniray/web/src/main.js`, `initialState.input`)
-by adding the storage binding and the dead function.
+Pin its expected diagnostics with the repo's own CLI before trusting it:
+`zig build && ./zig-out/bin/wgslender lint <sample>` should report exactly the
+one W0001, and `validate` should be clean. A sample that surprises the linter
+poisons every later assertion.
 
-Run `pnpm test`: every test fails on unresolvable imports. That is the red.
+**Red.** Add `"test": "node --test 'tests/*.test.mjs'"` to `web/package.json`
+and write `web/tests/lsp-flow.test.mjs`:
+
+1. Initialize `wgslender-lsp` with a `wasmModule` compiled from the bytes at
+   `createRequire(import.meta.url).resolve('wgslender-lsp/wasm')` (the
+   `fetch(file:)` trap), and `wgslender` alongside it.
+2. Drive a session over `sendMessage` directly (no CodeMirror in Node):
+   `initialize` → `initialized` → `didOpen` with the sample. Assert the
+   returned batch contains a `textDocument/publishDiagnostics` for the URI
+   carrying `W0001` on the unused helper.
+3. `didChange` (full-text form) mutating a struct member access to a
+   nonexistent field → assert `E0206` appears; change it back → assert it
+   clears.
+4. `textDocument/hover` over the uniform variable returns non-empty contents;
+   `textDocument/definition` on the called helper points at its declaration.
+5. `workspace/executeCommand` `wgslender.showMinifiedOutput` with `[uri]`
+   returns `minified_text`, `byte_count`, and a **`gz_count` smaller than
+   `byte_count`**.
+6. Package-side: `minify(sample)` shrinks the source and drops the unused
+   helper from `code`; `reflect(sample)` reports the uniform + storage
+   bindings, the texture/sampler, the override, and both entry points.
+
+Keep the JSON-RPC plumbing (id counter, `send(method, params)` →
+parsed-responses, `notify`) in one small helper at the top of the file; Block 4
+extends the same session.
+
+Run `pnpm test`: red on unresolvable imports.
 
 **Green.**
 
-1. Rebuild both wasms from the current tree and copy into the packages —
+1. Rebuild both wasms from this tree and copy them in, exactly as the
+   packages' own `prepublishOnly` scripts do — from the repo root:
    `zig build wasm -Doptimize=ReleaseSafe && cp zig-out/bin/wgslender.wasm
    packages/js-npm/` and `zig build lsp-wasm -Doptimize=ReleaseSafe &&
-   cp zig-out/bin/wgslender-lsp.wasm npm/wgslender-lsp/` (from the repo
-   root). If `git status` shows changed bytes, commit the wasm refresh as its
-   own commit before the deps commit.
-2. Add the two `file:` dependencies plus editor deps to `web/package.json`:
-   `codemirror` (^6), `@codemirror/language`, `@codemirror/lint`,
-   `@codemirror/lsp-client` (version: whatever `pnpm add` resolves — record
-   it here), and run `pnpm install`.
-3. `pnpm test` until green. Expect to discover the exact diagnostic codes
-   here (dead helper is likely `W0001` unused-symbol from
-   `@wgslender/recommended`); pin whatever the server actually says, the way
-   `tests/lint_rules_test.zig` pins codes with `hasCodeContaining`.
+   cp zig-out/bin/wgslender-lsp.wasm npm/wgslender-lsp/`. If `git status`
+   shows changed bytes, commit that refresh **on its own** (see Behavior
+   changes). If it shows nothing, say so in the commit message for the deps
+   commit — "checked-in wasm verified current" is a fact worth recording.
+2. Add to `web/package.json`: the two `file:` deps, `codemirror` (^6.0.2),
+   `@codemirror/{state,view,language,lint,autocomplete}`,
+   `@codemirror/lsp-client` (^6.2.5). `pnpm install`.
+3. `pnpm test` until green. Where a message or code differs from what this
+   plan predicted, pin what the server actually says and note it in Status.
 
-**Gate:** `cd web && pnpm test` green; `pnpm build` still green (no source
-changes yet, this just proves deps didn't break the build).
+**Gate:** `cd web && pnpm test` green; `pnpm build` still green.
 
 ---
 
 ## Block 2 — the editor island: CodeMirror + WGSL mode + live diagnostics
 
-*Fresh-session context: Block 1 landed `file:` deps on `wgslender` +
-`wgslender-lsp`, codemirror deps, a green `tests/lsp-flow.test.mjs`, and
-`sample-shader.ts`. The LSP pushes `publishDiagnostics` inside every
-`didOpen`/`didChange` `sendMessage` batch; settings arrive via a
-`workspace/configuration` round-trip (see "Verified current state"). Dev
-server: `astro dev --background` per `web/AGENTS.md`.*
+*Fresh-session context: Block 1 landed `file:` deps, codemirror deps, a green
+`tests/lsp-flow.test.mjs`, and `sample-shader.ts`. `@codemirror/lsp-client`
+6.2.5 gives completion, hover, format, rename, signature help, jump-to-def,
+find-references and push-diagnostic rendering via `languageServerExtensions()`;
+`createTransport()` matches its `Transport` type. Server sync is incremental
+with utf-16 positions. Dev server: `astro dev --background` per
+`web/AGENTS.md`.*
 
-Create, in order:
+1. `scripts/sync-wasm.mjs` + `"predev"`/`"prebuild"` hooks: resolve
+   `wgslender/wasm` and `wgslender-lsp/wasm` via `createRequire` and copy both
+   into `web/public/`. Add `public/*.wasm` to `web/.gitignore`. This is the
+   deliberate choice over `import … from 'wgslender/wasm?url'`: Vite resolving
+   a `?url` export subpath across a pnpm `file:` symlink is exactly the kind of
+   thing that breaks between versions, and a copy step keeps the wasm-freshness
+   rule mechanical. (If a later session wants `?url`, it must delete the sync
+   script, not stack the two.)
+2. `src/scripts/playground/wasm.ts` — `initPlayground()` initializes both
+   packages in parallel from `/wgslender.wasm` and `/wgslender-lsp.wasm`,
+   returning a promise per package so the editor can come up before the
+   minifier lands (~1.6 MB of wasm total — never block first paint on both).
+3. `src/scripts/playground/wgsl-language.ts` — a `StreamLanguage.define` WGSL
+   mode: keyword / type / builtin lists lifted from `src/Lexer.zig` (do not
+   invent them; `private`, `uniform`, `storage`, `read`, `write`, `read_write`
+   are address-space/access words, *not* reserved), `//` comments and **nesting
+   `/* */` comments** (WGSL nests them — the mode must count depth), numeric
+   literals with suffixes, `@attributes`. Give the `Language` the name `wgsl`
+   so lsp-client derives the right `languageID`. Highlighting works before any
+   wasm arrives; semantic tokens are a possible future enhancement, not a
+   dependency.
+4. `src/scripts/playground/lsp-session.ts` — `createSession()`: `initialize()`
+   → `createTransport()` → `new LSPClient({extensions:
+   languageServerExtensions()})` → `client.connect(transport)`, and returns
+   `{client, uri, extension: client.plugin(uri)}` plus two wgslender-specific
+   helpers used from Block 3 on: `refreshInsights()` (the debounced
+   `wgslender/recomputeMinifyInsights` notification the server's hot path
+   expects) and `showMinifiedOutput()` (the executeCommand round-trip returning
+   `byte_count`/`gz_count`).
+5. `src/components/PlaygroundEditor.astro` — server-rendered shell: a
+   `<pre>` holding the sample shader (so the page is readable with JS off and
+   there is no layout jump), the two-column grid (`1fr 1fr`, one column under
+   768 px), a status line, and an empty right pane for Block 3. Its `<script>`
+   dynamically imports the boot module and replaces the `<pre>` with a
+   CodeMirror view (`basicSetup` + WGSL mode + the LSP extension).
+6. `src/content/docs/playground.mdx` — `title: Playground`,
+   `tableOfContents: false`, renders `<PlaygroundEditor />`, one line of copy:
+   everything on this page runs in your browser, no server. Add
+   `{ label: 'Playground', slug: 'playground' }` to the sidebar in
+   `astro.config.mjs`.
 
-1. `src/scripts/playground/wgsl-language.ts` — `StreamLanguage.define` mode:
-   keywords/types/builtins lifted from `src/Lexer.zig` keyword tables (do not
-   invent the lists; `private`/`uniform`/`storage`/`read_write` are address
-   space/access words, not reserved), `//` and nesting `/* */` comments
-   (WGSL comments nest — the mode must count depth), numeric literals,
-   `@attributes`.
-2. `src/scripts/playground/wasm.ts` — one `initPlayground()` that imports
-   both wasm URLs (`import wgslWasmUrl from 'wgslender/wasm?url'`, same for
-   `wgslender-lsp/wasm`) and runs both `initialize({ wasmURL })` calls in
-   parallel. **Probe:** if Vite chokes on `?url` across the `file:` symlink,
-   fall back to copying the two `.wasm` into `web/public/` via an
-   `astro:build`/predev script — record which path won.
-3. `src/scripts/playground/lsp-client.ts` — wraps
-   `createTransport()` + `LSPClient` + `languageServerExtensions()` per
-   `README.md:452-466`. Two jobs beyond the sketch: answer the server's
-   `workspace/configuration` request (return `[{}]` for now; Block 4 fills
-   it), and expose a `subscribe` tap that forwards every
-   `publishDiagnostics` payload to a callback — that tap is the
-   client-library-proof path to the diagnostics panel, and the fallback
-   renderer (via `@codemirror/lint` `setDiagnostics`) if the probe shows
-   lsp-client doesn't render pushed diagnostics itself.
-4. `src/components/PlaygroundEditor.astro` — markup: loading note, editor
-   pane, empty right pane (Block 3), miniray's grid geometry
-   (`1fr 1fr`, one column under 768 px); scoped styles on `--sl-*` tokens;
-   `<script>` that mounts CodeMirror (basic setup + WGSL mode + LSP
-   extensions) with the sample shader.
-5. `src/content/docs/playground.mdx` — frontmatter `title: Playground`,
-   `tableOfContents: false`; imports and renders `<PlaygroundEditor />`; one
-   sentence of copy ("Everything on this page runs in your browser — no
-   server."). Add `{ label: 'Playground', slug: 'playground' }` to the
-   sidebar in `astro.config.mjs`.
-
-**Verification (browser, by hand):** typing `uniforms.tim` squiggles with the
-E-code within ~a keystroke's debounce; hovering `uniforms` shows type info;
-`Ctrl-Space` after `uniforms.` completes struct fields; the dead helper
-carries a warning squiggle on load. Both color themes look native.
+**Hand verification:** breaking a member access squiggles `E0206` within a
+keystroke; the unused helper carries its `W0001` squiggle on load; hover shows
+types; `Ctrl-Space` after `.` completes struct fields; both themes look native;
+mobile width collapses to one column.
 
 **Gate:** `pnpm test` (Block 1 suite still green) + `pnpm build`.
 
@@ -351,136 +394,152 @@ carries a warning squiggle on load. Both color themes look native.
 
 ## Block 3 — the working panels: minify, reflect, diagnostics
 
-*Fresh-session context: Blocks 1–2 landed the editor island with live LSP
-diagnostics on `/playground/`. The minifier wasm is already initialized by
-`wasm.ts` but nothing calls `minify`/`reflect` yet. miniray's playground
-(`~/Dev/miniray/web/`) is the UX reference: options pills, stats bar, copy
-button, 300 ms debounce.*
+*Fresh-session context: Blocks 1-2 landed the editor island with live LSP
+diagnostics on `/playground/`. `wasm.ts` already initializes the minifier
+package; nothing calls `minify`/`reflect` yet. `lsp-session.ts` exposes
+`showMinifiedOutput()` for the gzip number. miniray's playground is the UX
+reference.*
 
 **Red.** `web/tests/panels.test.mjs` against a new pure module
-`src/scripts/playground/panels.ts`:
+`src/scripts/playground/panels.ts`, run against the real wasm:
 
-- `buildMinifyModel(source, opts)` → `{ code, stats: { original, minified,
-  savedPct }, errors }` — assert real numbers from the real wasm on the
-  sample shader; assert `mangleExternalBindings: false` keeps `uniforms` in
-  the output and toggling identifiers off keeps `computeColor`.
-- `buildReflectModel(source)` → grouped rows (uniforms / storage / textures /
-  samplers, entry points with stage + workgroup size, struct layouts with
-  offset/size) — assert the sample's uniform struct fields and offsets.
-- `formatDiagnostic(d)` → `"E0xxx line:col message"` rows sorted
-  errors-first — feed it a captured `publishDiagnostics` payload.
+- `buildMinifyModel(source, opts)` → `{code, stats: {original, minified,
+  savedPct}, errors}`. Assert on the sample: default options shrink it and drop
+  the unused helper; `treeShaking: false` keeps it; `mangleExternalBindings:
+  false` (the default) keeps the binding's original name in `code`;
+  `minifyIdentifiers: false` keeps the called helper's name; enabling
+  `sortDeclarations + scopeLocalRename` changes `code` without changing what
+  `reflect` reports about it.
+- `buildReflectModel(source)` → grouped rows: uniforms / storage / textures /
+  samplers with group+binding, entry points with stage (and workgroup size when
+  present), struct fields with offset/size/align, overrides. Assert the
+  sample's uniform struct field offsets — those numbers are the reflection
+  engine's whole point.
+- `formatDiagnostics(payload)` → rows `{severity, code, line, col, message}`
+  sorted errors-first, then by position; feed it a `publishDiagnostics` payload
+  captured from the Block 1 session.
 
-**Green.** Implement `panels.ts` (pure — Node-testable), then wire the right
-pane in `PlaygroundEditor.astro` as three **Starlight-native tabs** — use the
-existing `Tabs`/`TabItem` components from `@astrojs/starlight/components` if
-they accept island content cleanly, else three plain buttons styled with
-`--sl-*` tokens (record which):
+**Green.** Implement `panels.ts` (pure, no DOM), then wire the right pane in
+`PlaygroundEditor.astro` as three tabs. Prefer Starlight's `<Tabs>`/`<TabItem>`
+from `@astrojs/starlight/components` if they compose with island content;
+otherwise three buttons styled with `--sl-*` tokens — record which won.
 
-- **Minified** — read-only output (a second minimal CodeMirror with the WGSL
-  mode, `EditorState.readOnly`), miniray's stats bar and copy button, and
-  the option pills: Whitespace / Identifiers / Syntax / Mangle bindings /
-  Tree shaking. Recompute on option change and on a 300 ms debounce of
-  editor changes (one shared debounce with the LSP `didChange` pacing).
-- **Reflection** — the `buildReflectModel` tables; monospace, plus a
-  "raw JSON" `<details>`.
-- **Diagnostics** — the formatted list; clicking a row moves the editor
-  cursor to the range (this is DOM wiring, thin by design).
+- **Minified** — read-only CodeMirror (same WGSL mode, `EditorState.readOnly`),
+  option pills (Whitespace / Identifiers / Syntax / Mangle bindings / Tree
+  shaking / Sort declarations / Scope-local rename), miniray's stats bar
+  extended with a **gzip column** fed by `showMinifiedOutput()`'s `gz_count`,
+  and a copy button with the "Copied!" flash. Recompute on pill change and on
+  the shared 300 ms debounce.
+- **Reflection** — `buildReflectModel` tables in monospace, plus a raw-JSON
+  `<details>`.
+- **Diagnostics** — the formatted rows; clicking one moves the editor cursor to
+  that position (thin DOM wiring by design).
 
-**Gate:** `pnpm test` green (both suites) + `pnpm build` + hand check:
-toggling "Tree shaking" makes the dead helper reappear in the minified
-output, and the stats bar tracks it.
+One debounce drives all three: on it, run `minify` + `reflect` on the current
+document and fire `refreshInsights()`. Ordering matters — the LSP's `didChange`
+already fired synchronously on keystroke (cheap diagnostics); this pass is the
+expensive half the server explicitly defers to the client.
 
----
-
-## Block 4 — the LSP showpieces: insights inlay hints, rename, format
-
-*Fresh-session context: `/playground/` now has a working editor + three
-panels. The LSP serves `inlayHint`, `rename`/`prepareRename`, `formatting`,
-`signatureHelp` (`lsp/wasm.zig:100-133`). Minify-insight hints require
-config `{ "lsp": { "minifyMode": "insights" } }` delivered as the response to
-the server's `workspace/configuration` request (`lsp/wasm/lifecycle.zig:47-65`,
-schema note at `lsp/Handler.zig:56-60`).*
-
-1. Extend `tests/lsp-flow.test.mjs` first (red): after answering the config
-   request with `{ lsp: { minifyMode: "insights" } }`, a
-   `textDocument/inlayHint` request over the whole document returns hints
-   whose labels carry byte counts; a `textDocument/rename` of `computeColor`
-   returns a WorkspaceEdit touching every reference; `textDocument/formatting`
-   returns edits on a deliberately misindented document.
-2. Wire config: `lsp-client.ts`'s configuration answer becomes a small
-   settings store; the UI adds one toggle pill — "Minify insights" — that
-   flips `minifyMode` between `"off"` and `"insights"` and pokes the server
-   (`workspace/didChangeConfiguration` triggers its re-fetch).
-3. **Probe** `@codemirror/lsp-client` for inlay-hint support. If absent:
-   request `textDocument/inlayHint` through `sendMessage` after each
-   debounced change and render as CodeMirror inline decorations (a small,
-   self-contained ViewPlugin). Rename and format: prefer the client
-   library's commands; fallbacks are `prepareRename`/`rename` via
-   `sendMessage` + applying the WorkspaceEdit as a CodeMirror transaction,
-   and a "Format" button doing the same with `formatting` edits.
-4. Page copy on `/playground/` gains a one-line "try this" list: hover a
-   builtin, rename a function (F2), toggle Minify insights and watch
-   per-declaration byte estimates appear.
-
-**Gate:** `pnpm test` + `pnpm build` + hand check of all three features in
-the browser, both themes.
+**Gate:** `pnpm test` (both suites) + `pnpm build` + hand check: toggling
+"Tree shaking" makes the unused helper reappear and the stats bar move; the
+gzip number tracks the sort/scope pills.
 
 ---
 
-## Block 5 — page truth pass and the full gate
+## Block 4 — the wgslender showpiece: minify insights
 
-*Fresh-session context: the playground is functionally complete on
-`/playground/`. What's left is making the rest of the site point at it and
-making the docs stop lying.*
+*Fresh-session context: `/playground/` has a working editor plus three panels.
+Minify-size inlay hints exist server-side (`lsp/handler/inlay_hints.zig`,
+`kind = minify_size`, each carrying an "approximate" tooltip) but only fire
+when the effective mode is `insights` or `strict`. The mode flips via
+`workspace/executeCommand` `wgslender.setMinifyMode` with
+`["insights"|"strict"|"off"]` — lsp-client cannot push settings, so the command
+is the route. `@codemirror/lsp-client` has no inlay-hint support; this is ours.*
 
-1. `index.mdx`: hero action #1 becomes "Try the playground" → `/playground/`
-   (replacing the dead "Example Guide" starter link); the CardGrid keeps its
-   copy but the minifier/validator/LSP cards gain links into the playground.
-   Leave the commented-out starter cards; delete the "Read the Starlight
-   docs" action or point it at the GitHub repo — pick one, record it.
-2. `web/README.md`: replace the starter README's structure section with the
-   real one (playground modules, test command, the `file:` dependency note
-   and its consequence: `pnpm install` must run *after* the packages exist
-   on disk — true in every fresh clone).
-3. `web/AGENTS.md`: append the two commands agents will need:
-   `pnpm test` (Node suites) and the wasm-refresh pair from Block 1, with
-   the rule that a wire-affecting Zig change requires rebuilding both wasms
-   before trusting playground behavior (the npm-wasm staleness rule).
-4. Full gate, in order: `cd web && pnpm test && pnpm build`, then
-   `zig build test` from the repo root (`-j1` if the corpus suites run) to
-   prove the wasm rebuild in Block 1 didn't ride on a broken tree, then a
-   final hand pass over `/playground/` with `astro dev --background`.
-5. Update this plan's **Status** to executed, with the commit list and every
-   probe outcome (lsp-client version + which fallbacks were needed, `?url`
-   vs `public/` wasm serving, Tabs vs buttons), following the
-   `rust-examples.md` convention.
+1. **Red first**, extending `tests/lsp-flow.test.mjs`: with mode `off`, a
+   whole-document `textDocument/inlayHint` returns no `minify_size`-flavoured
+   hints; after `wgslender.setMinifyMode ["insights"]`, hints come back with
+   byte counts in their labels and a tooltip; after `["off"]` they disappear.
+   Also pin `textDocument/rename` of the called helper (a WorkspaceEdit
+   touching every reference) and `textDocument/formatting` on a deliberately
+   misindented document.
+2. `src/scripts/playground/insights.ts` — a CodeMirror `ViewPlugin` that, on
+   the shared debounce, requests `textDocument/inlayHint` for the visible range
+   and renders the results as inline widget decorations (position mapped from
+   LSP utf-16 line/char, tooltip on hover). Keep it small and self-contained;
+   it is the one place we implement an LSP feature the client library lacks.
+3. A "Minify insights" toggle pill sends the executeCommand, then
+   `refreshInsights()`, then re-requests hints. The server republishes
+   diagnostics for every open document after the command, so M-code minify
+   lints appear in the Diagnostics panel at the same moment the hints do —
+   check that they do.
+4. Page copy gains a short "try this" list: hover a builtin, F2-rename a
+   function, toggle Minify insights and watch per-declaration byte estimates
+   appear next to each declaration.
+
+**Gate:** `pnpm test` + `pnpm build` + hand check of hints, rename and format
+in the browser, both themes.
+
+---
+
+## Block 5 — truth pass and the full gate
+
+*Fresh-session context: the playground is functionally complete. What's left is
+making the rest of the site point at it and stop lying.*
+
+1. `astro.config.mjs`: title `'My Docs'` → `'WGSLender'`, social link →
+   `https://github.com/HugoDaniel/wgslender`. Two lines, deliberately inside
+   this plan's scope even though broader branding is not — a page titled "My
+   Docs" undercuts the demo it frames.
+2. `index.mdx`: hero action #1 becomes "Try the playground" → `/playground/`
+   (replacing the dead starter link); drop or re-point the "Read the Starlight
+   docs" action; the minifier / validator / discoverability / LSP cards link
+   into the playground.
+3. `web/README.md`: replace the starter text with the real structure —
+   playground modules, `pnpm test`, and the `file:` dependency consequence
+   (`pnpm install` in `web/` requires the sibling package directories, true in
+   every fresh clone).
+4. `web/AGENTS.md` (remember `CLAUDE.md` symlinks to it): add `pnpm test`, the
+   `sync-wasm` step, and the rule that a wire-affecting Zig change requires
+   rebuilding both wasms before trusting playground behavior.
+5. Full gate, in order: `cd web && pnpm test && pnpm build`; then `zig build
+   test` from the repo root (`-j1`) to prove the Block 1 wasm rebuild didn't
+   ride on a broken tree; then a final hand pass over `/playground/`.
+6. Update this file's **Status** to executed with the commit list and every
+   deviation (lsp-client version actually installed, Tabs vs buttons, any
+   message or code that differed from the predictions above), following
+   `docs/plans/rust-examples.md`'s convention.
 
 ---
 
 ## Behavior changes (explicit)
 
-- **None to the Zig library, CLI, native LSP, or any package's JS API.**
-  The playground only consumes published surfaces.
-- **The checked-in wasm binaries may change bytes** (Block 1 refresh). That
-  changes what the unpublished npm packages would ship. It lands as its own
-  commit so it can be reverted independently of the web work.
-- `web/package.json` gains runtime dependencies (codemirror family) and two
-  `file:` links — a fresh clone must build nothing, but `pnpm install` in
-  `web/` now depends on the sibling package dirs existing.
-- `astro.config.mjs` may gain a `vite.server.fs.allow` entry (dev-server
-  only; no effect on builds).
+- **None to the Zig library, CLI, native LSP, or any package's JS API.** The
+  playground only consumes shipped surfaces.
+- **The checked-in wasm binaries may change bytes** (Block 1 refresh),
+  changing what the unpublished npm packages would ship. Lands as its own
+  commit so it can be reverted independently.
+- `web/package.json` gains runtime deps (codemirror family) and two `file:`
+  links: `pnpm install` in `web/` now depends on the sibling package
+  directories existing.
+- `web/public/` gains two generated, gitignored `.wasm` files and
+  `web/package.json` gains `predev`/`prebuild` hooks that write them.
+- Site title and GitHub link change from the Starlight starter defaults
+  (Block 5, item 1).
 
 ## Definition of done
 
 - [ ] `/playground/` renders inside the Starlight shell, both themes, mobile
-      column collapse included, with zero custom color values (only `--sl-*`).
-- [ ] Editor: WGSL highlighting (nested comments included), live diagnostics
-      with codes, hover, completion, go-to-definition, rename, formatting.
-- [ ] Panels: minified output with option pills + stats + copy; reflection
-      tables + raw JSON; clickable diagnostics list.
-- [ ] Minify-insights inlay hints toggle on and show per-declaration bytes.
+      column collapse included, with no custom color values (only `--sl-*`).
+- [ ] Editor: WGSL highlighting incl. nested comments, live diagnostics with
+      codes, hover, completion, go-to-definition, rename, format, signature
+      help.
+- [ ] Panels: minified output with option pills + byte/gzip stats + copy;
+      reflection tables + raw JSON; clickable diagnostics list.
+- [ ] Minify-insights toggle turns per-declaration byte hints on and off.
 - [ ] `cd web && pnpm test` — headless LSP session + panel models, green.
 - [ ] `cd web && pnpm build` — green.
-- [ ] Both wasm binaries rebuilt from the tree that shipped them, committed.
-- [ ] `index.mdx` hero links to the playground; no starter links remain.
-- [ ] This file's Status records commits + probe outcomes.
+- [ ] Both wasm binaries verified current against the tree, committed if changed.
+- [ ] `index.mdx` links to the playground; no starter links or starter title
+      remain.
+- [ ] Status records commits and every deviation from this plan's predictions.
