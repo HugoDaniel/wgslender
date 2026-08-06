@@ -6,7 +6,9 @@
 //! cargo run -p wgslender --example reflect_types
 //! ```
 
-use wgslender::{Error, reflect};
+use core::str::FromStr as _;
+
+use wgslender::{Error, Value, reflect, reflect_json};
 
 /// Two uniform blocks with different alignment stories, and two entry points.
 const SHADER: &str = "\
@@ -74,5 +76,44 @@ fn main() -> Result<(), Error> {
         }
     }
 
+    the_untyped_answer()
+}
+
+/// The same call, unparsed — for the three fields the structs above do not
+/// carry.
+fn the_untyped_answer() -> Result<(), Error> {
+    let envelope = reflect_json(SHADER)?;
+
+    // `wgslender::Value` is `serde_json::Value` under this crate's name, which
+    // is what makes the envelope readable without taking on serde yourself.
+    let parsed = Value::from_str(&envelope)?;
+    println!(
+        "\nreflect_json: {} bytes, envelope version {}",
+        envelope.len(),
+        parsed
+            .get("version")
+            .map_or_else(|| "absent".to_owned(), ToString::to_string),
+    );
+
+    let first = parsed.get("bindings").and_then(|bindings| bindings.get(0));
+    for field in ["name", "nameOffset", "stableId", "declSpan"] {
+        let value = first.and_then(|binding| binding.get(field));
+        println!(
+            "  {field:<12}{}",
+            value.map_or_else(|| "absent".to_owned(), ToString::to_string),
+        );
+    }
+
+    println!(
+        "\nNone of the last three are on the typed `Binding`, which is the reason\n\
+         `reflect_json` exists. The `stableId` is the interesting one: it is exactly\n\
+         what `refactor::StableId::new` takes, so it is the bridge between the two\n\
+         halves of this API — reflection says what is in the shader and where, and\n\
+         refactor edits the thing that id names. `cargo run --example refactor`\n\
+         reaches the same symbol from the other end.\n\
+         \n\
+         Prefer the typed call for everything it covers. This one hands back a wire\n\
+         format, and a wire format is versioned — hence the `version` field."
+    );
     Ok(())
 }

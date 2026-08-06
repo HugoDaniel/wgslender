@@ -49,6 +49,10 @@ name = "embed_compressed"
 required-features = ["macros", "compress"]
 
 [[example]]
+name = "include_wgsl"
+required-features = ["macros"]
+
+[[example]]
 name = "wgsl_module"
 required-features = ["macros"]
 
