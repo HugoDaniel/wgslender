@@ -1,6 +1,6 @@
 package wgslender_test
 
-// Examples for the four calls a program is most likely to make. They are named
+// Examples for every family of call this package offers. They are named
 // after the functions they demonstrate rather than after the package, so that
 // each one appears beside its function in the documentation.
 //
