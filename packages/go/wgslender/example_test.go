@@ -61,6 +61,30 @@ func ExampleMinify() {
 	// struct f{resolution:vec2f,time:f32}@group(0) @binding(0) var<uniform> params:f;@group(1) @binding(2) var<storage,read_write> data:array<vec4f>;fn c(d:vec3f)->f32{return dot(d,vec3f(.2126,.7152,.0722));}@compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) b:vec3u){let e=vec2f(b.xy)/params.resolution;let a=c(vec3f(e,params.time));data[b.x]=vec4f(a,a,a,1.);}
 }
 
+// ExampleMinify_options overrides the defaults where a caller most often
+// needs to: KeepNames pins an identifier a host looks up by name, and the two
+// compression flags reorder and rename for DEFLATE's benefit — the output is
+// no shorter, but it compresses better on the wire. The fields are Opt[bool],
+// so anything not Set stays whatever wgslender decides.
+func ExampleMinify_options() {
+	opts := &wgslender.MinifyOptions{
+		KeepNames:        []string{"luminance"},
+		SortDeclarations: wgslender.Set(true),
+		ScopeLocalRename: wgslender.Set(true),
+	}
+	result, err := wgslender.Minify(context.Background(), exampleShader, opts)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(result.Code)
+	// luminance kept its name, and the short names restart in every scope —
+	// both functions open with a — which is ScopeLocalRename making the bytes
+	// repeat for the compressor.
+	//
+	// Output:
+	// struct e{resolution:vec2f,time:f32}@group(0) @binding(0) var<uniform> params:e;@group(1) @binding(2) var<storage,read_write> data:array<vec4f>;fn luminance(a:vec3f)->f32{return dot(a,vec3f(.2126,.7152,.0722));}@compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) a:vec3u){let b=vec2f(a.xy)/params.resolution;let c=luminance(vec3f(b,params.time));data[a.x]=vec4f(c,c,c,1.);}
+}
+
 // ExampleValidate type-checks a shader that does not.
 func ExampleValidate() {
 	// A shader's own problems are data, not errors: the call succeeds and the
