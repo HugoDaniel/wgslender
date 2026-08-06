@@ -230,11 +230,17 @@ type Span struct {
 type AddressSpace string
 
 const (
-	AddressSpaceFunction  AddressSpace = "function"
-	AddressSpacePrivate   AddressSpace = "private"
+	// AddressSpaceFunction holds a variable local to one function call.
+	AddressSpaceFunction AddressSpace = "function"
+	// AddressSpacePrivate holds module-scope state private to one invocation.
+	AddressSpacePrivate AddressSpace = "private"
+	// AddressSpaceWorkgroup holds state shared by a compute workgroup.
 	AddressSpaceWorkgroup AddressSpace = "workgroup"
-	AddressSpaceUniform   AddressSpace = "uniform"
-	AddressSpaceStorage   AddressSpace = "storage"
+	// AddressSpaceUniform holds a read-only binding uploaded by the host.
+	AddressSpaceUniform AddressSpace = "uniform"
+	// AddressSpaceStorage holds a buffer binding, writable when its
+	// [AccessMode] says so.
+	AddressSpaceStorage AddressSpace = "storage"
 	// AddressSpaceHandle holds textures and samplers. WGSL leaves it
 	// unspellable in source; the engine infers it from the type.
 	AddressSpaceHandle AddressSpace = "handle"
@@ -246,8 +252,11 @@ const (
 type AccessMode string
 
 const (
-	AccessRead      AccessMode = "read"
-	AccessWrite     AccessMode = "write"
+	// AccessRead lets the shader only read.
+	AccessRead AccessMode = "read"
+	// AccessWrite lets the shader only write.
+	AccessWrite AccessMode = "write"
+	// AccessReadWrite lets the shader do both.
 	AccessReadWrite AccessMode = "read_write"
 )
 
@@ -255,8 +264,11 @@ const (
 type ShaderStage string
 
 const (
-	StageCompute  ShaderStage = "compute"
-	StageVertex   ShaderStage = "vertex"
+	// StageCompute runs over a workgroup grid the host dispatches.
+	StageCompute ShaderStage = "compute"
+	// StageVertex runs once per vertex.
+	StageVertex ShaderStage = "vertex"
+	// StageFragment runs once per rasterised fragment.
 	StageFragment ShaderStage = "fragment"
 )
 
@@ -265,26 +277,41 @@ const (
 type TypeKind string
 
 const (
-	KindScalar  TypeKind = "scalar"
-	KindVec     TypeKind = "vec"
-	KindMat     TypeKind = "mat"
-	KindArray   TypeKind = "array"
-	KindStruct  TypeKind = "struct"
-	KindAtomic  TypeKind = "atomic"
+	// KindScalar is a lone numeric or boolean value.
+	KindScalar TypeKind = "scalar"
+	// KindVec is a vector of scalars.
+	KindVec TypeKind = "vec"
+	// KindMat is a matrix of column vectors.
+	KindMat TypeKind = "mat"
+	// KindArray is an array, sized or runtime-sized.
+	KindArray TypeKind = "array"
+	// KindStruct is a structure the shader declares.
+	KindStruct TypeKind = "struct"
+	// KindAtomic is an atomic wrapper over an integer scalar.
+	KindAtomic TypeKind = "atomic"
+	// KindSampler is a sampler, which has no memory layout at all.
 	KindSampler TypeKind = "sampler"
+	// KindTexture is a texture; [TextureKind] and [TextureDimension] say more.
 	KindTexture TypeKind = "texture"
-	KindPtr     TypeKind = "ptr"
+	// KindPtr is a pointer, which never crosses the host boundary.
+	KindPtr TypeKind = "ptr"
 )
 
 // A TextureDimension is a texture's shape.
 type TextureDimension string
 
 const (
-	Dim1D        TextureDimension = "1d"
-	Dim2D        TextureDimension = "2d"
-	Dim2DArray   TextureDimension = "2d_array"
-	Dim3D        TextureDimension = "3d"
-	DimCube      TextureDimension = "cube"
+	// Dim1D is a one-dimensional texture.
+	Dim1D TextureDimension = "1d"
+	// Dim2D is a two-dimensional texture.
+	Dim2D TextureDimension = "2d"
+	// Dim2DArray is an array of two-dimensional layers.
+	Dim2DArray TextureDimension = "2d_array"
+	// Dim3D is a volume texture.
+	Dim3D TextureDimension = "3d"
+	// DimCube is a cube of six square faces.
+	DimCube TextureDimension = "cube"
+	// DimCubeArray is an array of cubes.
 	DimCubeArray TextureDimension = "cube_array"
 )
 
@@ -293,12 +320,19 @@ const (
 type TextureKind string
 
 const (
-	TextureSampled           TextureKind = "sampled"
-	TextureMultisampled      TextureKind = "multisampled"
-	TextureStorage           TextureKind = "storage"
-	TextureDepth             TextureKind = "depth"
+	// TextureSampled is read through a sampler.
+	TextureSampled TextureKind = "sampled"
+	// TextureMultisampled holds several samples per texel.
+	TextureMultisampled TextureKind = "multisampled"
+	// TextureStorage is read and written directly, no sampler involved.
+	TextureStorage TextureKind = "storage"
+	// TextureDepth holds depth values for comparison sampling.
+	TextureDepth TextureKind = "depth"
+	// TextureDepthMultisampled is a depth texture with several samples per
+	// texel.
 	TextureDepthMultisampled TextureKind = "depth_multisampled"
-	TextureExternal          TextureKind = "external"
+	// TextureExternal wraps a video frame the host imports.
+	TextureExternal TextureKind = "external"
 )
 
 // A Reflection is everything the engine can say about a shader's interface:
