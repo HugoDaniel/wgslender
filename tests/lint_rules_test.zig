@@ -413,21 +413,44 @@ test "no-unused-binding: unused storage is flagged" {
     try std.testing.expect(hasCodeContaining(r, "W0003", "unused_buf"));
 }
 
-test "no-unused-binding: textures are currently caught by no-unused-vars, not this rule" {
-    // Limitation: the parser sets `is_external_binding` only on `var<uniform>`
-    // and `var<storage>` declarations (Parser.zig:905), so textures and
-    // samplers declared with `@group/@binding` fall through to the
-    // no-unused-vars rule instead. Kept as a regression guard so a future
-    // fix (detect `@group/@binding` attrs directly) is a visible, tested
-    // change rather than a silent behavior drift.
+test "no-unused-binding: unused texture is flagged as a binding" {
+    // Was the reverse until `is_api_facing` was wired up: the parser sets
+    // `is_external_binding` from the address space, so handle bindings fell
+    // through to no-unused-vars and reported W0001 ("declared but never
+    // used") instead of W0003 ("consumes a bind group layout slot"). The
+    // old test pinned that as a known limitation and named this fix.
     var r = try runLint(
         \\@group(0) @binding(0) var tex: texture_2d<f32>;
         \\@compute @workgroup_size(1)
         \\fn main() {}
     , recommended_opts);
     defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0003", "tex"));
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0001"));
+}
+
+test "no-unused-binding: unused sampler is flagged as a binding" {
+    var r = try runLint(
+        \\@group(0) @binding(0) var samp: sampler;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expect(hasCodeContaining(r, "W0003", "samp"));
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0001"));
+}
+
+test "no-unused-binding: a plain module-scope var is still no-unused-vars' job" {
+    // The negative control. `is_api_facing` keys off the @group/@binding
+    // attributes, so a private var must not be mistaken for a binding.
+    var r = try runLint(
+        \\var<private> scratch: f32;
+        \\@compute @workgroup_size(1)
+        \\fn main() {}
+    , recommended_opts);
+    defer r.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0003"));
-    try std.testing.expect(hasCodeContaining(r, "W0001", "tex"));
+    try std.testing.expect(hasCodeContaining(r, "W0001", "scratch"));
 }
 
 test "no-unused-binding: message mentions bind group layout slot" {
@@ -539,6 +562,22 @@ test "naming-convention: external binding is excluded (api surface)" {
     var r = try runLint(
         \\@group(0) @binding(0) var<uniform> my_uniform: f32;
         \\@compute @workgroup_size(1) fn main() { let x = my_uniform; _ = x; }
+    , naming_opts);
+    defer r.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0200"));
+}
+
+test "naming-convention: texture and sampler bindings are excluded too" {
+    // Same api-surface reasoning as the uniform case above: a binding's name
+    // is part of the contract with the host, so the rule must exempt every
+    // binding, not just the uniform/storage ones.
+    var r = try runLint(
+        \\@group(0) @binding(0) var BadTexture: texture_2d<f32>;
+        \\@group(0) @binding(1) var BadSampler: sampler;
+        \\@compute @workgroup_size(1) fn main() {
+        \\  let c = textureSampleLevel(BadTexture, BadSampler, vec2f(0.0), 0.0);
+        \\  _ = c;
+        \\}
     , naming_opts);
     defer r.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 0), countCode(r, "W0200"));

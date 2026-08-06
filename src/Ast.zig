@@ -135,10 +135,19 @@ pub const Symbol = struct {
     /// removed the four mutable analysis bits.
     pub const Flags = packed struct(u8) {
         is_entry_point: bool = false,
-        /// Set for @group/@binding vars and config-preserved names.
+        /// Set for vars declared with both `@group` and `@binding`, whatever
+        /// their address space — textures and samplers included. Means "part
+        /// of the contract with the host": the linter must not second-guess
+        /// the name or report it unused as if it were an ordinary variable.
         is_api_facing: bool = false,
         is_builtin: bool = false,
-        /// Set for @group/@binding vars; enables alias generation in Printer.
+        /// Set for `var<uniform>` / `var<storage>` — an **address space**
+        /// test, not an attribute one. Enables alias generation in Printer
+        /// and keeps the renamer off the name. Deliberately narrower than
+        /// `is_api_facing`: handle bindings need neither aliasing nor
+        /// rename protection, so widening this would change minified output
+        /// for every shader with a texture. Do not use it to mean "is a
+        /// binding" — that is what `is_api_facing` is for.
         is_external_binding: bool = false,
         _padding: u4 = 0,
     };

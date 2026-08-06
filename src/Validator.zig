@@ -273,7 +273,12 @@ pub const AnalysisResult = struct {
         const module = self.module orelse return false;
         if (sym_idx >= module.symbols.items.len) return false;
         const sym = module.symbols.items[sym_idx];
-        if (!sym.flags.is_external_binding) return false;
+        // `is_api_facing`, not `is_external_binding`: the latter is set from
+        // the address space, so keying on it reported unused textures and
+        // samplers as plain unused variables (W0001) instead of unused
+        // bindings, losing the "consumes a bind group layout slot" message
+        // for exactly the bindings most likely to be forgotten.
+        if (!sym.flags.is_api_facing) return false;
         if (self.useCount(sym_idx) > 0) return false;
         if (sym.original_name.len == 0) return false;
         return true;
@@ -314,6 +319,7 @@ pub const AnalysisResult = struct {
         if (self.useCount(sym_idx) == 0) return false;
         if (sym.original_name.len == 0) return false;
         if (sym.flags.is_entry_point) return false;
+        if (sym.flags.is_api_facing) return false;
         if (sym.flags.is_external_binding) return false;
         return switch (sym.kind) {
             .function, .@"struct", .@"const", .let, .@"var", .override => true,

@@ -945,6 +945,20 @@ fn parseOverrideDecl(self: *Parser, attrs: *std.ArrayList(Ast.Attribute), decl_s
     return decl;
 }
 
+/// True iff the declaration carries both `@group` and `@binding`. This is
+/// the same shape `Reflect.extractBinding` requires before it will report a
+/// binding, so "the linter treats it as api-facing" and "reflect reports it"
+/// stay the same set. Argument *values* are the validator's business.
+fn hasBindingAttrs(attrs: []const Ast.Attribute) bool {
+    var has_group = false;
+    var has_binding = false;
+    for (attrs) |attr| {
+        if (std.mem.eql(u8, attr.name, "group")) has_group = true;
+        if (std.mem.eql(u8, attr.name, "binding")) has_binding = true;
+    }
+    return has_group and has_binding;
+}
+
 fn parseVarDecl(self: *Parser, attrs: *std.ArrayList(Ast.Attribute), decl_start: u32) !*Ast.VarDecl {
     _ = try self.expect(.keyword_var);
     const decl = try self.arena.create(Ast.VarDecl);
@@ -958,9 +972,24 @@ fn parseVarDecl(self: *Parser, attrs: *std.ArrayList(Ast.Attribute), decl_start:
     }
 
     var flags = Ast.Symbol.Flags{};
+    // Two different questions, deliberately kept apart:
+    //
+    //   is_external_binding — "does the Printer need to alias this, and must
+    //   the renamer leave it alone?" That is an address-space question:
+    //   only `uniform`/`storage` vars get the alias treatment.
+    //
+    //   is_api_facing — "is this part of the contract with the host, so the
+    //   linter should not second-guess its name or its use?" That is an
+    //   *attribute* question, and it covers textures and samplers, whose
+    //   address space is `handle` (usually implicit) and which therefore
+    //   fail the test above.
+    //
+    // Conflating them is a bug that has been fixed twice now: once in
+    // reflect's resource attribution, once here.
     if (decl.address_space == .uniform or decl.address_space == .storage) {
         flags.is_external_binding = true;
     }
+    if (hasBindingAttrs(attrs.items)) flags.is_api_facing = true;
 
     if (try self.eatIdent()) |text| {
         const loc = self.currentStart();
