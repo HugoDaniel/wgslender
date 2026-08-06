@@ -12,9 +12,35 @@ none. Doctests cover them (near 1:1 with public functions), but a doctest is a
 compile-checked assertion, not something a reader can run to see what the library
 *says*.
 
-**Status:** ready to execute. Every number below was measured against
-`main @ 3e65c1a`, 2026-08-06, macOS arm64, library version `1.1.0`. Do not re-derive
-them; do re-run the four existing examples if HEAD has moved.
+**Status:** **executed** — all seven blocks, 2026-08-06, on the `rust-examples`
+worktree branch off `main @ 3e65c1a`. Block 1 `e30211c` (the gate task that runs
+them), 2 `93289fb` (`validate`), 3 `35ab316` (`lint`), 4 `1ab8f6a` (`compile`),
+5 `db4490f` (`refactor`), 6 `f098dfb` (`minify_options`, `include_wgsl`, and the
+`reflect_json` footnote), 7 `53cd631` (this documentation pass). `cd packages/rust
+&& cargo xtask check` is green across all eight steps — ten examples run, not
+merely compiled — and `cargo xtask msrv` with it.
+
+Every number below was measured against `main @ 3e65c1a`, 2026-08-06, macOS arm64,
+library version `1.1.0`. Do not re-derive them; do re-run the examples if HEAD has
+moved. Where execution diverged from the plan it was because the plan's own ground
+rule — numbers come from the library — pointed somewhere else:
+
+- **Block 4 corrected a claim made here.** `sort_declarations` + `scope_local_rename`
+  are described below as leaving the byte count identical. That holds up to a size:
+  past roughly a dozen sibling scopes the raw count moves too, and `minify_options`
+  prints the curve (3151 → 2959 bytes at 32 scopes). Its section 3 says so rather
+  than repeating the blanket claim.
+- **Block 6 could not take the first branch of its own instruction.** "Compress both
+  outputs and show the real difference" needs a deflate the crate does not export:
+  the only one is `CompressedWgsl::__deflate`, `#[doc(hidden)]` and `compress`-gated,
+  and `compile()` forces both flags on regardless of the options it is handed. The
+  example takes the second branch and makes it measurable instead — same bytes, a
+  quarter fewer distinct names.
+- **Two examples measure their own shader** rather than the one named here.
+  `minify_options` needs dead code and sibling scopes for its options to have work to
+  do, which `demo.wgsl` has neither of; the `reflect_json` footnote stays on
+  `reflect_types.rs`'s Camera/Material shader so the example is about one shader
+  throughout.
 
 ---
 

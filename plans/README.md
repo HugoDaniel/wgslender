@@ -48,6 +48,14 @@ own "Explicitly not done" list is the remaining follow-up surface.
 **Every plan in this directory is now executed** (plan 2 excepted — superseded
 by plan 4 and never run).
 
+**Elsewhere:** [`docs/plans/rust-examples.md`](../docs/plans/rust-examples.md)
+is a follow-up to plan 4 — the Rust package shipped four examples for the seven
+capabilities in its own table, and that plan takes it to ten, each one run by
+`cargo xtask examples` rather than merely compiled. **Executed**, all seven
+blocks. It lives under `docs/plans/` rather than here because this directory is
+the embedding-example set and that set is closed; a plan about one package's
+documentation is not a fifth member of it.
+
 ## Suggested execution order
 
 The plans are **independent** — any order works, one plan (or one block) per session.
