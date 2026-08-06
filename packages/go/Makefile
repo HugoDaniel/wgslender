@@ -1,0 +1,60 @@
+# wgslender Go package — local gates only.
+#
+# This repo has no CI by design, so `make check` is the gate: it must pass
+# before every commit. The opt-in targets (lint, fuzz, bench) are for when you
+# are working on the thing they measure, not for every change.
+
+GO ?= go
+
+# Fuzzing runs one package at a time (`go test -fuzz` refuses a multi-package
+# pattern), so it needs an explicit target.
+FUZZPKG  ?= ./wgslender
+FUZZTIME ?= 30s
+
+.PHONY: check fmt vet build test lint fuzz bench
+
+## check: the mandatory pre-commit gate.
+check: fmt vet build test
+
+## fmt: report unformatted files without rewriting them, so the gate is a
+## question ("is this clean?") rather than an action with a side effect.
+fmt:
+	@unformatted="$$(gofmt -l .)"; \
+	if [ -n "$$unformatted" ]; then \
+		echo "not gofmt-clean:"; \
+		echo "$$unformatted"; \
+		echo "run: gofmt -w ."; \
+		exit 1; \
+	fi
+
+## vet: stdlib static analysis.
+vet:
+	$(GO) vet ./...
+
+## build: every package compiles.
+build:
+	$(GO) build ./...
+
+## test: -race is not optional here; the package hands one single-threaded
+## wasm instance to arbitrarily many goroutines and the detector is what keeps
+## that honest. -count=1 defeats the test cache.
+test:
+	$(GO) test -race -count=1 ./...
+
+## lint: opt-in, and hard-fails when golangci-lint is missing — a check that
+## did not run has not passed.
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+		echo "golangci-lint is not installed."; \
+		echo "install: https://golangci-lint.run/welcome/install/"; \
+		exit 1; \
+	}
+	golangci-lint run
+
+## fuzz: opt-in. Override FUZZPKG/FUZZTIME to aim it.
+fuzz:
+	$(GO) test -run '^$$' -fuzz . -fuzztime $(FUZZTIME) $(FUZZPKG)
+
+## bench: opt-in. -count=6 is what benchstat wants to see.
+bench:
+	$(GO) test -run '^$$' -bench . -benchmem -count=6 ./...

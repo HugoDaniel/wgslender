@@ -1,0 +1,43 @@
+# Opt-in lint config for `make lint`.
+#
+# NOTE: golangci-lint is not installed on the machine this package was written
+# on, so this file's schema has never been exercised here. `make check` — the
+# gate that actually runs — does not read it. If golangci-lint rejects this
+# config, fix the config; do not weaken the gate.
+#
+# The linter set is deliberately the floor from mastery/go GO_MASTERY.md
+# ("Tooling Floor"): govet, staticcheck, revive, errcheck, ineffassign, plus
+# errorlint because this package's whole error story is wrapping wire strings
+# into sentinels that callers compare with errors.Is.
+
+version: "2"
+
+linters:
+  # standard = errcheck, govet, ineffassign, staticcheck, unused.
+  default: standard
+  enable:
+    - errorlint
+    - revive
+
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        # Field order here follows the wire layout it mirrors; packing it for
+        # the allocator would make the types harder to check against the Zig.
+        - fieldalignment
+    revive:
+      rules:
+        - name: exported
+        - name: context-as-argument
+        - name: early-return
+        - name: indent-error-flow
+        - name: waitgroup-by-value
+
+  exclusions:
+    rules:
+      # Tests may reach for the unchecked-error shortcuts that production code
+      # may not.
+      - path: _test\.go$
+        linters:
+          - errcheck
