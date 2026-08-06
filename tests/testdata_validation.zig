@@ -166,6 +166,7 @@ pub const @"errors/declarations/storage_write_only" = @embedFile("testdata/valid
 pub const @"errors/declarations/empty_struct" = @embedFile("testdata/validation/errors/declarations/empty_struct.wgsl");
 pub const @"errors/declarations/duplicate_struct_member" = @embedFile("testdata/validation/errors/declarations/duplicate_struct_member.wgsl");
 pub const @"errors/declarations/recursive_struct" = @embedFile("testdata/validation/errors/declarations/recursive_struct.wgsl");
+pub const @"errors/declarations/recursive_struct_var" = @embedFile("testdata/validation/errors/declarations/recursive_struct_var.wgsl");
 pub const @"errors/declarations/override_id_out_of_range" = @embedFile("testdata/validation/errors/declarations/override_id_out_of_range.wgsl");
 pub const @"errors/declarations/override_id_duplicate" = @embedFile("testdata/validation/errors/declarations/override_id_duplicate.wgsl");
 pub const @"errors/declarations/array_size_zero" = @embedFile("testdata/validation/errors/declarations/array_size_zero.wgsl");

@@ -120,6 +120,11 @@ pub const Type = union(enum) {
     /// Returns true if values of this type can be constructed.
     /// Follows array element chains iteratively.
     pub fn isConstructible(self: Type) bool {
+        var path: StructPath = .{};
+        return self.isConstructibleOnPath(&path);
+    }
+
+    fn isConstructibleOnPath(self: Type, path: *StructPath) bool {
         var current = self;
         for (0..type_chain_walk_limit) |_| {
             switch (current) {
@@ -130,7 +135,7 @@ pub const Type = union(enum) {
                     if (a.count == 0) return false;
                     current = a.element;
                 },
-                .@"struct" => |s| return s.isConstructibleStruct(),
+                .@"struct" => |s| return s.isConstructibleStruct(path),
                 .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => return false,
             }
         } else return false; // deeper than any parser-valid type — treat conservatively (never reached for valid input)
@@ -139,6 +144,11 @@ pub const Type = union(enum) {
     /// Returns true if this is not an abstract type.
     /// Follows array element chains iteratively.
     pub fn isConcrete(self: Type) bool {
+        var path: StructPath = .{};
+        return self.isConcreteOnPath(&path);
+    }
+
+    fn isConcreteOnPath(self: Type, path: *StructPath) bool {
         var current = self;
         for (0..type_chain_walk_limit) |_| {
             switch (current) {
@@ -146,7 +156,7 @@ pub const Type = union(enum) {
                 .vector => |v| return v.element.isConcrete(),
                 .matrix => |m| return m.element.isConcrete(),
                 .array => |a| current = a.element,
-                .@"struct" => |s| return s.isConcreteStruct(),
+                .@"struct" => |s| return s.isConcreteStruct(path),
                 .pointer, .reference, .atomic, .sampler, .texture, .function, .void_type => return true,
             }
         } else return false; // deeper than any parser-valid type — treat conservatively (never reached for valid input)
@@ -155,6 +165,11 @@ pub const Type = union(enum) {
     /// Returns true if values can be stored in memory.
     /// Follows array element chains iteratively.
     pub fn isStorable(self: Type) bool {
+        var path: StructPath = .{};
+        return self.isStorableOnPath(&path);
+    }
+
+    fn isStorableOnPath(self: Type, path: *StructPath) bool {
         var current = self;
         for (0..type_chain_walk_limit) |_| {
             switch (current) {
@@ -162,7 +177,7 @@ pub const Type = union(enum) {
                 .vector => |v| return v.element.isConcrete(),
                 .matrix => |m| return m.element.isConcrete(),
                 .array => |a| current = a.element,
-                .@"struct" => |s| return s.isStorableStruct(),
+                .@"struct" => |s| return s.isStorableStruct(path),
                 .atomic => return true,
                 .pointer, .reference, .sampler, .texture, .function, .void_type => return false,
             }
@@ -172,6 +187,11 @@ pub const Type = union(enum) {
     /// Returns true if this type can cross the CPU/GPU boundary.
     /// Follows array element chains iteratively.
     pub fn isHostShareable(self: Type) bool {
+        var path: StructPath = .{};
+        return self.isHostShareableOnPath(&path);
+    }
+
+    fn isHostShareableOnPath(self: Type, path: *StructPath) bool {
         var current = self;
         for (0..type_chain_walk_limit) |_| {
             switch (current) {
@@ -179,7 +199,7 @@ pub const Type = union(enum) {
                 .vector => |v| return v.element.kind != .bool and v.element.isConcrete(),
                 .matrix => |m| return m.element.isConcrete(),
                 .array => |a| current = a.element,
-                .@"struct" => |s| return s.isHostShareableStruct(),
+                .@"struct" => |s| return s.isHostShareableStruct(path),
                 .atomic => return true,
                 .pointer, .reference, .sampler, .texture, .function, .void_type => return false,
             }
@@ -509,33 +529,75 @@ pub const Struct = struct {
         return null;
     }
 
-    fn isConstructibleStruct(self: *const Struct) bool {
+    // The four field walks below all guard with StructPath.enter: the type
+    // graph is cyclic for a recursive struct — the validator diagnoses that
+    // (E0104) but leaves the graph intact — so an unguarded walk would not
+    // terminate. What a refused walk answers is per-predicate: a recursive
+    // struct cannot be constructed, stored or shared with the host, while
+    // revisiting a struct can add no abstract leaf its first visit missed.
+
+    fn isConstructibleStruct(self: *const Struct, path: *StructPath) bool {
         if (self.has_runtime_array) return false;
+        if (!path.enter(self)) return false;
+        defer path.leave();
         for (self.fields) |f| {
-            if (!f.typ.isConstructible()) return false;
+            if (!f.typ.isConstructibleOnPath(path)) return false;
         }
         return true;
     }
 
-    fn isConcreteStruct(self: *const Struct) bool {
+    fn isConcreteStruct(self: *const Struct, path: *StructPath) bool {
+        if (!path.enter(self)) return true;
+        defer path.leave();
         for (self.fields) |f| {
-            if (!f.typ.isConcrete()) return false;
+            if (!f.typ.isConcreteOnPath(path)) return false;
         }
         return true;
     }
 
-    fn isStorableStruct(self: *const Struct) bool {
+    fn isStorableStruct(self: *const Struct, path: *StructPath) bool {
+        if (!path.enter(self)) return false;
+        defer path.leave();
         for (self.fields) |f| {
-            if (!f.typ.isStorable()) return false;
+            if (!f.typ.isStorableOnPath(path)) return false;
         }
         return true;
     }
 
-    fn isHostShareableStruct(self: *const Struct) bool {
+    fn isHostShareableStruct(self: *const Struct, path: *StructPath) bool {
+        if (!path.enter(self)) return false;
+        defer path.leave();
         for (self.fields) |f| {
-            if (!f.typ.isHostShareable()) return false;
+            if (!f.typ.isHostShareableOnPath(path)) return false;
         }
         return true;
+    }
+};
+
+/// The structs a recursive type predicate has already entered on its current
+/// path. Everything that walks struct fields carries one, because the type
+/// graph is not a tree: a recursive struct keeps its cycle after the
+/// validator has diagnosed it. The capacity is far past WGSL's composite
+/// nesting limit; a path that deep answers conservatively, like the
+/// chain-walk limit in the predicates themselves.
+const StructPath = struct {
+    seen: [64]*const Struct = undefined,
+    depth: usize = 0,
+
+    /// enter records s on the path, and reports false when s is already there
+    /// or the path is full — either way the caller must not walk s's fields.
+    fn enter(p: *StructPath, s: *const Struct) bool {
+        if (p.depth == p.seen.len) return false;
+        for (p.seen[0..p.depth]) |seen| {
+            if (seen == s) return false;
+        }
+        p.seen[p.depth] = s;
+        p.depth += 1;
+        return true;
+    }
+
+    fn leave(p: *StructPath) void {
+        p.depth -= 1;
     }
 };
 

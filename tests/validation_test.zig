@@ -1369,6 +1369,12 @@ test "validation: errors/declarations/recursive_struct" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/recursive_struct");
 }
 
+test "validation: errors/declarations/recursive_struct_var" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/declarations/recursive_struct_var");
+}
+
 test "validation: errors/declarations/override_id_out_of_range" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -852,7 +852,11 @@ pub fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
         .handle => .read,
         else => .read_write,
     };
-    try v.scratch.var_info.put(v.arena, d.name.index(), .{ .address_space = as_norm, .access_mode = am_norm });
+    // A parse-recovered `var` can be nameless. Nothing can mention it, so no
+    // `&` expression will ever need this entry.
+    if (d.name.isValid()) {
+        try v.scratch.var_info.put(v.arena, d.name.index(), .{ .address_space = as_norm, .access_mode = am_norm });
+    }
 }
 
 pub fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u8, r: LocRange) Allocator.Error!void {
@@ -885,14 +889,17 @@ pub fn validateBindingAttributes(v: *Validator, d: *Ast.VarDecl, name: []const u
             }
         }
         try v.scratch.binding_pairs.put(v.arena, key, .{ .name = name, .loc = r.start });
-        // Collect binding info for pattern analysis
-        try v.scratch.binding_infos.append(v.arena, .{
-            .name = name,
-            .loc = r.start,
-            .group = gv,
-            .binding = bv,
-            .sym_idx = d.name.index(),
-        });
+        // Collect binding info for pattern analysis. A parse-recovered var can
+        // be nameless, and pattern analysis is about symbols, so it sits out.
+        if (d.name.isValid()) {
+            try v.scratch.binding_infos.append(v.arena, .{
+                .name = name,
+                .loc = r.start,
+                .group = gv,
+                .binding = bv,
+                .sym_idx = d.name.index(),
+            });
+        }
     }
 }
 
@@ -1732,15 +1739,32 @@ pub fn validateInterpolation(v: *Validator, attrs: std.ArrayList(Ast.Attribute),
 }
 
 /// Check if a type contains an atomic anywhere (including inside structs/arrays).
+///
+/// The struct arm carries the path of structs already entered: a recursive
+/// struct — diagnosed as E0104 in phase 2.5, but left in the type graph — would
+/// otherwise recurse this walk off the stack. A struct already on the path
+/// cannot add an atomic its first visit did not, so it answers false, and a
+/// path deeper than the buffer (far past WGSL's composite nesting limit) gives
+/// up the same way the array bound below does.
 pub fn typeContainsAtomic(typ: Types.Type) bool {
+    var path: [64]*const Types.Struct = undefined;
+    return typeContainsAtomicOnPath(typ, &path, 0);
+}
+
+fn typeContainsAtomicOnPath(typ: Types.Type, path: *[64]*const Types.Struct, depth: usize) bool {
     var current = typ;
     for (0..32) |_| {
         switch (current) {
             .atomic => return true,
             .array => |a| current = a.element,
             .@"struct" => |s| {
+                if (depth == path.len) return false;
+                for (path[0..depth]) |seen| {
+                    if (seen == s) return false;
+                }
+                path[depth] = s;
                 for (s.fields) |f| {
-                    if (typeContainsAtomic(f.typ)) return true;
+                    if (typeContainsAtomicOnPath(f.typ, path, depth + 1)) return true;
                 }
                 return false;
             },

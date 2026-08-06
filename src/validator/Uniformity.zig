@@ -403,6 +403,9 @@ const UniformityAnalyzer = struct {
                 switch (attr.args.items[0]) {
                     .ident => |ident| {
                         if (!isNonUniformBuiltin(ident.name)) continue;
+                        // A parse-recovered param can be nameless; a value
+                        // nothing can read cannot make anything non-uniform.
+                        if (!param.name.isValid()) continue;
                         const desc = try std.fmt.allocPrint(ua.arena, "non-uniform builtin input '{s}'", .{ident.name});
                         try ua.values.put(ua.arena, param.name.index(), .{
                             .non_uniform = .{ .loc = ua.symbolLoc(param.name), .desc = desc },
