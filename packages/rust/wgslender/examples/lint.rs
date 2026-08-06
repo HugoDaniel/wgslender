@@ -253,5 +253,5 @@ fn grade(severity: Severity) -> &'static str {
 /// A section rule, so four sections of output read as four sections.
 fn heading(title: &str) {
     println!("\n{title}");
-    println!("{}", "-".repeat(title.len()));
+    println!("{}", "-".repeat(title.chars().count()));
 }
