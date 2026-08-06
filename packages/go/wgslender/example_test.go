@@ -16,6 +16,7 @@ import (
 	"log"
 	"maps"
 	"slices"
+	"strings"
 
 	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
 )
@@ -158,6 +159,93 @@ func ExampleCompile() {
 	// Output:
 	// input: 497 bytes; module: 546 bytes
 	// 1:12 expected ')'
+}
+
+// ExampleFindReferences lists every mention of a symbol, given any byte
+// offset inside one of them. Offsets are plain string indexes, so
+// strings.Index is all it takes to point at a name.
+func ExampleFindReferences() {
+	off := strings.Index(exampleShader, "luminance")
+	refs, err := wgslender.FindReferences(context.Background(), exampleShader, off, wgslender.WithDeclaration)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, r := range refs {
+		kind := "read"
+		if r.IsWrite {
+			kind = "write"
+		}
+		fmt.Printf("%s at %d..%d (%s)\n", exampleShader[r.Start:r.End], r.Start, r.End, kind)
+	}
+	// The declaration comes first and is the write; the call site is the read.
+	//
+	// Output:
+	// luminance at 179..188 (write)
+	// luminance at 416..425 (read)
+}
+
+// ExampleRenameApply renames a symbol and hands back the rewritten shader.
+// The edits alongside it are at offsets into the *original* source — they are
+// for showing a diff, not for splicing, because the splicing already happened.
+func ExampleRenameApply() {
+	const shader = `fn scale(v: f32) -> f32 { return v * 2.0; }
+
+@fragment
+fn main() -> @location(0) vec4f {
+    let s = scale(0.5);
+    return vec4f(s);
+}
+`
+	applied, err := wgslender.RenameApply(context.Background(),
+		shader, strings.Index(shader, "scale"), "double")
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("%d edits\n", len(applied.Edits))
+	fmt.Print(applied.Source)
+	// Output:
+	// 2 edits
+	// fn double(v: f32) -> f32 { return v * 2.0; }
+	//
+	// @fragment
+	// fn main() -> @location(0) vec4f {
+	//     let s = double(0.5);
+	//     return vec4f(s);
+	// }
+}
+
+// ExampleStableIDAtOffset shows what a StableID is for. A byte offset names a
+// symbol only until the next edit moves it; the ID keeps naming it across any
+// edit that leaves the declaration in place.
+func ExampleStableIDAtOffset() {
+	ctx := context.Background()
+
+	id, ok, err := wgslender.StableIDAtOffset(ctx, exampleShader, strings.Index(exampleShader, "luminance"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if !ok {
+		log.Fatal("no symbol at that offset")
+	}
+	fmt.Println(id)
+
+	// A leading comment moves every byte in the file. The offset the ID was
+	// taken at now points into the comment; the ID still finds the symbol.
+	edited := "// tone mapping helpers\n" + exampleShader
+	span, ok, err := wgslender.LocateStableID(ctx, edited, id)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if !ok {
+		log.Fatal("the symbol is gone")
+	}
+	fmt.Printf("%s at %d..%d\n", edited[span.Start:span.End], span.Start, span.End)
+	// The span is the FindReferences declaration span from the example above,
+	// moved by exactly the length of the comment.
+	//
+	// Output:
+	// v1:fn:luminance
+	// luminance at 203..212
 }
 
 // ExampleBindGroups arranges the bindings the way a WebGPU host consumes
