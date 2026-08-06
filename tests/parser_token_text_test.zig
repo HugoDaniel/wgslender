@@ -13,6 +13,7 @@ const wgslender = @import("wgslender");
 const Ast = wgslender.Ast;
 const Lexer = wgslender.Lexer;
 const Parser = wgslender.Parser;
+const expectNoParseErrors = @import("parse_ok.zig").expectNoParseErrors;
 
 /// Source slice of the first int/float literal token, per the lexer's stored
 /// `Token.end` — the authoritative boundary this block defers to.
@@ -67,6 +68,10 @@ test "parser: literal value is the lexer's byte-exact number slice" {
         var tokens = try Lexer.tokenize(a, source);
         var parser = try Parser.init(a, source, tokens);
         const module = try parser.parse();
+        // Every case below is a well-formed `const X = <literal>;`. A parse
+        // error would leave no literal to compare against, and the case would
+        // bail on `NoLiteral` — a failure that names the wrong cause.
+        try expectNoParseErrors(&parser, source);
 
         // Authoritative slice from the lexer's stored end.
         const lexer_slice = firstNumberSlice(source, &tokens);

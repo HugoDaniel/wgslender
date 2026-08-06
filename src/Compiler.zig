@@ -1683,8 +1683,11 @@ fn compileAndVerifyRoundTrip(source: [:0]const u8) !void {
     var tokens = try Lexer.tokenize(alloc, source);
     defer tokens.deinit(alloc);
     var parser = try Parser.init(alloc, source, tokens);
-    const module = parser.parse() catch return error.OutOfMemory;
-    if (parser.errors.items.len > 0) return error.OutOfMemory;
+    const module = try parser.parse();
+    // Reported as OutOfMemory until now, which named the wrong cause: these
+    // fixtures are valid WGSL, so a populated error list means the fixture is
+    // broken, not that the allocator gave out.
+    try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
 
     // Prepare renamer (same as compile path)
     const prep = try prepareRenamer(alloc, source, module, .{});

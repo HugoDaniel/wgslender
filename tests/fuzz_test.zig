@@ -45,6 +45,10 @@ fn testParserNoCrash(_: void, smith: *std.testing.Smith) !void {
     var tokens = wgslender.Lexer.tokenize(alloc, source) catch return;
     defer tokens.deinit(alloc);
     var parser = wgslender.Parser.init(alloc, source, tokens) catch return;
+    // `parser.errors` is deliberately ignored, and this is the one place that
+    // is right: the input is random bytes, so a populated error list is the
+    // expected outcome. The property under test is "does not crash", not
+    // "parses". Everywhere else, use `tests/parse_ok.zig`.
     _ = parser.parse() catch return;
 }
 

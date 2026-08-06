@@ -41,11 +41,10 @@ const ExprList = struct {
     }
 };
 
-fn parseForTest(alloc: Allocator, source: [:0]const u8) !*Ast.Module {
-    const tokens = try wgslender.Lexer.tokenize(alloc, source);
-    var parser = try wgslender.Parser.init(alloc, source, tokens);
-    return try parser.parse();
-}
+/// Every fixture here is valid WGSL. A parse error would silently shrink the
+/// AST the walker traverses, and these tests assert on *counts* of visited
+/// nodes — the one shape that reads a truncated parse as a real answer.
+const parseForTest = @import("parse_ok.zig").parseOk;
 
 // =========================================================================
 // Tests

@@ -14,10 +14,9 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Ast = wgslender.Ast;
-const Parser = wgslender.Parser;
-const Lexer = wgslender.Lexer;
 const Dce = wgslender.Dce;
 const Liveness = wgslender.Liveness;
+const parseOk = @import("parse_ok.zig").parseOk;
 
 // =========================================================================
 // Liveness sanity: no-entry-points fallback marks every symbol live.
@@ -30,9 +29,7 @@ test "liveness: Dce.mark no-entry-points fallback marks every symbol live" {
 
     // Library mode: no entry points → DCE keeps everything.
     const src: [:0]const u8 = "fn a() -> i32 { return 1; } fn b() -> i32 { return 2; }";
-    const tokens = try Lexer.tokenize(arena, src);
-    var parser = try Parser.init(arena, src, tokens);
-    const module = parser.parse() catch return;
+    const module = try parseOk(arena, src);
 
     var liveness = try Liveness.init(arena, module.symbols.items.len);
     _ = try Dce.mark(arena, module, &liveness);
@@ -49,18 +46,23 @@ test "liveness: Dce.mark no-entry-points fallback marks every symbol live" {
 // =========================================================================
 
 fn checkMinifyDceDecls(gpa: std.mem.Allocator, src: [:0]const u8) anyerror!void {
-    var result = wgslender.minifyWithOptions(gpa, src, .{}) catch return;
+    var result = try wgslender.minifyWithOptions(gpa, src, .{});
     defer result.deinit(gpa);
 
-    if (result.errors.len > 0) return;
+    // The caller's fixture is hand-written and expected to minify cleanly.
+    // This used to `return` here, which made the whole check vacuous whenever
+    // the fixture failed to parse — and it did: `_ = 1;` was a parse error
+    // until phony assignment landed, so this test asserted nothing at all.
+    if (result.errors.len > 0) {
+        for (result.errors) |e| std.debug.print("minify error at byte {d}: {s}\n", .{ e.pos, e.message });
+        return error.FixtureDidNotMinifyCleanly;
+    }
 
     var arena_inst = std.heap.ArenaAllocator.init(gpa);
     defer arena_inst.deinit();
     const arena = arena_inst.allocator();
 
-    const tokens = try Lexer.tokenize(arena, src);
-    var parser = try Parser.init(arena, src, tokens);
-    const module = parser.parse() catch return;
+    const module = try parseOk(arena, src);
 
     var fresh = try Liveness.init(arena, module.symbols.items.len);
     _ = try Dce.mark(arena, module, &fresh);

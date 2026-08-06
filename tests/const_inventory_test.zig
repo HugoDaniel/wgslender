@@ -15,12 +15,10 @@ const wgslender = @import("wgslender");
 const Reflect = wgslender.Reflect;
 
 /// Bind-parse a snippet to a module (pass-2 complete). Mirrors the parse
-/// path in `root.zig`'s `reflect`.
-fn parse(arena: std.mem.Allocator, source: [:0]const u8) !*wgslender.Ast.Module {
-    const tokens = try wgslender.Lexer.tokenize(arena, source);
-    var parser = try wgslender.Parser.init(arena, source, tokens);
-    return parser.parse();
-}
+/// path in `root.zig`'s `reflect`. Every fixture below is valid WGSL, so a
+/// parse error means the fixture is wrong, not that the inventory is empty —
+/// `parseOk` says so instead of handing back a partial AST.
+const parse = @import("parse_ok.zig").parseOk;
 
 fn findConst(inv: []const Reflect.ConstInfo, name: []const u8) ?Reflect.ConstInfo {
     for (inv) |c| {

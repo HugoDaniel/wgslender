@@ -26,6 +26,7 @@ const Diagnostic = wgslender.Diagnostic;
 const Compiler = wgslender.Compiler;
 const Minifier = wgslender.Minifier;
 const Printer = wgslender.Printer;
+const expectNoParseErrors = @import("parse_ok.zig").expectNoParseErrors;
 
 // =========================================================================
 // Test inputs
@@ -65,11 +66,15 @@ const multi_line: [:0]const u8 =
 // =========================================================================
 
 /// Parse a module from source using the given allocator (setup for module-level tests).
+/// This is *setup*, not the thing under test — an OOM sweep over a partial AST
+/// would sweep the wrong code — so the fixture has to have parsed cleanly.
 fn parseTestModule(arena: std.mem.Allocator, source: [:0]const u8) !*Ast.Module {
     var tokens = try Lexer.tokenize(arena, source);
     defer tokens.deinit(arena);
     var parser = try Parser.init(arena, source, tokens);
-    return try parser.parse();
+    const module = try parser.parse();
+    try expectNoParseErrors(&parser, source);
+    return module;
 }
 
 // =========================================================================
@@ -235,7 +240,11 @@ fn testParserParseArena(allocator: std.mem.Allocator, source: [:0]const u8) !voi
     };
     _ = parser.parse() catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return, // parse errors are fine
+        // Not "parse errors are fine" — `parse()` recovers from those into
+        // `parser.errors`. The only thing that reaches here is `ParseFailed`
+        // (a depth limit), which these fixed, valid fixtures cannot hit.
+        // Swallowing it would silently abandon the allocation sweep.
+        else => return e,
     };
 }
 
@@ -299,7 +308,7 @@ fn testValidatorValidate(allocator: std.mem.Allocator, source: [:0]const u8) !vo
     };
     const module = parser.parse() catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return,
+        else => return e,
     };
     _ = Validator.validate(alloc, module, .{}) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -324,7 +333,7 @@ fn testReflectModule(allocator: std.mem.Allocator, source: [:0]const u8) !void {
     };
     const module = parser.parse() catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return,
+        else => return e,
     };
     _ = Reflect.reflect(alloc, module) catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
@@ -349,7 +358,7 @@ fn testPrinterPrint(allocator: std.mem.Allocator, source: [:0]const u8) !void {
     };
     const module = parser.parse() catch |e| switch (e) {
         error.OutOfMemory => return error.OutOfMemory,
-        else => return,
+        else => return e,
     };
     var printer = Printer.init(alloc, .{}, module.symbols.items);
     _ = printer.print(module) catch |e| switch (e) {

@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const wgslender = @import("wgslender");
+const parseOk = @import("parse_ok.zig").parseOk;
 
 // =========================================================================
 // Test data — imported from project-root bridge module (testdata_semantic.zig)
@@ -112,10 +113,7 @@ fn testRoundtripStability(allocator: std.mem.Allocator, source_bytes: []const u8
     const source = try makeSentinel(allocator, source_bytes);
 
     // First pass: parse + print (whitespace only, no renaming)
-    var tokens1 = try wgslender.Lexer.tokenize(allocator, source);
-    _ = &tokens1;
-    var parser1 = try wgslender.Parser.init(allocator, source, tokens1);
-    const module1 = try parser1.parse();
+    const module1 = try parseOk(allocator, source);
 
     const RenamerMod = wgslender.Renamer;
     const noop1 = try allocator.create(RenamerMod.NoOpRenamer);
@@ -131,12 +129,13 @@ fn testRoundtripStability(allocator: std.mem.Allocator, source_bytes: []const u8
     }, module1.symbols.items);
     const output1 = try printer1.print(module1);
 
-    // Second pass: parse output1 + print again
+    // Second pass: parse output1 + print again. `parseOk`, not a bare
+    // `parse()`: output1 is *our own* printed text, so a parse error here is
+    // the printer emitting invalid WGSL — the exact bug this test exists to
+    // catch. A recovering parse would quietly hand back a smaller module and
+    // let the mismatch surface as an unexplained string diff.
     const output1_z = try makeSentinel(allocator, output1);
-    var tokens2 = try wgslender.Lexer.tokenize(allocator, output1_z);
-    _ = &tokens2;
-    var parser2 = try wgslender.Parser.init(allocator, output1_z, tokens2);
-    const module2 = try parser2.parse();
+    const module2 = try parseOk(allocator, output1_z);
 
     const noop2 = try allocator.create(RenamerMod.NoOpRenamer);
     noop2.* = RenamerMod.NoOpRenamer.init(module2.symbols.items);
@@ -186,12 +185,12 @@ fn testComputeToysShader(allocator: std.mem.Allocator, source_bytes: []const u8)
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
     try std.testing.expect(result.minified_size < result.original_size);
 
-    // Verify re-parse succeeds
+    // Verify re-parse succeeds. This said "verify" while calling a
+    // *recovering* parser and discarding its error list, so it could not have
+    // failed on anything but OOM — the minified output could have been
+    // outright invalid WGSL and this line would still have passed.
     const min_source = try makeSentinel(allocator, result.code);
-    var tokens = try wgslender.Lexer.tokenize(allocator, min_source);
-    _ = &tokens;
-    var parser = try wgslender.Parser.init(allocator, min_source, tokens);
-    _ = try parser.parse();
+    _ = try parseOk(allocator, min_source);
 
     // Check required names are preserved
     if (std.mem.indexOf(u8, source_bytes, "main_image") != null) {

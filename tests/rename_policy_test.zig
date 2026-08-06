@@ -11,9 +11,8 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Ast = wgslender.Ast;
-const Parser = wgslender.Parser;
-const Lexer = wgslender.Lexer;
 const RenamePolicy = wgslender.RenamePolicy;
+const parseOk = @import("parse_ok.zig").parseOk;
 
 // =========================================================================
 // Helper: iterate the compute.toys directory, calling `check` per shader.
@@ -60,9 +59,10 @@ fn checkBuilderPinsEntryPointsAndBindings(gpa: std.mem.Allocator, src: [:0]const
     defer arena_inst.deinit();
     const arena = arena_inst.allocator();
 
-    const tokens = try Lexer.tokenize(arena, src);
-    var parser = try Parser.init(arena, src, tokens);
-    const module = parser.parse() catch return;
+    // `parse() catch return` here used to skip a shader silently while
+    // `forEachComputeToysShader` still counted it, so the corpus loop could
+    // report N shaders checked having checked none of them.
+    const module = try parseOk(arena, src);
 
     var builder = try RenamePolicy.Builder.init(arena, module.symbols.items.len);
     builder.markEntryPoints(module);
