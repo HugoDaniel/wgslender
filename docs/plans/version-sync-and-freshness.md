@@ -13,9 +13,35 @@ graph ever writes to that directory. Both failures are silent: a drifted version
 misleads consumers, and a drifted WASM does not crash — it answers questions using
 the old wire format.
 
-**Status:** ready to execute. That is an intention, not evidence — check
-`git log --oneline -- docs/plans/version-sync-and-freshness.md scripts/release.sh tools/gen_version.zig`
-before assuming any block has landed.
+**Status:** 🏁 executed 2026-08-07, all six blocks.
+
+| Block | Commit | What landed |
+|---|---|---|
+| 1 | `0e73444` | Both LSP transports derive `serverInfo.version`; `wasm_lifecycle` registered as a native module |
+| 2 | `0bcecb7` | `zig build gen-version` + `tests/version_sync_test.zig`; Rust and VS Code moved to 1.1.0 |
+| 3 | `71dd37b` | `release-assets` feeds all five WASM destinations; the stale LSP copy refreshed |
+| 4 | `c638b81` | `tests/wasm_freshness_test.zig` + `TestWasmMatchesSiblings` |
+| 5 | `2a7bfcd` | `scripts/release.sh` |
+| 6 | `2957da0`, `33b0234`, `bbfbef6`, `2c42bae` | Docs, tag scheme, three dependency bumps |
+
+Verified: two consecutive green `./scripts/release.sh` runs leaving the tree
+untouched, and a throwaway commit carrying a stale WASM made step 9 exit 1
+naming the file.
+
+Deviations from the plan as written, all deliberate:
+
+- **Block 2 imports the canonical version rather than scraping `src/root.zig`.**
+  The plan said parse it. Importing the module is strictly stronger: no regex to
+  get wrong, and the build graph rebuilds the tool when the constant changes.
+- **Block 4's LSP version pin is tighter than planned.** Instead of a bare
+  version search it looks for `"version":"<v>"` — the exact fragment of
+  `initialize_result_json`, which exists only because Block 1 made both
+  transports derive it. Block 1 paid for Block 4's gate.
+- **Block 6's dependency bumps stop short of the full `npm outdated` list.**
+  esbuild and `@vscode/vsce` moved. TypeScript 5→7, `vscode-languageclient`
+  9→10, the test-runner majors, and `@types/vscode` (which must track
+  `engines.vscode`, not the latest baseline) were each left as their own
+  decision rather than swept into release hygiene.
 
 **Constraint:** no CI. Every gate here is a local command or a test inside
 `zig build test`. Nothing in this plan produces a workflow file.
