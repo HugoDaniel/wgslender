@@ -342,7 +342,20 @@ Create `wgslender.json` in your project:
 }
 ```
 
-Config files are auto-discovered by walking parent directories. Supported names: `wgslender.json`, `.wgslenderrc`, `.wgslenderrc.json`.
+Config files are auto-discovered by walking parent directories. Supported names: `wgslender.json`, `.wgslenderrc`, `.wgslenderrc.json`. Pass `--no-config` to skip discovery entirely.
+
+**Precedence.** Settings layer lowest-first: built-in defaults, then the
+config file, then command-line flags. A flag wins over the config file on the
+field it names and leaves every other config value in place — so
+`wgslender --config c.json --sort-declarations` keeps everything in `c.json`
+*and* sorts declarations. Two exceptions:
+
+- `--keep-names` **replaces** the config's `keepNames` rather than appending
+  to it (per-field last-layer-wins, like every other flag). The lint
+  accumulators `extends` and `rules` are the opposite — they concatenate, so
+  config packs compose with CLI ones and CLI entries win on conflict.
+- The `--minify` / `--minify-*` / `--no-mangle` / `--no-whitespace` /
+  `--no-syntax` cluster is resolved last and outranks both layers.
 
 All four surfaces (CLI `lint`, LSP, JS `lint()`, C `wgslender_lint_c`) read
 the `extends`, `rules`, and `reportUnusedDisableDirectives` keys from the

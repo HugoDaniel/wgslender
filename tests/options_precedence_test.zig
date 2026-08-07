@@ -117,6 +117,114 @@ test "applySourceMapFlags: inline alone still generates; sources sets include_so
     try testing.expect(opts.source_map_options.include_source);
 }
 
+// --- Config.mergeMinifierOptions ---------------------------------------------
+//
+// Layering, lowest first: `Minifier.defaultOptions()` < wgslender.json <
+// CLI flags. The CLI layer arrives as a `Config`-shaped overlay carrying
+// only the fields the user actually spelled, so "unset" (null / empty
+// list) is distinguishable from "explicitly false".
+
+const MergeCase = struct {
+    name: []const u8,
+    file: ?Config = null,
+    cli: Config = .{},
+    want_sort: bool = false,
+    want_scope: bool = false,
+    want_tree_shaking: bool = true,
+    want_mangle_external: bool = false,
+    want_keep_names: []const []const u8 = &.{},
+};
+
+const merge_cases = [_]MergeCase{
+    .{
+        .name = "no config, no CLI → untouched defaults",
+    },
+    .{
+        .name = "config alone supplies its values",
+        .file = .{ .sort_declarations = true, .keep_names = &.{"screen"} },
+        .want_sort = true,
+        .want_keep_names = &.{"screen"},
+    },
+    .{
+        .name = "CLI alone supplies its values",
+        .cli = .{ .scope_local_rename = true },
+        .want_scope = true,
+    },
+    .{
+        // The regression: a config file must not erase flags the user
+        // typed. `wgslender --config c.json --sort-declarations` used to
+        // drop --sort-declarations on the floor.
+        .name = "CLI flag survives a config that does not mention it",
+        .file = .{ .minify_syntax = true, .keep_names = &.{"screen"} },
+        .cli = .{ .sort_declarations = true, .scope_local_rename = true },
+        .want_sort = true,
+        .want_scope = true,
+        .want_keep_names = &.{"screen"},
+    },
+    .{
+        .name = "CLI true overrides config false on the same field",
+        .file = .{ .sort_declarations = false },
+        .cli = .{ .sort_declarations = true },
+        .want_sort = true,
+    },
+    .{
+        // `--no-tree-shaking` writes an explicit false, which must beat a
+        // config `true` — the reason the overlay is optional-shaped rather
+        // than a plain Options struct.
+        .name = "CLI explicit false overrides config true",
+        .file = .{ .tree_shaking = true },
+        .cli = .{ .tree_shaking = false },
+        .want_tree_shaking = false,
+    },
+    .{
+        .name = "config value survives when the CLI leaves the field unset",
+        .file = .{ .mangle_external_bindings = true },
+        .cli = .{ .sort_declarations = true },
+        .want_sort = true,
+        .want_mangle_external = true,
+    },
+    .{
+        // Per-field last-layer-wins: a CLI --keep-names replaces the
+        // config list outright rather than concatenating.
+        .name = "CLI keep-names replaces the config list",
+        .file = .{ .keep_names = &.{ "screen", "time" } },
+        .cli = .{ .keep_names = &.{"custom"} },
+        .want_keep_names = &.{"custom"},
+    },
+};
+
+test "mergeMinifierOptions layers CLI over config over defaults" {
+    for (merge_cases) |case| {
+        const got = Config.mergeMinifierOptions(case.file, case.cli);
+        testing.expectEqual(case.want_sort, got.sort_declarations) catch |e| {
+            std.debug.print("case '{s}': sort_declarations\n", .{case.name});
+            return e;
+        };
+        testing.expectEqual(case.want_scope, got.scope_local_rename) catch |e| {
+            std.debug.print("case '{s}': scope_local_rename\n", .{case.name});
+            return e;
+        };
+        testing.expectEqual(case.want_tree_shaking, got.tree_shaking) catch |e| {
+            std.debug.print("case '{s}': tree_shaking\n", .{case.name});
+            return e;
+        };
+        testing.expectEqual(case.want_mangle_external, got.mangle_external_bindings) catch |e| {
+            std.debug.print("case '{s}': mangle_external_bindings\n", .{case.name});
+            return e;
+        };
+        testing.expectEqual(case.want_keep_names.len, got.keep_names.len) catch |e| {
+            std.debug.print("case '{s}': keep_names length\n", .{case.name});
+            return e;
+        };
+        for (case.want_keep_names, got.keep_names) |want, got_name| {
+            testing.expectEqualStrings(want, got_name) catch |e| {
+                std.debug.print("case '{s}': keep_names entry\n", .{case.name});
+                return e;
+            };
+        }
+    }
+}
+
 // --- Config.mergeLintOptions -------------------------------------------------
 
 fn ov(id: []const u8, sev: wgslender.Diagnostic.Severity) Linter.Options.RuleOverride {

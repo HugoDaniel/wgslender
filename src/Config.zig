@@ -203,6 +203,34 @@ pub fn toOptions(self: Config) Minifier.Options {
     return opts;
 }
 
+/// Compose minifier options from the layers the CLI sees, lowest first:
+///
+///   `Minifier.defaultOptions()`  <  `file` (wgslender.json)  <  `cli`
+///
+/// Precedence is per field and last-layer-wins: a CLI flag beats the
+/// config file on that one field and leaves every other config value
+/// standing. `--keep-names` therefore *replaces* the config's list rather
+/// than concatenating (unlike the lint `extends` / `rules` accumulators in
+/// `mergeLintOptions`, which stack by design because packs compose).
+///
+/// `cli` is a `Config`-shaped overlay rather than a `Minifier.Options`
+/// because the layering needs to tell "the user didn't say" (null / empty
+/// list) apart from "the user said false" — the inverse spellings
+/// (`--no-tree-shaking`) write an explicit `false` that must beat a config
+/// `true`. Reusing `Config` keeps the overlay in lockstep with the spec
+/// table for free: `assertSpecFieldsExist` above already proves every
+/// `minifier_options_specs` field exists here with an optional-shaped type.
+///
+/// The hand-rolled minify cluster (`--minify`, `--minify-*`, `--no-mangle`,
+/// …) is *not* part of this merge — `cli/main.zig` folds it in afterwards
+/// via `OptionsSpec.applyMinifyPrecedence`, so it outranks all three layers.
+pub fn mergeMinifierOptions(file: ?Config, cli: Config) Minifier.Options {
+    var opts = Minifier.defaultOptions();
+    if (file) |cfg| options.applyDefaults(&options.minifier_options_specs, cfg, &opts);
+    options.applyDefaults(&options.minifier_options_specs, cli, &opts);
+    return opts;
+}
+
 /// Result of merging config-file lint settings with CLI lint overrides.
 /// Slices are owned by the arena passed to `mergeLintOptions`.
 pub const MergedLint = struct {

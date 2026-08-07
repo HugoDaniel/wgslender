@@ -9,6 +9,11 @@ const wgslender = @import("wgslender");
 const CliArgs = struct {
     input_path: ?[]const u8 = null,
     output_path: ?[]const u8 = null,
+    /// Resolved minifier options. Written once in `parseArgs`, after the
+    /// argv loop, by layering defaults < config file < CLI flags
+    /// (`Config.mergeMinifierOptions`) — the flags themselves accumulate
+    /// in a separate `Config`-shaped overlay while parsing, because a
+    /// non-optional `bool` here can't say "the user never mentioned this".
     options: wgslender.Minifier.Options = wgslender.Minifier.defaultOptions(),
     source_map_flags: SourceMapFlags = .{},
     subcommand: wgslender.OptionsSpec.Subcommand = .minify,
@@ -180,6 +185,12 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
     var cli_minify_syntax: ?bool = null;
     var passed: Passed = .{};
 
+    // Spec-driven minifier flags land in a `Config`-shaped overlay, not
+    // straight into `args.options`. Only fields the user actually spelled
+    // are non-null, so `Config.mergeMinifierOptions` below can layer the
+    // config file *underneath* them instead of overwriting them wholesale.
+    var cli_overlay: wgslender.Config = .{};
+
     // CLI-side accumulators for `--extends` / `--rule` live on
     // `args.lint_options` directly — the spec dispatcher writes there via
     // `OptionsSpec.matchFlag`. `lint_use_recommended` stays a local: it
@@ -245,7 +256,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             &args_iter,
             arena,
             args.subcommand,
-            &args.options,
+            &cli_overlay,
             &args.lint_options,
             &args.source_map_flags,
             &args.validate_options,
@@ -274,7 +285,10 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
         }
     }
 
-    const loaded_config: ?wgslender.Config = loadConfig(&args, arena, io, config_path, no_config) catch return null;
+    const loaded_config: ?wgslender.Config = loadConfig(args.input_path, arena, io, config_path, no_config) catch return null;
+    // Layer the config file under the CLI flags, then let the hand-rolled
+    // minify cluster have the final word over both.
+    args.options = wgslender.Config.mergeMinifierOptions(loaded_config, cli_overlay);
     wgslender.OptionsSpec.applyMinifyPrecedence(&args.options, .{
         .all = cli_minify_all,
         .whitespace = cli_minify_whitespace,
@@ -318,7 +332,8 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
 }
 
 /// Try to match `arg` against the spec tables, in order:
-///   1. `minifier_options_specs` → writes to `Minifier.Options`
+///   1. `minifier_options_specs` → writes to the CLI's `Config`-shaped
+///      overlay (merged over the config file by `mergeMinifierOptions`)
 ///   2. `source_map_specs` → writes to `CliArgs.SourceMapFlags`
 ///   3. `lint_specs` → writes to `CliArgs.LintOptions` (lint_extends /
 ///      lint_rules accumulators)
@@ -346,7 +361,7 @@ fn dispatchSpecFlag(
     args_iter: anytype,
     arena: std.mem.Allocator,
     subcommand: wgslender.OptionsSpec.Subcommand,
-    minify_target: *wgslender.Minifier.Options,
+    minify_target: *wgslender.Config,
     lint_target: *CliArgs.LintOptions,
     source_map_target: *CliArgs.SourceMapFlags,
     validate_target: *CliArgs.ValidateOptions,
@@ -593,8 +608,14 @@ fn warnIgnoredFlags(
 /// Load config from explicit path or auto-discover from parent directories.
 /// On hard error (bad path / invalid JSON), prints to stderr and returns
 /// `error.ConfigError`. On no config / `--no-config`, returns `null`.
+///
+/// Pure loader: the caller decides how the loaded values compose with the
+/// CLI layer (`Config.mergeMinifierOptions`). It used to write
+/// `config.toOptions()` straight onto `CliArgs.options`, which silently
+/// discarded every minifier flag already parsed off the command line.
+/// `input_path` supplies the auto-discovery start directory.
 fn loadConfig(
-    args: *CliArgs,
+    input_path: ?[]const u8,
     arena: std.mem.Allocator,
     io: std.Io,
     config_path: ?[]const u8,
@@ -608,18 +629,13 @@ fn loadConfig(
             File.stderr().writeStreamingAll(io, "error: could not read config file\n") catch {};
             return error.ConfigError;
         };
-        const config = wgslender.Config.parseJson(arena, content) catch {
+        return wgslender.Config.parseJson(arena, content) catch {
             File.stderr().writeStreamingAll(io, "error: invalid config JSON\n") catch {};
             return error.ConfigError;
         };
-        args.options = config.toOptions();
-        return config;
     } else if (!no_config) {
-        const start = if (args.input_path) |p| std.fs.path.dirname(p) else null;
-        if (wgslender.Config.discover(arena, io, start)) |config| {
-            args.options = config.toOptions();
-            return config;
-        }
+        const start = if (input_path) |p| std.fs.path.dirname(p) else null;
+        if (wgslender.Config.discover(arena, io, start)) |config| return config;
     }
     return null;
 }
