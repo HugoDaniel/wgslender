@@ -1,49 +1,72 @@
-# Starlight Starter Kit: Basics
+# `web/` — the wgslender site
 
-[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
+An [Astro](https://astro.build) + [Starlight](https://starlight.astro.build) site
+whose reason to exist is `/playground/`: a CodeMirror 6 editor wired to
+`wgslender-lsp.wasm`, with three output panels driven by `wgslender.wasm`.
+Diagnostics, hover, completion, go-to-definition, rename, formatting,
+minify-insight inlay hints, option-driven minification with byte and gzip
+counts, and reflection JSON — all of it in the visitor's tab, with no server
+and no WebGPU context.
 
-```
-pnpm create astro@latest -- --template starlight
-```
-
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro + Starlight project, you'll see the following folders and files:
+## Structure
 
 ```
-.
-├── public/
-├── src/
-│   ├── assets/
-│   ├── content/
-│   │   └── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+src/content/docs/
+  index.mdx                    landing page
+  playground.mdx               the page; hosts the island and the "things to try" list
+src/components/
+  PlaygroundEditor.astro       the island: markup, Starlight <Tabs>, scoped styles
+src/scripts/playground/
+  wasm.ts                      boots both wasm modules (one promise each, so the
+                               editor comes up without waiting on the minifier)
+  lsp-session.ts               CodeMirror ↔ wgslender-lsp; owns the debounce timer
+  insights.ts                  minify-size inlay hints (lsp-client has none)
+  wgsl-language.ts             StreamLanguage highlighting, word lists lifted from src/
+  editor-theme.ts              CodeMirror theme in --sl-* tokens, so it follows the
+                               site's light/dark toggle with no JS
+  panels.ts                    the three panels as pure data — no DOM, no CodeMirror
+  render.ts                    those models → DOM, via textContent only
+  sample-shader.ts             the opening document, and every test's fixture
+scripts/
+  sync-wasm.mjs                copies both .wasm files into public/
+  smoke.mjs                    headless-Chrome check of the built page
+tests/                         node --test, against the real wasm
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+## Commands
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+| Command | Action |
+| :------ | :----- |
+| `pnpm install` | Install dependencies |
+| `pnpm dev` | Dev server on `localhost:4324` (runs `sync-wasm` first) |
+| `pnpm build` | Production build to `./dist/` (runs `sync-wasm` first) |
+| `pnpm test` | The playground's logic, against both wasm builds |
+| `pnpm smoke` | Drive the running dev server in headless Chrome |
+| `pnpm sync-wasm` | Copy both `.wasm` files into `public/` by hand |
 
-Static assets, like favicons, can be placed in the `public/` directory.
+`pnpm test` is `node --test 'tests/*.test.mjs'` — a glob, not a directory,
+because `node --test <dir>` is broken on node 26.
 
-## 🧞 Commands
+`pnpm smoke` needs a server already running and Google Chrome installed. It
+looks at port 4324, which is why `dev` pins that port rather than taking
+Astro's 4321 and drifting upward whenever something else holds it; point it
+elsewhere with `PLAYGROUND_URL`. It asserts what only a browser can show —
+that the island boots, that the editor replaces its fallback, that panels have
+non-zero height — and it caught two bugs whose DOM looked perfectly correct.
 
-All commands are run from the root of the project, from a terminal:
+## Two things that bite
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `pnpm install`             | Installs dependencies                            |
-| `pnpm dev`             | Starts local dev server at `localhost:4321`      |
-| `pnpm build`           | Build your production site to `./dist/`          |
-| `pnpm preview`         | Preview your build locally, before deploying     |
-| `pnpm astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `pnpm astro -- --help` | Get help using the Astro CLI                     |
+**The packages are `file:` dependencies.** `wgslender` and `wgslender-lsp` are
+unpublished, so `package.json` points at `../packages/js-npm` and
+`../npm/wgslender-lsp`. `pnpm install` here therefore needs those sibling
+directories to exist — true in a clone of this repo, false if `web/` is copied
+out on its own. pnpm *copies* `file:` deps into its virtual store rather than
+linking them, so editing `packages/js-npm` changes nothing here until
+`pnpm install` runs again.
 
-## 👀 Want to learn more?
-
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+**The `.wasm` files are build artifacts of the Zig tree.** `public/*.wasm` is
+gitignored and regenerated by `sync-wasm` from whatever the two npm packages
+currently ship. Those checked-in binaries are what the playground actually
+runs, so a Zig change that touches the LSP wire or the minifier only reaches
+this page after `zig build wasm && zig build lsp-wasm` and copying the results
+into the packages. Nothing detects a stale one for you.
