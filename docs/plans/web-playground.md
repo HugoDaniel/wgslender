@@ -702,15 +702,19 @@ different.
   `getBoundingClientRect()` centre is enough — `posAtCoords` reads
   coordinates, not `isTrusted`, so hover *is* reachable from a headless check
   now and could be pinned in `smoke.mjs`.
-- **That tooltip loses its type parameters, and the bug is server-side.**
-  `lsp/handler/hover.zig` builds a bare markdown string with no code fence, so
-  `vecN<f32>` arrives as raw markdown, the renderer passes it through, and the
-  browser parses `<f32>` as an unknown element: *"T is f32, f16, vecN<f32>, or
-  vecN<f16>"* renders as *"T is f32, f16, vecN, or vecN"*. The text is in the
-  DOM — as elements — and invisible on screen, which is Block 3's lesson a
-  third time. Every markdown-rendering client eats them, VS Code included.
-  Left unfixed here: fencing the signature changes LSP wire output for all
-  clients and needs both wasms rebuilt, which is not a truth pass.
+- **That tooltip lost its type parameters, and the bug was server-side**
+  (`e89528e`, `8013ccf`, after this block). `lsp/handler/hover.zig` built a
+  bare markdown string with no code fence, so `vecN<f32>` arrived as raw
+  markdown, the renderer passed it through, and the browser parsed `<f32>` as
+  an unknown element: *"T is f32, f16, vecN<f32>, or vecN<f16>"* rendered as
+  *"T is f32, f16, vecN, or vecN"*. The text was in the DOM — as elements —
+  and invisible on screen, which is Block 3's lesson a third time; every
+  markdown-rendering client ate them, VS Code included. Everything WGSL now
+  goes through one `fenced` helper, which also un-folded the struct-layout
+  table (markdown folds single newlines) and bought syntax highlighting in the
+  tooltip. Prose stays outside the fence and is escaped instead, because
+  `step`'s description reads "Returns 0.0 if x < edge, otherwise 1.0." and
+  survived only because that `<` is followed by a space.
 - **The two starter doc pages went with their links.** "Example Guide" and
   "Example Reference" said "a guide in my new Starlight docs site" and sat in
   the sidebar of every page; the definition of done's "no starter links
