@@ -1,5 +1,11 @@
 //! Hover: build the markdown content shown when the cursor lingers
 //! over a symbol, type, or expression.
+//!
+//! Both transports serve what `computeHover` returns as
+//! `MarkupContent{kind: "markdown"}` (`lsp/wire/navigation.zig`,
+//! `lsp/lspkit/navigation.zig`), so everything here goes through `fenced`.
+//! See its doc comment for why WGSL cannot be handed to a markdown renderer
+//! as prose.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
@@ -26,6 +32,39 @@ pub const HighlightKind = enum(u8) {
     read = 2,
     write = 3,
 };
+
+/// Render WGSL `code` as a fenced block, optionally followed by `prose`.
+///
+/// Hover is markdown, and WGSL is not. Two things break outside a fence:
+///
+///   - `vec4<f32>` is parsed as an HTML tag, so the type parameter reaches
+///     the client as an element and renders as nothing. `sin`'s constraint
+///     showed as "T is f32, f16, vecN, or vecN" — present in the DOM,
+///     invisible on screen.
+///   - single newlines fold into a paragraph, which flattened the
+///     struct-layout table into one line.
+///
+/// The `wgsl` info string also buys syntax highlighting from clients that do
+/// it. `prose` is rendered as markdown, so its `&` and `<` are escaped: the
+/// `step` builtin's description reads "Returns 0.0 if x < edge, otherwise
+/// 1.0." and survives today only because that `<` happens to be followed by a
+/// space. Escaping here means no future description has to be audited for it.
+fn fenced(gpa: std.mem.Allocator, code: []const u8, prose: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, "```wgsl\n");
+    try out.appendSlice(gpa, code);
+    try out.appendSlice(gpa, "\n```");
+    if (prose.len > 0) {
+        try out.appendSlice(gpa, "\n\n");
+        for (prose) |c| switch (c) {
+            '&' => try out.appendSlice(gpa, "&amp;"),
+            '<' => try out.appendSlice(gpa, "&lt;"),
+            else => try out.append(gpa, c),
+        };
+    }
+    return out.toOwnedSlice(gpa);
+}
 
 pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?HoverResult {
     const doc = handler.documents.getPtr(uri) orelse return null;
@@ -56,7 +95,7 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
                     // For functions, show full signature
                     if (t == .function) {
                         if (formatFunctionSignature(&buf, module, id.ref, t.function)) |sig| {
-                            break :blk try handler.gpa.dupe(u8, sig);
+                            break :blk try fenced(handler.gpa, sig, "");
                         }
                     }
                     const type_str = t.string();
@@ -64,14 +103,14 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
                     if (sym.kind == .@"const") {
                         if (analysis.const_values.get(id.ref.index())) |val| {
                             const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s} = {d}", .{ kind_str, id.name, type_str, val }) catch return null).len;
-                            break :blk try handler.gpa.dupe(u8, buf[0..len]);
+                            break :blk try fenced(handler.gpa, buf[0..len], "");
                         }
                     }
                     const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s}", .{ kind_str, id.name, type_str }) catch return null).len;
-                    break :blk try handler.gpa.dupe(u8, buf[0..len]);
+                    break :blk try fenced(handler.gpa, buf[0..len], "");
                 }
                 const len = (std.fmt.bufPrint(&buf, "({s}) {s}: unknown", .{ kind_str, id.name }) catch return null).len;
-                break :blk try handler.gpa.dupe(u8, buf[0..len]);
+                break :blk try fenced(handler.gpa, buf[0..len], "");
             };
             return .{
                 .contents = contents,
@@ -87,7 +126,7 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
                     // For functions, show full signature
                     if (t == .function) {
                         if (formatFunctionSignature(&buf, module, dn.sym_idx, t.function)) |sig| {
-                            break :blk try handler.gpa.dupe(u8, sig);
+                            break :blk try fenced(handler.gpa, sig, "");
                         }
                     }
                     const type_str = t.string();
@@ -95,14 +134,14 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
                     if (sym.kind == .@"const") {
                         if (analysis.const_values.get(dn.sym_idx.index())) |val| {
                             const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s} = {d}", .{ kind_str, sym.original_name, type_str, val }) catch return null).len;
-                            break :blk try handler.gpa.dupe(u8, buf[0..len]);
+                            break :blk try fenced(handler.gpa, buf[0..len], "");
                         }
                     }
                     const len = (std.fmt.bufPrint(&buf, "({s}) {s}: {s}", .{ kind_str, sym.original_name, type_str }) catch return null).len;
-                    break :blk try handler.gpa.dupe(u8, buf[0..len]);
+                    break :blk try fenced(handler.gpa, buf[0..len], "");
                 }
                 const len = (std.fmt.bufPrint(&buf, "({s}) {s}", .{ kind_str, sym.original_name }) catch return null).len;
-                break :blk try handler.gpa.dupe(u8, buf[0..len]);
+                break :blk try fenced(handler.gpa, buf[0..len], "");
             };
             return .{
                 .contents = contents,
@@ -111,7 +150,9 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
         },
         .type_ref => |tr| {
             if (analysis.struct_types.get(tr.name)) |st| {
-                const contents = try formatStructLayout(handler.gpa, tr.name, st);
+                const layout = try formatStructLayout(handler.gpa, tr.name, st);
+                defer handler.gpa.free(layout);
+                const contents = try fenced(handler.gpa, layout, "");
                 return .{
                     .contents = contents,
                     .range = Handler.offsetRangeToLspRange(source, tr.loc, tr.loc + @as(u32, @intCast(tr.name.len))) orelse return null,
@@ -122,9 +163,9 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
         .member_access => |ma| {
             // Try to resolve the base expression's type and show field type
             const contents: []const u8 = blk: {
-                const base_sym_idx = resolveExprSymbol(ma.base) orelse break :blk try handler.gpa.dupe(u8, ma.member);
-                if (!base_sym_idx.isValid()) break :blk try handler.gpa.dupe(u8, ma.member);
-                const base_type = analysis.symbol_types.get(base_sym_idx.index()) orelse break :blk try handler.gpa.dupe(u8, ma.member);
+                const base_sym_idx = resolveExprSymbol(ma.base) orelse break :blk try fenced(handler.gpa, ma.member, "");
+                if (!base_sym_idx.isValid()) break :blk try fenced(handler.gpa, ma.member, "");
+                const base_type = analysis.symbol_types.get(base_sym_idx.index()) orelse break :blk try fenced(handler.gpa, ma.member, "");
                 // Dereference pointers/references to get the underlying type
                 const resolved: wgslender.Types.Type = switch (base_type) {
                     .reference => |r| r.element,
@@ -134,19 +175,19 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
                 switch (resolved) {
                     .@"struct" => |st| {
                         if (st.getField(ma.member)) |field| {
-                            const len = (std.fmt.bufPrint(&buf, "(field) {s}: {s}", .{ ma.member, field.typ.string() }) catch break :blk try handler.gpa.dupe(u8, ma.member)).len;
-                            break :blk try handler.gpa.dupe(u8, buf[0..len]);
+                            const len = (std.fmt.bufPrint(&buf, "(field) {s}: {s}", .{ ma.member, field.typ.string() }) catch break :blk try fenced(handler.gpa, ma.member, "")).len;
+                            break :blk try fenced(handler.gpa, buf[0..len], "");
                         }
                     },
                     .vector => |v| {
                         if (ma.member.len == 1) {
-                            const len = (std.fmt.bufPrint(&buf, "(swizzle) {s}: {s}", .{ ma.member, v.element.string() }) catch break :blk try handler.gpa.dupe(u8, ma.member)).len;
-                            break :blk try handler.gpa.dupe(u8, buf[0..len]);
+                            const len = (std.fmt.bufPrint(&buf, "(swizzle) {s}: {s}", .{ ma.member, v.element.string() }) catch break :blk try fenced(handler.gpa, ma.member, "")).len;
+                            break :blk try fenced(handler.gpa, buf[0..len], "");
                         }
                     },
                     else => {},
                 }
-                break :blk try handler.gpa.dupe(u8, ma.member);
+                break :blk try fenced(handler.gpa, ma.member, "");
             };
             return .{
                 .contents = contents,
@@ -154,44 +195,26 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
             };
         },
         .binary_expr => |be| {
-            // Show const-evaluated result and/or expression type
-            var parts: [2][]const u8 = undefined;
-            var part_count: usize = 0;
+            // The expression's type (keyed on the operator's loc) and its
+            // const-evaluated value, whichever of the two are known. Both are
+            // WGSL, so both go in the fence — the type was `**bold**` before,
+            // which lost `vec2<f32>` to the markdown renderer like the rest.
+            const type_str: []const u8 = if (analysis.expr_types.get(be.loc)) |info| info.typ.string() else "";
+            const value = Handler.resolveConstExpr(be.expr, &analysis.const_values);
+            if (type_str.len == 0 and value == null) return null;
 
-            // Try to show the type of the expression (key on operator loc)
-            if (analysis.expr_types.get(be.loc)) |info| {
-                const type_str = info.typ.string();
-                const formatted = std.fmt.bufPrint(&buf, "**{s}**", .{type_str}) catch "";
-                if (formatted.len > 0) {
-                    parts[part_count] = try handler.gpa.dupe(u8, formatted);
-                    part_count += 1;
-                }
+            var pos: usize = 0;
+            if (type_str.len > 0) {
+                const t = std.fmt.bufPrint(&buf, "{s}", .{type_str}) catch return null;
+                pos = t.len;
             }
-
-            // Try to show const-evaluated result
-            if (Handler.resolveConstExpr(be.expr, &analysis.const_values)) |val| {
-                var val_buf: [64]u8 = undefined;
-                const val_str = std.fmt.bufPrint(&val_buf, "= {d}", .{val}) catch "";
-                if (val_str.len > 0) {
-                    parts[part_count] = try handler.gpa.dupe(u8, val_str);
-                    part_count += 1;
-                }
-            }
-
-            if (part_count == 0) return null;
-
-            // Join parts with newline
-            if (part_count == 2) {
-                const combined = try std.fmt.allocPrint(handler.gpa, "{s}\n\n{s}", .{ parts[0], parts[1] });
-                handler.gpa.free(parts[0]);
-                handler.gpa.free(parts[1]);
-                return .{
-                    .contents = combined,
-                    .range = Handler.offsetRangeToLspRange(source, be.loc, be.loc + be.op_len) orelse return null,
-                };
+            if (value) |val| {
+                const sep: []const u8 = if (pos > 0) "\n" else "";
+                const v = std.fmt.bufPrint(buf[pos..], "{s}= {d}", .{ sep, val }) catch return null;
+                pos += v.len;
             }
             return .{
-                .contents = parts[0],
+                .contents = try fenced(handler.gpa, buf[0..pos], ""),
                 .range = Handler.offsetRangeToLspRange(source, be.loc, be.loc + be.op_len) orelse return null,
             };
         },
@@ -255,45 +278,49 @@ pub fn formatFunctionSignature(buf: *[1024]u8, module: *const Ast.Module, sym_id
 }
 
 /// Format a hover tooltip for a builtin function, with spec documentation.
+///
+/// The spec signature and its type constraint are WGSL and go in the fence —
+/// `sin`'s constraint is "T is f32, f16, vecN<f32>, or vecN<f16>", every
+/// bracket of which a markdown renderer eats. The description and the
+/// category/stage line are prose and stay outside it; the invariant that they
+/// contain nothing needing a fence is pinned in `tests/hover_test.zig`.
 fn formatBuiltinHover(handler: *Handler, buf: *[1024]u8, name: []const u8, builtin: Builtins.Builtin) ![]const u8 {
     var pos: usize = 0;
+    var description: []const u8 = "";
 
     // Signature from doc table, or fallback to name
     if (Builtins.doc(name)) |d| {
-        const sig = std.fmt.bufPrint(buf, "{s}", .{d.signature}) catch return try handler.gpa.dupe(u8, name);
+        const sig = std.fmt.bufPrint(buf, "{s}", .{d.signature}) catch return try fenced(handler.gpa, name, "");
         pos = sig.len;
 
         // Type constraint
         if (d.type_constraint.len > 0) {
-            const tc = std.fmt.bufPrint(buf[pos..], "\n  {s}", .{d.type_constraint}) catch return try handler.gpa.dupe(u8, buf[0..pos]);
+            const tc = std.fmt.bufPrint(buf[pos..], "\n  {s}", .{d.type_constraint}) catch return try fenced(handler.gpa, buf[0..pos], "");
             pos += tc.len;
         }
 
-        // Description
-        const desc = std.fmt.bufPrint(buf[pos..], "\n\n{s}", .{d.description}) catch return try handler.gpa.dupe(u8, buf[0..pos]);
-        pos += desc.len;
+        description = d.description;
     } else {
-        const header = std.fmt.bufPrint(buf, "(builtin) {s}", .{name}) catch return try handler.gpa.dupe(u8, name);
+        const header = std.fmt.bufPrint(buf, "(builtin) {s}", .{name}) catch return try fenced(handler.gpa, name, "");
         pos = header.len;
     }
 
-    // Metadata line: category + evaluation stage
+    // Metadata line: category + evaluation stage, plus the uniformity warning
     const kind_str = @tagName(builtin.kind);
     const stage_str: []const u8 = switch (builtin.stage) {
         .const_eval => "const-evaluable",
         .runtime => "runtime",
         .override => "override-evaluable",
     };
-    const meta = std.fmt.bufPrint(buf[pos..], "\n\n({s}) {s}", .{ kind_str, stage_str }) catch return try handler.gpa.dupe(u8, buf[0..pos]);
-    pos += meta.len;
+    const uniformity: []const u8 = if (builtin.requiresUniform()) " | requires uniform control flow" else "";
 
-    // Uniformity warning
-    if (builtin.requiresUniform()) {
-        const warn = std.fmt.bufPrint(buf[pos..], " | requires uniform control flow", .{}) catch return try handler.gpa.dupe(u8, buf[0..pos]);
-        pos += warn.len;
-    }
+    const prose = if (description.len > 0)
+        try std.fmt.allocPrint(handler.gpa, "{s}\n\n({s}) {s}{s}", .{ description, kind_str, stage_str, uniformity })
+    else
+        try std.fmt.allocPrint(handler.gpa, "({s}) {s}{s}", .{ kind_str, stage_str, uniformity });
+    defer handler.gpa.free(prose);
 
-    return try handler.gpa.dupe(u8, buf[0..pos]);
+    return try fenced(handler.gpa, buf[0..pos], prose);
 }
 
 /// Format a struct type with per-field byte offsets, sizes, and padding gaps.

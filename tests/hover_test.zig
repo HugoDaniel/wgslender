@@ -1,5 +1,6 @@
 const std = @import("std");
 const Handler = @import("Handler");
+const Builtins = @import("wgslender").Builtins;
 
 fn setup(source: [:0]const u8) !struct { handler: *Handler, source: [:0]const u8 } {
     const handler = try std.testing.allocator.create(Handler);
@@ -16,6 +17,138 @@ fn teardown(ctx: anytype) void {
 fn posAt(source: []const u8, needle: []const u8) ?Handler.Position {
     const offset = std.mem.indexOf(u8, source, needle) orelse return null;
     return Handler.offsetToLspPosition(source, @intCast(offset));
+}
+
+/// Assert hover contents are markdown a client can actually render.
+///
+/// Both transports serve hover as `MarkupContent{kind: "markdown"}`
+/// (`lsp/wire/navigation.zig`, `lsp/lspkit/navigation.zig`), and WGSL is not
+/// markdown. Two things break outside a fence:
+///
+///   - `vec4<f32>` is parsed as an HTML tag, so the type parameter arrives as
+///     an element and renders as nothing — the text is in the DOM and
+///     invisible on screen.
+///   - single newlines fold, so the struct-layout table collapses into one
+///     paragraph.
+///
+/// So: every `<` belongs inside a fence, and every fence is closed.
+fn expectRenderableMarkdown(contents: []const u8) !void {
+    var inside_fence = false;
+    var lines = std.mem.splitScalar(u8, contents, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "```")) {
+            inside_fence = !inside_fence;
+            continue;
+        }
+        if (!inside_fence and std.mem.indexOfScalar(u8, line, '<') != null) {
+            std.debug.print("\nunfenced '<' in hover line: {s}\n", .{line});
+            return error.UnfencedAngleBracket;
+        }
+    }
+    if (inside_fence) {
+        std.debug.print("\nunclosed fence in hover:\n{s}\n", .{contents});
+        return error.UnclosedFence;
+    }
+}
+
+test "hover: a function signature's type parameters survive markdown" {
+    const source: [:0]const u8 = "fn shade(c: vec4<f32>) -> vec4<f32> { return c; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "shade") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try expectRenderableMarkdown(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "vec4<f32>") != null);
+}
+
+test "hover: a variable's type parameters survive markdown" {
+    const source: [:0]const u8 = "fn f() { let v = vec3<f32>(1.0); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "v =") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try expectRenderableMarkdown(result.?.contents);
+}
+
+test "hover: a builtin's type constraint survives markdown" {
+    // The one this was found on: sin's constraint reads
+    // "T is f32, f16, vecN<f32>, or vecN<f16>", and rendered as
+    // "T is f32, f16, vecN, or vecN" in the playground.
+    const source: [:0]const u8 = "fn f(x: f32) -> f32 { return sin(x); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "sin") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try expectRenderableMarkdown(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "vecN<f32>") != null);
+}
+
+test "hover: a builtin description's prose is escaped, not fenced" {
+    // The description stays outside the fence, so its metacharacters have to
+    // be escaped instead. `step` is the builtin that has one: "Returns 0.0 if
+    // x < edge, otherwise 1.0."
+    try std.testing.expect(std.mem.indexOfScalar(u8, Builtins.doc("step").?.description, '<') != null);
+
+    const source: [:0]const u8 = "fn f(x: f32) -> f32 { return step(0.5, x); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "step") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try expectRenderableMarkdown(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "x &lt; edge") != null);
+}
+
+test "hover: a struct layout keeps its lines" {
+    const source: [:0]const u8 = "struct Camera { eye: vec3<f32>, time: f32 } fn f(c: Camera) {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const type_ref = std.mem.lastIndexOf(u8, source, "Camera") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(type_ref)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try expectRenderableMarkdown(result.?.contents);
+    // One line per field is the whole point of this hover; markdown folds
+    // single newlines, so the fence is what preserves them.
+    try std.testing.expect(std.mem.count(u8, result.?.contents, "\n  @") == 2);
+}
+
+test "hover: a member access's field type survives markdown" {
+    const source: [:0]const u8 =
+        "struct S { p: vec2<f32> } fn f(s: S) -> vec2<f32> { return s.p; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const dot_pos = std.mem.lastIndexOf(u8, source, ".p") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(dot_pos + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    defer std.testing.allocator.free(result.?.contents);
+    try expectRenderableMarkdown(result.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, result.?.contents, "vec2<f32>") != null);
+}
+
+test "hover: a binary expression's type survives markdown" {
+    const source: [:0]const u8 =
+        \\fn f(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+        \\  return a + b;
+        \\}
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = posAt(source, "+ b") orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeHover("test://file.wgsl", pos);
+    if (result) |r| {
+        defer std.testing.allocator.free(r.contents);
+        try expectRenderableMarkdown(r.contents);
+    }
 }
 
 test "hover: variable shows type" {
