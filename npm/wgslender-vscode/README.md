@@ -4,7 +4,7 @@ Rich WGSL editing powered by [wgslender](https://github.com/HugoDaniel/wgslender
 
 ## Features
 
-- **Language server** — diagnostics, hover, completion, signature help, definition, references, formatting, semantic tokens, code actions, inlay hints, code lens, call hierarchy, folding, document symbols, rename, type definition, document highlight, selection range. All via the bundled WASM LSP, no Node child process or remote server.
+- **Language server** — diagnostics, hover, completion, signature help, definition, declaration, references, formatting, semantic tokens, code actions, inlay hints, code lens, call hierarchy, folding, document symbols, rename, type definition, document highlight, selection range. All via the bundled WASM LSP, no Node child process or remote server.
 - **Lint** with configurable rule packs (`@wgslender/recommended`, `/style`, `/performance`, `/portability`, `/strict`).
 - **Palette commands**:
   - `wgslender: Minify Preview` — opens a live read-only `.min.wgsl` view beside the source.
