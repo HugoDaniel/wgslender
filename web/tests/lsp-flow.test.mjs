@@ -146,14 +146,33 @@ test('a bad member access raises E0206, and reverting clears it', () => {
   assert.deepEqual(codesIn(afterFix), ['W0001']);
 });
 
-test('hover over a uniform reports its type', () => {
+/** The `value` of a hover response, whichever shape the server used. */
+function hoverAt(needle) {
   const { result } = request('textDocument/hover', {
     textDocument: { uri: sampleUri },
-    position: positionOf(sampleShader, 'camera.time'),
+    position: positionOf(sampleShader, needle),
   });
+  return typeof result.contents === 'string' ? result.contents : result.contents.value;
+}
 
-  const text = typeof result.contents === 'string' ? result.contents : result.contents.value;
-  assert.match(text, /Camera/);
+test('hover over a uniform reports its type', () => {
+  assert.match(hoverAt('camera.time'), /Camera/);
+});
+
+test('hover fences its WGSL, so type parameters survive the renderer', () => {
+  // The server answers with MarkupContent{kind:"markdown"}, and an unfenced
+  // `vecN<f32>` is parsed as an HTML tag by every markdown client — the
+  // playground rendered sin's constraint as "T is f32, f16, vecN, or vecN",
+  // the brackets present in the DOM as elements and invisible on screen.
+  const text = hoverAt('sin(uv.x');
+  assert.match(text, /^```wgsl\n/);
+  assert.match(text, /vecN<f32>/);
+
+  // Everything with a bracket is inside the fence; the prose after it is
+  // escaped rather than fenced.
+  const [, fence, prose] = text.split('```');
+  assert.match(fence, /fn sin/);
+  assert.doesNotMatch(prose, /</);
 });
 
 test('go-to-definition on a call lands on the declaration', () => {
