@@ -63,6 +63,38 @@ function replaceDocument(version, text) {
   });
 }
 
+/** A `range` covering every line of `text` — what an inlay-hint request wants. */
+function wholeDocument(text) {
+  const lines = text.split('\n');
+  return {
+    start: { line: 0, character: 0 },
+    end: { line: lines.length - 1, character: lines.at(-1).length },
+  };
+}
+
+/** Inlay hints for the whole sample. The server returns `null` for none. */
+function inlayHints(range = wholeDocument(sampleShader)) {
+  const { result } = request('textDocument/inlayHint', {
+    textDocument: { uri: sampleUri },
+    range,
+  });
+  return result ?? [];
+}
+
+/**
+ * Minify-size hints are indistinguishable from type hints by `kind` — the
+ * wire maps both to LSP `InlayHintKind.Type` (1), see
+ * `lsp/wire/editing.zig::inlayHintKindCode`. Their tooltip is the only
+ * marker on the wire, so that is what the playground filters on too.
+ */
+const isMinifyHint = (hint) => hint.tooltip?.startsWith('approximate minified byte size');
+
+const setMinifyMode = (mode) =>
+  request('workspace/executeCommand', {
+    command: 'wgslender.setMinifyMode',
+    arguments: [mode],
+  });
+
 before(async () => {
   const lspWasm = await readFile(require.resolve('wgslender-lsp/wasm'));
   await initLsp({ wasmModule: await WebAssembly.compile(lspWasm) });
@@ -211,4 +243,181 @@ test('reflect reports every binding, the override, and both entry points', () =>
     info.overrides.map((o) => o.name),
     ['particle_scale'],
   );
+});
+
+// ---------------------------------------------------------------------------
+// Block 4: minify-size inlay hints, rename, formatting.
+//
+// These pin server behaviour that already exists — the playground's job is to
+// surface it, and these assertions are what `insights.ts` is written against.
+// ---------------------------------------------------------------------------
+
+/** Line index of the `}` that closes the block opened at `needle`. */
+function closingBraceLineAfter(needle) {
+  const lines = sampleShader.split('\n');
+  let line = positionOf(sampleShader, needle).line;
+  while (line < lines.length && lines[line] !== '}') line++;
+  return line;
+}
+
+test('with minify mode off, no size hints — but type hints still arrive', () => {
+  const hints = inlayHints();
+
+  assert.deepEqual(hints.filter(isMinifyHint), [], 'mode `off` gates the whole lane');
+  assert.ok(
+    hints.some((h) => h.label === 'f32'),
+    'ordinary type hints are unaffected by the minify mode',
+  );
+});
+
+test('setMinifyMode insights brings back one size hint per live declaration', () => {
+  assert.equal(setMinifyMode('insights').result, null, 'a void command resolves with null');
+
+  const minifyHints = inlayHints().filter(isMinifyHint);
+
+  // Every label is a byte delta, and every hint discloses that it is an
+  // estimate — the tooltip is the disclosure the server promises.
+  for (const hint of minifyHints) {
+    assert.match(hint.label, /^-\d+(\.\d)? ?[KM]?B$/, `unexpected label ${hint.label}`);
+    assert.match(hint.tooltip, /approximate/);
+  }
+
+  // The module total sits at the very top of the document.
+  const total = minifyHints.filter((h) => h.position.line === 0 && h.position.character === 0);
+  assert.equal(total.length, 1, 'exactly one module-total hint');
+  const bytesOf = (hint) => Number(hint.label.match(/-(\d+)/)[1]);
+  assert.ok(
+    minifyHints.every((h) => h === total[0] || bytesOf(h) < bytesOf(total[0])),
+    'the module total is the largest saving on the page',
+  );
+
+  // Function hints land on the closing brace; declaration hints on the `;`.
+  const lines = minifyHints.map((h) => h.position.line);
+  for (const fn of ['fn wave', 'fn vs_main', 'fn fs_main']) {
+    assert.ok(lines.includes(closingBraceLineAfter(fn)), `no size hint closing ${fn}`);
+  }
+  assert.ok(
+    lines.includes(positionOf(sampleShader, 'override particle_scale').line),
+    'the override is measured too',
+  );
+
+  // `unused_helper` gets no hint at all. That is not an oversight: the
+  // estimator walks live declarations only (`MinifyEstimator` filters through
+  // `Dce.isDeclarationLive`), and a tree-shaken function contributes nothing
+  // to the minified output. Its silence *is* the insight.
+  assert.ok(
+    !lines.includes(closingBraceLineAfter('fn unused_helper')),
+    'dead code has no size to report',
+  );
+});
+
+test('minify hints ignore the requested range', () => {
+  // Type hints honour the range; the minify lane is emitted whole-document
+  // regardless. `insights.ts` leans on this — it asks for one range and gets
+  // every hint, so there is no viewport bookkeeping to get wrong.
+  const narrow = inlayHints({
+    start: { line: 0, character: 0 },
+    end: { line: 1, character: 0 },
+  });
+
+  assert.equal(narrow.filter(isMinifyHint).length, inlayHints().filter(isMinifyHint).length);
+  assert.ok(
+    narrow.filter((h) => !isMinifyHint(h)).length < inlayHints().filter((h) => !isMinifyHint(h)).length,
+    'type hints, by contrast, are range-filtered',
+  );
+});
+
+test('strict mode adds minify lints to the published diagnostics', () => {
+  const { messages } = setMinifyMode('strict');
+
+  // The command republishes diagnostics for every open document, so the
+  // Diagnostics panel updates at the same moment the hints do.
+  const codes = codesIn(diagnosticsIn(messages));
+  assert.ok(
+    codes.some((c) => c.startsWith('M')),
+    `expected an M-code minify lint, got ${codes}`,
+  );
+  assert.ok(codes.includes('W0001'), 'the ordinary lints survive the mode change');
+});
+
+test('setMinifyMode off removes the size hints again', () => {
+  setMinifyMode('off');
+  assert.deepEqual(inlayHints().filter(isMinifyHint), []);
+
+  const codes = codesIn(diagnosticsIn(setMinifyMode('off').messages));
+  assert.deepEqual(codes, ['W0001'], 'and takes the M-codes with it');
+});
+
+test('rename rewrites the declaration and every call site', () => {
+  const declaration = positionOf(sampleShader, 'wave(uv : vec2');
+  const { result } = request('textDocument/rename', {
+    textDocument: { uri: sampleUri },
+    position: declaration,
+    newName: 'ripple',
+  });
+
+  const edits = result.changes[sampleUri];
+  assert.deepEqual(
+    edits.map((e) => [e.range.start.line, e.range.start.character, e.newText]),
+    [
+      [declaration.line, declaration.character, 'ripple'],
+      [
+        positionOf(sampleShader, 'wave(uv, camera.time)').line,
+        positionOf(sampleShader, 'wave(uv, camera.time)').character,
+        'ripple',
+      ],
+    ],
+    'declaration first, then the call in fs_main',
+  );
+
+  // Renaming from the call site produces the same edit set.
+  const fromCall = request('textDocument/rename', {
+    textDocument: { uri: sampleUri },
+    position: positionOf(sampleShader, 'wave(uv, camera.time)'),
+    newName: 'ripple',
+  });
+  assert.deepEqual(fromCall.result, result);
+});
+
+test('rename needs the cursor on the identifier itself', () => {
+  // `positionOf(…, 'fn wave')` points at the `f` of `fn`, which is a keyword,
+  // not a symbol — the server answers `null` rather than guessing. Worth
+  // pinning: it is the difference between F2 working and silently doing
+  // nothing, and it is why the page copy says to click the name.
+  const { result } = request('textDocument/rename', {
+    textDocument: { uri: sampleUri },
+    position: positionOf(sampleShader, 'fn wave'),
+    newName: 'ripple',
+  });
+
+  assert.equal(result, null);
+});
+
+test('formatting re-indents — and rewrites far more than whitespace', () => {
+  const misindented = sampleShader
+    .replace('fn wave(', '        fn wave(')
+    .replace('  return sin(', 'return sin(');
+  replaceDocument(4, misindented);
+
+  const { result } = request('textDocument/formatting', {
+    textDocument: { uri: sampleUri },
+    options: { tabSize: 2, insertSpaces: true },
+  });
+
+  assert.equal(result.length, 1, 'one edit replacing the whole document');
+  const formatted = result[0].newText;
+  assert.match(formatted, /^fn wave\(uv: vec2<f32>, t: f32\) -> f32 \{$/m, 'indentation fixed');
+  assert.match(formatted, /^ {4}return sin/m);
+
+  // `computeFormatting` runs the *whole minifier* with only whitespace and
+  // identifier minification switched off, so "format document" also:
+  assert.doesNotMatch(formatted, /\/\//, 'strips every comment');
+  assert.doesNotMatch(formatted, /unused_helper/, 'tree-shakes dead code');
+  assert.match(formatted, /= 1\.;/, 'and rewrites literals (`1.0` became `1.`)');
+
+  // This is destructive enough that the playground does not offer a format
+  // button — see the note in PlaygroundEditor.astro. The assertions above are
+  // here to catch the day it changes, in either direction.
+
+  replaceDocument(5, sampleShader);
 });
