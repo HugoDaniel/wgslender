@@ -16,9 +16,11 @@ two panels, live debounced minification, option pills, a stats bar, one screen,
 no framework. This is that, upgraded from `<textarea>` to a real editor, because
 wgslender — unlike miniray — has a language server to show off.
 
-**Status:** Blocks 1-2 executed 2026-08-06 — `cb313d7` wasm refresh, `37a25e4`
-deps + tests, `283771a` the editor island, `d18ae43` the browser smoke check.
-Blocks 3-5 pending. Outcomes worth carrying forward:
+**Status:** Blocks 1-3 executed 2026-08-06/07 — `cb313d7` wasm refresh,
+`37a25e4` deps + tests, `283771a` the editor island, `d18ae43` the browser
+smoke check, `e20ab6e` two npm type-declaration fixes, `8e8752b` the panel
+models, `09b3a74` the panel UI. Blocks 4-5 pending. Outcomes worth carrying
+forward:
 
 - Installed versions: `@codemirror/lsp-client` 6.2.5, `codemirror` 6.0.2,
   `@codemirror/{state 6.7.1, view 6.43.8, language 6.12.4, lint 6.9.7,
@@ -71,6 +73,54 @@ From Block 2:
   events never satisfied CodeMirror's `posAtCoords` bounds check, so no
   tooltip could be provoked headlessly. Worth ten seconds of a human's time
   before Block 5 signs off.
+
+From Block 3:
+
+- **Both themes are now confirmed** by screenshot (the Block 2 caveat above is
+  closed). Everything is `--sl-*` tokens, so light and dark follow the toggle
+  with no JS. Hover remains the one unobserved item.
+- Starlight's `<Tabs>` won over hand-rolled buttons. `processPanels`
+  (`user-components/rehype-tabs.ts`) only rewrites `<starlight-tab-item>`
+  wrappers and `SKIP`s their children, so island markup and Astro's scoped
+  class both survive `Astro.slots.render()`. Two rules are needed to host them
+  in a fixed-height pane — see the next two bullets, both of which shipped
+  broken until the page was looked at.
+- **`display: flex` on `[role=tabpanel]` silently disables `hidden`.** The UA
+  stylesheet implements `hidden` as `display: none`; any `display` rule of
+  yours outranks it, and all three panels stack. Needs an explicit
+  `[role='tabpanel'][hidden] { display: none }`.
+- **An `overflow-x: auto` box has no min-content height**, so as a flex child
+  it shrinks to nothing. The reflection tables all collapsed while the
+  headings between them still rendered. Only the minify tab is a flex column
+  (its editor must absorb leftover height); the table panels stay block-level
+  and simply scroll.
+- Both bugs were invisible to the smoke check, which asserted on
+  `textContent` — present in the DOM, zero pixels on screen. It now measures
+  `getBoundingClientRect()` for panel visibility and table rows. **Assert
+  layout, not presence**; and screenshot the page, because neither bug
+  survived one look at it.
+- **The gzip column is computed client-side with `CompressionStream`**, not
+  read from `wgslender.showMinifiedOutput` as this plan assumed. That command
+  takes only a URI, so it minifies with the *server's* settings; the moment a
+  pill is toggled its number would describe different bytes than the ones on
+  screen. `showMinifiedOutput()` stays on the `Session` (Block 1 pins it) but
+  nothing calls it now.
+- Diagnostics reach the panel through a second `transport.subscribe` handler.
+  The transport fans out to every handler, so this costs nothing and hands
+  `formatDiagnostics` the exact payload its tests pin, rather than the
+  narrowed shape lsp-client passes to `@codemirror/lint`.
+- Two `packages/js-npm/lib/main.d.ts` declarations did not match the wire
+  (`e20ab6e`), both found by writing TypeScript against them: `TypeInfo`'s
+  texture variant is flat (`{kind, dim, texKind, …}`), not
+  `{kind, texture: {...}}` — reading `typeInfo.texture.dim` throws — and
+  `MinifyError.line`/`.column` are never emitted, since `writeMinifyJson`
+  serializes only `message`. Populating them would be a wire change; left as a
+  decision.
+- `pnpm`'s `file:` dependencies are **copies in the virtual store**, not links.
+  Editing `packages/js-npm` does nothing for `web/` until `pnpm install` runs
+  again.
+- `minifyIdentifiers` and `treeShaking` are independent: the dead helper is
+  dropped either way. A test asserting it survives with renaming off is wrong.
 
 Facts below were verified against the worktree and against the actual npm
 tarball of `@codemirror/lsp-client` on 2026-08-06. File:line references are
@@ -501,6 +551,15 @@ expensive half the server explicitly defers to the client.
 **Gate:** `pnpm test` (both suites) + `pnpm build` + hand check: toggling
 "Tree shaking" makes the unused helper reappear and the stats bar move; the
 gzip number tracks the sort/scope pills.
+
+**Executed** (`e20ab6e`, `8e8752b`, `09b3a74`): `pnpm test` 35/35, `pnpm build`
+green, `pnpm smoke` 27/27. The hand check is automated — the smoke script
+toggles the pills and asserts both that the helper's body reappears and that
+the gzip figure moves (407 B → 403 B with sort + scope-local rename on), then
+clicks a diagnostic row and checks the editor's active line. `panels.ts` is
+pure and tested against the real wasm; `render.ts` builds DOM with
+`textContent` throughout, since every string on the page comes from whatever
+the visitor typed.
 
 ---
 
