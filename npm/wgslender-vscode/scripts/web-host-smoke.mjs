@@ -128,6 +128,25 @@ const HARNESS = `<!doctype html>
       const value = hover.result?.contents?.value ?? hover.result?.contents ?? '';
       done({ hover: String(value) });
 
+      // Go-to navigation through the worker pump: from the \`y\` usage in
+      // \`return y\` back to the parameter. Declaration must agree with
+      // definition — WGSL has no forward declarations.
+      const navPos = { line: 1, character: text.split('\\n')[1].indexOf('y; }') };
+      const definition = await request('textDocument/definition', {
+        textDocument: { uri },
+        position: navPos,
+      });
+      const declaration = await request('textDocument/declaration', {
+        textDocument: { uri },
+        position: navPos,
+      });
+      done({
+        definition: definition.result ?? null,
+        declarationMatchesDefinition:
+          definition.result != null &&
+          JSON.stringify(declaration.result) === JSON.stringify(definition.result),
+      });
+
       const shown = await request('workspace/executeCommand', {
         command: 'wgslender.server.showMinifiedOutput',
         arguments: [uri],
@@ -309,6 +328,14 @@ try {
     );
     check('hover opens with a wgsl fence', (result.hover ?? '').startsWith('```wgsl'), (result.hover ?? '').slice(0, 40));
     check('hover keeps its type parameters', (result.hover ?? '').includes('vecN<f32>'));
+    check(
+      'go-to-definition answers over the worker',
+      result.definition &&
+        result.definition.range.start.line === 1 &&
+        result.definition.range.start.character === 8,
+      JSON.stringify(result.definition),
+    );
+    check('go-to-declaration answers like definition', result.declarationMatchesDefinition);
     check(
       'showMinifiedOutput answers over the worker',
       result.minified && result.minified.byte_count > 0,

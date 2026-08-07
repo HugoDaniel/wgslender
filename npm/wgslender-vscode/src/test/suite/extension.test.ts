@@ -1,10 +1,23 @@
 // Smoke tests for the wgslender VS Code extension. Exercises the
-// LSP wiring (diagnostics arrive on a known-broken shader) plus the
-// two highest-value palette commands (reflect, minifyPreview).
+// LSP wiring (diagnostics arrive on a known-broken shader), go-to
+// navigation (definition / declaration / type definition / references
+// across structs, vars, and functions), plus the two highest-value
+// palette commands (reflect, minifyPreview).
 
 import * as assert from 'assert';
 
-import { commands, languages, Hover, MarkdownString, Position, Uri, window, workspace } from 'vscode';
+import {
+  commands,
+  languages,
+  Hover,
+  Location,
+  LocationLink,
+  MarkdownString,
+  Position,
+  Uri,
+  window,
+  workspace,
+} from 'vscode';
 
 const BROKEN_SHADER = `@vertex fn main() -> @builtin(position) vec4f {
   let badness =;
@@ -83,6 +96,121 @@ suite('wgslender VS Code extension', () => {
     const [, fence, prose] = value.split('```');
     assert.match(fence, /fn sin/);
     assert.ok(!prose.includes('<'), `unescaped '<' in hover prose: ${prose}`);
+  });
+
+  // One declaration of each kind the user navigates to: a struct, a
+  // module-scope var, a function, and a local let.
+  const NAV_SHADER = `struct Particle { pos: vec4f, vel: vec4f }
+@group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
+fn integrate(p: Particle) -> Particle { return p; }
+@compute @workgroup_size(64) fn main() {
+  let p = particles[0];
+  particles[0] = integrate(p);
+}
+`;
+
+  /** Position of the first occurrence of `needle` in NAV_SHADER. */
+  function navPosition(needle: string): Position {
+    const index = NAV_SHADER.indexOf(needle);
+    assert.ok(index >= 0, `needle not found in NAV_SHADER: ${needle}`);
+    const before = NAV_SHADER.slice(0, index);
+    const line = before.split('\n').length - 1;
+    const character = index - (before.lastIndexOf('\n') + 1);
+    return new Position(line, character);
+  }
+
+  /** First target range from a definition-family provider, once one arrives. */
+  async function navigateFrom(command: string, uri: Uri, position: Position) {
+    const results = await waitFor(async () => {
+      const locations = await commands.executeCommand<(Location | LocationLink)[]>(
+        command,
+        uri,
+        position,
+      );
+      return locations && locations.length > 0 ? locations : undefined;
+    }, 10_000);
+    const first = results[0];
+    return 'targetRange' in first
+      ? { uri: first.targetUri, range: first.targetRange }
+      : { uri: first.uri, range: first.range };
+  }
+
+  test('go to definition: module var usage jumps to its declaration', async () => {
+    const uri = await openInMemoryWgsl(NAV_SHADER);
+    const target = await navigateFrom(
+      'vscode.executeDefinitionProvider',
+      uri,
+      navPosition('particles[0] ='),
+    );
+    assert.strictEqual(target.uri.toString(), uri.toString());
+    const declared = navPosition('particles: array');
+    assert.strictEqual(target.range.start.line, declared.line);
+    assert.strictEqual(target.range.start.character, declared.character);
+  });
+
+  test('go to definition: function call jumps to fn declaration', async () => {
+    const uri = await openInMemoryWgsl(NAV_SHADER);
+    const target = await navigateFrom(
+      'vscode.executeDefinitionProvider',
+      uri,
+      navPosition('integrate(p)'),
+    );
+    const declared = navPosition('integrate(p: Particle)');
+    assert.strictEqual(target.range.start.line, declared.line);
+    assert.strictEqual(target.range.start.character, declared.character);
+  });
+
+  test('go to definition: struct type reference jumps to struct declaration', async () => {
+    const uri = await openInMemoryWgsl(NAV_SHADER);
+    const target = await navigateFrom(
+      'vscode.executeDefinitionProvider',
+      uri,
+      navPosition('Particle>'),
+    );
+    const declared = navPosition('Particle {');
+    assert.strictEqual(target.range.start.line, declared.line);
+    assert.strictEqual(target.range.start.character, declared.character);
+  });
+
+  test('go to declaration answers like go to definition', async () => {
+    const uri = await openInMemoryWgsl(NAV_SHADER);
+    const target = await navigateFrom(
+      'vscode.executeDeclarationProvider',
+      uri,
+      navPosition('particles[0] ='),
+    );
+    const declared = navPosition('particles: array');
+    assert.strictEqual(target.range.start.line, declared.line);
+    assert.strictEqual(target.range.start.character, declared.character);
+  });
+
+  test('go to type definition: value of struct type jumps to the struct', async () => {
+    const uri = await openInMemoryWgsl(NAV_SHADER);
+    const target = await navigateFrom(
+      'vscode.executeTypeDefinitionProvider',
+      uri,
+      navPosition('p);'),
+    );
+    const declared = navPosition('Particle {');
+    assert.strictEqual(target.range.start.line, declared.line);
+    assert.strictEqual(target.range.start.character, declared.character);
+  });
+
+  test('find references: function has its declaration and call site', async () => {
+    const uri = await openInMemoryWgsl(NAV_SHADER);
+    const references = await waitFor(async () => {
+      const locations = await commands.executeCommand<Location[]>(
+        'vscode.executeReferenceProvider',
+        uri,
+        navPosition('integrate(p)'),
+      );
+      return locations && locations.length >= 2 ? locations : undefined;
+    }, 10_000);
+    const lines = references.map((l) => l.range.start.line).sort((a, b) => a - b);
+    assert.deepStrictEqual(lines, [
+      navPosition('integrate(p: Particle)').line,
+      navPosition('integrate(p)').line,
+    ]);
   });
 
   test('wgslender.reflect opens a JSON document with entryPoints', async () => {
