@@ -594,6 +594,24 @@ pub fn build(b: *std.Build) void {
     // Freshness gate: committed files must match the generator's output.
     _ = addTestStep(b, test_step, "tests/npm_generated_test.zig", target, optimize, &.{ w, .{ .name = "gen_npm", .module = gen_npm_mod } });
 
+    // gen-version: stamp src/root.zig's `pub const version` into every package
+    // manifest (Zig, three npm, Cargo's four occurrences). Same setCwd(.) and
+    // always-re-runs shape as gen-npm, but it rewrites one field per file
+    // rather than emitting whole files — see tools/gen_version.zig.
+    const gen_version_mod = b.createModule(.{
+        .root_source_file = b.path("tools/gen_version.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{w},
+    });
+    const gen_version_exe = b.addExecutable(.{ .name = "gen-version", .root_module = gen_version_mod });
+    const run_gen_version = b.addRunArtifact(gen_version_exe);
+    run_gen_version.setCwd(b.path("."));
+    const gen_version_step = b.step("gen-version", "Stamp src/root.zig's version into every package manifest");
+    gen_version_step.dependOn(&run_gen_version.step);
+    // Drift gate: every manifest must already carry the canonical version.
+    _ = addTestStep(b, test_step, "tests/version_sync_test.zig", target, optimize, &.{ w, .{ .name = "gen_version", .module = gen_version_mod } });
+
     // LSP Handler tests
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
     // LSP URI helper tests (no imports needed beyond stdlib)
