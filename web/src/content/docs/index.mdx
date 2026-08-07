@@ -2,6 +2,11 @@
 title: WGSLender
 description: The shader toolkit that gives you a WGSL minifier, validator, linter, reflection engine, language server, and a binary shader compiler.
 template: splash
+head:
+  # Without this the tab reads "WGSLender | WGSLender" — the page title and
+  # the site title are the same word on the home page only.
+  - tag: title
+    content: WGSLender — WGSL minifier, validator and language server
 hero:
   tagline: The WGSL devtools for your shader proclivities.
   image:
