@@ -56,6 +56,37 @@ in your editor too, with the same key names. Key knobs:
 - `wgslender.format.enable` — toggle formatter.
 - `wgslender.trace.server` — LSP communication trace.
 
+## Development
+
+The two `.wasm` files in `dist/` are build artefacts of the Zig tree, not
+checked in. Populate them before anything else:
+
+```
+zig build vscode-assets     # from the repository root
+npm install
+npm run build               # esbuild → dist/{extension,web-extension,server}.js
+```
+
+There are two hosts and a test for each. Neither substitutes for the other:
+they load different bundles.
+
+```
+npm test               # desktop host — @vscode/test-electron loads dist/extension.js
+npm run test:web-host  # browser host — headless Chrome drives dist/server.js in a real Worker
+```
+
+`npm test` downloads a VS Code build on first run and opens it. `test:web-host`
+needs Google Chrome (`CHROME_PATH` overrides) and serves `dist/` over a local
+port. It exists because the interesting failures on the web side — a bundle
+that throws on load, a WASM URL that 404s, an advertised command list that
+drifted — all look fine from Node, and the desktop bundle once shipped broken
+for exactly that reason.
+
+Note that the language server's `workspace/executeCommand` ids live in
+`wgslender.server.*`, separate from this extension's own `wgslender.*` command
+ids. They must stay separate: vscode-languageclient registers a VS Code command
+for every id the server advertises, so a shared name breaks activation.
+
 ## License
 
 CC0-1.0
