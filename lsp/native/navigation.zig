@@ -34,6 +34,19 @@ pub fn handleDefinition(
     return nav.toLspKitDefinitionLocation(params.textDocument.uri, r);
 }
 
+/// WGSL has no forward declarations, so a symbol's declaration IS its
+/// definition — `textDocument/declaration` answers exactly what
+/// `textDocument/definition` answers.
+pub fn handleDeclaration(
+    h: *Handler,
+    params: lsp.types.declaration.Params,
+) ?lsp.types.Definition.Result {
+    return handleDefinition(h, .{
+        .textDocument = params.textDocument,
+        .position = params.position,
+    });
+}
+
 pub fn handleTypeDefinition(
     h: *Handler,
     params: lsp.types.type_definition.Params,

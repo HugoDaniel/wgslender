@@ -112,6 +112,8 @@ const dispatch_table = [_]struct { method: []const u8, handler: HandlerFn }{
     .{ .method = "textDocument/codeAction", .handler = handleCodeAction },
     .{ .method = "textDocument/hover", .handler = handleHover },
     .{ .method = "textDocument/definition", .handler = handleDefinition },
+    // WGSL has no forward declarations — declaration IS definition.
+    .{ .method = "textDocument/declaration", .handler = handleDefinition },
     .{ .method = "textDocument/references", .handler = handleReferences },
     .{ .method = "textDocument/documentHighlight", .handler = handleDocumentHighlight },
     .{ .method = "textDocument/rename", .handler = handleRename },

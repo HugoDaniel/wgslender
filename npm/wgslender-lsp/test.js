@@ -55,6 +55,61 @@ async function run() {
   assert(diag1.params.uri === 'file:///test.wgsl', 'correct uri');
   assert(diag1.params.diagnostics.length === 0, 'no diagnostics for valid shader');
 
+  // ---- go-to navigation over the wire ----
+  console.log('  definition / declaration / typeDefinition...');
+  assert(initResult.result.capabilities.definitionProvider === true, 'definitionProvider advertised');
+  assert(initResult.result.capabilities.declarationProvider === true, 'declarationProvider advertised');
+  assert(initResult.result.capabilities.typeDefinitionProvider === true, 'typeDefinitionProvider advertised');
+
+  // One line so positions are simple: struct at 7, var 'u' at 46, usage of 'u' at 76.
+  const navText = 'struct S { v: vec4f } @group(0) @binding(0) var<uniform> u: S; fn f() -> S { return u; }';
+  sendMessage(JSON.stringify({
+    jsonrpc: '2.0', method: 'textDocument/didOpen',
+    params: {
+      textDocument: { uri: 'file:///nav.wgsl', languageId: 'wgsl', version: 1, text: navText }
+    }
+  }));
+
+  const defResponses = sendMessage(JSON.stringify({
+    jsonrpc: '2.0', id: 10, method: 'textDocument/definition',
+    params: {
+      textDocument: { uri: 'file:///nav.wgsl' },
+      position: { line: 0, character: navText.lastIndexOf('u;') }
+    }
+  }));
+  assert(defResponses.length === 1, 'definition returns one response');
+  const defResult = JSON.parse(defResponses[0]).result;
+  assert(defResult !== null, 'definition resolves the var usage');
+  assert(defResult.range.start.character === navText.indexOf('u:'), 'definition points at the var declaration');
+
+  const declResponses = sendMessage(JSON.stringify({
+    jsonrpc: '2.0', id: 11, method: 'textDocument/declaration',
+    params: {
+      textDocument: { uri: 'file:///nav.wgsl' },
+      position: { line: 0, character: navText.lastIndexOf('u;') }
+    }
+  }));
+  assert(declResponses.length === 1, 'declaration returns one response');
+  const declResult = JSON.parse(declResponses[0]).result;
+  assert(declResult !== null, 'declaration resolves the var usage');
+  assert(JSON.stringify(declResult) === JSON.stringify(defResult), 'declaration answers exactly like definition');
+
+  const typeDefResponses = sendMessage(JSON.stringify({
+    jsonrpc: '2.0', id: 12, method: 'textDocument/typeDefinition',
+    params: {
+      textDocument: { uri: 'file:///nav.wgsl' },
+      position: { line: 0, character: navText.lastIndexOf('u;') }
+    }
+  }));
+  const typeDefResult = JSON.parse(typeDefResponses[0]).result;
+  assert(typeDefResult !== null, 'typeDefinition resolves the var usage');
+  assert(typeDefResult.range.start.character === navText.indexOf('S {'), 'typeDefinition points at the struct');
+
+  sendMessage(JSON.stringify({
+    jsonrpc: '2.0', method: 'textDocument/didClose',
+    params: { textDocument: { uri: 'file:///nav.wgsl' } }
+  }));
+
   // ---- didChange with invalid shader ----
   console.log('  didChange (invalid shader)...');
   const changeResponses = sendMessage(JSON.stringify({

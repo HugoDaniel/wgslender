@@ -748,6 +748,15 @@ pub fn build(b: *std.Build) void {
         .{ .name = "lspkit", .module = lspkit_mod },
         .{ .name = "wire", .module = wire_mod },
     });
+    // `textDocument/declaration` must answer exactly what
+    // `textDocument/definition` answers (WGSL has no forward decls).
+    _ = addTestStep(b, test_step, "tests/lsp_declaration_route_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+        .{ .name = "wire", .module = wire_mod },
+        .{ .name = "NativeServer", .module = native_server_mod },
+    });
     // Parity harness for symbols + edits + code_actions: same property
     // as the navigation harness but covers the recursive `DocumentSymbol`,
     // the `WorkspaceEdit.changes` map, and the composed `CodeAction`

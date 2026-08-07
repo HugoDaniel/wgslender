@@ -445,6 +445,16 @@ pub fn @"textDocument/definition"(
     return native_navigation.handleDefinition(&self.handler, params);
 }
 
+pub fn @"textDocument/declaration"(
+    self: *NativeServer,
+    _: std.mem.Allocator,
+    params: lsp.types.declaration.Params,
+) ?lsp.types.Definition.Result {
+    self.lock();
+    defer self.unlock();
+    return native_navigation.handleDeclaration(&self.handler, params);
+}
+
 pub fn @"textDocument/references"(
     self: *NativeServer,
     arena: std.mem.Allocator,
