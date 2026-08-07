@@ -16,10 +16,12 @@ two panels, live debounced minification, option pills, a stats bar, one screen,
 no framework. This is that, upgraded from `<textarea>` to a real editor, because
 wgslender — unlike miniray — has a language server to show off.
 
-**Status:** Blocks 1-3 executed 2026-08-06/07 — `cb313d7` wasm refresh,
+**Status:** Blocks 1-4 executed 2026-08-06/07 — `cb313d7` wasm refresh,
 `37a25e4` deps + tests, `283771a` the editor island, `d18ae43` the browser
 smoke check, `e20ab6e` two npm type-declaration fixes, `8e8752b` the panel
-models, `09b3a74` the panel UI. Blocks 4-5 pending. Outcomes worth carrying
+models, `09b3a74` the panel UI, `e7ae464` the inlay-hint/rename/format wire
+tests, `dba5c76` the Starlight rhythm fix, `c49a6f1` minify insights,
+`afa04ac` the page copy. Block 5 pending. Outcomes worth carrying
 forward:
 
 - Installed versions: `@codemirror/lsp-client` 6.2.5, `codemirror` 6.0.2,
@@ -596,6 +598,50 @@ is the route. `@codemirror/lsp-client` has no inlay-hint support; this is ours.*
 
 **Gate:** `pnpm test` + `pnpm build` + hand check of hints, rename and format
 in the browser, both themes.
+
+**Executed** (`e7ae464`, `dba5c76`, `c49a6f1`, `afa04ac`): `pnpm test` 50/50,
+`pnpm build` green, `pnpm smoke` 39/39. The hand checks are automated — smoke
+drives the toggle, F2 and Shift-Alt-f, and asserts geometry rather than
+`textContent`. Both themes confirmed by screenshot.
+
+Corrections to this block's predictions, all found by probing the live server
+before writing assertions:
+
+- **The toggle sends `strict`, not `insights`.** Step 3 wanted the M-code
+  minify lints to appear with the hints; `insights` mode produces the hints
+  but no lints (`MinifySettings.modeDefaults` only sets `lints_enabled` under
+  `strict`). Since M0100 names the bindings the "Mangle bindings" pill
+  controls, `strict` is also the better demo.
+- **A `StateField`, not a `ViewPlugin`.** Hints arrive from a debounced
+  request while the visitor keeps typing; a StateField maps its ranges
+  through the intervening changes for free.
+- **Minify hints carry no distinguishing `kind`** — the wire maps them to
+  `InlayHintKind.Type` alongside real type hints
+  (`lsp/wire/editing.zig::inlayHintKindCode`), so the tooltip is the only
+  marker. And they **ignore the requested range**, unlike type hints.
+- **`unused_helper` gets no hint at all.** The estimator walks live
+  declarations only, so a tree-shaken function has no size to report. Worth
+  saying out loud on the page: its silence is the insight.
+- The server returns hints in traversal order with the module total *last*,
+  so `Decoration.set(..., true)` is load-bearing.
+- CodeMirror virtualizes: how many widgets exist in the DOM depends on scroll
+  position and window height, so no browser check may assert a fixed count.
+
+Two findings that are not about this block:
+
+- **`textDocument/formatting` is destructive.** `computeFormatting` runs the
+  whole minifier with only whitespace and identifier renaming disabled, so
+  formatting a document also strips every comment, tree-shakes dead code and
+  rewrites literals (`1.0` → `1.`). `languageServerExtensions()` binds it to
+  Shift-Alt-f, so a visitor can hit it by accident. Pinned in both suites;
+  left as-is because it is the tool's real behaviour, and `src/Cst.zig` is
+  trivia-preserving if it should ever become a true formatter.
+- **A Block 2 bug, fixed here** (`dba5c76`): Starlight's markdown vertical
+  rhythm was adding 16px between every `.cm-line`, which desynchronised
+  CodeMirror's height map and made clicking a line land two lines away.
+  Rename could not work until this was fixed. `not-content` is Starlight's
+  own opt-out. Twenty-five lines now fit where fourteen did — and this is
+  very likely why hover never looked right either.
 
 ---
 
