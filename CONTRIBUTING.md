@@ -61,6 +61,44 @@ Atomic commits are strongly preferred — one logical change per commit.
 - If you change wire formats, public APIs, or the CLI surface, mention
   it explicitly in the PR description — these are not just refactors.
 
+## Releasing
+
+One version line spans every package. Bump it in one place and let the
+build write it everywhere:
+
+```bash
+$EDITOR src/root.zig        # `pub const version` — the only manual edit
+./scripts/release.sh        # stamp, rebuild, test everything, prove the tree is fresh
+git diff                    # review what the stamp and the rebuild changed
+git commit -am "chore: release X.Y.Z"
+```
+
+`release.sh` stamps every manifest (`zig build gen-version`), rebuilds both
+WASM modules into all five destinations (`zig build release-assets`), runs
+the Zig, Go, Rust, and npm suites, reports dependency drift without applying
+it, and finishes with `git diff --exit-code`. That last step is the gate:
+both WASM builds are byte-reproducible, so a tree that moved after the
+script means what was committed was stale. `--check` does the same but
+restores the tree.
+
+Bump dependencies in their own commits *before* a release, never inside one.
+
+### Tags
+
+A release needs **two** tags on the same commit. Go resolves a module in a
+subdirectory by its path prefix, so `packages/go` cannot share the plain one:
+
+```
+v1.1.0                  the repo / Zig / npm / crates release
+packages/go/v1.1.0      what `go get …/wgslender/packages/go@v1.1.0` resolves
+```
+
+`release.sh` prints both commands rather than running them — tagging is
+irreversible, and tags are awkward to move after publication.
+
+Cut `CHANGELOG.md`'s `## [Unreleased]` section into a versioned one as part
+of the release commit.
+
 ## License
 
 Contributions are released under [CC0-1.0](./LICENSE) — public domain.

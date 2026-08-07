@@ -43,7 +43,21 @@ echo 'fn main() {}' | ./zig-out/bin/wgslender          # From stdin
 # NPM package
 cd packages/js-npm && npm test                # Run all 4 wrapper variants
 cd packages/js-npm && npm pack --dry-run      # Check package contents
+
+# Release (one version line across Zig/npm/Go/Rust/VS Code)
+$EDITOR src/root.zig       # `pub const version` — the only manual edit
+./scripts/release.sh       # stamp + rebuild + test everything + prove the tree is fresh
+./scripts/release.sh --check   # same, but restores the tree afterwards
+zig build gen-version      # stamp every manifest from src/root.zig
+zig build release-assets   # rebuild both WASM modules into all five destinations
 ```
+
+**Never hand-edit a version in a manifest** — `package.json`, `Cargo.toml`,
+and `build.zig.zon` are all stamped from `src/root.zig`'s `pub const version`
+by `zig build gen-version`, and `tests/version_sync_test.zig` fails on drift.
+Likewise, never `cp` a `.wasm` between packages: `zig build release-assets`
+writes every copy from one build, and `tests/wasm_freshness_test.zig` plus
+`release.sh`'s final `git diff --exit-code` are what keep them honest.
 
 ## Architecture
 

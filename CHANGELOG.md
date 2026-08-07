@@ -45,8 +45,43 @@ All notable changes to wgslender are recorded here. The project follows
   the advisory `@wgslender/minify` pack (its rules use `hint` severity), which
   was previously missing from the hand-maintained mirror.
 
+- **One version line across every package, and a release script.**
+  `zig build gen-version` stamps `src/root.zig`'s `pub const version` into
+  every manifest (`build.zig.zon`, three `package.json`, and all four
+  occurrences in `packages/rust/Cargo.toml`), with
+  `tests/version_sync_test.zig` failing on drift.
+  `zig build release-assets` (was `vscode-assets`, kept as an alias) writes
+  both WASM modules into all five in-tree destinations from a single build.
+  `./scripts/release.sh` runs the whole thing — stamp, rebuild, the Zig, Go,
+  Rust and npm suites, a dependency-drift report — and ends with
+  `git diff --exit-code`: because both WASM builds are byte-reproducible, a
+  tree that moved means what was committed was stale.
+
 ### Changed
 
+- **`npm/wgslender-lsp` ships 137 commits of accumulated LSP work (⚠ behavior).**
+  Its committed `wgslender-lsp.wasm` had gone stale since 2026-05-06: nothing
+  in `build.zig` wrote to that directory and the package had no build script,
+  so every LSP change since then was absent from the published package.
+  Wire-visible among them: the new `wgslender/constInventory` request,
+  semantic-token lengths corrected to UTF-16 code units, semantic tokens
+  resolved via `NodeAtOffset` instead of whole-module name match, signature
+  help backed by real builtin/function signatures, diagnostics carrying every
+  configured lint pack rather than `@wgslender/minify` alone, the per-file
+  lint result object, control bytes escaped in diagnostic JSON, and the new
+  `E0700`–`E0703` uniformity codes. `zig build release-assets` now writes this
+  copy, so it cannot recur.
+- **`packages/rust` 0.1.0 → 1.1.0 (⚠ behavior).** The four crates join the
+  shared version line. A `1.x` number is a semver promise of API stability;
+  the crates are unpublished, so nothing breaks today, but breaking changes
+  after the first publish will require `2.0.0`.
+- **`npm/wgslender-vscode` 0.1.0 → 1.1.0 (⚠ behavior).** The extension's
+  marketplace version joins the shared line and moves with core releases
+  whether or not the extension itself changed.
+- **LSP `serverInfo.version` is derived, not hardcoded.** Both transports read
+  `wgslender.version` instead of a hand-edited literal. No observable change —
+  both literals already read `1.1.0` — but the LSP can no longer misreport
+  which build it is.
 - **npm package moved to `packages/js-npm/`** (was `npm/wgslender/`). Published
   package name (`wgslender`) and public API are unchanged; only the in-repo
   path moved, so this affects local dev commands (`cd packages/js-npm && npm
