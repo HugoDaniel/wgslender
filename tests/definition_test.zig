@@ -611,6 +611,147 @@ test "definition: ptr type arg jumps to struct" {
 }
 
 // =========================================================================
+// Module-scope var declarations (uniform / storage / private / handle)
+// =========================================================================
+
+test "definition: var<uniform> usage jumps to declaration" {
+    const source: [:0]const u8 = "@group(0) @binding(0) var<uniform> params: vec4f; fn f() -> vec4f { return params; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "params") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    const decl: u32 = @intCast(std.mem.indexOf(u8, source, "params").?);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(decl, result.?.start.character);
+    try std.testing.expectEqual(decl + 6, result.?.end.character);
+}
+
+test "definition: var<storage, read_write> usage jumps to declaration" {
+    const source: [:0]const u8 = "@group(0) @binding(0) var<storage, read_write> data: array<f32>; fn f() { data[0] = 1.0; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "data") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    const decl: u32 = @intCast(std.mem.indexOf(u8, source, "data").?);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(decl, result.?.start.character);
+    try std.testing.expectEqual(decl + 4, result.?.end.character);
+}
+
+test "definition: var<private> usage jumps to declaration" {
+    const source: [:0]const u8 = "var<private> counter: u32 = 0u; fn bump() { counter = counter + 1u; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "counter") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 13), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 20), result.?.end.character);
+}
+
+test "definition: texture handle var usage jumps to declaration" {
+    const source: [:0]const u8 = "@group(0) @binding(0) var tex: texture_2d<f32>; @group(0) @binding(1) var smp: sampler; @fragment fn fs() -> @location(0) vec4f { return textureSample(tex, smp, vec2f(0.5)); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.indexOf(u8, source, "(tex,") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    const decl: u32 = @intCast(std.mem.indexOf(u8, source, "tex:").?);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(decl, result.?.start.character);
+    try std.testing.expectEqual(decl + 3, result.?.end.character);
+}
+
+test "definition: sampler handle var usage jumps to declaration" {
+    const source: [:0]const u8 = "@group(0) @binding(0) var tex: texture_2d<f32>; @group(0) @binding(1) var smp: sampler; @fragment fn fs() -> @location(0) vec4f { return textureSample(tex, smp, vec2f(0.5)); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.indexOf(u8, source, " smp,") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage + 1)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    const decl: u32 = @intCast(std.mem.indexOf(u8, source, "smp:").?);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(decl, result.?.start.character);
+    try std.testing.expectEqual(decl + 3, result.?.end.character);
+}
+
+// =========================================================================
+// Function-scope let / const
+// =========================================================================
+
+test "definition: local let usage jumps to declaration" {
+    const source: [:0]const u8 = "fn f() -> f32 { let scale = 2.0; return scale * 3.0; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "scale") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 20), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 25), result.?.end.character);
+}
+
+test "definition: function-scope const usage jumps to declaration" {
+    const source: [:0]const u8 = "fn f() -> u32 { const K: u32 = 8u; return K; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const usage = std.mem.lastIndexOf(u8, source, "K") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 22), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 23), result.?.end.character);
+}
+
+// =========================================================================
+// Declaration names themselves resolve to their own location
+// =========================================================================
+
+test "definition: on struct name returns own location" {
+    const source: [:0]const u8 = "struct Light { intensity: f32 }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 7) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 7), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 12), result.?.end.character);
+}
+
+test "definition: on struct member name returns own location" {
+    const source: [:0]const u8 = "struct Light { intensity: f32 }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const pos = Handler.offsetToLspPosition(source, 15) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 15), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, 24), result.?.end.character);
+}
+
+test "definition: on module var name returns own location" {
+    const source: [:0]const u8 = "@group(0) @binding(0) var<uniform> params: vec4f;";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const decl = std.mem.indexOf(u8, source, "params") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(source, @intCast(decl)) orelse return error.TestUnexpectedResult;
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, @intCast(decl)), result.?.start.character);
+    try std.testing.expectEqual(@as(u32, @intCast(decl + 6)), result.?.end.character);
+}
+
+// =========================================================================
 // Negative cases — non-symbol tokens return null
 // =========================================================================
 
