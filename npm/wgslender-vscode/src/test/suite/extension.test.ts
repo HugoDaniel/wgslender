@@ -14,6 +14,8 @@ import {
   LocationLink,
   MarkdownString,
   Position,
+  SymbolInformation,
+  SymbolKind,
   Uri,
   window,
   workspace,
@@ -211,6 +213,36 @@ fn integrate(p: Particle) -> Particle { return p; }
       navPosition('integrate(p: Particle)').line,
       navPosition('integrate(p)').line,
     ]);
+  });
+
+  test('workspace symbol search finds declarations across open documents', async () => {
+    const uri = await openInMemoryWgsl(NAV_SHADER);
+    const symbols = await waitFor(async () => {
+      const found = await commands.executeCommand<SymbolInformation[]>(
+        'vscode.executeWorkspaceSymbolProvider',
+        'integrate',
+      );
+      return found && found.length > 0 ? found : undefined;
+    }, 10_000);
+    const integrate = symbols.find((s) => s.name === 'integrate');
+    assert.ok(integrate, `expected an "integrate" symbol, got: ${symbols.map((s) => s.name).join(', ')}`);
+    assert.strictEqual(integrate.kind, SymbolKind.Function);
+    assert.strictEqual(integrate.location.uri.toString(), uri.toString());
+    assert.strictEqual(integrate.location.range.start.line, navPosition('integrate(p: Particle)').line);
+  });
+
+  test('workspace symbol search matches fields with their container', async () => {
+    await openInMemoryWgsl(NAV_SHADER);
+    const symbols = await waitFor(async () => {
+      const found = await commands.executeCommand<SymbolInformation[]>(
+        'vscode.executeWorkspaceSymbolProvider',
+        'vel',
+      );
+      return found && found.length > 0 ? found : undefined;
+    }, 10_000);
+    const vel = symbols.find((s) => s.name === 'vel');
+    assert.ok(vel, `expected a "vel" symbol, got: ${symbols.map((s) => s.name).join(', ')}`);
+    assert.strictEqual(vel.containerName, 'Particle');
   });
 
   test('wgslender.reflect opens a JSON document with entryPoints', async () => {
