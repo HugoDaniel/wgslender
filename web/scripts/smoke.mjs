@@ -287,6 +287,149 @@ try {
     `${minifiedBox.w}x${minifiedBox.h}`,
   );
 
+  // ---- minify insights ---------------------------------------------------
+
+  const hintCount = () => evaluate(`document.querySelectorAll('.cm-minify-hint').length`);
+  const hasMinifyLint = `[...document.querySelectorAll('[data-diagnostics] .diagnostic')].some(d => d.textContent.includes('M0100'))`;
+
+  // The diagnostic-click check above scrolled the editor to line 28, and
+  // CodeMirror only renders lines near the viewport — so get back to the top
+  // before asking about a widget that lives above line 1.
+  await evaluate(`document.querySelector('[data-editor] .cm-scroller').scrollTop = 0`);
+  await sleep(300);
+
+  check(
+    'the insights toggle is enabled once the server is up',
+    await evaluate(`!document.querySelector('[data-insights]').disabled`),
+  );
+  check('no size hints before the toggle', (await hintCount()) === 0);
+
+  await evaluate(`document.querySelector('[data-insights]').click()`);
+  // Not a fixed count: CodeMirror only renders the lines near the viewport, so
+  // how many of the eleven widgets exist in the DOM depends on scroll position
+  // and window height. The full set is `tests/insights.test.mjs`'s business;
+  // what a browser has to prove is that they reach the page at all.
+  check(
+    'toggling insights on brings in the size hints',
+    await until(`document.querySelectorAll('.cm-minify-hint').length > 3`, 10000),
+    `hints=${await hintCount()}`,
+  );
+
+  // Rendered, not merely present: a widget decoration that never reaches the
+  // DOM still counts in the decoration set.
+  const hintBox = await evaluate(`(() => {
+    const el = document.querySelector('.cm-minify-hint:not(.cm-minify-total)');
+    const r = el.getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height), text: el.textContent, title: el.title };
+  })()`);
+  check(
+    'the hints are laid out and labelled',
+    hintBox.w > 0 && hintBox.h > 0 && /^-\d/.test(hintBox.text),
+    `${hintBox.w}x${hintBox.h} "${hintBox.text}"`,
+  );
+  check(
+    'each hint discloses that it is an estimate',
+    hintBox.title.startsWith('approximate'),
+    hintBox.title,
+  );
+
+  // The module total is a block widget above line 1. Rendered inline it would
+  // sit in front of the first character of the file's opening comment.
+  const total = await evaluate(`(() => {
+    const el = document.querySelector('.cm-minify-total');
+    if (!el) return null;
+    const line = document.querySelector('[data-editor] .cm-line');
+    return {
+      text: el.textContent,
+      above: el.getBoundingClientRect().bottom <= line.getBoundingClientRect().top + 1,
+      firstLine: line.textContent.slice(0, 24),
+    };
+  })()`);
+  check(
+    'the module total sits on its own line above the shader',
+    total?.above && /^whole file-\d+ B$/.test(total.text) && total.firstLine.startsWith('//'),
+    `${JSON.stringify(total)}`,
+  );
+
+  // The same command republishes diagnostics, so the minify lints land in the
+  // panel at the moment the hints land in the editor.
+  check('the minify lints arrive with them', await until(hasMinifyLint, 10000));
+
+  await evaluate(`document.querySelector('[data-insights]').click()`);
+  check(
+    'toggling insights off removes both',
+    (await until(`document.querySelectorAll('.cm-minify-hint').length === 0`, 10000)) &&
+      (await until(`!${hasMinifyLint}`, 10000)),
+  );
+
+  // ---- rename and format -------------------------------------------------
+
+  // `languageServerExtensions()` binds F2 and Shift-Alt-f. Both are wired to
+  // the real server, so both are worth proving in a browser.
+  const key = (params) =>
+    send('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...params }).then(() =>
+      send('Input.dispatchKeyEvent', { type: 'keyUp', ...params }),
+    );
+
+  // Click the middle of the `Camera` token on its `struct` line — the same
+  // gesture a visitor makes. A DOM range gives the coordinates.
+  const spot = await evaluate(`(() => {
+    const line = [...document.querySelectorAll('[data-editor] .cm-line')]
+      .find(l => l.textContent.startsWith('struct Camera'));
+    if (!line) return null;
+    const walker = document.createTreeWalker(line, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const at = n.data.indexOf('Camera');
+      if (at < 0) continue;
+      const range = document.createRange();
+      range.setStart(n, at + 2);
+      range.setEnd(n, at + 3);
+      const r = range.getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }
+    return null;
+  })()`);
+  for (const type of ['mousePressed', 'mouseReleased']) {
+    await send('Input.dispatchMouseEvent', { type, ...spot, button: 'left', clickCount: 1 });
+  }
+
+  await key({ key: 'F2', code: 'F2', windowsVirtualKeyCode: 113, nativeVirtualKeyCode: 113 });
+  await sleep(300);
+  check('F2 opens the rename prompt', await evaluate(`!!document.querySelector('.cm-panel input')`));
+
+  await send('Input.insertText', { text: 'Lens' });
+  await key({ key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+  await sleep(500);
+  const renamed = await evaluate(`document.querySelector('[data-editor] .cm-content').textContent`);
+  check(
+    'rename rewrites the declaration and its use',
+    renamed.includes('struct Lens') && renamed.includes(': Lens;') && !renamed.includes('Camera'),
+    renamed.match(/struct \w+ \{/)?.[0] ?? '',
+  );
+
+  // Shift-Alt-f runs the server's formatter, which is the whole minifier with
+  // whitespace and identifier renaming switched off — so it also strips every
+  // comment and tree-shakes dead code. Asserted here because it is surprising,
+  // not because it is desirable.
+  await evaluate(`document.querySelector('[data-editor] .cm-content').focus()`);
+  await key({
+    // Lowercase `key`: CodeMirror's keymap matches the unshifted name, so a
+    // synthetic event reporting `F` never resolves to the binding.
+    key: 'f', code: 'KeyF', windowsVirtualKeyCode: 70, nativeVirtualKeyCode: 70,
+    modifiers: 9, // Shift (8) + Alt (1)
+  });
+  await sleep(600);
+  const formatted = await evaluate(`document.querySelector('[data-editor] .cm-content').textContent`);
+  check(
+    'Shift-Alt-f formats the document',
+    formatted.includes('view_proj: mat4x4<f32>'),
+    formatted.slice(0, 40),
+  );
+  check(
+    'and, as the formatter does, drops comments and dead code',
+    !formatted.includes('//') && !formatted.includes('unused_helper'),
+  );
+
   // The round trip: keystroke -> didChange -> wasm -> publishDiagnostics.
   await evaluate(`document.querySelector('[data-editor] .cm-content').focus()`);
   await send('Input.insertText', { text: 'fn oops(\n' });

@@ -27,6 +27,8 @@ import { LSPClient, languageServerExtensions } from '@codemirror/lsp-client';
 import type { Extension } from '@codemirror/state';
 import { createTransport } from 'wgslender-lsp';
 
+import type { LspInlayHint, LspPosition } from './insights';
+
 /** `src/MinifySettings.zig` `Mode`. */
 export type MinifyMode = 'off' | 'insights' | 'strict';
 
@@ -52,6 +54,15 @@ export interface Session {
   refreshInsights(): void;
   showMinifiedOutput(): Promise<MinifiedOutput>;
   setMinifyMode(mode: MinifyMode): Promise<unknown>;
+  /**
+   * Inlay hints for `range`. lsp-client has no inlay-hint support, so this is
+   * a plain request and `insights.ts` does the rendering.
+   *
+   * The minify-size lane ignores `range` and always answers whole-document
+   * (pinned in `tests/lsp-flow.test.mjs`); the range is sent honestly anyway,
+   * so the hints keep arriving if the server ever starts honouring it.
+   */
+  inlayHints(range: { start: LspPosition; end: LspPosition }): Promise<LspInlayHint[]>;
   /**
    * Listen for this document's diagnostics. Returns an unsubscribe function.
    *
@@ -96,6 +107,15 @@ export async function createSession(uri: string): Promise<Session> {
 
     setMinifyMode(mode) {
       return executeCommand(client, 'wgslender.setMinifyMode', [mode]);
+    },
+
+    async inlayHints(range) {
+      // The server answers `null`, not `[]`, when it has nothing to say.
+      const hints = await client.request<unknown, LspInlayHint[] | null>(
+        'textDocument/inlayHint',
+        { textDocument: { uri }, range },
+      );
+      return hints ?? [];
     },
 
     onDiagnostics(listener) {

@@ -33,6 +33,13 @@ import { minifyOptions } from '../scripts/playground/panels';
 		<header class="pane-head">
 			<h2 class="pane-title">shader.wgsl</h2>
 			<p class="pane-status" data-status>Starting the language server…</p>
+			<label
+				class="pill"
+				title="Show each declaration's estimated minified size inline, and turn on the minify lints"
+			>
+				<input type="checkbox" data-insights disabled />
+				Minify insights
+			</label>
 		</header>
 		<div class="pane-body editor" data-editor><pre class="fallback">{sampleShader}</pre></div>
 	</div>
@@ -107,6 +114,7 @@ import { minifyOptions } from '../scripts/playground/panels';
 		renderReflect,
 		renderStats,
 	} from '../scripts/playground/render';
+	import { minifyInsights, setMinifyHints } from '../scripts/playground/insights';
 
 	/** How long typing has to settle before the expensive half runs. */
 	const DEBOUNCE_MS = 300;
@@ -119,6 +127,7 @@ import { minifyOptions } from '../scripts/playground/panels';
 	const reflectHost = document.querySelector<HTMLElement>('[data-reflect]');
 	const diagnosticsHost = document.querySelector<HTMLElement>('[data-diagnostics]');
 	const copyButton = document.querySelector<HTMLButtonElement>('[data-copy]');
+	const insightsToggle = document.querySelector<HTMLInputElement>('[data-insights]');
 
 	function setStatus(message: string, failed = false) {
 		if (!status) return;
@@ -156,6 +165,7 @@ import { minifyOptions } from '../scripts/playground/panels';
 					wgsl(),
 					playgroundTheme,
 					session.extension,
+					minifyInsights,
 					EditorView.updateListener.of((update) => {
 						if (!update.docChanged) return;
 						clearTimeout(scheduled);
@@ -164,7 +174,9 @@ import { minifyOptions } from '../scripts/playground/panels';
 				],
 			}),
 		});
-		setStatus('wgslender-lsp ready — it re-checks as you type');
+		// Short on purpose: the filename, this line and the insights toggle
+		// share one header row, and the longer sentence wrapped it to two.
+		setStatus('wgslender-lsp ready');
 
 		// Diagnostics come straight from the server, so the panel shows the
 		// same codes and spec links the squiggles carry.
@@ -227,15 +239,55 @@ import { minifyOptions } from '../scripts/playground/panels';
 			if (reflectHost) renderReflect(reflectHost, buildReflectModel(source));
 		}
 
+		// Inlay hints are gated on a server-side mode, so the toggle is the
+		// single source of truth for whether we ask for them at all.
+		let hintRun = 0;
+
+		async function refreshHints() {
+			if (!insightsToggle?.checked) return setMinifyHints(view, []);
+
+			const run = ++hintRun;
+			const doc = view.state.doc;
+			const hints = await session.inlayHints({
+				start: { line: 0, character: 0 },
+				end: { line: doc.lines - 1, character: doc.line(doc.lines).length },
+			});
+			// A slow reply must not overwrite a newer one, and hints measured
+			// against a document two edits ago are worse than none.
+			if (run === hintRun) setMinifyHints(view, hints);
+		}
+
 		function settled() {
 			refreshPanels();
 			// The server publishes cheap diagnostics on every keystroke and
 			// defers the minify-lint pass to us; this is our half of that.
 			session.refreshInsights();
+			void refreshHints();
 		}
 
 		for (const box of document.querySelectorAll<HTMLInputElement>('[data-option]')) {
 			box.addEventListener('change', refreshPanels);
+		}
+
+		if (insightsToggle) {
+			insightsToggle.disabled = false;
+			insightsToggle.addEventListener('change', async () => {
+				// `strict`, not `insights`: both modes produce the size hints, but
+				// only `strict` also runs the minify lints — and those are the
+				// half that pays off here. M0100 names the bindings whose
+				// original names ship verbatim, which is exactly what the
+				// "Mangle bindings" pill in the next pane controls. The two
+				// halves of the page end up talking to each other.
+				//
+				// Order matters: the mode gates the hints server-side, so it has
+				// to land first; `refreshInsights` then recomputes the estimator
+				// and republishes diagnostics, which is what makes the lints
+				// appear in the Diagnostics panel at the same moment the hints
+				// appear in the editor.
+				await session.setMinifyMode(insightsToggle.checked ? 'strict' : 'off');
+				session.refreshInsights();
+				await refreshHints();
+			});
 		}
 
 		copyButton?.addEventListener('click', async () => {
@@ -287,13 +339,13 @@ import { minifyOptions } from '../scripts/playground/panels';
 	.pane-head {
 		display: flex;
 		flex-wrap: wrap;
-		align-items: baseline;
-		justify-content: space-between;
+		align-items: center;
 		gap: 0.5rem;
 		padding: 0.5rem 0.75rem;
 		border-bottom: 1px solid var(--sl-color-hairline);
 		background-color: var(--sl-color-bg-nav);
 	}
+
 
 	.pane-title {
 		margin: 0;
@@ -307,6 +359,13 @@ import { minifyOptions } from '../scripts/playground/panels';
 		margin: 0;
 		font-size: var(--sl-text-xs);
 		color: var(--sl-color-gray-3);
+	}
+
+	/* Filename and state read together on the left; the toggle is a control,
+	   so it goes to the right edge. `margin-left: auto` rather than
+	   `space-between` on the header, which strands the middle child. */
+	.pane-head .pill {
+		margin-left: auto;
 	}
 
 	.pane-status.failed {
