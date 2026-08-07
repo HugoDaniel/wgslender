@@ -55,6 +55,28 @@ pub fn toLspKitDocumentSymbol(
     };
 }
 
+/// Convert a `Handler.WorkspaceSymbolInfo[]` slice for a
+/// `workspace/symbol` response. Allocated on `arena`; strings are
+/// borrowed from the input (same contract as document symbols).
+pub fn toLspKitWorkspaceSymbols(
+    arena: std.mem.Allocator,
+    syms: []const Handler.WorkspaceSymbolInfo,
+) std.mem.Allocator.Error![]lsp.types.workspace.Symbol {
+    const out = try arena.alloc(lsp.types.workspace.Symbol, syms.len);
+    for (syms, 0..) |sym, i| {
+        out[i] = .{
+            .location = .{ .location = .{
+                .uri = sym.uri,
+                .range = primitives.toLspKitRange(sym.range),
+            } },
+            .name = sym.name,
+            .kind = toLspKitSymbolKind(sym.kind),
+            .containerName = if (sym.container_name.len > 0) sym.container_name else null,
+        };
+    }
+    return out;
+}
+
 // =========================================================================
 // Tests
 // =========================================================================

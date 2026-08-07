@@ -40,6 +40,7 @@ pub const server_capabilities: lsp.types.ServerCapabilities = .{
         .triggerCharacters = &.{ "(", "," },
     },
     .documentSymbolProvider = .{ .bool = true },
+    .workspaceSymbolProvider = .{ .bool = true },
     .foldingRangeProvider = .{ .bool = true },
     .typeDefinitionProvider = .{ .bool = true },
     .inlayHintProvider = .{ .bool = true },

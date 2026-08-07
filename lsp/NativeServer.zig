@@ -541,6 +541,16 @@ pub fn @"textDocument/documentSymbol"(
     return native_symbols.handleDocumentSymbol(&self.handler, arena, params);
 }
 
+pub fn @"workspace/symbol"(
+    self: *NativeServer,
+    arena: std.mem.Allocator,
+    params: lsp.types.workspace.Symbol.Params,
+) ?lsp.types.workspace.Symbol.Result {
+    self.lock();
+    defer self.unlock();
+    return native_symbols.handleWorkspaceSymbol(&self.handler, arena, params);
+}
+
 // =========================================================================
 // Folding Ranges
 // =========================================================================

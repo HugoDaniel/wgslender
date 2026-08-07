@@ -44,6 +44,20 @@ pub fn handlePrepareRename(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Val
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
 
+pub fn handleWorkspaceSymbol(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
+    const query = blk: {
+        const params = root.getPtr("params") orelse break :blk "";
+        break :blk json.strVal(json.objGet(params, "query")) orelse "";
+    };
+    const symbols = ctx.handler.computeWorkspaceSymbols(query) catch return ctx.sendResult(id, "null");
+    defer ctx.handler.gpa.free(symbols);
+    if (symbols.len == 0) return ctx.sendResult(id, "null");
+
+    var buf: std.ArrayList(u8) = .empty;
+    wire_symbols.appendWorkspaceSymbols(&buf, ctx.gpa, symbols);
+    ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
+}
+
 pub fn handleDocumentSymbol(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
     const uri = json.extractUri(root) orelse return ctx.sendResult(id, "null");
     const symbols = ctx.handler.computeDocumentSymbols(uri) catch return ctx.sendResult(id, "null");

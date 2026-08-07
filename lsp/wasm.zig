@@ -121,6 +121,7 @@ const dispatch_table = [_]struct { method: []const u8, handler: HandlerFn }{
     .{ .method = "textDocument/completion", .handler = handleCompletion },
     .{ .method = "textDocument/signatureHelp", .handler = handleSignatureHelp },
     .{ .method = "textDocument/documentSymbol", .handler = handleDocumentSymbol },
+    .{ .method = "workspace/symbol", .handler = handleWorkspaceSymbol },
     .{ .method = "textDocument/foldingRange", .handler = handleFoldingRange },
     .{ .method = "textDocument/typeDefinition", .handler = handleTypeDefinition },
     .{ .method = "textDocument/inlayHint", .handler = handleInlayHint },
@@ -290,6 +291,9 @@ fn handlePrepareRename(root: std.json.ObjectMap, id: ?std.json.Value) void {
 }
 fn handleDocumentSymbol(root: std.json.ObjectMap, id: ?std.json.Value) void {
     wasm_symbols.handleDocumentSymbol(symbolsCtx(), root, id);
+}
+fn handleWorkspaceSymbol(root: std.json.ObjectMap, id: ?std.json.Value) void {
+    wasm_symbols.handleWorkspaceSymbol(symbolsCtx(), root, id);
 }
 
 fn handleCompletion(root: std.json.ObjectMap, id: ?std.json.Value) void {

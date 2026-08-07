@@ -42,6 +42,18 @@ pub fn handlePrepareRename(
     };
 }
 
+pub fn handleWorkspaceSymbol(
+    h: *Handler,
+    arena: std.mem.Allocator,
+    params: lsp.types.workspace.Symbol.Params,
+) ?lsp.types.workspace.Symbol.Result {
+    const symbols = h.computeWorkspaceSymbols(params.query) catch return null;
+    defer h.gpa.free(symbols);
+    if (symbols.len == 0) return null;
+    const lsp_symbols = sym_codec.toLspKitWorkspaceSymbols(arena, symbols) catch return null;
+    return .{ .workspace_symbols = lsp_symbols };
+}
+
 pub fn handleDocumentSymbol(
     h: *Handler,
     arena: std.mem.Allocator,

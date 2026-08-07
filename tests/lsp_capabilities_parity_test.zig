@@ -98,6 +98,7 @@ test "both transports advertise the full go-to navigation family" {
         "referencesProvider",
         "documentHighlightProvider",
         "documentSymbolProvider",
+        "workspaceSymbolProvider",
         "renameProvider",
         "callHierarchyProvider",
         "hoverProvider",

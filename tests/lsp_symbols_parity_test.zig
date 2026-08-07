@@ -195,3 +195,64 @@ test "parity: CodeAction — isPreferred=false omits the field on both transport
 
     try expectEqualJson(a, b);
 }
+
+// =========================================================================
+// WorkspaceSymbol (workspace/symbol)
+// =========================================================================
+
+test "parity: WorkspaceSymbol — module symbol without container" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const syms = [_]Handler.WorkspaceSymbolInfo{
+        .{
+            .name = "integrate",
+            .kind = .function,
+            .uri = test_uri,
+            .range = sample_sel,
+            .container_name = "",
+        },
+        .{
+            .name = "particles",
+            .kind = .variable,
+            .uri = "test://other.wgsl",
+            .range = sample_range,
+            .container_name = "",
+        },
+    };
+
+    const lsp_syms = try lspkit.symbols.toLspKitWorkspaceSymbols(aa, &syms);
+    const a = try writeAndParse(aa, []const lsp.types.workspace.Symbol, lsp_syms);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    wire.symbols.appendWorkspaceSymbols(&buf, aa, &syms);
+    const b = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
+
+    try expectEqualJson(a, b);
+}
+
+test "parity: WorkspaceSymbol — field carries containerName, empty omits it on both" {
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const syms = [_]Handler.WorkspaceSymbolInfo{
+        .{
+            .name = "pos",
+            .kind = .field,
+            .uri = test_uri,
+            .range = sample_sel,
+            .container_name = "Particle",
+        },
+    };
+
+    const lsp_syms = try lspkit.symbols.toLspKitWorkspaceSymbols(aa, &syms);
+    const a = try writeAndParse(aa, []const lsp.types.workspace.Symbol, lsp_syms);
+
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    wire.symbols.appendWorkspaceSymbols(&buf, aa, &syms);
+    const b = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
+
+    try expectEqualJson(a, b);
+}

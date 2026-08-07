@@ -105,6 +105,31 @@ async function run() {
   assert(typeDefResult !== null, 'typeDefinition resolves the var usage');
   assert(typeDefResult.range.start.character === navText.indexOf('S {'), 'typeDefinition points at the struct');
 
+  // ---- workspace/symbol ----
+  console.log('  workspace/symbol...');
+  assert(initResult.result.capabilities.workspaceSymbolProvider === true, 'workspaceSymbolProvider advertised');
+
+  const wsResponses = sendMessage(JSON.stringify({
+    jsonrpc: '2.0', id: 13, method: 'workspace/symbol',
+    params: { query: 'f' }
+  }));
+  const wsResult = JSON.parse(wsResponses[0]).result;
+  assert(Array.isArray(wsResult), 'workspace/symbol returns an array');
+  assert(wsResult.length === 1, 'query "f" matches exactly the function');
+  assert(wsResult[0].name === 'f', 'symbol name is f');
+  assert(wsResult[0].kind === 12, 'symbol kind is Function');
+  assert(wsResult[0].location.uri === 'file:///nav.wgsl', 'symbol location uri');
+
+  const wsAllResponses = sendMessage(JSON.stringify({
+    jsonrpc: '2.0', id: 14, method: 'workspace/symbol',
+    params: { query: '' }
+  }));
+  const wsAll = JSON.parse(wsAllResponses[0]).result;
+  // nav.wgsl: S, v (field of S), u, f — test.wgsl: main
+  assert(wsAll.length === 5, `empty query returns every open document's symbols (got ${wsAll.length})`);
+  const field = wsAll.find(s => s.name === 'v');
+  assert(field && field.containerName === 'S', 'field carries its container name');
+
   sendMessage(JSON.stringify({
     jsonrpc: '2.0', method: 'textDocument/didClose',
     params: { textDocument: { uri: 'file:///nav.wgsl' } }

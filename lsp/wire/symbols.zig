@@ -66,6 +66,36 @@ pub fn appendDocSymbol(
     buf.append(gpa, '}') catch {};
 }
 
+/// Append `[{<workspace sym>}, …]` for a `workspace/symbol` response.
+/// Field order mirrors the lsp-kit stringifier (`location` first) so
+/// the transports stay byte-comparable, though the parity harness
+/// compares structurally. `containerName` is omitted when empty.
+pub fn appendWorkspaceSymbols(
+    buf: *std.ArrayList(u8),
+    gpa: std.mem.Allocator,
+    syms: []const Handler.WorkspaceSymbolInfo,
+) void {
+    buf.append(gpa, '[') catch return;
+    for (syms, 0..) |sym, i| {
+        if (i > 0) buf.append(gpa, ',') catch {};
+        primitives.appendStr(buf, gpa, "{\"location\":{\"uri\":\"");
+        Diagnostic.appendJsonEscaped(buf, gpa, sym.uri) catch {};
+        primitives.appendStr(buf, gpa, "\",\"range\":");
+        primitives.formatRange(buf, gpa, sym.range);
+        primitives.appendStr(buf, gpa, "},\"name\":\"");
+        Diagnostic.appendJsonEscaped(buf, gpa, sym.name) catch {};
+        primitives.appendStr(buf, gpa, "\",\"kind\":");
+        primitives.appendUint(buf, gpa, symbolKindCode(sym.kind));
+        if (sym.container_name.len > 0) {
+            primitives.appendStr(buf, gpa, ",\"containerName\":\"");
+            Diagnostic.appendJsonEscaped(buf, gpa, sym.container_name) catch {};
+            buf.append(gpa, '"') catch {};
+        }
+        buf.append(gpa, '}') catch {};
+    }
+    buf.append(gpa, ']') catch {};
+}
+
 // =========================================================================
 // Tests
 // =========================================================================
