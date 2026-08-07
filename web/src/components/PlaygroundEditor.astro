@@ -18,7 +18,17 @@ import { sampleShader } from '../scripts/playground/sample-shader';
 import { minifyOptions } from '../scripts/playground/panels';
 ---
 
-<section class="playground">
+{/*
+	`not-content` is Starlight's own opt-out, and it is load-bearing here.
+	Without it, `.sl-markdown-content :not(…) + :not(…)` in
+	`style/markdown.css` puts `margin-top: var(--sl-content-gap-y)` between
+	*every* adjacent pair of elements it can reach — including CodeMirror's
+	`.cm-line` and `.cm-gutterElement` divs. That is not just cosmetic: it
+	adds 16px between every line, so the editor's DOM geometry stops matching
+	the height map CodeMirror measured, and clicking a line puts the cursor
+	two lines away. Rename-at-the-cursor and hover both miss their targets.
+*/}
+<section class="playground not-content">
 	<div class="pane">
 		<header class="pane-head">
 			<h2 class="pane-title">shader.wgsl</h2>
