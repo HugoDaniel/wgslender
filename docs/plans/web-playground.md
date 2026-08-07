@@ -239,6 +239,10 @@ accepts both ranged and full-text forms, `lsp/wasm/document_sync.zig:47-66`),
 natively), and `executeCommandProvider.commands = ["wgslender.setMinifyMode",
 "wgslender.toggleMinifyMode", "wgslender.recomputeMinifyInsights"]`.
 
+> **Superseded.** Those ids are now `wgslender.server.*`, and
+> `showMinifiedOutput` joined the advertised list. They collided with the VS
+> Code extension's own command ids — see the Block 5 outcomes.
+
 Four flow facts that shape the design:
 
 1. **Diagnostics are pushed synchronously.** `handleDidOpen` /
@@ -715,6 +719,18 @@ different.
   tooltip. Prose stays outside the fence and is escaped instead, because
   `step`'s description reads "Returns 0.0 if x < edge, otherwise 1.0." and
   survived only because that `<` is followed by a space.
+- **Running the VS Code extension's own suite found three more bugs**, all
+  older than this plan and all invisible because that suite had not compiled
+  in a long time (`import * as Mocha` is not constructable under
+  `esModuleInterop`, so `tsc` refused it). In order of discovery: the desktop
+  bundle threw on load, because esbuild resolved `wgslender`'s ESM entry for a
+  cjs output and `import.meta.url` is empty there (`2ca8960`); `activate`
+  aborted at `lsp.ts:33` because the server advertised
+  `wgslender.toggleMinifyMode` and vscode-languageclient registers a VS Code
+  command for every advertised id, colliding with the extension's own — the
+  server now lives in `wgslender.server.*`; and `wgslender.reflect` opened a
+  document reading "[object Object]", because the extension typed the wire's
+  `json` field as a string when both transports send a structured value.
 - **The two starter doc pages went with their links.** "Example Guide" and
   "Example Reference" said "a guide in my new Starlight docs site" and sat in
   the sidebar of every page; the definition of done's "no starter links
