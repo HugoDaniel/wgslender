@@ -12,3 +12,18 @@ context — the shader below is checked by the same code the CLI and the editor 
 compiled to WebAssembly.
 
 <PlaygroundEditor />
+
+## Things to try
+
+- **Hover a builtin** — `textureSample`, `sin`, `mix` — for its signature and uniformity rules.
+- **Rename a function.** Click the name `wave`, press <kbd>F2</kbd>, and type. Every reference
+  moves with it. (The cursor has to be on the name itself, not on the `fn` in front of it.)
+- **Break something.** Change `camera.time` to `camera.tim` and watch the squiggle and the
+  Diagnostics panel arrive together — then click the diagnostic to jump to it.
+- **Turn on Minify insights.** Each declaration grows a byte estimate showing what it costs
+  after minification. `unused_helper` gets none: nothing calls it, so it is not in the output
+  at all. The same switch turns on the minify lints, which point out that `camera` and
+  `particles` ship under their original names — flip **Mangle bindings** in the next pane to
+  see what changes.
+- **Toggle the pills** in the Minified panel and watch the gzip column. `Sort declarations`
+  and `Scope-local rename` do not shrink the output; they make it compress better.
