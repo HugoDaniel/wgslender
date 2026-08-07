@@ -628,6 +628,10 @@ pub fn build(b: *std.Build) void {
     gen_version_step.dependOn(&run_gen_version.step);
     // Drift gate: every manifest must already carry the canonical version.
     _ = addTestStep(b, test_step, "tests/version_sync_test.zig", target, optimize, &.{ w, .{ .name = "gen_version", .module = gen_version_mod } });
+    // Drift gate for the committed WASM artefacts — copy-equality and a
+    // version pin. Deliberately *not* a freshness proof; see the file's
+    // header for why only `scripts/release.sh` can be one.
+    _ = addTestStep(b, test_step, "tests/wasm_freshness_test.zig", target, optimize, &.{w});
 
     // LSP Handler tests
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
