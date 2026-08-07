@@ -4,6 +4,7 @@
 
 const lsp = @import("lsp");
 const wgslender = @import("wgslender");
+const Handler = @import("Handler");
 
 pub const server_info: lsp.types.ServerInfo = .{
     .name = "wgslender-lsp",
@@ -65,12 +66,6 @@ pub const server_capabilities: lsp.types.ServerCapabilities = .{
         },
     },
     .executeCommandProvider = .{
-        .commands = &.{
-            "wgslender.setMinifyMode",
-            "wgslender.toggleMinifyMode",
-            "wgslender.showMinifiedOutput",
-            "wgslender.recomputeMinifyInsights",
-            "wgslender.reflect",
-        },
+        .commands = &Handler.command_ids.native,
     },
 };

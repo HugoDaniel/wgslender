@@ -120,7 +120,7 @@ pub fn handleExecuteCommand(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Va
             return;
         },
     };
-    if (std.mem.eql(u8, command, "wgslender.showMinifiedOutput")) {
+    if (std.mem.eql(u8, command, Handler.command_ids.id.show_minified_output)) {
         if (id == null) return;
         const items = args_slice orelse return ctx.sendErrorCode(id, -32602, "missing uri");
         if (items.len < 1) return ctx.sendErrorCode(id, -32602, "missing uri");

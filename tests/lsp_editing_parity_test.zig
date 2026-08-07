@@ -1,7 +1,7 @@
 //! Parity harness for the editing batch (completion, signature help,
 //! folding ranges, inlay hints, code lens, selection range, semantic
 //! tokens, formatting) plus the data-returning workspace commands
-//! (`wgslender.showMinifiedOutput`, `wgslender/reflect`).
+//! (`wgslender.server.showMinifiedOutput`, `wgslender/reflect`).
 //!
 //! `lspkit/<feature>.zig` (driven by `lsp.writeResponse`) and
 //! `wire/<feature>.zig` must emit byte-equivalent JSON for every result
@@ -215,7 +215,7 @@ test "parity: codeLens — title-only and command-with-arguments" {
         .{
             .range = sample_range,
             .title = "Show minified",
-            .command = "wgslender.showMinifiedOutput",
+            .command = "wgslender.server.showMinifiedOutput",
             .arguments = args[0..],
         },
     };

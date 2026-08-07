@@ -73,7 +73,7 @@ export interface LspSettings {
   reportUnusedDisableDirectives?: boolean;
   /**
    * CLI-minifier knobs (also live in `wgslender.json`). The LSP
-   * forwards these to the `wgslender.showMinifiedOutput` command and
+   * forwards these to the `wgslender.server.showMinifiedOutput` command and
    * uses them to key the per-document estimator cache, so flipping
    * any of them invalidates the displayed insights.
    */

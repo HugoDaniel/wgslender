@@ -197,7 +197,7 @@ test "parity: showMinifiedOutput — arguments: null → InvalidParams / -32602 
 
     // Native: arguments = null
     const params: lsp.types.workspace.execute_command.Params = .{
-        .command = "wgslender.showMinifiedOutput",
+        .command = "wgslender.server.showMinifiedOutput",
         .arguments = null,
     };
     const native_err = if (native_workspace_commands.handle(handler, aa, params)) |_|
@@ -212,7 +212,7 @@ test "parity: showMinifiedOutput — arguments: null → InvalidParams / -32602 
     var ws_outbox = std.ArrayListUnmanaged([]u8).empty;
     defer ws_outbox.deinit(std.testing.allocator);
     const root = try parseRoot(aa,
-        \\{"params":{"command":"wgslender.showMinifiedOutput"}}
+        \\{"params":{"command":"wgslender.server.showMinifiedOutput"}}
     );
     wasm_workspace_commands.handleExecuteCommand(harness.ctx, root, .{ .integer = 0 });
 
@@ -236,7 +236,7 @@ test "parity: showMinifiedOutput — arguments: [] → InvalidParams / -32602 / 
 
     const empty_args: []const std.json.Value = &.{};
     const params: lsp.types.workspace.execute_command.Params = .{
-        .command = "wgslender.showMinifiedOutput",
+        .command = "wgslender.server.showMinifiedOutput",
         .arguments = empty_args,
     };
     const native_err = if (native_workspace_commands.handle(handler, aa, params)) |_|
@@ -248,7 +248,7 @@ test "parity: showMinifiedOutput — arguments: [] → InvalidParams / -32602 / 
     var harness = makeWasmHarness(handler);
     wireWasmCtx(&harness);
     const root = try parseRoot(aa,
-        \\{"params":{"command":"wgslender.showMinifiedOutput","arguments":[]}}
+        \\{"params":{"command":"wgslender.server.showMinifiedOutput","arguments":[]}}
     );
     wasm_workspace_commands.handleExecuteCommand(harness.ctx, root, .{ .integer = 0 });
 
@@ -272,7 +272,7 @@ test "parity: showMinifiedOutput — arguments[0] not a string → InvalidParams
 
     var args = [_]std.json.Value{.{ .integer = 42 }};
     const params: lsp.types.workspace.execute_command.Params = .{
-        .command = "wgslender.showMinifiedOutput",
+        .command = "wgslender.server.showMinifiedOutput",
         .arguments = args[0..],
     };
     const native_err = if (native_workspace_commands.handle(handler, aa, params)) |_|
@@ -284,7 +284,7 @@ test "parity: showMinifiedOutput — arguments[0] not a string → InvalidParams
     var harness = makeWasmHarness(handler);
     wireWasmCtx(&harness);
     const root = try parseRoot(aa,
-        \\{"params":{"command":"wgslender.showMinifiedOutput","arguments":[42]}}
+        \\{"params":{"command":"wgslender.server.showMinifiedOutput","arguments":[42]}}
     );
     wasm_workspace_commands.handleExecuteCommand(harness.ctx, root, .{ .integer = 0 });
 
@@ -308,7 +308,7 @@ test "parity: showMinifiedOutput — unknown URI → InvalidParams / -32602 / 'd
 
     var args = [_]std.json.Value{.{ .string = "test://unknown.wgsl" }};
     const params: lsp.types.workspace.execute_command.Params = .{
-        .command = "wgslender.showMinifiedOutput",
+        .command = "wgslender.server.showMinifiedOutput",
         .arguments = args[0..],
     };
     const native_err = if (native_workspace_commands.handle(handler, aa, params)) |_|
@@ -320,7 +320,7 @@ test "parity: showMinifiedOutput — unknown URI → InvalidParams / -32602 / 'd
     var harness = makeWasmHarness(handler);
     wireWasmCtx(&harness);
     const root = try parseRoot(aa,
-        \\{"params":{"command":"wgslender.showMinifiedOutput","arguments":["test://unknown.wgsl"]}}
+        \\{"params":{"command":"wgslender.server.showMinifiedOutput","arguments":["test://unknown.wgsl"]}}
     );
     wasm_workspace_commands.handleExecuteCommand(harness.ctx, root, .{ .integer = 0 });
 
@@ -333,7 +333,7 @@ test "parity: showMinifiedOutput — unknown URI → InvalidParams / -32602 / 'd
 // =========================================================================
 // reflect error cases
 //
-// Native: dispatches via `executeCommand` with command="wgslender.reflect".
+// Native: dispatches via `executeCommand` with command="wgslender.server.reflect".
 // Wasm: dispatches via the custom `wgslender/reflect` method, so we drive
 // `handleReflect` directly with a different params shape. The asserted
 // invariant is that the same logical failure produces the same code on
@@ -354,7 +354,7 @@ test "parity: reflect — missing params → InvalidParams / -32602 / 'missing p
 
     // Native equivalent: arguments: null → runReflect → InvalidParams
     const params: lsp.types.workspace.execute_command.Params = .{
-        .command = "wgslender.reflect",
+        .command = "wgslender.server.reflect",
         .arguments = null,
     };
     const native_err = if (native_workspace_commands.handle(handler, aa, params)) |_|
@@ -394,7 +394,7 @@ test "parity: reflect — bad format string 'v3' → InvalidParams / -32602 / fo
         .{ .string = "v3" },
     };
     const params: lsp.types.workspace.execute_command.Params = .{
-        .command = "wgslender.reflect",
+        .command = "wgslender.server.reflect",
         .arguments = args[0..],
     };
     const native_err = if (native_workspace_commands.handle(handler, aa, params)) |_|
@@ -433,7 +433,7 @@ test "parity: reflect — unknown URI → InvalidParams / -32602 / 'document not
         .{ .string = "v2" },
     };
     const params: lsp.types.workspace.execute_command.Params = .{
-        .command = "wgslender.reflect",
+        .command = "wgslender.server.reflect",
         .arguments = args[0..],
     };
     const native_err = if (native_workspace_commands.handle(handler, aa, params)) |_|

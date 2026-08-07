@@ -57,7 +57,7 @@ export function formatBytes(bytes: number): string {
  *
  * The stats bar's compressed number has to describe the code actually on
  * screen, which is minified with whatever the pills currently say. The
- * server's `wgslender.showMinifiedOutput` reports a gzip count too, but for
+ * server's `wgslender.server.showMinifiedOutput` reports a gzip count too, but for
  * *its* settings rather than the panel's, so the two would disagree the
  * moment a pill was toggled. Returns null where `CompressionStream` is
  * missing, and the column is then left out rather than guessed at.

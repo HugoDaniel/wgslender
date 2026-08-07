@@ -12,7 +12,7 @@
 const std = @import("std");
 const Handler = @import("Handler");
 
-/// Build the `std.json.Value` body for `wgslender.showMinifiedOutput`.
+/// Build the `std.json.Value` body for `wgslender.server.showMinifiedOutput`.
 /// Mirrors the shape emitted by `wire/workspace_commands.zig`.
 pub fn toLspKitShowMinifiedOutput(
     arena: std.mem.Allocator,

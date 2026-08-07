@@ -32,7 +32,7 @@ import type { LspInlayHint, LspPosition } from './insights';
 /** `src/MinifySettings.zig` `Mode`. */
 export type MinifyMode = 'off' | 'insights' | 'strict';
 
-/** Result of `wgslender.showMinifiedOutput` (`lsp/wire/workspace_commands.zig`). */
+/** Result of `wgslender.server.showMinifiedOutput` (`lsp/wire/workspace_commands.zig`). */
 export interface MinifiedOutput {
   uri: string;
   minified_text: string;
@@ -102,11 +102,11 @@ export async function createSession(uri: string): Promise<Session> {
     },
 
     showMinifiedOutput() {
-      return executeCommand<MinifiedOutput>(client, 'wgslender.showMinifiedOutput', [uri]);
+      return executeCommand<MinifiedOutput>(client, 'wgslender.server.showMinifiedOutput', [uri]);
     },
 
     setMinifyMode(mode) {
-      return executeCommand(client, 'wgslender.setMinifyMode', [mode]);
+      return executeCommand(client, 'wgslender.server.setMinifyMode', [mode]);
     },
 
     async inlayHints(range) {

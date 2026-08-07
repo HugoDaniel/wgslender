@@ -1,11 +1,13 @@
 //! workspace/executeCommand handlers: dispatch the void-returning
-//! mode-toggle commands and the data-returning
-//! `wgslender.showMinifiedOutput` / `wgslender/reflect` operations.
+//! mode-toggle commands and the data-returning `showMinifiedOutput` /
+//! `wgslender/reflect` operations. Command ids come from
+//! `lsp/command_ids.zig`; see it for why they are namespaced.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Handler = @import("../Handler.zig");
+const ids = @import("../command_ids.zig");
 const MinifySettings = wgslender.MinifySettings;
 
 pub const CommandError = error{
@@ -17,7 +19,7 @@ pub const CommandError = error{
     ReflectFailed,
 };
 
-/// Result of running `wgslender.showMinifiedOutput`. Mirrors master-plan
+/// Result of running `wgslender.server.showMinifiedOutput`. Mirrors master-plan
 /// §9.2: the client opens a virtual document with `minified_text` and
 /// uses the byte counts for status-bar / lens display without
 /// re-deriving them. All four fields are owned by the request arena
@@ -56,10 +58,10 @@ pub const ConstInventoryCommandResult = struct {
 /// arguments, otherwise a slice of `LSPAny` (= `std.json.Value`).
 ///
 /// Used for the void-returning commands (mode toggles). Data-returning
-/// commands (e.g. `wgslender.showMinifiedOutput`) live on dedicated
+/// commands (e.g. `wgslender.server.showMinifiedOutput`) live on dedicated
 /// methods because the wire shape — and the arena lifetime — differs.
 pub fn executeCommand(handler: *Handler, name: []const u8, args: ?[]const std.json.Value) CommandError!void {
-    if (std.mem.eql(u8, name, "wgslender.setMinifyMode")) {
+    if (std.mem.eql(u8, name, ids.id.set_minify_mode)) {
         const items = args orelse return error.InvalidParams;
         if (items.len < 1) return error.InvalidParams;
         const s = switch (items[0]) {
@@ -70,7 +72,7 @@ pub fn executeCommand(handler: *Handler, name: []const u8, args: ?[]const std.js
         handler.workspace_config.lsp_minify.mode = m;
         return;
     }
-    if (std.mem.eql(u8, name, "wgslender.toggleMinifyMode")) {
+    if (std.mem.eql(u8, name, ids.id.toggle_minify_mode)) {
         const current = handler.effectiveMinify().mode;
         const next: MinifySettings.Mode = switch (current) {
             .off => .insights,
@@ -80,7 +82,7 @@ pub fn executeCommand(handler: *Handler, name: []const u8, args: ?[]const std.js
         handler.workspace_config.lsp_minify.mode = next;
         return;
     }
-    if (std.mem.eql(u8, name, "wgslender.recomputeMinifyInsights")) {
+    if (std.mem.eql(u8, name, ids.id.recompute_minify_insights)) {
         // Phase 7 native debounce shim. lsp-kit's `basic_server.run`
         // dispatch only knows method names registered with the
         // generator, so a custom `wgslender/recomputeMinifyInsights`
@@ -102,7 +104,7 @@ pub fn executeCommand(handler: *Handler, name: []const u8, args: ?[]const std.js
     return error.UnknownCommand;
 }
 
-/// Run `wgslender.showMinifiedOutput` for `uri`. The full minifier
+/// Run `wgslender.server.showMinifiedOutput` for `uri`. The full minifier
 /// pipeline runs against the document's current source — this is the
 /// "cold path" the master plan §2.4 reserves for on-command requests
 /// (the lens title itself uses the cheap `MinifyEstimator`). All

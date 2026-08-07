@@ -373,7 +373,7 @@ test "appendCodeLenses: command + arguments shape" {
     const lenses = [_]Handler.CodeLensInfo{.{
         .range = sample_range,
         .title = "1 ref",
-        .command = "wgslender.showMinifiedOutput",
+        .command = "wgslender.server.showMinifiedOutput",
         .arguments = @constCast(&args),
     }};
     var buf: std.ArrayList(u8) = .empty;
@@ -382,7 +382,7 @@ test "appendCodeLenses: command + arguments shape" {
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
     const cmd = v.array.items[0].object.get("command").?.object;
     try testing.expectEqualStrings("1 ref", cmd.get("title").?.string);
-    try testing.expectEqualStrings("wgslender.showMinifiedOutput", cmd.get("command").?.string);
+    try testing.expectEqualStrings("wgslender.server.showMinifiedOutput", cmd.get("command").?.string);
     try testing.expectEqualStrings("test://a.wgsl", cmd.get("arguments").?.array.items[0].string);
 }
 

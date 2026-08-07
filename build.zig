@@ -172,6 +172,9 @@ pub fn build(b: *std.Build) void {
             // Only for `server_info.version` — the LSP reports the core
             // version rather than a literal of its own.
             .{ .name = "wgslender", .module = wgslender_mod },
+            // Only for `command_ids` — the advertised executeCommand list
+            // comes from the same constants the dispatchers match on.
+            .{ .name = "Handler", .module = handler_mod },
         },
     });
     const native_navigation_mod = b.addModule("native_navigation", .{

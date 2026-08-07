@@ -1,5 +1,5 @@
 //! JSON encoders for the data-returning workspace commands:
-//! `wgslender.showMinifiedOutput` and `wgslender/reflect`.
+//! `wgslender.server.showMinifiedOutput` and `wgslender/reflect`.
 //!
 //! Reached as `wire.workspace_commands.*` via `lsp/wire_root.zig`. The
 //! WASM transport drives both helpers from `wasm/workspace_commands.zig`;
@@ -13,7 +13,7 @@ const primitives = @import("primitives.zig");
 
 const Diagnostic = wgslender.Diagnostic;
 
-/// Emit the success body for `wgslender.showMinifiedOutput`:
+/// Emit the success body for `wgslender.server.showMinifiedOutput`:
 /// `{"uri":"…","minified_text":"…","byte_count":N,"gz_count":N}`.
 pub fn appendShowMinifiedOutput(
     buf: *std.ArrayList(u8),

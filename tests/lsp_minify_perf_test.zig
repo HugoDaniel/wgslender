@@ -177,7 +177,7 @@ test "perf: rapid didChange coalesces to single estimator run" {
     //      itself touching the estimator.
     //   2. `refreshMinifyInsights` is the only estimator-running entry
     //      point on the hot path (transports route through it once on
-    //      idle / on `wgslender.recomputeMinifyInsights`).
+    //      idle / on `wgslender.server.recomputeMinifyInsights`).
     // Drive that contract here without a transport stub.
     const h = try setup();
     defer teardown(h);
@@ -447,7 +447,7 @@ test "perf: full-minify burst coalesces to single estimator run" {
 test "perf: refreshMinifyInsights hand-off (recomputeMinifyInsights path)" {
     // The WASM transport's `wgslender/recomputeMinifyInsights` notification
     // (lsp/wasm.zig:handleRecomputeMinifyInsights) and the native
-    // `wgslender.recomputeMinifyInsights` executeCommand entry both call
+    // `wgslender.server.recomputeMinifyInsights` executeCommand entry both call
     // `Handler.refreshMinifyInsights(uri)` → `emitDiagnostics(uri)` /
     // `republishAllDocuments`. Driving the shared entry point exercises
     // the cache-warming side-effect both transports rely on without

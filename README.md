@@ -421,9 +421,17 @@ A full-featured WGSL language server built from the same analyzer as the CLI.
 | Call hierarchy | Incoming and outgoing calls |
 | Incremental sync | `TextDocumentSyncKind.Incremental` — only changed ranges are reparsed |
 | `workspace/configuration` | Pulls `wgslender` section. Schema mirrors `wgslender.json`: LSP-only knobs under `lsp.*` (`lsp.inlayHints.enabled`, `lsp.diagnostics.enabled`, `lsp.minifyMode`, `lsp.minifyLints.{enabled,budgetBytes}`); CLI knobs at top-level (`mangleExternalBindings`, `minifyWhitespace`, …); per-rule severities at top-level `rules` (id-keyed, ESLint-shape) |
-| `workspace/executeCommand` | `wgslender.setMinifyMode`, `wgslender.toggleMinifyMode`, `wgslender.showMinifiedOutput` |
+| `workspace/executeCommand` | `wgslender.server.setMinifyMode`, `wgslender.server.toggleMinifyMode`, `wgslender.server.recomputeMinifyInsights`, `wgslender.server.showMinifiedOutput` (native adds `wgslender.server.reflect`) |
 
-Both transports (native stdio and browser WASM) expose the same capability set.
+The `wgslender.server.` prefix is deliberate. A client may turn every
+advertised command id into a command of its own — vscode-languageclient
+registers a VS Code command for each — so an id that an editor extension also
+registers collides and breaks its activation. Editor command ids live in
+`wgslender.*`; the server keeps to `wgslender.server.*`.
+
+Both transports (native stdio and browser WASM) expose the same capability
+set, with one exception: reflection is a command (`wgslender.server.reflect`)
+on the native transport and the `wgslender/reflect` request on both.
 
 #### Minifier-mode size budget
 
@@ -461,7 +469,7 @@ supply the budget via the standard rule-options shape:
 ```
 
 Clicking the total-size lens triggers `workspace/executeCommand` with
-`wgslender.showMinifiedOutput`. The server runs the full minifier and
+`wgslender.server.showMinifiedOutput`. The server runs the full minifier and
 returns `{ uri, minified_text, byte_count, gz_count }`; the client is
 expected to open a virtual document (e.g. `wgslender-minified:` URI
 scheme) with the returned text — wgslender does not create files.

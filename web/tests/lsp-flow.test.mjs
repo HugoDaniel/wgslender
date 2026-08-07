@@ -1,7 +1,7 @@
 // A full wgslender-lsp session, driven headlessly over `sendMessage` — no
 // CodeMirror, no DOM. This pins the wire behaviour the playground's editor
 // island depends on: pushed diagnostics, hover, go-to-definition, and the
-// `wgslender.showMinifiedOutput` command that feeds the stats bar's gzip
+// `wgslender.server.showMinifiedOutput` command that feeds the stats bar's gzip
 // column. The minifier package's `minify`/`reflect` are checked here too,
 // since the panels read them directly.
 //
@@ -91,7 +91,7 @@ const isMinifyHint = (hint) => hint.tooltip?.startsWith('approximate minified by
 
 const setMinifyMode = (mode) =>
   request('workspace/executeCommand', {
-    command: 'wgslender.setMinifyMode',
+    command: 'wgslender.server.setMinifyMode',
     arguments: [mode],
   });
 
@@ -113,10 +113,14 @@ test('initialize advertises the capabilities the playground relies on', () => {
   assert.equal(result.capabilities.textDocumentSync.change, 2);
   assert.equal(result.capabilities.hoverProvider, true);
   assert.equal(result.capabilities.inlayHintProvider, true);
+  // Namespaced under `wgslender.server.` because a client may turn each of
+  // these into a command of its own — vscode-languageclient does — and an id
+  // the editor extension also registers aborts its activation.
   assert.deepEqual(result.capabilities.executeCommandProvider.commands, [
-    'wgslender.setMinifyMode',
-    'wgslender.toggleMinifyMode',
-    'wgslender.recomputeMinifyInsights',
+    'wgslender.server.setMinifyMode',
+    'wgslender.server.toggleMinifyMode',
+    'wgslender.server.recomputeMinifyInsights',
+    'wgslender.server.showMinifiedOutput',
   ]);
 
   notify('initialized', {});
@@ -188,7 +192,7 @@ test('go-to-definition on a call lands on the declaration', () => {
 
 test('showMinifiedOutput returns text plus byte and gzip counts', () => {
   const { result } = request('workspace/executeCommand', {
-    command: 'wgslender.showMinifiedOutput',
+    command: 'wgslender.server.showMinifiedOutput',
     arguments: [sampleUri],
   });
 

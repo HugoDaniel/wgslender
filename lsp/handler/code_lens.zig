@@ -1,11 +1,12 @@
 //! Code Lens: emit reference counts, binding summaries, workgroup
-//! sizes, and the module-level total-size lens that links to
-//! `wgslender.showMinifiedOutput`.
+//! sizes, and the module-level total-size lens that links to the
+//! server's `showMinifiedOutput` command.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Handler = @import("../Handler.zig");
+const ids = @import("../command_ids.zig");
 const Range = Handler.Range;
 const Ast = wgslender.Ast;
 const Edits = wgslender.Edits;
@@ -16,7 +17,7 @@ pub const CodeLensInfo = struct {
     /// Optional command to invoke when the lens is clicked. Existing
     /// reference / binding / workgroup lenses leave this null and surface
     /// as plain title-only lenses (`command = ""` in the LSP wire shape).
-    /// The total-size lens sets it to `wgslender.showMinifiedOutput`.
+    /// The total-size lens sets it to `command_ids.id.show_minified_output`.
     command: ?[]const u8 = null,
     /// JSON arguments forwarded to the command. Owned by the same
     /// allocator as `title`; `freeCodeLens` releases both. The
@@ -133,7 +134,7 @@ pub fn computeCodeLens(handler: *Handler, uri: []const u8) ![]CodeLensInfo {
 /// and the estimator's `total_min` exceeds it. ASCII-only badge for
 /// client renderer portability (see plan §"Decisions resolved").
 ///
-/// Click target: `wgslender.showMinifiedOutput`, with `[uri]` as the
+/// Click target: `command_ids.id.show_minified_output`, with `[uri]` as the
 /// argument. The command produces the actual minified text via
 /// `Minifier.minify`; the lens itself only relies on the cheap
 /// estimator.
@@ -183,7 +184,7 @@ fn appendTotalSizeLens(
             .end = .{ .line = 0, .character = 0 },
         },
         .title = title_dup,
-        .command = "wgslender.showMinifiedOutput",
+        .command = ids.id.show_minified_output,
         .arguments = args,
     });
 }

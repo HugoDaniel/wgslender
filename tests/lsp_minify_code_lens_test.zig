@@ -7,7 +7,7 @@
 //! ` (over budget)` ASCII suffix when the resolved
 //! `minifyLints.budgetBytes` is exceeded by the estimator.
 //!
-//! Click target: `wgslender.showMinifiedOutput`, which delegates to
+//! Click target: `wgslender.server.showMinifiedOutput`, which delegates to
 //! `Handler.runShowMinifiedOutput` and returns the full minified text
 //! plus byte/gz counts so the client can spawn a virtual document.
 
@@ -46,13 +46,13 @@ fn freeLenses(lenses: []const Handler.CodeLensInfo) void {
 }
 
 /// Locate the module-level total-size lens — the one anchored at line
-/// 0, character 0, with the `wgslender.showMinifiedOutput` click
+/// 0, character 0, with the `wgslender.server.showMinifiedOutput` click
 /// command. Returns null if no such lens was emitted.
 fn findTotalLens(lenses: []const Handler.CodeLensInfo) ?Handler.CodeLensInfo {
     for (lenses) |l| {
         if (l.range.start.line != 0 or l.range.start.character != 0) continue;
         if (l.command) |c| {
-            if (std.mem.eql(u8, c, "wgslender.showMinifiedOutput")) return l;
+            if (std.mem.eql(u8, c, "wgslender.server.showMinifiedOutput")) return l;
         }
     }
     return null;
@@ -149,10 +149,10 @@ test "code lens: title shows 'NN B → NN B min → NN B gz'" {
 }
 
 // =========================================================================
-// Click command: wgslender.showMinifiedOutput
+// Click command: wgslender.server.showMinifiedOutput
 // =========================================================================
 
-test "code lens: click target is wgslender.showMinifiedOutput" {
+test "code lens: click target is wgslender.server.showMinifiedOutput" {
     const h = try setup();
     defer teardown(h);
     try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
@@ -163,7 +163,7 @@ test "code lens: click target is wgslender.showMinifiedOutput" {
 
     const lens = findTotalLens(lenses) orelse return error.TestUnexpectedResult;
     const cmd = lens.command orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("wgslender.showMinifiedOutput", cmd);
+    try std.testing.expectEqualStrings("wgslender.server.showMinifiedOutput", cmd);
 }
 
 test "code lens: command argument is the document URI" {

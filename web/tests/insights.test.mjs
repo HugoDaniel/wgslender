@@ -54,7 +54,7 @@ before(async () => {
     textDocument: { uri: sampleUri, languageId: 'wgsl', version: 1, text: sampleShader },
   });
   request('workspace/executeCommand', {
-    command: 'wgslender.setMinifyMode',
+    command: 'wgslender.server.setMinifyMode',
     arguments: ['insights'],
   });
 

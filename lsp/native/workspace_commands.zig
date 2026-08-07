@@ -15,10 +15,10 @@ pub fn handle(
     arena: std.mem.Allocator,
     params: lsp.types.workspace.execute_command.Params,
 ) !?std.json.Value {
-    if (std.mem.eql(u8, params.command, "wgslender.showMinifiedOutput")) {
+    if (std.mem.eql(u8, params.command, Handler.command_ids.id.show_minified_output)) {
         return try runShowMinifiedOutput(h, arena, params.arguments);
     }
-    if (std.mem.eql(u8, params.command, "wgslender.reflect")) {
+    if (std.mem.eql(u8, params.command, Handler.command_ids.id.reflect)) {
         return try runReflect(h, arena, params.arguments);
     }
     h.executeCommand(params.command, params.arguments) catch |err| switch (err) {

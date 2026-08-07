@@ -1,8 +1,8 @@
 //! Handler-level tests for the minifier-mode settings plumbing:
 //!   - `effectiveMinify()` / `effectiveMinifyFor(uri)` resolve the
 //!     project + workspace + magic-comment layers correctly.
-//!   - `workspace/executeCommand` dispatches `wgslender.setMinifyMode`
-//!     and `wgslender.toggleMinifyMode` against `workspace_config`.
+//!   - `workspace/executeCommand` dispatches `wgslender.server.setMinifyMode`
+//!     and `wgslender.server.toggleMinifyMode` against `workspace_config`.
 //!
 //! Per-key parser coverage lives in `src/Config.zig` tests now that the
 //! LSP wire schema and `wgslender.json` share one parser
@@ -80,32 +80,71 @@ test "applyClientConfig: each push replaces the workspace overlay" {
 }
 
 // =========================================================================
-// executeCommand — wgslender.setMinifyMode + toggleMinifyMode
+// executeCommand — wgslender.server.setMinifyMode + toggleMinifyMode
 // =========================================================================
 
-test "executeCommand: wgslender.setMinifyMode \"insights\" sets mode" {
+test "executeCommand: no advertised id trespasses in the editor's namespace" {
+    // A client may turn every id in `executeCommandProvider.commands` into a
+    // command of its own — vscode-languageclient registers a real VS Code
+    // command for each. When these were plain `wgslender.*`, that collided
+    // with the ids the editor extension registers itself and aborted its
+    // `activate` on the second registration, leaving every command declared
+    // after that line missing. `wgslender.*` is the editor's; ours is
+    // `wgslender.server.*`.
+    for (Handler.command_ids.native) |command| {
+        try std.testing.expect(std.mem.startsWith(u8, command, "wgslender.server."));
+    }
+}
+
+test "executeCommand: both transports advertise the same shared ids" {
+    // The two lists drifted before they shared a source — native named five
+    // commands and the WASM capabilities string three, one of which
+    // (showMinifiedOutput) the WASM transport has always answered.
+    for (Handler.command_ids.shared) |command| {
+        try std.testing.expect(std.mem.indexOf(u8, Handler.capabilities_json, command) != null);
+
+        var in_native = false;
+        for (Handler.command_ids.native) |native_command| {
+            if (std.mem.eql(u8, native_command, command)) in_native = true;
+        }
+        try std.testing.expect(in_native);
+    }
+}
+
+test "executeCommand: an un-namespaced id is no longer dispatched" {
+    const h = try setup();
+    defer teardown(h);
+    var args = try parseJson("[\"insights\"]");
+    defer args.deinit();
+    try std.testing.expectError(
+        error.UnknownCommand,
+        h.executeCommand("wgslender.setMinifyMode", args.value.array.items),
+    );
+}
+
+test "executeCommand: wgslender.server.setMinifyMode \"insights\" sets mode" {
     const h = try setup();
     defer teardown(h);
 
     var args = try parseJson("[\"insights\"]");
     defer args.deinit();
 
-    try h.executeCommand("wgslender.setMinifyMode", args.value.array.items);
+    try h.executeCommand("wgslender.server.setMinifyMode", args.value.array.items);
     try std.testing.expectEqual(MinifySettings.Mode.insights, h.effectiveMinify().mode);
 }
 
-test "executeCommand: wgslender.setMinifyMode \"strict\" sets mode" {
+test "executeCommand: wgslender.server.setMinifyMode \"strict\" sets mode" {
     const h = try setup();
     defer teardown(h);
 
     var args = try parseJson("[\"strict\"]");
     defer args.deinit();
 
-    try h.executeCommand("wgslender.setMinifyMode", args.value.array.items);
+    try h.executeCommand("wgslender.server.setMinifyMode", args.value.array.items);
     try std.testing.expectEqual(MinifySettings.Mode.strict, h.effectiveMinify().mode);
 }
 
-test "executeCommand: wgslender.setMinifyMode with invalid value errors" {
+test "executeCommand: wgslender.server.setMinifyMode with invalid value errors" {
     const h = try setup();
     defer teardown(h);
 
@@ -114,11 +153,11 @@ test "executeCommand: wgslender.setMinifyMode with invalid value errors" {
 
     try std.testing.expectError(
         error.InvalidParams,
-        h.executeCommand("wgslender.setMinifyMode", args.value.array.items),
+        h.executeCommand("wgslender.server.setMinifyMode", args.value.array.items),
     );
 }
 
-test "executeCommand: wgslender.setMinifyMode with wrong arg shape errors" {
+test "executeCommand: wgslender.server.setMinifyMode with wrong arg shape errors" {
     const h = try setup();
     defer teardown(h);
 
@@ -127,7 +166,7 @@ test "executeCommand: wgslender.setMinifyMode with wrong arg shape errors" {
 
     try std.testing.expectError(
         error.InvalidParams,
-        h.executeCommand("wgslender.setMinifyMode", args.value.array.items),
+        h.executeCommand("wgslender.server.setMinifyMode", args.value.array.items),
     );
 }
 
@@ -144,7 +183,7 @@ test "executeCommand: unknown command errors" {
     );
 }
 
-test "executeCommand: wgslender.toggleMinifyMode cycles off → insights → strict → off" {
+test "executeCommand: wgslender.server.toggleMinifyMode cycles off → insights → strict → off" {
     const h = try setup();
     defer teardown(h);
 
@@ -153,13 +192,13 @@ test "executeCommand: wgslender.toggleMinifyMode cycles off → insights → str
 
     try std.testing.expectEqual(MinifySettings.Mode.off, h.effectiveMinify().mode);
 
-    try h.executeCommand("wgslender.toggleMinifyMode", args.value.array.items);
+    try h.executeCommand("wgslender.server.toggleMinifyMode", args.value.array.items);
     try std.testing.expectEqual(MinifySettings.Mode.insights, h.effectiveMinify().mode);
 
-    try h.executeCommand("wgslender.toggleMinifyMode", args.value.array.items);
+    try h.executeCommand("wgslender.server.toggleMinifyMode", args.value.array.items);
     try std.testing.expectEqual(MinifySettings.Mode.strict, h.effectiveMinify().mode);
 
-    try h.executeCommand("wgslender.toggleMinifyMode", args.value.array.items);
+    try h.executeCommand("wgslender.server.toggleMinifyMode", args.value.array.items);
     try std.testing.expectEqual(MinifySettings.Mode.off, h.effectiveMinify().mode);
 }
 
