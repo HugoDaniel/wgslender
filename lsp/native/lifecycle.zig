@@ -29,6 +29,7 @@ pub const server_capabilities: lsp.types.ServerCapabilities = .{
     .declarationProvider = .{ .bool = true },
     .definitionProvider = .{ .bool = true },
     .referencesProvider = .{ .bool = true },
+    .documentHighlightProvider = .{ .bool = true },
     .renameProvider = .{
         .rename_options = .{ .prepareProvider = true },
     },

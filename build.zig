@@ -748,6 +748,17 @@ pub fn build(b: *std.Build) void {
         .{ .name = "lspkit", .module = lspkit_mod },
         .{ .name = "wire", .module = wire_mod },
     });
+    // Capability-advertisement parity: the native `server_capabilities`
+    // struct and the WASM `Handler.capabilities_json` blob must offer
+    // the same feature set (values too, executeCommandProvider excepted
+    // — its command lists diverge by design).
+    _ = addTestStep(b, test_step, "tests/lsp_capabilities_parity_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "lsp", .module = lsp_mod },
+        .{ .name = "wire", .module = wire_mod },
+        .{ .name = "native_lifecycle", .module = native_lifecycle_mod },
+    });
     // `textDocument/declaration` must answer exactly what
     // `textDocument/definition` answers (WGSL has no forward decls).
     _ = addTestStep(b, test_step, "tests/lsp_declaration_route_test.zig", target, optimize, &.{
