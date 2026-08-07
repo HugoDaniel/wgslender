@@ -1,144 +1,64 @@
 # wgslender
 
-A high-performance WGSL minifier, validator, and reflection tool written in Zig — with a built-in language server.
+[![npm](https://img.shields.io/npm/v/wgslender)](https://www.npmjs.com/package/wgslender)
+[![license: CC0-1.0](https://img.shields.io/badge/license-CC0--1.0-blue)](LICENSE)
 
-**[Try the online demo](https://hugodaniel.com/pages/wgslender/)**
+Ship smaller, safer WebGPU shaders. wgslender minifies, validates, lints, and reflects WGSL — with a language server that runs natively or in the browser.
+
+**[Playground](https://hugodaniel.com/pages/wgslender/)** · **[VS Code extension](https://marketplace.visualstudio.com/items?itemName=hugodaniel.wgslender-vscode)** · **[Benchmarks](BENCHMARK.md)**
+
+## Quick start
 
 ```bash
-# CLI
-wgslender shader.wgsl -o shader.min.wgsl
-
-# npm
 npm install wgslender
-
-# Editor support (LSP)
-npm install wgslender-lsp
 ```
 
-## Quick Start
-
 ```javascript
-import { initialize, minify, reflect, validate } from "wgslender";
+import { initialize, minify } from "wgslender";
 
 await initialize();
 
-// Minify
 const result = minify(source);
-console.log(result.code); // Minified WGSL
-
-// Validate
-const validation = validate(source);
-console.log(validation.valid); // true/false
-
-// Reflect
-const info = reflect(source);
-console.log(info.bindings); // Uniform/storage bindings
-console.log(info.entryPoints); // Entry point metadata
+console.log(result.code); // minified WGSL
 ```
 
-## Features
+Same engine on every surface — see [Install](#install) for the CLI, Rust, Go, C, and editors.
 
-| Feature            | Description                                                    |
-| ------------------ | -------------------------------------------------------------- |
-| **Minification**   | Whitespace removal, identifier renaming, dead code elimination |
-| **Validation**     | Type checking, symbol resolution, uniformity analysis, rich diagnostics |
-| **Lint**           | ESLint-style configurable rules + shareable configs + disable comments |
-| **Reflection**     | Extract bindings, struct layouts, entry points                 |
-| **Source Maps**    | Debug minified shaders with v3 source maps                     |
-| **Binary shaders** | Compile WGSL to `.wasm` — BPE compression + tiny WASM decoder  |
-| **Multi-platform** | CLI, npm/WASM, Zig library, C library (FFI)                    |
-| **Editor support** | Full-featured language server — see [Language Server](#language-server-lsp) |
-| **Refactoring API** | Programmatic find-references, rename, and reparse-stable IDs from JS/C |
-| **Well tested**    | Validated against Dawn Tint test suite (11,952 shaders)         |
+## Highlights
 
-## Installation
+- **Smaller shaders** — up to 86% smaller raw, 63% after gzip ([benchmarks](BENCHMARK.md))
+- **[Binary shaders](#binary-shaders)** — WGSL compiled to a self-extracting `.wasm` with a ~110-byte decoder
+- **[Validation](#reflection--validation)** — type checking, symbol resolution, and uniformity analysis before the GPU sees the shader
+- **[Lint](#lint)** — ESLint-style rules, shareable config packs, `--fix` autofixes, disable comments
+- **Reflection** — bindings, entry points, and struct layouts as JSON ([format](docs/reflect.md))
+- **[Editor support](#editor-support)** — a full language server, native or as WASM in the browser
+- **Trustworthy** — tested against the Dawn Tint suite (11,952 shaders); one dependency-free Zig core behind every binding; CC0
 
-### CLI
+## Install
+
+| Surface | Install | Docs |
+| ------- | ------- | ---- |
+| JavaScript / TypeScript | `npm install wgslender` | [packages/js-npm](packages/js-npm/README.md) |
+| CLI | `zig build -Doptimize=ReleaseSafe` → `zig-out/bin/wgslender` | requires [Zig 0.16.0](https://ziglang.org/download/) |
+| Rust | `cargo add wgslender` | [packages/rust](packages/rust/README.md) |
+| Go | `go get git.hugodaniel.com/hugo/wgslender/packages/go/wgslender` | [packages/go](packages/go/README.md) |
+| C | `zig build lib` → `libwgslender.a` + `wgslender.h` | [C API](docs/C-API.md) |
+| LSP server | `npm install wgslender-lsp` (browser) · `zig build lsp` (native) | [Editor support](#editor-support) |
+| VS Code | [Marketplace](https://marketplace.visualstudio.com/items?itemName=hugodaniel.wgslender-vscode) | [extension docs](npm/wgslender-vscode/README.md) |
+
+## CLI
 
 ```bash
-zig build -Doptimize=ReleaseSafe   # → zig-out/bin/wgslender
+wgslender shader.wgsl -o shader.min.wgsl     # minify
+wgslender --no-mangle shader.wgsl            # whitespace-only (safest)
+wgslender validate shader.wgsl               # check errors without minifying
+wgslender lint shader.wgsl                   # quality rules
+wgslender reflect shader.wgsl                # bindings + layouts as JSON
+wgslender compile shader.wgsl -o shader.wasm # binary shader (see below)
 ```
 
-Requires [Zig 0.16.0](https://ziglang.org/download/).
-
-### npm (Browser/Node.js)
-
-```bash
-npm install wgslender
-```
-
-### Rust
-
-A cargo workspace lives in [`packages/rust/`](packages/rust/README.md): the
-whole C ABI behind a safe API, plus `include_wgsl!` / `include_wgsl_compressed!`
-/ `wgsl_module!` proc-macros that validate, minify and reflect shaders while
-`cargo build` runs. Not on crates.io yet — depend on it by path.
-
-```toml
-[dependencies]
-wgslender = { path = "../wgslender/packages/rust/wgslender" }
-```
-
-### Go
-
-A pure-Go module lives in [`packages/go/`](packages/go/README.md): the whole API
-over a `wgslender.wasm` embedded in the package and run by
-[wazero](https://wazero.io), so it needs no cgo, no C toolchain and no Zig.
-Plus `wgslgen`, a `go:generate` tool that embeds a shader minified and checked,
-and can describe it as Go structs with their layouts proved. Not published yet
-— depend on it by `replace` directive.
-
-```go
-import "git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
-```
-
-### C Library
-
-```bash
-zig build lib   # → zig-out/lib/libwgslender.a + zig-out/include/wgslender.h
-```
-
-Ten worked examples live in [`examples/c/`](examples/c/), covering minify,
-validate, reflect, lint, rename, refactor and compile. They are tested:
-
-```bash
-make -C examples/c test              # build + smoke-test all ten
-make -C examples/c lint-portability  # compile them against glibc headers
-```
-
-### LSP Server
-
-```bash
-# Native (VS Code, Neovim — stdio transport)
-zig build lsp -Doptimize=ReleaseSafe   # → zig-out/bin/wgslender-lsp
-
-# Browser editors
-npm install wgslender-lsp
-```
-
-## CLI Usage
-
-```bash
-# Basic minification
-wgslender shader.wgsl -o shader.min.wgsl
-
-# Validate shader
-wgslender validate shader.wgsl
-
-# Extract reflection data
-wgslender reflect shader.wgsl
-
-# Compile to binary shader (.wasm)
-wgslender compile shader.wgsl -o shader.wasm
-
-# Whitespace-only (safest)
-wgslender --no-mangle shader.wgsl
-
-# With source map
-wgslender --source-map shader.wgsl -o shader.min.wgsl
-```
-
-### CLI Options
+<details>
+<summary>All 19 flags, subcommand variants, and what gets preserved</summary>
 
 | Flag                         | Description                          |
 | ---------------------------- | ------------------------------------ |
@@ -162,33 +82,44 @@ wgslender --source-map shader.wgsl -o shader.min.wgsl
 | `--line-offset <n>`          | Add n to reported line numbers (validate/lint) |
 | `--reflect-format <v1\|v2>`  | Reflect JSON schema (default: v2)    |
 
-### Subcommands
-
 ```bash
-# Validate - check for errors without minifying
-wgslender validate shader.wgsl
-wgslender validate --format json shader.wgsl
-wgslender validate --strict shader.wgsl  # Warnings as errors
-
-# Reflect - extract binding/struct info as JSON
-wgslender reflect shader.wgsl
+wgslender validate --format json shader.wgsl    # machine-readable diagnostics
+wgslender validate --strict shader.wgsl         # warnings as errors
 wgslender reflect --compact shader.wgsl
-
-# Lint - run configurable quality rules
-wgslender lint shader.wgsl                                 # @wgslender/recommended by default
-wgslender lint --extends @wgslender/strict shader.wgsl     # CI-grade preset
-wgslender lint --rule no-unused-vars=error shader.wgsl     # override a rule
-wgslender lint --format json shader.wgsl                   # machine-readable
-wgslender lint --fix shader.wgsl                           # apply autofixes in place
-wgslender lint --fix-dry-run shader.wgsl                   # preview fixes to stdout
-
-# Compile - produce a binary shader (.wasm)
-wgslender compile shader.wgsl -o shader.wasm
+wgslender lint --extends @wgslender/strict shader.wgsl
+wgslender lint --rule no-unused-vars=error shader.wgsl
+wgslender lint --fix-dry-run shader.wgsl        # preview autofixes to stdout
 ```
 
-### Lint Rules
+`--source-map` writes a v3 source map next to the output; from JS, pass
+`minify(source, { sourceMap: true, sourceMapSources: true })`.
 
-Rules are organized into shareable config packs:
+**What gets preserved:**
+
+| Always Preserved                                       | Minified            |
+| ------------------------------------------------------ | ------------------- |
+| Entry point names (`@vertex`, `@fragment`, `@compute`) | Local variables     |
+| `@builtin` names                                       | Function parameters |
+| `@location` members                                    | Helper functions    |
+| `@group`/`@binding` indices                            | Private structs     |
+| `override` names                                       | Type aliases        |
+| Uniform/storage var names*                             |                     |
+
+*Use `--mangle-external-bindings` to also minify uniform/storage names.
+
+</details>
+
+## Lint
+
+```bash
+wgslender lint shader.wgsl        # @wgslender/recommended by default
+wgslender lint --fix shader.wgsl  # apply autofixes in place
+```
+
+Rules ship in five shareable packs — `@wgslender/recommended`, `/style`, `/performance`, `/portability`, and `/strict` as a CI gate.
+
+<details>
+<summary>Rule packs and disable comments</summary>
 
 | Pack                       | Rules                                                                      |
 | -------------------------- | -------------------------------------------------------------------------- |
@@ -200,8 +131,6 @@ Rules are organized into shareable config packs:
 
 Opt-in rule not included in any pack by default: `no-magic-numbers` (flags
 bare numeric literals outside `{-1, 0, 1, 2}`).
-
-### Disable Comments
 
 Silence specific rules inline:
 
@@ -222,272 +151,83 @@ let b = 77;
 Rule ids are comma-separated. An empty list silences every lint rule. Pass
 `--report-unused-disable-directives` to be warned about dangling directives.
 
-## What Gets Preserved
+</details>
 
-| Always Preserved                                       | Minified            |
-| ------------------------------------------------------ | ------------------- |
-| Entry point names (`@vertex`, `@fragment`, `@compute`) | Local variables     |
-| `@builtin` names                                       | Function parameters |
-| `@location` members                                    | Helper functions    |
-| `@group`/`@binding` indices                            | Private structs     |
-| `override` names                                       | Type aliases        |
-| Uniform/storage var names*                             |                     |
+## Binary shaders
 
-*Use `--mangle-external-bindings` to also minify uniform/storage names.
-
-## JavaScript/TypeScript API
-
-```javascript
-import { initialize, minify, reflect, validate } from "wgslender";
-
-await initialize({ wasmURL: "/wgslender.wasm" });
-
-// Minify with options
-const result = minify(source, {
-  minifyWhitespace: true,
-  minifyIdentifiers: true,
-  minifySyntax: true,
-  treeShaking: true,
-  keepNames: ["myHelper"],
-});
-
-// Validate (strictMode treats warnings as errors)
-const validation = validate(source, {
-  strictMode: true,
-  diagnosticFilters: { derivative_uniformity: "warning" },
-});
-if (!validation.valid) {
-  for (const d of validation.diagnostics) {
-    console.log(`${d.line}:${d.column}: ${d.message}`);
-  }
-}
-
-// Reflect
-const info = reflect(source);
-for (const b of info.bindings) {
-  console.log(`@group(${b.group}) @binding(${b.binding}) ${b.name}: ${b.type}`);
-}
-
-// Lint
-import { lint, lintAndFix } from "wgslender";
-import { recommended, strict } from "wgslender/configs";
-
-const report = lint(source, {
-  extends: [recommended.name],
-  rules: { "no-unused-vars": "error" },
-});
-console.log(`${report.errorCount} errors, ${report.warningCount} warnings`);
-for (const d of report.diagnostics) {
-  console.log(`${d.line}:${d.column} ${d.severity} [${d.code}] ${d.message}`);
-}
-
-// Apply autofixes and rewrite the source in one call
-const { fixed } = lintAndFix(source, { extends: [strict.name] });
-```
-
-See [packages/js-npm/README.md](packages/js-npm/README.md) for full API documentation.
-
-### Refactoring API
-
-The same analyzer that powers the language server is exposed as pure functions,
-so any editor or build tool can drive find-references, rename, and structural
-edits without running a full LSP session.
-
-```javascript
-import {
-  findReferences, rename, renameApply,
-  stableIdAtOffset, locateStableId, locateDeclaration, locateType,
-  renameByStableId,
-  removeDeclarationByStableId, removeDeclarationApplyByStableId,
-  changeTypeByStableId, changeTypeApplyByStableId,
-} from "wgslender";
-
-// Offset-based (good for cursor-in-editor workflows)
-const refs = findReferences(source, cursorByteOffset);   // { references: [{start,end,isWrite}] }
-const edits = rename(source, cursorByteOffset, "newName"); // { edits: [{start,end,newText}] }
-const { source: next } = renameApply(source, cursorByteOffset, "newName");
-
-// Stable-ID based (survives reparses + unrelated edits)
-const { stableId } = stableIdAtOffset(source, cursorByteOffset);
-const decl   = locateDeclaration(source, stableId); // { start, end } of full decl
-const typeSp = locateType(source, stableId);         // { start, end } of `: T` annotation
-renameByStableId(source, stableId, "newName");
-changeTypeApplyByStableId(source, stableId, "vec3<f32>");
-removeDeclarationApplyByStableId(source, stableId);
-```
-
-Stable IDs survive reparses and edits that don't move the declaration across a
-block scope, so callers can cache them across keystrokes. Every function
-returns an `error` field (e.g. `"invalid identifier"`, `"symbol not found"`)
-instead of throwing, and `*Apply` variants always return a usable `source`
-string (the original on failure).
-
-## Config File
-
-Create `wgslender.json` in your project:
-
-```json
-{
-  "minifyWhitespace": true,
-  "minifyIdentifiers": true,
-  "minifySyntax": true,
-  "treeShaking": true,
-  "keepNames": ["myUniform"],
-
-  "extends": ["@wgslender/recommended"],
-  "rules": {
-    "no-unused-vars": "error",
-    "no-magic-numbers": ["warn", { "allowlist": [-1, 0, 1, 2] }]
-  }
-}
-```
-
-Config files are auto-discovered by walking parent directories. Supported names: `wgslender.json`, `.wgslenderrc`, `.wgslenderrc.json`. Pass `--no-config` to skip discovery entirely.
-
-**Precedence.** Settings layer lowest-first: built-in defaults, then the
-config file, then command-line flags. A flag wins over the config file on the
-field it names and leaves every other config value in place — so
-`wgslender --config c.json --sort-declarations` keeps everything in `c.json`
-*and* sorts declarations. Two exceptions:
-
-- `--keep-names` **replaces** the config's `keepNames` rather than appending
-  to it (per-field last-layer-wins, like every other flag). The lint
-  accumulators `extends` and `rules` are the opposite — they concatenate, so
-  config packs compose with CLI ones and CLI entries win on conflict.
-- The `--minify` / `--minify-*` / `--no-mangle` / `--no-whitespace` /
-  `--no-syntax` cluster is resolved last and outranks both layers.
-
-All four surfaces (CLI `lint`, LSP, JS `lint()`, C `wgslender_lint_c`) read
-the `extends`, `rules`, and `reportUnusedDisableDirectives` keys from the
-same config. CLI flags (`--extends`, `--rule`, `--no-recommended`,
-`--report-unused-disable-directives`) layer on top: extends and rules
-append to the config-derived list (CLI rules win on per-id conflict);
-`--no-recommended` suppresses the `@wgslender/recommended` auto-add.
-
-Pre-built configs available in `configs/`:
-
-- `compute.toys.json` - For [compute.toys](https://compute.toys) shaders
-- `pngine.json` - For [PNGine](https://github.com/HugoDaniel/pngine)
-
-## Source Maps
-
-```bash
-wgslender --source-map shader.wgsl -o shader.min.wgsl
-# Creates shader.min.wgsl and shader.min.wgsl.map
-```
-
-```javascript
-const result = minify(source, { sourceMap: true, sourceMapSources: true });
-// result.sourceMap contains v3 source map JSON
-```
-
-## Binary Shaders
-
-Compile WGSL shaders into self-contained `.wasm` files that generate the WGSL string at runtime. Uses BPE (byte-pair encoding) compression with a ~110-byte WASM decoder.
+`wgslender compile` turns a shader into a self-contained `.wasm` that regenerates the WGSL at runtime — BPE-compressed text plus a ~110-byte decoder. Above the ~5 KB crossover it beats gzipped minified text, making it the smallest way to ship a big shader ([benchmarks](BENCHMARK.md)).
 
 ```bash
 wgslender compile shader.wgsl -o shader.wasm
 ```
 
+<details>
+<summary>Loading a compiled shader in the browser</summary>
+
 ```javascript
-// Load binary shader in the browser
 const { instance } = await WebAssembly.instantiate(await fetch("shader.wasm").then(r => r.arrayBuffer()));
 const len = instance.exports.generate();
 const wgsl = new TextDecoder().decode(new Uint8Array(instance.exports.memory.buffer, 0, len));
 device.createShaderModule({ code: wgsl });
 ```
 
-## Language Server (LSP)
+</details>
 
-A full-featured WGSL language server built from the same analyzer as the CLI.
+## Reflection & validation
+
+```javascript
+const validation = validate(source); // { valid, diagnostics: [{ line, column, message, ... }] }
+const info = reflect(source);        // bindings, entry points, struct layouts
+```
+
+Validation catches the errors the browser would raise — at build time instead ([why?](docs/why-pre-validate-wgsl.md)). Reflection emits bindings, entry points, and exact struct memory layouts as JSON, ready to drive bind-group creation ([why?](docs/why-reflect-wgsl.md), [output format](docs/reflect.md)).
+
+## Editor support
+
+- **VS Code** — install [wgslender from the Marketplace](https://marketplace.visualstudio.com/items?itemName=hugodaniel.wgslender-vscode): diagnostics, hover, completion, rename, formatting, semantic tokens, inlay hints, a size code lens, and a reflection sidebar — all from a bundled WASM server, no separate binary ([extension docs](npm/wgslender-vscode/README.md)).
+- **Neovim and other editors** — `zig build lsp -Doptimize=ReleaseSafe` builds `zig-out/bin/wgslender-lsp`, a stdio language server; point your LSP client at it for `.wgsl` files.
+- **Browser editors** — `npm install wgslender-lsp` runs the same server as WASM with no backend; the [playground](https://hugodaniel.com/pages/wgslender/) is it, live.
+
+<details>
+<summary>LSP capabilities and CodeMirror wiring</summary>
 
 | Capability | Details |
 | ---------- | ------- |
 | Diagnostics | Push on open/change/save **and** pull model (`textDocument/diagnostic`) with `resultId` cache |
-| Quick fixes | Code actions for typo fixes, safe casts, duplicate-binding renumbering, unused-removal, "did you mean?" |
-| Hover | Resolved type info + function signatures + docstrings |
-| Go to definition / type definition | Jump to decl or to the struct/alias behind a value |
-| Find references / document highlight | All uses of the symbol under the cursor |
-| Rename | With `prepareRename`, validates the new name against reserved words |
+| Quick fixes | Typo fixes, safe casts, duplicate-binding renumbering, unused-removal, "did you mean?" |
+| Hover / signature help | Resolved types, function signatures, docstrings; parameter info triggered by `(` and `,` |
 | Completion | Identifier + attribute completion (triggered by `.` and `@`) |
-| Signature help | Parameter info while typing a call (triggered by `(` and `,`) |
-| Document symbols | Hierarchical outline — structs, fields, functions, params, locals |
-| Folding ranges | Blocks, functions, structs |
+| Navigation | Definition, type definition, references, document highlight, call hierarchy |
+| Rename | With `prepareRename`, validates the new name against reserved words |
+| Outline | Document symbols, folding ranges, selection range |
 | Inlay hints | Evaluated `const` array sizes and other computed values (toggleable) |
-| Code lens | Binding / entry-point annotations + module total-size lens (`<src> B → <min> B min → <gz> B gz`, click → minified text) |
-| Document formatting | Pretty-print the full file |
-| Semantic tokens | 9 token types × 3 modifiers (keyword, function, struct, parameter, variable, number, type, comment, decorator) |
-| Selection range | Smart expand/shrink up the AST |
-| Call hierarchy | Incoming and outgoing calls |
-| Incremental sync | `TextDocumentSyncKind.Incremental` — only changed ranges are reparsed |
-| `workspace/configuration` | Pulls `wgslender` section. Schema mirrors `wgslender.json`: LSP-only knobs under `lsp.*` (`lsp.inlayHints.enabled`, `lsp.diagnostics.enabled`, `lsp.minifyMode`, `lsp.minifyLints.{enabled,budgetBytes}`); CLI knobs at top-level (`mangleExternalBindings`, `minifyWhitespace`, …); per-rule severities at top-level `rules` (id-keyed, ESLint-shape) |
-| `workspace/executeCommand` | `wgslender.server.setMinifyMode`, `wgslender.server.toggleMinifyMode`, `wgslender.server.recomputeMinifyInsights`, `wgslender.server.showMinifiedOutput` (native adds `wgslender.server.reflect`) |
+| Code lens | Binding / entry-point annotations + module total-size lens (`<src> B → <min> B min → <gz> B gz`) |
+| Formatting | Pretty-print the full file |
+| Semantic tokens | 9 token types × 3 modifiers |
+| Incremental sync | Only changed ranges are reparsed |
+| `workspace/configuration` | Pulls the `wgslender` section; schema mirrors `wgslender.json`, with LSP-only knobs under `lsp.*` |
+| `workspace/executeCommand` | `wgslender.server.{setMinifyMode,toggleMinifyMode,recomputeMinifyInsights,showMinifiedOutput}` |
 
-The `wgslender.server.` prefix is deliberate. A client may turn every
-advertised command id into a command of its own — vscode-languageclient
-registers a VS Code command for each — so an id that an editor extension also
-registers collides and breaks its activation. Editor command ids live in
-`wgslender.*`; the server keeps to `wgslender.server.*`.
+Both transports expose the same capability set; the native transport
+additionally offers reflection as the `wgslender.server.reflect` command.
 
-Both transports (native stdio and browser WASM) expose the same capability
-set, with one exception: reflection is a command (`wgslender.server.reflect`)
-on the native transport and the `wgslender/reflect` request on both.
-
-#### Minifier-mode size budget
-
-When `lsp.minifyMode = "strict"` is on, the LSP runs the minifier-mode
-lint pack (`@wgslender/minify`). The `M0500 minify/shader-exceeds-size-budget`
-rule fires when the estimated minified size exceeds a configured byte
-budget. Set the budget through workspace config:
+**Minifier-mode size budget.** With `lsp.minifyMode = "strict"` the server runs
+the `@wgslender/minify` lint pack, and `M0500 minify/shader-exceeds-size-budget`
+fires when the estimated minified size exceeds `budgetBytes`. The same value
+powers an `(over budget)` badge on the total-size code lens; without it the
+rule is a no-op.
 
 ```json
 {
     "lsp": {
         "minifyMode": "strict",
-        "minifyLints": {
-            "enabled": true,
-            "budgetBytes": 8192
-        }
+        "minifyLints": { "enabled": true, "budgetBytes": 8192 }
     },
-    "rules": {
-        "minify/shader-exceeds-size-budget": "warning"
-    }
+    "rules": { "minify/shader-exceeds-size-budget": "warning" }
 }
 ```
 
-The same `budgetBytes` value powers an `(over budget)` badge on the
-module-level total-size code lens. Without `budgetBytes`, the rule
-stays a no-op and the lens shows just the size triple. CLI users can
-supply the budget via the standard rule-options shape:
-
-```json
-{
-    "rules": {
-        "minify/shader-exceeds-size-budget": ["warn", { "maxBytes": 8192 }]
-    }
-}
-```
-
-Clicking the total-size lens triggers `workspace/executeCommand` with
-`wgslender.server.showMinifiedOutput`. The server runs the full minifier and
-returns `{ uri, minified_text, byte_count, gz_count }`; the client is
-expected to open a virtual document (e.g. `wgslender-minified:` URI
-scheme) with the returned text — wgslender does not create files.
-
-### Native (VS Code / Neovim)
-
-```bash
-zig build lsp -Doptimize=ReleaseSafe
-# → zig-out/bin/wgslender-lsp (stdio transport)
-```
-
-Configure your editor to run `wgslender-lsp` as a language server for `.wgsl` files.
-
-### Browser (CodeMirror)
-
-```bash
-npm install wgslender-lsp
-```
+**CodeMirror wiring:**
 
 ```javascript
 import { initialize, createTransport } from "wgslender-lsp";
@@ -499,44 +239,116 @@ const client = new LSPClient({ extensions: languageServerExtensions() });
 client.connect(transport);
 ```
 
+</details>
+
+## JavaScript API
+
+`minify`, `validate`, `reflect`, `lint`, `lintAndFix`, and a refactoring API — full documentation, TypeScript types, and bundler recipes in [packages/js-npm/README.md](packages/js-npm/README.md).
+
+<details>
+<summary>Options, lint, and the refactoring API</summary>
+
+```javascript
+import { initialize, minify, lint, lintAndFix } from "wgslender";
+import { recommended, strict } from "wgslender/configs";
+
+await initialize({ wasmURL: "/wgslender.wasm" });
+
+const result = minify(source, {
+  minifyWhitespace: true,
+  minifyIdentifiers: true,
+  minifySyntax: true,
+  treeShaking: true,
+  keepNames: ["myHelper"],
+});
+
+const report = lint(source, {
+  extends: [recommended.name],
+  rules: { "no-unused-vars": "error" },
+});
+console.log(`${report.errorCount} errors, ${report.warningCount} warnings`);
+
+// Apply autofixes and rewrite the source in one call
+const { fixed } = lintAndFix(source, { extends: [strict.name] });
+```
+
+The same analyzer that powers the language server is exposed as pure
+functions, so any editor or build tool can drive find-references, rename,
+and structural edits without an LSP session:
+
+```javascript
+import { findReferences, renameApply, stableIdAtOffset, renameByStableId } from "wgslender";
+
+const refs = findReferences(source, cursorByteOffset);       // { references: [{ start, end, isWrite }] }
+const { source: next } = renameApply(source, cursorByteOffset, "newName");
+
+const { stableId } = stableIdAtOffset(source, cursorByteOffset);
+renameByStableId(source, stableId, "newName");               // survives reparses + unrelated edits
+```
+
+Stable IDs survive reparses and edits that don't move the declaration across
+a block scope, so callers can cache them across keystrokes. Every function
+returns an `error` field instead of throwing, and `*Apply` variants always
+return a usable `source` string (the original on failure). Also available:
+`rename`, `locateStableId`, `locateDeclaration`, `locateType`,
+`changeTypeByStableId`/`changeTypeApplyByStableId`,
+`removeDeclarationByStableId`/`removeDeclarationApplyByStableId`.
+
+</details>
+
+## Configuration
+
+Drop a `wgslender.json` next to your shaders — the CLI, LSP, JS, and C surfaces all read the same file. It is auto-discovered by walking parent directories (also as `.wgslenderrc` / `.wgslenderrc.json`); pass `--no-config` to skip discovery.
+
+```json
+{
+  "minifyWhitespace": true,
+  "minifyIdentifiers": true,
+  "keepNames": ["myUniform"],
+  "extends": ["@wgslender/recommended"],
+  "rules": { "no-unused-vars": "error" }
+}
+```
+
+<details>
+<summary>Precedence rules and presets</summary>
+
+Settings layer lowest-first: built-in defaults, then the config file, then
+command-line flags. A flag wins over the config file on the field it names
+and leaves every other config value in place — so
+`wgslender --config c.json --sort-declarations` keeps everything in `c.json`
+*and* sorts declarations. Two exceptions:
+
+- `--keep-names` **replaces** the config's `keepNames` rather than appending
+  to it (per-field last-layer-wins, like every other flag). The lint
+  accumulators `extends` and `rules` are the opposite — they concatenate, so
+  config packs compose with CLI ones and CLI entries win on conflict.
+- The `--minify` / `--minify-*` / `--no-mangle` / `--no-whitespace` /
+  `--no-syntax` cluster is resolved last and outranks both layers.
+
+Pre-built configs live in `configs/`: `compute.toys.json` for
+[compute.toys](https://compute.toys) shaders, `pngine.json` for
+[PNGine](https://github.com/HugoDaniel/pngine).
+
+</details>
+
+## Learn more
+
+- [Why minify WGSL?](docs/why-minify-wgsl.md) · [Why pre-validate?](docs/why-pre-validate-wgsl.md) · [Why reflect?](docs/why-reflect-wgsl.md)
+- [Reflection output format](docs/reflect.md)
+- [C API reference](docs/C-API.md) · [worked examples in C and TypeScript](examples/README.md)
+- [Building with wgslender](BUILDING_WITH_WGSLENDER.md) — the integration guide
+- [Benchmarks](BENCHMARK.md) · [Changelog](CHANGELOG.md)
+
 ## Development
 
 ```bash
-zig build              # Build CLI → zig-out/bin/wgslender
-zig build wasm         # Build WASM → zig-out/bin/wgslender.wasm
-zig build lsp          # Build LSP server → zig-out/bin/wgslender-lsp
-zig build lsp-wasm     # Build WASM LSP → zig-out/bin/wgslender-lsp.wasm
-zig build test         # Run all tests
-
-# Run
-echo 'fn main() {}' | ./zig-out/bin/wgslender
-./zig-out/bin/wgslender validate shader.wgsl
-./zig-out/bin/wgslender compile shader.wgsl -o shader.wasm
-
-# NPM package tests
-cd packages/js-npm && npm test                # all 4 wrapper variants
-cd npm/wgslender-lsp && node test.js
-
-# Rust package gate (fmt, clippy, tests, doctests, docs)
-cd packages/rust && cargo xtask check
-
-# Go package gate (gofmt, vet, build, test -race)
-make -C packages/go check
+zig build        # CLI → zig-out/bin/wgslender
+zig build test   # full test suite
 ```
 
-Requires [Zig 0.16.0](https://ziglang.org/download/) — install via `zigup 0.16.0`.
-
-## Documentation
-
-- [Why minify WGSL?](docs/why-minify-wgsl.md) - Benefits of shader minification
-- [Why pre-validate WGSL?](docs/why-pre-validate-wgsl.md) - Benefits of build-time validation
-- [Why reflect WGSL?](docs/why-reflect-wgsl.md) - Benefits of shader reflection
-- [npm package docs](packages/js-npm/README.md) - JavaScript/TypeScript API
-- [Rust package docs](packages/rust/README.md) - Cargo workspace, compile-time embedding macros
-- [Go package docs](packages/go/README.md) - Pure-Go module over wazero, `wgslgen` code generator
-- [C API reference](docs/C-API.md) - C/FFI integration
-- [Building with wgslender](BUILDING_WITH_WGSLENDER.md) - Integration guide
+Requires [Zig 0.16.0](https://ziglang.org/download/) (`zigup 0.16.0`). Each language package documents its own test gate in its README; the contribution workflow lives in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-CC0 Public Domain - See [LICENSE](LICENSE)
+CC0 Public Domain — see [LICENSE](LICENSE).
