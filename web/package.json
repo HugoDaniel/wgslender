@@ -5,9 +5,9 @@
   "scripts": {
     "sync-wasm": "node scripts/sync-wasm.mjs",
     "predev": "node scripts/sync-wasm.mjs",
-    "dev": "astro dev",
+    "dev": "astro dev --port 4324",
     "prestart": "node scripts/sync-wasm.mjs",
-    "start": "astro dev",
+    "start": "astro dev --port 4324",
     "prebuild": "node scripts/sync-wasm.mjs",
     "build": "astro build",
     "preview": "astro preview",
