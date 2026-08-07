@@ -30,6 +30,15 @@ pub const Ctx = struct {
     }
 };
 
+/// The whole `initialize` result, built at comptime. Named rather than
+/// inlined at the `sendResult` call so a test can assert on the bytes the
+/// wasm transport actually emits — the native transport's equivalent is
+/// `native_lifecycle.server_info`, and the two are checked against each
+/// other and against `wgslender.version`.
+pub const initialize_result_json =
+    "{\"capabilities\":" ++ Handler.capabilities_json ++
+    ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"" ++ wgslender.version ++ "\"}}";
+
 pub fn handleInitialize(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
     if (root.getPtr("params")) |params| {
         if (json.objGet(params, "capabilities")) |cap|
@@ -41,7 +50,7 @@ pub fn handleInitialize(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value)
         if (json.objGet(params, "initializationOptions")) |opts|
             ctx.handler.applyClientConfig(opts.*);
     }
-    ctx.sendResult(id, "{\"capabilities\":" ++ Handler.capabilities_json ++ ",\"serverInfo\":{\"name\":\"wgslender-lsp\",\"version\":\"1.1.0\"}}");
+    ctx.sendResult(id, initialize_result_json);
 }
 
 pub fn handleDidChangeConfiguration(ctx: Ctx) void {

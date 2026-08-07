@@ -169,6 +169,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
+            // Only for `server_info.version` — the LSP reports the core
+            // version rather than a literal of its own.
+            .{ .name = "wgslender", .module = wgslender_mod },
         },
     });
     const native_navigation_mod = b.addModule("native_navigation", .{
@@ -233,6 +236,24 @@ pub fn build(b: *std.Build) void {
     // matching lifecycle Ctx.
     const wasm_workspace_commands_mod = b.addModule("wasm_workspace_commands", .{
         .root_source_file = b.path("lsp/wasm/workspace_commands.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "wgslender", .module = wgslender_mod },
+            .{ .name = "wire", .module = wire_mod },
+        },
+    });
+
+    // Native-target build of the WASM lifecycle handlers, so the
+    // serverInfo-version test can read the `initialize` payload the wasm
+    // transport emits. Same argument as `wasm_workspace_commands` above:
+    // no wasm-specific intrinsics, compiles cleanly for the host. Keep it
+    // out of any test that also imports `wasm_workspace_commands` — that
+    // module reaches `lifecycle.zig` as a sibling, and a file cannot be
+    // both a module root and a path-import inside one compilation.
+    const wasm_lifecycle_mod = b.addModule("wasm_lifecycle", .{
+        .root_source_file = b.path("lsp/wasm/lifecycle.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -721,6 +742,13 @@ pub fn build(b: *std.Build) void {
         .{ .name = "wire", .module = wire_mod },
         .{ .name = "native_workspace_commands", .module = native_workspace_commands_mod },
         .{ .name = "wasm_workspace_commands", .module = wasm_workspace_commands_mod },
+    });
+    // Both transports' `initialize` serverInfo must carry the core
+    // `wgslender.version`, not a hand-edited literal.
+    _ = addTestStep(b, test_step, "tests/lsp_server_info_version_test.zig", target, optimize, &.{
+        w,
+        .{ .name = "native_lifecycle", .module = native_lifecycle_mod },
+        .{ .name = "wasm_lifecycle", .module = wasm_lifecycle_mod },
     });
     // Internal smoke tests for the shared parity helpers module
     // (`jsonEql`, `expectEqualErrorCode` round-trip, escape-aware

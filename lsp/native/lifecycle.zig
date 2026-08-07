@@ -3,10 +3,11 @@
 //! arming) stay in NativeServer.
 
 const lsp = @import("lsp");
+const wgslender = @import("wgslender");
 
 pub const server_info: lsp.types.ServerInfo = .{
     .name = "wgslender-lsp",
-    .version = "1.1.0",
+    .version = wgslender.version,
 };
 
 pub const server_capabilities: lsp.types.ServerCapabilities = .{
