@@ -4,7 +4,7 @@
 
 import * as assert from 'assert';
 
-import { commands, languages, Uri, window, workspace } from 'vscode';
+import { commands, languages, Hover, MarkdownString, Position, Uri, window, workspace } from 'vscode';
 
 const BROKEN_SHADER = `@vertex fn main() -> @builtin(position) vec4f {
   let badness =;
@@ -16,20 +16,41 @@ const VALID_SHADER = `@group(0) @binding(0) var<uniform> u: vec4f;
 @compute @workgroup_size(1) fn main() {}
 `;
 
+// One line, so the hover position is an index rather than arithmetic.
+const HOVER_SHADER = `@compute @workgroup_size(1) fn main() { let a = sin(1.0); }
+`;
+
 async function openInMemoryWgsl(content: string): Promise<Uri> {
   const doc = await workspace.openTextDocument({ language: 'wgsl', content });
   await window.showTextDocument(doc);
   return doc.uri;
 }
 
-async function waitFor<T>(predicate: () => T | undefined, timeoutMs: number): Promise<T> {
+async function waitFor<T>(
+  predicate: () => T | undefined | Promise<T | undefined>,
+  timeoutMs: number,
+): Promise<T> {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const value = predicate();
+    const value = await predicate();
     if (value !== undefined) return value;
     await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error(`waitFor timed out after ${timeoutMs} ms`);
+}
+
+/** The markdown behind the first hover at `position`, once one arrives. */
+async function hoverMarkdownAt(uri: Uri, position: Position): Promise<string> {
+  return waitFor(async () => {
+    const hovers = await commands.executeCommand<Hover[]>(
+      'vscode.executeHoverProvider',
+      uri,
+      position,
+    );
+    const content = hovers?.[0]?.contents?.[0];
+    if (content === undefined) return undefined;
+    return typeof content === 'string' ? content : (content as MarkdownString).value;
+  }, 10_000);
 }
 
 suite('wgslender VS Code extension', () => {
@@ -45,6 +66,23 @@ suite('wgslender VS Code extension', () => {
       return list.length > 0 ? list : undefined;
     }, 10_000);
     assert.ok(diagnostics.length >= 1, 'at least one diagnostic should be reported');
+  });
+
+  test('hover fences its WGSL, so VS Code renders the type parameters', async () => {
+    // VS Code renders MarkupContent{kind:"markdown"} as markdown, which parses
+    // an unfenced `vecN<f32>` as an HTML tag and drops the type parameter. The
+    // fence also matches this extension's own language id, so the signature
+    // gets highlighted by the grammar in syntaxes/.
+    const uri = await openInMemoryWgsl(HOVER_SHADER);
+    const value = await hoverMarkdownAt(uri, new Position(0, HOVER_SHADER.indexOf('sin(')));
+
+    assert.match(value, /^```wgsl\n/, 'hover should open with a wgsl fence');
+    assert.ok(value.includes('vecN<f32>'), `type parameter was lost: ${value}`);
+
+    // Prose lives outside the fence, so it must be escaped instead.
+    const [, fence, prose] = value.split('```');
+    assert.match(fence, /fn sin/);
+    assert.ok(!prose.includes('<'), `unescaped '<' in hover prose: ${prose}`);
   });
 
   test('wgslender.reflect opens a JSON document with entryPoints', async () => {

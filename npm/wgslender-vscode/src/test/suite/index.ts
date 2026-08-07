@@ -4,7 +4,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import * as Mocha from 'mocha';
+// A default import, not `* as`: mocha is CommonJS with `export = Mocha`, and
+// under `esModuleInterop` the namespace form is not constructable — which is
+// what stopped this suite from compiling at all.
+import Mocha from 'mocha';
 
 export async function run(): Promise<void> {
   const mocha = new Mocha({ ui: 'tdd', color: true, timeout: 30_000 });
