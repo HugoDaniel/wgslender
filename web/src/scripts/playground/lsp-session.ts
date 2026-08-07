@@ -38,6 +38,12 @@ export interface MinifiedOutput {
   gz_count: number;
 }
 
+/** A `textDocument/publishDiagnostics` payload, exactly as the server sent it. */
+export interface DiagnosticsPayload {
+  uri: string;
+  diagnostics: unknown[];
+}
+
 export interface Session {
   client: LSPClient;
   uri: string;
@@ -46,6 +52,16 @@ export interface Session {
   refreshInsights(): void;
   showMinifiedOutput(): Promise<MinifiedOutput>;
   setMinifyMode(mode: MinifyMode): Promise<unknown>;
+  /**
+   * Listen for this document's diagnostics. Returns an unsubscribe function.
+   *
+   * The panel wants the server's own payload — codes, spec links and all —
+   * and lsp-client's rendering path narrows that to what `@codemirror/lint`
+   * needs. Subscribing to the transport alongside lsp-client costs nothing
+   * (the transport fans out to every handler) and keeps `formatDiagnostics`
+   * working on the shape its tests pin.
+   */
+  onDiagnostics(listener: (payload: DiagnosticsPayload) => void): () => void;
 }
 
 function executeCommand<T>(client: LSPClient, command: string, args: unknown[]): Promise<T> {
@@ -58,7 +74,8 @@ function executeCommand<T>(client: LSPClient, command: string, args: unknown[]):
  */
 export async function createSession(uri: string): Promise<Session> {
   const client = new LSPClient({ extensions: languageServerExtensions() });
-  client.connect(createTransport());
+  const transport = createTransport();
+  client.connect(transport);
   await client.initializing;
 
   return {
@@ -79,6 +96,28 @@ export async function createSession(uri: string): Promise<Session> {
 
     setMinifyMode(mode) {
       return executeCommand(client, 'wgslender.setMinifyMode', [mode]);
+    },
+
+    onDiagnostics(listener) {
+      const handler = (message: string) => {
+        let parsed: { method?: string; params?: DiagnosticsPayload };
+        try {
+          parsed = JSON.parse(message);
+        } catch {
+          return; // Not our business: lsp-client owns protocol errors.
+        }
+        if (parsed.method !== 'textDocument/publishDiagnostics') return;
+        if (parsed.params?.uri !== uri) return;
+
+        // The transport dispatches synchronously from inside `send`, which
+        // itself runs from a CodeMirror update listener. Deferring keeps
+        // panel rendering out of that call stack.
+        const payload = parsed.params;
+        queueMicrotask(() => listener(payload));
+      };
+
+      transport.subscribe(handler);
+      return () => transport.unsubscribe(handler);
     },
   };
 }

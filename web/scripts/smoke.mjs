@@ -18,7 +18,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const URL_ = process.env.PLAYGROUND_URL ?? 'http://localhost:4321/playground/';
+const URL_ = process.env.PLAYGROUND_URL ?? 'http://localhost:4324/playground/';
 const PORT = Number(process.env.CDP_PORT ?? 9333);
 const CHROME =
   process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -123,7 +123,7 @@ try {
   await send('Page.enable');
   await send('Page.navigate', { url: URL_ });
 
-  check('the editor mounts', await until(`!!document.querySelector('.cm-editor')`));
+  check('the editor mounts', await until(`!!document.querySelector('[data-editor] .cm-editor')`));
   check('the no-JS fallback is replaced', await evaluate(`!document.querySelector('.fallback')`));
 
   const status = await evaluate(`document.querySelector('[data-status]')?.textContent ?? ''`);
@@ -157,12 +157,146 @@ try {
   check('one column under 768px', (await columns(600)) === 1);
   await columns(1280);
 
+  // ---- the output panels -------------------------------------------------
+
+  check(
+    'three tabs are rendered',
+    (await evaluate(`[...document.querySelectorAll('[role=tab]')].map(t => t.textContent.trim())`))
+      .join()
+      .includes('Minified,Reflection,Diagnostics'),
+  );
+
+  // Presence is not visibility. Styling the panels for a fixed-height pane
+  // once overrode the `display: none` behind their `hidden` attribute, and
+  // all three rendered at once — invisible to any check that only queries by
+  // selector, and obvious the moment you look at the page.
+  const visiblePanels = () =>
+    evaluate(`
+      [...document.querySelectorAll('[role=tabpanel]')]
+        .filter(p => p.offsetParent !== null && p.getBoundingClientRect().height > 0)
+        .length
+    `);
+  check('exactly one panel is visible at a time', (await visiblePanels()) === 1, `visible=${await visiblePanels()}`);
+
+  // The minified pane is its own editor, so read its document, not the DOM.
+  const minifiedText = () =>
+    evaluate(`document.querySelector('[data-minify-output] .cm-content')?.textContent ?? ''`);
+  check('the minified panel fills in', await until(`
+    (document.querySelector('[data-minify-output] .cm-content')?.textContent ?? '').includes('fs_main')
+  `));
+  check(
+    'tree shaking dropped the dead helper',
+    !(await minifiedText()).includes('unused_helper'),
+  );
+
+  const statLabels = await evaluate(
+    `[...document.querySelectorAll('[data-minify-stats] .stat-label')].map(e => e.textContent)`,
+  );
+  check('the stats bar has a gzip column', statLabels.join() === 'Original,Minified,Saved,Gzip', statLabels.join());
+
+  const statValue = (label) => evaluate(`
+    [...document.querySelectorAll('[data-minify-stats] .stat')]
+      .find(s => s.querySelector('.stat-label').textContent === ${JSON.stringify(label)})
+      ?.querySelector('.stat-value').textContent
+  `);
+  const savedBefore = await statValue('Saved');
+  const gzipBefore = await statValue('Gzip');
+
+  // Toggling a pill has to move the numbers *and* the code.
+  const togglePill = async (key) => {
+    await evaluate(`document.querySelector('[data-option=${key}]').click()`);
+    await sleep(600);
+  };
+  await togglePill('treeShaking');
+  check(
+    // The helper survives under a renamed identifier, so match its body —
+    // `includes('return')` would be true of almost any shader.
+    'turning tree shaking off brings the helper back',
+    /return (\w+)\*\1\*\1;/.test(await minifiedText()),
+    await statValue('Saved'),
+  );
+  check('the saved percentage moved', (await statValue('Saved')) !== savedBefore);
+  await togglePill('treeShaking');
+
+  await togglePill('sortDeclarations');
+  await togglePill('scopeLocalRename');
+  check(
+    'the gzip number tracks the compression pills',
+    (await statValue('Gzip')) !== gzipBefore,
+    `${gzipBefore} -> ${await statValue('Gzip')}`,
+  );
+  await togglePill('sortDeclarations');
+  await togglePill('scopeLocalRename');
+
+  // Reflection: the §6.2.10 padding is the panel's reason to exist.
+  await evaluate(`document.querySelectorAll('[role=tab]')[1].click()`);
+  await sleep(300);
+  check(
+    'switching tabs shows the reflection panel',
+    await evaluate(`document.querySelector('[data-reflect]').getBoundingClientRect().height > 0`),
+  );
+  const reflectText = await evaluate(`document.querySelector('[data-reflect]').textContent`);
+  check('the reflection panel lists the bindings', reflectText.includes('noise_tex'));
+  check(
+    'the reflection panel shows the vec3 padding',
+    /time\s*f32\s*76/.test(reflectText.replace(/\s+/g, ' ')),
+  );
+
+  // `textContent` sees rows that render at zero height, which is exactly how
+  // a collapsed flex child hides an entire table. Measure instead.
+  const laidOutRows = await evaluate(`
+    [...document.querySelectorAll('[data-reflect] tbody tr')]
+      .filter(row => row.getBoundingClientRect().height > 0)
+      .length
+  `);
+  check('the reflection tables are actually laid out', laidOutRows >= 10, `rows=${laidOutRows}`);
+
+  // Diagnostics: rows, and a click that moves the cursor.
+  await evaluate(`document.querySelectorAll('[role=tab]')[2].click()`);
+  await sleep(300);
+  const rows = await evaluate(`document.querySelectorAll('[data-diagnostics] .diagnostic').length`);
+  check('the diagnostics panel lists a row', rows === 1, `rows=${rows}`);
+  check(
+    'the row names the lint code',
+    (await evaluate(`document.querySelector('[data-diagnostics] .diagnostic').textContent`)).includes(
+      'W0001',
+    ),
+  );
+
+  // basicSetup highlights the cursor's line, so the active line is a
+  // DOM-visible proxy for the selection — no reaching into CodeMirror's
+  // internals from a page that loaded it through Vite.
+  await evaluate(`document.querySelector('[data-diagnostics] .diagnostic').click()`);
+  await sleep(300);
+  const activeLine = await evaluate(
+    `document.querySelector('[data-editor] .cm-activeLine')?.textContent ?? ''`,
+  );
+  check('clicking a diagnostic moves the cursor to it', activeLine.includes('unused_helper'), activeLine);
+
+  // Back to the first tab: the minified editor was laid out while hidden, so
+  // this is what the re-measure hook is for.
+  await evaluate(`document.querySelectorAll('[role=tab]')[0].click()`);
+  await sleep(400);
+  const minifiedBox = await evaluate(`(() => {
+    const r = document.querySelector('[data-minify-output] .cm-content').getBoundingClientRect();
+    return { w: Math.round(r.width), h: Math.round(r.height) };
+  })()`);
+  check(
+    'the minified editor survives a tab round trip',
+    minifiedBox.h > 0 && minifiedBox.w > 0,
+    `${minifiedBox.w}x${minifiedBox.h}`,
+  );
+
   // The round trip: keystroke -> didChange -> wasm -> publishDiagnostics.
-  await evaluate(`document.querySelector('.cm-content').focus()`);
+  await evaluate(`document.querySelector('[data-editor] .cm-content').focus()`);
   await send('Input.insertText', { text: 'fn oops(\n' });
   check(
     'typing produces new diagnostics',
     await until(`document.querySelectorAll('.cm-lintRange-error').length > 0`, 10000),
+  );
+  check(
+    'the diagnostics panel picks up the new errors',
+    await until(`document.querySelectorAll('[data-diagnostics] .diagnostic.error').length > 0`, 10000),
   );
 
   check('no page errors', problems.length === 0, problems.join(' | '));
