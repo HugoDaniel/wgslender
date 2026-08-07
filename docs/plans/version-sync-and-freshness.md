@@ -90,10 +90,19 @@ all. The `vscode-assets` step (`build.zig:339-348`) copies both WASM files, but 
 into `npm/wgslender-vscode/dist/` — which is why the VS Code copy is current and this
 one is not.
 
-Everything merged into the LSP WASM since `20806fa` is therefore absent from the
-published `wgslender-lsp` package. `8cd45d0` (structured `QuickFixHint` payload
-replacing diagnostic-message parsing) is in that window — a wire-shape change, which
-is the exact failure mode the drifted-copy problem was going to produce.
+Everything merged into the LSP WASM since `20806fa` (2026-05-06) is therefore absent
+from the published `wgslender-lsp` package: **137 commits** touching `lsp/` or `src/`.
+Wire-visible among them — a new `wgslender/constInventory` request (`8c6a49e`),
+semantic-token lengths corrected to UTF-16 code units (`41f8e7f`), semantic tokens
+resolved via `NodeAtOffset` (`1cd61b7`), signature help backed by real signatures
+(`aa017d5`), diagnostics carrying every configured lint pack (`b4a902b`), one per-file
+lint result object (`98faf37`), control bytes escaped in diagnostic JSON (`2ee6844`),
+and the new `E0700`–`E0703` uniformity codes. That is the failure mode the
+drifted-copy problem produces.
+
+*(Corrected during execution: an earlier draft named `8cd45d0`, the structured
+`QuickFixHint` payload, as being in this window. It is not — it landed 2026-05-05,
+one day before `20806fa`.)*
 
 ### Finding 3 — `prepublishOnly`'s optimize flag is a no-op
 
