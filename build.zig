@@ -354,19 +354,36 @@ pub fn build(b: *std.Build) void {
     const lsp_wasm_step = b.step("lsp-wasm", "Build the WGSL LSP WASM module");
     lsp_wasm_step.dependOn(&install_lsp_wasm.step);
 
-    // VS Code extension assets — copy the WASM artefacts into
-    // npm/wgslender-vscode/dist/ so esbuild + vsce can pick them up.
-    const copy_lsp_wasm_to_vscode = b.addInstallFile(
-        lsp_wasm.getEmittedBin(),
-        "../npm/wgslender-vscode/dist/wgslender-lsp.wasm",
-    );
-    const copy_wasm_to_vscode = b.addInstallFile(
-        wasm.getEmittedBin(),
-        "../npm/wgslender-vscode/dist/wgslender.wasm",
-    );
-    const vscode_assets_step = b.step("vscode-assets", "Copy WASM artefacts into npm/wgslender-vscode/dist/");
-    vscode_assets_step.dependOn(&copy_lsp_wasm_to_vscode.step);
-    vscode_assets_step.dependOn(&copy_wasm_to_vscode.step);
+    // Release assets — every in-tree copy of the two WASM modules, written
+    // from one build.
+    //
+    // This used to feed npm/wgslender-vscode/dist/ only, and the other three
+    // destinations were copied by hand or by a package's own prepublish
+    // script. npm/wgslender-lsp/wgslender-lsp.wasm had no writer at all and
+    // went stale for a stretch of LSP commits — silently, because a drifted
+    // WASM does not crash, it answers questions using the old wire format.
+    // Anything shipping a WASM copy belongs in this list.
+    //
+    // packages/go keeps its own copy because `go:embed` cannot reach outside
+    // the module (see packages/go/internal/wasmabi/abi.go). That duplication
+    // is unavoidable; what changes here is that a build step writes it.
+    //
+    // Paths are relative to the install prefix (zig-out), hence the `../`.
+    const release_asset_copies = [_]*std.Build.Step.InstallFile{
+        b.addInstallFile(wasm.getEmittedBin(), "../packages/js-npm/wgslender.wasm"),
+        b.addInstallFile(wasm.getEmittedBin(), "../packages/go/internal/wasmabi/wgslender.wasm"),
+        b.addInstallFile(wasm.getEmittedBin(), "../npm/wgslender-vscode/dist/wgslender.wasm"),
+        b.addInstallFile(lsp_wasm.getEmittedBin(), "../npm/wgslender-lsp/wgslender-lsp.wasm"),
+        b.addInstallFile(lsp_wasm.getEmittedBin(), "../npm/wgslender-vscode/dist/wgslender-lsp.wasm"),
+    };
+    const release_assets_step = b.step("release-assets", "Copy the WASM artefacts into every package that ships one");
+    // Kept as an alias: `vscode-assets` is referenced from the extension's
+    // own docs and from muscle memory.
+    const vscode_assets_step = b.step("vscode-assets", "Alias for release-assets");
+    for (release_asset_copies) |copy| {
+        release_assets_step.dependOn(&copy.step);
+    }
+    vscode_assets_step.dependOn(release_assets_step);
 
     // Test data modules
     const validation_data_mod = b.addModule("validation_data", .{
