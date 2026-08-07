@@ -21,6 +21,15 @@ const shared = {
 /** @type {esbuild.BuildOptions[]} */
 const builds = [
   // Desktop extension host (Node).
+  //
+  // `wgslender` is imported with ESM syntax, so esbuild resolves the `import`
+  // condition of its exports map — `esm/node.mjs` — even though the output
+  // format is cjs. That file computes `fileURLToPath(import.meta.url)` at
+  // module scope, and `import.meta` is empty in cjs output, so the bundle
+  // threw "The 'path' argument must be of type string" on load and the
+  // extension never activated. Restoring it takes both halves below —
+  // `define` values have to be an identifier or JSON, so the expression goes
+  // in a banner and `define` points at it.
   {
     ...shared,
     entryPoints: { extension: 'src/extension.ts' },
@@ -28,6 +37,10 @@ const builds = [
     platform: 'node',
     format: 'cjs',
     external: ['vscode'],
+    banner: {
+      js: "const __wgslender_import_meta_url = require('url').pathToFileURL(__filename).href;",
+    },
+    define: { 'import.meta.url': '__wgslender_import_meta_url' },
   },
   // Web extension host (Browser worker context for vscode.dev / github.dev).
   {
