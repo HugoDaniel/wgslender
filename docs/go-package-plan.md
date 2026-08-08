@@ -475,7 +475,7 @@ conventional and atomic.
 
 ```
 packages/go/
-  go.mod                 module git.hugodaniel.com/hugo/wgslender/packages/go   (go 1.26)
+  go.mod                 module github.com/HugoDaniel/wgslender/packages/go   (go 1.26)
   go.sum
   Makefile               check = fmt + vet + build + test -race ; lint/fuzz/bench opt-in
   .golangci.yml          minimal: govet(all), staticcheck, revive, errcheck, ineffassign, errorlint
@@ -505,8 +505,8 @@ packages/go/
   cmd/wgslgen/           go:generate codegen tool (Blocks 7–8)
 ```
 
-- Module path `git.hugodaniel.com/hugo/wgslender/packages/go`; public import
-  `git.hugodaniel.com/hugo/wgslender/packages/go/wgslender`. The extra path segment
+- Module path `github.com/HugoDaniel/wgslender/packages/go`; public import
+  `github.com/HugoDaniel/wgslender/packages/go/wgslender`. The extra path segment
   buys a clean final element (`wgslender`) so no named import is needed. Module root
   holds no Go files.
 - In-repo consumers (examples, future tooling) use a `go.work` at `packages/go` level
@@ -713,7 +713,7 @@ Gate before every commit: `make -C packages/go check`. Conventional commits, are
 
 Mastery: GO_MASTERY (package design), CONCURRENCY (Mutex, OnceValues).
 
-1. `mkdir packages/go && go mod init git.hugodaniel.com/hugo/wgslender/packages/go`;
+1. `mkdir packages/go && go mod init github.com/HugoDaniel/wgslender/packages/go`;
    `go get github.com/tetratelabs/wazero@v1.12.0`. Copy
    `packages/js-npm/wgslender.wasm` → `packages/go/internal/wasmabi/wgslender.wasm`.
 2. Makefile: `check` = `fmt vet build test`; `fmt` = `test -z "$$(gofmt -l .)"`;
