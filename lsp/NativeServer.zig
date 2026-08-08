@@ -293,6 +293,7 @@ pub fn onResponse(
     // (master plan §10.1 "settings change resets debounce timer").
     self.republishAllDocumentsLocked();
     self.rearmAllOpenDocsLocked();
+    self.sendPullRefreshRequestsLocked();
 }
 
 // =========================================================================
@@ -737,6 +738,34 @@ fn sendConfigurationRequestLocked(self: *NativeServer) void {
         .{ .emit_null_optional_fields = false },
     ) catch return;
     self.pending_config_id = id;
+}
+
+/// Ask the client to re-pull everything whose result depends on settings.
+/// Mirrors `lsp/wasm/lifecycle.zig::sendPullRefreshRequests`: republishing
+/// covers the push model only, and a pull-model client (VS Code) keeps its
+/// stale `textDocument/diagnostic` results until the next edit otherwise.
+/// Responses to these requests land in `onResponse` and are ignored there
+/// as unmatched ids — including error responses from clients without
+/// refresh support.
+fn sendPullRefreshRequestsLocked(self: *NativeServer) void {
+    const methods = [_][]const u8{
+        "workspace/diagnostic/refresh",
+        "workspace/inlayHint/refresh",
+        "workspace/codeLens/refresh",
+    };
+    for (methods) |method| {
+        const id = self.next_request_id;
+        self.next_request_id +%= 1;
+        self.transport.writeRequest(
+            self.io,
+            self.handler.gpa,
+            .{ .number = id },
+            method,
+            ?u8,
+            null,
+            .{ .emit_null_optional_fields = false },
+        ) catch return;
+    }
 }
 
 /// Re-publish diagnostics for every open document. Called after client
