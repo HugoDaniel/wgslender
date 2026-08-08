@@ -3,7 +3,7 @@ resolver = "3"
 members = ["wgslender", "wgslender-core", "wgslender-macros", "wgslender-sys", "xtask"]
 
 [workspace.package]
-version = "1.1.0"
+version = "1.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "CC0-1.0"
@@ -19,9 +19,9 @@ keywords = ["wgsl", "webgpu", "shader", "minifier", "wgpu"]
 categories = ["compression", "game-development", "wasm"]
 
 [workspace.dependencies]
-wgslender-core = { path = "wgslender-core", version = "1.1.0" }
-wgslender-macros = { path = "wgslender-macros", version = "1.1.0" }
-wgslender-sys = { path = "wgslender-sys", version = "1.1.0" }
+wgslender-core = { path = "wgslender-core", version = "1.2.0" }
+wgslender-macros = { path = "wgslender-macros", version = "1.2.0" }
+wgslender-sys = { path = "wgslender-sys", version = "1.2.0" }
 
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
