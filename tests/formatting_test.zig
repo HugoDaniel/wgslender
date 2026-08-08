@@ -81,6 +81,33 @@ test "formatting: valid shader formats cleanly" {
     try std.testing.expect(std.mem.indexOf(u8, edit.?.new_text, "main") != null);
 }
 
+test "formatting: preserves declarations unreachable from entry points" {
+    // Formatting must be content-preserving. The formatter runs the minifier
+    // pipeline with whitespace/identifier minification off, but tree shaking
+    // must be off too — otherwise Format Document silently deletes any
+    // helper not yet called from an entry point.
+    const source: [:0]const u8 =
+        \\fn helper_unused(x: f32) -> f32 { return x * 2.0; }
+        \\@compute @workgroup_size(1) fn main() { let a = 1.0; _ = a; }
+    ;
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const edit = try ctx.handler.computeFormatting("test://file.wgsl");
+    try std.testing.expect(edit != null);
+    defer std.testing.allocator.free(edit.?.new_text);
+    try std.testing.expect(std.mem.indexOf(u8, edit.?.new_text, "helper_unused") != null);
+}
+
+test "formatting: preserves literal spelling (no syntax minification)" {
+    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() { let a = 1.0; _ = a; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const edit = try ctx.handler.computeFormatting("test://file.wgsl");
+    try std.testing.expect(edit != null);
+    defer std.testing.allocator.free(edit.?.new_text);
+    try std.testing.expect(std.mem.indexOf(u8, edit.?.new_text, "1.0") != null);
+}
+
 test "formatting: preserves struct content" {
     const source: [:0]const u8 = "struct Vertex { position: vec3f, normal: vec3f }";
     const ctx = try setup(source);

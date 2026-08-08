@@ -1,5 +1,8 @@
-//! Formatting: run the wgslender minifier with whitespace + identifier
-//! minification disabled to produce a canonically-formatted document.
+//! Formatting: run the wgslender printer pipeline with every content
+//! transformation disabled to produce a canonically-formatted document.
+//! Formatting must be content-preserving: no tree shaking (it would
+//! delete not-yet-called helpers), no syntax minification (it would
+//! respell literals like `1.0` as `1.`), no renaming.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
@@ -18,6 +21,8 @@ pub fn computeFormatting(handler: *Handler, uri: []const u8) !?LspTextEdit {
     var options = wgslender.Minifier.defaultOptions();
     options.minify_whitespace = false;
     options.minify_identifiers = false;
+    options.minify_syntax = false;
+    options.tree_shaking = false;
 
     var result = try wgslender.minifyWithOptions(handler.gpa, source_z, options);
     defer result.deinit(handler.gpa);
