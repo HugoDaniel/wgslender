@@ -203,7 +203,8 @@ func ExampleCompile() {
 	fmt.Println("input:", shader.OriginalSize, "bytes; module:", len(shader.WASM), "bytes")
 
 	_, err = wgslender.Compile(context.Background(), "fn broken( {}", nil)
-	if cerr, ok := errors.AsType[*wgslender.CompileError](err); ok {
+	var cerr *wgslender.CompileError
+	if errors.As(err, &cerr) {
 		for _, d := range cerr.Diagnostics {
 			fmt.Printf("%d:%d %s\n", d.Line, d.Column, d.Message)
 		}

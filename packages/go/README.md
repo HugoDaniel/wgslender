@@ -17,9 +17,14 @@ Go targets is the whole build.
 ```
 import path   git.hugodaniel.com/hugo/wgslender/packages/go/wgslender
 module        git.hugodaniel.com/hugo/wgslender/packages/go
-go            1.26
+go            1.25.0
 requires      github.com/tetratelabs/wazero v1.12.0
+license       CC0-1.0
 ```
+
+The `go` line is the floor its dependencies set — wazero and `golang.org/x/sys`
+both declare `go 1.25.0`, and `go mod tidy` will not let this module go below
+what they require.
 
 ## What is here
 

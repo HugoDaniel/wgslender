@@ -97,7 +97,8 @@ func (e *CompileError) Error() string {
 // A shader that does not parse is a *[CompileError] carrying the parse errors,
 // because there is no module to hand back:
 //
-//	if cerr, ok := errors.AsType[*wgslender.CompileError](err); ok {
+//	var cerr *wgslender.CompileError
+//	if errors.As(err, &cerr) {
 //		for _, d := range cerr.Diagnostics { … }
 //	}
 //

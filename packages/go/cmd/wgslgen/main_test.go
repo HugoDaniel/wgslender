@@ -190,7 +190,8 @@ func TestExitStatus(t *testing.T) {
 			err := cmd.Run()
 
 			got := 0
-			if exit, ok := errors.AsType[*exec.ExitError](err); ok {
+			var exit *exec.ExitError
+			if errors.As(err, &exit) {
 				got = exit.ExitCode()
 			} else if err != nil {
 				t.Fatalf("running the tool: %v", err)

@@ -435,8 +435,8 @@ func TestCompileUnparseable(t *testing.T) {
 		t.Errorf("Compile() returned %+v alongside its error, want the zero value", got)
 	}
 
-	cerr, ok := errors.AsType[*wgslender.CompileError](err)
-	if !ok {
+	var cerr *wgslender.CompileError
+	if !errors.As(err, &cerr) {
 		t.Fatalf("Compile() error = %v (%T), want a *wgslender.CompileError", err, err)
 	}
 	if len(cerr.Diagnostics) == 0 {
@@ -467,8 +467,8 @@ func TestCompileReportsEveryParseError(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Compile() returned %+v, want an error", one)
 	}
-	single, ok := errors.AsType[*wgslender.CompileError](err)
-	if !ok {
+	var single *wgslender.CompileError
+	if !errors.As(err, &single) {
 		t.Fatalf("Compile() error = %v (%T), want a *wgslender.CompileError", err, err)
 	}
 
@@ -476,8 +476,8 @@ func TestCompileReportsEveryParseError(t *testing.T) {
 	if err == nil {
 		t.Fatal("Compile() of two broken functions returned no error")
 	}
-	double, ok := errors.AsType[*wgslender.CompileError](err)
-	if !ok {
+	var double *wgslender.CompileError
+	if !errors.As(err, &double) {
 		t.Fatalf("Compile() error = %v (%T), want a *wgslender.CompileError", err, err)
 	}
 
