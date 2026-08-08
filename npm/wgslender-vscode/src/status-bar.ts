@@ -13,6 +13,7 @@ import {
   workspace,
 } from 'vscode';
 
+import { minifyOptionsFromConfig } from './commands/minify';
 import { getWgslenderEngine } from './wgslender-engine';
 
 const RECOMPUTE_DEBOUNCE_MS = 250;
@@ -56,12 +57,9 @@ export function registerMinifyStatusBar(context: ExtensionContext): MinifyStatus
     const token = ++lastRunToken;
     try {
       const engine = await getWgslenderEngine(context);
-      const result = engine.minify(doc.getText(), {
-        minifyWhitespace: true,
-        minifyIdentifiers: true,
-        minifySyntax: true,
-        treeShaking: true,
-      });
+      // Same option bag as Save Minified As, so the size shown here is
+      // the size that command would write.
+      const result = engine.minify(doc.getText(), minifyOptionsFromConfig());
       if (token !== lastRunToken) return;
       const text = formatSize(result.originalSize, result.minifiedSize);
       const tooltip = `wgslender: ${result.originalSize} B → ${result.minifiedSize} B`;
@@ -104,7 +102,11 @@ export function registerMinifyStatusBar(context: ExtensionContext): MinifyStatus
       schedule(editor);
     }),
     workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('wgslender.minify')) {
+      // The whole section: `lsp.minifyMode` decides visibility, and any
+      // `minify*` knob shifts the computed size. (`wgslender.minify` is
+      // not a real section — matching it left the item stale until the
+      // next editor switch.)
+      if (e.affectsConfiguration('wgslender')) {
         cache.clear();
         schedule(window.activeTextEditor);
       }
