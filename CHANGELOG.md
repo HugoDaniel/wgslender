@@ -7,6 +7,17 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Added
 
+- **Lint autofixes as editor quickfixes.** Fixable lint rules
+  (`no-redundant-casts`, `no-useless-return`, `prefer-mix`, `no-self-assign`,
+  `prefer-let-over-var`, `no-f16-without-extension`) previously showed a
+  squiggle with no 💡 — their `Entry.fix` rewrite was only reachable through
+  `lint --fix`. The LSP diagnostics bridge now converts the fix into a
+  `lintFix` data payload (LSP coordinates), both transports round-trip it,
+  and the code-action engine offers an `Apply autofix (CODE)` quickfix
+  carrying the exact edit the CLI fixer applies. Wire note: diagnostics for
+  fixable rules now include a `data` object with `kind: "lintFix"` — clients
+  that ignore unknown `data` shapes are unaffected.
+
 - **npm `minifyAndReflect(source, options?)`.** Wires the existing
   `wgslender_minify_and_reflect` WASM export (previously reachable only from
   Zig/C-ABI) into `_core.cjs` and all four JS entry shims. Returns
