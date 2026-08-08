@@ -16,6 +16,8 @@ import {
   MessageWriter,
 } from 'vscode-languageclient';
 
+import { sanitizeLoneSurrogateEscapes } from './json-sanitize';
+
 class InProcessReader extends AbstractMessageReader implements MessageReader {
   private callback: DataCallback | undefined;
 
@@ -38,7 +40,7 @@ class InProcessWriter extends AbstractMessageWriter implements MessageWriter {
   }
 
   async write(msg: Message): Promise<void> {
-    const responses = this.send(JSON.stringify(msg));
+    const responses = this.send(sanitizeLoneSurrogateEscapes(JSON.stringify(msg)));
     for (const json of responses) {
       this.reader.emit(JSON.parse(json) as Message);
     }

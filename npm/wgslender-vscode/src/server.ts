@@ -8,6 +8,8 @@
 
 import * as lsp from 'wgslender-lsp';
 
+import { sanitizeLoneSurrogateEscapes } from './json-sanitize';
+
 declare const self: DedicatedWorkerGlobalScope;
 
 type Pending = MessageEvent;
@@ -23,7 +25,7 @@ self.addEventListener('message', (event: MessageEvent) => {
 });
 
 function dispatch(msg: unknown): void {
-  const responses = lsp.sendMessage(JSON.stringify(msg));
+  const responses = lsp.sendMessage(sanitizeLoneSurrogateEscapes(JSON.stringify(msg)));
   for (const json of responses) {
     self.postMessage(JSON.parse(json));
   }
