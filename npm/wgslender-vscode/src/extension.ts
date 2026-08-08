@@ -9,9 +9,11 @@ import { ExtensionContext, Uri, workspace } from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions } from 'vscode-languageclient/node';
 
 import { WgslenderApi } from './api';
+import { buildClientOptions } from './client-options';
 import { registerCompileCommands, compileOptionsFromConfig } from './commands/compile';
 import { registerLspCommands } from './commands/lsp';
 import { registerMinifyCommands, minifyOptionsFromConfig } from './commands/minify';
+import { registerFixOnSave } from './fix-on-save';
 import { registerReflectionView } from './reflection';
 import { registerMinifyStatusBar } from './status-bar';
 import { createInProcessTransports } from './transport';
@@ -28,13 +30,7 @@ export async function activate(context: ExtensionContext): Promise<WgslenderApi>
 
   const serverOptions: ServerOptions = async () => createInProcessTransports(lsp.sendMessage);
 
-  const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ language: 'wgsl' }],
-    synchronize: {
-      configurationSection: 'wgslender',
-    },
-    initializationOptions: workspace.getConfiguration('wgslender'),
-  };
+  const clientOptions: LanguageClientOptions = buildClientOptions();
 
   client = new LanguageClient('wgslender', 'wgslender Language Server', serverOptions, clientOptions);
   await client.start();
@@ -45,6 +41,7 @@ export async function activate(context: ExtensionContext): Promise<WgslenderApi>
     ...registerLspCommands(client),
     ...registerMinifyCommands(context),
     ...registerCompileCommands(context),
+    registerFixOnSave(context),
     ...reflection.disposables,
     ...statusBar.disposables,
   );
