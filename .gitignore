@@ -39,6 +39,11 @@ tests/testdata/ucd/
 *.swo
 *~
 
+# Reference checkouts of other projects, kept for reading rather than building.
+# They used to be submodules, which meant `git clone --recursive` pulled a few
+# hundred MB of unrelated repositories. Clone whatever you want to read here.
+/external/
+
 # Temp/scratch
 /tmp/
 

@@ -2,7 +2,7 @@
 //! transports take divergent code paths when commands fail:
 //!
 //!   - Native (`lsp/native/workspace_commands.zig::handle()`): returns a
-//!     Zig error → `external/lsp-kit/src/basic_server.zig` maps it to a
+//!     Zig error → lsp-kit's `src/basic_server.zig` maps it to a
 //!     `JsonRPCMessage.Response.Error.Code` and writes
 //!     `{"code":<n>,"message":"<@errorName(err)>"}` via
 //!     `lsp.writeErrorResponse` with `emit_null_optional_fields = false`.

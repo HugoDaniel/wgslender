@@ -129,6 +129,17 @@ All notable changes to wgslender are recorded here. The project follows
   OOM still propagates. The npm `CompileResult.errors` type widens from
   `{ message }[]` to `DiagnosticInfo[]`.
 
+### Infrastructure
+
+- **`external/` is no longer a set of git submodules.** Eight reference
+  checkouts (gpuweb, eslint, vscode-extension-samples, naga, wgsl-analyzer,
+  wgsl_reflect, lsp-client, lsp-kit) were tracked as submodules, so a
+  `git clone --recursive` pulled several hundred MB of unrelated projects to
+  build a WGSL minifier. They are kept for reading, not building, and are now
+  gitignored — clone whatever you want to read into `external/`. The one
+  script that consumed a checkout, `tests/cross_check.sh`, is manual, already
+  exits 2 when it is absent, and now prints the clone command.
+
 ### Fixed
 
 - **`zig build lsp` works from a release tarball.** lsp-kit was a `.path`

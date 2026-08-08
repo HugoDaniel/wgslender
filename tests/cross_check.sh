@@ -10,7 +10,10 @@
 # Exit code:
 #   0  every shader matched
 #   1  at least one shader diverged (full diff printed)
-#   2  setup error (missing CLI / submodule / Node)
+#   2  setup error (missing CLI / wgsl_reflect / Node)
+#
+# `external/wgsl_reflect` is not vendored — clone it yourself to run this:
+#   git clone https://github.com/brendan-duncan/wgsl_reflect external/wgsl_reflect
 #
 # Usage:
 #   tests/cross_check.sh                     # all shaders in compute.toys
@@ -28,7 +31,8 @@ if [[ ! -x "$WGSLENDER_BIN" ]]; then
   exit 2
 fi
 if [[ ! -f "$WGSL_REFLECT_PKG" ]]; then
-  echo "error: $WGSL_REFLECT_PKG missing — submodule not initialized" >&2
+  echo "error: $WGSL_REFLECT_PKG missing — clone it with" >&2
+  echo "  git clone https://github.com/brendan-duncan/wgsl_reflect external/wgsl_reflect" >&2
   exit 2
 fi
 if ! command -v node >/dev/null 2>&1; then

@@ -1,4 +1,5 @@
-//! Reflect tests ported from `external/wgsl_reflect/test/tests/test_reflect.js`.
+//! Reflect tests ported from wgsl_reflect's `test/tests/test_reflect.js`
+//! (https://github.com/brendan-duncan/wgsl_reflect).
 //!
 //! The originals run JS-API assertions (e.g. `t.uniforms[0].type.size`); ports
 //! here translate to wgslender's `ReflectResult` shape (subset views + struct
