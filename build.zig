@@ -813,6 +813,12 @@ pub fn build(b: *std.Build) void {
         .{ .name = "native_lifecycle", .module = native_lifecycle_mod },
         .{ .name = "wasm_lifecycle", .module = wasm_lifecycle_mod },
     });
+    // A workspace/configuration response must trigger the client-side
+    // pull refreshes (diagnostics, inlay hints, code lenses).
+    _ = addTestStep(b, test_step, "tests/lsp_config_refresh_test.zig", target, optimize, &.{
+        .{ .name = "Handler", .module = handler_mod },
+        .{ .name = "wasm_lifecycle", .module = wasm_lifecycle_mod },
+    });
     // Internal smoke tests for the shared parity helpers module
     // (`jsonEql`, `expectEqualErrorCode` round-trip, escape-aware
     // `buildAndParseWasmErrorEnvelope`). Lives in its own file so the

@@ -92,6 +92,37 @@ pub fn handleResponse(ctx: Ctx, root: std.json.ObjectMap) void {
     if (arr.items.len == 0) return;
     ctx.handler.applyClientConfig(arr.items[0]);
     republishAllDocuments(ctx);
+    sendPullRefreshRequests(ctx);
+}
+
+/// Ask the client to re-pull everything whose result depends on settings.
+/// `republishAllDocuments` covers the *push* model, but VS Code consumes
+/// pull diagnostics (`textDocument/diagnostic`) — without
+/// `workspace/diagnostic/refresh` the stale pull results linger until the
+/// next edit, so a settings change (rule off, diagnostics off) appears to
+/// do nothing. Inlay hints and code lenses re-pull for the same reason
+/// when `lsp.minifyMode` toggles. Sent unconditionally: a client without
+/// refresh support answers with an error response, which `handleResponse`
+/// ignores as an unmatched id.
+fn sendPullRefreshRequests(ctx: Ctx) void {
+    const methods = [_][]const u8{
+        "workspace/diagnostic/refresh",
+        "workspace/inlayHint/refresh",
+        "workspace/codeLens/refresh",
+    };
+    for (methods) |method| {
+        const id = ctx.next_request_id.*;
+        ctx.next_request_id.* +%= 1;
+
+        var buf: std.ArrayList(u8) = .empty;
+        json.appendStr(&buf, ctx.gpa, "{\"jsonrpc\":\"2.0\",\"id\":");
+        json.appendI64(&buf, ctx.gpa, id);
+        json.appendStr(&buf, ctx.gpa, ",\"method\":\"");
+        json.appendStr(&buf, ctx.gpa, method);
+        json.appendStr(&buf, ctx.gpa, "\"}");
+        const msg = buf.toOwnedSlice(ctx.gpa) catch return;
+        ctx.enqueue(msg);
+    }
 }
 
 /// Re-publish diagnostics (or empty list when disabled) for every open URI.
