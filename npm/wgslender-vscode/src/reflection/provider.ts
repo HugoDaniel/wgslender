@@ -18,7 +18,14 @@ import { BaseLanguageClient } from 'vscode-languageclient';
 interface ReflectResponse {
   uri: string;
   version: 1 | 2;
-  json: string;
+  /**
+   * The reflection payload. Both transports embed it on the wire as a
+   * nested object (`lsp/wire/workspace_commands.zig::appendReflectResult`
+   * splices the pre-rendered JSON verbatim), so it arrives here parsed —
+   * same trap `commands/lsp.ts` documents. Typed unknown so the string
+   * case stays handled if a transport ever re-encodes.
+   */
+  json: unknown;
 }
 
 interface ReflectData {
@@ -88,7 +95,9 @@ export class ReflectionProvider implements TreeDataProvider<ReflectionNode> {
         format: version,
         pretty: false,
       });
-      const parsed = JSON.parse(response.json) as Omit<ReflectData, 'uri'>;
+      const parsed = (
+        typeof response.json === 'string' ? JSON.parse(response.json) : response.json
+      ) as Omit<ReflectData, 'uri'>;
       this.data = { uri, ...parsed };
     } catch (err) {
       this.data = {
