@@ -112,6 +112,51 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Fixed
 
+- **Format Document is content-preserving.** The LSP formatter ran the
+  minifier pipeline with only whitespace/identifier minification disabled, so
+  tree shaking silently *deleted* any declaration not yet reachable from an
+  entry point, and syntax minification respelled literals (`1.0` → `1.`).
+  Both are now off in the formatting path; formatting can never change what a
+  document contains.
+- **Settings changes refresh pull diagnostics (both LSP transports).** The
+  server republished on the push channel after a `workspace/configuration`
+  response, but VS Code consumes the pull model — stale pull results lingered
+  until the next edit, so turning a lint rule off (`rules`), disabling
+  diagnostics, or toggling `lsp.minifyMode` looked like it did nothing. Both
+  transports now send `workspace/diagnostic/refresh`,
+  `workspace/inlayHint/refresh`, and `workspace/codeLens/refresh` after
+  applying a configuration response.
+- **VS Code reflection sidebar rendered an error for every shader.** The
+  provider `JSON.parse`d the `wgslender/reflect` payload, but both transports
+  put it on the wire as a structured object — the parse threw and the view
+  showed `Errors (1)` unconditionally. Same trap the reflect palette command
+  already documents; the sidebar predated that fix.
+- **VS Code minify status bar reacted to a settings section that doesn't
+  exist** (`wgslender.minify`), so toggling `wgslender.lsp.minifyMode` never
+  showed/hid the item until an editor switch. It now watches the whole
+  `wgslender` section and computes the size with the user's configured minify
+  options, so the number always matches what *Save Minified As* writes.
+- **VS Code compile command ran without `sortDeclarations` /
+  `scopeLocalRename`.** `cfg.get(key, true)` can never return `true` when
+  `package.json` declares the key `default: false` — the manifest default
+  wins over the code fallback — so the command silently diverged from the CLI
+  `compile` subcommand (which always applies both before BPE). The
+  compile-only defaults now resolve through `inspect()` and only an explicit
+  user setting overrides them.
+- **A lone surrogate no longer kills document sync in the VS Code
+  extension.** `JSON.stringify` escapes an unpaired surrogate as `\ud800`,
+  the Zig `std.json` parser inside the LSP wasm rejects the message, and the
+  drop was silent — from then on every answer came from stale text. Both the
+  in-process transport and the web Worker now replace lone-surrogate escapes
+  with U+FFFD (same UTF-16 length, so incremental edit ranges stay aligned).
+- **The three declared-but-inert VS Code settings now work.**
+  `wgslender.lint.fixOnSave` applies the engine's `lintAndFix` as a save
+  participant (the CLI's `lint --fix`); `wgslender.format.enable: false`
+  actually disables formatting (client middleware); `wgslender.validate.strict`
+  escalates warning diagnostics to errors on both the push and pull channels
+  (the CLI's `validate --strict`). All three were advertised in the manifest
+  and README but consumed nowhere.
+
 - **Out-of-memory honesty (validator):** the type-resolution and
   constructor-inference paths no longer swallow allocation failures.
   `resolveType` / `lookupType`, the `resolve*Type` helpers, the vector/matrix
