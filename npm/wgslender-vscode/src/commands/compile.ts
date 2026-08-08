@@ -27,7 +27,7 @@ async function runCompile(context: ExtensionContext): Promise<void> {
   let result: { wasm: Uint8Array; originalSize: number; wasmSize: number; errors: { message: string }[] };
   try {
     const engine = await getWgslenderEngine(context);
-    result = engine.compile(editor.document.getText(), optionsFromConfig());
+    result = engine.compile(editor.document.getText(), compileOptionsFromConfig());
   } catch (err) {
     window.showErrorMessage(`wgslender: compile failed — ${formatError(err)}`);
     return;
@@ -66,7 +66,7 @@ async function defaultOutputUri(sourceUri: Uri): Promise<Uri> {
   return Uri.joinPath(baseUri, outputDir, wasmName);
 }
 
-function optionsFromConfig(): Record<string, unknown> {
+export function compileOptionsFromConfig(): Record<string, unknown> {
   const cfg = workspace.getConfiguration('wgslender');
   return {
     minifyWhitespace: cfg.get<boolean>('minifyWhitespace', true),

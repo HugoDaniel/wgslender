@@ -8,16 +8,17 @@
 import { ExtensionContext, Uri, workspace } from 'vscode';
 import { LanguageClient, LanguageClientOptions, ServerOptions } from 'vscode-languageclient/node';
 
-import { registerCompileCommands } from './commands/compile';
+import { WgslenderApi } from './api';
+import { registerCompileCommands, compileOptionsFromConfig } from './commands/compile';
 import { registerLspCommands } from './commands/lsp';
-import { registerMinifyCommands } from './commands/minify';
+import { registerMinifyCommands, minifyOptionsFromConfig } from './commands/minify';
 import { registerReflectionView } from './reflection';
 import { registerMinifyStatusBar } from './status-bar';
 import { createInProcessTransports } from './transport';
 
 let client: LanguageClient | undefined;
 
-export async function activate(context: ExtensionContext): Promise<void> {
+export async function activate(context: ExtensionContext): Promise<WgslenderApi> {
   const wasmUri = Uri.joinPath(context.extensionUri, 'dist', 'wgslender-lsp.wasm');
   const wasmBytes = await workspace.fs.readFile(wasmUri);
   const wasmModule = await WebAssembly.compile(wasmBytes as BufferSource);
@@ -38,13 +39,23 @@ export async function activate(context: ExtensionContext): Promise<void> {
   client = new LanguageClient('wgslender', 'wgslender Language Server', serverOptions, clientOptions);
   await client.start();
 
+  const reflection = registerReflectionView(client);
+  const statusBar = registerMinifyStatusBar(context);
   context.subscriptions.push(
     ...registerLspCommands(client),
     ...registerMinifyCommands(context),
     ...registerCompileCommands(context),
-    ...registerReflectionView(client),
-    ...registerMinifyStatusBar(context),
+    ...reflection.disposables,
+    ...statusBar.disposables,
   );
+
+  return {
+    client,
+    reflection: reflection.provider,
+    statusBarItem: statusBar.item,
+    resolveMinifyOptions: minifyOptionsFromConfig,
+    resolveCompileOptions: compileOptionsFromConfig,
+  };
 }
 
 export async function deactivate(): Promise<void> {

@@ -62,7 +62,7 @@ class MinifiedPreviewProvider implements TextDocumentContentProvider {
     state.source = source;
 
     const engine = await getWgslenderEngine(this.context);
-    const result = engine.minify(source, optionsFromConfig());
+    const result = engine.minify(source, minifyOptionsFromConfig());
     if (result.errors.length > 0) {
       const lines = result.errors.map((e) => `// ${e.message}`).join('\n');
       return `${lines}\n${result.code}`;
@@ -127,7 +127,7 @@ async function runMinifySaveAs(context: ExtensionContext): Promise<void> {
   let result: { code: string; errors: { message: string }[] };
   try {
     const engine = await getWgslenderEngine(context);
-    result = engine.minify(editor.document.getText(), optionsFromConfig());
+    result = engine.minify(editor.document.getText(), minifyOptionsFromConfig());
   } catch (err) {
     window.showErrorMessage(`wgslender: minify failed — ${formatError(err)}`);
     return;
@@ -157,7 +157,7 @@ function previewUriFor(sourceUri: Uri): Uri {
   );
 }
 
-function optionsFromConfig(): Record<string, unknown> {
+export function minifyOptionsFromConfig(): Record<string, unknown> {
   const cfg = workspace.getConfiguration('wgslender');
   return {
     minifyWhitespace: cfg.get<boolean>('minifyWhitespace', true),

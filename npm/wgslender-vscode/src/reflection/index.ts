@@ -13,7 +13,12 @@ import { ReflectionProvider } from './provider';
 
 const REFRESH_DEBOUNCE_MS = 250;
 
-export function registerReflectionView(client: BaseLanguageClient): Disposable[] {
+export interface ReflectionView {
+  disposables: Disposable[];
+  provider: ReflectionProvider;
+}
+
+export function registerReflectionView(client: BaseLanguageClient): ReflectionView {
   const provider = new ReflectionProvider(client);
   const view = window.createTreeView('wgslenderReflection', {
     treeDataProvider: provider,
@@ -35,7 +40,7 @@ export function registerReflectionView(client: BaseLanguageClient): Disposable[]
 
   scheduleRefresh(window.activeTextEditor);
 
-  return [
+  const disposables: Disposable[] = [
     view,
     provider,
     window.onDidChangeActiveTextEditor((e) => scheduleRefresh(e)),
@@ -57,4 +62,5 @@ export function registerReflectionView(client: BaseLanguageClient): Disposable[]
       if (pendingRefresh) clearTimeout(pendingRefresh);
     }),
   ];
+  return { disposables, provider };
 }

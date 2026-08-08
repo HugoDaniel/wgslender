@@ -6,6 +6,7 @@ import {
   Disposable,
   ExtensionContext,
   StatusBarAlignment,
+  StatusBarItem,
   TextDocument,
   TextEditor,
   window,
@@ -18,7 +19,12 @@ const RECOMPUTE_DEBOUNCE_MS = 250;
 
 type MinifyMode = 'off' | 'insights' | 'strict';
 
-export function registerMinifyStatusBar(context: ExtensionContext): Disposable[] {
+export interface MinifyStatusBar {
+  disposables: Disposable[];
+  item: StatusBarItem;
+}
+
+export function registerMinifyStatusBar(context: ExtensionContext): MinifyStatusBar {
   const item = window.createStatusBarItem(StatusBarAlignment.Right, 100);
   item.command = 'wgslender.toggleMinifyMode';
   item.tooltip = 'wgslender: toggle minify insights mode';
@@ -88,7 +94,7 @@ export function registerMinifyStatusBar(context: ExtensionContext): Disposable[]
 
   schedule(window.activeTextEditor);
 
-  return [
+  const disposables: Disposable[] = [
     item,
     window.onDidChangeActiveTextEditor((e) => schedule(e)),
     workspace.onDidSaveTextDocument((doc) => {
@@ -107,6 +113,7 @@ export function registerMinifyStatusBar(context: ExtensionContext): Disposable[]
       if (pending) clearTimeout(pending);
     }),
   ];
+  return { disposables, item };
 }
 
 function formatSize(originalSize: number, minifiedSize: number): string {
