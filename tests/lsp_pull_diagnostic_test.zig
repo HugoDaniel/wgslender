@@ -202,6 +202,48 @@ test "pull: stale previousResultId after incremental edit yields a new Full" {
 }
 
 // =========================================================================
+// Scenario 4b — a settings change invalidates the resultId.
+//
+// The result id must cover everything the report depends on, and lint
+// output depends on configuration: after `applyClientConfig` a re-pull
+// with the old id must yield a fresh Full, or the client keeps showing a
+// rule the user just turned off. (This is exactly the VS Code flow:
+// config change → workspace/diagnostic/refresh → client re-pulls with
+// its cached previousResultId.)
+// =========================================================================
+
+test "pull: a settings change invalidates previousResultId" {
+    var handler = Handler.init(std.testing.allocator);
+    defer handler.deinit();
+    try handler.openDocument(
+        test_uri,
+        "@compute @workgroup_size(1) fn main() { let unused = 1.0; }",
+        1,
+    );
+
+    var cap1 = try capturePull(&handler, test_uri, null);
+    defer cap1.deinit();
+    const id1 = try std.testing.allocator.dupe(u8, cap1.result.object.get("resultId").?.string);
+    defer std.testing.allocator.free(id1);
+    try std.testing.expect(findItemByMessage(cap1.result.object.get("items").?, "never used") != null);
+
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        "{\"rules\":{\"no-unused-vars\":\"off\"}}",
+        .{},
+    );
+    defer parsed.deinit();
+    handler.applyClientConfig(parsed.value);
+
+    var cap2 = try capturePull(&handler, test_uri, id1);
+    defer cap2.deinit();
+
+    try std.testing.expectEqualStrings("full", cap2.result.object.get("kind").?.string);
+    try std.testing.expect(findItemByMessage(cap2.result.object.get("items").?, "never used") == null);
+}
+
+// =========================================================================
 // Scenario 5 — resultId survives a full-text replace (monotonicity).
 // =========================================================================
 

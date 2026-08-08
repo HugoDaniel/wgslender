@@ -58,6 +58,13 @@ project_config: wgslender.Config = .{},
 /// identical to `wgslender.json`'s, so the same key set works in both
 /// places (e.g. `lsp.minifyMode`, `rules.no-unused-vars`).
 workspace_config: wgslender.Config = .{},
+/// Bumped on every settings change. Folded into `currentResultId` so a
+/// pull client's `previousResultId` goes stale when configuration —
+/// not just document content — changes; otherwise a re-pull after
+/// turning a rule off answers Unchanged and the client keeps showing
+/// the silenced diagnostic. Both contributions only ever increase, so
+/// the composed id can never revisit an old value.
+config_generation: u32 = 0,
 
 pub const Document = struct {
     source: []u8,
@@ -337,7 +344,9 @@ pub fn getDocumentSource(self: *const Handler, uri: []const u8) ?[]const u8 {
 pub fn currentResultId(self: *const Handler, uri: []const u8) ?u32 {
     const doc = self.documents.get(uri) orelse return null;
     const p = doc.parse orelse return null;
-    return p.module_version;
+    // Content version + settings generation: the pull report depends on
+    // both, so the id must change when either does.
+    return p.module_version +% self.config_generation;
 }
 
 /// Handles a `textDocument/didSave` notification. The client remains the
@@ -374,6 +383,7 @@ pub fn applyClientConfig(self: *Handler, value: std.json.Value) void {
     // Any settings refresh can shift `effectiveMinifyFor` — invalidate
     // once per configuration pull, far cheaper than a per-field dirty
     // check.
+    self.config_generation +%= 1;
     self.invalidateAllMinifyCaches();
     self.workspace_config.deinit(self.gpa);
     self.workspace_config = .{};
