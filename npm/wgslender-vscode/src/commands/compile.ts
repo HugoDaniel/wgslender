@@ -74,13 +74,33 @@ export function compileOptionsFromConfig(): Record<string, unknown> {
     minifySyntax: cfg.get<boolean>('minifySyntax', true),
     treeShaking: cfg.get<boolean>('treeShaking', true),
     preserveUniformStructTypes: cfg.get<boolean>('preserveUniformStructTypes', false),
-    // Compile defaults sortDeclarations + scopeLocalRename to true because
-    // the BPE pass that follows benefits significantly from both.
-    sortDeclarations: cfg.get<boolean>('sortDeclarations', true),
-    scopeLocalRename: cfg.get<boolean>('scopeLocalRename', true),
+    // Compile defaults sortDeclarations + scopeLocalRename to true — the
+    // BPE pass that follows benefits significantly from both, and the CLI
+    // `compile` subcommand always applies them. package.json declares
+    // these keys `default: false` (for the minify family), so `cfg.get`
+    // with a fallback can never say true here; only an explicit user
+    // value may override the compile default.
+    sortDeclarations: explicitUserValue(cfg, 'sortDeclarations') ?? true,
+    scopeLocalRename: explicitUserValue(cfg, 'scopeLocalRename') ?? true,
     mangleExternalBindings: cfg.get<boolean>('mangleExternalBindings', false),
     keepNames: cfg.get<string[]>('keepNames', []),
   };
+}
+
+/** The user's own setting for `key` at any scope, ignoring the package-manifest default. */
+function explicitUserValue(
+  cfg: ReturnType<typeof workspace.getConfiguration>,
+  key: string,
+): boolean | undefined {
+  const info = cfg.inspect<boolean>(key);
+  return (
+    info?.workspaceFolderLanguageValue ??
+    info?.workspaceLanguageValue ??
+    info?.globalLanguageValue ??
+    info?.workspaceFolderValue ??
+    info?.workspaceValue ??
+    info?.globalValue
+  );
 }
 
 function formatError(err: unknown): string {
