@@ -15,6 +15,14 @@ const lsp = @import("lsp");
 const NativeServer = @import("NativeServer");
 
 pub fn main(init: std.process.Init) !void {
+    // `basic_server.run` instantiates `MessageType(NativeServer)`, which folds
+    // every request/notification handler on `NativeServer` into two comptime
+    // tagged unions. Our handler surface is large enough to exhaust the
+    // default branch quota, and the quota is a property of this comptime
+    // evaluation — raising it here covers the nested instantiation, so
+    // lsp-kit stays an unpatched upstream dependency.
+    @setEvalBranchQuota(20_000);
+
     var read_buffer: [4096]u8 = undefined;
     var stdio_transport: lsp.Transport.Stdio = .init(&read_buffer, .stdin(), .stdout());
     // Read happens only on the basic_server thread, so `thread_safe_read`

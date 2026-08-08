@@ -3,6 +3,9 @@
 /dist/
 zig-out/
 .zig-cache/
+# Where `zig build` unpacks fetched dependencies (lsp_kit); the tarball itself
+# is cached globally, so this is reproducible from build.zig.zon's url + hash.
+zig-pkg/
 /packages/rust/target/
 
 # C example binaries (built from examples/c/Makefile)

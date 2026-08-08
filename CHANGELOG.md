@@ -123,6 +123,16 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Fixed
 
+- **`zig build lsp` works from a release tarball.** lsp-kit was a `.path`
+  dependency on a git submodule, and `git archive` — the basis of every
+  GitHub source tarball — emits submodules as empty directories. Anyone
+  building the LSP from a released archive got a missing-file error. It is
+  now fetched by `.url` + `.hash`, pinned to the same upstream commit the
+  submodule tracked. The submodule additionally carried a local one-line
+  patch raising `@setEvalBranchQuota` inside lsp-kit's `MessageType`; that
+  quota is a property of the comptime evaluation, so it now lives at our
+  own instantiation site in `lsp/main.zig` and lsp-kit is unmodified
+  upstream.
 - **Format Document is content-preserving.** The LSP formatter ran the
   minifier pipeline with only whitespace/identifier minification disabled, so
   tree shaking silently *deleted* any declaration not yet reachable from an

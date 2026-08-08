@@ -12,8 +12,14 @@
         "tests",
     },
     .dependencies = .{
+        // Fetched by URL rather than vendored as a submodule: `git archive`
+        // (and therefore every GitHub release tarball) drops submodule
+        // contents, which left `zig build lsp` unbuildable for anyone
+        // consuming a release. Pinned to the exact upstream commit that the
+        // submodule tracked, so this is a packaging change only.
         .lsp_kit = .{
-            .path = "external/lsp-kit",
+            .url = "https://github.com/zigtools/lsp-kit/archive/ec325a3c33d1da7708cf513355208f74d9560580.tar.gz",
+            .hash = "lsp_kit-0.1.0-bi_PL_kyDACVTEhLaMq2-PJx0MocqRyjXDAN0ybMUyQQ",
             .lazy = true,
         },
     },
