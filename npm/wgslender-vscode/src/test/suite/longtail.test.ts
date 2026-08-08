@@ -706,6 +706,32 @@ fn integrate(p: Particle) -> Particle { return p; }
     );
   });
 
+  test('fixable lint rules offer the same autofix lint --fix applies', async () => {
+    const doc = await openWgsl(FIXABLE_SHADER);
+    const diagnostics = await waitForDiagnostics(doc.uri);
+    const w201 = diagnostics.find((d) => codeOf(d) === 'W0201');
+    assert.ok(w201, `expected W0201, got: ${diagnostics.map((d) => codeOf(d)).join(',')}`);
+    const actions = await waitFor(
+      async () => {
+        const a = await commands.executeCommand<CodeAction[]>(
+          'vscode.executeCodeActionProvider',
+          doc.uri,
+          w201.range,
+        );
+        return a && a.some((x) => /autofix/i.test(x.title)) ? a : undefined;
+      },
+      10_000,
+      'lint autofix action',
+    );
+    const fix = actions.find((a) => /autofix/i.test(a.title))!;
+    assert.ok(fix.edit, 'autofix action should carry a workspace edit');
+    assert.ok(await workspace.applyEdit(fix.edit), 'applyEdit failed');
+    assert.ok(
+      doc.getText().includes('let a = 1.5f;'),
+      `autofix should remove the redundant cast: ${doc.getText().split('\n')[0]}`,
+    );
+  });
+
   test('rename returns a multi-site edit; renaming a builtin cannot kill the server', async () => {
     const doc = await openWgsl(NAV_SHADER);
     const edit = await waitFor(
