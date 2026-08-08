@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/internal/wasmabi"
+	"github.com/HugoDaniel/wgslender/packages/go/internal/wasmabi"
 )
 
 // The errors this package reports for a call that could not be made or could

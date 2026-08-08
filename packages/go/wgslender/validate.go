@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/internal/wasmabi"
+	"github.com/HugoDaniel/wgslender/packages/go/internal/wasmabi"
 )
 
 // validateFn is the guest export behind [Validate].

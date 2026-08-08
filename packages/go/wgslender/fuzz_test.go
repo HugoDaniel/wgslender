@@ -5,7 +5,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // FuzzEveryCall drives the rest of the public surface with one arbitrary

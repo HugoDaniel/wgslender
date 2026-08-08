@@ -70,6 +70,14 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Changed
 
+- **Go module path moved to GitHub (⚠ breaking for Go consumers).** The module
+  was `git.hugodaniel.com/hugo/wgslender/packages/go`, which only resolved
+  against the self-hosted remote. It is now
+  `github.com/HugoDaniel/wgslender/packages/go`, so
+  `go get github.com/HugoDaniel/wgslender/packages/go/wgslender` works against
+  the public mirror. Existing importers must update their import paths; the
+  package API itself is unchanged. Code emitted by `wgslgen` imports only the
+  standard library and is unaffected.
 - **`npm/wgslender-lsp` ships 137 commits of accumulated LSP work (⚠ behavior).**
   Its committed `wgslender-lsp.wasm` had gone stale since 2026-05-06: nothing
   in `build.zig` wrote to that directory and the package had no build script,

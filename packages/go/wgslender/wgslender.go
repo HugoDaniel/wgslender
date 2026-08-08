@@ -3,7 +3,7 @@ package wgslender
 import (
 	"context"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/internal/wasmabi"
+	"github.com/HugoDaniel/wgslender/packages/go/internal/wasmabi"
 )
 
 // Version returns the version of the wgslender engine embedded in this

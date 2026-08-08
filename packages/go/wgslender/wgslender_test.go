@@ -8,8 +8,8 @@ import (
 	"regexp"
 	"testing"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/internal/wasmabi"
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/internal/wasmabi"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // Paths to the rest of the repo, relative to this package's directory

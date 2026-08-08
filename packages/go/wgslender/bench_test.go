@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // largeWGSL is a synthetic shader two orders of magnitude bigger than the

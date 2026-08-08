@@ -15,8 +15,8 @@ Go targets is the whole build.
 [wazero]: https://wazero.io
 
 ```
-import path   git.hugodaniel.com/hugo/wgslender/packages/go/wgslender
-module        git.hugodaniel.com/hugo/wgslender/packages/go
+import path   github.com/HugoDaniel/wgslender/packages/go/wgslender
+module        github.com/HugoDaniel/wgslender/packages/go
 go            1.25.0
 requires      github.com/tetratelabs/wazero v1.12.0
 license       CC0-1.0
@@ -169,7 +169,7 @@ get` fetches it by asking that URL for `?go-get=1` and reading a `go-import`
 meta tag. So the question is which URL.
 
 1. **Push the repository and rely on Gitea's own metadata.**
-   `git.hugodaniel.com/hugo/wgslender/packages/go` would resolve directly.
+   `github.com/HugoDaniel/wgslender/packages/go` would resolve directly.
    Unverified: whether the instance serves `go-import` for a subdirectory
    module, and whether it is reachable to the proxy at `proxy.golang.org` —
    a private host means every consumer needs `GOPRIVATE=git.hugodaniel.com`
@@ -184,7 +184,7 @@ meta tag. So the question is which URL.
    without any consumer configuration; the cost is a second place the code
    lives and a mirror that can fall behind.
 
-The module path is already `git.hugodaniel.com/hugo/wgslender/packages/go`, so
+The module path is already `github.com/HugoDaniel/wgslender/packages/go`, so
 option 1 needs no code change and the others do. **Re-verify before publishing
 either way**: a module path baked into every `import` line is expensive to
 change afterwards.

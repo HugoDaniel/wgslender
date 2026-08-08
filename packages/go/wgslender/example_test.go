@@ -23,7 +23,7 @@ import (
 	"slices"
 	"strings"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // exampleShader is what the examples work on: two resources, a helper the

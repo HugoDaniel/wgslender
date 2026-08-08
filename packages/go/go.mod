@@ -1,4 +1,4 @@
-module git.hugodaniel.com/hugo/wgslender/packages/go
+module github.com/HugoDaniel/wgslender/packages/go
 
 go 1.25.0
 

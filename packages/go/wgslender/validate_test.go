@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // TestValidate is the validation table. A new scenario is a row.

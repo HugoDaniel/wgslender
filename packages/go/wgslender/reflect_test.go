@@ -7,7 +7,7 @@ import (
 	"slices"
 	"testing"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // TestReflect is the behaviour table. Every expectation was read off the live

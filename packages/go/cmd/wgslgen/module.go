@@ -11,7 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // What -module turns a shader's interface into: constants for the slots and the

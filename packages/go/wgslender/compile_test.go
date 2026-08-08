@@ -9,7 +9,7 @@ import (
 
 	"github.com/tetratelabs/wazero"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // wasmMagic is the four bytes every WebAssembly module starts with.

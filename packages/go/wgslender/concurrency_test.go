@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // A stressOp is one call whose answer depends on nothing but its input, so the

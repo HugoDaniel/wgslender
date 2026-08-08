@@ -41,7 +41,7 @@ Same engine on every surface — see [Install](#install) for the CLI, Rust, Go, 
 | JavaScript / TypeScript | `npm install wgslender` | [packages/js-npm](packages/js-npm/README.md) |
 | CLI | `zig build -Doptimize=ReleaseSafe` → `zig-out/bin/wgslender` | requires [Zig 0.16.0](https://ziglang.org/download/) |
 | Rust | `cargo add wgslender` | [packages/rust](packages/rust/README.md) |
-| Go | `go get git.hugodaniel.com/hugo/wgslender/packages/go/wgslender` | [packages/go](packages/go/README.md) |
+| Go | `go get github.com/HugoDaniel/wgslender/packages/go/wgslender` | [packages/go](packages/go/README.md) |
 | C | `zig build lib` → `libwgslender.a` + `wgslender.h` | [C API](docs/C-API.md) |
 | LSP server | `npm install wgslender-lsp` (browser) · `zig build lsp` (native) | [Editor support](#editor-support) |
 | VS Code | [Marketplace](https://marketplace.visualstudio.com/items?itemName=hugodaniel.wgslender-vscode) | [extension docs](npm/wgslender-vscode/README.md) |

@@ -13,7 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // The generated file's first line. Go's convention for a file nobody should

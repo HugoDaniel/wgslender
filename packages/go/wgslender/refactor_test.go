@@ -20,7 +20,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // offsetOf is the byte offset at which needle starts.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // TestLint is the lint table. A new scenario is a row.

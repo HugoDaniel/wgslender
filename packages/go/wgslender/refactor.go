@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/internal/wasmabi"
+	"github.com/HugoDaniel/wgslender/packages/go/internal/wasmabi"
 )
 
 // The guest exports behind the twelve refactor operations.

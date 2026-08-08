@@ -8,7 +8,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // TestMinify is the behaviour table: one row per scenario, each row naming what

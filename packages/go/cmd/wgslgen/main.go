@@ -86,7 +86,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // The exit statuses. Two for a command line that could not be read, one for

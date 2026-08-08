@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"git.hugodaniel.com/hugo/wgslender/packages/go/wgslender"
+	"github.com/HugoDaniel/wgslender/packages/go/wgslender"
 )
 
 // TestMinifyOptionsJSON pins the wire spelling of every option, because the
