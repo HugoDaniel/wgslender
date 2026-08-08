@@ -266,6 +266,20 @@ pub fn quickFixHintFromLspKit(val: ?std.json.Value) Diagnostic.QuickFixHint {
         return .{ .feature_not_enabled = s };
     }
     if (std.mem.eql(u8, kind, "vertexMissingBuiltinPosition")) return .vertex_missing_builtin_position;
+    if (std.mem.eql(u8, kind, "lintFix")) {
+        const sl = intField(obj, "startLine") orelse return .none;
+        const sc = intField(obj, "startCharacter") orelse return .none;
+        const el = intField(obj, "endLine") orelse return .none;
+        const ec = intField(obj, "endCharacter") orelse return .none;
+        const text = strField(obj, "text") orelse return .none;
+        return .{ .lint_fix = .{
+            .start_line = std.math.cast(u32, sl) orelse return .none,
+            .start_character = std.math.cast(u32, sc) orelse return .none,
+            .end_line = std.math.cast(u32, el) orelse return .none,
+            .end_character = std.math.cast(u32, ec) orelse return .none,
+            .text = text,
+        } };
+    }
     return .none;
 }
 
@@ -295,7 +309,29 @@ fn buildHintValue(arena: std.mem.Allocator, hint: Diagnostic.QuickFixHint, owner
         .unused_symbol => |s| obj2(arena, "unusedSymbol", "name", .{ .string = dup(arena, s, ownership) }),
         .feature_not_enabled => |s| obj2(arena, "featureNotEnabled", "feature", .{ .string = dup(arena, s, ownership) }),
         .vertex_missing_builtin_position => obj1(arena, "vertexMissingBuiltinPosition"),
+        // Field order matches wire/diagnostics.zig::appendData — the
+        // diagnostic parity suite byte-compares the two encoders.
+        .lint_fix => |lf| lintFixValue(arena, lf, ownership),
     };
+}
+
+fn lintFixValue(
+    arena: std.mem.Allocator,
+    lf: Diagnostic.QuickFixHint.LintFix,
+    ownership: Ownership,
+) ?std.json.Value {
+    const text: []const u8 = switch (ownership) {
+        .borrow => lf.text,
+        .own => arena.dupe(u8, lf.text) catch "",
+    };
+    var map: std.json.ObjectMap = .empty;
+    map.put(arena, "kind", .{ .string = "lintFix" }) catch return null;
+    map.put(arena, "startLine", .{ .integer = @intCast(lf.start_line) }) catch return null;
+    map.put(arena, "startCharacter", .{ .integer = @intCast(lf.start_character) }) catch return null;
+    map.put(arena, "endLine", .{ .integer = @intCast(lf.end_line) }) catch return null;
+    map.put(arena, "endCharacter", .{ .integer = @intCast(lf.end_character) }) catch return null;
+    map.put(arena, "text", .{ .string = text }) catch return null;
+    return .{ .object = map };
 }
 
 fn obj1(arena: std.mem.Allocator, kind: []const u8) ?std.json.Value {

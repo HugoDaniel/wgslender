@@ -128,6 +128,22 @@ test "parity: vertex_missing_builtin_position" {
     });
 }
 
+test "parity: lint_fix" {
+    try assertParity(.{
+        .range = base_range,
+        .severity = .warning,
+        .message = "redundant cast",
+        .code = "W0201",
+        .data = .{ .lint_fix = .{
+            .start_line = 0,
+            .start_character = 48,
+            .end_line = 0,
+            .end_character = 57,
+            .text = "1.5f",
+        } },
+    });
+}
+
 test "parity: code + spec_url + tags + related" {
     const related = [_]Handler.LspRelatedInfo{.{
         .range = .{ .start = .{ .line = 3, .character = 4 }, .end = .{ .line = 3, .character = 5 } },

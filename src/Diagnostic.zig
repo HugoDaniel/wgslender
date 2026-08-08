@@ -132,10 +132,25 @@ pub const QuickFixHint = union(enum) {
     /// member; no extra payload is needed since the source-scan logic
     /// in the LSP rediscovers the insertion point.
     vertex_missing_builtin_position,
+    /// A ready-to-apply source rewrite in LSP coordinates (0-based line,
+    /// UTF-16 character). Never stamped by emit sites — the LSP
+    /// diagnostics bridge derives it from `Entry.fix` so fixable lint
+    /// rules surface the same rewrite `lint --fix` applies as an "Apply
+    /// autofix" code action. The byte-offset original stays on
+    /// `Entry.fix` for the CLI fixer.
+    lint_fix: LintFix,
 
     pub const TypeMismatch = struct {
         actual: []const u8,
         expected: []const u8,
+    };
+
+    pub const LintFix = struct {
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+        text: []const u8,
     };
 };
 

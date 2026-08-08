@@ -184,6 +184,41 @@ test "code action: duplicate @location produces increment action for input param
 // Edge cases
 // =========================================================================
 
+// =========================================================================
+// Fixable lint rules — the `Entry.fix` autofix must surface as a quickfix
+// =========================================================================
+
+/// Like `getCodeActions`, but through `validateDocumentFull` (the
+/// publish/pull production path), which runs the lint packs and so
+/// produces diagnostics that carry `Entry.fix` payloads.
+fn getCodeActionsWithLint(source: [:0]const u8) !TestResult {
+    const handler = try std.testing.allocator.create(Handler);
+    handler.* = Handler.init(std.testing.allocator);
+
+    try handler.openDocument("test://file.wgsl", source, 1);
+    const diags = try handler.validateDocumentFull("test://file.wgsl");
+    const actions = try handler.computeCodeActions(diags);
+
+    return .{ .actions = actions, .handler = handler, .diags = diags };
+}
+
+test "code action: fixable lint rule surfaces its autofix" {
+    // no-redundant-casts (W0201, @wgslender/recommended, fixable): the same
+    // rewrite `lint --fix` applies must be offered as a quickfix.
+    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() { let a = f32(1.5f); _ = a; }";
+    const result = try getCodeActionsWithLint(source);
+    defer cleanup(result);
+
+    const action = findActionByTitle(result.actions, "autofix") orelse
+        return error.TestExpectedAutofixAction;
+    try std.testing.expectEqualStrings("quickfix", action.kind);
+    try std.testing.expectEqual(@as(usize, 1), action.edits.len);
+
+    const fixed = try applyEdit(source, action.edits[0]);
+    defer std.testing.allocator.free(fixed);
+    try std.testing.expect(std.mem.indexOf(u8, fixed, "let a = 1.5f;") != null);
+}
+
 test "code action: empty source produces no actions" {
     const source: [:0]const u8 = "";
     const result = try getCodeActions(source);

@@ -354,6 +354,9 @@ fn freeQuickFixHint(gpa: std.mem.Allocator, data: WgslDiagnostic.QuickFixHint) v
             if (tm.actual.len > 0) gpa.free(tm.actual);
             if (tm.expected.len > 0) gpa.free(tm.expected);
         },
+        .lint_fix => |lf| {
+            if (lf.text.len > 0) gpa.free(lf.text);
+        },
     }
 }
 
@@ -367,7 +370,33 @@ fn dupeQuickFixHint(gpa: std.mem.Allocator, data: WgslDiagnostic.QuickFixHint) W
             .actual = gpa.dupe(u8, tm.actual) catch "",
             .expected = gpa.dupe(u8, tm.expected) catch "",
         } },
+        .lint_fix => |lf| .{ .lint_fix = .{
+            .start_line = lf.start_line,
+            .start_character = lf.start_character,
+            .end_line = lf.end_line,
+            .end_character = lf.end_character,
+            .text = gpa.dupe(u8, lf.text) catch "",
+        } },
     };
+}
+
+/// Derive a `.lint_fix` hint from `entry.fix` — the byte-offset rewrite
+/// the linter's Fixer applies — converted to LSP coordinates via `pm`.
+/// Returns `.none` when the entry has no fix or the offsets don't map.
+fn hintFromEntryFix(
+    gpa: std.mem.Allocator,
+    pm: *const Handler.PositionMapper,
+    entry: *const WgslDiagnostic.Entry,
+) WgslDiagnostic.QuickFixHint {
+    const fix = entry.fix orelse return .none;
+    const range = pm.range(fix.range.start.offset, fix.range.end.offset) orelse return .none;
+    return .{ .lint_fix = .{
+        .start_line = range.start.line,
+        .start_character = range.start.character,
+        .end_line = range.end.line,
+        .end_character = range.end.character,
+        .text = gpa.dupe(u8, fix.text) catch "",
+    } };
 }
 
 const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
@@ -435,7 +464,12 @@ pub fn convertDiagnostic(
             break :blk url;
         } else "",
         .related = related,
-        .data = dupeQuickFixHint(gpa, entry.data),
+        // Emit-site hints win; otherwise a lint autofix (`Entry.fix`)
+        // becomes a `.lint_fix` hint so fixable rules get a quickfix.
+        .data = if (entry.data == .none)
+            hintFromEntryFix(gpa, pm, entry)
+        else
+            dupeQuickFixHint(gpa, entry.data),
     };
 }
 

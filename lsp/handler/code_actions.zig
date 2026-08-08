@@ -92,9 +92,51 @@ pub fn computeCodeActions(
         .type_mismatch => |tm| addCastAction(handler, &actions, diag, tm),
         .unused_symbol => |name| addUnusedSymbolActions(handler, &actions, diag, name),
         .feature_not_enabled => |feature| addFeatureNotEnabledAction(handler, &actions, diag, feature),
+        .lint_fix => |lf| addLintFixAction(handler, &actions, diag, lf),
     };
 
     return actions.toOwnedSlice(handler.gpa) catch &.{};
+}
+
+/// The `Entry.fix` rewrite of a fixable lint rule, pre-converted to LSP
+/// coordinates by the diagnostics bridge. Same edit `lint --fix` applies.
+fn addLintFixAction(
+    handler: *Handler,
+    actions: *std.ArrayList(LspCodeAction),
+    diag: LspDiagnostic,
+    lf: WgslDiagnostic.QuickFixHint.LintFix,
+) void {
+    const title = if (diag.code.len > 0)
+        std.fmt.allocPrint(handler.gpa, "Apply autofix ({s})", .{diag.code}) catch return
+    else
+        handler.gpa.dupe(u8, "Apply autofix") catch return;
+    const new_text = handler.gpa.dupe(u8, lf.text) catch {
+        handler.gpa.free(title);
+        return;
+    };
+    const edit = handler.gpa.alloc(LspTextEdit, 1) catch {
+        handler.gpa.free(new_text);
+        handler.gpa.free(title);
+        return;
+    };
+    edit[0] = .{
+        .range = .{
+            .start = .{ .line = lf.start_line, .character = lf.start_character },
+            .end = .{ .line = lf.end_line, .character = lf.end_character },
+        },
+        .new_text = new_text,
+    };
+    actions.append(handler.gpa, .{
+        .title = title,
+        .kind = "quickfix",
+        .is_preferred = true,
+        .diagnostic = diag,
+        .edits = edit,
+    }) catch {
+        handler.gpa.free(edit);
+        handler.gpa.free(new_text);
+        handler.gpa.free(title);
+    };
 }
 
 fn addDidYouMeanAction(

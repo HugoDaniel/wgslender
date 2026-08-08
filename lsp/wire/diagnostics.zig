@@ -182,6 +182,19 @@ pub fn appendData(buf: *std.ArrayList(u8), allocator: std.mem.Allocator, data: D
         .vertex_missing_builtin_position => {
             primitives.appendStr(buf, allocator, ",\"data\":{\"kind\":\"vertexMissingBuiltinPosition\"}");
         },
+        .lint_fix => |lf| {
+            primitives.appendStr(buf, allocator, ",\"data\":{\"kind\":\"lintFix\",\"startLine\":");
+            primitives.appendUint(buf, allocator, lf.start_line);
+            primitives.appendStr(buf, allocator, ",\"startCharacter\":");
+            primitives.appendUint(buf, allocator, lf.start_character);
+            primitives.appendStr(buf, allocator, ",\"endLine\":");
+            primitives.appendUint(buf, allocator, lf.end_line);
+            primitives.appendStr(buf, allocator, ",\"endCharacter\":");
+            primitives.appendUint(buf, allocator, lf.end_character);
+            primitives.appendStr(buf, allocator, ",\"text\":\"");
+            Diagnostic.appendJsonEscaped(buf, allocator, lf.text) catch {};
+            primitives.appendStr(buf, allocator, "\"}");
+        },
     }
 }
 
@@ -225,6 +238,20 @@ pub fn parseData(val: ?*const std.json.Value) Diagnostic.QuickFixHint {
     }
     if (std.mem.eql(u8, kind, "vertexMissingBuiltinPosition")) {
         return .vertex_missing_builtin_position;
+    }
+    if (std.mem.eql(u8, kind, "lintFix")) {
+        const sl = primitives.intVal(obj.getPtr("startLine")) orelse return .none;
+        const sc = primitives.intVal(obj.getPtr("startCharacter")) orelse return .none;
+        const el = primitives.intVal(obj.getPtr("endLine")) orelse return .none;
+        const ec = primitives.intVal(obj.getPtr("endCharacter")) orelse return .none;
+        const text = primitives.strVal(obj.getPtr("text")) orelse return .none;
+        return .{ .lint_fix = .{
+            .start_line = std.math.cast(u32, sl) orelse return .none,
+            .start_character = std.math.cast(u32, sc) orelse return .none,
+            .end_line = std.math.cast(u32, el) orelse return .none,
+            .end_character = std.math.cast(u32, ec) orelse return .none,
+            .text = text,
+        } };
     }
     return .none;
 }
@@ -461,6 +488,41 @@ test "data round-trip: vertex_missing_builtin_position (payloadless)" {
     const tree = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), buf.items, .{});
     const parsed = parseDiagnosticItems(arena.allocator(), tree.array.items) orelse return error.TestUnexpectedResult;
     try testing.expectEqual(Diagnostic.QuickFixHint.vertex_missing_builtin_position, parsed[0].data);
+}
+
+test "data round-trip: lint_fix" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+
+    const diags = [_]Handler.LspDiagnostic{.{
+        .range = .{ .start = .{ .line = 0, .character = 48 }, .end = .{ .line = 0, .character = 57 } },
+        .severity = .warning,
+        .message = "redundant cast",
+        .code = "W0201",
+        .data = .{ .lint_fix = .{
+            .start_line = 0,
+            .start_character = 48,
+            .end_line = 0,
+            .end_character = 57,
+            .text = "1.5f",
+        } },
+    }};
+
+    var buf: std.ArrayList(u8) = .empty;
+    appendDiagnosticItems(&buf, testing.allocator, "test://a.wgsl", &diags);
+    defer buf.deinit(testing.allocator);
+
+    const tree = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), buf.items, .{});
+    const parsed = parseDiagnosticItems(arena.allocator(), tree.array.items) orelse return error.TestUnexpectedResult;
+    try testing.expectEqual(@as(usize, 1), parsed.len);
+    switch (parsed[0].data) {
+        .lint_fix => |lf| {
+            try testing.expectEqual(@as(u32, 48), lf.start_character);
+            try testing.expectEqual(@as(u32, 57), lf.end_character);
+            try testing.expectEqualStrings("1.5f", lf.text);
+        },
+        else => return error.TestUnexpectedResult,
+    }
 }
 
 test "data round-trip: .none omits the field entirely" {
