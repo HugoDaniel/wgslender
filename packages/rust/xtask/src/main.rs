@@ -53,6 +53,7 @@ tasks:
   msrv       type-check the workspace with the declared minimum toolchain
   deny       audit dependencies with cargo-deny
   package    vendor the Zig sources and build the wgslender-sys tarball
+  publish    the same, then upload all four crates to crates.io
 ";
 
 /// Which binary a step runs.
@@ -290,6 +291,34 @@ const PACKAGE: &[Step] = &[Step {
     env: &[],
 }];
 
+/// Publishing all four crates, in the order their dependencies allow.
+///
+/// One `cargo publish` rather than four: cargo orders a multi-package publish
+/// itself and waits for each crate to appear in the index before the next one
+/// that depends on it, which is the part that is tedious and easy to get wrong
+/// by hand.
+///
+/// This exists for the same reason [`PACKAGE`] does — publishing runs the same
+/// packaging and verification, so it needs the same vendored sources. A bare
+/// `cargo publish` fails, and says why.
+const PUBLISH: &[Step] = &[Step {
+    label: "publish to crates.io",
+    program: Program::Cargo,
+    args: &[
+        "publish",
+        "--package",
+        "wgslender-sys",
+        "--package",
+        "wgslender-core",
+        "--package",
+        "wgslender-macros",
+        "--package",
+        "wgslender",
+        "--allow-dirty",
+    ],
+    env: &[],
+}];
+
 /// Whether a tool an optional task needs is installed.
 enum Availability {
     Present,
@@ -345,7 +374,8 @@ fn main() -> ExitCode {
         Some("examples") => examples().report(),
         Some("msrv") => msrv(),
         Some("deny") => deny(),
-        Some("package") => package(),
+        Some("package") => with_vendored_sources(PACKAGE),
+        Some("publish") => with_vendored_sources(PUBLISH),
         Some(unknown) => {
             eprintln!("xtask: no task named {unknown:?}\n\n{USAGE}");
             ExitCode::FAILURE
@@ -420,9 +450,12 @@ fn copy_recursively(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Vendors the Zig sources, packages `wgslender-sys`, and takes them away
-/// again.
-fn package() -> ExitCode {
+/// Vendors the Zig sources, runs `steps`, and takes them away again.
+///
+/// Packaging and publishing both need this. `cargo publish` runs the same
+/// packaging and verification as `cargo package` before it uploads anything,
+/// so it fails on a crate with no Zig in it exactly as packaging does.
+fn with_vendored_sources(steps: &[Step]) -> ExitCode {
     println!("\n=== vendoring the Zig sources ===");
     let vendored = match VendoredSources::place() {
         Ok(vendored) => vendored,
@@ -439,7 +472,7 @@ fn package() -> ExitCode {
 
     // Bound to a name, not to `_`: `_` drops at the end of the statement, which
     // would take the sources away before cargo reads them.
-    let outcome = run(PACKAGE);
+    let outcome = run(steps);
     drop(vendored);
     outcome.report()
 }

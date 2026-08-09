@@ -152,5 +152,9 @@ subdirectory module by its path prefix, so it needs its own:
 Tagging is the irreversible step, so it is yours to run. Then publish:
 
   (cd packages/js-npm && npm publish)
-  (cd packages/rust  && cargo publish -p wgslender-sys -p wgslender-core -p wgslender-macros -p wgslender)
+  (cd packages/rust  && cargo xtask publish)
+
+A bare \`cargo publish\` cannot work here: it packages and verifies exactly as
+\`cargo package\` does, and the crate carries no Zig sources until the xtask
+vendors them in. It fails with a message saying so.
 EOF
