@@ -3,7 +3,12 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.3.0] — 2026-08-09
+
+Publishes the VS Code extension alone. The other packages are unchanged in
+behavior apart from the LSP default below and stay where they are on their
+registries; the version line moves everywhere because that is the rule this
+repository keeps.
 
 ### Changed
 
