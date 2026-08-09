@@ -124,6 +124,10 @@ test "settings wiring: disabled inlay hints short-circuits computeInlayHints" {
     defer teardown(handler);
     try handler.openDocument("test://file.wgsl", source, 1);
 
+    // The type-annotation lane is opt-in; this test is about the master
+    // switch, so give it a lane that produces hints.
+    handler.workspace_config.lsp_inlay_type_annotations = true;
+
     // Baseline: hints are produced for an inferred let binding.
     const with_hints = try handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
