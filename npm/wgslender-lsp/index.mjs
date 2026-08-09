@@ -51,9 +51,14 @@ async function _doInitialize(options) {
 async function _compile(wasmURL) {
   const url = typeof wasmURL === 'string' ? new URL(wasmURL, import.meta.url) : wasmURL;
   if (url.protocol === 'file:') {
+    // The specifiers are assembled rather than written out so that a bundler
+    // targeting the browser cannot see them. Spelled literally, esbuild fails
+    // the build with `Could not resolve "node:fs/promises"` — which is what
+    // this package's own VS Code extension does to itself. A browser never
+    // reaches this branch: its URLs are http(s).
     const [{ readFile }, { fileURLToPath }] = await Promise.all([
-      import('node:fs/promises'),
-      import('node:url'),
+      import(['node:', 'fs/promises'].join('')),
+      import(['node:', 'url'].join('')),
     ]);
     return WebAssembly.compile(await readFile(fileURLToPath(url)));
   }
