@@ -3,6 +3,23 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] — 2026-08-09
+
+### Fixed
+
+- **`docs.rs/wgslender` builds.** The 1.2.0 facade failed to document with
+  `can't find crate for wgslender_macros`, while the other three crates were
+  fine. Documenting a library needs only its dependencies' metadata, so
+  nothing in this workspace linked on docs.rs and `wgslender-sys`'s build
+  script emitted nothing there — correct until the facade re-exported a **proc
+  macro**. Rustc *loads* a proc-macro dylib rather than reading its metadata,
+  so that dylib links for real, and every symbol `wgslender-core` references
+  has to resolve. Under `DOCS_RS` the build script now compiles a stub
+  `libwgslender.a` whose symbols all `abort()`; documenting code does not run
+  it, and the symbol list is read out of `wgslender-sys/src/lib.rs` so it
+  cannot drift from what needs to resolve. No change to a real build: the stub
+  exists only when `DOCS_RS` is set.
+
 ## [1.2.0] — 2026-08-09
 
 ### Added
