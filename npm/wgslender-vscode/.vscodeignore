@@ -12,6 +12,8 @@ esbuild.js
 # The web-host smoke harness is a development gate, not something an installed
 # extension runs — it was shipping 13 KB into every install.
 scripts/**
+# Source for icon.png; the marketplace only reads the PNG.
+icon.svg
 *.vsix
 tsconfig.json
 **/tsconfig.json

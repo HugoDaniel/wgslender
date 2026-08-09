@@ -1,0 +1,36 @@
+<!--
+  Source for icon.png, which is what the marketplace and the extensions
+  sidebar show. Regenerate with:
+
+      rsvg-convert -w 256 -h 256 icon.svg -o icon.png
+
+  The mark is the project logo from wgslender.svg at the repository root,
+  path data and blue glow unchanged, so the extension is recognisably the
+  same project.
+
+  What is added here is the tile. The logo is a black wordmark meant for a
+  light page; an icon has to survive a light marketplace listing *and* VS
+  Code's dark sidebar, and a black mark on transparency disappears into the
+  second. A white tile keeps the wordmark black, as drawn, and lets the glow
+  read — it is the background the logo was designed against, carried along
+  with it.
+
+  The wordmark is wide (107x76), so it is scaled to fill the square by width
+  and centred vertically.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 128 128">
+  <rect width="128" height="128" rx="26" fill="#fff"/>
+  <g transform="translate(13.51 28.22) scale(0.95)">
+    <g filter="url(#glow)">
+      <path d="M28.192 71.328L4 7.968L30.368 4L38.304 53.792H39.328L56.608 8.352L65.824 11.168L77.6 54.176H78.624L91.936 4.896L102.304 7.712L81.952 69.664L71.584 71.328L52.896 41.376L40.864 69.664L28.192 71.328Z" fill="#5D8DFF"/>
+    </g>
+    <path d="M28.192 71.328L4 7.968L30.368 4L38.304 53.792H39.328L56.608 8.352L65.824 11.168L77.6 54.176H78.624L91.936 4.896L102.304 7.712L81.952 69.664L71.584 71.328L52.896 41.376L40.864 69.664L28.192 71.328Z" fill="black"/>
+  </g>
+  <defs>
+    <filter id="glow" x="0" y="0" width="106.304" height="75.328" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+      <feGaussianBlur stdDeviation="2" result="effect1_foregroundBlur"/>
+    </filter>
+  </defs>
+</svg>
