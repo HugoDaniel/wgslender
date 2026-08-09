@@ -3,6 +3,26 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2] — 2026-08-09
+
+### Fixed
+
+- **`wgslender-lsp` works from Node ESM and from browser bundlers.** The ESM
+  entry resolved its default `.wasm` beside itself — a `file:` URL — and gave
+  it to `fetch`, which refuses those under Node, so `initialize()` with no
+  arguments threw instead of starting a language server. The CJS entry beside
+  it had always read the file. Loading now follows the URL: read from disk for
+  `file:`, fetched otherwise. The `node:` specifiers are assembled from parts
+  rather than written literally, because esbuild targeting the browser fails
+  the whole build on a literal `import('node:fs/promises')` — including this
+  repository's own VS Code web extension, which bundles that file. Affects
+  `wgslender-lsp` 1.2.1, its first published version; a browser never reaches
+  the disk-reading branch.
+- **The VS Code extension no longer ships its web-host smoke harness.**
+  `scripts/**` is now in `.vscodeignore`, taking 13 KB of development gate out
+  of every install, and the CC0 text is packaged so the marketplace has a
+  licence to show.
+
 ## [1.2.1] — 2026-08-09
 
 ### Fixed

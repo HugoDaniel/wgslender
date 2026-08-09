@@ -9,6 +9,10 @@ test/**
 .yarnrc
 .yarn/**
 esbuild.js
+# The web-host smoke harness is a development gate, not something an installed
+# extension runs — it was shipping 13 KB into every install.
+scripts/**
+*.vsix
 tsconfig.json
 **/tsconfig.json
 node_modules/**

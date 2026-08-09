@@ -1,6 +1,6 @@
 .{
     .name = .wgslender,
-    .version = "1.2.1",
+    .version = "1.2.2",
     .fingerprint = 0x69278284534a33a0,
     .minimum_zig_version = "0.16.0",
     .paths = .{
