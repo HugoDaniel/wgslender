@@ -16,7 +16,7 @@ zig build              # native CLI → zig-out/bin/wgslender
 zig build wasm         # WASM build → zig-out/bin/wgslender.wasm
 zig build lsp          # native LSP → zig-out/bin/wgslender-lsp
 zig build lsp-wasm     # WASM LSP → zig-out/bin/wgslender-lsp.wasm
-zig build test         # full test suite
+zig build test         # core test suite (see docs/testing.md)
 ```
 
 The npm wrapper has its own test suite:

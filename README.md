@@ -344,10 +344,18 @@ Pre-built configs live in `configs/`: `compute.toys.json` for
 
 ```bash
 zig build        # CLI → zig-out/bin/wgslender
-zig build test   # full test suite
+zig build test   # core test suite
 ```
 
 Requires [Zig 0.16.0](https://ziglang.org/download/) (`zigup 0.16.0`). Each language package documents its own test gate in its README; the contribution workflow lives in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+### Testing
+
+64,919 lines of test code across 144 files cover 73,775 lines of implementation, in two tiers. The **core tier** is the 131 files in this repository, and `zig build test` runs all of them on a clean checkout with no additional setup: validation, lint rules, reflection, minification goldens, LSP responses and transport parity, plus allocation-failure injection at every allocation point.
+
+The **exhaustive tier** is 13 files of differential, mutation, and fuzz machinery for the incremental reparse path, together with the Tint conformance harness. It lives in a separate repository, mounts at `tests/exhaustive/`, and is available under license. Builds without it configure and pass normally.
+
+[docs/testing.md](docs/testing.md) covers what each tier holds, how to run them, and how to get access.
 
 ## License
 
