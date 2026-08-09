@@ -2200,8 +2200,11 @@ test "ScopeLocalRename: multiple functions with struct return types" {
     );
 
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
-    // Must re-parse successfully (would fail if shadowing produced invalid WGSL)
-    const reparse = try wgslender.minifyWithOptions(alloc, @ptrCast(result.code), .{
+    // Must re-parse successfully (would fail if shadowing produced invalid WGSL).
+    // `Result.code` is `[]const u8` and carries no sentinel — `@ptrCast`ing it
+    // to `[:0]const u8` hands the lexer a string it will read one byte past.
+    const roundtrip = try alloc.dupeZ(u8, result.code);
+    const reparse = try wgslender.minifyWithOptions(alloc, roundtrip, .{
         .minify_whitespace = true,
         .minify_identifiers = false,
         .tree_shaking = false,
@@ -2232,8 +2235,10 @@ test "ScopeLocalRename: locals in body must not shadow struct types" {
     );
 
     try std.testing.expectEqual(@as(usize, 0), result.errors.len);
-    // Round-trip: re-parse the minified output
-    const reparse = try wgslender.minifyWithOptions(alloc, @ptrCast(result.code), .{
+    // Round-trip: re-parse the minified output. See the note above — the
+    // sentinel has to be materialized, not asserted via @ptrCast.
+    const roundtrip = try alloc.dupeZ(u8, result.code);
+    const reparse = try wgslender.minifyWithOptions(alloc, roundtrip, .{
         .minify_whitespace = true,
         .minify_identifiers = false,
         .tree_shaking = false,

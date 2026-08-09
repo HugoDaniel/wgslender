@@ -747,12 +747,43 @@ fn parseTranslationUnit(self: *Parser, module: *Ast.Module) !void {
     } else unreachable;
 
     // Parse declarations — `parseDeclaration` emits its own per-decl kind.
+    // Set while consuming a contiguous run of stray tokens, so the run costs
+    // one diagnostic rather than one per token: `export default "…"` is eight
+    // stray tokens, and eight cascading errors bury the only useful position.
+    var in_stray_run = false;
+
     while (self.currentTag() != .eof) {
+        const errors_before = self.errors.items.len;
         if (try self.parseDeclaration()) |decl| {
             try module.declarations.append(self.arena, decl);
+            in_stray_run = false;
         } else {
             // Malformed: consume the stray token into the module node so
-            // the round-trip invariant holds.
+            // the round-trip invariant holds. Consuming it is required;
+            // consuming it *silently* is not — without a diagnostic here,
+            // arbitrary non-WGSL parses clean and minifies to the empty
+            // string, so a caller that pipes it the wrong bytes gets an
+            // empty shader and a success exit code.
+            //
+            // `parseDeclaration` reports its own error when it consumed
+            // attributes first ("unexpected attributes"); leave that as the
+            // more specific message rather than stacking a second one on it.
+            //
+            // A bare `;` is not stray: the grammar admits an empty global
+            // declaration (`global_decl: ';'`), and `struct S { … };` puts one
+            // at module scope in a great many real shaders. It ends a stray
+            // run rather than joining it.
+            const unreported = self.errors.items.len == errors_before;
+            const empty_decl = unreported and self.currentTag() == .semicolon;
+            if (unreported and !empty_decl and !in_stray_run) {
+                const msg = std.fmt.allocPrint(
+                    self.arena,
+                    "unexpected '{s}' at module scope; expected a declaration or directive",
+                    .{self.currentText()},
+                ) catch "unexpected token at module scope";
+                try self.addErrorWithCode(msg, Diagnostic.Code.unexpected_token);
+            }
+            in_stray_run = !empty_decl;
             self.advance();
         }
     }
