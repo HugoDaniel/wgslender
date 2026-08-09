@@ -3,6 +3,21 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Type-annotation inlay hints are now opt-in (⚠ behavior).** The LSP
+  previously rendered inferred-type hints (`: f32` after untyped `let`s,
+  result types on binary ops / calls / member and index expressions)
+  whenever inlay hints were enabled — visual noise most users didn't ask
+  for. The lane is now off by default and gated by the new
+  `lsp.inlayHints.typeAnnotations` setting (`wgslender.json` and the
+  VS Code extension both accept it). Const-value hints (computed array
+  sizes) and the minify-size lane are unaffected — the latter keeps its
+  own `lsp.minifyMode` gate. `lsp.inlayHints.enabled` remains the master
+  switch over all lanes.
+
 ## [1.2.3] — 2026-08-09
 
 Only the VS Code extension is published from this release; every other
