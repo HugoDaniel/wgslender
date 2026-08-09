@@ -10,12 +10,19 @@ const wgslender = @import("wgslender");
 
 /// Scans minified output for declaration keywords (struct, const, fn, var, let, alias)
 /// and checks that no top-level declaration name appears more than once.
+///
+/// `var<...>` is listed separately from `var `: a module-scope binding prints
+/// its address space as a template list (`var<uniform> u:S;`), so a scan for
+/// `"var "` alone walks straight past every `@group`/`@binding` declaration —
+/// exactly the ones a renamer is most likely to collide with, since they are
+/// preserved rather than renamed by default.
 fn checkNoDuplicateNames(code: []const u8) !void {
     const keywords = [_][]const u8{
         "struct ",
         "const ",
         "fn ",
         "var ",
+        "var<",
         "let ",
         "alias ",
     };
@@ -29,8 +36,18 @@ fn checkNoDuplicateNames(code: []const u8) !void {
         var matched = false;
         for (keywords) |kw| {
             if (pos + kw.len <= code.len and std.mem.eql(u8, code[pos .. pos + kw.len], kw)) {
-                // Extract identifier after the keyword
-                const start = pos + kw.len;
+                // Extract identifier after the keyword. For `var<`, the name
+                // sits past the address-space template list — reading straight
+                // after the keyword would collect `uniform`/`storage` instead.
+                var start = pos + kw.len;
+                if (std.mem.eql(u8, kw, "var<")) {
+                    start = (std.mem.indexOfScalarPos(u8, code, start, '>') orelse {
+                        pos += kw.len;
+                        matched = true;
+                        break;
+                    }) + 1;
+                    while (start < code.len and std.ascii.isWhitespace(code[start])) start += 1;
+                }
                 var end = start;
                 while (end < code.len and (std.ascii.isAlphanumeric(code[end]) or code[end] == '_')) {
                     end += 1;
@@ -67,6 +84,58 @@ fn checkNoDuplicateNames(code: []const u8) !void {
         return error.DuplicateDeclarationName;
     }
 }
+
+/// Minifies `source` under `options` and asserts the output still validates.
+///
+/// This is the load-bearing check for renamer collisions. It rejects on *any*
+/// error rather than on `E0101 redeclaration` specifically: a reissued name
+/// also silently re-points every later reference at the wrong symbol, so the
+/// first diagnostic is often a downstream one instead — removing the guard in
+/// `Pipeline.runBuildRenamer` makes these two tests report `E0206` (member
+/// lookup against the shadowing struct) and `E0103` (a function that now
+/// appears to call itself). Minified output should validate cleanly, full
+/// stop; pinning one code would let the other shapes through.
+///
+/// Unlike `checkNoDuplicateNames` this goes through the real parser and scope
+/// resolution, so it stays correct under `scope_local_rename`, where the same
+/// local name legitimately recurs in sibling function bodies.
+fn expectMinifiesWithoutRedeclaration(
+    arena: std.mem.Allocator,
+    source: [:0]const u8,
+    options: wgslender.Minifier.Options,
+) !void {
+    const result = try wgslender.minifyWithOptions(arena, source, options);
+    try std.testing.expect(result.errors.len == 0);
+
+    const minified = try arena.dupeZ(u8, result.code);
+    const validation = try wgslender.validateWithOptions(arena, minified, .{});
+
+    for (validation.diagnostics.diagnostics.items) |d| {
+        if (d.severity != .@"error") continue;
+        std.debug.print(
+            "minified output failed to validate: {s} [{s}]\noutput:\n{s}\n",
+            .{ d.message, d.code, minified },
+        );
+        return error.MinifiedOutputInvalid;
+    }
+}
+
+/// The renaming-pressure axes. Identifier renaming is on throughout — with it
+/// off there is no generator to collide with anything.
+const rename_configs = [_]struct {
+    name: []const u8,
+    options: wgslender.Minifier.Options,
+}{
+    .{ .name = "defaults", .options = .{} },
+    .{ .name = "mangle-external-bindings", .options = .{ .mangle_external_bindings = true } },
+    .{ .name = "scope-local-rename", .options = .{ .scope_local_rename = true } },
+    .{ .name = "sort+scope-local", .options = .{ .sort_declarations = true, .scope_local_rename = true } },
+    .{ .name = "all", .options = .{
+        .mangle_external_bindings = true,
+        .sort_declarations = true,
+        .scope_local_rename = true,
+    } },
+};
 
 // =========================================================================
 // Tests
@@ -229,4 +298,141 @@ test "collision: no duplicate names many symbols" {
     const result = try wgslender.minifyWithOptions(arena.allocator(), source, wgslender.Minifier.defaultOptions());
     try std.testing.expect(result.errors.len == 0);
     try checkNoDuplicateNames(result.code);
+}
+
+// --- Regression: a preserved binding name must not be reissued ---
+//
+// Reported against a sibling minifier (miniray #1): `var<uniform> u` is
+// preserved by default (external bindings keep their name so the host API
+// keeps working), but the name generator was not told `u` was taken, so it
+// counted up to `u` and handed it to a function — yielding a module with two
+// `u` declarations. The guard here is `reserveUnrenamedSymbolNames`, run
+// between slot allocation and name assignment in `Pipeline.runBuildRenamer`:
+// every symbol that will *not* be renamed contributes its original name to the
+// reserved set, and `assignNames` skips reserved names.
+//
+// The shader is kept at the reporter's size on purpose — the collision only
+// appears once the generator has issued enough names to reach `u`.
+test "collision: preserved external binding name is not reissued to a function" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source: [:0]const u8 =
+        \\struct Uniforms {
+        \\  hue: f32,
+        \\  use_p3: f32,
+        \\}
+        \\@group(0) @binding(0) var<uniform> u: Uniforms;
+        \\struct VertexOutput {
+        \\  @builtin(position) position: vec4f,
+        \\  @location(0) uv: vec2f,
+        \\}
+        \\@vertex
+        \\fn vs_main(@builtin(vertex_index) vi: u32) -> VertexOutput {
+        \\  var out: VertexOutput;
+        \\  let x = f32(i32(vi & 1u)) * 4.0 - 1.0;
+        \\  let y = f32(i32(vi >> 1u)) * 4.0 - 1.0;
+        \\  out.position = vec4f(x, y, 0.0, 1.0);
+        \\  out.uv = vec2f((x + 1.0) * 0.5, (1.0 - y) * 0.5);
+        \\  return out;
+        \\}
+        \\fn oklch_to_oklab(l: f32, c: f32, h_deg: f32) -> vec3f {
+        \\  let h = h_deg * 3.14159265 / 180.0;
+        \\  return vec3f(l, c * cos(h), c * sin(h));
+        \\}
+        \\fn oklab_to_lms(L: f32, a: f32, b: f32) -> vec3f {
+        \\  let l_ = L + 0.3963377774 * a + 0.2158037573 * b;
+        \\  let m_ = L - 0.1055613458 * a - 0.0638541728 * b;
+        \\  let s_ = L - 0.0894841775 * a - 1.291485548 * b;
+        \\  return vec3f(l_ * l_ * l_, m_ * m_ * m_, s_ * s_ * s_);
+        \\}
+        \\fn lms_to_linear_srgb(lms: vec3f) -> vec3f {
+        \\  return vec3f(
+        \\    4.0767416621 * lms.x - 3.3077115913 * lms.y + 0.2309699292 * lms.z,
+        \\    -1.2684380046 * lms.x + 2.6097574011 * lms.y - 0.3413193965 * lms.z,
+        \\    -0.0041960863 * lms.x - 0.7034186147 * lms.y + 1.707614701 * lms.z,
+        \\  );
+        \\}
+        \\fn lms_to_linear_p3(lms: vec3f) -> vec3f {
+        \\  return vec3f(
+        \\    3.1277455454 * lms.x - 2.2571357909 * lms.y + 0.1293902455 * lms.z,
+        \\    -1.0910086139 * lms.x + 2.0133420547 * lms.y + 0.0776665591 * lms.z,
+        \\    -0.0260256887 * lms.x - 0.3541460076 * lms.y + 1.3801716964 * lms.z,
+        \\  );
+        \\}
+        \\fn linear_to_gamma(c: f32) -> f32 {
+        \\  return select(1.055 * pow(c, 1.0 / 2.4) - 0.055, 12.92 * c, c <= 0.0031308);
+        \\}
+        \\@fragment
+        \\fn fs_main(in: VertexOutput) -> @location(0) vec4f {
+        \\  let l = 1.0 - in.uv.y;
+        \\  let c = in.uv.x * 0.37;
+        \\  let lab = oklch_to_oklab(l, c, u.hue);
+        \\  let lms = oklab_to_lms(lab.x, lab.y, lab.z);
+        \\  var rgb_lin: vec3f;
+        \\  if (u.use_p3 > 0.5) {
+        \\    rgb_lin = lms_to_linear_p3(lms);
+        \\  } else {
+        \\    rgb_lin = lms_to_linear_srgb(lms);
+        \\  }
+        \\  rgb_lin = clamp(rgb_lin, vec3f(0.0), vec3f(1.0));
+        \\  let rgb = vec3f(
+        \\    linear_to_gamma(rgb_lin.x),
+        \\    linear_to_gamma(rgb_lin.y),
+        \\    linear_to_gamma(rgb_lin.z),
+        \\  );
+        \\  return vec4f(rgb, 1.0);
+        \\}
+    ;
+
+    for (rename_configs) |cfg| {
+        expectMinifiesWithoutRedeclaration(arena.allocator(), source, cfg.options) catch |err| {
+            std.debug.print("config \"{s}\" produced a colliding module\n", .{cfg.name});
+            return err;
+        };
+    }
+}
+
+// --- Regression: bindings squatting the head of the generated-name sequence ---
+//
+// Sharpens the case above. `a`, `b`, `c` are the first names the generator
+// emits, and as external bindings they are preserved rather than renamed — so
+// every one of them is a collision waiting to happen on the very first slot.
+// A renamer missing the reservation step fails here immediately, without
+// needing a shader large enough to count up to a longer name.
+test "collision: bindings occupying the first generated names are skipped" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const source: [:0]const u8 =
+        \\struct U { hue: f32, k: f32 }
+        \\@group(0) @binding(0) var<uniform> a: U;
+        \\@group(0) @binding(1) var<uniform> b: U;
+        \\@group(0) @binding(2) var<uniform> c: U;
+        \\fn f1(x: f32) -> f32 { return x * a.hue; }
+        \\fn f2(x: f32) -> f32 { return f1(x) + b.k; }
+        \\fn f3(x: f32) -> f32 { return f2(x) * c.hue; }
+        \\fn f4(x: f32) -> f32 { return f3(x) - f1(x); }
+        \\fn f5(x: f32) -> f32 { return f4(x) / f2(x); }
+        \\@fragment fn fs() -> @location(0) vec4f {
+        \\  return vec4f(f5(1.0), f4(2.0), f3(3.0), 1.0);
+        \\}
+    ;
+
+    for (rename_configs) |cfg| {
+        expectMinifiesWithoutRedeclaration(arena.allocator(), source, cfg.options) catch |err| {
+            std.debug.print("config \"{s}\" produced a colliding module\n", .{cfg.name});
+            return err;
+        };
+    }
+
+    // With the bindings preserved (the default), the generator must route
+    // around `a`/`b`/`c` rather than shadowing them.
+    const result = try wgslender.minifyWithOptions(arena.allocator(), source, .{});
+    try std.testing.expect(result.errors.len == 0);
+    try checkNoDuplicateNames(result.code);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "var<uniform> a:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "fn a(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "fn b(") == null);
+    try std.testing.expect(std.mem.indexOf(u8, result.code, "fn c(") == null);
 }
