@@ -30,11 +30,34 @@ async function _doInitialize(options) {
       // Try to resolve relative to this module
       wasmURL = new URL('./wgslender-lsp.wasm', import.meta.url);
     }
-    const response = await fetch(wasmURL);
-    wasmModule = await WebAssembly.compileStreaming(response);
+    wasmModule = await _compile(wasmURL);
   }
   const instance = await WebAssembly.instantiate(wasmModule, {});
   _wasm = instance.exports;
+}
+
+/**
+ * Compile the module at `wasmURL`, by whichever means the URL allows.
+ *
+ * Resolving the default relative to this file produces a `file:` URL, and
+ * `fetch` refuses those under Node — so an ESM consumer who called
+ * `initialize()` with no arguments got `failed to parse URL` rather than a
+ * language server. Reading it from disk is what the CJS entry beside this one
+ * has always done, and what `packages/js-npm`'s node entry does.
+ *
+ * @param {string | URL} wasmURL
+ * @returns {Promise<WebAssembly.Module>}
+ */
+async function _compile(wasmURL) {
+  const url = typeof wasmURL === 'string' ? new URL(wasmURL, import.meta.url) : wasmURL;
+  if (url.protocol === 'file:') {
+    const [{ readFile }, { fileURLToPath }] = await Promise.all([
+      import('node:fs/promises'),
+      import('node:url'),
+    ]);
+    return WebAssembly.compile(await readFile(fileURLToPath(url)));
+  }
+  return WebAssembly.compileStreaming(fetch(url));
 }
 
 /**
