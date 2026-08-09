@@ -1,6 +1,6 @@
 {
   "name": "wgslender-lsp",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "WGSL Language Server powered by wgslender (WASM build)",
   "main": "index.js",
   "module": "index.mjs",

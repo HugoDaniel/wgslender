@@ -3,6 +3,20 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] — 2026-08-09
+
+Only the VS Code extension is published from this release; every other
+package is byte-identical to 1.2.2 and stays there. The version moves
+everywhere because one version line is the rule, not because the code did.
+
+### Added
+
+- **The VS Code extension has an icon.** The project wordmark, on a white
+  rounded tile. The tile is what makes one file work in two places: on the
+  marketplace's light listing it blends into the page and leaves the logo as
+  drawn, and in VS Code's dark sidebar it appears and carries the mark, which
+  a black-on-transparent logo could not.
+
 ## [1.2.2] — 2026-08-09
 
 ### Fixed
