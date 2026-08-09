@@ -471,6 +471,7 @@ pub fn build(b: *std.Build) void {
     // Structural precedence pins — assert AST tree shape (printer-independent),
     // so a swapped precedence level is caught even though the flat printer would
     // emit identical text (Block 1.1 precedence-table collapse).
+    _ = addTestStep(b, test_step, "tests/parser_minus_split_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/parser_precedence_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/parser_stray_token_test.zig", target, optimize, &.{w});
     // Phony assignment (WGSL §9.3 `_ = expr`) — grammar, use-counting,

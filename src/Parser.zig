@@ -549,6 +549,23 @@ fn expectTemplateClose(self: *Parser) Allocator.Error!bool {
     }
 }
 
+/// Consume the first `-` of a `--` token, leaving a `.minus` at the same
+/// index for the caller's next step to pick up.
+///
+/// WGSL has no prefix or infix decrement: `--` is a token purely because the
+/// *statement* form `i--;` exists (§9.4). In every expression position the
+/// lexer's maximal munch has to be undone, so `two--one` is `two - (-one)`
+/// and `two----one` is `two` minus three nested negations.
+///
+/// Same retag-and-bump discipline as `expectTemplateClose`: the parser-owned
+/// token view is rewritten in place and `pos` does not move, so the CST's raw
+/// token stream still sees one `--` and the byte-exact round trip holds.
+fn splitMinusMinus(self: *Parser) void {
+    std.debug.assert(self.currentTag() == .minus_minus);
+    self.token_tags[self.pos] = .minus;
+    self.token_starts[self.pos] += 1;
+}
+
 /// Exact source text of the token at `pos`, sliced by the lexer's own
 /// `[start, end)`. The lexer already computed the precise end (WGSL's
 /// number grammar is subtle — `1.e5`, `2.f`, hex floats — and the lexer is
@@ -1484,12 +1501,27 @@ fn matchBinOp(comptime ops: []const OpMap, tag: Tag) ?Ast.BinaryOp {
 // hand-written copies this replaces; `leaf` selects the full vs. template unary.
 fn parseBinaryLevel(self: *Parser, comptime level: usize, comptime leaf: anytype) !?Ast.Expr {
     const ops = bin_levels[level];
+    // Only the level that owns binary `-` may break a `--` apart; at any other
+    // level the token is not this level's business and must fall through.
+    const owns_minus = comptime matchBinOp(ops, .minus) != null;
     var left = (try self.parseBinaryOperand(level, leaf)) orelse return null;
     var left_marker = self.cst_last_closed_expr;
     for (0..self.token_tags.len) |_| {
-        const op = matchBinOp(ops, self.currentTag()) orelse return left;
+        const tag = self.currentTag();
         const loc = self.currentStart();
-        self.advance();
+        // `a--b` is `a - -b`: consume the first `-` as this level's operator
+        // and leave the second for the right operand's unary chain.
+        //
+        // Except in statement-tail position. `i--;` and `for (…; …; i--)` are
+        // decrement *statements*, and those parsers reach the `--` through a
+        // full `parseExpression` call — so splitting here would eat the token
+        // they are waiting for. Declining costs nothing: a split `--` followed
+        // by `;` or `)` would have to parse `-;` or `-)` as an operand, which
+        // is never an expression.
+        const split = owns_minus and tag == .minus_minus and
+            self.peekTag(1) != .semicolon and self.peekTag(1) != .r_paren;
+        const op = if (split) .sub else matchBinOp(ops, tag) orelse return left;
+        if (split) self.splitMinusMinus() else self.advance();
         const right = (try self.parseBinaryOperand(level, leaf)) orelse return null;
         const node = try self.arena.create(Ast.BinaryExpr);
         node.* = .{ .loc = loc, .op = op, .left = left, .right = right, .span = .{ .start = left.span().start, .end = right.span().end } };
@@ -1520,8 +1552,12 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
     var ops_len: u8 = 0;
 
     while (ops_len < ops_buf.len) {
-        const unary_op: Ast.UnaryOp = switch (self.currentTag()) {
-            .minus => .neg,
+        const tag = self.currentTag();
+        const unary_op: Ast.UnaryOp = switch (tag) {
+            // `--` is two negations here, never a decrement — see
+            // `splitMinusMinus`. The second `-` is left in place and picked up
+            // by the next turn of this same loop.
+            .minus, .minus_minus => .neg,
             .bang => .not,
             .tilde => .bit_not,
             .star => .deref,
@@ -1531,7 +1567,7 @@ fn parseUnaryExpr(self: *Parser) !?Ast.Expr {
         cst_markers_buf[ops_len] = self.cstOpen();
         ops_buf[ops_len] = .{ .op = unary_op, .loc = self.currentStart() };
         ops_len += 1;
-        self.advance();
+        if (tag == .minus_minus) self.splitMinusMinus() else self.advance();
     }
 
     var operand = (try self.parsePostfixExpr()) orelse {
@@ -1787,8 +1823,10 @@ fn parseTemplateArgExpr(self: *Parser) error{ OutOfMemory, ParseFailed }!?Ast.Ex
 }
 
 fn parseTemplateUnaryExpr(self: *Parser) !?Ast.Expr {
-    const op: ?Ast.UnaryOp = switch (self.currentTag()) {
-        .minus => .neg,
+    const tag = self.currentTag();
+    const op: ?Ast.UnaryOp = switch (tag) {
+        // `array<i32, two--one>` splits the same way as anywhere else.
+        .minus, .minus_minus => .neg,
         .bang => .not,
         .tilde => .bit_not,
         else => null,
@@ -1796,7 +1834,7 @@ fn parseTemplateUnaryExpr(self: *Parser) !?Ast.Expr {
     if (op) |unary_op| {
         const outer_marker = self.cstOpen();
         const loc = self.currentStart();
-        self.advance();
+        if (tag == .minus_minus) self.splitMinusMinus() else self.advance();
         const operand = (try self.parseTemplateUnaryExpr()) orelse {
             self.cstAbandon(outer_marker);
             return null;
