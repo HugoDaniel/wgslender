@@ -378,7 +378,9 @@ test "minify inlay: coexists with type-inference inlay hints" {
     const h = try setup();
     defer teardown(h);
 
-    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\"}}");
+    // Type annotations are opt-in; this test is exactly about both lanes
+    // rendering together, so it turns both on.
+    try applySettings(h, "{\"lsp\":{\"minifyMode\":\"insights\",\"inlayHints\":{\"typeAnnotations\":true}}}");
 
     const source: [:0]const u8 = "fn f() { let x = 1.0; }";
     try h.openDocument("file:///a.wgsl", source, 1);
