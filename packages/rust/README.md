@@ -265,44 +265,59 @@ cargo run -p wgslender --features compress --example embed_compressed
 
 ## Publishing
 
-Nothing here is on crates.io. The workspace is publish-*ready* — metadata,
-`include` lists, docs.rs configuration and a changelog are all in place — and
-one thing stands in the way, which is a decision rather than a step.
+Nothing here is on crates.io yet, but nothing is in the way either: the
+decision this section used to describe — vendor the Zig sources, or ship
+prebuilt libraries — was settled in favour of vendoring, and the machinery is
+in place.
 
-**`wgslender-sys/build.rs` reaches `../../..` for the Zig sources.** That path
-exists in this repository and in no `.crate` tarball, so a published
-`wgslender-sys` would fail its first build with the message the script already
-prints: *expected the wgslender sources at … but found no build.zig there*.
-There are two ways out, and they trade different things away:
+```sh
+cargo xtask package      # vendor, package, verify, unvendor
+```
 
-1. **Vendor the Zig sources into the crate at package time.** An `xtask vendor`
-   copies them in and `build.rs` prefers the vendored tree when it finds one.
-   Measured: `zig build lib` needs `src/`, `include/`, `build.zig`,
-   `build.zig.zon` **and** `external/lsp-kit/` — the last because the LSP step's
-   `b.lazyDependency` is a *path* dependency, which Zig opens while it is
-   configuring even though nothing asks for it. Without it the build stops at
-   `unable to open '…/external/lsp-kit'`. That is ~3.3 MB of sources, well
-   inside the 10 MB crate limit. The cost is that **every consumer needs Zig
-   0.16.0 on `PATH`** — a Rust crate that will not build on a machine with a
-   Rust toolchain on it, which is a real thing to ask.
-2. **Ship prebuilt static libraries per target.** No Zig on the consumer's
-   machine, and a different can of worms: a `.crate` per platform or a fat
-   archive, glibc versions, and a supply chain in which the bytes people link
-   are not the bytes they can read.
+**How it works.** `wgslender-sys/build.rs` builds `libwgslender.a` with `zig
+build lib`, from whichever Zig sources it can find: a `vendor/` directory
+inside the crate if there is one, otherwise the repository three levels up.
+A checkout has no `vendor/` and builds from the repository, so editing
+`src/*.zig` is picked up without ceremony. `cargo xtask package` copies the
+sources in for the length of one `cargo package` run and removes them
+afterwards, which is why a published `.crate` carries them and this repository
+does not: a vendored copy that lives in git is a copy that can disagree with
+the sources it was taken from.
 
-Until one is chosen, `WGSLENDER_LIB_DIR` is the supported way to build against
-a library you produced yourself.
+**The cost, plainly:** every consumer needs **Zig 0.16.0 on `PATH`**. A Rust
+crate that will not build on a machine that has only a Rust toolchain is a real
+thing to ask, and it is the price of not shipping binaries. The build is 7.5 s
+and needs no network. `WGSLENDER_LIB_DIR` remains the way to link a library you
+produced yourself, and is what a target Zig cannot reach falls back to.
+
+Three measured facts behind that, none of which are guesses:
+
+- **The vendored set is four paths** — `build.zig`, `build.zig.zon`, `src/`,
+  `include/` — 2.4 MB, **525 KB compressed**, comfortably inside the 10 MiB
+  crate limit. `external/lsp-kit` is *not* among them, contrary to what this
+  section claimed for a while: `lsp_kit` became a lazy **URL** dependency, and
+  the `lib` step does not use it.
+- **`zig build lib` is passed `-Dlsp=false`.** Merely *asking* for a lazy
+  dependency makes the build runner fetch it — `b.lazyDependency` registers it
+  and then returns null — so without that flag every consumer's first build
+  would need the network and would unpack `zig-pkg/` beside the sources.
+- **The build runs in `OUT_DIR`, never in the crate directory.** Cargo
+  checksums an unpacked crate's files and fails verification over anything a
+  build script adds, and Zig writes `.zig-cache/` and `zig-pkg/` next to the
+  `build.zig` it is handed. The vendored copy is staged into `OUT_DIR` first.
+
+**Verification now runs**, which is the part that matters: `cargo package`
+unpacks what would be published and builds it. That is the only thing that can
+prove the vendored set is complete, and it is why `--no-verify` is gone from
+this page. `--allow-dirty` stays, because `vendor/` is untracked by design and
+cargo counts untracked files as dirt.
 
 The names `wgslender`, `wgslender-sys` and `wgslender-macros` were free on
-crates.io on 2026-08-05; `wgslender-core` was never checked. **Re-verify all
-four immediately before publishing** — a name that was free is not a name that
-is reserved. Publish order, versions in lock-step: `wgslender-sys` →
-`wgslender-core` → `wgslender-macros` → `wgslender`.
-
-`cargo package -p <crate> --no-verify --list` prints what a tarball would
-carry. `--no-verify` because the verification build is exactly the step that
-cannot work yet. Note that only `wgslender-sys` can be *packaged* today: the
-other three carry `path` + `version` dependencies, and cargo rewrites those to
-registry dependencies while packaging, so it goes looking for a
-`wgslender-core` that is not there yet. That is the same constraint as the
-publish order, met one step earlier.
+crates.io on 2026-08-05, and all four were free on 2026-08-08. **Re-verify
+immediately before publishing** — a name that was free is not a name that is
+reserved. Publish order, versions in lock-step: `wgslender-sys` →
+`wgslender-core` → `wgslender-macros` → `wgslender`. Only `wgslender-sys` can
+be packaged before that sequence starts: the other three carry `path` +
+`version` dependencies, which cargo rewrites to registry dependencies while
+packaging, so it goes looking for a `wgslender-core` that is not there yet.
+That is the same constraint as the publish order, met one step earlier.

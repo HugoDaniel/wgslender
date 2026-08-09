@@ -78,6 +78,12 @@ fi
 step "Rust package"
 if have cargo; then
     (cd packages/rust && cargo xtask check)
+    # Packaging is a release concern rather than a development one, so it is
+    # here and not in `xtask check`. It vendors the Zig sources, builds the
+    # tarball, and — the point — lets cargo unpack that tarball and build it.
+    # Nothing else can prove the vendored set is complete, and the failure it
+    # catches is invisible until someone runs `cargo publish`.
+    (cd packages/rust && cargo xtask package)
 else
     echo "  skipped (no cargo toolchain, or SKIP_FOREIGN=1)"
 fi

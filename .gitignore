@@ -49,6 +49,12 @@ tests/testdata/ucd/
 # hundred MB of unrelated repositories. Clone whatever you want to read here.
 /external/
 
+# The Zig sources, copied into the crate by `cargo xtask package` for the
+# length of one packaging run and removed again on the way out. Ignored so that
+# a run interrupted between those two moments cannot leave 2.5 MB of duplicated
+# source staged for commit.
+/packages/rust/wgslender-sys/vendor/
+
 # Temp/scratch
 /tmp/
 

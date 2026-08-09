@@ -13,7 +13,8 @@
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
 /// The workspace root, one directory above this crate.
@@ -21,6 +22,21 @@ use std::process::{Command, ExitCode, Stdio};
 /// Baked in at build time so that the gate runs the same way from wherever the
 /// user happened to be standing.
 const WORKSPACE_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/..");
+
+/// The wgslender repository root: `packages/rust/xtask`, three levels up.
+const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../..");
+
+/// Where the vendored Zig sources go, matching `VENDOR_DIR` in
+/// `wgslender-sys/build.rs`.
+const VENDOR_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../wgslender-sys/vendor");
+
+/// Everything `zig build lib` reads, and nothing else.
+///
+/// Measured rather than assumed: these four paths build `libwgslender.a` in a
+/// directory holding no others. `external/lsp-kit` is deliberately absent —
+/// `lsp_kit` is a lazy *URL* dependency that only the LSP steps ask for, so the
+/// library target never fetches it and a consumer never needs the network.
+const VENDORED_PATHS: &[&str] = &["build.zig", "build.zig.zon", "src", "include"];
 
 /// The directory the `EXAMPLES` table below claims to describe in full.
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../wgslender/examples");
@@ -36,6 +52,7 @@ tasks:
   examples   run every example, and check the table listing them is complete
   msrv       type-check the workspace with the declared minimum toolchain
   deny       audit dependencies with cargo-deny
+  package    vendor the Zig sources and build the wgslender-sys tarball
 ";
 
 /// Which binary a step runs.
@@ -260,6 +277,19 @@ const DENY: &[Step] = &[Step {
     env: &[],
 }];
 
+/// Building the tarball, with verification left on.
+///
+/// Verification is the whole point: it unpacks what would be published and
+/// builds it, which is the only thing that can prove the vendored sources are
+/// complete. `--allow-dirty` is not a shortcut around a dirty tree — `vendor/`
+/// is untracked by design, and cargo counts untracked files as dirt.
+const PACKAGE: &[Step] = &[Step {
+    label: "package wgslender-sys",
+    program: Program::Cargo,
+    args: &["package", "--package", "wgslender-sys", "--allow-dirty"],
+    env: &[],
+}];
+
 /// Whether a tool an optional task needs is installed.
 enum Availability {
     Present,
@@ -315,6 +345,7 @@ fn main() -> ExitCode {
         Some("examples") => examples().report(),
         Some("msrv") => msrv(),
         Some("deny") => deny(),
+        Some("package") => package(),
         Some(unknown) => {
             eprintln!("xtask: no task named {unknown:?}\n\n{USAGE}");
             ExitCode::FAILURE
@@ -324,6 +355,93 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The vendored Zig sources, present for exactly as long as the packaging run
+/// that needs them.
+///
+/// A guard rather than a copy-then-delete pair, because `cargo package` fails
+/// sometimes and 2.5 MB of Zig left behind in a directory the repository does
+/// not track is a puzzle for whoever runs `git status` next. Dropping it is the
+/// only way it goes away, so there is no path that forgets.
+struct VendoredSources {
+    dir: PathBuf,
+}
+
+impl VendoredSources {
+    /// Copies [`VENDORED_PATHS`] out of the repository and into the crate.
+    ///
+    /// Copied fresh every time rather than kept in the repository: a copy that
+    /// lives in git is a copy that can disagree with the sources, and the only
+    /// way to be sure it never does is for it not to outlive the command.
+    fn place() -> io::Result<Self> {
+        let dir = PathBuf::from(VENDOR_DIR);
+        if let Err(err) = fs::remove_dir_all(&dir)
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            return Err(err);
+        }
+        fs::create_dir_all(&dir)?;
+
+        let repo_root = Path::new(REPO_ROOT);
+        for path in VENDORED_PATHS {
+            copy_recursively(&repo_root.join(path), &dir.join(path))?;
+        }
+        Ok(Self { dir })
+    }
+}
+
+impl Drop for VendoredSources {
+    fn drop(&mut self) {
+        if let Err(err) = fs::remove_dir_all(&self.dir) {
+            eprintln!(
+                "xtask: could not remove {}: {err}\n  \
+                 delete it by hand — a published crate must not be built from a stale copy",
+                self.dir.display()
+            );
+        }
+    }
+}
+
+/// Copies a file, or a directory and everything under it.
+fn copy_recursively(from: &Path, to: &Path) -> io::Result<()> {
+    if from.is_dir() {
+        fs::create_dir_all(to)?;
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            copy_recursively(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(from, to)?;
+    Ok(())
+}
+
+/// Vendors the Zig sources, packages `wgslender-sys`, and takes them away
+/// again.
+fn package() -> ExitCode {
+    println!("\n=== vendoring the Zig sources ===");
+    let vendored = match VendoredSources::place() {
+        Ok(vendored) => vendored,
+        Err(err) => {
+            eprintln!("xtask: could not vendor the Zig sources: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!(
+        "{} <- {}",
+        vendored.dir.display(),
+        VENDORED_PATHS.join(", ")
+    );
+
+    // Bound to a name, not to `_`: `_` drops at the end of the statement, which
+    // would take the sources away before cargo reads them.
+    let outcome = run(PACKAGE);
+    drop(vendored);
+    outcome.report()
 }
 
 /// Runs steps in order, stopping at the first one that fails.

@@ -81,6 +81,28 @@ pub fn build(b: *std.Build) void {
     lib_step.dependOn(&install_lib.step);
     lib_step.dependOn(&install_header.step);
 
+    // `-Dlsp=false` returns here, which leaves only the three steps declared
+    // above it: `run`, `wasm` and `lib`. Everything below — the LSP, the tests,
+    // the generators — is gone, so this is a switch for a build that wants the
+    // library and nothing else, not a way to trim the LSP out of a normal one.
+    //
+    // What it buys is the fetch. `b.lazyDependency` registers `lsp_kit` as
+    // wanted and *then* returns null, so the build runner downloads the tarball
+    // and re-runs `build()` even when the requested step is `lib` and the
+    // `orelse return` below skips the whole LSP graph. The download needs the
+    // network, and Zig materializes the result in `zig-pkg/` beside the
+    // sources. `wgslender-sys/build.rs` can afford neither: it builds from a
+    // crate a consumer unpacked, which cargo checksums and which may well be on
+    // a machine that is offline.
+    const want_lsp = b.option(
+        bool,
+        "lsp",
+        "Declare the steps that need the lsp_kit dependency — the LSP, the " ++
+            "tests and the generators. False leaves only run/wasm/lib and " ++
+            "fetches nothing (default: true)",
+    ) orelse true;
+    if (!want_lsp) return;
+
     // LSP server (native). lsp_kit is marked `.lazy = true`, so it's only
     // fetched when a step that actually needs it is in the build graph
     // (lsp / lsp-wasm / test). If it hasn't been fetched yet, skip the

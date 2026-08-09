@@ -15,7 +15,11 @@ build = "build.rs"
 
 # Spelled out rather than filtered: a list of what to ship cannot accidentally
 # grow, and a list of what to leave out can.
-include = ["src/**/*.rs", "build.rs"]
+#
+# `vendor/` is the Zig sources, absent from the repository and put there by
+# `cargo xtask package` for the length of one `cargo package` run. Packaging by
+# hand produces a crate that cannot build; the build script says so by name.
+include = ["src/**/*.rs", "build.rs", "vendor/**"]
 
 [lints]
 workspace = true
