@@ -744,7 +744,7 @@ pub const Attribute = struct {
     /// Byte span from the `@` through the closing `)` (or the identifier
     /// end for argument-less attributes). Stamped by the Parser via
     /// `attr_loc`/`prevTokenEnd()`. The incremental hot path's
-    /// `findSlotInAttribute` gates on it (pinned by `tests/ast_equal.zig`).
+    /// `findSlotInAttribute` gates on it (pinned by `tests/exhaustive/ast_equal.zig`).
     span: Span = .empty,
 };
 

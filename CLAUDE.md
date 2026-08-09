@@ -240,6 +240,15 @@ If types like `MyStruct` aren't being renamed:
 
 ## Test Data
 
+**Two test tiers** (see `docs/testing.md`):
+- **Core** — `tests/`, public, 131 files. Runs on a clean checkout with no setup.
+- **Exhaustive** — `tests/exhaustive/`, a licensed private submodule, 13 files. Differential/mutation/fuzz machinery for the incremental hot path plus the Tint conformance harness.
+
+`build.zig` registers test files through `hasFile`, so absent files are skipped at
+configure time and a checkout without the exhaustive tier builds and tests normally.
+The `tint-test` and `tint-triage` steps exist only when the tier is present. Never
+add an unconditional `b.path("tests/exhaustive/...")` — it breaks the public build.
+
 **compute.toys shaders** (`tests/testdata/compute.toys/`):
 - Real-world shaders verified working after minification
 - Use with `--config configs/compute.toys.json`
@@ -254,13 +263,13 @@ If types like `MyStruct` aren't being renamed:
 
 **Tint tests** (`tests/testdata/tint/`):
 - 11,952 WGSL shaders from Google's Dawn Tint project (`test/tint` sparse checkout), pinned to the dawn revision in `scripts/tint-testdata.rev`
-- Semantic-preservation test (`tests/tint_test.zig`, `zig build tint-test`) exercises all 11,952 (8,604 run; f16/subgroups/`diagnostic(...)` shaders skipped)
-- Two validator goldens produced by one walk (`tests/inference_corpus_pinning_test.zig`) over 8,726 processed shaders (3,226 excluded):
-  - `tests/inference/corpus_golden.txt` — per-code diagnostic histogram
-  - `tests/inference/triage_golden.txt` — that histogram split by Tint's own verdict into fp/tp/unk (`tests/tint_oracle.zig` classifies each shader's sibling `.expected.wgsl`; fp = a code we emit on a shader Tint accepts = false-positive candidate)
-- Triage tool (`tools/tint_triage.zig`): `zig build tint-triage -- --code E0200 --bucket fp [--max-per-code N]` prints a `path<TAB>line:col<TAB>message` false-positive worklist; `-- --tsv report.tsv` writes a per-shader report; no args prints the summary table. Reports only; the golden test is the gate.
-- Regenerate both goldens after an intentional change: `rm tests/inference/corpus_golden.txt tests/inference/triage_golden.txt && zig build test`
-- Bump the pinned corpus: edit `scripts/tint-testdata.rev`, then `rm -rf tests/testdata/tint tests/inference/corpus_golden.txt tests/inference/triage_golden.txt && ./scripts/fetch-tint-testdata.sh && zig build test`, and commit the rev + both goldens together
+- Semantic-preservation test (`tests/exhaustive/tint_test.zig`, `zig build tint-test`) exercises all 11,952 (8,604 run; f16/subgroups/`diagnostic(...)` shaders skipped)
+- Two validator goldens produced by one walk (`tests/exhaustive/inference_corpus_pinning_test.zig`) over 8,726 processed shaders (3,226 excluded):
+  - `tests/exhaustive/corpus_golden.txt` — per-code diagnostic histogram
+  - `tests/exhaustive/triage_golden.txt` — that histogram split by Tint's own verdict into fp/tp/unk (`tests/exhaustive/tint_oracle.zig` classifies each shader's sibling `.expected.wgsl`; fp = a code we emit on a shader Tint accepts = false-positive candidate)
+- Triage tool (`tests/exhaustive/tint_triage.zig`): `zig build tint-triage -- --code E0200 --bucket fp [--max-per-code N]` prints a `path<TAB>line:col<TAB>message` false-positive worklist; `-- --tsv report.tsv` writes a per-shader report; no args prints the summary table. Reports only; the golden test is the gate.
+- Regenerate both goldens after an intentional change: `rm tests/exhaustive/corpus_golden.txt tests/exhaustive/triage_golden.txt && zig build test`
+- Bump the pinned corpus: edit `scripts/tint-testdata.rev`, then `rm -rf tests/testdata/tint tests/exhaustive/corpus_golden.txt tests/exhaustive/triage_golden.txt && ./scripts/fetch-tint-testdata.sh && zig build test`, and commit the rev + both goldens together
 - Optional — all corpus tests self-skip if the directory is absent
 
 ## WGSL Specifics

@@ -399,15 +399,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    // Tint expected-file verdict classifier (Block 1). Registered here as an
-    // importable module for its first consumers: the corpus pinning/triage
-    // test and the `tint-triage` tool.
-    const tint_oracle_mod = b.addModule("tint_oracle", .{
-        .root_source_file = b.path("tests/tint_oracle.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const tint_oracle_import: std.Build.Module.Import = .{ .name = "tint_oracle", .module = tint_oracle_mod };
+    // Tint expected-file verdict classifier. Lives in the exhaustive tier, so
+    // it is present only when that submodule is checked out; its consumers
+    // (corpus pinning test, `tint-triage` tool) are gated on the same file.
+    const tint_oracle_import: ?std.Build.Module.Import = if (hasFile(b, "tests/exhaustive/tint_oracle.zig")) .{
+        .name = "tint_oracle",
+        .module = b.addModule("tint_oracle", .{
+            .root_source_file = b.path("tests/exhaustive/tint_oracle.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    } else null;
     // `handler_mod` and `bridge_mod` are defined above, adjacent to the
     // LSP executable so both binary and tests share the same module graph.
 
@@ -477,11 +479,11 @@ pub fn build(b: *std.Build) void {
     // changeTypeEdit, locateDeclaration, locateType.
     _ = addTestStep(b, test_step, "tests/decl_span_test.zig", target, optimize, &.{w});
     // Incremental.reparse — bulk corpus over compute.toys + composition.
-    _ = addTestStep(b, test_step, "tests/incremental_corpus_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/exhaustive/incremental_corpus_test.zig", target, optimize, &.{w});
     // Incremental.reparse — corpus × mutation-section add/sub coverage
     // with per-symbol use_count oracle (complements the aggregate-sum
     // I-01 in incremental_corpus_test.zig).
-    _ = addTestStep(b, test_step, "tests/incremental_corpus_addsub_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/exhaustive/incremental_corpus_addsub_test.zig", target, optimize, &.{w});
     // Non-gating perf smoke for the Phase 2 compound_stmt hot path. Reports
     // a speedup ratio over parseFull on bridge.wgsl and asserts a loose
     // floor so regressions surface in CI logs.
@@ -504,7 +506,7 @@ pub fn build(b: *std.Build) void {
     // anchor kinds and round-trip edit sequences.
     _ = addTestStep(b, test_step, "tests/incremental_addsub_test.zig", target, optimize, &.{w});
     // Incremental.reparse — symbol-free hot-path unit tests.
-    _ = addTestStep(b, test_step, "tests/incremental_mutation_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/exhaustive/incremental_mutation_test.zig", target, optimize, &.{w});
     // Incremental.reparse — shared sentinel stub arena identity /
     // deinit-safety contract across every hot-path return.
     _ = addTestStep(b, test_step, "tests/incremental_stub_sentinel_test.zig", target, optimize, &.{w});
@@ -513,14 +515,14 @@ pub fn build(b: *std.Build) void {
     // moved prev returns `error.PrevAlreadyMoved`.
     _ = addTestStep(b, test_step, "tests/incremental_moved_guard_test.zig", target, optimize, &.{w});
     // Incremental.reparse — hot-path targeted fuzz / property tests.
-    _ = addTestStep(b, test_step, "tests/incremental_mutation_fuzz_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/exhaustive/incremental_mutation_fuzz_test.zig", target, optimize, &.{w});
     // Incremental.reparse — long-tail edge cases (unicode, CRLF, token
     // tag flips, comment-break / comment-close, boundary edits, …).
-    _ = addTestStep(b, test_step, "tests/incremental_longtail_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/exhaustive/incremental_longtail_test.zig", target, optimize, &.{w});
     // Incremental.reparse — long-tail mutation scenarios (M1–M8): attribute
     // args, type-expr fallback, for/switch/if/while compartments, member &
     // call chains, and mixed-anchor churn / retained_arenas growth.
-    _ = addTestStep(b, test_step, "tests/incremental_mutation_longtail_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/exhaustive/incremental_mutation_longtail_test.zig", target, optimize, &.{w});
     // Incremental.reparse — error-list fixup across the splice (drop entries
     // inside the old anchor, shift downstream by delta, append add-walk
     // E0102s) verified against a parseFull oracle on the new source.
@@ -539,7 +541,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/cst_splice_test.zig", target, optimize, &.{w});
     // Property-based fuzz for Incremental.reparse — random edits must
     // produce the same AST / source as parseFull on the spliced source.
-    _ = addTestStep(b, test_step, "tests/incremental_fuzz_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/exhaustive/incremental_fuzz_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/predeclared_test.zig", target, optimize, &.{w});
     // Semantic tests
     const sd: std.Build.Module.Import = .{ .name = "semantic_data", .module = semantic_data_mod };
@@ -547,31 +549,35 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/semantic_test.zig", target, optimize, &.{ w, sd });
     // Source map tests
     _ = addTestStep(b, test_step, "tests/sourcemap_test.zig", target, optimize, &.{w});
-    // Tint tests — bulk semantic preservation test of 12,668 real Tint shaders.
-    // testdata/tint/ is optional: if absent the test prints a skip message and passes.
-    const run_tint_tests = addTestStep(b, test_step, "tests/tint_test.zig", target, optimize, &.{w});
-    const tint_step = b.step("tint-test", "Run Tint semantic preservation tests");
-    tint_step.dependOn(run_tint_tests);
+    // Tint tests — bulk semantic preservation over the real Tint shader corpus.
+    // Exhaustive tier: the test file ships in the licensed submodule, and
+    // testdata/tint/ is separately optional (absent corpus prints a skip).
+    if (addTestStep(b, test_step, "tests/exhaustive/tint_test.zig", target, optimize, &.{w})) |run_tint_tests| {
+        const tint_step = b.step("tint-test", "Run Tint semantic preservation tests");
+        tint_step.dependOn(run_tint_tests);
+    }
 
     // tint-triage: Tint-oracle conformance worklist/report tool (reports only).
     // setCwd(.) so it resolves `tests/testdata/tint` relative to the repo root
     // regardless of the build's cwd; `--` args pass straight through.
-    const tint_triage_exe = b.addExecutable(.{
-        .name = "tint-triage",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/tint_triage.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{ w, tint_oracle_import },
-        }),
-    });
-    const run_tint_triage = b.addRunArtifact(tint_triage_exe);
-    run_tint_triage.setCwd(b.path("."));
-    if (b.args) |triage_args| run_tint_triage.addArgs(triage_args);
-    const tint_triage_step = b.step("tint-triage", "Tint-oracle triage worklist/report tool");
-    tint_triage_step.dependOn(&run_tint_triage.step);
-    // The tool's pure-fn tests (arg parsing, TSV escaping) run corpus-free in CI.
-    _ = addTestStep(b, test_step, "tools/tint_triage.zig", target, optimize, &.{ w, tint_oracle_import });
+    if (tint_oracle_import) |oracle| {
+        const tint_triage_exe = b.addExecutable(.{
+            .name = "tint-triage",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tests/exhaustive/tint_triage.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{ w, oracle },
+            }),
+        });
+        const run_tint_triage = b.addRunArtifact(tint_triage_exe);
+        run_tint_triage.setCwd(b.path("."));
+        if (b.args) |triage_args| run_tint_triage.addArgs(triage_args);
+        const tint_triage_step = b.step("tint-triage", "Tint-oracle triage worklist/report tool");
+        tint_triage_step.dependOn(&run_tint_triage.step);
+        // The tool's pure-fn tests (arg parsing, TSV escaping) run corpus-free.
+        _ = addTestStep(b, test_step, "tests/exhaustive/tint_triage.zig", target, optimize, &.{ w, oracle });
+    }
 
     // gen-xid: regenerate src/unicode_xid_data.zig from a UCD
     // DerivedCoreProperties.txt (fetched by scripts/fetch-ucd.sh). setCwd(.) so
@@ -921,7 +927,7 @@ pub fn build(b: *std.Build) void {
     // OOM exhaustive tests
     _ = addTestStep(b, test_step, "tests/oom_test.zig", target, optimize, &.{w});
     // Fuzz tests
-    _ = addTestStep(b, test_step, "tests/fuzz_test.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "tests/exhaustive/fuzz_test.zig", target, optimize, &.{w});
     // Determinism tests
     _ = addTestStep(b, test_step, "tests/determinism_test.zig", target, optimize, &.{w});
     // Inference tests (spec §8.2 rank table, and future inference surface).
@@ -951,12 +957,27 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/inference/sig_shape_invariant_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/builtin_rejection_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/inference/named_edge_cases_test.zig", target, optimize, &.{w});
-    _ = addTestStep(b, test_step, "tests/inference_corpus_pinning_test.zig", target, optimize, &.{ w, tint_oracle_import });
+    if (tint_oracle_import) |oracle| {
+        _ = addTestStep(b, test_step, "tests/exhaustive/inference_corpus_pinning_test.zig", target, optimize, &.{ w, oracle });
+    }
     // Tint expected-file verdict oracle — pure classifier with corpus-free
-    // fixture tests (feeds the Block-2 triage golden; runs in default CI).
-    _ = addTestStep(b, test_step, "tests/tint_oracle.zig", target, optimize, &.{});
+    // fixture tests (feeds the triage golden).
+    _ = addTestStep(b, test_step, "tests/exhaustive/tint_oracle.zig", target, optimize, &.{});
 }
 
+/// True when `path` exists relative to the build root.
+///
+/// Used to keep the exhaustive test tier (`tests/exhaustive/`, a licensed
+/// submodule) optional: a checkout without it configures and tests normally.
+fn hasFile(b: *std.Build, path: []const u8) bool {
+    b.build_root.handle.access(b.graph.io, path, .{}) catch return false;
+    return true;
+}
+
+/// Registers `source` as a test step, skipping it when the file is absent.
+///
+/// Returns null for a skipped file so callers that hang a named step off the
+/// result can skip that too, rather than publishing a step that does nothing.
 fn addTestStep(
     b: *std.Build,
     test_step: *std.Build.Step,
@@ -964,7 +985,8 @@ fn addTestStep(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     imports: []const std.Build.Module.Import,
-) *std.Build.Step {
+) ?*std.Build.Step {
+    if (!hasFile(b, source)) return null;
     const t = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path(source),

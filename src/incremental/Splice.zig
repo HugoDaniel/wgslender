@@ -363,7 +363,7 @@ pub fn tryCompoundSpliceInPlace(
     // not the last same-kind sibling — landing the replacement on the
     // wrong index vs a full parse. `new_scopes[0]` is the compound's own
     // block scope (pushed before any nested scope). Gated by
-    // tests/incremental_mutation_test.zig "B3b-C2".
+    // tests/exhaustive/incremental_mutation_test.zig "B3b-C2".
     if (lowered.new_scopes.items.len > 0) {
         lowered.new_scopes.items[0].sibling_index = old_block_scope.sibling_index;
     }

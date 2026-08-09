@@ -202,10 +202,10 @@ Empirical numbers aren't committed here yet. (Timing is available —
 has wired an incremental-reparse harness to it.) The correctness bounds
 are gated by the test suite:
 
-- `tests/incremental_corpus_test.zig` verifies the fast path on every
+- `tests/exhaustive/incremental_corpus_test.zig` verifies the fast path on every
   compute.toys shader, plus a composition test that runs 20 successive
   prepend-a-comment reparses without corruption.
-- `tests/incremental_longtail_test.zig` covers 23 edge cases including
+- `tests/exhaustive/incremental_longtail_test.zig` covers 23 edge cases including
   comment-break / comment-close, keyword-flip, template-vs-comparison
   disambiguation, and CRLF normalization — each asserts the expected
   `EditKind` classification.
@@ -215,7 +215,7 @@ are gated by the test suite:
 - `tests/cst_shape_test.zig` snapshots the tree skeleton on grammar
   ambiguities (templates vs comparisons, attribute-with-call, nested
   compound stmts, parse-error recovery).
-- `tests/incremental_fuzz_test.zig` asserts
+- `tests/exhaustive/incremental_fuzz_test.zig` asserts
   `reparse(prev, edit).ast ≡ parseFull(apply(source, edit)).ast` on
   deterministic seeds plus a Smith-driven continuous fuzz under
   `--fuzz`.
@@ -278,7 +278,7 @@ a clean arena.
 
 The practical envelope on a long editing session is therefore bounded
 by `~16 × source.len` (one trip's worth of growth plus the next
-iteration's fresh splice allocation). `tests/incremental_mutation_longtail_test.zig`
+iteration's fresh splice allocation). `tests/exhaustive/incremental_mutation_longtail_test.zig`
 M13 locks this on a real compute.toys shader across a 100-edit burst
 via `ReparseResult.arenaBytes()`. The in-session per-edit arena-struct
 allocation count on the hot path is 1 — only the stub installed on

@@ -30,7 +30,7 @@ if [ -d "$DEST_DIR" ] && [ "$(find "$DEST_DIR" -name '*.wgsl' -maxdepth 1 -print
     echo "tests/testdata/tint/ already exists with $count .wgsl files — skipping."
     echo "To re-fetch: remove tests/testdata/tint/ first."
     echo "To bump the pinned revision: edit scripts/tint-testdata.rev, then"
-    echo "  rm -rf tests/testdata/tint tests/inference/corpus_golden.txt tests/inference/triage_golden.txt &&"
+    echo "  rm -rf tests/testdata/tint tests/exhaustive/corpus_golden.txt tests/exhaustive/triage_golden.txt &&"
     echo "  ./scripts/fetch-tint-testdata.sh && zig build test"
     echo "(regenerates both goldens against the new revision; commit rev + goldens together)."
     exit 0

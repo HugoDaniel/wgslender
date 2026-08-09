@@ -1,0 +1,4 @@
+[submodule "tests/exhaustive"]
+	path = tests/exhaustive
+	url = https://git.hugodaniel.com/hugo/wgslender-exhaustive.git
+	update = none
