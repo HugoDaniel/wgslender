@@ -39,6 +39,11 @@ tests/testdata/ucd/
 *.swo
 *~
 
+# Personal Obsidian vault — drafts and notes about the project, not project
+# documentation. Lives here so the vault sits next to the code it talks about;
+# git never sees it, on any remote.
+/docs/obsidian/
+
 # Reference checkouts of other projects, kept for reading rather than building.
 # They used to be submodules, which meant `git clone --recursive` pulled a few
 # hundred MB of unrelated repositories. Clone whatever you want to read here.
