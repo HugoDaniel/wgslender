@@ -131,6 +131,25 @@ All notable changes to wgslender are recorded here. The project follows
 
 ### Infrastructure
 
+- **`wgslender-sys` can be published.** Its build script reached three
+  directories up for the Zig sources — a path that exists in this repository
+  and in no `.crate` tarball — so a published crate would have failed its
+  first build, and `cargo package` could only ever run with `--no-verify`.
+  The sources are now vendored into the crate by `cargo xtask package` for the
+  length of one packaging run and removed afterwards, and `build.rs` prefers a
+  vendored tree over the repository when it finds one. The vendored set is four
+  paths (`build.zig`, `build.zig.zon`, `src/`, `include/`) — 2.4 MB, 525 KB
+  compressed — and verification now runs, which is the only thing that can
+  prove the set is complete. **Consumers of the Rust crates need Zig 0.16.0 on
+  `PATH`**; `WGSLENDER_LIB_DIR` still links a library you built yourself.
+- **`zig build` takes `-Dlsp=false`.** It returns before declaring anything
+  that needs `lsp_kit`, leaving `run`, `wasm` and `lib`. This exists because
+  `b.lazyDependency` registers a lazy dependency and *then* returns null, so
+  `zig build lib` fetched lsp-kit over the network and unpacked it into
+  `zig-pkg/` beside the sources even though nothing in the library graph used
+  it. `wgslender-sys` passes the flag, so building the static library needs no
+  network and writes nothing next to the sources.
+
 - **`external/` is no longer a set of git submodules.** Eight reference
   checkouts (gpuweb, eslint, vscode-extension-samples, naga, wgsl-analyzer,
   wgsl_reflect, lsp-client, lsp-kit) were tracked as submodules, so a
