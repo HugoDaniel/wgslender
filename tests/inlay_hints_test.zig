@@ -1,11 +1,29 @@
 const std = @import("std");
 const Handler = @import("Handler");
 
-fn setup(source: [:0]const u8) !struct { handler: *Handler } {
+const TestCtx = struct { handler: *Handler };
+
+fn setup(source: [:0]const u8) !TestCtx {
     const handler = try std.testing.allocator.create(Handler);
     handler.* = Handler.init(std.testing.allocator);
     try handler.openDocument("test://file.wgsl", source, 1);
     return .{ .handler = handler };
+}
+
+/// Like `setup`, but with `lsp.inlayHints.typeAnnotations` enabled — the
+/// type-annotation lane (let types, expression result types) is opt-in,
+/// so every test that asserts on those hints goes through here.
+fn setupWithTypeAnnotations(source: [:0]const u8) !TestCtx {
+    const ctx = try setup(source);
+    var parsed = try std.json.parseFromSlice(
+        std.json.Value,
+        std.testing.allocator,
+        "{\"lsp\":{\"inlayHints\":{\"typeAnnotations\":true}}}",
+        .{},
+    );
+    defer parsed.deinit();
+    ctx.handler.applyClientConfig(parsed.value);
+    return ctx;
 }
 
 fn teardown(ctx: anytype) void {
@@ -13,9 +31,42 @@ fn teardown(ctx: anytype) void {
     std.testing.allocator.destroy(ctx.handler);
 }
 
+test "inlay hints: type annotations are off by default" {
+    // A shader that would produce a let-type hint and an expression-type
+    // hint when the lane is on. By default neither may appear — users
+    // opt in via `lsp.inlayHints.typeAnnotations`.
+    const source: [:0]const u8 = "fn g() -> f32 { return 2.0; } fn f() { let x = 1.0 + g(); _ = x; }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = @intCast(source.len) },
+    });
+    defer std.testing.allocator.free(hints);
+    for (hints) |h| {
+        try std.testing.expect(h.kind != .type_hint);
+    }
+}
+
+test "inlay hints: typeAnnotations setting enables the lane" {
+    const source: [:0]const u8 = "fn f() { let x = 1.0; _ = x; }";
+    const ctx = try setupWithTypeAnnotations(source);
+    defer teardown(ctx);
+    const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = @intCast(source.len) },
+    });
+    defer std.testing.allocator.free(hints);
+    var saw_type_hint = false;
+    for (hints) |h| {
+        if (h.kind == .type_hint) saw_type_hint = true;
+    }
+    try std.testing.expect(saw_type_hint);
+}
+
 test "inlay hints: let without type annotation" {
     const source: [:0]const u8 = "fn f() { let x = 1.0; }";
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
@@ -73,7 +124,7 @@ test "inlay hints: multiple lets without types in function" {
         \\  let c = 3.0;
         \\}
     ;
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
@@ -212,7 +263,7 @@ test "inlay hints: binary arithmetic shows result type" {
         \\  let c = a + b;
         \\}
     ;
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
@@ -235,7 +286,7 @@ test "inlay hints: comparison op does not show bool hint" {
         \\  if a == b { }
         \\}
     ;
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
@@ -258,7 +309,7 @@ test "inlay hints: function call shows return type" {
         \\  let y = helper() + x;
         \\}
     ;
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
@@ -283,7 +334,7 @@ test "inlay hints: assignment RHS gets expression type hints" {
         \\  x = x + y;
         \\}
     ;
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
@@ -306,7 +357,7 @@ test "inlay hints: type constructor does not show redundant hint" {
         \\  let v = vec3<f32>(1.0, 2.0, 3.0);
         \\}
     ;
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
@@ -333,7 +384,7 @@ test "inlay hints: call expression hint appears after closing paren" {
         \\  let x = sin(t);
         \\}
     ;
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
@@ -364,7 +415,7 @@ test "inlay hints: nested binary+call produces single hint" {
         \\  let x = 0.5 + 0.5 * sin(t);
         \\}
     ;
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     const hints = try ctx.handler.computeInlayHints("test://file.wgsl", .{
         .start = .{ .line = 0, .character = 0 },
@@ -390,7 +441,7 @@ test "inlay hints: range filtering works" {
         \\  let b = 2.0;
         \\}
     ;
-    const ctx = try setup(source);
+    const ctx = try setupWithTypeAnnotations(source);
     defer teardown(ctx);
     // Request hints only for line 1
     const all = try ctx.handler.computeInlayHints("test://file.wgsl", .{

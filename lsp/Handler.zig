@@ -421,6 +421,17 @@ pub fn inlayHintsEnabled(self: *const Handler) bool {
         true;
 }
 
+/// Resolve `lsp.inlayHints.typeAnnotations`. Defaults to `false`: the
+/// inferred-type hint lane (let types, expression result types) is
+/// opt-in — an editor rendering `: f32` after every declaration is
+/// noise most users didn't ask for. The minify-size lane has its own
+/// gate (`lsp.minifyMode`) and const-value hints stay on.
+pub fn typeAnnotationHintsEnabled(self: *const Handler) bool {
+    return self.workspace_config.lsp_inlay_type_annotations orelse
+        self.project_config.lsp_inlay_type_annotations orelse
+        false;
+}
+
 /// Resolve `lsp.diagnostics.enabled`. Defaults to `true` when neither
 /// layer set it.
 pub fn diagnosticsEnabled(self: *const Handler) bool {

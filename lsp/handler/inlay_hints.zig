@@ -187,7 +187,7 @@ fn collectInlayHintsFromDecl(
 ) std.mem.Allocator.Error!void {
     switch (decl) {
         .let => |l| {
-            if (l.typ == null) { // No explicit type annotation
+            if (l.typ == null and handler.typeAnnotationHintsEnabled()) { // No explicit type annotation
                 if (l.name.isValid()) {
                     const sym = module.symbols.items[l.name.index()];
                     if (sym.loc >= range_start and sym.loc < range_end) {
@@ -348,6 +348,7 @@ fn exprEndOffset(expr: Ast.Expr) u32 {
 /// Collect expression type hints for interesting sub-expressions.
 /// Only emits hints for binary ops (non-comparison), function calls (non-constructors),
 /// member access, and indexing operations within the visible range.
+/// The whole lane is opt-in via `lsp.inlayHints.typeAnnotations`.
 fn collectExprTypeHints(
     handler: *Handler,
     module: *const Ast.Module,
@@ -360,6 +361,7 @@ fn collectExprTypeHints(
     depth: u32,
 ) std.mem.Allocator.Error!void {
     if (depth > 8) return;
+    if (!handler.typeAnnotationHintsEnabled()) return;
 
     // Look up by expression-specific loc (operator for binary, open-paren
     // for call, dot for member, bracket for index) — matches Validator keys.

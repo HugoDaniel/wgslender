@@ -891,6 +891,7 @@ pub const lint_specs = [_]OptionSpec{
 /// parallel spec table colocated with `Partial` itself.
 pub const lsp_toggle_specs = [_]OptionSpec{
     .{ .field = "lsp_inlay_hints_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "inlayHints.enabled", .summary = "Enable LSP inlay hints (struct sizes, type echoes)" },
+    .{ .field = "lsp_inlay_type_annotations", .kind = .bool_opt, .cli_simple = false, .json_override = "inlayHints.typeAnnotations", .summary = "Show inferred-type inlay hints (off by default)" },
     .{ .field = "lsp_diagnostics_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "diagnostics.enabled", .summary = "Publish diagnostics from the LSP server" },
     .{ .field = "lsp_lint_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "lint.enabled", .summary = "Run the configured lint packs in LSP diagnostics" },
 };

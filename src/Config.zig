@@ -66,6 +66,10 @@ lsp_minify: MinifySettings.Partial = .{},
 /// `lsp.lint.enabled` JSON keys, in either `wgslender.json` or the LSP
 /// `workspace/configuration` payload.
 lsp_inlay_hints_enabled: ?bool = null,
+/// `lsp.inlayHints.typeAnnotations` — the inferred-type hint lane (let
+/// types, expression result types). Off unless the user opts in; the
+/// minify-size and const-value lanes are gated separately.
+lsp_inlay_type_annotations: ?bool = null,
 lsp_diagnostics_enabled: ?bool = null,
 /// Gates the general lint packs (`lint_extends`, defaulting to
 /// `@wgslender/recommended`) in the LSP diagnostics path. Independent of
