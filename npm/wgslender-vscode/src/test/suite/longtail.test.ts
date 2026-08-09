@@ -481,6 +481,37 @@ suite('settings flows', () => {
     }
   });
 
+  test('type-annotation inlay hints are opt-in', async function () {
+    this.timeout(30_000);
+    try {
+      const doc = await openWgsl('@compute @workgroup_size(1) fn main() { let a = 1.0; _ = a; }\n');
+      const fullRange = new Range(new Position(0, 0), new Position(doc.lineCount, 0));
+
+      const before = await commands.executeCommand<InlayHint[]>(
+        'vscode.executeInlayHintProvider',
+        doc.uri,
+        fullRange,
+      );
+      assert.strictEqual((before ?? []).length, 0, 'no inlay hints by default');
+
+      await cfg().update('lsp.inlayHints.typeAnnotations', true, ConfigurationTarget.Global);
+      await waitFor(
+        async () => {
+          const hints = await commands.executeCommand<InlayHint[]>(
+            'vscode.executeInlayHintProvider',
+            doc.uri,
+            fullRange,
+          );
+          return hints && hints.length > 0 ? hints : undefined;
+        },
+        10_000,
+        'type hints after enabling typeAnnotations',
+      );
+    } finally {
+      await resetConfig('lsp.inlayHints.typeAnnotations');
+    }
+  });
+
   test('format.enable=false disables document formatting', async function () {
     this.timeout(30_000);
     try {

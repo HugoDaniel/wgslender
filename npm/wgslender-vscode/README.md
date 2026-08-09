@@ -32,7 +32,8 @@ in your editor too, with the same key names. Key knobs:
 - `wgslender.lint.fixOnSave` — apply autofixes on save.
 
 **LSP feature toggles**
-- `wgslender.lsp.inlayHints.enabled` — show inlay hints (sizes, parameter names).
+- `wgslender.lsp.inlayHints.enabled` — master switch for inlay hints (type annotations, const values, minify size insights).
+- `wgslender.lsp.inlayHints.typeAnnotations` — show inferred-type hints (`: f32` on lets, expression result types). Off by default.
 - `wgslender.lsp.diagnostics.enabled` — publish diagnostics.
 
 **Minify insights** (drive the LSP-side estimator + inlay hints / code lens)

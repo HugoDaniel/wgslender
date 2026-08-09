@@ -199,7 +199,12 @@
         "wgslender.lsp.inlayHints.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Publish wgslender inlay hints (minify size insights, parameter names)."
+          "description": "Master switch for wgslender inlay hints (type annotations, const values, minify size insights)."
+        },
+        "wgslender.lsp.inlayHints.typeAnnotations": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show inferred-type inlay hints (let types, expression result types). Off by default."
         },
         "wgslender.lsp.diagnostics.enabled": {
           "type": "boolean",
