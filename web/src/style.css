@@ -1,0 +1,553 @@
+/**
+ * Design tokens, ported byte-for-byte (as resolved HSL values) from
+ * @astrojs/starlight's style/props.css. The `--pg-*` names are ours; the
+ * colours themselves are Starlight's default dark theme, with a light
+ * override activated by the OS/browser preference instead of a manual
+ * toggle — there is no second page to hang a toggle button off of.
+ */
+:root {
+	--pg-color-white: hsl(0, 0%, 100%);
+	--pg-color-gray-1: hsl(224, 20%, 94%);
+	--pg-color-gray-2: hsl(224, 6%, 77%);
+	--pg-color-gray-3: hsl(224, 6%, 56%);
+	--pg-color-gray-4: hsl(224, 7%, 36%);
+	--pg-color-gray-5: hsl(224, 10%, 23%);
+	--pg-color-gray-6: hsl(224, 14%, 16%);
+
+	--pg-color-accent: hsl(224, 100%, 60%);
+	--pg-color-accent-low: hsl(224, 54%, 20%);
+	--pg-color-text-accent: hsl(224, 100%, 85%);
+
+	--pg-color-bg: hsl(224, 10%, 10%);
+	--pg-color-bg-nav: var(--pg-color-gray-6);
+	--pg-color-bg-inline-code: var(--pg-color-gray-5);
+	--pg-color-hairline: var(--pg-color-gray-6);
+	--pg-color-hairline-shade: hsl(224, 10%, 10%);
+
+	--pg-color-orange: hsl(41, 82%, 63%);
+	--pg-color-orange-high: hsl(41, 82%, 87%);
+	--pg-color-green-high: hsl(101, 82%, 80%);
+	--pg-color-green-low: hsl(101, 39%, 22%);
+	--pg-color-blue-high: hsl(234, 100%, 87%);
+	--pg-color-purple-high: hsl(281, 82%, 89%);
+	--pg-color-red: hsl(339, 82%, 63%);
+	--pg-color-red-high: hsl(339, 82%, 87%);
+
+	--pg-font-system: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+		'Noto Sans', Arial, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+		'Noto Color Emoji';
+	--pg-font-system-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+		'Courier New', monospace;
+
+	--pg-text-xs: 0.8125rem;
+	--pg-text-sm: 0.875rem;
+	--pg-text-code-sm: 0.8125rem;
+	--pg-line-height: 1.75;
+}
+
+@media (prefers-color-scheme: light) {
+	:root {
+		--pg-color-white: hsl(224, 10%, 10%);
+		--pg-color-gray-1: hsl(224, 14%, 16%);
+		--pg-color-gray-2: hsl(224, 10%, 23%);
+		--pg-color-gray-3: hsl(224, 7%, 36%);
+		--pg-color-gray-4: hsl(224, 6%, 56%);
+		--pg-color-gray-5: hsl(224, 6%, 77%);
+		--pg-color-gray-6: hsl(224, 20%, 94%);
+
+		--pg-color-accent: hsl(234, 90%, 60%);
+		--pg-color-accent-low: hsl(234, 88%, 90%);
+		--pg-color-text-accent: hsl(234, 90%, 60%);
+
+		--pg-color-bg: hsl(0, 0%, 100%);
+		--pg-color-bg-nav: hsl(224, 19%, 97%);
+		--pg-color-hairline-shade: var(--pg-color-gray-6);
+
+		--pg-color-orange: hsl(41, 90%, 60%);
+		--pg-color-orange-high: hsl(41, 80%, 25%);
+		--pg-color-green-high: hsl(101, 80%, 22%);
+		--pg-color-green-low: hsl(101, 85%, 90%);
+		--pg-color-blue-high: hsl(234, 80%, 30%);
+		--pg-color-purple-high: hsl(281, 90%, 30%);
+		--pg-color-red: hsl(339, 90%, 60%);
+		--pg-color-red-high: hsl(339, 80%, 30%);
+	}
+}
+
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+* {
+	margin: 0;
+}
+
+html {
+	color-scheme: dark light;
+	accent-color: var(--pg-color-accent);
+}
+
+body {
+	font-family: var(--pg-font-system);
+	line-height: var(--pg-line-height);
+	-webkit-font-smoothing: antialiased;
+	color: var(--pg-color-gray-2);
+	background-color: var(--pg-color-bg);
+}
+
+code {
+	font-family: var(--pg-font-system-mono);
+}
+
+/* ---------------------------------------------------------------- page --- */
+
+.site-header {
+	position: sticky;
+	top: 0;
+	z-index: 10;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	padding: 0.75rem 1.5rem;
+	border-bottom: 1px solid var(--pg-color-hairline);
+	background-color: var(--pg-color-bg-nav);
+}
+
+.site-title {
+	margin: 0;
+	font-size: 1.375rem;
+	font-weight: 600;
+	color: var(--pg-color-text-accent);
+}
+
+.gh-link {
+	display: flex;
+	color: var(--pg-color-gray-2);
+}
+
+.gh-link:hover {
+	color: var(--pg-color-white);
+}
+
+.page {
+	max-width: 68.75rem;
+	margin: 0 auto;
+	padding: 1.5rem;
+}
+
+.lede {
+	max-width: 60rem;
+	margin-bottom: 1.5rem;
+	font-size: 1.125rem;
+	color: var(--pg-color-gray-2);
+}
+
+.tips-title {
+	font-size: 1.8125rem;
+	font-weight: 600;
+	line-height: 1.2;
+	color: var(--pg-color-white);
+}
+
+.page ul {
+	padding-left: 1.25rem;
+}
+
+.page li + li {
+	margin-top: 0.25rem;
+}
+
+.page a {
+	color: var(--pg-color-text-accent);
+}
+
+.page a:hover {
+	color: var(--pg-color-white);
+}
+
+.page code {
+	background-color: var(--pg-color-bg-inline-code);
+	padding: 0.125rem 0.375rem;
+	font-size: var(--pg-text-code-sm);
+}
+
+/* ----------------------------------------------------------- playground --- */
+
+.playground {
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	gap: 1rem;
+	margin-block: 1.5rem;
+}
+
+@media (max-width: 768px) {
+	.playground {
+		grid-template-columns: 1fr;
+	}
+}
+
+/* The "Expand" toggle collapses the grid down to the editor's column and
+   drops the output pane, rather than just stretching the editor over it —
+   the output pane's content (the minified editor, the tables) would
+   otherwise stay laid out underneath for no visible reason. */
+.playground.expanded {
+	grid-template-columns: 1fr;
+}
+
+.playground.expanded .pane-output {
+	display: none;
+}
+
+.pane {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	border: 1px solid var(--pg-color-hairline);
+	border-radius: 0.5rem;
+	overflow: hidden;
+	background-color: var(--pg-color-bg);
+}
+
+.pane-head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+	padding: 0.5rem 0.75rem;
+	border-bottom: 1px solid var(--pg-color-hairline);
+	background-color: var(--pg-color-bg-nav);
+}
+
+.pane-title {
+	margin: 0;
+	font-family: var(--pg-font-system-mono);
+	font-size: 1em;
+	font-weight: 600;
+	color: var(--pg-color-white);
+}
+
+/* The title reads on the left; the controls are on the right, flush against
+   the edge. Only the first one carries the auto margin — if every `.pill`
+   had it, the free space would split *between* the pills too, prying them
+   apart instead of grouping them. */
+.pane-title + .pill {
+	margin-left: auto;
+}
+
+.pane-body {
+	height: min(65vh, 34rem);
+}
+
+/* CodeMirror scrolls itself. A second scroller on the wrapper would fight
+   it: `scrollIntoView`, hover and click coordinates all resolve against
+   the editor's own scroller, and would drift by the wrapper's offset. */
+.editor {
+	overflow: hidden;
+}
+
+/* Matches the CodeMirror metrics in editor-theme.ts, so swapping the
+   fallback for the real editor does not move the text. */
+.editor .fallback {
+	height: 100%;
+	margin: 0;
+	padding: 0.25rem 0.75rem;
+	border: 0;
+	border-radius: 0;
+	overflow: auto;
+	font-family: var(--pg-font-system-mono);
+	font-size: var(--pg-text-code-sm);
+	line-height: 1.6;
+	background-color: var(--pg-color-bg);
+}
+
+.panels {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.tabs {
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	min-height: 0;
+}
+
+.tablist {
+	display: flex;
+	list-style: none;
+	gap: 0;
+	padding: 0 0.5rem;
+	border-bottom: 2px solid var(--pg-color-gray-5);
+	background-color: var(--pg-color-bg-nav);
+}
+
+.tab {
+	padding: 0.5rem 1.25rem;
+	border: 0;
+	background: none;
+	box-shadow: 0 2px 0 var(--pg-color-gray-5);
+	font: inherit;
+	font-size: var(--pg-text-sm);
+	color: var(--pg-color-gray-3);
+	cursor: pointer;
+}
+
+.tab[aria-selected='true'] {
+	box-shadow: 0 2px 0 var(--pg-color-text-accent);
+	color: var(--pg-color-white);
+	font-weight: 600;
+}
+
+.tab-body {
+	flex: 1;
+	min-height: 0;
+	padding: 0.5rem 0.75rem;
+}
+
+/* Only the minified tab is a flex column, because only it has a child
+   that must absorb the leftover height (the read-only editor). */
+.tab-body.minify {
+	display: flex;
+	flex-direction: column;
+	gap: 0.5rem;
+}
+
+/* The table panels stay in block layout and simply scroll. */
+.tab-body.scrolls {
+	overflow: auto;
+}
+
+.tab-body[hidden] {
+	display: none;
+}
+
+.pills {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.25rem 0.5rem;
+}
+
+.pill {
+	display: flex;
+	align-items: center;
+	gap: 0.3rem;
+	padding: 0.1rem 0.5rem 0.1rem 0.3rem;
+	border: 1px solid var(--pg-color-hairline);
+	border-radius: 999px;
+	background: none;
+	font: inherit;
+	font-size: var(--pg-text-xs);
+	color: var(--pg-color-gray-2);
+	cursor: pointer;
+	user-select: none;
+}
+
+.pill:hover {
+	border-color: var(--pg-color-text-accent);
+	color: var(--pg-color-white);
+}
+
+.pill[aria-pressed='true'] {
+	border-color: var(--pg-color-text-accent);
+	color: var(--pg-color-text-accent);
+}
+
+.pill:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.pill input {
+	margin: 0;
+	accent-color: var(--pg-color-text-accent);
+}
+
+/* Four figures plus a button rarely fit one line in half a pane, so both
+   rows wrap and share a baseline — otherwise the numbers stagger. */
+.stats-row {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 0.35rem 0.5rem;
+}
+
+.stats {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.35rem 0.75rem;
+}
+
+.stats .stat {
+	display: flex;
+	align-items: baseline;
+	gap: 0.3rem;
+	font-size: var(--pg-text-xs);
+}
+
+.stats .stat-label {
+	color: var(--pg-color-gray-3);
+}
+
+.stats .stat-value {
+	font-family: var(--pg-font-system-mono);
+	color: var(--pg-color-white);
+}
+
+.stats .highlight .stat-value {
+	color: var(--pg-color-text-accent);
+	font-weight: 600;
+}
+
+.copy {
+	flex: none;
+	padding: 0.15rem 0.6rem;
+	border: 1px solid var(--pg-color-hairline);
+	border-radius: 0.25rem;
+	background-color: var(--pg-color-bg-nav);
+	font-size: var(--pg-text-xs);
+	color: var(--pg-color-white);
+	cursor: pointer;
+}
+
+.copy:hover:not(:disabled) {
+	border-color: var(--pg-color-text-accent);
+}
+
+.copy:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.minified {
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+}
+
+.notice {
+	padding: 0.4rem 0.6rem;
+	border-left: 2px solid var(--pg-color-red);
+	font-size: var(--pg-text-xs);
+	color: var(--pg-color-red-high);
+}
+
+.notice p {
+	margin: 0;
+}
+
+.empty {
+	margin: 0;
+	font-size: var(--pg-text-sm);
+	color: var(--pg-color-gray-3);
+}
+
+/* Tables come from render.ts. */
+.tab-body .section-title {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5rem;
+	margin: 0.75rem 0 0.25rem;
+	font-family: var(--pg-font-system-mono);
+	font-size: var(--pg-text-xs);
+	color: var(--pg-color-white);
+}
+
+.tab-body .section-title:first-child {
+	margin-top: 0;
+}
+
+.tab-body .note {
+	font-weight: 400;
+	color: var(--pg-color-gray-3);
+}
+
+.tab-body .table-scroll {
+	overflow-x: auto;
+}
+
+.tab-body table {
+	width: 100%;
+	border-collapse: collapse;
+	font-family: var(--pg-font-system-mono);
+	font-size: var(--pg-text-xs);
+}
+
+.tab-body th {
+	text-align: left;
+	font-weight: 600;
+	color: var(--pg-color-gray-3);
+}
+
+.tab-body th,
+.tab-body td {
+	padding: 0.15rem 0.5rem 0.15rem 0;
+	border-bottom: 1px solid var(--pg-color-hairline);
+	white-space: nowrap;
+	color: var(--pg-color-gray-1);
+}
+
+.tab-body .raw {
+	margin-top: 0.75rem;
+	font-size: var(--pg-text-xs);
+}
+
+.tab-body .raw summary {
+	cursor: pointer;
+	color: var(--pg-color-gray-3);
+}
+
+.tab-body .raw pre {
+	max-height: 20rem;
+	overflow: auto;
+	font-size: var(--pg-text-xs);
+}
+
+.tab-body .diagnostics {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.tab-body .diagnostic {
+	display: flex;
+	gap: 0.5rem;
+	width: 100%;
+	padding: 0.25rem 0.4rem;
+	border: 0;
+	border-left: 2px solid transparent;
+	border-radius: 0.25rem;
+	background: none;
+	text-align: left;
+	font-size: var(--pg-text-xs);
+	color: var(--pg-color-gray-2);
+	cursor: pointer;
+}
+
+.tab-body .diagnostic:hover {
+	background-color: var(--pg-color-gray-6);
+}
+
+.tab-body .diagnostic.error {
+	border-left-color: var(--pg-color-red);
+}
+
+.tab-body .diagnostic.warning {
+	border-left-color: var(--pg-color-orange);
+}
+
+.tab-body .diagnostic-where,
+.tab-body .diagnostic-code {
+	flex: none;
+	font-family: var(--pg-font-system-mono);
+	color: var(--pg-color-gray-3);
+}
+
+.tab-body .diagnostic-message {
+	min-width: 0;
+}

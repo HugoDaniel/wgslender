@@ -327,7 +327,7 @@ export interface DiagnosticRow {
   href: string;
 }
 
-interface PublishDiagnosticsPayload {
+export interface PublishDiagnosticsPayload {
   uri?: string;
   diagnostics?: {
     range: { start: LspPosition; end: LspPosition };

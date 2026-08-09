@@ -191,9 +191,9 @@ export function setMinifyHints(view: EditorView, hints: readonly LspInlayHint[])
 }
 
 /**
- * Styling for the hint widgets. A base theme rather than a scoped rule in the
- * Astro component, because the widgets are created by this module and CodeMirror
- * owns the DOM they live in — Astro's scoping never reaches them.
+ * Styling for the hint widgets. A base theme rather than a rule scoped to the
+ * host page, because the widgets are created by this module and CodeMirror
+ * owns the DOM they live in — a page-scoped stylesheet never reaches them.
  */
 const minifyHintTheme = EditorView.baseTheme({
   '.cm-minify-hint': {
@@ -203,8 +203,8 @@ const minifyHintTheme = EditorView.baseTheme({
     fontSize: '0.85em',
     // `cursor: help` is the affordance that says the tooltip is worth reading.
     cursor: 'help',
-    backgroundColor: 'var(--sl-color-green-low)',
-    color: 'var(--sl-color-green-high)',
+    backgroundColor: 'var(--pg-color-green-low)',
+    color: 'var(--pg-color-green-high)',
     whiteSpace: 'nowrap',
   },
 

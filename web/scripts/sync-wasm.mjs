@@ -4,13 +4,13 @@
 //
 // Why a copy step and not `import wasm from 'wgslender/wasm?url'`: both
 // packages are linked with `file:` deps, so the `?url` import would have to
-// travel through a pnpm symlink into a directory outside the Astro root.
-// That works until it doesn't, and when it breaks it breaks at build time
-// with an opaque message. Copying keeps the freshness rule mechanical — the
-// bytes in `public/` are always the bytes the package would publish.
+// travel through a pnpm symlink into a directory outside Vite's root. That
+// works until it doesn't, and when it breaks it breaks at build time with an
+// opaque message. Copying keeps the freshness rule mechanical — the bytes in
+// `public/` are always the bytes the package would publish.
 //
-// Runs automatically via the `predev` / `prebuild` hooks. If you start Astro
-// directly (`astro dev --background`), run `pnpm sync-wasm` first.
+// Runs automatically via the `predev` / `prebuild` hooks. If you start Vite
+// directly (`vite dev --background`), run `pnpm sync-wasm` first.
 
 import { copyFile, mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';

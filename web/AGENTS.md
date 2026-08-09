@@ -1,24 +1,23 @@
 ## What this site is
 
-A Starlight site whose point is `/playground/` — a CodeMirror editor talking to
-`wgslender-lsp.wasm`, with panels driven by `wgslender.wasm`. See `README.md`
-for the module map. Everything here consumes shipped surfaces; nothing in `web/`
-should require a change to the Zig library to work.
+A single-page Vite app whose point is the page itself — a CodeMirror editor
+talking to `wgslender-lsp.wasm`, with panels driven by `wgslender.wasm`. See
+`README.md` for the module map. Everything here consumes shipped surfaces;
+nothing in `web/` should require a change to the Zig library to work.
 
 ## Development
 
 Both wasm binaries are copied into `public/` by `scripts/sync-wasm.mjs`, which
-`pnpm dev`, `pnpm start` and `pnpm build` run for you. `astro dev` on its own
-does **not** — so in background mode, sync first:
+`pnpm dev`, `pnpm start` and `pnpm build` run for you. `vite` on its own does
+**not** — so in background mode, sync first:
 
 ```
 pnpm sync-wasm
-astro dev --background --port 4324
+./node_modules/.bin/vite --background
 ```
 
-Manage the background server with `astro dev stop`, `astro dev status`, and
-`astro dev logs`. Port 4324 is what `pnpm dev` pins and what `pnpm smoke`
-expects.
+Port 4324 is pinned in `vite.config.ts` — what `pnpm dev`, `pnpm start`,
+`pnpm preview` and `pnpm smoke` all expect.
 
 ## Gate
 
@@ -51,15 +50,43 @@ then copying the results over `packages/js-npm/wgslender.wasm` and
 edited package is invisible here until it reinstalls. Nothing warns you about a
 stale binary; a rebase can make one stale without changing a byte of it.
 
+## Publishing to hugodaniel.com
+
+The page is also served at https://hugodaniel.com/pages/wgslender/. That build
+is driven from the blog repo, not from here:
+
+```
+cd ../../hugodaniel.com && make wgslender    # build with --base, copy into static/pages/
+```
+
+Two things about that target are load-bearing:
+
+**`--base=/pages/wgslender/` is passed in, not pinned.** The prefix is a fact
+about the blog, so `vite.config.ts` stays on `/` and the Makefile supplies it.
+`initPlayground` builds its wasm URLs off `import.meta.env.BASE_URL`, so both
+binaries follow the flag automatically — but only because the base is
+*absolute*. `--base=./` would resolve `new URL('./', location.origin)` back to
+the site root and 404 both.
+
+**The host serves `.wasm` as `application/octet-stream`.** `compileStreaming`
+and `instantiateStreaming` reject anything that is not `application/wasm`, so
+the playground compiles both binaries itself in `wasm.ts`, picking streaming or
+a buffer off the response header. Before that it died on load there — and the
+neighbouring `/pages/sjon/playground` still does, for exactly this reason.
+Fixing the server's MIME table would be the better fix and would repair sjon
+too; until then this page does not depend on it.
+
+To check a build the way the blog will serve it, point `pnpm smoke` at a server
+that reproduces both conditions — subpath and wrong MIME — rather than at
+`pnpm preview`, which serves `.wasm` correctly and so cannot see the bug:
+
+```
+PLAYGROUND_URL=http://localhost:4517/pages/wgslender/ pnpm smoke
+```
+
+`public/preview.webp` is the social card and is a screenshot of this page;
+regenerate it when the layout changes.
+
 ## Documentation
 
-Full documentation: https://docs.astro.build
-
-Consult these guides before working on related tasks:
-
-- [Adding pages, dynamic routes, or middleware](https://docs.astro.build/en/guides/routing/)
-- [Working with Astro components](https://docs.astro.build/en/basics/astro-components/)
-- [Using React, Vue, Svelte, or other framework components](https://docs.astro.build/en/guides/framework-components/)
-- [Adding or managing content](https://docs.astro.build/en/guides/content-collections/)
-- [Adding styles or using Tailwind](https://docs.astro.build/en/guides/styling/)
-- [Supporting multiple languages](https://docs.astro.build/en/guides/internationalization/)
+Full documentation: https://vite.dev/guide/

@@ -439,8 +439,8 @@ test('formatting re-indents — and rewrites far more than whitespace', () => {
   assert.match(formatted, /= 1\.;/, 'and rewrites literals (`1.0` became `1.`)');
 
   // This is destructive enough that the playground does not offer a format
-  // button — see the note in PlaygroundEditor.astro. The assertions above are
-  // here to catch the day it changes, in either direction.
+  // button — see `src/main.ts`. The assertions above are here to catch the
+  // day it changes, in either direction.
 
   replaceDocument(5, sampleShader);
 });

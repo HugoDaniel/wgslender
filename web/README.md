@@ -1,29 +1,29 @@
-# `web/` — the wgslender site
+# `web/` — the wgslender playground
 
-An [Astro](https://astro.build) + [Starlight](https://starlight.astro.build) site
-whose reason to exist is `/playground/`: a CodeMirror 6 editor wired to
-`wgslender-lsp.wasm`, with three output panels driven by `wgslender.wasm`.
-Diagnostics, hover, completion, go-to-definition, rename, formatting,
-minify-insight inlay hints, option-driven minification with byte and gzip
-counts, and reflection JSON — all of it in the visitor's tab, with no server
-and no WebGPU context.
+A single-page [Vite](https://vite.dev) app whose entire reason to exist is a
+CodeMirror 6 editor wired to `wgslender-lsp.wasm`, with three output panels
+driven by `wgslender.wasm`. Diagnostics, hover, completion, go-to-definition,
+rename, formatting, minify-insight inlay hints, option-driven minification
+with byte and gzip counts, and reflection JSON — all of it in the visitor's
+tab, with no server and no WebGPU context. No framework, no other pages: the
+page you land on is the playground.
 
 ## Structure
 
 ```
-src/content/docs/
-  index.mdx                    landing page
-  playground.mdx               the page; hosts the island and the "things to try" list
-src/components/
-  PlaygroundEditor.astro       the island: markup, Starlight <Tabs>, scoped styles
+index.html                     the page: markup, hand-rolled ARIA tabs, "things to try" list
+src/main.ts                    entry point — wires the DOM to the modules below
+src/tabs.ts                    a minimal ARIA tabs controller (click / arrow-key)
+src/style.css                  design tokens (ported from Starlight's palette,
+                               `--pg-*`) plus every rule the page needs
 src/scripts/playground/
   wasm.ts                      boots both wasm modules (one promise each, so the
                                editor comes up without waiting on the minifier)
   lsp-session.ts               CodeMirror ↔ wgslender-lsp; owns the debounce timer
   insights.ts                  minify-size inlay hints (lsp-client has none)
   wgsl-language.ts             StreamLanguage highlighting, word lists lifted from src/
-  editor-theme.ts              CodeMirror theme in --sl-* tokens, so it follows the
-                               site's light/dark toggle with no JS
+  editor-theme.ts              CodeMirror theme in --pg-* tokens, so it follows the
+                               page's light/dark media query with no JS
   panels.ts                    the three panels as pure data — no DOM, no CodeMirror
   render.ts                    those models → DOM, via textContent only
   sample-shader.ts             the opening document, and every test's fixture
@@ -49,10 +49,11 @@ because `node --test <dir>` is broken on node 26.
 
 `pnpm smoke` needs a server already running and Google Chrome installed. It
 looks at port 4324, which is why `dev` pins that port rather than taking
-Astro's 4321 and drifting upward whenever something else holds it; point it
-elsewhere with `PLAYGROUND_URL`. It asserts what only a browser can show —
-that the island boots, that the editor replaces its fallback, that panels have
-non-zero height — and it caught two bugs whose DOM looked perfectly correct.
+Vite's default 5173 and drifting upward whenever something else holds it;
+point it elsewhere with `PLAYGROUND_URL`. It asserts what only a browser can
+show — that the page boots, that the editor replaces its fallback, that
+panels have non-zero height — and it caught two bugs whose DOM looked
+perfectly correct.
 
 ## Two things that bite
 

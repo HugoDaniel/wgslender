@@ -5,18 +5,16 @@
   "scripts": {
     "sync-wasm": "node scripts/sync-wasm.mjs",
     "predev": "node scripts/sync-wasm.mjs",
-    "dev": "astro dev --port 4324",
+    "dev": "vite",
     "prestart": "node scripts/sync-wasm.mjs",
-    "start": "astro dev --port 4324",
+    "start": "vite",
     "prebuild": "node scripts/sync-wasm.mjs",
-    "build": "astro build",
-    "preview": "astro preview",
-    "astro": "astro",
+    "build": "vite build",
+    "preview": "vite preview",
     "test": "node --test 'tests/*.test.mjs'",
     "smoke": "node scripts/smoke.mjs"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.41.6",
     "@codemirror/autocomplete": "^6.20.3",
     "@codemirror/language": "^6.12.4",
     "@codemirror/lint": "^6.9.7",
@@ -24,10 +22,11 @@
     "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.8",
     "@lezer/highlight": "^1.2.3",
-    "astro": "^7.0.2",
     "codemirror": "^6.0.2",
-    "sharp": "^0.34.5",
     "wgslender": "file:../packages/js-npm",
     "wgslender-lsp": "file:../npm/wgslender-lsp"
+  },
+  "devDependencies": {
+    "vite": "^8.2.1"
   }
 }

@@ -29,15 +29,38 @@ let started: PlaygroundWasm | null = null;
  */
 export function initPlayground(): PlaygroundWasm {
   if (!started) {
-    // Astro rewrites `import.meta.env.BASE_URL` at build time; the `?.` keeps
+    // Vite rewrites `import.meta.env.BASE_URL` at build time; the `?.` keeps
     // this module importable from a plain Node process too.
     const base = import.meta.env?.BASE_URL ?? '/';
     const url = (name: string) => new URL(name, new URL(base, location.origin)).href;
 
     started = {
-      lsp: initLsp({ wasmURL: url('wgslender-lsp.wasm') }),
-      minifier: initMinifier({ wasmURL: url('wgslender.wasm') }),
+      lsp: compile(url('wgslender-lsp.wasm')).then((wasmModule) => initLsp({ wasmModule })),
+      minifier: compile(url('wgslender.wasm')).then((wasmModule) => initMinifier({ wasmModule })),
     };
   }
   return started;
+}
+
+/**
+ * Fetch and compile one binary, streaming it when the host lets us.
+ *
+ * `WebAssembly.compileStreaming` refuses anything not served as
+ * `application/wasm`, and a plain static host serves `.wasm` as
+ * `application/octet-stream` — hugodaniel.com, where this page is published,
+ * does exactly that. `wgslender` retries through a buffer when it sees a MIME
+ * error; `wgslender-lsp` calls `compileStreaming` and lets the rejection
+ * through, so on such a host the language server never starts and the editor
+ * arrives with no diagnostics, no hover and no rename. Choosing off the
+ * response header keeps both on the streaming path wherever the type is right
+ * and works everywhere else, which is the difference between this page being
+ * portable and being correct only on a server we control.
+ */
+async function compile(url: string): Promise<WebAssembly.Module> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} → HTTP ${response.status}`);
+  if (response.headers.get('content-type')?.startsWith('application/wasm')) {
+    return WebAssembly.compileStreaming(response);
+  }
+  return WebAssembly.compile(await response.arrayBuffer());
 }

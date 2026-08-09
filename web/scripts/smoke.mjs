@@ -18,7 +18,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const URL_ = process.env.PLAYGROUND_URL ?? 'http://localhost:4324/playground/';
+const URL_ = process.env.PLAYGROUND_URL ?? 'http://localhost:4324/';
 const PORT = Number(process.env.CDP_PORT ?? 9333);
 const CHROME =
   process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -125,9 +125,6 @@ try {
 
   check('the editor mounts', await until(`!!document.querySelector('[data-editor] .cm-editor')`));
   check('the no-JS fallback is replaced', await evaluate(`!document.querySelector('.fallback')`));
-
-  const status = await evaluate(`document.querySelector('[data-status]')?.textContent ?? ''`);
-  check('the status line reports a live server', status.includes('ready'), status);
 
   // didOpen publishes in the same batch, so the squiggle is there on arrival:
   // exactly one W0001 for the sample's uncalled helper.

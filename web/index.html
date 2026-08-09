@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <title>WGSLender — WGSL minifier, validator and language server</title>
+    <meta
+      name="description"
+      content="Edit WGSL in the browser against the real wgslender language server, minifier and reflection engine — all compiled to WebAssembly, all running in this tab."
+    />
+    <meta name="author" content="Hugo Daniel" />
+
+    <!--
+			The social card needs absolute URLs, so it has to name a canonical
+			home: https://hugodaniel.com/pages/wgslender/, which is also the
+			`--base` that `make wgslender` builds with. `preview.webp` beside it
+			is a screenshot of this page — regenerate it if the layout changes,
+			or it will keep advertising a page that no longer exists.
+		-->
+    <link rel="canonical" href="https://hugodaniel.com/pages/wgslender/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://hugodaniel.com/pages/wgslender/" />
+    <meta
+      property="og:title"
+      content="WGSLender — a WGSL language server in your browser"
+    />
+    <meta
+      property="og:description"
+      content="Edit WGSL against the real wgslender language server, minifier and reflection engine — all compiled to WebAssembly, all running in this tab."
+    />
+    <meta
+      property="og:image"
+      content="https://hugodaniel.com/pages/wgslender/preview.webp"
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta
+      name="twitter:title"
+      content="WGSLender — a WGSL language server in your browser"
+    />
+    <meta
+      name="twitter:description"
+      content="Edit WGSL against the real wgslender language server, minifier and reflection engine — all compiled to WebAssembly, all running in this tab."
+    />
+    <meta
+      name="twitter:image"
+      content="https://hugodaniel.com/pages/wgslender/preview.webp"
+    />
+  </head>
+  <body>
+    <header class="site-header">
+      <h1 class="site-title">WGSLender</h1>
+      <a
+        class="gh-link"
+        href="https://github.com/HugoDaniel/wgslender"
+        target="_blank"
+        rel="noreferrer"
+        aria-label="Source on GitHub"
+      >
+        <svg
+          width="22"
+          height="22"
+          viewBox="0 0 16 16"
+          fill="currentColor"
+          aria-hidden="true"
+        >
+          <path
+            d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"
+          />
+        </svg>
+      </a>
+    </header>
+
+    <main class="page">
+      <p class="lede">
+        Everything on this page runs in your browser. There is no server and no
+        WebGPU context. The shader below is checked by the same code the CLI and
+        the editor extension use, compiled to WebAssembly.
+      </p>
+
+      <section class="playground">
+        <div class="pane">
+          <header class="pane-head">
+            <h2 class="pane-title">wgslender</h2>
+            <label
+              class="pill"
+              title="Show each declaration's estimated minified size inline, and turn on the minify lints"
+            >
+              <input type="checkbox" data-insights disabled />
+              Minify insights
+            </label>
+            <button
+              type="button"
+              class="pill"
+              data-expand
+              aria-pressed="false"
+              title="Expand the editor to fill the page width"
+              disabled
+            >
+              Expand
+            </button>
+          </header>
+          <div class="pane-body editor" data-editor></div>
+        </div>
+
+        <div class="pane pane-output">
+          <div class="pane-body panels">
+            <div class="tabs">
+              <div role="tablist" class="tablist" aria-label="Output">
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-minify"
+                  aria-controls="panel-minify"
+                  aria-selected="true"
+                  class="tab"
+                >
+                  Minified
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-reflect"
+                  aria-controls="panel-reflect"
+                  aria-selected="false"
+                  tabindex="-1"
+                  class="tab"
+                >
+                  Reflection
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  id="tab-diagnostics"
+                  aria-controls="panel-diagnostics"
+                  aria-selected="false"
+                  tabindex="-1"
+                  class="tab"
+                >
+                  Diagnostics
+                </button>
+              </div>
+
+              <div
+                role="tabpanel"
+                id="panel-minify"
+                aria-labelledby="tab-minify"
+                class="tab-body minify"
+              >
+                <div class="pills" data-minify-options></div>
+                <div class="stats-row">
+                  <div class="stats" data-minify-stats></div>
+                  <button type="button" class="copy" data-copy disabled>
+                    Copy
+                  </button>
+                </div>
+                <div class="notice" data-minify-errors hidden></div>
+                <div class="minified" data-minify-output>
+                  <p class="empty">Loading the minifier…</p>
+                </div>
+              </div>
+
+              <div
+                role="tabpanel"
+                id="panel-reflect"
+                aria-labelledby="tab-reflect"
+                class="tab-body scrolls"
+                data-reflect
+                hidden
+              >
+                <p class="empty">Loading the minifier…</p>
+              </div>
+
+              <div
+                role="tabpanel"
+                id="panel-diagnostics"
+                aria-labelledby="tab-diagnostics"
+                class="tab-body scrolls"
+                data-diagnostics
+                hidden
+              >
+                <p class="empty">Waiting for the language server…</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <h2 class="tips-title">Things to try</h2>
+      <ul>
+        <li>
+          <strong>Hover a builtin</strong> — <code>textureSample</code>,
+          <code>sin</code>, <code>mix</code> — for its signature and uniformity
+          rules.
+        </li>
+        <li>
+          <strong>Rename a function.</strong> Click the name <code>wave</code>,
+          press <code>F2</code>, and type. Every reference moves with it. (The
+          cursor has to be on the name itself, not on the <code>fn</code> in
+          front of it.)
+        </li>
+        <li>
+          <strong>Break something.</strong> Change <code>camera.time</code> to
+          <code>camera.tim</code> and watch the squiggle and the Diagnostics
+          panel arrive together — then click the diagnostic to jump to it.
+        </li>
+        <li>
+          <strong>Turn on Minify insights.</strong> Each declaration grows a
+          byte estimate showing what it costs after minification.
+          <code>unused_helper</code> gets none: nothing calls it, so it is not
+          in the output at all. The same switch turns on the minify lints, which
+          point out that <code>camera</code> and <code>particles</code> ship
+          under their original names — flip <strong>Mangle bindings</strong> in
+          the next pane to see what changes.
+        </li>
+        <li>
+          <strong>Toggle the pills</strong> in the Minified panel and watch the
+          gzip column. <code>Sort declarations</code> and
+          <code>Scope-local rename</code> do not shrink the output; they make it
+          compress better.
+        </li>
+      </ul>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
