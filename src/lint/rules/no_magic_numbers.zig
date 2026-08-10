@@ -2,21 +2,32 @@
 //! allowlist. Rule-of-thumb: readers shouldn't have to guess what `3.14159`
 //! means — if it's PI, name it.
 //!
-//! v1 allowlist (hard-coded): `-1`, `0`, `1`, `2`. Future slice can pull
+//! v1 allowlist (hard-coded): magnitudes `0`, `1`, `2`. Future slice can pull
 //! this from rule options (`["warn", { "allowlist": [0, 1, 2, 255] }]`).
 //!
-//! Negative literals: WGSL writes `-1` as a unary `-` on a `1` literal, so
-//! we catch both the bare `1` (outside allowlist in isolation) AND the
-//! unary-expression case. The callback checks the containing expression:
-//! if it's a literal whose parent is a unary `-`, we allow the
-//! magnitude-1 literal.
+//! The allowlist matches a literal's *spelling* — after stripping one `u` /
+//! `i` / `f` / `h` suffix — not its value, so `ALLOWED_MAGNITUDES` is the
+//! exact set that passes. Numerically-equal spellings outside it (`00`,
+//! `0.00`, `.0`, `0x1`, `1e0`) are still reported; that's a known sharp edge
+//! of spelling-matching, not an intentional call.
 //!
-//! Context exemptions:
-//!   * Inside `@workgroup_size(x, y, z)` attribute args — any literal OK.
-//!   * Inside array size: `array<f32, 64>` — any literal OK (naming would
-//!     defeat compile-time sizing).
-//!   * Inside `@group(N)`, `@binding(N)`, `@location(N)`, `@id(N)` — any
-//!     literal OK (these are binding / location IDs that *must* be numeric).
+//! Negative literals: WGSL writes `-1` as a unary `-` on a `1` literal, so
+//! only the magnitude ever reaches `checkLiteral` — the sign is invisible to
+//! this rule by construction. The allowlist is therefore sign-symmetric:
+//! `-1` and `-2` pass exactly as `1` and `2` do, and `-3` reports at the `3`.
+//!
+//! Context exemptions. Only the `switch`-selector case is an explicit skip;
+//! every other exemption falls out of *where the walk goes* — `run` descends
+//! into declaration initializers and function bodies, and nothing else:
+//!   * Attribute args — `@workgroup_size(x, y, z)`, `@group(N)`, `@binding(N)`,
+//!     `@location(N)`, `@id(N)`, `@size(N)`, `@align(N)`. Attributes are never
+//!     visited, so their operands (which *must* be numeric) never surface.
+//!   * Type positions — `array<f32, 64>`. Types are never visited; naming an
+//!     array size would defeat compile-time sizing anyway.
+//!   * `switch` case selectors — pattern literals, skipped explicitly in
+//!     `checkStmt`.
+//!   * Anything inside a `const` / `override` declaration, whose whole job is
+//!     to *be* the named numeric value.
 
 const std = @import("std");
 
@@ -30,18 +41,20 @@ pub const rule = Rule{
         .id = "no-magic-numbers",
         .code = Diagnostic.Code.lint_no_magic_numbers,
         .default_severity = .warning,
-        .description = "Report numeric literals outside a small allowlist (-1, 0, 1, 2) — readers shouldn't have to guess what a bare number means",
+        .description = "Report numeric literals outside a small allowlist (0, 1, 2, either sign) — readers shouldn't have to guess what a bare number means",
         .docs_url = "https://github.com/hugoam/wgslender/blob/main/docs/rules/no-magic-numbers.md",
         .category = .suspicious,
     },
     .run = run,
 };
 
-const ALLOWED_NUMERIC_ATTRS = [_][]const u8{ "workgroup_size", "group", "binding", "location", "id", "size", "align" };
+/// Literal spellings that pass, compared *after* `stripSuffix`. Spelling, not
+/// value — see the module doc.
+const ALLOWED_MAGNITUDES = [_][]const u8{ "0", "0.0", "0.", "1", "1.0", "1.", "2", "2.0", "2." };
 
-fn isAllowedAttr(name: []const u8) bool {
-    for (ALLOWED_NUMERIC_ATTRS) |a| {
-        if (std.mem.eql(u8, a, name)) return true;
+fn isAllowedMagnitude(magnitude: []const u8) bool {
+    for (ALLOWED_MAGNITUDES) |a| {
+        if (std.mem.eql(u8, a, magnitude)) return true;
     }
     return false;
 }
@@ -126,12 +139,10 @@ fn checkExpr(ctx: *Context, root: Ast.Expr) error{OutOfMemory}!void {
     try stack.append(ctx.arena, root);
 
     while (stack.pop()) |e| switch (e) {
-        .literal => |lit| try checkLiteral(ctx, lit, null),
-        .unary => |u| switch (u.operand) {
-            // `-1` / `-2` → check literal with unary-negation context.
-            .literal => |lit| try checkLiteral(ctx, lit, u),
-            else => try stack.append(ctx.arena, u.operand),
-        },
+        .literal => |lit| try checkLiteral(ctx, lit),
+        // `-1` reaches `checkLiteral` as a bare `1`; the allowlist is
+        // sign-symmetric, so the operand needs no negation context.
+        .unary => |u| try stack.append(ctx.arena, u.operand),
         .binary => |b| {
             try stack.append(ctx.arena, b.right);
             try stack.append(ctx.arena, b.left);
@@ -150,25 +161,13 @@ fn checkExpr(ctx: *Context, root: Ast.Expr) error{OutOfMemory}!void {
     };
 }
 
-fn checkLiteral(
-    ctx: *Context,
-    lit: *Ast.LiteralExpr,
-    unary_parent: ?*Ast.UnaryExpr,
-) error{OutOfMemory}!void {
+fn checkLiteral(ctx: *Context, lit: *Ast.LiteralExpr) error{OutOfMemory}!void {
     // Boolean literals aren't numbers; skip.
     if (std.mem.eql(u8, lit.value, "true") or std.mem.eql(u8, lit.value, "false")) return;
 
-    // Allowlist magnitudes: 0, 1, 2. Negation allowed only for magnitude 1
-    // (so `-1` passes).
-    const magnitude = stripSuffix(lit.value);
-    const is_zero = std.mem.eql(u8, magnitude, "0") or std.mem.eql(u8, magnitude, "0.0") or std.mem.eql(u8, magnitude, "0f") or std.mem.eql(u8, magnitude, "0.");
-    const is_one = std.mem.eql(u8, magnitude, "1") or std.mem.eql(u8, magnitude, "1.0") or std.mem.eql(u8, magnitude, "1f") or std.mem.eql(u8, magnitude, "1.");
-    const is_two = std.mem.eql(u8, magnitude, "2") or std.mem.eql(u8, magnitude, "2.0") or std.mem.eql(u8, magnitude, "2f") or std.mem.eql(u8, magnitude, "2.");
-    if (is_zero or is_one or is_two) {
-        // `-2` and `-0` also pass (allowlist covers the magnitude either way).
-        _ = unary_parent;
-        return;
-    }
+    // A leading `-` is a separate unary node, so this only ever sees the
+    // magnitude — the allowlist covers both signs.
+    if (isAllowedMagnitude(stripSuffix(lit.value))) return;
 
     const lit_end: u32 = lit.loc + @as(u32, @intCast(lit.value.len));
     const msg = try ctx.fmt(
