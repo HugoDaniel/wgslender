@@ -1319,6 +1319,24 @@ test "refiner: no-match surfaces a refined diagnostic carrying the culprit arg" 
     try std.testing.expectEqual(@as(u32, 1), probe.calls);
 }
 
+test "refiner: a 300-argument constructor reports its culprit instead of trapping" {
+    // The culprit index is only bounded by the argument list, which is only
+    // bounded by the source: one flipped `)` in a big `array<vec3i, N>(…)`
+    // table literal merges hundreds of arguments into one `vec3i(…)` call.
+    // `first_bad_arg` was u8 and the `@intCast` that fed it trapped at 257
+    // arguments — `pngine validate` died on a one-byte WGSL corruption instead
+    // of reporting the count mismatch (found by pngine's corpus mutation sweep).
+    const sigs = matrixDichotomySigs(2, 2, Types.F32);
+    var probe = RefinerProbe{};
+    const refiner = Overload.DiagnosticRefiner{ .ctx = &probe, .refine = &probeRefine };
+    var args: [300]?Types.Type = undefined;
+    for (&args) |*a| a.* = Types.F32;
+    const r = Overload.resolveTargetedRefined(&sigs, m2x2f_t, &args, refiner);
+    try std.testing.expect(r == .err);
+    try std.testing.expectEqual(@as(u32, 299), r.err.first_bad_arg);
+    try std.testing.expectEqual(@as(u32, 1), probe.calls);
+}
+
 test "refiner: not invoked on a successful resolution" {
     const sigs = matrixDichotomySigs(2, 2, Types.F32);
     var probe = RefinerProbe{};

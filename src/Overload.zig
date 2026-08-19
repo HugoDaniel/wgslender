@@ -318,8 +318,11 @@ pub const ResolveFailure = struct {
     /// For `no_matching_overload` on a single-overload builtin: the 0-based
     /// index of the first argument that failed to unify, and the expected
     /// scalar family / shape description for that slot. Kept minimal —
-    /// diagnostics are the Validator's responsibility.
-    first_bad_arg: u8 = 0,
+    /// diagnostics are the Validator's responsibility. u32, not u8: an
+    /// argument list is only bounded by the source, and a constructor fed
+    /// 257+ arguments (one flipped `)` in a big table literal) used to trip
+    /// an `@intCast` here instead of reporting the count mismatch.
+    first_bad_arg: u32 = 0,
     /// A call-site-specific message installed by a `DiagnosticRefiner` on the
     /// `resolveTargetedRefined` path (null everywhere else). Constructors set
     /// one so "requires 3 components, got 4" beats the generic no-match.
@@ -402,7 +405,7 @@ pub fn resolveSeeded(
     // Overwriting per-sig (as earlier iterations did) collapsed to the
     // last-tried sig's bad arg, which was usually 0 for irrelevant sigs
     // (e.g. the vector form of a scalar-valued call).
-    var last_bad_arg: u8 = 0;
+    var last_bad_arg: u32 = 0;
 
     // Tie-break by declaration order — on strict less-than we take the
     // earliest winner, so two overloads with equal minimum rank leave the
@@ -419,13 +422,13 @@ pub fn resolveSeeded(
             // No tparam slots, so `bindings` stays = seed.
             total_rank = unifyReduction(rp, arg_types) catch {
                 // Whole-list failure — attribute the culprit to the last arg.
-                const bad: u8 = if (arg_types.len == 0) 0 else @intCast(arg_types.len - 1);
+                const bad: u32 = if (arg_types.len == 0) 0 else std.math.lossyCast(u32, arg_types.len - 1);
                 if (bad > last_bad_arg) last_bad_arg = bad;
                 continue;
             };
         } else {
             var ok = true;
-            var bad_arg: u8 = 0;
+            var bad_arg: u32 = 0;
             for (s.params, 0..) |p, pi| {
                 const arg = arg_types[pi] orelse {
                     // A null arg (upstream type inference failure) is treated as
@@ -435,7 +438,7 @@ pub fn resolveSeeded(
                 };
                 const r = unifyArg(&p, arg, &bindings) catch {
                     ok = false;
-                    bad_arg = @intCast(pi);
+                    bad_arg = std.math.lossyCast(u32, pi);
                     break;
                 };
                 total_rank = @max(total_rank, r);
@@ -505,7 +508,7 @@ pub const RefinedDiagnostic = struct {
 pub const RefineInput = struct {
     sigs: []const OverloadSig,
     arg_types: []const ?Types.Type,
-    first_bad_arg: u8,
+    first_bad_arg: u32,
     /// Structured failure reason (see `FailureDetail`); the refiner formats it
     /// instead of re-deriving the classification. Null for the constructor
     /// forms whose refiner keeps its own wording (single-arg copy/splat,
@@ -688,7 +691,7 @@ fn unifyMatrixDichotomy(cols: u8, rows: u8, elem: Types.Type, arg_types: []const
 /// copy/splat, scalar, array) or an upstream null arg should fall back to the
 /// generic no-match. `first_bad_arg` is the solver's deepest-progress arg,
 /// used to locate the culprit field for the per-slot struct form.
-pub fn ctorFailureDetail(target: Types.Type, arg_types: []const ?Types.Type, first_bad_arg: u8) ?FailureDetail {
+pub fn ctorFailureDetail(target: Types.Type, arg_types: []const ?Types.Type, first_bad_arg: u32) ?FailureDetail {
     return switch (target) {
         .vector => |ve| if (arg_types.len == 1) null else variadicFailureDetail(ve, arg_types),
         .matrix => |mt| if (arg_types.len == 1) null else matrixDichotomyFailureDetail(mt, arg_types),
@@ -773,7 +776,7 @@ fn matrixDichotomyFailureDetail(mt: *const Types.Matrix, arg_types: []const ?Typ
 /// Mirrors `refineStructCtor`: an arity mismatch, else the culprit field is the
 /// solver's deepest-progress arg (per-slot `.concrete` unification stops at the
 /// first field whose argument fails to convert, skipping null args).
-fn structFailureDetail(st: *const Types.Struct, arg_types: []const ?Types.Type, first_bad_arg: u8) ?FailureDetail {
+fn structFailureDetail(st: *const Types.Struct, arg_types: []const ?Types.Type, first_bad_arg: u32) ?FailureDetail {
     if (arg_types.len != st.fields.len) return .{ .count_mismatch = .{
         .got = @intCast(arg_types.len),
         .want = @intCast(st.fields.len),
