@@ -118,6 +118,7 @@ pub const @"errors/calls/too_many_args" = @embedFile("testdata/validation/errors
 pub const @"errors/calls/arg_type_mismatch" = @embedFile("testdata/validation/errors/calls/arg_type_mismatch.wgsl");
 pub const @"errors/calls/too_few_args" = @embedFile("testdata/validation/errors/calls/too_few_args.wgsl");
 pub const @"errors/calls/not_callable" = @embedFile("testdata/validation/errors/calls/not_callable.wgsl");
+pub const @"errors/calls/member_callee" = @embedFile("testdata/validation/errors/calls/member_callee.wgsl");
 pub const @"errors/calls/vec_constructor_wrong_count" = @embedFile("testdata/validation/errors/calls/vec_constructor_wrong_count.wgsl");
 pub const @"errors/calls/mat_constructor_wrong_count" = @embedFile("testdata/validation/errors/calls/mat_constructor_wrong_count.wgsl");
 pub const @"errors/calls/scalar_constructor_too_many" = @embedFile("testdata/validation/errors/calls/scalar_constructor_too_many.wgsl");

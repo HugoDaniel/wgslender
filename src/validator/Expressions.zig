@@ -34,7 +34,6 @@ const exprLoc = Validator.exprLoc;
 const astTypeRange = Validator.astTypeRange;
 const astTypeLoc = Validator.astTypeLoc;
 
-
 const max_expr_depth: u32 = 256;
 
 pub fn checkExpr(v: *Validator, expr: Ast.Expr) Allocator.Error!InferResult {
@@ -950,6 +949,13 @@ pub fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResul
         return try checkTemplateTypeCtor(v, e, tt, callee_name);
     }
 
+    // Past the template arm, a call needs a name — a callee the parser could
+    // not name and no template type is not a call at all.
+    if (callee_name.len == 0) {
+        v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, "expression is not callable");
+        return InferResult.fail;
+    }
+
     // A value declaration (let/var/const/override/parameter) named after a
     // builtin function shadows it. The binder already resolved this callee to
     // that declaration, so the call targets a non-callable value, not the
@@ -1000,10 +1006,16 @@ pub fn checkCallExpr(v: *Validator, e: *Ast.CallExpr) Allocator.Error!InferResul
 }
 
 pub fn extractCalleeName(v: *Validator, e: *Ast.CallExpr) ?[]const u8 {
+    // A null callee is the template-constructor spelling (`array<f32, 3>(…)`):
+    // the parser leaves `func` unset and `template_type` names the type;
+    // `checkTemplateTypeCtor` takes that arm before any name lookup.
     const func = e.func orelse return "";
     return switch (func) {
         .ident => |ident| ident.name,
-        .member => "", // Method call — simplified, treat as unknown
+        // WGSL has no method calls: `s.v(1.0)` / `vec.f(…)` is a member access
+        // applied like a function, which is `not_callable` — the same verdict
+        // as any other non-identifier callee. Returning "" here sent the empty
+        // name on to `lookupType`, which asserts a non-empty name.
         else => blk: {
             v.addErrorWithCodeR(exprRange(.{ .call = e }), Diagnostic.Code.not_callable, "expression is not callable");
             break :blk null;

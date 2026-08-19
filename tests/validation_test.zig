@@ -1179,6 +1179,12 @@ test "validation: errors/calls/not_callable" {
     try runValidationTest(arena.allocator(), validation_data.@"errors/calls/not_callable");
 }
 
+test "validation: errors/calls/member_callee" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try runValidationTest(arena.allocator(), validation_data.@"errors/calls/member_callee");
+}
+
 test "validation: errors/calls/vec_constructor_wrong_count" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
