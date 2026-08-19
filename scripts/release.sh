@@ -88,9 +88,12 @@ else
     echo "  skipped (no cargo toolchain, or SKIP_FOREIGN=1)"
 fi
 
-step "npm package"
+step "npm packages"
+# Two published npm packages, not one. `wgslender-lsp` shipped from 1.2.1 and
+# is easy to forget because it lives under npm/ rather than packages/.
 if have npm; then
     (cd packages/js-npm && npm test)
+    (cd npm/wgslender-lsp && npm test)
 else
     echo "  skipped (no npm, or SKIP_FOREIGN=1)"
 fi
@@ -151,8 +154,16 @@ subdirectory module by its path prefix, so it needs its own:
 
 Tagging is the irreversible step, so it is yours to run. Then publish:
 
-  (cd packages/js-npm && npm publish)
-  (cd packages/rust  && cargo xtask publish)
+  (cd packages/js-npm     && npm publish)
+  (cd npm/wgslender-lsp   && npm publish)
+  (cd packages/rust       && cargo xtask publish)
+
+Both npm packages ship, and \`wgslender-lsp\` is the one that gets missed —
+it sat at 1.2.2 through the whole of 1.3.0 and 1.4.0 because this list used
+to name \`packages/js-npm\` alone. The VS Code extension is published
+separately from its own \`.vsix\` (\`cd npm/wgslender-vscode && npm run
+package\`), and GitHub gets the two tags above and no Release object, which
+is this project's practice.
 
 A bare \`cargo publish\` cannot work here: it packages and verifies exactly as
 \`cargo package\` does, and the crate carries no Zig sources until the xtask

@@ -13,6 +13,10 @@
     },
     "./wasm": "./wgslender-lsp.wasm"
   },
+  "scripts": {
+    "test": "node test.js",
+    "prepublishOnly": "cd ../.. && zig build release-assets"
+  },
   "files": [
     "index.js",
     "index.mjs",
