@@ -3,6 +3,81 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-08-19
+
+The first release since 1.2.2 for every package except the VS Code extension,
+which shipped 1.2.3 and 1.3.0 on its own. npm, crates.io and the Go module
+proxy therefore also pick up the two entries below this one — most notably
+1.3.0's opt-in type-annotation inlay hints.
+
+Four of the fixes below came in from outside: two from `pngine`'s corpus
+mutation sweep (both were validator aborts on a one-byte corruption), one from
+a `miniray` report, and one from a build pipeline that fed a shader path the
+wrong bytes and was told they minified fine.
+
+### Changed
+
+- **Stray tokens at module scope are reported instead of silently skipped
+  (⚠ behavior).** The module-scope loop consumed any token that could start
+  neither a directive nor a declaration and said nothing about it. Consuming
+  it is required — the CST is lossless, so every byte has to land in the tree
+  — but staying silent meant arbitrary non-WGSL parsed clean: `export default
+  "…"` (what Vite hands a plugin for a `?raw` import), an HTML page, or plain
+  prose all produced zero diagnostics, an empty `code`, and a success exit
+  code. A build pipeline fed the wrong bytes shipped an empty shader and was
+  told it worked. The first token of each contiguous stray run is now an
+  E0001 — per-run, because `export default "…"` is eight stray tokens and
+  eight cascading errors bury the only useful position. A bare `;` is exempt:
+  the grammar admits an empty global declaration, and `struct S { … };` puts
+  one at module scope in a great many real shaders. Consequences: `validate`
+  rejects inputs it used to accept, and `minify` returns the original source
+  with an error where it used to return `""` with none — the same path parse
+  errors already took. A differential sweep over all 12,275 corpus shaders
+  found no shader whose valid/invalid verdict moved.
+
+### Fixed
+
+- **`--` in expression position parses as two minus signs.** WGSL has no
+  prefix or infix decrement; `--` is a token only because the statement form
+  `i--;` exists (§9.4). Everywhere else the lexer's maximal munch has to be
+  undone — `two--one` is `two - (-one)`, and `two----one` is `two` minus three
+  nested negations — and we were parsing neither. The `--` ended the enclosing
+  expression early, so a shader whose `const` initializers contained one lost
+  them, and every `const_assert` reading those consts then failed against a
+  value we had invented. The token is now split in place at all three
+  consumption sites (the unary chain, the additive binary level, and the
+  template-argument unary leaf), with the same retag-and-bump discipline that
+  already breaks a `>>` into two template closures — so the CST's raw token
+  stream still sees one `--` and the byte-exact round trip holds. Statement-
+  tail position (`--` followed by `;` or `)`) declines to split, because
+  `i--;` and `for (…; …; i--)` reach that token through a full expression
+  parse. Three false-positive diagnostics leave the corpus goldens (E0001,
+  E0300, E0807); the differential sweep moves exactly two shaders, both
+  invalid → valid.
+- **A constructor with more than 256 arguments reports its culprit instead of
+  trapping.** The overload engine attributed a whole-list unification failure
+  to the last argument through a `u8` index, and an argument list is bounded
+  only by the source. One flipped `)` in a large `array<vec3i, N>(…)` table
+  literal merges hundreds of arguments into a single `vec3i(…)` call, which
+  trapped the validator instead of reporting `requires 3 components, got
+  1497`. The index is `u32` end to end now.
+- **A member access applied like a function is `not_callable` instead of
+  aborting the validator.** `s.v(1.0)` — one flipped byte in an otherwise
+  valid shader — resolved the callee name to `""` and carried it into a type
+  lookup that asserts a non-empty name. WGSL has no method calls, so the
+  callee is as non-callable as any other non-identifier expression and now
+  takes that arm; the type lookup also refuses an empty name outright.
+
+### Documentation
+
+- **`no-magic-numbers`' allowlist is documented as implemented.** The module
+  doc claimed negation was allowed only for magnitude 1, and named an
+  attribute-argument allowlist that nothing ever called — attribute arguments
+  are exempt because the walk never descends into them, not because their
+  names are checked. Both are replaced by the spelling table the rule actually
+  consults. Behavior-neutral: diagnostics are byte-identical over a probe
+  covering every allowlisted spelling, both signs, and each exempt context.
+
 ## [1.3.0] — 2026-08-09
 
 Publishes the VS Code extension alone. The other packages are unchanged in
