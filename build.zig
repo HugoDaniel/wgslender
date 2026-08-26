@@ -66,23 +66,38 @@ pub fn build(b: *std.Build) void {
     wasm_step.dependOn(&install_wasm.step);
 
     // C static library
-    const lib = b.addLibrary(.{
-        .name = "wgslender",
-        .linkage = .static,
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/lib.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
+    const lib = staticLibrary(b, target, optimize);
     const install_lib = b.addInstallArtifact(lib, .{});
     const install_header = b.addInstallFile(b.path("include/wgslender.h"), "include/wgslender.h");
     const lib_step = b.step("lib", "Build C static library (libwgslender.a)");
     lib_step.dependOn(&install_lib.step);
     lib_step.dependOn(&install_header.step);
 
-    // `-Dlsp=false` returns here, which leaves only the three steps declared
-    // above it: `run`, `wasm` and `lib`. Everything below — the LSP, the tests,
+    // Proof that the archive is position-independent (see `staticLibrary`).
+    // A Rust proc-macro crate is a shared object, and
+    // `packages/rust/wgslender-sys` links this archive into one, so an archive
+    // that is not PIC fails every Linux consumer of the Rust package at link
+    // time (issue #1). macOS cannot notice, everything there is PIC. So the
+    // archive is cross-built for both Linux targets the crate maps, the way
+    // `build.rs` builds it, and linked whole into a shared object with the
+    // same lld rustc uses. Nothing runs: the link is the test.
+    const lib_pic_check_step = b.step(
+        "lib-pic-check",
+        "Prove libwgslender.a links into a shared object on x86_64 and aarch64 Linux (what a Rust proc-macro build does)",
+    );
+    for ([_][]const u8{ "x86_64-linux-gnu", "aarch64-linux-gnu" }) |triple| {
+        const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch unreachable;
+        const archive = staticLibrary(b, b.resolveTargetQuery(query), .ReleaseFast);
+        const link = b.addSystemCommand(&.{ b.graph.zig_exe, "cc", "-target", triple, "-shared", "-Wl,--whole-archive" });
+        link.addFileArg(archive.getEmittedBin());
+        link.addArgs(&.{ "-Wl,--no-whole-archive", "-o" });
+        _ = link.addOutputFileArg(b.fmt("libwgslender-{s}.so", .{triple}));
+        link.setName(b.fmt("link libwgslender.a into a shared object ({s})", .{triple}));
+        lib_pic_check_step.dependOn(&link.step);
+    }
+
+    // `-Dlsp=false` returns here, which leaves only the four steps declared
+    // above it: `run`, `wasm`, `lib` and `lib-pic-check`. Everything below — the LSP, the tests,
     // the generators — is gone, so this is a switch for a build that wants the
     // library and nothing else, not a way to trim the LSP out of a normal one.
     //
@@ -98,7 +113,7 @@ pub fn build(b: *std.Build) void {
         bool,
         "lsp",
         "Declare the steps that need the lsp_kit dependency — the LSP, the " ++
-            "tests and the generators. False leaves only run/wasm/lib and " ++
+            "tests and the generators. False leaves only run/wasm/lib/lib-pic-check and " ++
             "fetches nothing (default: true)",
     ) orelse true;
     if (!want_lsp) return;
@@ -1022,4 +1037,36 @@ fn addTestStep(
     const run = b.addRunArtifact(t);
     test_step.dependOn(&run.step);
     return &run.step;
+}
+
+/// The C static library, built the way its consumers take it:
+/// `packages/rust/wgslender-sys/build.rs`, `examples/c`, and the
+/// `lib-pic-check` step that vouches for the first of those.
+///
+/// Position-independent, which is not Zig's default for a static library.
+/// The archive does not stay static: `wgslender-sys` links it into
+/// `wgslender-macros`, a proc-macro crate, and a proc-macro crate is a shared
+/// object. Without PIC that link dies on Linux — `relocation R_X86_64_32
+/// cannot be used against local symbol; recompile with -fPIC` on x86_64,
+/// `R_AARCH64_ABS64` in read-only vtables on aarch64 — which is how every
+/// published version through 1.4.0 failed the Linux users of the Rust package
+/// (issue #1). GNU ld on aarch64 let it through with `DT_TEXTREL` stamped on
+/// the result, which is the same defect deferred to load time. Nothing on
+/// macOS could have shown it: Mach-O code is PIC whatever is asked for.
+/// Executables that link the archive, such as `examples/c`, lose nothing.
+fn staticLibrary(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    return b.addLibrary(.{
+        .name = "wgslender",
+        .linkage = .static,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/lib.zig"),
+            .target = target,
+            .optimize = optimize,
+            .pic = true,
+        }),
+    });
 }

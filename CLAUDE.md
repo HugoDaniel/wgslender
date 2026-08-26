@@ -14,7 +14,8 @@ zig build              # Native CLI → zig-out/bin/wgslender
 zig build wasm         # WASM → zig-out/bin/wgslender.wasm
 zig build lsp          # Native LSP → zig-out/bin/wgslender-lsp
 zig build lsp-wasm     # WASM LSP → zig-out/bin/wgslender-lsp.wasm
-zig build lib          # C static library → zig-out/lib/libwgslender.a
+zig build lib          # C static library → zig-out/lib/libwgslender.a (PIC: it ends up inside the Rust proc-macro .so)
+zig build lib-pic-check # Prove the archive links into a shared object on x86_64 + aarch64 Linux (also run by cargo xtask check)
 
 # Test
 zig build test         # Run all tests

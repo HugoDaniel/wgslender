@@ -3,6 +3,24 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The Rust crates build on Linux.** `wgslender-macros` is a proc-macro
+  crate, which rustc links as a shared object, and `wgslender-sys` links the
+  Zig-built `libwgslender.a` into it — but Zig's default for a static library
+  is not position-independent code. On x86_64 that link died with `relocation
+  R_X86_64_32 cannot be used against local symbol; recompile with -fPIC`
+  ([#1](https://github.com/HugoDaniel/wgslender/issues/1)); on aarch64 GNU ld
+  let it through with `DT_TEXTREL` stamped on the result, and lld refused it
+  the same way. Every published version through 1.4.0 is affected, and
+  nothing on macOS could show it, since Mach-O code is PIC whatever is asked
+  for. The archive is now built with `-fPIC`, `zig build lib-pic-check`
+  cross-builds it for both Linux targets and links it whole into a shared
+  object with the lld rustc uses, and `cargo xtask check` runs that step. A
+  prebuilt archive handed to `WGSLENDER_LIB_DIR` needs the same property.
+
 ## [1.4.0] — 2026-08-19
 
 The first release since 1.2.2 for every package except the VS Code extension,

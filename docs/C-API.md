@@ -14,6 +14,12 @@ zig build lib
 # Produces: zig-out/lib/libwgslender.a and zig-out/include/wgslender.h
 ```
 
+The archive is built as position-independent code, so it can be linked into a
+shared library as well as an executable. The Rust package depends on that: its
+proc-macro crate is a shared object with this archive inside. `zig build
+lib-pic-check` proves the property by linking the archive into a shared object
+for x86_64 and aarch64 Linux.
+
 ## Linking
 
 ```bash
