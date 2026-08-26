@@ -61,10 +61,13 @@ tasks:
 /// `Cargo` resolves through `$CARGO`, so every step uses the same toolchain
 /// that launched xtask. `Rustup` is looked up on `PATH`, because the one step
 /// that needs it is precisely the step asking for a *different* toolchain.
+/// `Zig` is looked up on `PATH` the way `wgslender-sys/build.rs` looks it up,
+/// so the gate builds with the Zig a consumer's build would.
 #[derive(Clone, Copy)]
 enum Program {
     Cargo,
     Rustup,
+    Zig,
 }
 
 impl Program {
@@ -72,6 +75,7 @@ impl Program {
         match self {
             Self::Cargo => Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into())),
             Self::Rustup => Command::new("rustup"),
+            Self::Zig => Command::new("zig"),
         }
     }
 
@@ -80,6 +84,35 @@ impl Program {
         match self {
             Self::Cargo => "cargo",
             Self::Rustup => "rustup",
+            Self::Zig => "zig",
+        }
+    }
+
+    /// Where the program has to stand. Cargo finds the workspace from anywhere
+    /// inside it; `zig build` reads the `build.zig` in front of it, and that
+    /// is at the repository root.
+    fn working_dir(self) -> WorkingDir {
+        match self {
+            Self::Cargo | Self::Rustup => WorkingDir::Workspace,
+            Self::Zig => WorkingDir::Repository,
+        }
+    }
+}
+
+/// The directory a step runs in.
+#[derive(Clone, Copy)]
+enum WorkingDir {
+    /// `packages/rust`, where the Rust workspace lives.
+    Workspace,
+    /// The wgslender repository root, where `build.zig` lives.
+    Repository,
+}
+
+impl WorkingDir {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Workspace => WORKSPACE_ROOT,
+            Self::Repository => REPO_ROOT,
         }
     }
 }
@@ -95,8 +128,8 @@ struct Step {
 }
 
 impl Step {
-    /// The step as a user would type it, so that a failure can be reproduced by
-    /// hand without reading this file.
+    /// The step as a user would type it from the workspace root, so that a
+    /// failure can be reproduced by hand without reading this file.
     fn command_line(&self) -> String {
         let mut line = String::new();
         for (key, value) in self.env {
@@ -107,7 +140,10 @@ impl Step {
             line.push(' ');
             line.push_str(arg);
         }
-        line
+        match self.program.working_dir() {
+            WorkingDir::Workspace => line,
+            WorkingDir::Repository => format!("(cd ../.. && {line})"),
+        }
     }
 }
 
@@ -144,6 +180,22 @@ const CHECK: &[Step] = &[
             "-D",
             "warnings",
         ],
+        env: &[],
+    },
+    // `wgslender-macros` is a proc-macro crate, which is to say a shared
+    // object, and `wgslender-sys` links the Zig archive into it. So the archive
+    // has to be position-independent, which is not Zig's default for a static
+    // library — and nothing else in this gate can tell, because on macOS every
+    // object is PIC and the link goes through. On Linux it did not: every
+    // published version through 1.4.0 failed there with `relocation R_X86_64_32
+    // cannot be used against local symbol; recompile with -fPIC` (issue #1).
+    // This step
+    // cross-builds the archive for both Linux targets `build.rs` maps and
+    // links it, whole, into a shared object with the same lld rustc uses.
+    Step {
+        label: "static library links into a shared object (Linux)",
+        program: Program::Zig,
+        args: &["build", "lib-pic-check", "-Dlsp=false"],
         env: &[],
     },
     // `cargo test` runs the doctests along with everything else, so there is no
@@ -483,7 +535,9 @@ fn run(steps: &[Step]) -> Outcome {
         println!("\n=== {} ===\n$ {}", step.label, step.command_line());
 
         let mut command = step.program.command();
-        command.current_dir(WORKSPACE_ROOT).args(step.args);
+        command
+            .current_dir(step.program.working_dir().path())
+            .args(step.args);
         for (key, value) in step.env {
             command.env(key, value);
         }

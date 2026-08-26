@@ -144,6 +144,13 @@ layout.
    `zig-out/` is never written to, which keeps this out of the way of the Zig
    workflows.
 
+The archive that step produces is position-independent, which is not what
+`zig build` gives a static library by default. It has to be: `wgslender-macros`
+is a proc-macro crate, so rustc links it as a shared object, and the archive
+goes in with it. A prebuilt library handed over through `WGSLENDER_LIB_DIR`
+needs the same property, or the build fails on Linux at the proc-macro link
+with `recompile with -fPIC`.
+
 ## Memory
 
 Every buffer the C ABI returns is freed with a **sized** free,
@@ -171,11 +178,22 @@ It runs, stopping at the first failure:
 | formatting | `cargo fmt --all -- --check` |
 | lints | `cargo clippy --workspace --all-targets -- -D warnings` |
 | lints, every feature | the same with `--all-features` |
+| static library links into a shared object (Linux) | `zig build lib-pic-check -Dlsp=false`, at the repository root |
 | tests and doctests | `cargo test --workspace` |
 | tests and doctests, every feature | `cargo test --workspace --all-features` |
 | no features at all | `cargo check --workspace --all-targets --no-default-features` |
 | documentation | `cargo doc --workspace --no-deps --all-features` with `RUSTDOCFLAGS="-D rustdoc::broken_intra_doc_links -D rustdoc::private_intra_doc_links"` |
 | examples | `cargo run -p wgslender --example …`, once for each of the ten |
+
+The shared-object step is the one a macOS machine cannot do without. The
+proc-macro crate is a shared object, `wgslender-sys` links the Zig archive into
+it, and Zig's default for a static library is not position-independent code.
+Mach-O code is PIC whatever is asked for, so on macOS the link goes through
+regardless; on Linux every published version through 1.4.0 failed at that link with
+`relocation R_X86_64_32 cannot be used against local symbol; recompile with
+-fPIC` ([issue #1](https://github.com/HugoDaniel/wgslender/issues/1)). The
+step cross-builds the archive for both Linux targets `build.rs` maps and links
+it, whole, into a shared object with the same lld rustc uses.
 
 There is no separate `--doc` step: `cargo test --workspace` already runs the
 doctests, and a second pass would only run them twice.
