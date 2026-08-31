@@ -558,3 +558,55 @@ across all four wrappers against rebuilt wasm.
 For a host, the practical gain is that a kernel now has a durable name.
 `stableId` survives a reparse where `nameOffset` and `declSpan` do not,
 so a diagnostic attached to a kernel can outlive an edit above it.
+
+---
+
+# Follow-up, 2026-08-31: a review pass, and what it found in the spelling
+
+Re-reading the landed change against a probe of all five kernel classes
+turned up one defect and two false sentences, all in the same place: what
+a signature's *spelling* is contracted to say.
+
+**An explicitly written access mode was dropped.**
+`typeToStringMapped` only ever emitted the two-argument pointer form, so
+`ptr<storage, array<f32>, read_write>` came back as
+`ptr<storage, array<f32>>` — not a lossy rendering but a different type,
+since an omitted mode defaults to `read`, and one that contradicted the
+`access` already carried in the `typeInfo` beside it. Now the third
+argument is written exactly when the author wrote one: `.none` is the
+AST's "not written" state, so `ptr<function, Element>` does not grow a
+`read` it never had, which WGSL permits only on `storage`. This reaches
+`AliasInfo.typ` too; no other caller renders a pointer, and no existing
+assertion anywhere in the tree used the three-argument form.
+
+**The spelling does not follow alias chains, and three places said it
+did.** `src/Reflect.zig` has claimed since aliases were added that
+`typeToStringMapped` follows `Symbol.kind == .alias`. It does not — the
+`.ident` arm returns the name as written — and the claim had already been
+copied into the new `buildCallGraph` comment and into `docs/reflect.md`.
+It is `buildTypeInfo`, through `resolveAliasType`, that resolves. So
+`fn field1(p: Pos)` where `alias Pos = vec2f` reports `"Pos"` with a
+`type_info` of `vec<2, f32>`.
+
+Both are now pinned by tests rather than by prose.
+
+## To the host, revised
+
+The "all five classes are a string comparison" line above is **wrong for
+a kernel written through an alias**, and that is worth correcting before
+anything is built on it. `fn field1(p: Pos) -> f32` is a valid `field1`
+that a `params[].type == "vec2f"` check rejects.
+
+Match on `typeInfo` instead — `{kind: "vec", width: 2, format: {kind:
+"scalar", name: "f32"}}` — which is alias-free by construction, and keep
+`type` for what it is good at: the label to show a human. For `step`,
+`typeInfo` is `{kind: "ptr", addressSpace: "function", format: {kind:
+"struct", name: "Element"}}`, and the access mode, when there is one,
+is `typeInfo.access`.
+
+Re-verified after the fix: `tests/reflect_test.zig` 126/126;
+`zig build test -j1` 4688/4689, the added two being the new pins and the
+one crash the same pre-existing `tint: semantic preservation` SIGKILL;
+no golden drift, which the corpus cannot see anyway since nothing in the
+validator path imports `Reflect`; full Go package and 187 npm assertions
+across all four wrappers against rebuilt wasm.
