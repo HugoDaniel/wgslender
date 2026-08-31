@@ -518,9 +518,12 @@ pub fn reflectWithRenamer(
     }
 
     // Second pass (a): collect type aliases. Aliases don't enter struct
-    // layouts or binding extraction — `typeToStringMapped` already follows
-    // `Symbol.kind == .alias` chains for nested types — so this pass is
-    // pure metadata for v2 consumers (and wgsl_reflect parity).
+    // layouts or binding extraction — `buildTypeInfo` already follows
+    // `Symbol.kind == .alias` chains via `resolveAliasType`, so every
+    // `type_info` is already alias-free — so this pass is pure metadata
+    // for v2 consumers (and wgsl_reflect parity). Note it is only the
+    // structured tree that resolves: `typeToStringMapped` reports an
+    // alias by its own name, because `typ` is the source spelling.
     for (module.declarations.items) |decl| switch (decl) {
         .alias => |a| {
             const name = lc.getSymbolName(a.name);

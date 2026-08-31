@@ -54,8 +54,9 @@ const sampler_pair_builtins = std.StaticStringMap(void).initComptime(.{
 ///
 /// `lc` spells the signature types. It is the same renderer that fills
 /// `BindingInfo.typ` and `AliasInfo.typ`, so a parameter's type reads
-/// exactly as a binding's of the same type would — source form, with
-/// alias chains followed and nothing else resolved.
+/// exactly as a binding's of the same type would: the source form, with
+/// nothing resolved — an alias is reported by its own name. The alias
+/// chain is followed only in the parallel `type_info` tree.
 pub fn buildCallGraph(
     arena: Allocator,
     module: *Ast.Module,

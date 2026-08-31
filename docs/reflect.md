@@ -175,13 +175,19 @@ type — `name`, `name_mapped`, `typ`, `type_mapped`, `type_info` — and the
 return type has the matching `return_type_mapped` and `return_type_info`.
 
 Signature types are spelled from the AST, so they read as the author wrote
-them: `"vec2f"`, not `"vec2<f32>"`. Reflection does not run the validator, so
-nothing is resolved beyond what `typeToStringMapped` already does for a
-binding's type (it follows alias chains). A type name that does not resolve is
-reported as written, with no diagnostic. A host that needs resolved types uses
+them: `"vec2f"`, not `"vec2<f32>"`, and a parameter declared `p: Pos` reports
+`"Pos"`, not the alias's target. A type name that does not resolve at all is
+likewise reported as written, with no diagnostic. The alias chain *is* followed
+in the parallel `type_info` tree, so a host matching a signature against a
+table of expected shapes should compare `type_info` and treat `typ` as the
+label to show a human. A host that needs types the validator resolved uses
 `analyze` and `AnalysisResult.symbol_types` instead. The boundary is:
 reflection answers what a signature *says*, and `validate` answers whether it
 is true.
+
+One thing the spelling does carry is a pointer's access mode, when the author
+wrote one: `ptr<storage, array<f32>, read_write>` round-trips, and
+`ptr<function, Element>` does not grow a `read` it never had.
 
 An entry point appears in both `functions[]` and `entry_points[]`. Its
 `FunctionInfo.params` lists the declared parameters; its attributed pipeline
