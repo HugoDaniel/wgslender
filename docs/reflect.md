@@ -89,7 +89,7 @@ pub const ReflectResult = struct {
 | `structs` | Map from struct name to fully-resolved layout (size, alignment, per-field offset/size/alignment). |
 | `entry_points` | Functions with `@vertex` / `@fragment` / `@compute` attributes, with workgroup size, I/O signature, and transitive resource list. |
 | `overrides` | `override` declarations with optional `@id`, type, and default-value text. |
-| `functions` | Every user-defined `fn`, with direct resource refs, direct override refs, outgoing call edges, and transitive `in_use` flag. |
+| `functions` | Every user-defined `fn`, with its declared signature (`params` and `return_type`, spelled from the AST), direct resource refs, direct override refs, outgoing call edges, and transitive `in_use` flag. |
 | `aliases` | `alias T = U;` declarations with resolved RHS type. |
 | `errors` | Non-fatal reflection errors. Empty on success. |
 
@@ -154,13 +154,36 @@ decl_span, name_offset, stable_id    // for IDE / diff tooling
 and a structured `type_info`. Struct-typed parameters and return types are
 flattened: one `InputOutputInfo` per attributed member.
 
-### `OverrideInfo` / `AliasInfo` / `FunctionInfo`
+### `OverrideInfo` / `AliasInfo`
 
-Each surfaces names, source offsets, stable IDs, declaration spans, types
-(both source-spelled and structured `TypeInfo`), and — for overrides — the
+Each surfaces a name, a source offset, a stable ID, a declaration span, and its
+type both source-spelled and as a structured `TypeInfo`. An override adds the
 `@id(N)` value if present and the default expression as written.
-`FunctionInfo` adds `calls`, `direct_resources`, `direct_overrides`, and a
-transitive `in_use` flag.
+
+### `FunctionInfo`
+
+A name, a source offset, a stable ID, a declaration span, plus `calls`,
+`direct_resources`, `direct_overrides`, and a transitive `in_use` flag.
+
+It also carries the declared signature: `params`, one `ParamInfo` per declared
+parameter in declaration order, and `return_type` (empty when the declaration
+has no `-> T` clause). A `ParamInfo` has the same field set as an `AliasInfo`
+type — `name`, `name_mapped`, `typ`, `type_mapped`, `type_info` — and the
+return type has the matching `return_type_mapped` and `return_type_info`.
+
+Signature types are spelled from the AST, so they read as the author wrote
+them: `"vec2f"`, not `"vec2<f32>"`. Reflection does not run the validator, so
+nothing is resolved beyond what `typeToStringMapped` already does for a
+binding's type (it follows alias chains). A type name that does not resolve is
+reported as written, with no diagnostic. A host that needs resolved types uses
+`analyze` and `AnalysisResult.symbol_types` instead. The boundary is:
+reflection answers what a signature *says*, and `validate` answers whether it
+is true.
+
+An entry point appears in both `functions[]` and `entry_points[]`. Its
+`FunctionInfo.params` lists the declared parameters; its attributed pipeline
+I/O, flattened per `@location(N)` / `@builtin(name)`, stays in
+`EntryPointInfo.inputs` / `.outputs`.
 
 ## Approach
 
@@ -248,7 +271,12 @@ This is what `minifyAndReflect` exploits: one parse, one analysis, two outputs
   - `textures[]`  — `type_info.tag == .texture` (includes storage textures, so
     that `samplers[]` ∪ `textures[]` cover every handle binding);
   - `samplers[]`  — `type_info.tag == .sampler`;
-- `"aliases": [ … ]` from the alias-collection pass.
+- `"aliases": [ … ]` from the alias-collection pass;
+- `"params": [ … ]` and `"returnType"` on every entry of `functions[]`.
+  `"params"` is always present, an empty array for a nullary function;
+  `"returnType"` is `null` for a function with no `-> T` clause. A param's
+  optional `"nameMapped"` / `"typeMapped"` are omitted when they equal their
+  unmapped form.
 
 The legacy `bindings[]` array is still emitted in v2 as the union — adding the
 subset views doesn't remove anything.
@@ -259,6 +287,10 @@ subset views doesn't remove anything.
 - Every `StructLayout.alignment` is a power of two; `size` is a multiple of
   `alignment`.
 - Without a renamer, `name_mapped == name` and `type_mapped == typ`.
+- `functions[i].params.len` equals the declared parameter count, in
+  declaration order, for every function — entry points included, and
+  `in_use == false` included. A fragment with no entry point at all still
+  reports each function's full signature.
 - `entry_points[i].workgroup_size[k] == 0` iff axis `k` is driven by an
   `override`; in that case the override name appears in
   `entry_points[i].overrides`.
