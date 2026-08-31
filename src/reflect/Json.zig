@@ -24,6 +24,7 @@ const TypeInfo = Reflect.TypeInfo;
 const EntryPointInfo = Reflect.EntryPointInfo;
 const InputOutputInfo = Reflect.InputOutputInfo;
 const FunctionInfo = Reflect.FunctionInfo;
+const ParamInfo = Reflect.ParamInfo;
 const AliasInfo = Reflect.AliasInfo;
 const OverrideInfo = Reflect.OverrideInfo;
 
@@ -80,7 +81,7 @@ pub fn writeResult(
     try appendStr(buf, arena, "],\"functions\":[");
     for (self.functions.items, 0..) |*f, i| {
         if (i > 0) try appendStr(buf, arena, ",");
-        try writeFunctionJson(buf, arena, f);
+        try writeFunctionJson(buf, arena, f, version);
     }
     try appendStr(buf, arena, "]");
     if (version == .v2) {
@@ -324,7 +325,15 @@ fn writeBindingJson(buf: *std.ArrayList(u8), arena: Allocator, b: *const Binding
     try appendStr(buf, arena, "}");
 }
 
-fn writeFunctionJson(buf: *std.ArrayList(u8), arena: Allocator, f: *const FunctionInfo) Allocator.Error!void {
+/// `params` / `returnType` are v2-only. `functions[]` itself is written in
+/// both versions, and v1 is the frozen wgsl_reflect-parity shape, so the
+/// new keys are gated rather than the array.
+fn writeFunctionJson(
+    buf: *std.ArrayList(u8),
+    arena: Allocator,
+    f: *const FunctionInfo,
+    version: JsonVersion,
+) Allocator.Error!void {
     try appendStr(buf, arena, "{\"name\":");
     try appendJsonStr(buf, arena, f.name);
     if (f.name_mapped.len > 0) {
@@ -355,7 +364,53 @@ fn writeFunctionJson(buf: *std.ArrayList(u8), arena: Allocator, f: *const Functi
         if (i > 0) try appendStr(buf, arena, ",");
         try appendJsonStr(buf, arena, o);
     }
-    try appendStr(buf, arena, "]}");
+    try appendStr(buf, arena, "]");
+    if (version == .v2) {
+        try appendStr(buf, arena, ",\"params\":[");
+        for (f.params.items, 0..) |*p, i| {
+            if (i > 0) try appendStr(buf, arena, ",");
+            try writeParamJson(buf, arena, p);
+        }
+        // `null`, not `""`, for a function with no `-> T` clause —
+        // matching `"id": null` and `"workgroupSize": null` above.
+        try appendStr(buf, arena, "],\"returnType\":");
+        if (f.return_type.len > 0) {
+            try appendJsonStr(buf, arena, f.return_type);
+            if (!std.mem.eql(u8, f.return_type_mapped, f.return_type)) {
+                try appendStr(buf, arena, ",\"returnTypeMapped\":");
+                try appendJsonStr(buf, arena, f.return_type_mapped);
+            }
+            if (f.return_type_info) |ti| {
+                try appendStr(buf, arena, ",\"returnTypeInfo\":");
+                try writeTypeInfoJson(buf, arena, ti);
+            }
+        } else {
+            try appendStr(buf, arena, "null");
+        }
+    }
+    try appendStr(buf, arena, "}");
+}
+
+fn writeParamJson(buf: *std.ArrayList(u8), arena: Allocator, p: *const ParamInfo) Allocator.Error!void {
+    try appendStr(buf, arena, "{\"name\":");
+    try appendJsonStr(buf, arena, p.name);
+    try appendStr(buf, arena, ",\"type\":");
+    try appendJsonStr(buf, arena, p.typ);
+    // Mapped renderings are omitted when they match, the rule
+    // `writeFunctionJson` already applies to `nameMapped`.
+    if (!std.mem.eql(u8, p.name_mapped, p.name)) {
+        try appendStr(buf, arena, ",\"nameMapped\":");
+        try appendJsonStr(buf, arena, p.name_mapped);
+    }
+    if (!std.mem.eql(u8, p.type_mapped, p.typ)) {
+        try appendStr(buf, arena, ",\"typeMapped\":");
+        try appendJsonStr(buf, arena, p.type_mapped);
+    }
+    if (p.type_info) |ti| {
+        try appendStr(buf, arena, ",\"typeInfo\":");
+        try writeTypeInfoJson(buf, arena, ti);
+    }
+    try appendStr(buf, arena, "}");
 }
 
 fn writeStructLayoutJson(buf: *std.ArrayList(u8), arena: Allocator, layout: *const StructLayout) Allocator.Error!void {
