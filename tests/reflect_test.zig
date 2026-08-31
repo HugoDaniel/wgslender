@@ -3043,3 +3043,62 @@ test "reflect: an alias-spelled param type is reported as written, resolved only
     const ri = f.return_type_info orelse return error.TestExpectedTypeInfo;
     try std.testing.expectEqual(@as(u8, 2), ri.vec.width);
 }
+
+// =========================================================================
+// A type name reflection cannot map to anything
+//
+// Reflection never runs the validator, so an unknown name is not an error
+// here — but it was reported as a `scalar` of size 0, a shape no real
+// scalar has and no consumer was told to look for. A host switching on
+// `kind` read it as a scalar named `Missing` and believed it.
+// =========================================================================
+
+test "reflect: an unresolvable type name is its own kind, not a zero-size scalar" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\fn g(d: Missing) { }
+    );
+
+    const g = findFunction(result.functions.items, "g") orelse return error.TestExpectedFunction;
+    const ti = g.params.items[0].type_info orelse return error.TestExpectedTypeInfo;
+    // The spelling is still reported verbatim; it is the structured tree
+    // that must not claim a type it could not find.
+    try std.testing.expectEqualStrings("Missing", g.params.items[0].typ);
+    try std.testing.expectEqualStrings("Missing", ti.unresolved.name);
+}
+
+test "reflect: an unresolvable binding type is unresolved too" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Predates `params[]` — a binding has always had this fallback, and
+    // `size == 0` was the only way to tell.
+    const result = try reflectSource(alloc,
+        \\@group(0) @binding(0) var<uniform> u: Missing;
+        \\@compute @workgroup_size(1) fn m() { _ = u; }
+    );
+
+    const b = findBinding(result.bindings.items, "u") orelse return error.TestExpectedBinding;
+    const ti = b.type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expectEqualStrings("Missing", ti.unresolved.name);
+}
+
+test "reflect: JSON spells an unresolvable type's kind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\fn g(d: Missing) { }
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v2);
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"kind\":\"unresolved\",\"name\":\"Missing\"") != null);
+    // No size / alignment: there is no type to have measured.
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"name\":\"Missing\",\"size\":0") == null);
+}
