@@ -2989,3 +2989,57 @@ test "reflect: JSON carries a function's stableId, and nameMapped only when it d
     // ("absent when no renamer was applied").
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"nameMapped\"") == null);
 }
+
+// =========================================================================
+// Two spelling contracts `params` newly puts in front of a host
+//
+// Both predate this change — the same `typeToStringMapped` fills
+// `BindingInfo.typ` and `AliasInfo.typ` — but a parameter is the first
+// place a `ptr` type is routinely rendered, and animader's kernel classes
+// are matched by comparing a signature's spelling against a table. What
+// the spelling drops and what it does not resolve is therefore contract.
+// =========================================================================
+
+test "reflect: a ptr param keeps an explicitly written access mode" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\fn g(a: ptr<storage, array<f32>, read_write>, b: ptr<function, f32>) { }
+    );
+
+    const g = findFunction(result.functions.items, "g") orelse return error.TestExpectedFunction;
+    try std.testing.expectEqual(@as(usize, 2), g.params.items.len);
+    // Dropping `read_write` would leave a string that re-reads as the
+    // default `read` — a different type, and `typeInfo.access` would
+    // disagree with the spelling beside it.
+    try std.testing.expectEqualStrings("ptr<storage, array<f32>, read_write>", g.params.items[0].typ);
+    // An access mode the author did not write is not invented: it is only
+    // permitted on `storage`, so `ptr<function, f32, read>` is invalid WGSL.
+    try std.testing.expectEqualStrings("ptr<function, f32>", g.params.items[1].typ);
+}
+
+test "reflect: an alias-spelled param type is reported as written, resolved only in type_info" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\alias Pos = vec2f;
+        \\fn field1(p: Pos) -> Pos { return p; }
+    );
+
+    const f = findFunction(result.functions.items, "field1") orelse return error.TestExpectedFunction;
+    // The spelling is the author's, not the alias target: a host matching a
+    // kernel class on `typ` alone rejects this valid `fn(vec2f) -> vec2f`.
+    try std.testing.expectEqualStrings("Pos", f.params.items[0].typ);
+    try std.testing.expectEqualStrings("Pos", f.return_type);
+    // `type_info` is where the alias is followed, so it is what a class
+    // check should read.
+    const pi = f.params.items[0].type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expectEqual(@as(u8, 2), pi.vec.width);
+    try std.testing.expectEqualStrings("f32", pi.vec.format.scalar.name);
+    const ri = f.return_type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expectEqual(@as(u8, 2), ri.vec.width);
+}
