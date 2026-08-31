@@ -485,12 +485,11 @@ same omit-when-equal rule as `nameMapped`. The design listed them on the
 struct and showed only `"returnType"` in the sketch; there was no reason
 to make the return type less legible than a parameter.
 
-**`FunctionInfo.stable_id` and `.name_mapped` are still never populated.**
-Both fields exist and both have been dead since `functions[]` was added:
-`buildCallGraph` sets `name`, `name_offset` and `decl_span` only. Out of
-scope here, and left alone deliberately — noting it because a host
-reading the struct would reasonably expect otherwise, and because the
-`stableId` key is therefore absent from every `functions[]` entry.
+**`FunctionInfo.stable_id` and `.name_mapped` were never populated.**
+Both fields existed and both had been dead since `functions[]` was added:
+`buildCallGraph` set `name`, `name_offset` and `decl_span` only. Filed
+here as out of scope, then fixed on the same day at wgslender's own call
+(`a312bd8` red, `d0b6277` green, `8a6b4d2` assets) — see the note below.
 
 ## Verification
 
@@ -524,3 +523,38 @@ All five kernel classes are now a string comparison against
 reflects. `step` included: `ptr<function, Element>` is spelled whole.
 Drop the probe rather than fixing it — and note that the probe as filed
 never worked, for the E0105 reason in the verdict above.
+
+---
+
+# Follow-up, 2026-08-31: the two dead fields, and one v1 wire change
+
+`FunctionInfo.stable_id` and `.name_mapped` are now populated. Filling
+them was a two-line change once `buildCallGraph` already held the
+`LayoutComputer`, and it removes a real hole rather than a cosmetic one:
+a function that is not an entry point has no other record, so until now
+there was no way to name one across a reparse. For a function that is an
+entry point, the id here and the id in `entry_points[]` agree.
+
+**This changes v1 output.** `functions[]` entries now carry `stableId` in
+both schema versions. That is additive and it is what the writer always
+intended — v1 already emitted `stableId` for bindings, struct fields and
+entry points, and the `if (f.stable_id.len > 0)` branch sat outside every
+version guard; `functions[]` lacked the key only because the field was
+empty. Both the Go and the TypeScript types already declared it optional,
+so no consumer breaks. The v1 byte pin in `tests/reflect_test.zig` was
+updated to the new bytes rather than the key being gated to v2.
+
+`nameMapped` on a function is now omitted when it equals `name`, matching
+the contract `packages/js-npm/lib/main.d.ts` already stated ("absent when
+no renamer was applied") and what the new `params[]` writer does. A
+reflection with no renamer behind it therefore has no `nameMapped`
+anywhere in `functions[]`, and v1 is otherwise byte-for-byte as before.
+
+Re-verified: `tests/reflect_test.zig` 124/124; `zig build test -j1`
+4686/4687 with the same pre-existing `tint: semantic preservation`
+SIGKILL and no golden drift; full Go package and 187 npm assertions
+across all four wrappers against rebuilt wasm.
+
+For a host, the practical gain is that a kernel now has a durable name.
+`stableId` survives a reparse where `nameOffset` and `declSpan` do not,
+so a diagnostic attached to a kernel can outlive an edit above it.
