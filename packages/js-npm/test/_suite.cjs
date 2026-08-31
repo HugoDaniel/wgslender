@@ -259,6 +259,28 @@ alias Color = vec3f;`;
       'reflect: aliases[] populated');
   }
   {
+    // Signatures are spelled from the AST, so `vec2f` and
+    // `ptr<function, Element>` come back exactly as written.
+    const r = reflect(`struct Element { pos: vec2f }
+fn noop() {}
+fn simplex(p: vec2f) -> f32 { return p.x + p.y; }
+fn step_k(e: ptr<function, Element>, dt: f32) { (*e).pos.x = dt; }`);
+    const byName = Object.fromEntries(r.functions.map((f) => [f.name, f]));
+    assert(byName.noop.params.length === 0 && byName.noop.returnType === null,
+      'reflect: a nullary void fn has empty params and a null returnType');
+    assert(byName.simplex.params.length === 1 &&
+      byName.simplex.params[0].name === 'p' &&
+      byName.simplex.params[0].type === 'vec2f',
+      'reflect: params carry name + source-spelled type');
+    assert(byName.simplex.returnType === 'f32', 'reflect: returnType is spelled from source');
+    assert(byName.step_k.params[0].type === 'ptr<function, Element>',
+      'reflect: a pointer parameter is spelled whole');
+    // No entry point exists here, so nothing is in use -- which must not
+    // gate the signature.
+    assert(byName.simplex.inUse === false && byName.simplex.params.length === 1,
+      'reflect: an unreached function still reports its signature');
+  }
+  {
     const input = `@group(0) @binding(0) var<uniform> u: vec3f;
 @group(0) @binding(2) var samp: sampler;
 @group(1) @binding(0) var tex: texture_2d<f32>;`;

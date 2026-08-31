@@ -364,6 +364,36 @@ export interface FunctionInfo {
   directOverrides: string[];
   /** Entry-point or transitively reachable from one. */
   inUse: boolean;
+  /**
+   * Declared parameters, in declaration order. Empty for a nullary
+   * function. Present for entry points too, whose attributed pipeline
+   * I/O stays in `EntryPointInfo.inputs` / `.outputs`.
+   */
+  params: ParamInfo[];
+  /**
+   * Return type spelled as in source, or null when the declaration has
+   * no `-> T` clause.
+   */
+  returnType: string | null;
+  /** Renamer-mapped form of `returnType`; absent when they match. */
+  returnTypeMapped?: string;
+  returnTypeInfo?: TypeInfo;
+}
+
+/**
+ * One declared parameter of a function.
+ *
+ * Types are spelled from the AST, so they carry the source form
+ * (`"vec2f"`, not `"vec2<f32>"`): reflection never runs the validator.
+ */
+export interface ParamInfo {
+  name: string;
+  /** Type spelled in source, e.g. `"ptr<function, Element>"`. */
+  type: string;
+  /** Renamer-mapped forms; absent when they match the unmapped form. */
+  nameMapped?: string;
+  typeMapped?: string;
+  typeInfo?: TypeInfo;
 }
 
 /**

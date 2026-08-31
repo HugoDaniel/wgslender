@@ -607,6 +607,34 @@ type Function struct {
 	// transitive version.
 	DirectResources []string `json:"directResources"`
 	DirectOverrides []string `json:"directOverrides"`
+	// Params are the declared parameters, in declaration order. Entry
+	// points have them too: their attributed pipeline I/O is the separate
+	// [EntryPoint.Inputs] and [EntryPoint.Outputs].
+	Params []Param `json:"params"`
+	// ReturnType is the return type as written and ReturnTypeMapped what it
+	// became. ReturnType is empty when the function returns nothing.
+	ReturnType       string `json:"returnType"`
+	ReturnTypeMapped string `json:"returnTypeMapped,omitempty"`
+	// ReturnTypeInfo is the structured form of ReturnType.
+	ReturnTypeInfo *TypeInfo `json:"returnTypeInfo,omitempty"`
+}
+
+// A Param is one declared parameter of a [Function].
+//
+// Types here are spelled from the AST, so they read as the author wrote
+// them: "vec2f", not "vec2<f32>". Reflection does not run the validator, so
+// a name that does not resolve is reported as written. Use Validate to find
+// out whether a signature is true, and this to find out what it says.
+type Param struct {
+	// Name is the parameter as written and NameMapped what it became. The
+	// latter is empty unless there was a renaming pass.
+	Name       string `json:"name"`
+	NameMapped string `json:"nameMapped,omitempty"`
+	// Type is the type as written and TypeMapped what it became.
+	Type       string `json:"type"`
+	TypeMapped string `json:"typeMapped,omitempty"`
+	// TypeInfo is the structured form of Type.
+	TypeInfo *TypeInfo `json:"typeInfo,omitempty"`
 }
 
 // A TypeInfo is a WGSL type, taken apart.

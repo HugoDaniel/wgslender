@@ -254,6 +254,37 @@ func TestReflect(t *testing.T) {
 			},
 		},
 		{
+			name: "a function reports the signature it declares",
+			source: "struct Element { pos: vec2f }\n" +
+				"fn noop() {}\n" +
+				"fn simplex(p: vec2f) -> f32 { return p.x + p.y; }\n" +
+				"fn step_k(e: ptr<function, Element>, dt: f32) { (*e).pos.x = dt; }\n",
+			check: func(t *testing.T, got wgslender.Reflection) {
+				if noop := functionByName(t, got, "noop"); len(noop.Params) != 0 || noop.ReturnType != "" {
+					t.Errorf("noop = %+v -> %q, want no params and no return type",
+						noop.Params, noop.ReturnType)
+				}
+				simplex := functionByName(t, got, "simplex")
+				if len(simplex.Params) != 1 || simplex.Params[0].Name != "p" || simplex.Params[0].Type != "vec2f" {
+					t.Errorf("simplex.Params = %+v, want one p: vec2f", simplex.Params)
+				}
+				if simplex.ReturnType != "f32" {
+					t.Errorf("simplex.ReturnType = %q, want f32", simplex.ReturnType)
+				}
+				// Types are spelled from the AST, so a pointer comes back
+				// whole rather than as a placeholder.
+				step := functionByName(t, got, "step_k")
+				if len(step.Params) != 2 || step.Params[0].Type != "ptr<function, Element>" {
+					t.Errorf("step_k.Params = %+v, want a ptr and an f32", step.Params)
+				}
+				// Nothing here is an entry point, so nothing is in use --
+				// which must not gate the signature.
+				if step.InUse {
+					t.Error("no entry point exists, so step_k cannot be in use")
+				}
+			},
+		},
+		{
 			name:   "a vertex/fragment pair has no workgroup size",
 			source: renderWGSL,
 			check: func(t *testing.T, got wgslender.Reflection) {

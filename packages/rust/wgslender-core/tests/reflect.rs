@@ -465,3 +465,24 @@ fn reflect_json_carries_the_keys_the_typed_view_omits() {
         );
     }
 }
+
+/// A function's declared signature reaches the raw envelope too. Types are
+/// spelled from the AST, so `vec2f` and `ptr<function, Element>` come back
+/// exactly as written rather than resolved or elided.
+#[test]
+#[cfg(not(miri))]
+fn reflect_json_reports_function_signatures() {
+    let source = "struct Element { pos: vec2f }\n\
+                  fn simplex(p: vec2f) -> f32 { return p.x + p.y; }\n\
+                  fn step_k(e: ptr<function, Element>, dt: f32) { (*e).pos.x = dt; }\n";
+    let Ok(json) = reflect_json(source) else {
+        panic!("reflect_json failed on a kernel fragment")
+    };
+    for fragment in [
+        r#""params":[{"name":"p","type":"vec2f""#,
+        r#""returnType":"f32""#,
+        r#""type":"ptr<function, Element>""#,
+    ] {
+        assert!(json.contains(fragment), "expected {fragment:?} in {json}");
+    }
+}
