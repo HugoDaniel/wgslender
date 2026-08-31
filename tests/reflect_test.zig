@@ -2827,12 +2827,13 @@ test "reflect: params carry a structured typeInfo alongside the spelling" {
     const f = findFunction(result.functions.items, "simplex") orelse return error.TestExpectedFunction;
 
     const pi = f.params.items[0].type_info orelse return error.TestExpectedTypeInfo;
-    try std.testing.expectEqual(@as(u32, 2), pi.width);
-    try std.testing.expectEqual(@as(u32, 8), pi.size);
+    try std.testing.expectEqual(@as(u8, 2), pi.vec.width);
+    try std.testing.expectEqual(@as(u32, 8), pi.vec.size);
+    try std.testing.expectEqualStrings("f32", pi.vec.format.scalar.name);
 
     const ri = f.return_type_info orelse return error.TestExpectedTypeInfo;
-    try std.testing.expectEqualStrings("f32", ri.name);
-    try std.testing.expectEqual(@as(u32, 4), ri.size);
+    try std.testing.expectEqualStrings("f32", ri.scalar.name);
+    try std.testing.expectEqual(@as(u32, 4), ri.scalar.size);
 }
 
 test "reflect: params are reported for functions no entry point reaches" {

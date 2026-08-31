@@ -346,6 +346,23 @@ pub const InterpolateInfo = struct {
     sampling: []const u8 = "",
 };
 
+/// One declared parameter of a user-defined `fn`, in declaration order.
+/// Types are spelled from the AST, so they carry the source form
+/// (`"vec2f"`, not `"vec2<f32>"`) and never depend on the validator.
+pub const ParamInfo = struct {
+    name: []const u8,
+    /// Parameter name with the renamer applied; equal to `name` when no
+    /// renamer is in play.
+    name_mapped: []const u8 = "",
+    /// Type spelled in source (e.g. `"ptr<function, Element>"`).
+    typ: []const u8 = "",
+    /// Same type with renamer-applied user type names; equal to `typ`
+    /// when no renamer is in play.
+    type_mapped: []const u8 = "",
+    /// Structured tree mirroring `typ`. `null` only on parse-failure paths.
+    type_info: ?*const TypeInfo = null,
+};
+
 /// Per-function reflection record. Populated for every user-defined
 /// `fn` (entry points included). Resources / overrides / calls are
 /// captured in source order during a one-pass body walk; the
@@ -368,6 +385,19 @@ pub const FunctionInfo = struct {
     /// True iff this function is an entry point or transitively
     /// called from one.
     in_use: bool = false,
+    /// One entry per declared parameter, in declaration order. Present
+    /// for every function including entry points, whose attributed
+    /// pipeline I/O stays in `EntryPointInfo.inputs` / `.outputs`.
+    params: std.ArrayList(ParamInfo) = .empty,
+    /// Return type spelled as in source. Empty when the declaration has
+    /// no `-> T` clause.
+    return_type: []const u8 = "",
+    /// Return type with renamer-applied user type names; equal to
+    /// `return_type` when no renamer is in play.
+    return_type_mapped: []const u8 = "",
+    /// Structured tree mirroring `return_type`; `null` when there is no
+    /// return type.
+    return_type_info: ?*const TypeInfo = null,
 };
 
 /// Metadata for a top-level WGSL `alias T = U;` declaration. The
@@ -598,7 +628,7 @@ pub fn reflectWithRenamer(
     // `FunctionDecl` body, recording direct resource refs, override
     // refs, and outgoing call edges. Texture-sampling builtin calls
     // also stamp bidirectional `relations` on the matching bindings.
-    try CallGraph.buildCallGraph(arena, module, &result);
+    try CallGraph.buildCallGraph(arena, module, &lc, &result);
     // Compute transitive resources / overrides per entry point and
     // mark `in_use` on every reachable function.
     try CallGraph.propagateEntryReachability(arena, &result);

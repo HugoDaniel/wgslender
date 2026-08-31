@@ -19,6 +19,7 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("../Ast.zig");
 const Reflect = @import("../Reflect.zig");
+const LayoutComputer = @import("Layout.zig").LayoutComputer;
 
 const ReflectResult = Reflect.ReflectResult;
 const FunctionInfo = Reflect.FunctionInfo;
@@ -43,12 +44,23 @@ const sampler_pair_builtins = std.StaticStringMap(void).initComptime(.{
 
 /// Walk every user-defined function body once. Populates
 /// `result.functions` with one entry per `FunctionDecl`, recording:
+///   • the declared signature → `params` / `return_type`
 ///   • direct `var<>` references → `direct_resources`
 ///   • direct `@override` references → `direct_overrides`
 ///   • outgoing function calls → `calls`
 /// Texture-sampling builtin calls additionally stamp the matching
 /// `BindingInfo.relations` lists bidirectionally.
-pub fn buildCallGraph(arena: Allocator, module: *Ast.Module, result: *ReflectResult) Allocator.Error!void {
+///
+/// `lc` spells the signature types. It is the same renderer that fills
+/// `BindingInfo.typ` and `AliasInfo.typ`, so a parameter's type reads
+/// exactly as a binding's of the same type would — source form, with
+/// alias chains followed and nothing else resolved.
+pub fn buildCallGraph(
+    arena: Allocator,
+    module: *Ast.Module,
+    lc: *LayoutComputer,
+    result: *ReflectResult,
+) Allocator.Error!void {
     for (module.declarations.items) |decl| switch (decl) {
         .function => |fn_decl| {
             var info = FunctionInfo{
@@ -56,6 +68,20 @@ pub fn buildCallGraph(arena: Allocator, module: *Ast.Module, result: *ReflectRes
                 .name_offset = getSymbolLoc(fn_decl.name, module.symbols.items),
                 .decl_span = spanInfoFromAst(fn_decl.decl_span),
             };
+            for (fn_decl.parameters.items) |param| {
+                try info.params.append(arena, .{
+                    .name = lc.getSymbolName(param.name),
+                    .name_mapped = lc.getMappedName(param.name),
+                    .typ = lc.typeToStringMapped(param.typ, false),
+                    .type_mapped = lc.typeToStringMapped(param.typ, true),
+                    .type_info = lc.buildTypeInfo(param.typ),
+                });
+            }
+            if (fn_decl.return_type) |rt| {
+                info.return_type = lc.typeToStringMapped(rt, false);
+                info.return_type_mapped = lc.typeToStringMapped(rt, true);
+                info.return_type_info = lc.buildTypeInfo(rt);
+            }
             if (fn_decl.body) |body| {
                 try walkBody(arena, module, body, &info, result);
             }
