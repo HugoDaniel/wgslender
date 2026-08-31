@@ -2912,3 +2912,75 @@ test "reflect: v1 JSON functions[] stays byte-identical" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"params\"") == null);
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"returnType\"") == null);
 }
+
+// =========================================================================
+// `FunctionInfo.stable_id` / `.name_mapped`
+//
+// Both fields have been declared since `functions[]` was added and neither
+// was ever written: `buildCallGraph` set `name`, `name_offset` and
+// `decl_span` only. Every sibling record — bindings, struct fields, entry
+// points, overrides, aliases — carries both.
+// =========================================================================
+
+test "reflect: a function carries a stable id" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\fn simplex(p: vec2f) -> f32 { return p.x + p.y; }
+        \\@compute @workgroup_size(1) fn cs() { let x = simplex(vec2f(0)); }
+    );
+
+    // A plain function has no other record to carry its id, so without this
+    // there is no way to name one across a reparse.
+    const simplex = findFunction(result.functions.items, "simplex") orelse return error.TestExpectedFunction;
+    try std.testing.expectEqualStrings("v1:fn:simplex", simplex.stable_id);
+
+    // An entry point appears in both lists and must agree with itself.
+    const cs = findFunction(result.functions.items, "cs") orelse return error.TestExpectedFunction;
+    const ep = findEntryByName(result.entry_points.items, "cs") orelse return error.TestExpectedEntry;
+    try std.testing.expectEqualStrings(ep.stable_id, cs.stable_id);
+}
+
+test "reflect: a renamed function reports both names" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try wgslender.minifyAndReflect(alloc,
+        \\fn simplex(p: vec2f) -> f32 { return p.x + p.y; }
+        \\@compute @workgroup_size(1) fn cs() { let x = simplex(vec2f(0)); }
+    , .{
+        .minify_whitespace = true,
+        .minify_identifiers = true,
+        .minify_syntax = false,
+        .tree_shaking = false,
+    });
+
+    const simplex = findFunction(result.reflect.functions.items, "simplex") orelse
+        return error.TestExpectedFunction;
+    // `name` stays the name the author wrote; `name_mapped` is what the
+    // renamer emitted, which is what appears in the minified text.
+    try std.testing.expect(simplex.name_mapped.len > 0);
+    try std.testing.expect(!std.mem.eql(u8, simplex.name, simplex.name_mapped));
+    try std.testing.expect(std.mem.indexOf(u8, result.minify.code, simplex.name_mapped) != null);
+}
+
+test "reflect: JSON carries a function's stableId, and nameMapped only when it differs" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\fn simplex(p: vec2f) -> f32 { return p.x + p.y; }
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v2);
+
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"stableId\":\"v1:fn:simplex\"") != null);
+    // No renamer ran, so the mapped form matches and the key is omitted --
+    // the contract `packages/js-npm/lib/main.d.ts` already documents
+    // ("absent when no renamer was applied").
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"nameMapped\"") == null);
+}
