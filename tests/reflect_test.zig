@@ -2669,3 +2669,245 @@ test "reflect: phony-only resources flow transitively through a helper" {
     try std.testing.expectEqual(@as(usize, 1), ep.resources.items.len);
     try std.testing.expectEqualStrings("tex", ep.resources.items[0]);
 }
+
+// =========================================================================
+// W1 — function signatures in reflection
+//
+// `docs/plans/asks/01-function-signatures-in-reflection.md`. Every
+// `FunctionInfo` carries its declared parameters and its return type,
+// spelled from the AST: reflection never runs the validator, so what is
+// reported is the source form (`vec2f`, not `vec2<f32>`) and an
+// unresolvable type name comes back as written.
+// =========================================================================
+
+const ExpectedParam = struct {
+    name: []const u8,
+    typ: []const u8,
+};
+
+const SignatureCase = struct {
+    label: []const u8,
+    source: [:0]const u8,
+    fn_name: []const u8,
+    params: []const ExpectedParam,
+    /// Empty when the declaration has no `-> T` clause.
+    return_type: []const u8,
+};
+
+test "reflect: function params and return type are spelled from the AST" {
+    const cases = [_]SignatureCase{
+        .{
+            .label = "nullary void",
+            .source =
+            \\fn noop() {}
+            ,
+            .fn_name = "noop",
+            .params = &.{},
+            .return_type = "",
+        },
+        .{
+            // animader's `field1` class.
+            .label = "vec2f in, f32 out",
+            .source =
+            \\fn simplex(p: vec2f) -> f32 { return p.x + p.y; }
+            ,
+            .fn_name = "simplex",
+            .params = &.{.{ .name = "p", .typ = "vec2f" }},
+            .return_type = "f32",
+        },
+        .{
+            // animader's `step` class — the one the ask expected to lose.
+            .label = "pointer parameter",
+            .source =
+            \\struct Element { pos: vec2f }
+            \\fn step_k(e: ptr<function, Element>, dt: f32) { (*e).pos.x = dt; }
+            ,
+            .fn_name = "step_k",
+            .params = &.{
+                .{ .name = "e", .typ = "ptr<function, Element>" },
+                .{ .name = "dt", .typ = "f32" },
+            },
+            .return_type = "",
+        },
+        .{
+            .label = "struct parameter",
+            .source =
+            \\struct Element { pos: vec2f }
+            \\fn use_it(s: Element) -> vec4f { return vec4f(s.pos, 0.0, 1.0); }
+            ,
+            .fn_name = "use_it",
+            .params = &.{.{ .name = "s", .typ = "Element" }},
+            .return_type = "vec4f",
+        },
+        .{
+            .label = "entry point",
+            .source =
+            \\@fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+            \\    return vec4f(uv, 0.0, 1.0);
+            \\}
+            ,
+            .fn_name = "fs",
+            .params = &.{.{ .name = "uv", .typ = "vec2f" }},
+            .return_type = "vec4f",
+        },
+        .{
+            .label = "long-form vector spelling is preserved verbatim",
+            .source =
+            \\fn longform(p: vec2<f32>) -> vec4<f32> { return vec4<f32>(p, 0.0, 1.0); }
+            ,
+            .fn_name = "longform",
+            .params = &.{.{ .name = "p", .typ = "vec2<f32>" }},
+            .return_type = "vec4<f32>",
+        },
+    };
+
+    for (cases) |c| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        const alloc = arena.allocator();
+
+        const result = try reflectSource(alloc, c.source);
+        const f = findFunction(result.functions.items, c.fn_name) orelse {
+            std.debug.print("case '{s}': no function named '{s}'\n", .{ c.label, c.fn_name });
+            return error.TestExpectedFunction;
+        };
+
+        if (c.params.len != f.params.items.len) {
+            std.debug.print(
+                "case '{s}': expected {d} params, got {d}\n",
+                .{ c.label, c.params.len, f.params.items.len },
+            );
+            return error.TestUnexpectedResult;
+        }
+        for (c.params, f.params.items) |want, got| {
+            try std.testing.expectEqualStrings(want.name, got.name);
+            try std.testing.expectEqualStrings(want.typ, got.typ);
+            // Without a renamer the mapped renderings equal the plain ones.
+            try std.testing.expectEqualStrings(want.name, got.name_mapped);
+            try std.testing.expectEqualStrings(want.typ, got.type_mapped);
+        }
+        try std.testing.expectEqualStrings(c.return_type, f.return_type);
+        try std.testing.expectEqualStrings(c.return_type, f.return_type_mapped);
+    }
+}
+
+test "reflect: an entry point carries both params and its attributed IO" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\@fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+        \\    return vec4f(uv, 0.0, 1.0);
+        \\}
+    );
+
+    const f = findFunction(result.functions.items, "fs") orelse return error.TestExpectedFunction;
+    try std.testing.expectEqual(@as(usize, 1), f.params.items.len);
+    try std.testing.expectEqualStrings("uv", f.params.items[0].name);
+    try std.testing.expectEqualStrings("vec2f", f.params.items[0].typ);
+    try std.testing.expectEqualStrings("vec4f", f.return_type);
+
+    // The pipeline I/O view is unchanged and still lives on the entry point.
+    const ep = findEntryByName(result.entry_points.items, "fs") orelse return error.TestExpectedEntry;
+    try std.testing.expectEqual(@as(usize, 1), ep.inputs.items.len);
+    try std.testing.expectEqual(@as(?u32, 0), ep.inputs.items[0].location);
+    try std.testing.expectEqual(@as(usize, 1), ep.outputs.items.len);
+    try std.testing.expectEqual(@as(?u32, 0), ep.outputs.items[0].location);
+}
+
+test "reflect: params carry a structured typeInfo alongside the spelling" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\fn simplex(p: vec2f) -> f32 { return p.x + p.y; }
+    );
+    const f = findFunction(result.functions.items, "simplex") orelse return error.TestExpectedFunction;
+
+    const pi = f.params.items[0].type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expectEqual(@as(u32, 2), pi.width);
+    try std.testing.expectEqual(@as(u32, 8), pi.size);
+
+    const ri = f.return_type_info orelse return error.TestExpectedTypeInfo;
+    try std.testing.expectEqualStrings("f32", ri.name);
+    try std.testing.expectEqual(@as(u32, 4), ri.size);
+}
+
+test "reflect: params are reported for functions no entry point reaches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // An animader kernel is authored as a fragment with no entry point at
+    // all, so `in_use == false` must not gate the signature.
+    const result = try reflectSource(alloc,
+        \\fn simplex(p: vec2f) -> f32 { return p.x + p.y; }
+    );
+    const f = findFunction(result.functions.items, "simplex") orelse return error.TestExpectedFunction;
+    try std.testing.expect(!f.in_use);
+    try std.testing.expectEqual(@as(usize, 1), f.params.items.len);
+    try std.testing.expectEqualStrings("f32", f.return_type);
+}
+
+test "reflect: v2 JSON emits params and returnType" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const result = try reflectSource(alloc,
+        \\fn noop() {}
+        \\fn simplex(p: vec2f) -> f32 { return p.x + p.y; }
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v2);
+
+    // Nullary void function: an empty array and an explicit null.
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        buf.items,
+        "\"params\":[],\"returnType\":null",
+    ) != null);
+    // One typed parameter, keyed `type` like every other type in this writer.
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        buf.items,
+        "\"params\":[{\"name\":\"p\",\"type\":\"vec2f\"",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"returnType\":\"f32\"") != null);
+}
+
+test "reflect: v1 JSON functions[] stays byte-identical" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Function-heavy fixture: nullary, typed, pointer-taking, struct-taking
+    // and an entry point, so every shape the new fields touch is present.
+    const result = try reflectSource(alloc,
+        \\struct Element { pos: vec2f }
+        \\@group(0) @binding(0) var<uniform> u: f32;
+        \\fn noop() {}
+        \\fn simplex(p: vec2f) -> f32 { return p.x + p.y; }
+        \\fn step_k(e: ptr<function, Element>, dt: f32) { (*e).pos.x = dt; }
+        \\fn use_it(s: Element) -> vec4f { return vec4f(s.pos, 0.0, u); }
+        \\@fragment fn fs(@location(0) uv: vec2f) -> @location(0) vec4f {
+        \\    return vec4f(uv, 0.0, 1.0);
+        \\}
+    );
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    try result.toJsonVersion(&buf, alloc, .v1);
+
+    // v1 is the wgsl_reflect-parity shape and is frozen. Captured from
+    // `wgslender reflect --reflect-format v1 --compact` at `68dab58`.
+    const expected_functions =
+        \\"functions":[{"name":"noop","nameOffset":76,"declSpan":{"start":73,"end":85},"inUse":false,"calls":[],"directResources":[],"directOverrides":[]},{"name":"simplex","nameOffset":89,"declSpan":{"start":86,"end":135},"inUse":false,"calls":[],"directResources":[],"directOverrides":[]},{"name":"step_k","nameOffset":139,"declSpan":{"start":136,"end":202},"inUse":false,"calls":[],"directResources":[],"directOverrides":[]},{"name":"use_it","nameOffset":206,"declSpan":{"start":203,"end":266},"inUse":false,"calls":[],"directResources":["u"],"directOverrides":[]},{"name":"fs","nameOffset":280,"declSpan":{"start":267,"end":364},"inUse":true,"calls":[],"directResources":[],"directOverrides":[]}]
+    ;
+    if (std.mem.indexOf(u8, buf.items, expected_functions) == null) {
+        std.debug.print("v1 functions[] drifted.\nfull output:\n{s}\n", .{buf.items});
+        return error.TestUnexpectedResult;
+    }
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"params\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"returnType\"") == null);
+}
