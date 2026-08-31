@@ -20,6 +20,7 @@ const Allocator = std.mem.Allocator;
 const Ast = @import("../Ast.zig");
 const Reflect = @import("../Reflect.zig");
 const LayoutComputer = @import("Layout.zig").LayoutComputer;
+const StableId = @import("../StableId.zig");
 
 const ReflectResult = Reflect.ReflectResult;
 const FunctionInfo = Reflect.FunctionInfo;
@@ -65,9 +66,19 @@ pub fn buildCallGraph(
         .function => |fn_decl| {
             var info = FunctionInfo{
                 .name = getSymbolName(fn_decl.name, module.symbols.items),
+                .name_mapped = lc.getMappedName(fn_decl.name),
                 .name_offset = getSymbolLoc(fn_decl.name, module.symbols.items),
                 .decl_span = spanInfoFromAst(fn_decl.decl_span),
             };
+            // Same error handling as every other record in `Reflect.zig`:
+            // an over-long id is dropped, leaving `stable_id` empty,
+            // rather than failing the whole reflection.
+            if (StableId.stableIdFor(arena, module, fn_decl.name)) |maybe_id| {
+                if (maybe_id) |id| info.stable_id = id.bytes;
+            } else |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.IdTooLong => {},
+            }
             for (fn_decl.parameters.items) |param| {
                 try info.params.append(arena, .{
                     .name = lc.getSymbolName(param.name),

@@ -163,7 +163,10 @@ type both source-spelled and as a structured `TypeInfo`. An override adds the
 ### `FunctionInfo`
 
 A name, a source offset, a stable ID, a declaration span, plus `calls`,
-`direct_resources`, `direct_overrides`, and a transitive `in_use` flag.
+`direct_resources`, `direct_overrides`, and a transitive `in_use` flag. A
+function that is not an entry point has no other record, so this is the only
+place its stable ID appears; for one that is, the ID here and the ID in
+`entry_points[]` are the same.
 
 It also carries the declared signature: `params`, one `ParamInfo` per declared
 parameter in declaration order, and `return_type` (empty when the declaration
@@ -261,6 +264,10 @@ This is what `minifyAndReflect` exploits: one parse, one analysis, two outputs
   "functions":    [ … ]
 }
 ```
+
+Both versions carry `stableId` on every record that has one, `functions[]`
+included. A `nameMapped` is written only where it differs from `name`, so a
+reflection with no renamer behind it has none at all.
 
 ### v2 — adds
 

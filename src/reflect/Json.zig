@@ -336,7 +336,9 @@ fn writeFunctionJson(
 ) Allocator.Error!void {
     try appendStr(buf, arena, "{\"name\":");
     try appendJsonStr(buf, arena, f.name);
-    if (f.name_mapped.len > 0) {
+    // Omitted when it matches `name`, which is the contract the npm types
+    // state: "absent when no renamer was applied".
+    if (f.name_mapped.len > 0 and !std.mem.eql(u8, f.name_mapped, f.name)) {
         try appendStr(buf, arena, ",\"nameMapped\":");
         try appendJsonStr(buf, arena, f.name_mapped);
     }

@@ -2879,7 +2879,7 @@ test "reflect: v2 JSON emits params and returnType" {
     try std.testing.expect(std.mem.indexOf(u8, buf.items, "\"returnType\":\"f32\"") != null);
 }
 
-test "reflect: v1 JSON functions[] stays byte-identical" {
+test "reflect: v1 JSON functions[] is pinned" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
@@ -2900,10 +2900,15 @@ test "reflect: v1 JSON functions[] stays byte-identical" {
     var buf: std.ArrayListUnmanaged(u8) = .empty;
     try result.toJsonVersion(&buf, alloc, .v1);
 
-    // v1 is the wgsl_reflect-parity shape and is frozen. Captured from
-    // `wgslender reflect --reflect-format v1 --compact` at `68dab58`.
+    // v1 gained one key here: `stableId`, which v1 already emitted for
+    // bindings, struct fields and entry points, and which `functions[]`
+    // lacked only because nobody populated `FunctionInfo.stable_id`. The
+    // writer's branch for it was always there, outside any version guard.
+    // Additive, and both the Go and TypeScript types already declare it
+    // optional. `params` / `returnType` remain v2-only, and `nameMapped`
+    // stays absent because no renamer ran.
     const expected_functions =
-        \\"functions":[{"name":"noop","nameOffset":76,"declSpan":{"start":73,"end":85},"inUse":false,"calls":[],"directResources":[],"directOverrides":[]},{"name":"simplex","nameOffset":89,"declSpan":{"start":86,"end":135},"inUse":false,"calls":[],"directResources":[],"directOverrides":[]},{"name":"step_k","nameOffset":139,"declSpan":{"start":136,"end":202},"inUse":false,"calls":[],"directResources":[],"directOverrides":[]},{"name":"use_it","nameOffset":206,"declSpan":{"start":203,"end":266},"inUse":false,"calls":[],"directResources":["u"],"directOverrides":[]},{"name":"fs","nameOffset":280,"declSpan":{"start":267,"end":364},"inUse":true,"calls":[],"directResources":[],"directOverrides":[]}]
+        \\"functions":[{"name":"noop","nameOffset":76,"stableId":"v1:fn:noop","declSpan":{"start":73,"end":85},"inUse":false,"calls":[],"directResources":[],"directOverrides":[]},{"name":"simplex","nameOffset":89,"stableId":"v1:fn:simplex","declSpan":{"start":86,"end":135},"inUse":false,"calls":[],"directResources":[],"directOverrides":[]},{"name":"step_k","nameOffset":139,"stableId":"v1:fn:step_k","declSpan":{"start":136,"end":202},"inUse":false,"calls":[],"directResources":[],"directOverrides":[]},{"name":"use_it","nameOffset":206,"stableId":"v1:fn:use_it","declSpan":{"start":203,"end":266},"inUse":false,"calls":[],"directResources":["u"],"directOverrides":[]},{"name":"fs","nameOffset":280,"stableId":"v1:fn:fs","declSpan":{"start":267,"end":364},"inUse":true,"calls":[],"directResources":[],"directOverrides":[]}]
     ;
     if (std.mem.indexOf(u8, buf.items, expected_functions) == null) {
         std.debug.print("v1 functions[] drifted.\nfull output:\n{s}\n", .{buf.items});
