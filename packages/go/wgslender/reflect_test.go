@@ -285,6 +285,25 @@ func TestReflect(t *testing.T) {
 			},
 		},
 		{
+			name: "a name that resolves to nothing says so",
+			// Reflection never runs the validator, so an unknown name is
+			// not an error here. It used to arrive as a scalar of size 0,
+			// which a switch on Kind read as a real scalar.
+			source: "fn g(d: Missing) { }\n",
+			check: func(t *testing.T, got wgslender.Reflection) {
+				g := functionByName(t, got, "g")
+				if len(g.Params) != 1 || g.Params[0].Type != "Missing" {
+					t.Fatalf("g.Params = %+v, want one d: Missing", g.Params)
+				}
+				ti := g.Params[0].TypeInfo
+				if ti == nil || ti.Kind != wgslender.KindUnresolved {
+					t.Errorf("d.TypeInfo = %+v, want KindUnresolved", ti)
+				} else if ti.Name != "Missing" {
+					t.Errorf("d.TypeInfo.Name = %q, want Missing", ti.Name)
+				}
+			},
+		},
+		{
 			name:   "a vertex/fragment pair has no workgroup size",
 			source: renderWGSL,
 			check: func(t *testing.T, got wgslender.Reflection) {

@@ -281,6 +281,17 @@ fn step_k(e: ptr<function, Element>, dt: f32) { (*e).pos.x = dt; }`);
       'reflect: an unreached function still reports its signature');
   }
   {
+    // Reflection never runs the validator, so an unknown name is not an
+    // error -- but it is not a scalar either, and it used to say it was.
+    const r = reflect('fn g(d: Missing) { }');
+    const p = r.functions.find((f) => f.name === 'g').params[0];
+    assert(p.type === 'Missing', 'reflect: an unresolvable type is spelled as written');
+    assert(p.typeInfo.kind === 'unresolved' && p.typeInfo.name === 'Missing',
+      'reflect: an unresolvable type has its own typeInfo kind');
+    assert(p.typeInfo.size === undefined && p.typeInfo.alignment === undefined,
+      'reflect: an unresolvable type carries no measurements');
+  }
+  {
     const input = `@group(0) @binding(0) var<uniform> u: vec3f;
 @group(0) @binding(2) var samp: sampler;
 @group(1) @binding(0) var tex: texture_2d<f32>;`;

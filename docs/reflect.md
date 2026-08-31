@@ -124,20 +124,29 @@ tree without re-parsing the textual `typ` string:
 
 ```zig
 union(enum) {
-    scalar:    ScalarInfo,                      // size, alignment
-    vec:       VecInfo,                         // width, format, size, alignment
-    mat:       MatInfo,                         // cols, rows, format, size, alignment, stride
-    array:     ArrayTypeInfo,                   // format, count?, size?, stride, alignment
-    @"struct": StructTypeRef,                   // name → look up in result.structs
-    atomic:    AtomicInfo,
-    texture:   TextureInfo,                     // dim, kind, format, access, sample_type
-    sampler:   SamplerInfo,                     // comparison: bool
-    ptr:       PtrInfo,                         // address_space, format, access
+    scalar:     ScalarInfo,                     // size, alignment
+    vec:        VecInfo,                        // width, format, size, alignment
+    mat:        MatInfo,                        // cols, rows, format, size, alignment, stride
+    array:      ArrayTypeInfo,                  // format, count?, size?, stride, alignment
+    @"struct":  StructTypeRef,                  // name → look up in result.structs
+    atomic:     AtomicInfo,
+    texture:    TextureInfo,                    // dim, kind, format, access, sample_type
+    sampler:    SamplerInfo,                    // comparison: bool
+    ptr:        PtrInfo,                        // address_space, format, access
+    unresolved: UnresolvedInfo,                 // name
 }
 ```
 
 Sizes/alignments inside `TypeInfo` match those reported on `BindingInfo.layout`
 and `FieldInfo` for the same physical type.
+
+`unresolved` is a name that maps to no builtin, no handle spelling and no
+struct in this module. Reflection does not run the validator, so it is not an
+error — a type declared in another file and a misspelling both land here — and
+it carries no size or alignment because none was ever computed. It was
+previously reported as a `scalar` of size 0, a shape no real scalar has and
+that a consumer switching on the tag read as a scalar and believed. `typ`
+still spells the name as written either way.
 
 ### `EntryPointInfo`
 

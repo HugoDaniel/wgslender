@@ -295,6 +295,12 @@ const (
 	KindTexture TypeKind = "texture"
 	// KindPtr is a pointer, which never crosses the host boundary.
 	KindPtr TypeKind = "ptr"
+	// KindUnresolved is a name that maps to no builtin, no handle spelling
+	// and no struct in the module. Reflection does not run the validator,
+	// so this is not an error — a type declared in another file and a
+	// misspelling both land here — and only [TypeInfo.Name] means
+	// anything: nothing was measured, so Size and Alignment are zero.
+	KindUnresolved TypeKind = "unresolved"
 )
 
 // A TextureDimension is a texture's shape.
@@ -639,16 +645,17 @@ type Param struct {
 
 // A TypeInfo is a WGSL type, taken apart.
 //
-// It is one struct for nine kinds of type, and [TypeInfo.Kind] says which
+// It is one struct for ten kinds of type, and [TypeInfo.Kind] says which
 // fields mean anything — switch on it rather than testing fields for
 // emptiness. The fields are grouped below by the kinds that use them.
 type TypeInfo struct {
 	// Kind discriminates everything else here.
 	Kind TypeKind `json:"kind"`
 
-	// Name is the type's name, on a scalar ("f32") or a struct ("Params").
-	// A struct's members are not here — look the name up in
-	// [Reflection.Structs].
+	// Name is the type's name, on a scalar ("f32"), a struct ("Params") or
+	// an unresolved name. A struct's members are not here — look the name
+	// up in [Reflection.Structs]. On a [KindUnresolved] it is the only
+	// field that means anything.
 	Name string `json:"name,omitempty"`
 
 	// Width is a vector's component count; Cols and Rows are a matrix's

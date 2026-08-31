@@ -486,3 +486,36 @@ fn reflect_json_reports_function_signatures() {
         assert!(json.contains(fragment), "expected {fragment:?} in {json}");
     }
 }
+
+/// A name reflection cannot map to anything is reported as its own kind
+/// rather than as a scalar of size zero. This crate does not type that kind —
+/// it does not type pointers or handles either — so what matters here is that
+/// the typed view still *deserializes*: `TypeInfo` is `#[serde(other)]`, so an
+/// unfamiliar tag becomes [`TypeInfo::Unknown`] instead of failing the whole
+/// reflection, which is what a stricter enum would have started doing.
+#[test]
+#[cfg(not(miri))]
+fn an_unresolvable_type_does_not_break_the_typed_view() {
+    let source = "struct S { m: Missing }\n\
+                  @group(0) @binding(0) var<uniform> u: S;\n\
+                  @compute @workgroup_size(1) fn e() { _ = u; }\n";
+
+    let Ok(json) = reflect_json(source) else {
+        panic!("reflect_json failed on an unresolvable member type")
+    };
+    assert!(
+        json.contains(r#""kind":"unresolved","name":"Missing""#),
+        "expected an unresolved typeInfo in {json}"
+    );
+
+    let Ok(reflection) = reflect(source) else {
+        panic!("the typed view rejected an unresolvable type")
+    };
+    let field = &reflection.structs["S"].fields[0];
+    assert_eq!(field.ty, "Missing", "the spelling survives as written");
+    assert!(
+        matches!(field.type_info, Some(TypeInfo::Unknown)),
+        "an unresolved kind degrades to Unknown, not an error: {:?}",
+        field.type_info,
+    );
+}

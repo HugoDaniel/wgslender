@@ -424,7 +424,14 @@ export type TypeInfo =
   | { kind: "atomic"; format: TypeInfo; size: number; alignment: number }
   | ({ kind: "texture" } & TextureInfo)
   | { kind: "sampler"; comparison: boolean }
-  | { kind: "ptr"; addressSpace: string; format: TypeInfo; access: string };
+  | { kind: "ptr"; addressSpace: string; format: TypeInfo; access: string }
+  /**
+   * A name that maps to no builtin, no handle spelling and no struct in
+   * the module. Reflection does not run the validator, so this is not an
+   * error — a type declared in another file and a misspelling both land
+   * here. It has no `size` or `alignment` because none was computed.
+   */
+  | { kind: "unresolved"; name: string };
 
 /**
  * Texture details, spread directly onto the `kind: "texture"` variant of
