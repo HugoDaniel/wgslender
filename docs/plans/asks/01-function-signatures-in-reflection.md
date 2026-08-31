@@ -464,3 +464,63 @@ The workaround in "Cost of not closing it" can be dropped rather than fixed.
 Once step 3 lands, a kernel's class check is a comparison against two strings
 in the reflection report the loader already reads, and no generated line is
 appended to anybody's shader.
+
+---
+
+# Executed
+
+**Landed 2026-08-31**, seven commits on `main` (`a2fb8b3` red, `96238a4`
+green, `0b12fa8` JSON, `b2500dc` docs, `8e0ba2a` bindings, `7003882`
+assets). The design above is what shipped; three details differ and are
+recorded here rather than rewritten above.
+
+**The JSON key for a parameter's type is `"type"`, not `"typ"`.** The
+design sketch at "### JSON" wrote `"typ"`, which is the Zig field name.
+Every other writer in `src/reflect/Json.zig` spells the key `"type"` —
+`writeFieldInfoJson`, `writeAliasJson`, `writeInputOutputJson` — so
+`writeParamJson` does too. `"returnType"` is unaffected.
+
+**`returnTypeMapped` and `returnTypeInfo` reach the JSON as well**, on the
+same omit-when-equal rule as `nameMapped`. The design listed them on the
+struct and showed only `"returnType"` in the sketch; there was no reason
+to make the return type less legible than a parameter.
+
+**`FunctionInfo.stable_id` and `.name_mapped` are still never populated.**
+Both fields exist and both have been dead since `functions[]` was added:
+`buildCallGraph` sets `name`, `name_offset` and `decl_span` only. Out of
+scope here, and left alone deliberately — noting it because a host
+reading the struct would reasonably expect otherwise, and because the
+`stableId` key is therefore absent from every `functions[]` entry.
+
+## Verification
+
+- `tests/reflect_test.zig` — 121/121, including six signature shapes
+  (nullary void, `fn(vec2f) -> f32`, `ptr<function, Element>`, a struct
+  parameter, an entry point, and a long-form `vec2<f32>` spelling that
+  survives verbatim), the unreached-function pin, and a byte pin on v1's
+  `functions[]`.
+- `zig build test -j1` — 4683/4684. The one crash,
+  `tint_test.test.tint: semantic preservation`, is a SIGKILL that
+  reproduces identically at `68dab58` with this work checked out, so it
+  is not from this change. Both corpus goldens are unchanged.
+- `go test ./wgslender/`, `npm test` (187 across all four wrappers), and
+  a new raw-envelope case in `packages/rust/wgslender-core/tests/reflect.rs`.
+- The reproduction at the top of this file, re-run:
+
+```json
+"functions": [
+  { "name": "simplex", "nameOffset": 3,
+    "declSpan": { "start": 0, "end": 49 },
+    "inUse": false, "calls": [], "directResources": [], "directOverrides": [],
+    "params": [ { "name": "p", "type": "vec2f", "typeInfo": { … } } ],
+    "returnType": "f32", "returnTypeInfo": { … } }
+]
+```
+
+## To the host
+
+All five kernel classes are now a string comparison against
+`params[].type` and `returnType`, on a document the loader already
+reflects. `step` included: `ptr<function, Element>` is spelled whole.
+Drop the probe rather than fixing it — and note that the probe as filed
+never worked, for the E0105 reason in the verdict above.

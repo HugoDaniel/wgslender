@@ -25,7 +25,7 @@ are copied from the first of them because they work.
 
 | # | Ask | Host | Verdict | Plan |
 |---|---|---|---|---|
-| W1 | Reflection reports every function's name and none of its type | animader | **Accepted 2026-08-31** — `FunctionInfo` gains AST-spelled `params` / `return_type`, JSON v2 only | [01](01-function-signatures-in-reflection.md) |
+| W1 | Reflection reports every function's name and none of its type | animader | **Accepted 2026-08-31** — `FunctionInfo` gains AST-spelled `params` / `return_type`, JSON v2 only. **Landed 2026-08-31** | [01](01-function-signatures-in-reflection.md) |
 
 Plan numbers track the W-numbers one-to-one, the way PNGine's track the
 P-numbers.
