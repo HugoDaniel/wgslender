@@ -553,6 +553,13 @@ fn writeTypeInfoJson(buf: *std.ArrayList(u8), arena: Allocator, t: *const TypeIn
             }
             try appendStr(buf, arena, "}");
         },
+        // No `size` / `alignment`: nothing was measured, and writing 0
+        // for them is what made this indistinguishable from a scalar.
+        .unresolved => |u| {
+            try appendStr(buf, arena, "{\"kind\":\"unresolved\",\"name\":");
+            try appendJsonStr(buf, arena, u.name);
+            try appendStr(buf, arena, "}");
+        },
         .ptr => |p| {
             try appendStr(buf, arena, "{\"kind\":\"ptr\",\"addressSpace\":");
             try appendJsonStr(buf, arena, p.address_space.string());

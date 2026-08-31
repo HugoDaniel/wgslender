@@ -221,6 +221,7 @@ pub const TypeInfo = union(enum) {
     texture: TextureInfo,
     sampler: SamplerInfo,
     ptr: PtrInfo,
+    unresolved: UnresolvedInfo,
 
     pub const ScalarInfo = struct {
         name: []const u8,
@@ -269,6 +270,18 @@ pub const TypeInfo = union(enum) {
         address_space: Ast.AddressSpace,
         format: *const TypeInfo,
         access: Ast.AccessMode,
+    };
+    /// A type name that maps to no builtin, no handle spelling and no
+    /// struct in this module. Reflection does not run the validator, so
+    /// this is not an error — a name declared in another file, or simply
+    /// misspelled, both land here — but it is not a type either, and it
+    /// carries no size or alignment because none was ever computed.
+    ///
+    /// Reported as its own kind rather than as a zero-size `scalar`,
+    /// which is a shape no real scalar has and no consumer was told to
+    /// look for.
+    pub const UnresolvedInfo = struct {
+        name: []const u8,
     };
 };
 

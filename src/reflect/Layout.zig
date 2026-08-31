@@ -326,14 +326,12 @@ pub const LayoutComputer = struct {
                         } });
                     }
                 }
-                // Unknown ident — fall back to a nominal scalar entry so
-                // callers always see a node. Layout values are 0; consumer
-                // can detect via `.size == 0`.
-                return self.alloc(TypeInfo{ .scalar = .{
-                    .name = ident.name,
-                    .size = 0,
-                    .alignment = 0,
-                } });
+                // Unknown ident — not a builtin, not a handle spelling,
+                // not a struct in this module. Callers still get a node,
+                // but one that says so: a zero-size `scalar` was a shape
+                // no real scalar has, and a host switching on `kind` read
+                // it as a scalar named `Missing` and believed it.
+                return self.alloc(TypeInfo{ .unresolved = .{ .name = ident.name } });
             },
             .vec => |vec| return self.buildVecTypeInfo(vec, depth),
             .mat => |mat| return self.buildMatTypeInfo(mat, depth),
@@ -632,7 +630,10 @@ pub const LayoutComputer = struct {
                     a.size = sz;
                 };
             },
-            .sampler, .texture, .ptr => {},
+            // Nothing to patch: a handle has no host-side layout, a
+            // pointer is not a member type, and an unresolved name has
+            // no size or alignment for `@align` / `@size` to raise.
+            .sampler, .texture, .ptr, .unresolved => {},
         }
         return patched;
     }
@@ -1215,7 +1216,9 @@ fn sizeOfTypeInfo(t: *const TypeInfo) ?u32 {
         .array => |a| a.size,
         .@"struct" => |s| s.size,
         .atomic => |a| a.size,
-        .sampler, .texture, .ptr => null,
+        // No size: a handle is opaque, a pointer is not a member type,
+        // and an unresolved name was never measured.
+        .sampler, .texture, .ptr, .unresolved => null,
     };
 }
 
