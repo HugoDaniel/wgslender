@@ -610,3 +610,49 @@ one crash the same pre-existing `tint: semantic preservation` SIGKILL;
 no golden drift, which the corpus cannot see anyway since nothing in the
 validator path imports `Reflect`; full Go package and 187 npm assertions
 across all four wrappers against rebuilt wasm.
+
+---
+
+# Follow-up, 2026-08-31: an unresolvable name is now its own kind
+
+The third thing the review pass turned up, fixed on request.
+
+A type name that maps to no builtin, no handle spelling and no struct in
+the module came back as `{"kind":"scalar","name":"Missing","size":0}`.
+That is a shape no real scalar has, but nothing said so: the only signal
+was a magic zero, mentioned in one code comment and in no document a
+consumer reads. A host switching on `kind` — which is what `kind` is for
+— read a scalar named `Missing` and believed it.
+
+`TypeInfo` now has a tenth variant, `unresolved`, carrying only the name.
+No size, no alignment: none was ever computed, and writing 0 for them is
+what made it indistinguishable in the first place. `typ` still spells the
+name as written, unchanged.
+
+This predates `params[]` — a binding has had the same fallback for as
+long as `type_info` has existed — so it is a wire change in both schema
+versions, not a v2 addition. npm and Go gained the kind. Rust did not:
+`wgslender-core` types a deliberate subset (no pointers, no handles), and
+its `TypeInfo` is `#[serde(other)]`, so the new tag lands in
+`TypeInfo::Unknown` rather than failing the reflection — which is worth
+stating plainly, because a stricter enum there would have started
+rejecting every shader carrying an unresolvable name the moment this
+shipped. There is now a test asserting exactly that.
+
+## To the host
+
+For animader this closes the case the workaround section never covered: a
+kernel written against a type the fragment does not itself declare. That
+is not a broken kernel — a fragment with no entry point and no bindings
+is precisely a file that leans on names from elsewhere — and the class
+check can now tell "this parameter is a type I cannot see" apart from
+"this parameter is a scalar", instead of quietly accepting the second.
+
+Verified: `zig build test -j1` **exit 0**, 129/129 in
+`tests/reflect_test.zig`, no golden drift, and the tint corpus ran to
+completion — 11952 total, 8606 passed, 0 failed. Worth recording that the
+`tint: semantic preservation` SIGKILL reported against the two earlier
+follow-ups was **not** a pre-existing bug: it was this machine's disk
+being full, and the test passes with room to work in. Full Go package,
+190 npm assertions across all four wrappers, and the whole
+`wgslender-core` Rust suite green against rebuilt wasm.
