@@ -1037,7 +1037,20 @@ pub const LayoutComputer = struct {
             .texture => |tex| return self.textureTypeToString(tex),
             .ptr => |p| {
                 const elem_str = self.typeToStringMapped(p.elem_type, mapped);
-                return self.fmtAlloc("ptr<{s}, {s}>", .{ p.address_space.string(), elem_str });
+                // The access mode is written only when the author wrote one
+                // (`.none` otherwise). Dropping an explicit `read_write`
+                // would leave a string that re-reads as the default `read`;
+                // inventing one where there was none would spell
+                // `ptr<function, T, read>`, which WGSL permits only on
+                // `storage`.
+                if (p.access_mode == .none) {
+                    return self.fmtAlloc("ptr<{s}, {s}>", .{ p.address_space.string(), elem_str });
+                }
+                return self.fmtAlloc("ptr<{s}, {s}, {s}>", .{
+                    p.address_space.string(),
+                    elem_str,
+                    p.access_mode.string(),
+                });
             },
         }
     }
