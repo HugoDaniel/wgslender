@@ -3,6 +3,63 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-09-11
+
+Every change in this release is in reflection. Two of them change what
+reflection writes in JSON schema v1 as well as v2, so a consumer that switches
+on `kind` or byte-compares v1 output should read the entries marked ⚠.
+
+### Added
+
+- **Reflection reports each function's parameters and return type.** In JSON
+  v2 every `functions[]` entry now carries `params`, an array of `{name,
+  type}` objects with a `typeInfo` wherever reflection can describe the type
+  (the array is empty for a function with no parameters), and `returnType`,
+  which is `null` when the function has no `-> T` clause and otherwise comes
+  with a `returnTypeInfo`. `nameMapped`, `typeMapped` and `returnTypeMapped`
+  appear only when a renamer changed the text. Types are spelled as the source
+  wrote them (`vec2f`, not `vec2<f32>`), because reflection does not run the
+  validator. The signature is filled in whether or not the function is
+  reachable from an entry point, so a shader fragment with no entry point
+  still describes its functions. v1 output does not gain these keys. The npm
+  types gain `ParamInfo`, the Go package gains `Param`, and the Rust crates
+  pass the new keys through in the JSON they already return.
+
+### Changed
+
+- **A type name that reflection cannot resolve is reported as
+  `{"kind":"unresolved","name":…}` (⚠ wire change, v1 and v2).** A name that
+  matches no builtin type, no texture or sampler spelling and no struct in
+  the module used to come back as `{"kind":"scalar","name":"Missing","size":0}`,
+  which a consumer switching on `kind` could not tell apart from a real
+  scalar. The new kind carries only the name, because no size or alignment
+  was ever computed for it. A misspelling and a type declared in another file
+  both land here, since reflection does not run the validator. Bindings are
+  affected as well as the new function parameters. npm gains a `{ kind:
+  "unresolved"; name: string }` member and Go gains `KindUnresolved`. In Rust,
+  `wgslender-core`'s `TypeInfo` already maps an unfamiliar tag to
+  `TypeInfo::Unknown`, so a shader carrying an unresolvable name still
+  reflects without an error.
+
+### Fixed
+
+- **A function's `stableId` and `nameMapped` are filled in (⚠ wire change,
+  v1 and v2).** A stable id is the name reflection gives a declaration that
+  survives a reparse, which `nameOffset` and `declSpan` do not. Both fields
+  existed on `FunctionInfo` and were never written, so a function that is not
+  an entry point had no durable name at all. `functions[]` entries therefore
+  gain a `stableId` key in v1 output too: it is additive, v1 already emitted
+  `stableId` for bindings, struct fields and entry points, and the Go and
+  TypeScript types already declared it optional on functions. `nameMapped` is
+  omitted when it equals `name`, which is what the npm types always stated
+  ("absent when no renamer was applied").
+- **A pointer type keeps its explicit access mode when reflection spells it.**
+  `ptr<storage, array<f32>, read_write>` came back as `ptr<storage,
+  array<f32>>`, which is a different type (an omitted access mode defaults to
+  `read`) and which contradicted the `access` field in the same type's
+  `typeInfo`. The third argument is now written exactly when the source wrote
+  one. This reaches type alias spellings as well as parameter types.
+
 ## [1.4.1] — 2026-08-26
 
 ### Fixed

@@ -8,7 +8,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-pub const version = "1.4.1";
+pub const version = "1.5.0";
 
 // Re-exported modules, grouped by stability tier:
 //
