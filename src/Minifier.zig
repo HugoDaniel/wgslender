@@ -432,82 +432,174 @@ fn countStmtUsage(arena: Allocator, stmt: Ast.Stmt, uses: *std.AutoHashMapUnmana
 
 /// Wraps the global renamer, overriding function-local symbols (parameters,
 /// locals) with canonical names (a, b, c, ...) that restart in each function.
+///
+/// The invariant: inside a function body, every identifier the printer can
+/// emit comes from one of two disjoint sets. The first is the canonical names
+/// `name` assigns. The second is every name that bypasses this wrapper — the
+/// base renamer's names for module-scope declarations, pinned symbols
+/// answering with their source name, and the keywords and builtins the
+/// pipeline already reserved. `reserve` folds the second set into the
+/// pipeline's reserved names before `name` hands out any canonical name, so a
+/// declaration position the walker misses keeps its base name and no
+/// canonical name can land on it. Struct members are excluded: they are not
+/// scope members and never occupy identifier position inside a body, so
+/// reserving their names would only burn short ones.
 pub const ScopeLocalRenamer = struct {
     overrides: std.AutoHashMapUnmanaged(u32, []const u8),
     base: *const Printer.Renamer,
     ren: Printer.Renamer,
+    /// Set by `collect`; read by `reserve` (`all`) and `name`
+    /// (`per_function`). Empty until `collect` runs.
+    candidates: Candidates = .{},
+
+    /// What `collect` found: the candidate symbols the wrapper may override.
+    const Candidates = struct {
+        /// One list per function, in function declaration order. Each list is
+        /// in the order `name` assigns canonical names: parameters first, then
+        /// body declarations in the text order of the statement walk.
+        per_function: std.ArrayList(std.ArrayList(u32)) = .empty,
+        /// Union of every list — `reserve`'s "the wrapper handles this"
+        /// membership test.
+        all: std.AutoHashMapUnmanaged(u32, void) = .{},
+    };
 
     pub fn init(
         arena: Allocator,
         module: *const Ast.Module,
         base: *const Printer.Renamer,
         policy: *const RenamePolicy,
+        reserved: *const std.StringHashMapUnmanaged(void),
     ) !*ScopeLocalRenamer {
         const self = try arena.create(ScopeLocalRenamer);
         self.* = .{ .overrides = .{}, .base = base, .ren = undefined };
 
-        // Collect global symbol indices (should NOT be overridden)
+        try self.collect(arena, module, policy);
+        const reserved_names = try self.reserve(arena, module, base, reserved);
+        try self.name(arena, &reserved_names);
+
+        self.ren = .{ .ptr = @ptrCast(self), .nameForSymbolFn = &nameForSymbol };
+        return self;
+    }
+
+    /// Walks every function into an ordered list of candidate symbols and the
+    /// union of all candidates. A candidate is a parameter or body-local
+    /// declaration the wrapper may override; module-scope declarations and
+    /// policy-pinned symbols are not candidates, so `reserve` keeps their
+    /// base names instead.
+    fn collect(self: *ScopeLocalRenamer, arena: Allocator, module: *const Ast.Module, policy: *const RenamePolicy) Allocator.Error!void {
+        self.candidates = .{};
+
+        // Module-scope declarations are never candidates: the printer routes
+        // global references through this same renamer, so overriding a global
+        // symbol would rename it to a per-function name.
         var globals: std.AutoHashMapUnmanaged(u32, void) = .{};
         for (module.declarations.items) |decl| {
             const ref = decl.nameRef();
             if (ref.isValid()) try globals.put(arena, ref.index(), {});
         }
 
-        // Collect renamed names of all globals so locals don't shadow them.
-        // Without this, a parameter renamed to "a" can shadow a struct also
-        // renamed to "a", producing invalid WGSL like `fn f(a:u32)->a`.
-        var reserved_names: std.StringHashMapUnmanaged(void) = .{};
-        var globals_iter = globals.keyIterator();
-        while (globals_iter.next()) |key_ptr| {
-            const sym_ref: Ast.SymbolIndex = @enumFromInt(key_ptr.*);
-            const name = base.nameForSymbol(sym_ref);
-            try reserved_names.put(arena, name, {});
-        }
-
-        var name_buf: [16]u8 = undefined;
         for (module.declarations.items) |decl| {
             if (decl != .function) continue;
             const func = decl.function;
-            var name_idx: u32 = 0;
+            var candidates: std.ArrayList(u32) = .empty;
 
             for (func.parameters.items) |param| {
-                if (!param.name.isValid()) continue;
-                const sym_idx = param.name.index();
-                if (globals.contains(sym_idx)) continue;
-                if (policy.mustNotRename(param.name)) continue;
-                const name = try allocCanonicalName(arena, &name_buf, &name_idx, &reserved_names);
-                try self.overrides.put(arena, sym_idx, name);
+                try addCandidate(arena, param.name, &globals, &candidates, &self.candidates.all, policy);
             }
-
             if (func.body) |body| {
-                try collectBodyLocals(arena, body, &globals, &self.overrides, &name_buf, &name_idx, &reserved_names, policy);
+                try collectBodyLocals(arena, body, &globals, &candidates, &self.candidates.all, policy);
+            }
+            try self.candidates.per_function.append(arena, candidates);
+        }
+    }
+
+    /// Builds the names no canonical name may take: the pipeline's reserved
+    /// set (keywords, builtins, `keep_names`) plus the base renamer's name for
+    /// every symbol `collect` did not make a candidate. That covers
+    /// module-scope declarations, pinned locals, and a declaration position a
+    /// future walker misses — the missed symbol keeps its base name, and
+    /// reserving that name stops any canonical name from landing on it.
+    fn reserve(
+        self: *const ScopeLocalRenamer,
+        arena: Allocator,
+        module: *const Ast.Module,
+        base: *const Printer.Renamer,
+        inherited: *const std.StringHashMapUnmanaged(void),
+    ) Allocator.Error!std.StringHashMapUnmanaged(void) {
+        // Copy entry by entry instead of aliasing `inherited.*`: this map is
+        // appended to below, and the copy's own `count()` has to stay an
+        // exact bound for `allocCanonicalName`'s walk.
+        var reserved: std.StringHashMapUnmanaged(void) = .{};
+        var inherited_iter = inherited.iterator();
+        while (inherited_iter.next()) |entry| try reserved.put(arena, entry.key_ptr.*, {});
+
+        for (module.symbols.items, 0..) |sym, i| {
+            if (sym.kind == .member) continue;
+            const index: u32 = @intCast(i);
+            if (self.candidates.all.contains(index)) continue;
+            const base_name = base.nameForSymbol(@enumFromInt(index));
+            if (base_name.len == 0) continue;
+            try reserved.put(arena, base_name, {});
+        }
+        return reserved;
+    }
+
+    /// Per function, restarts the counter and assigns a canonical name to
+    /// each candidate in order, skipping the reserved set.
+    fn name(self: *ScopeLocalRenamer, arena: Allocator, reserved: *const std.StringHashMapUnmanaged(void)) Allocator.Error!void {
+        var name_buf: [16]u8 = undefined;
+        for (self.candidates.per_function.items) |candidates| {
+            var name_idx: u32 = 0;
+            for (candidates.items) |sym_idx| {
+                const canonical = try allocCanonicalName(arena, &name_buf, &name_idx, reserved);
+                try self.overrides.put(arena, sym_idx, canonical);
             }
         }
+    }
 
-        self.ren = .{ .ptr = @ptrCast(self), .nameForSymbolFn = &nameForSymbol };
-        return self;
+    /// Appends `ref` to the ordered candidate list and the union set unless it
+    /// is a module-scope declaration or pinned by the policy.
+    fn addCandidate(
+        arena: Allocator,
+        ref: Ast.SymbolIndex,
+        globals: *const std.AutoHashMapUnmanaged(u32, void),
+        candidates: *std.ArrayList(u32),
+        candidate_set: *std.AutoHashMapUnmanaged(u32, void),
+        policy: *const RenamePolicy,
+    ) Allocator.Error!void {
+        if (!ref.isValid()) return;
+        const sym_idx = ref.index();
+        if (globals.contains(sym_idx)) return;
+        if (policy.mustNotRename(ref)) return;
+        try candidates.append(arena, sym_idx);
+        try candidate_set.put(arena, sym_idx, {});
     }
 
     fn allocCanonicalName(arena: Allocator, buf: *[16]u8, idx: *u32, reserved: *const std.StringHashMapUnmanaged(void)) ![]const u8 {
-        for (0..256) |_| {
-            const name = RenamerMod.numberToMinifiedName(buf, idx.*);
+        // At most `reserved.count()` names of the sequence can be reserved,
+        // so a walk of `reserved.count() + 1` consecutive indices always
+        // reaches a free name — the `unreachable` is now a true statement.
+        for (0..reserved.count() + 1) |_| {
+            const candidate = RenamerMod.numberToMinifiedName(buf, idx.*);
             idx.* += 1;
-            if (reserved.contains(name)) continue;
-            const copy = try arena.alloc(u8, name.len);
-            @memcpy(copy, name);
+            if (reserved.contains(candidate)) continue;
+            const copy = try arena.alloc(u8, candidate.len);
+            @memcpy(copy, candidate);
             return copy;
         } else unreachable;
     }
 
-    /// Iteratively walks compound statements, assigning canonical names to local declarations.
+    /// Iteratively walks compound statements, recording local declarations in
+    /// the walk's naming order. A `for` initialiser declaration is recorded
+    /// where the loop appears — the parser keeps it in `Ast.ForStmt.init_stmt`,
+    /// outside the body this stack descends into — so the counter takes the
+    /// text-order slot among the enclosing body's declarations.
     fn collectBodyLocals(
         arena: Allocator,
         body: *const Ast.CompoundStmt,
         globals: *const std.AutoHashMapUnmanaged(u32, void),
-        overrides: *std.AutoHashMapUnmanaged(u32, []const u8),
-        name_buf: *[16]u8,
-        name_idx: *u32,
-        reserved: *const std.StringHashMapUnmanaged(void),
+        candidates: *std.ArrayList(u32),
+        candidate_set: *std.AutoHashMapUnmanaged(u32, void),
         policy: *const RenamePolicy,
     ) Allocator.Error!void {
         var bodies: std.ArrayList(*const Ast.CompoundStmt) = .empty;
@@ -518,16 +610,7 @@ pub const ScopeLocalRenamer = struct {
             const current_body = bodies.pop() orelse break;
             for (current_body.stmts.items) |stmt| {
                 switch (stmt) {
-                    .decl => |ds| {
-                        const ref = ds.decl.nameRef();
-                        if (ref.isValid()) {
-                            const sym_idx = ref.index();
-                            if (!globals.contains(sym_idx) and !policy.mustNotRename(ref)) {
-                                const name = try allocCanonicalName(arena, name_buf, name_idx, reserved);
-                                try overrides.put(arena, sym_idx, name);
-                            }
-                        }
-                    },
+                    .decl => |ds| try addCandidate(arena, ds.decl.nameRef(), globals, candidates, candidate_set, policy),
                     .@"if" => |s| {
                         try bodies.append(arena, s.body);
                         // Walk else-if chain iteratively
@@ -546,7 +629,14 @@ pub const ScopeLocalRenamer = struct {
                             }
                         }
                     },
-                    .@"for" => |s| try bodies.append(arena, s.body),
+                    .@"for" => |s| {
+                        if (s.init_stmt) |is| {
+                            if (is == .decl) {
+                                try addCandidate(arena, is.decl.decl.nameRef(), globals, candidates, candidate_set, policy);
+                            }
+                        }
+                        try bodies.append(arena, s.body);
+                    },
                     .@"while" => |s| try bodies.append(arena, s.body),
                     .loop => |s| {
                         try bodies.append(arena, s.body);
@@ -565,7 +655,7 @@ pub const ScopeLocalRenamer = struct {
     fn nameForSymbol(ptr: *const anyopaque, ref: Ast.SymbolIndex) []const u8 {
         const self: *const ScopeLocalRenamer = @ptrCast(@alignCast(ptr));
         if (!ref.isValid()) return "";
-        if (self.overrides.get(ref.index())) |name| return name;
+        if (self.overrides.get(ref.index())) |override| return override;
         return self.base.nameForSymbol(ref);
     }
 };
@@ -629,4 +719,85 @@ test "minifier: basic smoke test" {
     const result = try minify(arena.allocator(), source, .{});
     try std.testing.expect(result.code.len > 0);
     try std.testing.expect(result.errors.len == 0);
+}
+
+// The fallback guarantee behind `ScopeLocalRenamer.reserve`: a declaration
+// position `collect` misses must keep its base name, and that name must be
+// in the reserved set `name` skips. It cannot be driven from the public API
+// — nothing public misses a declaration — so this removes the `for` counter
+// from the candidate lists by hand and then runs reserve and name.
+test "minifier: scope-local reserve keeps a missed declaration's base name" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const source: [:0]const u8 =
+        \\fn f(x: i32) -> i32 {
+        \\  let base = x * 2;
+        \\  var total = 0;
+        \\  for (var idx = 0; idx < 4; idx++) {
+        \\    total = total + base + idx;
+        \\  }
+        \\  return total;
+        \\}
+    ;
+
+    // The five passes `Compiler.prepareRenamer` runs, so `base` is the real
+    // frequency renamer: the missed local's base name is a short canonical
+    // name the wrapper's own sequence can land on.
+    var state = Pipeline.State.init(arena, source);
+    try Pipeline.run(&state, &.{
+        .tokenize,
+        .parse,
+        .mark_api_facing,
+        .dce,
+        .compute_usage,
+        .build_reserved_names,
+        .build_renamer,
+    }, .{});
+    const module = state.module.?;
+    const base = state.renamer.?;
+    const policy = state.rename_policy.?;
+    const inherited = if (state.reserved) |*r| r else return error.MissingReservedNames;
+
+    const scope = try arena.create(ScopeLocalRenamer);
+    scope.* = .{ .overrides = .{}, .base = base, .ren = undefined };
+    try scope.collect(arena, module, policy);
+
+    // Simulate a walker that misses the `for` initialiser: drop the counter
+    // from the ordered lists and the union set before `reserve` runs.
+    var missed: ?u32 = null;
+    for (module.symbols.items, 0..) |sym, i| {
+        if (std.mem.eql(u8, sym.original_name, "idx")) {
+            missed = @intCast(i);
+            break;
+        }
+    }
+    const missed_idx = missed orelse return error.FixtureSymbolNotFound;
+    try std.testing.expect(scope.candidates.all.remove(missed_idx));
+    var removed_from_list = false;
+    for (scope.candidates.per_function.items) |*candidates| {
+        for (candidates.items, 0..) |sym_idx, pos| {
+            if (sym_idx == missed_idx) {
+                _ = candidates.orderedRemove(pos);
+                removed_from_list = true;
+                break;
+            }
+        }
+    }
+    try std.testing.expect(removed_from_list);
+
+    const reserved = try scope.reserve(arena, module, base, inherited);
+    try scope.name(arena, &reserved);
+
+    // The missed declaration's base name is reserved, and no canonical name
+    // was handed out on top of it.
+    const base_name = base.nameForSymbol(@enumFromInt(missed_idx));
+    try std.testing.expect(base_name.len > 0);
+    try std.testing.expect(reserved.contains(base_name));
+    var override_iter = scope.overrides.valueIterator();
+    while (override_iter.next()) |name| {
+        try std.testing.expect(!std.mem.eql(u8, name.*, base_name));
+    }
+    try std.testing.expect(scope.overrides.count() > 0);
 }

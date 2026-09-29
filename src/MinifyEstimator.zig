@@ -150,7 +150,7 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
     // counts stay accurate on either path.
     var active_renamer: *const Printer.Renamer = base_renamer;
     if (options.scope_local_rename) {
-        const scope = try Minifier.ScopeLocalRenamer.init(arena, module, base_renamer, policy_box);
+        const scope = try Minifier.ScopeLocalRenamer.init(arena, module, base_renamer, policy_box, &reserved);
         active_renamer = &scope.ren;
     }
 

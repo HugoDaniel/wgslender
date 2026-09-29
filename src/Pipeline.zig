@@ -262,7 +262,8 @@ fn runPrint(state: *State, options: Minifier.Options) Allocator.Error!void {
 
     var renamer: *const Printer.Renamer = renamer_base;
     if (options.scope_local_rename and options.minify_identifiers) {
-        const scope = try Minifier.ScopeLocalRenamer.init(state.arena, module, renamer, policy);
+        const reserved = if (state.reserved) |*r| r else return;
+        const scope = try Minifier.ScopeLocalRenamer.init(state.arena, module, renamer, policy, reserved);
         renamer = &scope.ren;
         state.renamer = renamer;
     }

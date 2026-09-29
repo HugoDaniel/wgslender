@@ -260,10 +260,12 @@ const tail = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 /// `estimateRenameLength` (dry-run). Keeping the skip policy in exactly
 /// one place means the estimator and real renamer cannot drift.
 ///
-/// 256-iteration ceiling is safe: WGSL has ~120 reserved words plus
-/// keywords, so a run of consecutive collisions is bounded.
+/// The walk is bounded by the set itself, not by a keyword count: at most
+/// `reserved.count()` names of the sequence can be reserved, so
+/// `reserved.count() + 1` consecutive indices always reach a free name.
+/// The `unreachable` after the loop is a true statement.
 fn skipReservedNames(buf: *[16]u8, name_index: *u32, reserved: *const std.StringHashMapUnmanaged(void)) void {
-    for (0..256) |_| {
+    for (0..reserved.count() + 1) |_| {
         const name = numberToMinifiedName(buf, name_index.*);
         if (!reserved.contains(name)) return;
         name_index.* += 1;

@@ -225,7 +225,7 @@ fn sortedMinifiedText(arena: Allocator, source: [:0]const u8, module: *Ast.Modul
 
     // Scope-local renaming: within each function, reassign params/locals to
     // a,b,c,… so structurally similar functions produce identical text.
-    const scope_renamer = try ScopeLocalRenamer.init(arena, module, prep.renamer, prep.policy);
+    const scope_renamer = try ScopeLocalRenamer.init(arena, module, prep.renamer, prep.policy, &prep.reserved);
     const renamer = &scope_renamer.ren;
 
     // Sort declarations by kind + size (already filters to live decls).
@@ -257,6 +257,10 @@ const RenamerPrep = struct {
     /// consults it to skip pinned symbols (entry points, builtins,
     /// external bindings, keep-names) when assigning canonical names.
     policy: *const RenamePolicy,
+    /// Set by `build_reserved_names`: keywords, builtins and `keep_names`.
+    /// The wrapper reserves every name in it before handing out canonical
+    /// names.
+    reserved: std.StringHashMapUnmanaged(void),
 };
 
 /// Set up the global frequency-based renamer via the shared Pipeline.
@@ -289,7 +293,7 @@ fn prepareRenamer(arena: Allocator, source: [:0]const u8, module: *Ast.Module, o
         .build_renamer,
     }, effective);
 
-    return .{ .renamer = state.renamer.?, .policy = state.rename_policy.? };
+    return .{ .renamer = state.renamer.?, .policy = state.rename_policy.?, .reserved = state.reserved.? };
 }
 
 // =========================================================================

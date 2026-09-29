@@ -392,10 +392,6 @@ const rename_configs = [_]struct {
 // Shadow fixtures
 // =========================================================================
 
-/// Fixtures 8 and 9 panic the test binary by design until Block 2 removes the
-/// two name-generator ceilings; flip this off to iterate on the rest.
-const run_ceiling_fixtures = true;
-
 /// Frozen byte buffer result: a named struct type keeps `bytes` a normal
 /// field, so the global slice can point into it without tripping the
 /// "reference to comptime var / comptime field" check.
@@ -428,10 +424,9 @@ const keyword_ceiling_built: FrozenBytes(16 * 1024) = init: {
 const keyword_ceiling_source: [:0]const u8 = keyword_ceiling_built.bytes[0..keyword_ceiling_built.len :0];
 
 /// Fixture 8: 300 used module-scope constants plus one function with a local.
-/// The constants take the first 300 names of the canonical sequence and the
-/// wrapper reserves every one of them, so the first local walks into
-/// `unreachable` in `ScopeLocalRenamer.allocCanonicalName` — the wrapper's
-/// 256-iteration ceiling.
+/// The constants take the first 300 free names of the canonical sequence and
+/// the wrapper reserves every one of them, so the first local must walk past
+/// a long reserved run to get a name — the wrapper's reserved-set ceiling.
 const global_ceiling_built: FrozenBytes(24 * 1024) = init: {
     @setEvalBranchQuota(500_000);
     var buf: [24 * 1024]u8 = undefined;
@@ -467,8 +462,8 @@ const global_ceiling_source: [:0]const u8 = global_ceiling_built.bytes[0..global
 /// Fixture 9: the first 260 names of the canonical sequence, built at comptime
 /// through `Renamer.numberToMinifiedName` itself so the list can never drift
 /// from the sequence it pins. These are `keep_names` entries, so the base
-/// renamer's reserved set holds 260 consecutive sequence names and its own
-/// 256-iteration ceiling trips under every config — scope-local or not.
+/// renamer's reserved set holds 260 consecutive sequence names and must walk
+/// past all of them — the base renamer's reserved-set ceiling.
 const BaseNames = struct { names: [260][]const u8 };
 
 const base_ceiling_built: BaseNames = init: {
@@ -488,9 +483,6 @@ const ShadowFixture = struct {
     name: []const u8,
     source: [:0]const u8,
     keep_names: []const []const u8 = &.{},
-    /// Fixtures 8 and 9 take the whole test binary down with a panic until
-    /// Block 2 fixes the ceilings; `run_ceiling_fixtures` gates them.
-    panics_before_fix: bool = false,
 };
 
 const shadow_fixtures = [_]ShadowFixture{
@@ -598,7 +590,6 @@ const shadow_fixtures = [_]ShadowFixture{
     .{
         .name = "8-global-reservation-ceiling",
         .source = global_ceiling_source,
-        .panics_before_fix = true,
     },
     .{
         .name = "9-base-reserved-ceiling",
@@ -615,7 +606,6 @@ const shadow_fixtures = [_]ShadowFixture{
         \\}
         ,
         .keep_names = base_ceiling_keep_names,
-        .panics_before_fix = true,
     },
 };
 
@@ -946,7 +936,6 @@ test "collision: shadow fixtures keep bindings under every rename config" {
 
     var failed_pairs: usize = 0;
     for (shadow_fixtures) |fixture| {
-        if (fixture.panics_before_fix and !run_ceiling_fixtures) continue;
         for (rename_configs) |config| {
             var options = config.options;
             options.keep_names = fixture.keep_names;
@@ -1136,7 +1125,7 @@ test "collision: scope-local wrapper covers every scope member" {
     const base = state.renamer.?;
     const policy = state.rename_policy.?;
 
-    const scope_renamer = try wgslender.Minifier.ScopeLocalRenamer.init(alloc, module, base, policy);
+    const scope_renamer = try wgslender.Minifier.ScopeLocalRenamer.init(alloc, module, base, policy, &state.reserved.?);
 
     try expectScopeCovered(module.scope, policy, &scope_renamer.overrides);
     try expectOverrideNamesUnique(alloc, module, &scope_renamer.overrides);
