@@ -224,3 +224,51 @@ test "Pipeline.custom: empty state is observable, custom pass still runs" {
     try std.testing.expect(observer.invoked);
     try std.testing.expect(!observer.saw_anything);
 }
+
+// =========================================================================
+// Test 5 — A pipeline that asks for scope-local renaming but omits the
+// `build_reserved_names` pass must still print. The reserved set is a pure
+// function of the arena and `keep_names`, so the print pass derives it on
+// demand and produces exactly the bytes of the canonical pass list.
+// =========================================================================
+
+test "Pipeline.custom: scope-local print derives reserved names when the pass is omitted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const source: [:0]const u8 =
+        \\fn sum_to(n: i32) -> i32 {
+        \\    var acc = 0;
+        \\    for (var i = 0; i < n; i = i + 1) {
+        \\        acc = acc + i;
+        \\    }
+        \\    return acc;
+        \\}
+        \\@compute @workgroup_size(1) fn main() {
+        \\    let s = sum_to(4);
+        \\}
+    ;
+
+    const options: Minifier.Options = .{
+        .minify_identifiers = true,
+        .scope_local_rename = true,
+    };
+
+    // Same shader and options; only `.build_reserved_names` is missing.
+    var without = Pipeline.State.init(a, source);
+    try Pipeline.run(&without, &.{
+        .tokenize, .parse, .mark_api_facing, .dce, .compute_usage,
+        .build_renamer, .print,
+    }, options);
+
+    var with = Pipeline.State.init(a, source);
+    try Pipeline.run(&with, &.{
+        .tokenize, .parse, .mark_api_facing, .dce, .compute_usage,
+        .build_reserved_names, .build_renamer, .print,
+    }, options);
+
+    const out_with = with.output orelse return error.TestUnexpectedResult;
+    const out_without = without.output orelse return error.TestUnexpectedResult;
+    try std.testing.expect(out_without.len > 0);
+    try std.testing.expectEqualStrings(out_with, out_without);
+}

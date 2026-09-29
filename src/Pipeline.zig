@@ -257,12 +257,27 @@ fn runBuildRenamer(state: *State, options: Minifier.Options) Allocator.Error!voi
 
 fn runPrint(state: *State, options: Minifier.Options) Allocator.Error!void {
     const module = state.module orelse return;
-    const renamer_base = state.renamer orelse return;
     const policy = state.rename_policy orelse return;
+
+    // A pass list may omit `build_reserved_names`, which also makes
+    // `build_renamer` skip (`runBuildRenamer` needs the reserved set). When
+    // scope-local printing is requested, both products are derivable from the
+    // state the earlier passes populated, so derive them here instead of
+    // falling through to a silent no-output return.
+    if (options.scope_local_rename and options.minify_identifiers and state.renamer == null) {
+        if (state.reserved == null) try runBuildReservedNames(state, options);
+        try runBuildRenamer(state, options);
+    }
+
+    const renamer_base = state.renamer orelse return;
 
     var renamer: *const Printer.Renamer = renamer_base;
     if (options.scope_local_rename and options.minify_identifiers) {
-        const reserved = if (state.reserved) |*r| r else return;
+        const reserved = blk: {
+            if (state.reserved) |*r| break :blk r;
+            try runBuildReservedNames(state, options);
+            break :blk &state.reserved.?;
+        };
         const scope = try Minifier.ScopeLocalRenamer.init(state.arena, module, renamer, policy, reserved);
         renamer = &scope.ren;
         state.renamer = renamer;
