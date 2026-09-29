@@ -6,7 +6,8 @@ tree at `38f38a0` (the 1.5.0 artefact rebuild) on 2026-09-29, working tree
 clean. Reproduced on the native CLI, on the npm package's 1.5.0 wasm through
 the same `minify()` call the report used, and on the `compile` subcommand.
 
-**Status:** proposed, not executed. The plan is at the end of this file. Check
+**Status:** proposed, not executed. Reviewed once on 2026-09-29; the review
+section at the end of this file records what the review changed. Check
 `git log -- src/Minifier.zig tests/collision_test.zig` before trusting this
 line.
 
@@ -167,8 +168,36 @@ missing reservation.
 `src/Compiler.zig:275-297` builds a no-op base when `options.minify` is false
 and `sortedMinifiedText` at `src/Compiler.zig:228` wraps it anyway, so a
 fallen-through local keeps its source name while its neighbours get canonical
-ones. A source local named `i` next to nine or more canonical names collides
-the same way.
+ones. Decoded from the wasm that `compile --no-mangle` produces for a loop
+whose counter is named `a`:
+
+```
+fn f(a:i32)->i32{var b=0;for(var a=0;a<4;a++){b=b+a+a;}return b;}
+```
+
+The parameter `x` became `a`, the counter kept its source name `a`, and
+`x + a` reads the counter twice. Default `compile` gives the same shader
+`var b=0;for(var b=0;…){b=b+a+b;}`, which is the report's shape.
+
+## Two crashes on the same ceiling
+
+Both name generators stop after 256 consecutive reserved names and declare
+the rest unreachable. The reserved set is not bounded by the language: it
+holds every renamed global's name and every user pin, so a valid shader can
+exceed it.
+
+- `allocCanonicalName` at `src/Minifier.zig:492-499` walks the canonical
+  sequence with `for (0..256)`. A shader with 300 used module-scope
+  constants renames them to the first 300 names of the sequence, the wrapper
+  reserves all 300, and the first local of any function panics:
+  `thread … panic: reached unreachable code, src/Minifier.zig:499`.
+- `skipReservedNames` at `src/Renamer.zig:265-271` has the same loop. Passing
+  the first 260 names of the sequence as `--keep-names` panics the ordinary
+  renamer without scope-local naming: `src/Renamer.zig:270`, reached from
+  `assignNames`. `estimateRenameLength` shares the helper, so the LSP's size
+  estimate would hit it as well.
+
+In a release build `unreachable` is undefined behaviour rather than a panic.
 
 ## Where it ships
 
@@ -178,10 +207,27 @@ Three places construct the wrapper, and all three inherit every shape above.
 |---|---|---|
 | `Pipeline.runPrint` | `src/Pipeline.zig:264-268` | `--scope-local-rename`, `scopeLocalRename` in the npm package and in `wgslender.json`, the Go and Rust option of the same name |
 | `Compiler.sortedMinifiedText` | `src/Compiler.zig:228` | every `compile` call: the CLI subcommand, the C ABI and wasm exports, and the bindings built on them |
-| `MinifyEstimator` | `src/MinifyEstimator.zig:152-155` | LSP size estimates; wrong names, right lengths, so no user-visible effect |
+| `MinifyEstimator.estimate` | `src/MinifyEstimator.zig:152-155` | LSP size estimates, in both of its modes |
 
-The estimator has the pipeline's reserved set in scope at
-`src/MinifyEstimator.zig:130-145`, which matters for the fix below.
+The estimator has two modes (`src/MinifyEstimator.zig:41-59`). The full mode
+(`use_full_minify`) runs the production renamer and prints real names. The
+cheap mode runs a `LengthRenamer` (`src/MinifyEstimator.zig:283-291`) that
+answers every symbol with a run of `x` of the right length, so when the
+wrapper reserves "the base name of every global" in cheap mode it reserves
+`x` and `xx` instead of the names the real run reserves. The canonical
+sequence then crosses into two-character names at a different local, and the
+cheap estimate undercounts near that boundary. Measured on a shader with 10
+used globals and 52 locals under `scope_local_rename`:
+
+| Path | Bytes |
+|---|---:|
+| cheap estimator | 978 |
+| full estimator | 998 |
+| actual minifier | 998 |
+
+That inaccuracy predates this issue and is not caused by the fix, but the
+fix has to touch the same reservation step, and passing the keyword set
+alone does not repair it.
 
 ## Why nothing caught it
 
@@ -225,15 +271,47 @@ passes are for. The wrapper is also the only renamer that layers over
 another: the other `nameForSymbolFn` implementations are the base renamer,
 the no-op renamer and the estimator's length renamer.
 
+## A neighbouring bug this plan does not fix
+
+A local declared with the same name as a module-scope alias, struct or
+function binds wrongly before any renamer runs, and no amount of name
+reservation can repair a reference that already points at the wrong symbol.
+
+```wgsl
+alias T = i32;
+fn f() -> i32 {
+  let T: T = T();
+  return T;
+}
+```
+
+Validates as source (one `W0100`), and minifies under the default renamer to
+`fn b()->i32{let a:a=a();return a;}`, which fails to validate (`E0200
+unknown type 'a'`, `E0204`). In WGSL the declared name is not in scope until
+its declaration ends, so the type `T` and the call `T()` mean the alias. The
+binder disagrees twice: `AstVisit.visitType` at `src/AstVisit.zig:370` sets
+`ctx.current_loc = 0` before looking a type name up, which switches off the
+text-order filter and lets the later local win, and the initialiser is
+resolved with the declaration it initialises already visible. Six Tint
+shadowing fixtures are skipped for exactly this in
+`tests/exhaustive/tint_test.zig:48-57` (`shadowing/alias/{const,let,var}`,
+`shadowing/function/var`, `shadowing/struct/{let,var}`).
+
+This is a binder bug, it reproduces with every naming mode, and it needs its
+own plan. The binding-preservation helper this plan adds (Block 1) is the
+test that will catch it; the fixture above must not enter this plan's fixture
+table until the binder is fixed, or it fails for the wrong reason.
+
 ---
 
 # Verdict
 
 Accepted as a bug, to ship as a patch release. The wrapper's job is to give
 every function-local symbol a name from one sequence; it misses one
-declaration position and it never reserves the names that can still reach
-the printer past it. The fix closes both, and closes the second one by
-construction rather than by listing cases.
+declaration position, it never reserves the names that can still reach the
+printer past it, and both name generators stop at a fixed count that a valid
+shader can exceed. The fix closes all three, and closes the reservation gap
+by construction rather than by listing cases.
 
 ## Design
 
@@ -245,12 +323,9 @@ symbols answering with their source name, WGSL keywords and builtins), and
 every member of the second set is reserved before the first canonical name
 is handed out.
 
-Three changes to `ScopeLocalRenamer` in `src/Minifier.zig`, one signature
-change, three call sites.
-
 **1. Visit the `for` initialiser.** In `collectBodyLocals`, the `for` arm
-names a `.decl` in `s.init_stmt` the moment it meets the loop, before pushing
-the body:
+records a `.decl` in `s.init_stmt` the moment it meets the loop, before
+pushing the body:
 
 ```zig
 .@"for" => |s| {
@@ -264,12 +339,13 @@ naming order of everything else untouched, so shaders that print correctly
 today print the same bytes after the change unless they contain a `for`
 initialiser.
 
-**2. Reserve every name that can bypass the wrapper.** `init` becomes
-collect, reserve, name, in that order:
+**2. Reserve every name that can bypass the wrapper.** `init` becomes three
+named steps, collect, reserve, name, in that order, each callable on its own
+so a unit test can drive them:
 
-- Collect: walk every function as today (plus change 1) into an ordered list
-  of candidate symbols per function, and a set of all candidates.
-- Reserve: start from the pipeline's reserved set (a new `reserved:
+- `collect`: walk every function as today (plus change 1) into an ordered
+  list of candidate symbols per function, and a set of all candidates.
+- `reserve`: start from the pipeline's reserved set (a new `reserved:
   *const std.StringHashMapUnmanaged(void)` parameter; keywords, builtins and
   `keep_names` are already in it), then add `base.nameForSymbol(s)` for every
   symbol `s` in `module.symbols` that is not a candidate and is not of kind
@@ -280,19 +356,40 @@ collect, reserve, name, in that order:
   excluded because they are not scope members (`declareSymbolNoScope` at
   `src/Parser.zig:1204`) and never occupy identifier position inside a body,
   so reserving their names would only burn short ones.
-- Name: per function, restart the counter and assign a canonical name to each
-  candidate in order, with `allocCanonicalName` skipping the reserved set as
-  it does now.
+- `name`: per function, restart the counter and assign a canonical name to
+  each candidate in order, skipping the reserved set.
 
-**3. Signature and call sites.** `init(arena, module, base, policy, reserved)`.
-`src/Pipeline.zig:265` passes `state.reserved.?`. `src/Compiler.zig`:
-`RenamerPrep` (`:257-263`) gains a `reserved` field, `prepareRenamer` returns
-`state.reserved.?`, and `sortedMinifiedText` (`:228`) passes it.
-`src/MinifyEstimator.zig:153` passes the `reserved` it already built.
+**3. Terminate on the reserved set, not on a constant.** At most
+`reserved.count()` names of the sequence can be reserved, so a walk of
+`reserved.count() + 1` consecutive indices always reaches a free name. Both
+`allocCanonicalName` (`src/Minifier.zig:492`) and `skipReservedNames`
+(`src/Renamer.zig:266`) loop to that bound instead of 256, and keep the
+`unreachable` after it, which is now a true statement. `estimateRenameLength`
+inherits the fix through the shared helper.
 
-The 256-iteration ceiling in `allocCanonicalName` stays. The base renamer
-skips the same 417-entry set under the same ceiling, and a run of
-consecutive reserved names in the sequence is short.
+**4. The estimator's cheap mode reserves real names.** `estimateRenameLength`
+already walks the real sequence to compute each rank's length
+(`src/MinifyEstimator.zig:330` region, through `skipReservedNames`), so the
+sequence index of every symbol's name is known. The `LengthRenamer` keeps
+that index per symbol and answers with the materialised name for module-scope
+declarations and pinned symbols, which is what the wrapper reserves, and with
+the placeholder for everything else, which the wrapper overrides anyway.
+Cheap and full estimates then agree with the minifier on the boundary shader
+above.
+
+**5. Signature and call sites.** `ScopeLocalRenamer.init(arena, module,
+base, policy, reserved)`. `src/Pipeline.zig:265` passes `state.reserved.?`.
+`src/Compiler.zig`: `RenamerPrep` (`:257-263`) gains a `reserved` field,
+`prepareRenamer` returns `state.reserved.?`, and `sortedMinifiedText` (`:228`)
+passes it. `src/MinifyEstimator.zig:153` passes the `reserved` it built at
+`:130`.
+
+**6. A public seam for the compiler's text.** `sortedMinifiedText` becomes
+`pub fn minifiedText(arena, source, module, options)`, documented as the
+exact bytes the BPE stage compresses and regenerates. The in-module
+round-trip pin at `src/Compiler.zig:1724-1750` already proves that
+`decodeBpe(compress(text)) == text`, so a test that proves `minifiedText`
+correct proves the decoded wasm correct without a wasm runtime.
 
 ### Rejected alternatives
 
@@ -304,8 +401,13 @@ consecutive reserved names in the sequence is short.
   statement walk names an enclosing body before its nested bodies. Every
   scope-local and `compile` output with a nested block would change bytes.
   Not needed for correctness; possible later as a compression experiment.
-- **Only fix the `for` arm.** Closes the report, leaves the `keep_names` and
-  keyword shapes open, and leaves the next missed position silent again.
+- **Only fix the `for` arm.** Closes the report, leaves the `keep_names`,
+  keyword and ceiling shapes open, and leaves the next missed position
+  silent again.
+- **Force the estimator's full mode under scope-local.** Correct, but the
+  full mode also gzips the real text, and the cheap mode exists so the LSP
+  can answer on every keystroke. Materialising a handful of global names is
+  the cheaper repair.
 
 ### Behaviour changes, stated plainly
 
@@ -316,19 +418,24 @@ consecutive reserved names in the sequence is short.
   were correct by luck. No pinned golden is produced under these modes:
   `tests/snapshot_test.zig` keeps its goldens inline and never sets
   `scope_local_rename`, the Go, Rust and npm fixture sets contain no `for`
-  initialiser, and the compile round-trip pin in `src/Compiler.zig:1724-1750`
-  compares two live code paths, not stored bytes.
+  initialiser, and the compile round-trip pin compares two live code paths,
+  not stored bytes.
 - **Output bytes change** for `--keep-names` with a pinned local, and for
   functions with 321 or more parameters and locals. Both were wrong.
+- **Shaders that crashed now minify.** More than 256 reserved names in a row
+  no longer reach `unreachable` in either generator.
+- **LSP size estimates change** in cheap mode for documents using
+  `scope_local_rename`, in the direction of the full mode's numbers.
 - **`ScopeLocalRenamer.init` gains a parameter.** It is `pub` and reachable
   as `wgslender.Minifier.ScopeLocalRenamer`, so a Zig consumer calling it
   directly fails to compile until it passes a reserved set. No binding
   exposes it; the three in-tree callers are listed above.
+- **`Compiler` gains a public function**, `minifiedText`. Additive.
 - No option, flag, JSON key, C ABI or wire change.
 
 ## Plan
 
-Three blocks. Each is self-contained: it says what to read, what to change,
+Four blocks. Each is self-contained: it says what to read, what to change,
 and what proves it. Run tests from the repository root; the corpus tests read
 goldens relative to it. The fast red/green check for one test file is
 
@@ -342,82 +449,171 @@ and the gate is `zig build test -j1`, exit code only.
 
 Read `tests/collision_test.zig:1-142` first: `checkNoDuplicateNames`,
 `expectMinifiesWithoutRedeclaration`, and the `rename_configs` table every
-collision fixture runs against.
+collision fixture runs against. Three of its five entries enable scope-local
+naming (`scope-local-rename`, `sort+scope-local`, `all`).
 
-1. Add `expectNoIntroducedShadowing(arena, source, options)`. It validates
-   `source`, minifies it, validates the output, and fails if the number of
-   diagnostics with code `Diagnostic.Code.shadowing` grew, printing the
-   output. Counting rather than banning is what keeps it sound: source
-   shadowing is legal and must survive, dead-code elimination may remove a
-   shadow, and the base renamer's module-unique names mean no config can
-   legitimately add one (the table above: zero shaders in 324 for every
-   config without the wrapper). Document that argument on the helper.
-2. Add a `shadow_fixtures` table of `{ name, source, keep_names }` and one
+1. **`expectBindingsPreserved(arena, source, options)`, the check that
+   carries the proof.** Minify with `options` plus `minify_syntax = false`,
+   `tree_shaking = false` and `sort_declarations = false`, parse the output,
+   and compare the binding structure of source and output. Sorting is
+   switched off because it changes declaration order and nothing else: the
+   wrapper is built from the unsorted module and the sorted print reads the
+   same renamer (`src/Pipeline.zig:264-275`, `src/Compiler.zig:228-245`), so
+   proving the unsorted variant proves the names of the sorted one. With
+   those three off the printer preserves every declaration and every
+   reference in document order.
+
+   The binding structure is a sequence built by one `wgslender.MultiVisitor.
+   walk` (`src/lint/MultiVisitor.zig:51-60`, document order) run over each
+   module. `on_decl` gives a function's parameters ordinals 0, 1, 2 and
+   records the ordinals of the type names in its signature; `on_stmt` gives
+   each declaration statement the next ordinal, including a `for`
+   initialiser, and records the type name of a typed `let`/`var`; `on_expr`
+   records every `.ident`. Each recorded reference becomes `local(ordinal)`
+   when the symbol was declared in the current function, `global(index into
+   module.declarations)` when it is a module-scope member
+   (`module.scope.members`), and `other(name)` for builtins and unbound
+   names. The two sequences must be equal. Print both around the first
+   mismatch on failure. This is the test the counterexample in the review
+   section fails and the count-based smoke test passes.
+2. **`expectNoIntroducedShadowing(arena, source, options)`, kept as a smoke
+   test only.** It validates source and output and fails if the number of
+   `Diagnostic.Code.shadowing` diagnostics grew. Its doc comment must state
+   why it is not a proof: the wrapper gives every local a fresh name, so it
+   removes legitimate source shadows at the same time it introduces harmful
+   ones, and the counts can cancel.
+3. **`shadow_fixtures`**, a table of `{ name, source, keep_names }`, and one
    test that runs every fixture against every `rename_configs` entry through
-   both helpers, printing the fixture and config names on failure. Fixtures:
-   the report's shader; the `let` initialiser; the nested loops inside `if`;
-   the pinned local with `keep_names = &.{"a"}`; a `loop`/`continuing`,
-   `switch` and `while` shader that already prints correctly, so the test
-   also pins the shapes that must not regress; and a function with 340
-   locals built with a `comptime` loop (`@setEvalBranchQuota`), which is the
-   keyword shape.
-3. Add a structural completeness test: parse a shader with every declaration
+   `expectMinifiesWithoutRedeclaration`, `expectBindingsPreserved` and the
+   smoke test, printing fixture and config names on failure. Fixtures:
+   - the report's shader;
+   - the `let` initialiser;
+   - the nested loops inside `if`;
+   - the report's shader with `{ let x = 7; total += x; }` inserted before
+     the loop, the shape whose warning count does not move;
+   - the pinned local with `keep_names = &.{"a"}`;
+   - a `loop`/`continuing`, `switch` and `while` shader that already prints
+     correctly, pinning the shapes that must not regress;
+   - a function with 340 locals built with a `comptime` loop
+     (`@setEvalBranchQuota`), the keyword shape;
+   - 300 used module-scope constants plus one function with a local, the
+     wrapper's ceiling;
+   - a small shader with `keep_names` set to the first 260 names of
+     `numberToMinifiedName` (generated at `comptime` from the same head and
+     tail alphabets), the base renamer's ceiling, which fails under every
+     config in the table.
+4. **Structural completeness.** Parse a shader with every declaration
    position, run the passes `Compiler.prepareRenamer` runs
    (`src/Compiler.zig:284-292`, through `wgslender.Pipeline`), build the
-   wrapper, then walk `module.scope` recursively and assert every
-   `ScopeMember` of a non-module scope is either pinned by the policy or
-   present in `overrides`. This is the test that fails the next time a
-   declaration position is added and not walked.
-4. Call `expectNoIntroducedShadowing` from the two existing
-   `for (rename_configs)` tests at `tests/collision_test.zig:316` and `:403`.
+   wrapper, then walk `module.scope` recursively and assert three things:
+   every `ScopeMember` of a non-module scope is pinned by the policy or
+   present in `overrides`; the override names within one function are
+   pairwise distinct; and no override name equals `base.nameForSymbol` of
+   any symbol outside `overrides` (members excepted). This is the test that
+   fails the next time a declaration position is added and not walked, and
+   the test that would have failed on the reserved-set gap alone.
+5. Call `expectBindingsPreserved` from the two existing `for
+   (rename_configs)` tests at `tests/collision_test.zig:316` and `:403`.
 
-Expected reds before Block 2: fixture 1, 2, 3 and 6 fail under the two
-scope-local configs on the shadowing count (6 fails on parse), fixture 4
-fails under those configs on the count, and the structural test fails on the
-`for` counter. Everything else stays green.
+Expected reds before Block 2: fixtures 1 through 5 and 7 fail
+`expectBindingsPreserved` under the three scope-local configs (7 fails to
+parse first); fixture 8 panics under those configs; fixture 9 panics under
+every config; the structural test fails on the `for` counter. Fixture 6 and
+everything existing stay green. A panic is a red, but it takes the test
+binary down with it, so run fixtures 8 and 9 last or under a `skip` toggle
+until Block 2 lands, and remove the toggle in the same commit as the fix.
 
-Commit: `test(collision): pin renamer-introduced shadowing under scope-local rename`.
+Commit: `test(collision): pin renamer-introduced shadowing and the reserved-name ceilings`.
 
-### Block 2: the fix, in `src/Minifier.zig` and three callers
+### Block 2: the wrapper and the two ceilings
 
-Read `src/Minifier.zig:429-571` and the three call sites. Then:
+Read `src/Minifier.zig:429-571`, `src/Renamer.zig:255-313` and the three call
+sites. Then:
 
-1. Restructure `init` into collect, reserve, name as described under Design,
-   with the new `reserved` parameter. Keep `collectBodyLocals` as the
-   statement walk, feeding an ordered candidate list instead of naming
-   inline, and add the `for` initialiser arm.
-2. Replace the doc comment on `ScopeLocalRenamer` with the invariant in one
+1. Restructure `init` into `collect`, `reserve` and `name` as described under
+   Design, with the new `reserved` parameter, the `for` initialiser arm, and
+   the reserved-set termination bound in `allocCanonicalName`.
+2. Change the bound in `skipReservedNames` the same way and fix its doc
+   comment, which currently argues from the keyword count.
+3. Add a unit test beside `ScopeLocalRenamer` in `src/Minifier.zig` that runs
+   `collect` on a small module, removes one local from the candidate list by
+   hand, runs `reserve` and `name`, and asserts that the removed local's base
+   name is in the reserved set and equals no override. That is the proof of
+   the fallback guarantee, and it cannot be written from the public API
+   because nothing public misses a declaration.
+4. Replace the doc comment on `ScopeLocalRenamer` with the invariant in one
    paragraph: what the two name sets are, why members are excluded, and that
    a missed declaration keeps its base name safely.
-3. Update `src/Pipeline.zig:265`, `src/Compiler.zig` (`RenamerPrep`,
-   `prepareRenamer`, `sortedMinifiedText`) and `src/MinifyEstimator.zig:153`.
-4. Run the single-file check: every Block 1 test green. Run
-   `zig build test -j1`; expect exit 0 and no golden drift (the validator
-   path does not import the minifier, so the Tint goldens cannot move).
-   `tests/determinism_test.zig` and `tests/oom_test.zig` already cover the
-   scope-local path and must stay green.
+5. Update `src/Pipeline.zig:265`, `src/Compiler.zig` (`RenamerPrep`,
+   `prepareRenamer`, `sortedMinifiedText`) and `src/MinifyEstimator.zig:153`
+   to pass the reserved set.
+6. Run the single-file check: every Block 1 test green, ceiling toggles
+   removed. Run `zig build test -j1`; expect exit 0 and no golden drift (the
+   validator path does not import the minifier, so the Tint goldens cannot
+   move). `tests/determinism_test.zig` and `tests/oom_test.zig` already cover
+   the scope-local path and must stay green.
 
-Commit: `fix(minifier): name for-init declarations and reserve every base
-name under scope-local rename`, with `Fixes #2` in the body.
+Commit: `fix(minifier): name for-init declarations, reserve every bypassing
+name, and bound both name generators by the reserved set`, with `Fixes #2`
+in the body.
 
-### Block 3: artefacts, proof, changelog
+### Block 3: the compiler seam and the estimator
 
-1. `zig build release-assets`: the source changed, so every embedded wasm
-   changes and `tests/wasm_freshness_test.zig` fails until the five copies
-   are rebuilt. Commit them as `build(wasm): rebuild every artefact for the
-   scope-local rename fix`.
-2. Prove it where the reporter saw it: `cd packages/js-npm && npm test`, then
-   the report's `minify()` call through `lib/main.js`, expecting a
-   `validate()` with zero diagnostics. Rerun the corpus measurement with
-   properly quoted flags and expect zero shaders gaining a shadow under every
-   config, the two-flag one included. `cargo xtask check` for Rust, since it
-   links the static library, and the Go package tests, since they embed the
-   wasm.
+Read `src/Compiler.zig:215-297` and `src/MinifyEstimator.zig:91-180` and
+`:283-372`.
+
+1. Rename `sortedMinifiedText` to `pub fn minifiedText` with the doc comment
+   from Design item 6. Additive, so no red is possible before it exists.
+2. Reds in a new `tests/compile_text_test.zig` (register it in `build.zig`
+   through `hasFile` like its neighbours): call `Compiler.minifiedText` for
+   the report's shader, the `keep_names` fixture and the counter-named-`a`
+   shader under `.minify = true` and under `.minify = false`, and assert each
+   result through `expectBindingsPreserved` against the source and through a
+   clean `validate`. Move `expectBindingsPreserved` into a shared helper
+   file (`tests/bindings_preserved.zig`, alongside `tests/parse_ok.zig`) so
+   both suites import it. Expect the `.minify = false` cases red until the
+   wrapper fix from Block 2 is on the branch, and green after it; the seam
+   itself needs no further change.
+3. Reds in `tests/minify_estimator_test.zig`: the 10-globals, 52-locals
+   shader under `scope_local_rename`, asserting `total_min` equal to the real
+   minifier's byte count in cheap mode and in full mode. Cheap is red at 978
+   against 998.
+4. Implement Design item 4 in `MinifyEstimator`: keep the sequence index per
+   symbol in `buildLengthRenamer`, materialise names for module-scope and
+   pinned symbols, answer placeholders for the rest. Green.
+5. One end-to-end assertion in the npm suite: compile the report's shader,
+   instantiate the wasm, run `generate()`, and assert the decoded text
+   validates with zero diagnostics. This is the only test that executes the
+   generated module, and it runs against the rebuilt wasm from Block 4, so
+   write it here and expect it green only after Block 4 step 1.
+
+Commits: `feat(compiler): expose the text the BPE stage compresses`,
+`fix(estimator): reserve real global names in the cheap path under
+scope-local rename`, `test(compile): pin decoded-text bindings in both
+naming modes`.
+
+### Block 4: artefacts, proof, changelog
+
+1. `zig build release-assets`, then commit the five copies as `build(wasm):
+   rebuild every artefact for the scope-local rename fix`. The rebuild is
+   required by the release rule in `CLAUDE.md`; `tests/wasm_freshness_test.
+   zig` cannot detect a stale binary within a version (its own header says
+   so), and the only automatic gate is `release.sh`'s `git diff --exit-code`.
+2. Prove it where the reporter saw it: `cd packages/js-npm && npm test`
+   (which now includes the decoded-text assertion), then the report's
+   `minify()` call through `lib/main.js`, expecting a `validate()` with zero
+   diagnostics. Rerun the corpus measurement with each config in its own
+   quoted argument list (the interactive shell here is zsh, which does not
+   split an unquoted variable) and expect zero shaders gaining a shadow
+   under every config, the two-flag one included. `cargo xtask check` for
+   Rust, since it links the static library, and the Go package tests, since
+   they embed the wasm.
 3. `CHANGELOG.md`: a `## [Unreleased]` section with a `### Fixed` entry that
-   names the three shapes, says that scope-local and `compile` output bytes
-   change for shaders with a `for` initialiser, and credits the reporter.
-   `README.md` needs no change; the `--scope-local-rename` row at line 76
-   still describes the flag.
+   names the four shapes and the two ceilings, says that scope-local and
+   `compile` output bytes change for shaders with a `for` initialiser, notes
+   the cheap estimator change, and credits the reporter. `README.md` needs
+   no change; the `--scope-local-rename` row at line 76 still describes the
+   flag.
 4. Reply on issue #2 (draft below) once the fix is on `main`, and cut 1.5.1
    with `./scripts/release.sh` as a separate step.
 
@@ -425,11 +621,16 @@ Commit: `docs(changelog): record the scope-local rename fix`.
 
 ### Effort
 
-Block 1 about twenty minutes, Block 2 about thirty, Block 3 about an hour of
-mostly waiting on the full suite and the binding suites.
+Block 1 about forty minutes, most of it the binding walk. Block 2 about
+forty. Block 3 about forty. Block 4 about an hour of mostly waiting on the
+full suite and the binding suites.
 
 ## Not in this plan
 
+- The binder bug for locals named after a module-scope alias, struct or
+  function (`src/AstVisit.zig:370` and the initialiser's visibility of its
+  own declaration). Its own plan; `expectBindingsPreserved` is the gate to
+  reuse, and the six skipped Tint fixtures are its corpus.
 - Turn `scope_local_rename` on in one of the exhaustive differential or fuzz
   configurations so the Tint corpus exercises the wrapper.
 - A note in `docs/testing.md` or the README that a `W0100` present in
@@ -447,7 +648,63 @@ mostly waiting on the full suite and the binding suites.
 > renamed parameter, and let a function with more than 320 locals receive a
 > local named `if`. All three are closed by reserving every name that can
 > bypass the renamer before it hands out any, and the collision suite now
-> fails on any shadow that minification introduces, warning or not, which is
-> the check that should have caught this. Note that scope-local and
-> `compile` output bytes change for shaders with a `for` initialiser, since
-> the counter now takes a canonical name. Thank you for the precise report.
+> compares the binding structure of source and output, which is the check
+> that should have caught this. Note that scope-local and `compile` output
+> bytes change for shaders with a `for` initialiser, since the counter now
+> takes a canonical name. Thank you for the precise report.
+
+---
+
+# Review, 2026-09-29
+
+A review of the first draft of this plan reported four gaps and two
+corrections. Every claim was re-run against `38f38a0` before the plan was
+changed; all of them hold. What each one changed is recorded here, so the
+first draft's reasoning stays visible.
+
+**The fixed 256-iteration ceilings crash on valid input.** Reproduced both
+ways: 300 used globals panic the wrapper at `src/Minifier.zig:499`, and 260
+kept generated names panic the base renamer at `src/Renamer.zig:270` with
+scope-local naming off. The first draft said the ceiling "stays" and argued
+from the keyword count; the reserved set also holds every global's name and
+every pin, which the language does not bound. Now Design item 3, the
+"Two crashes" section above, fixtures 8 and 9, and Block 2 step 2.
+
+**A warning count cannot prove that bindings survived.** Reproduced with the
+report's shader plus `{ let x = 7; total += x; }` before the loop: one
+`W0100` in source, one in output, and the output still reads the counter
+where it meant `base`. The wrapper removes legitimate shadows while adding
+harmful ones, so the counts cancel. The count helper is demoted to a smoke
+test and `expectBindingsPreserved` (Block 1 item 1) carries the proof. The
+structural test also gained the uniqueness and disjointness assertions the
+review asked for.
+
+**The estimator's cheap mode needs a real repair.** Reproduced with my own
+shader: cheap 978, full 998, minifier 998. The first draft's table said the
+estimator produced "wrong names, right lengths", which is false when the
+wrapper reserves placeholders instead of names. Now the estimator paragraph
+under "Where it ships", Design item 4, Block 3 steps 3 and 4, and a
+behaviour-change line.
+
+**The compiler needs its own regressions, including the no-op base.**
+Reproduced by decoding the wasm: default `compile` and `compile --no-mangle`
+both alias the parameter and the counter. The first draft's coverage leaned
+on the compile round-trip pin, which compares two paths that share the
+wrapper and so cannot establish correctness on its own. Now Design item 6,
+Block 3 steps 1, 2 and 5, and the fallback-guarantee unit test in Block 2
+step 3, which the review also asked for.
+
+**A separate binder bug is out of scope and now stated as a boundary.** The
+alias/local reproduction was run under the default renamer and produces
+invalid output as described. Now "A neighbouring bug this plan does not fix"
+and the first item under "Not in this plan".
+
+**Two corrections.** `tests/wasm_freshness_test.zig` cannot detect a stale
+binary within a version, so the first draft's claim that it "fails until the
+five copies are rebuilt" was wrong; Block 4 step 1 now cites the release
+rule instead. `rename_configs` has three scope-local entries, not two; the
+expected-reds paragraph says so.
+
+The review also ran the existing collision suite and found all four tests
+passing, which is the expected state before Block 1: nothing in the suite
+observes a warning or a binding.
