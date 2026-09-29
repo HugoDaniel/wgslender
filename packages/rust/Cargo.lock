@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "wgslender"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "bytemuck",
  "trybuild",
@@ -533,7 +533,7 @@ dependencies = [
 
 [[package]]
 name = "wgslender-core"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "miniz_oxide",
  "proptest",
@@ -545,7 +545,7 @@ dependencies = [
 
 [[package]]
 name = "wgslender-macros"
-version = "1.5.0"
+version = "1.5.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -555,7 +555,7 @@ dependencies = [
 
 [[package]]
 name = "wgslender-sys"
-version = "1.5.0"
+version = "1.5.1"
 
 [[package]]
 name = "winapi-util"
@@ -595,7 +595,7 @@ checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
 
 [[package]]
 name = "xtask"
-version = "1.5.0"
+version = "1.5.1"
 
 [[package]]
 name = "zerocopy"
