@@ -155,7 +155,7 @@ fn compileInner(arena: Allocator, source: [:0]const u8, options: CompileOptions)
 
     // 2-5. Prepare the renamer, scope-localize, sort, and print the sorted
     //      minified text (the exact bytes the BPE stage compresses).
-    const minified = try sortedMinifiedText(arena, source, module, options);
+    const minified = try minifiedText(arena, source, module, options);
 
     // 6. BPE compress
     var bpe = try BpeEncoder.compress(arena, minified);
@@ -215,10 +215,13 @@ fn compileInner(arena: Allocator, source: [:0]const u8, options: CompileOptions)
 /// Steps 2-5 of `compileInner`: build the global frequency renamer, wrap it
 /// scope-local (params/locals → a,b,c,… per function), sort declarations, and
 /// print the sorted minified text. Returns the exact bytes the BPE stage
-/// compresses — the same text the `compile` binary regenerates at runtime.
-/// Factored out so the round-trip pin can assert it byte-for-byte against the
-/// public minifier's sorted output.
-fn sortedMinifiedText(arena: Allocator, source: [:0]const u8, module: *Ast.Module, options: CompileOptions) ![]const u8 {
+/// compresses — the text the generated wasm's `generate()` decodes back at
+/// runtime. There is no in-tree `decodeBpe(compress(text))` pin for this
+/// text (the decoder has fixed-input unit tests; the npm suite's decoded-text
+/// assertion executes the generated module end to end), so a test that proves
+/// `minifiedText` correct proves the decoded wasm correct without a wasm
+/// runtime.
+pub fn minifiedText(arena: Allocator, source: [:0]const u8, module: *Ast.Module, options: CompileOptions) ![]const u8 {
     // Global frequency-based renamer + the rename policy the scope-local
     // wrapper consults to skip pinned symbols.
     const prep = try prepareRenamer(arena, source, module, options);
@@ -1749,12 +1752,12 @@ test "pin: compiler sorted text == Minifier.minify sorted output (shared print l
         .scope_local_rename = true,
     });
 
-    // Path B — compiler's sorted print (sortedMinifiedText → printSortedModule).
+    // Path B — compiler's sorted print (minifiedText → printDecls).
     const tokens = try Lexer.tokenize(alloc, source);
     var parser = try Parser.init(alloc, source, tokens);
     const module = parser.parse() catch return error.OutOfMemory;
     try std.testing.expectEqual(@as(usize, 0), parser.errors.items.len);
-    const text_b = try sortedMinifiedText(alloc, source, module, .{});
+    const text_b = try minifiedText(alloc, source, module, .{});
 
     try std.testing.expectEqualStrings(mr.code, text_b);
 }
