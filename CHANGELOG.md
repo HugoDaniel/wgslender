@@ -3,7 +3,7 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.1] — 2026-09-29
 
 ### Fixed
 
