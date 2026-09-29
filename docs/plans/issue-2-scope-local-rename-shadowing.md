@@ -6,8 +6,12 @@ tree at `38f38a0` (the 1.5.0 artefact rebuild) on 2026-09-29, working tree
 clean. Reproduced on the native CLI, on the npm package's 1.5.0 wasm through
 the same `minify()` call the report used, and on the `compile` subcommand.
 
-**Status:** proposed, not executed. Reviewed once on 2026-09-29; the review
-section at the end of this file records what the review changed. Check
+**Status:** **executed, shipped in 1.5.1** (2026-09-29). All four blocks are on
+`main` — `810667e` (the reds), `d4bae45` (the fix), `3a2658d` / `72028f8` /
+`cddfb86` (compiler seam, estimator, compile-text tests), `69487aa` / `ab8bdf1`
+(artefact rebuilds), `d079a3e` (changelog), `75a7457` (the follow-up recorded
+under "Execution" at the end of this file). Reviewed once on 2026-09-29; the
+review section at the end of this file records what the review changed. Check
 `git log -- src/Minifier.zig tests/collision_test.zig` before trusting this
 line.
 
@@ -708,3 +712,76 @@ expected-reds paragraph says so.
 The review also ran the existing collision suite and found all four tests
 passing, which is the expected state before Block 1: nothing in the suite
 observes a warning or a binding.
+
+---
+
+# Execution, 2026-09-29
+
+All four blocks were executed against this plan the same day and shipped in
+1.5.1. Everything below is a correction the execution turned up, recorded so
+the plan's reasoning above stays readable as written.
+
+**Design item 6's premise is false.** There is no in-tree
+`decodeBpe(compress(text)) == text` pin at `src/Compiler.zig:1724-1750`: those
+lines are the tail of an op-decode assertion plus the
+sorted-print-vs-minifier pin, and the round-trip tests at `:1954+` are
+`compileAndVerifyRoundTrip` over `decodeOps`. The consequence is the opposite
+of what the item assumed — the npm decoded-text assertion added in Block 3 is
+the *only* end-to-end proof that executes the generated module, and no
+changelog entry may claim an in-tree BPE round trip. The committed doc comment
+states the real chain.
+
+**The 978/998 estimator fixture is not in the repo.** The reconstruction reds
+at `1061` against `1081` — the same 20-byte undercount, so the mechanism is
+confirmed even though the plan's absolute bytes are not reproducible. Compare
+the delta, not the absolute number.
+
+**Fixture 9 as written was vacuous.** With `fn f(x: i32)`, both names fall in
+the first 260 generated names, so both were pinned, no slots were allocated,
+and the ceiling was never walked: it passed for the wrong reason. The committed
+fixture uses `fn foo(bar: i32) -> i32 { return bar + 1; }`, which does reach
+the ceiling.
+
+**"Five copies" is three tracked paths.** `npm/wgslender-vscode/dist/*.wasm` is
+gitignored (`npm/wgslender-vscode/.gitignore`), so an artefact commit lists
+three files, matching every historical `build(wasm)` commit; all five
+destinations are still rebuilt. Related: the gate's `1 skipped` becomes `0
+skipped` once those gitignored copies exist and
+`tests/wasm_freshness_test.zig`'s LSP copy-equality check has two copies to
+compare.
+
+**Block 5: a follow-up the plan did not call for.** Block 2's fix introduced
+`src/Pipeline.zig:265`'s `if (state.reserved) |*r| r else return;`, a *new*
+silent no-output path — pre-fix, `runPrint` called `ScopeLocalRenamer.init`
+unconditionally. It is unreachable in-tree (every built-in pass list with
+`.print` also has `.build_reserved_names`), but reachable through the public
+composable pipeline, and quietly printing nothing is worse than loudly printing
+the wrong bytes. `75a7457` derives the reserved set and the renamer on demand
+instead. Note what the fix had to get right: deriving only the reserved set is
+not enough, because `runBuildRenamer`'s own `reserved orelse return` leaves
+`state.renamer` null and `runPrint` then returns at its pre-existing
+`renamer_base orelse return` — a fix whose guard sits behind another early
+return cannot reach the failure path it claims to close.
+
+**Two ceilings, not one, and not a fixed count.** Both generators are bounded
+by `reserved.count() + 1` rather than 256, because the ceiling trips when that
+many reserved names cover the head of the sequence, which 300 used globals do
+and 260 pins do — the plan's "300 module-scope constants plus a local" is a
+simplification of the same thing.
+
+**Stale line numbers.** The `tests/collision_test.zig` references drift
+(helper at 102 not 107, the `for (rename_configs)` loops at 388/422 not
+316/403). Cosmetic.
+
+**Gates that could not be run here.** `cargo`, `go` and `rustc` are absent from
+both machines, so `cargo xtask check` and the Go package tests were reported as
+gaps rather than run.
+
+The evidence, per block: the cold-cache suite (`305/305 steps succeeded;
+4421/4421 tests passed`), the anti-vacuity runs for both the estimator
+(`expected 1081, found 1061` with the parent revision restored) and the
+pipeline test, the npm suite (`193 passed, 0 failed` in all four variants with
+the decoded-text assertion green), the corpus sweep (**0 of 324** shaders gain
+a shadow under each of five configs, down from 4 of 324), and a from-scratch
+`release-assets` rebuild leaving every destination byte-identical with
+`git status` clean.
