@@ -501,6 +501,9 @@ pub fn build(b: *std.Build) void {
     // Compile artifact diagnostics — syntax errors surface as positioned
     // diagnostics (native + JSON), never as error.OutOfMemory or "compile failed".
     _ = addTestStep(b, test_step, "tests/compile_diagnostics_test.zig", target, optimize, &.{w});
+    // Compiler print seam — `Compiler.minifiedText` (the bytes the BPE stage
+    // compresses) keeps every binding in both naming modes.
+    _ = addTestStep(b, test_step, "tests/compile_text_test.zig", target, optimize, &.{w});
     // Reflect tests
     _ = addTestStep(b, test_step, "tests/reflect_test.zig", target, optimize, &.{w});
     _ = addTestStep(b, test_step, "tests/reflect_wgslreflect_test.zig", target, optimize, &.{w});

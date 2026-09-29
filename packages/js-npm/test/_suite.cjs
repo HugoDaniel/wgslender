@@ -827,6 +827,38 @@ fn get_time(g: Uniforms) -> f32 { return g.time; }
     const wgsl = new TextDecoder().decode(new Uint8Array(exports.memory.buffer, 0, len));
     assert(wgsl.includes('@compute'), 'regenerated WGSL preserves the @compute attribute');
   }
+  {
+    // Issue #2's shader: the compiler must not hand the `for` counter the
+    // name of a live binding. This is the only test that executes the
+    // generated module end to end. It runs against the committed wasm
+    // artefact, so it stays red until the artefacts are rebuilt: the
+    // pre-fix decoder emits `let b` and `for (var b…)` and the decoded
+    // text validates with the W0100 shadowing warning.
+    const repro = `fn accumulate(x: i32) -> i32 {
+  let base = x * 2;
+  var total = 0;
+  for (var idx = 0; idx < 4; idx++) {
+    total = total + base + idx;
+  }
+  return total;
+}`;
+    const result = compile(repro, {});
+    assert(result.errors.length === 0, 'compile() succeeds on the issue #2 shader');
+
+    const mod = await WebAssembly.instantiate(result.wasm, {});
+    const len = mod.instance.exports.generate();
+    assert(len > 0, `issue #2 module's generate() returns a positive byte length (${len})`);
+    const text = new TextDecoder().decode(
+      new Uint8Array(mod.instance.exports.memory.buffer, 0, len),
+    );
+    const v = validate(text);
+    assert(v.diagnostics.length === 0,
+      `decoded compiler text validates with zero diagnostics (${v.errorCount}e/${v.warningCount}w)`);
+    if (v.diagnostics.length !== 0) {
+      for (const d of v.diagnostics) console.log(`    ${d.severity}: ${d.message} [${d.code}]`);
+      console.log(`    decoded: ${text}`);
+    }
+  }
 
   console.log(`\n[${variantName}] ${passed} passed, ${failed} failed\n`);
   if (failed > 0 && failures.length > 0) {
