@@ -3,6 +3,40 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The scope-local renamer reserves every name that can bypass it (issue
+  #2).** With `scopeLocalRename` on, the wrapper never looked at a `for`
+  loop's initialiser declaration, so the counter kept the name the ordinary
+  renamer had given it and that name was never checked against the
+  per-function `a, b, c` sequence; the reporter's shader printed
+  `fn e(a:i32)->i32{let b=a*2;var c=0;for(var b=0;b<4;b++){c=c+b+b;}return c;}`,
+  where the loop body reads the counter twice. Three more shapes shared the
+  same missing reservation: a `let` initialiser (and nested loops, which
+  multiply the collisions), a local pinned by `keep_names` that could land
+  on a renamed parameter, and a function with 321 or more parameters and
+  locals, whose 321st canonical name is `if`. The compiler's non-minify
+  mode (`compile --no-mangle`) aliased a fallen-through local with a
+  canonical name for the same reason. The wrapper now reserves every name
+  that can bypass it — module-scope declarations, pinned symbols, and any
+  declaration position its walk misses — before handing out any canonical
+  name. Two fixed ceilings went with it: `allocCanonicalName` and the base
+  renamer's `skipReservedNames` stopped after 256 consecutive reserved
+  names, so 300 used module-scope constants panicked the wrapper and 260
+  pinned names panicked the base renamer (and the LSP's
+  `estimateRenameLength`, which shares the helper); both now walk the
+  reserved set's own size, and the LSP's cheap size estimate materialises
+  the names the wrapper really reserves instead of placeholders, moving its
+  numbers toward the full mode's. **Output bytes change** for every
+  scope-local or `compile` output whose functions contain a `for`
+  initialiser — the counter takes a canonical name, and every later name in
+  that function shifts by one — and for `--keep-names` with a pinned local.
+  The reporter's shader is now part of `tests/collision_test.zig`, which
+  compares the binding structure of source and output. Reported by sagacity
+  ([#2](https://github.com/HugoDaniel/wgslender/issues/2)).
+
 ## [1.5.0] — 2026-09-11
 
 Every change in this release is in reflection. Two of them change what
