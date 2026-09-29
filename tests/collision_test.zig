@@ -3,6 +3,8 @@
 
 const std = @import("std");
 const wgslender = @import("wgslender");
+const parse_ok = @import("parse_ok.zig");
+const Ast = wgslender.Ast;
 
 // =========================================================================
 // Helper
@@ -120,6 +122,255 @@ fn expectMinifiesWithoutRedeclaration(
     }
 }
 
+/// Counts `W0100` shadowing diagnostics in a validation result.
+fn countShadowDiagnostics(result: *const wgslender.Validator.Result) usize {
+    var count: usize = 0;
+    for (result.diagnostics.diagnostics.items) |d| {
+        if (std.mem.eql(u8, d.code, wgslender.Diagnostic.Code.shadowing)) count += 1;
+    }
+    return count;
+}
+
+/// Smoke test only: minified output must not gain `W0100` shadowing warnings
+/// over source.
+///
+/// This is NOT a proof that bindings survived. The scope-local wrapper hands
+/// every local a fresh canonical name, so it removes legitimate source shadows
+/// at the same time it introduces harmful ones, and the counts cancel —
+/// fixture `4-shadows-cancel` has one `W0100` before and one after while
+/// reading the counter where it meant `base`. `expectBindingsPreserved`
+/// carries the proof; this check only adds pressure.
+fn expectNoIntroducedShadowing(
+    arena: std.mem.Allocator,
+    source: [:0]const u8,
+    options: wgslender.Minifier.Options,
+) !void {
+    const source_validation = try wgslender.validateWithOptions(arena, source, .{});
+    const before = countShadowDiagnostics(&source_validation);
+
+    const result = try wgslender.minifyWithOptions(arena, source, options);
+    try std.testing.expect(result.errors.len == 0);
+    const minified = try arena.dupeZ(u8, result.code);
+    const output_validation = try wgslender.validateWithOptions(arena, minified, .{});
+
+    const after = countShadowDiagnostics(&output_validation);
+    if (after > before) {
+        std.debug.print(
+            "minifier added {d} shadowing warning(s) ({d} before, {d} after):\n{s}\n",
+            .{ after - before, before, after, minified },
+        );
+        return error.IntroducedShadowing;
+    }
+}
+
+/// One identifier reference, normalised so source and minified output compare
+/// without sharing a symbol table.
+const BindingRef = union(enum) {
+    /// Declared inside the function whose body contains this reference
+    /// (parameter or local), identified by declaration ordinal.
+    local: u32,
+    /// Module-scope declaration, identified by index into `module.declarations`.
+    global: usize,
+    /// Builtins, struct members and unresolved names — nothing renames them,
+    /// so the name itself is the identity.
+    other: []const u8,
+};
+
+fn bindingEqual(a: BindingRef, b: BindingRef) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .local => |x| x == b.local,
+        .global => |x| x == b.global,
+        .other => |x| std.mem.eql(u8, x, b.other),
+    };
+}
+
+/// Document-order binding recorder. `on_decl` numbers a function's parameters
+/// and records the type names in its signature; `on_stmt` numbers every
+/// declaration statement — a `for` initialiser included, because
+/// `MultiVisitor` walks `init_stmt` — and records the type name of a typed
+/// `let`/`var`; `on_expr` records every `.ident`. Ordinals restart at each
+/// function, so `local(n)` is a position in its own function's declaration
+/// order.
+const BindingWalk = struct {
+    arena: std.mem.Allocator,
+    module: *const Ast.Module,
+    refs: std.ArrayList(BindingRef) = .empty,
+    /// Symbol index -> ordinal, for the function currently being walked.
+    locals: std.AutoHashMapUnmanaged(u32, u32) = .{},
+    next_ordinal: u32 = 0,
+
+    fn onDecl(ctx: *anyopaque, decl: Ast.Decl) std.mem.Allocator.Error!void {
+        const self: *BindingWalk = @ptrCast(@alignCast(ctx));
+        if (decl != .function) return;
+        const func = decl.function;
+        self.next_ordinal = 0;
+        for (func.parameters.items) |param| {
+            if (param.name.isValid()) {
+                try self.locals.put(self.arena, param.name.index(), self.next_ordinal);
+                self.next_ordinal += 1;
+            }
+            try self.recordType(param.typ);
+        }
+        if (func.return_type) |ret| try self.recordType(ret);
+    }
+
+    fn onStmt(ctx: *anyopaque, stmt: Ast.Stmt) std.mem.Allocator.Error!void {
+        const self: *BindingWalk = @ptrCast(@alignCast(ctx));
+        if (stmt != .decl) return;
+        const ref = stmt.decl.decl.nameRef();
+        if (ref.isValid()) {
+            try self.locals.put(self.arena, ref.index(), self.next_ordinal);
+            self.next_ordinal += 1;
+        }
+        switch (stmt.decl.decl) {
+            // A module-scope `const` cannot appear as a statement; the typed
+            // local declarations are the ones whose type is a live reference.
+            .let => |d| if (d.typ) |t| try self.recordType(t),
+            .@"var" => |d| if (d.typ) |t| try self.recordType(t),
+            else => {},
+        }
+    }
+
+    fn onExpr(ctx: *anyopaque, expr: Ast.Expr) std.mem.Allocator.Error!void {
+        const self: *BindingWalk = @ptrCast(@alignCast(ctx));
+        if (expr != .ident) return;
+        try self.recordRef(expr.ident.ref, expr.ident.name);
+    }
+
+    fn recordType(self: *BindingWalk, typ: Ast.Type) std.mem.Allocator.Error!void {
+        switch (typ) {
+            .ident => |t| try self.recordRef(t.ref, t.name),
+            .vec => |t| if (t.elem_type) |inner| try self.recordType(inner),
+            .mat => |t| if (t.elem_type) |inner| try self.recordType(inner),
+            .array => |t| if (t.elem_type) |inner| try self.recordType(inner),
+            .ptr => |t| try self.recordType(t.elem_type),
+            .atomic => |t| try self.recordType(t.elem_type),
+            .sampler, .texture => {},
+        }
+    }
+
+    fn recordRef(self: *BindingWalk, ref: Ast.SymbolIndex, fallback_name: []const u8) std.mem.Allocator.Error!void {
+        if (ref.isValid()) {
+            if (self.locals.get(ref.index())) |ordinal| {
+                try self.refs.append(self.arena, .{ .local = ordinal });
+                return;
+            }
+            if (ref.index() < self.module.symbols.items.len) {
+                const sym = self.module.symbols.items[ref.index()];
+                if (self.module.scope.members.get(sym.original_name)) |member| {
+                    if (member.ref == ref) {
+                        for (self.module.declarations.items, 0..) |decl, i| {
+                            if (decl.nameRef() == ref) {
+                                try self.refs.append(self.arena, .{ .global = i });
+                                return;
+                            }
+                        }
+                    }
+                }
+                if (sym.original_name.len > 0) {
+                    try self.refs.append(self.arena, .{ .other = sym.original_name });
+                    return;
+                }
+            }
+        }
+        try self.refs.append(self.arena, .{ .other = fallback_name });
+    }
+};
+
+/// Walks `module` once through `MultiVisitor` in document order and returns
+/// the normalised reference sequence.
+fn bindingSequence(arena: std.mem.Allocator, module: *const Ast.Module) ![]const BindingRef {
+    const walk = try arena.create(BindingWalk);
+    walk.* = .{ .arena = arena, .module = module };
+    const listener: wgslender.MultiVisitor.Listener = .{
+        .ctx = @ptrCast(walk),
+        .on_decl = &BindingWalk.onDecl,
+        .on_stmt = &BindingWalk.onStmt,
+        .on_expr = &BindingWalk.onExpr,
+    };
+    try wgslender.MultiVisitor.walk(arena, module, &.{listener});
+    return walk.refs.items;
+}
+
+fn printBindingWindow(refs: []const BindingRef, at: usize) void {
+    const start = at -| 4;
+    const end = @min(refs.len, at + 5);
+    for (refs[start..end], start..) |ref, i| {
+        if (i == at) std.debug.print(" <<<", .{});
+        switch (ref) {
+            .local => |ordinal| std.debug.print(" local({d})", .{ordinal}),
+            .global => |index| std.debug.print(" global({d})", .{index}),
+            .other => |name| std.debug.print(" other({s})", .{name}),
+        }
+    }
+    std.debug.print("\n", .{});
+}
+
+/// The load-bearing binding check: minify `source` under `options`, re-parse
+/// the output, and require the normalised reference sequences to be equal.
+///
+/// `minify_syntax`, `tree_shaking` and `sort_declarations` are forced off.
+/// Sorting moves declaration order and nothing else — the wrapper is built
+/// from the unsorted module and the sorted print reads the same renamer — so
+/// proving the unsorted variant proves the sorted one. With all three off the
+/// printer preserves every declaration and every reference in document order,
+/// which is what makes the sequences directly comparable.
+///
+/// On failure this prints both sequences around the first divergence and the
+/// minified text; callers add the fixture and config name.
+fn expectBindingsPreserved(
+    arena: std.mem.Allocator,
+    source: [:0]const u8,
+    options: wgslender.Minifier.Options,
+) !void {
+    var effective = options;
+    effective.minify_syntax = false;
+    effective.tree_shaking = false;
+    effective.sort_declarations = false;
+
+    const result = try wgslender.minifyWithOptions(arena, source, effective);
+    try std.testing.expect(result.errors.len == 0);
+    const minified = try arena.dupeZ(u8, result.code);
+
+    const source_module = try parse_ok.parseOk(arena, source);
+    const output_module = try parse_ok.parseOk(arena, minified);
+
+    const expected = try bindingSequence(arena, source_module);
+    const actual = try bindingSequence(arena, output_module);
+
+    var mismatch: ?usize = null;
+    const common = @min(expected.len, actual.len);
+    for (expected[0..common], actual[0..common], 0..) |want, got, i| {
+        if (!bindingEqual(want, got)) {
+            mismatch = i;
+            break;
+        }
+    }
+    if (mismatch == null and expected.len != actual.len) mismatch = common;
+    const at = mismatch orelse return;
+
+    std.debug.print(
+        "binding structure not preserved: source has {d} reference(s), output {d}; first divergence at #{d}\n" ++
+            "options: scope_local_rename={} sort_declarations={} mangle_external_bindings={} keep_names={d}\n",
+        .{
+            expected.len,
+            actual.len,
+            at,
+            options.scope_local_rename,
+            options.sort_declarations,
+            options.mangle_external_bindings,
+            options.keep_names.len,
+        },
+    );
+    std.debug.print("source:", .{});
+    printBindingWindow(expected, at);
+    std.debug.print("output:", .{});
+    printBindingWindow(actual, at);
+    std.debug.print("minified output:\n{s}\n", .{minified});
+    return error.BindingsNotPreserved;
+}
+
 /// The renaming-pressure axes. Identifier renaming is on throughout — with it
 /// off there is no generator to collide with anything.
 const rename_configs = [_]struct {
@@ -135,6 +386,237 @@ const rename_configs = [_]struct {
         .sort_declarations = true,
         .scope_local_rename = true,
     } },
+};
+
+// =========================================================================
+// Shadow fixtures
+// =========================================================================
+
+/// Fixtures 8 and 9 panic the test binary by design until Block 2 removes the
+/// two name-generator ceilings; flip this off to iterate on the rest.
+const run_ceiling_fixtures = true;
+
+/// Frozen byte buffer result: a named struct type keeps `bytes` a normal
+/// field, so the global slice can point into it without tripping the
+/// "reference to comptime var / comptime field" check.
+fn FrozenBytes(comptime n: usize) type {
+    return struct { bytes: [n]u8, len: usize };
+}
+
+/// Fixture 7: 340 locals in one function. The wrapper's canonical sequence
+/// reaches `if` (index 320 of `numberToMinifiedName`) and the printer emits
+/// `var if=...`, which does not parse — the reserved-keyword ceiling.
+const keyword_ceiling_built: FrozenBytes(16 * 1024) = init: {
+    @setEvalBranchQuota(200_000);
+    var buf: [16 * 1024]u8 = undefined;
+    const head = "fn f() -> i32 { var total = 0; ";
+    @memcpy(buf[0..head.len], head);
+    var len: usize = head.len;
+    for (0..340) |i| {
+        const stmt = std.fmt.comptimePrint("var v{d} = {d}; total = total + v{d}; ", .{ i, i + 1, i });
+        @memcpy(buf[len..][0..stmt.len], stmt);
+        len += stmt.len;
+    }
+    const tail = "return total; }";
+    @memcpy(buf[len..][0..tail.len], tail);
+    len += tail.len;
+    buf[len] = 0;
+    const frozen = buf;
+    break :init .{ .bytes = frozen, .len = len };
+};
+
+const keyword_ceiling_source: [:0]const u8 = keyword_ceiling_built.bytes[0..keyword_ceiling_built.len :0];
+
+/// Fixture 8: 300 used module-scope constants plus one function with a local.
+/// The constants take the first 300 names of the canonical sequence and the
+/// wrapper reserves every one of them, so the first local walks into
+/// `unreachable` in `ScopeLocalRenamer.allocCanonicalName` — the wrapper's
+/// 256-iteration ceiling.
+const global_ceiling_built: FrozenBytes(24 * 1024) = init: {
+    @setEvalBranchQuota(500_000);
+    var buf: [24 * 1024]u8 = undefined;
+    var len: usize = 0;
+    for (0..300) |i| {
+        const decl = std.fmt.comptimePrint("const c{d} = {d};\n", .{ i, i });
+        @memcpy(buf[len..][0..decl.len], decl);
+        len += decl.len;
+    }
+    const head = "fn f() -> i32 { let x = 0; return ";
+    @memcpy(buf[len..][0..head.len], head);
+    len += head.len;
+    for (0..300) |i| {
+        if (i > 0) {
+            const plus = " + ";
+            @memcpy(buf[len..][0..plus.len], plus);
+            len += plus.len;
+        }
+        const term = std.fmt.comptimePrint("c{d}", .{i});
+        @memcpy(buf[len..][0..term.len], term);
+        len += term.len;
+    }
+    const tail = " + x; }";
+    @memcpy(buf[len..][0..tail.len], tail);
+    len += tail.len;
+    buf[len] = 0;
+    const frozen = buf;
+    break :init .{ .bytes = frozen, .len = len };
+};
+
+const global_ceiling_source: [:0]const u8 = global_ceiling_built.bytes[0..global_ceiling_built.len :0];
+
+/// Fixture 9: the first 260 names of the canonical sequence, built at comptime
+/// through `Renamer.numberToMinifiedName` itself so the list can never drift
+/// from the sequence it pins. These are `keep_names` entries, so the base
+/// renamer's reserved set holds 260 consecutive sequence names and its own
+/// 256-iteration ceiling trips under every config — scope-local or not.
+const BaseNames = struct { names: [260][]const u8 };
+
+const base_ceiling_built: BaseNames = init: {
+    @setEvalBranchQuota(100_000);
+    var names: [260][]const u8 = undefined;
+    var buf: [16]u8 = undefined;
+    for (0..260) |i| {
+        names[i] = std.fmt.comptimePrint("{s}", .{wgslender.Renamer.numberToMinifiedName(&buf, i)});
+    }
+    const frozen = names;
+    break :init .{ .names = frozen };
+};
+
+const base_ceiling_keep_names: []const []const u8 = &base_ceiling_built.names;
+
+const ShadowFixture = struct {
+    name: []const u8,
+    source: [:0]const u8,
+    keep_names: []const []const u8 = &.{},
+    /// Fixtures 8 and 9 take the whole test binary down with a panic until
+    /// Block 2 fixes the ceilings; `run_ceiling_fixtures` gates them.
+    panics_before_fix: bool = false,
+};
+
+const shadow_fixtures = [_]ShadowFixture{
+    .{
+        .name = "1-report-for-counter",
+        .source =
+        \\fn accumulate(x: i32) -> i32 {
+        \\  let base = x * 2;
+        \\  var total = 0;
+        \\  for (var idx = 0; idx < 4; idx++) {
+        \\    total = total + base + idx;
+        \\  }
+        \\  return total;
+        \\}
+        ,
+    },
+    .{
+        .name = "2-let-initialiser",
+        .source =
+        \\fn f(x: i32) -> i32 {
+        \\  let base = x * 2;
+        \\  var total = 0;
+        \\  for (let idx = 0; idx < 4;) {
+        \\    total = total + base + idx;
+        \\  }
+        \\  return total;
+        \\}
+        ,
+    },
+    .{
+        .name = "3-nested-loops-in-if",
+        .source =
+        \\fn f(x: i32) -> i32 {
+        \\  let base = x * 2;
+        \\  var total = 0;
+        \\  if (x > 0) {
+        \\    for (var i = 0; i < 4; i++) {
+        \\      for (var j = 0; j < 4; j++) {
+        \\        total = total + base + i * j;
+        \\      }
+        \\    }
+        \\  }
+        \\  return total;
+        \\}
+        ,
+    },
+    .{
+        .name = "4-shadows-cancel",
+        .source =
+        \\fn accumulate(x: i32) -> i32 {
+        \\  let base = x * 2;
+        \\  var total = 0;
+        \\  {
+        \\    let x = 7;
+        \\    total += x;
+        \\  }
+        \\  for (var idx = 0; idx < 4; idx++) {
+        \\    total = total + base + idx;
+        \\  }
+        \\  return total;
+        \\}
+        ,
+    },
+    .{
+        .name = "5-keep-names-local",
+        .source =
+        \\fn f(x: i32) -> i32 {
+        \\  let a = 1;
+        \\  return x + a;
+        \\}
+        ,
+        .keep_names = &.{"a"},
+    },
+    .{
+        .name = "6-loop-switch-while",
+        .source =
+        \\fn f(x: i32) -> i32 {
+        \\  var total = 0;
+        \\  loop {
+        \\    total = total + x;
+        \\    if (total > 8) { break; }
+        \\    continuing {
+        \\      total = total + 1;
+        \\    }
+        \\  }
+        \\  switch (x) {
+        \\    case 0: { let a = 1; total = total + a; }
+        \\    case 1: { let b = 2; total = total + b; }
+        \\    default: { let c = 3; total = total + c; }
+        \\  }
+        \\  var i = 0;
+        \\  while (i < 4) {
+        \\    let d = i;
+        \\    total = total + d;
+        \\    i = i + 1;
+        \\  }
+        \\  return total;
+        \\}
+        ,
+    },
+    .{
+        .name = "7-keyword-ceiling",
+        .source = keyword_ceiling_source,
+    },
+    .{
+        .name = "8-global-reservation-ceiling",
+        .source = global_ceiling_source,
+        .panics_before_fix = true,
+    },
+    .{
+        .name = "9-base-reserved-ceiling",
+        // The source names must stay outside the generated-name sequence or
+        // the ceiling is unreachable: `markKeepNames` pins any symbol whose
+        // source name is itself in `keep_names`, a pinned symbol gets no slot
+        // in `allocateSlots`, and `assignNames` — the only caller of
+        // `skipReservedNames` — then loops over zero slots. The keep list
+        // holds only the first 260 generated names (one and two letters), so
+        // `foo` / `bar` stay renameable and the reserved run is walked.
+        .source =
+        \\fn foo(bar: i32) -> i32 {
+        \\  return bar + 1;
+        \\}
+        ,
+        .keep_names = base_ceiling_keep_names,
+        .panics_before_fix = true,
+    },
 };
 
 // =========================================================================
@@ -390,6 +872,10 @@ test "collision: preserved external binding name is not reissued to a function" 
             std.debug.print("config \"{s}\" produced a colliding module\n", .{cfg.name});
             return err;
         };
+        expectBindingsPreserved(arena.allocator(), source, cfg.options) catch |err| {
+            std.debug.print("config \"{s}\" did not preserve bindings\n", .{cfg.name});
+            return err;
+        };
     }
 }
 
@@ -424,6 +910,10 @@ test "collision: bindings occupying the first generated names are skipped" {
             std.debug.print("config \"{s}\" produced a colliding module\n", .{cfg.name});
             return err;
         };
+        expectBindingsPreserved(arena.allocator(), source, cfg.options) catch |err| {
+            std.debug.print("config \"{s}\" did not preserve bindings\n", .{cfg.name});
+            return err;
+        };
     }
 
     // With the bindings preserved (the default), the generator must route
@@ -435,4 +925,220 @@ test "collision: bindings occupying the first generated names are skipped" {
     try std.testing.expect(std.mem.indexOf(u8, result.code, "fn a(") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "fn b(") == null);
     try std.testing.expect(std.mem.indexOf(u8, result.code, "fn c(") == null);
+}
+
+// --- Regression: scope-local naming must keep bindings and respect ceilings ---
+//
+// Every fixture below is minified under every `rename_configs` entry and put
+// through three checks: `expectMinifiesWithoutRedeclaration` (the existing
+// collision gate), `expectBindingsPreserved` (the proof: source and output
+// must have the same identifier-reference structure) and
+// `expectNoIntroducedShadowing` (a smoke test whose counts can cancel).
+//
+// Before Block 2, on the three scope-local configs:
+//   fixtures 1-5 and 7 fail `expectBindingsPreserved` (7 because the output
+//   stops parsing first), fixture 6 stays green, fixture 8 panics, and
+//   fixture 9 panics under every config because it never gets past the base
+//   renamer. All checks run for every pair so one run reports each red.
+test "collision: shadow fixtures keep bindings under every rename config" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var failed_pairs: usize = 0;
+    for (shadow_fixtures) |fixture| {
+        if (fixture.panics_before_fix and !run_ceiling_fixtures) continue;
+        for (rename_configs) |config| {
+            var options = config.options;
+            options.keep_names = fixture.keep_names;
+
+            std.debug.print("[{s} / {s}] ", .{ fixture.name, config.name });
+            var pair_failed = false;
+
+            expectMinifiesWithoutRedeclaration(arena.allocator(), fixture.source, options) catch |err| {
+                std.debug.print(
+                    "fixture \"{s}\" config \"{s}\": expectMinifiesWithoutRedeclaration -> {s}\n",
+                    .{ fixture.name, config.name, @errorName(err) },
+                );
+                pair_failed = true;
+            };
+            expectBindingsPreserved(arena.allocator(), fixture.source, options) catch |err| {
+                std.debug.print(
+                    "fixture \"{s}\" config \"{s}\": expectBindingsPreserved -> {s}\n",
+                    .{ fixture.name, config.name, @errorName(err) },
+                );
+                pair_failed = true;
+            };
+            expectNoIntroducedShadowing(arena.allocator(), fixture.source, options) catch |err| {
+                std.debug.print(
+                    "fixture \"{s}\" config \"{s}\": expectNoIntroducedShadowing -> {s}\n",
+                    .{ fixture.name, config.name, @errorName(err) },
+                );
+                pair_failed = true;
+            };
+
+            if (pair_failed) {
+                failed_pairs += 1;
+                std.debug.print("[{s} / {s}] RED\n", .{ fixture.name, config.name });
+            } else {
+                std.debug.print("[{s} / {s}] green\n", .{ fixture.name, config.name });
+            }
+        }
+    }
+    if (failed_pairs != 0) {
+        std.debug.print("{d} fixture x config pair(s) red (expected before Block 2)\n", .{failed_pairs});
+        return error.ShadowFixtureRed;
+    }
+}
+
+/// Every symbol a non-module scope declares must be pinned by the policy or
+/// named by the wrapper. `scope.members` is a hash map, so this is the
+/// position set the wrapper has to cover, independent of statement order.
+fn expectScopeCovered(
+    scope: *const Ast.Scope,
+    policy: *const wgslender.RenamePolicy,
+    overrides: *const std.AutoHashMapUnmanaged(u32, []const u8),
+) !void {
+    if (scope.kind != .module) {
+        var it = scope.members.iterator();
+        while (it.next()) |entry| {
+            const member = entry.value_ptr.*;
+            if (!member.ref.isValid()) continue;
+            if (policy.mustNotRename(member.ref)) continue;
+            if (!overrides.contains(member.ref.index())) {
+                std.debug.print(
+                    "scope member \"{s}\" (symbol {d}) is neither pinned nor in overrides\n",
+                    .{ entry.key_ptr.*, member.ref.index() },
+                );
+                return error.ScopeMemberNotCovered;
+            }
+        }
+    }
+    for (scope.children.items) |child| try expectScopeCovered(child, policy, overrides);
+}
+
+/// Two symbols visible in one function may not share an override name. The
+/// canonical counter makes this true by construction, so this is the
+/// regression pin for a future "reuse the shortest free name" change.
+fn expectOverrideNamesUnique(
+    arena: std.mem.Allocator,
+    module: *const Ast.Module,
+    overrides: *const std.AutoHashMapUnmanaged(u32, []const u8),
+) !void {
+    for (module.scope.children.items) |func_scope| {
+        if (func_scope.kind != .function) continue;
+        var seen: std.StringHashMapUnmanaged(void) = .{};
+        try expectUniqueNamesInScope(arena, func_scope, overrides, &seen);
+    }
+}
+
+fn expectUniqueNamesInScope(
+    arena: std.mem.Allocator,
+    scope: *const Ast.Scope,
+    overrides: *const std.AutoHashMapUnmanaged(u32, []const u8),
+    seen: *std.StringHashMapUnmanaged(void),
+) !void {
+    var it = scope.members.iterator();
+    while (it.next()) |entry| {
+        const ref = entry.value_ptr.ref;
+        if (!ref.isValid()) continue;
+        const name = overrides.get(ref.index()) orelse continue;
+        const gop = try seen.getOrPut(arena, name);
+        if (gop.found_existing) {
+            std.debug.print("wrapper reused name \"{s}\" within one function\n", .{name});
+            return error.DuplicateOverrideName;
+        }
+    }
+    for (scope.children.items) |child| try expectUniqueNamesInScope(arena, child, overrides, seen);
+}
+
+/// No override name may equal the base renamer's name for a symbol the
+/// wrapper left alone. That is the disjointness the invariant in the plan
+/// states: canonical names and every name that can still bypass the wrapper
+/// must not meet. Struct members are excluded — they are not scope members
+/// and never occupy identifier position inside a body.
+fn expectNoBaseNameCollisions(
+    arena: std.mem.Allocator,
+    module: *const Ast.Module,
+    base: *const wgslender.Printer.Renamer,
+    overrides: *const std.AutoHashMapUnmanaged(u32, []const u8),
+) !void {
+    var override_names: std.StringHashMapUnmanaged(u32) = .{};
+    var over_it = overrides.iterator();
+    while (over_it.next()) |entry| try override_names.put(arena, entry.value_ptr.*, entry.key_ptr.*);
+
+    for (module.symbols.items, 0..) |sym, i| {
+        if (sym.kind == .member) continue;
+        const index: u32 = @intCast(i);
+        if (overrides.contains(index)) continue;
+        const ref: Ast.SymbolIndex = @enumFromInt(index);
+        const name = base.nameForSymbol(ref);
+        if (name.len == 0) continue;
+        if (override_names.get(name)) |owner| {
+            std.debug.print(
+                "wrapper name \"{s}\" (symbol {d}) equals the base name of symbol {d}\n",
+                .{ name, owner, index },
+            );
+            return error.OverrideBaseNameCollision;
+        }
+    }
+}
+
+// Structural completeness of the scope-local wrapper, Block 1 item 4.
+//
+// The fixture table checks output text; this checks the position set. Parse a
+// shader with every declaration position, run the five passes
+// `Compiler.prepareRenamer` runs, build the wrapper, then assert over the
+// scope tree: (1) every member of a non-module scope is pinned or named,
+// (2) override names are pairwise distinct within one function, and (3) no
+// override name equals a base name the printer can still emit for a symbol
+// the wrapper skipped. It fails the next time a declaration position is added
+// and not walked; before Block 2 it is red on the `for` initialiser.
+//
+// Block 2 adds a `reserved` parameter to `ScopeLocalRenamer.init`; this call
+// site is updated there.
+test "collision: scope-local wrapper covers every scope member" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        \\struct S { x: f32 }
+        \\@group(0) @binding(0) var<uniform> u: f32;
+        \\const C: i32 = 2;
+        \\fn helper(v: f32) -> f32 { return v + u + f32(C); }
+        \\fn f(a: i32, b: f32) -> f32 {
+        \\  let x = b;
+        \\  var y = x;
+        \\  if (a > 0) { let z = y; y = z; } else { let w = y; y = w; }
+        \\  for (var i = 0; i < a; i++) { let t = y; y = t + b; }
+        \\  for (let j = 0; a > 0;) { let t2 = y; y = t2; break; }
+        \\  while (a > 0) { let q = y; y = q; break; }
+        \\  loop { let r = y; y = r; break; }
+        \\  switch (a) { case 0: { let s = y; y = s; } default: { let u2 = y; y = u2; } }
+        \\  { let inner = y; y = inner; }
+        \\  return y;
+        \\}
+    ;
+
+    const module = try parse_ok.parseOk(alloc, source);
+
+    // The five passes `Compiler.prepareRenamer` runs, through the public
+    // Pipeline. `scope_local_rename` is not one of them: the wrapper is built
+    // around the base renamer afterwards, which is what happens next.
+    var state = wgslender.Pipeline.State.initWithModule(alloc, source, module);
+    try wgslender.Pipeline.run(&state, &.{
+        .mark_api_facing,
+        .dce,
+        .compute_usage,
+        .build_reserved_names,
+        .build_renamer,
+    }, .{});
+    const base = state.renamer.?;
+    const policy = state.rename_policy.?;
+
+    const scope_renamer = try wgslender.Minifier.ScopeLocalRenamer.init(alloc, module, base, policy);
+
+    try expectScopeCovered(module.scope, policy, &scope_renamer.overrides);
+    try expectOverrideNamesUnique(alloc, module, &scope_renamer.overrides);
+    try expectNoBaseNameCollisions(alloc, module, base, &scope_renamer.overrides);
 }
