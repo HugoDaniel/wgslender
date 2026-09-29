@@ -282,12 +282,36 @@ fn skipReservedNames(buf: *[16]u8, name_index: *u32, reserved: *const std.String
 /// estimator and the real renamer produce identical length sequences
 /// given identical reserved sets.
 pub fn estimateRenameLength(reserved: *const std.StringHashMapUnmanaged(void), out: []u32) void {
+    walkRenameSlots(reserved, out, null);
+}
+
+/// Fills `out[i]` with the *sequence index* whose name rank `i` receives:
+/// `numberToMinifiedName(buf, out[i])` is the exact name `assignNames`
+/// would give slot `i` for the same reserved set. Same walk and skip
+/// policy as `estimateRenameLength`, for callers that need the bytes and
+/// not just the length.
+pub fn estimateRenameIndices(reserved: *const std.StringHashMapUnmanaged(void), out: []u32) void {
+    walkRenameSlots(reserved, null, out);
+}
+
+/// The single walk behind both estimators: advance past reserved names for
+/// each rank and report the sequence index, the name's byte length, or
+/// both. At least one output slice must be supplied.
+fn walkRenameSlots(
+    reserved: *const std.StringHashMapUnmanaged(void),
+    out_len: ?[]u32,
+    out_index: ?[]u32,
+) void {
+    const count = if (out_index) |slots| slots.len else out_len.?.len;
     var name_index: u32 = 0;
     var buf: [16]u8 = undefined;
-    for (out) |*slot_len| {
+    for (0..count) |i| {
         skipReservedNames(&buf, &name_index, reserved);
-        const name = numberToMinifiedName(&buf, name_index);
-        slot_len.* = @intCast(name.len);
+        if (out_index) |slots| slots[i] = name_index;
+        if (out_len) |lens| {
+            const name = numberToMinifiedName(&buf, name_index);
+            lens[i] = @intCast(name.len);
+        }
         name_index += 1;
     }
 }

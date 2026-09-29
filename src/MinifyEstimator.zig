@@ -136,9 +136,11 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
 
     // Step 6: build the renamer the Printer will route every identifier
     // through. The cheap path uses a `LengthRenamer` that emits
-    // 'x'-filled slices of the right length; the full-minify path uses
-    // the production `MinifyRenamer` directly so the buffered output
-    // can be gzipped for an exact `total_gz`.
+    // 'x'-filled slices of the right length, except for the module-scope
+    // and pinned symbols whose real names the scope-local wrapper
+    // reserves; the full-minify path uses the production `MinifyRenamer`
+    // directly so the buffered output can be gzipped for an exact
+    // `total_gz`.
     const base_renamer: *const Printer.Renamer = if (options.use_full_minify)
         try buildMinifyRenamer(arena, module, &uses, reserved, use_counts_box, policy_box)
     else
@@ -275,6 +277,15 @@ fn estimateGz(min: u32) u32 {
 }
 
 const LengthRenamer = struct {
+    /// Exact bytes for the symbols whose *names* matter, not just their
+    /// lengths: module-scope declarations and pinned symbols, which are
+    /// exactly what the scope-local wrapper reserves. Null for candidates
+    /// — the wrapper overrides those before they print, so a shared
+    /// placeholder of the right length is enough.
+    sym_names: []const ?[]const u8,
+    /// Byte length of the name the real renamer would assign (or of the
+    /// original name, for symbols it leaves alone). Used for every symbol
+    /// `sym_names` does not materialise.
     sym_lengths: []const u32,
     scratch: []const u8,
     ren: Printer.Renamer,
@@ -285,12 +296,15 @@ fn lengthRenamerNameFor(ptr: *const anyopaque, ref: Ast.SymbolIndex) []const u8 
     if (!ref.isValid()) return "";
     const idx = ref.index();
     if (idx >= self.sym_lengths.len) return "";
+    if (self.sym_names[idx]) |name| return name;
     const len = self.sym_lengths[idx];
     if (len == 0) return "";
     return self.scratch[0..len];
 }
 
-/// Build the cheap path's length-only renamer. Allocates rank+length
+/// Build the cheap path's renamer: byte lengths for every symbol, plus the
+/// materialised names of module-scope declarations and pinned symbols — the
+/// names the scope-local wrapper reserves. Allocates rank/length/name
 /// arrays in `arena` and returns a pointer suitable for plugging into
 /// `Printer.Options.renamer`.
 fn buildLengthRenamer(
@@ -333,14 +347,51 @@ fn buildLengthRenamer(
     const rank_lengths = try arena.alloc(u32, ranked.items.len);
     Renamer.estimateRenameLength(&reserved_local, rank_lengths);
 
+    // Per-rank sequence indices through the same walk, so
+    // `numberToMinifiedName(rank_indices[rank])` is the exact name the
+    // real renamer assigns that rank.
+    const rank_indices = try arena.alloc(u32, ranked.items.len);
+    Renamer.estimateRenameIndices(&reserved_local, rank_indices);
+
     // Per-symbol byte lengths. Non-ranked symbols (unused, non-
     // renameable) print their original name, so use its byte length.
     const sym_lengths = try arena.alloc(u32, module.symbols.items.len);
+    const sym_names = try arena.alloc(?[]const u8, module.symbols.items.len);
+    @memset(sym_names, null);
     for (module.symbols.items, 0..) |*sym, i| {
         sym_lengths[i] = @intCast(sym.original_name.len);
     }
     for (ranked.items, 0..) |rs, rank| {
         sym_lengths[rs.idx] = rank_lengths[rank];
+    }
+
+    // Materialise the names the scope-local wrapper reserves: every
+    // module-scope declaration (never a wrapper candidate) and every
+    // pinned symbol. The wrapper skips those base names when it hands out
+    // canonical names, so a placeholder that answers a different name
+    // moves the canonical sequence and undercounts. Candidates (params
+    // and body locals) are overridden before they print and keep the
+    // placeholder.
+    var globals: std.AutoHashMapUnmanaged(u32, void) = .{};
+    for (module.declarations.items) |decl| {
+        const ref = decl.nameRef();
+        if (ref.isValid()) try globals.put(arena, ref.index(), {});
+    }
+    var rank_of: std.AutoHashMapUnmanaged(u32, u32) = .{};
+    for (ranked.items, 0..) |rs, rank| {
+        try rank_of.put(arena, rs.idx, @intCast(rank));
+    }
+    var name_buf: [16]u8 = undefined;
+    for (module.symbols.items, 0..) |*sym, i| {
+        const idx: u32 = @intCast(i);
+        if (!globals.contains(idx) and isRenameable(idx, sym, policy, options)) continue;
+        if (rank_of.get(idx)) |rank| {
+            const name = Renamer.numberToMinifiedName(&name_buf, rank_indices[rank]);
+            sym_names[i] = try arena.dupe(u8, name);
+        } else {
+            // Unranked: `MinifyRenamer` answers the original name.
+            sym_names[i] = sym.original_name;
+        }
     }
 
     // Scratch buffer the LengthRenamer slices into. Content is
@@ -355,6 +406,7 @@ fn buildLengthRenamer(
 
     const length_renamer = try arena.create(LengthRenamer);
     length_renamer.* = .{
+        .sym_names = sym_names,
         .sym_lengths = sym_lengths,
         .scratch = scratch,
         .ren = undefined,

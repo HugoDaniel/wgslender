@@ -274,6 +274,80 @@ test "reserved words never chosen as rename target" {
 }
 
 // =========================================================================
+// Scope-local rename across the name-length boundary
+// =========================================================================
+
+/// 10 used module-scope constants, one helper function, and one function
+/// with 52 locals — the shape the plan's reviewer measured when the cheap
+/// estimator's placeholder names leaked into the scope-local wrapper's
+/// reserved set. Built at comptime so the table cannot drift.
+fn BoundaryBytes(comptime n: usize) type {
+    return struct { bytes: [n]u8, len: usize };
+}
+
+const scope_local_boundary_built: BoundaryBytes(16 * 1024) = init: {
+    @setEvalBranchQuota(200_000);
+    var buf: [16 * 1024]u8 = undefined;
+    var len: usize = 0;
+
+    for (0..10) |i| {
+        const decl = std.fmt.comptimePrint("const c{d}: i32 = {d};\n", .{ i, i + 1 });
+        @memcpy(buf[len..][0..decl.len], decl);
+        len += decl.len;
+    }
+    const helper = "fn h() -> i32 { return 1; }\n";
+    @memcpy(buf[len..][0..helper.len], helper);
+    len += helper.len;
+
+    const open = "fn f(x: i32) -> i32 {\n  var t = x + h();\n";
+    @memcpy(buf[len..][0..open.len], open);
+    len += open.len;
+    for (0..52) |i| {
+        const decl = std.fmt.comptimePrint("  let v{d} = t + c{d};\n", .{ i, i % 10 });
+        @memcpy(buf[len..][0..decl.len], decl);
+        len += decl.len;
+        const use = std.fmt.comptimePrint("  t = t + v{d};\n", .{i});
+        @memcpy(buf[len..][0..use.len], use);
+        len += use.len;
+    }
+    const tail = "  return t + c0 + c1 + c2 + c3 + c4 + c5 + c6 + c7 + c8 + c9;\n}\n";
+    @memcpy(buf[len..][0..tail.len], tail);
+    len += tail.len;
+
+    buf[len] = 0;
+    const frozen = buf;
+    break :init .{ .bytes = frozen, .len = len };
+};
+
+const scope_local_boundary_source: [:0]const u8 = scope_local_boundary_built.bytes[0..scope_local_boundary_built.len :0];
+
+test "scope-local estimator matches real minify across the name-length boundary" {
+    // Cheap and full are two paths over the same module; both must equal the
+    // real minifier byte-for-byte. The bug this pins: the cheap path's
+    // `LengthRenamer` answered every symbol with an 'x'-run, so the
+    // scope-local wrapper reserved 'x'/'xx' instead of the real global names,
+    // the canonical sequence crossed into two-character names at a different
+    // local, and the estimate undercounted. Full mode already ran the
+    // production renamer and agreed with the minifier.
+    const gpa = testing.allocator;
+
+    var cheap_opts: MinifyEstimator.Options = .{};
+    cheap_opts.scope_local_rename = true;
+    const cheap = try estimateTotal(gpa, scope_local_boundary_source, cheap_opts);
+
+    var full_opts = cheap_opts;
+    full_opts.use_full_minify = true;
+    const full = try estimateTotal(gpa, scope_local_boundary_source, full_opts);
+
+    var real_opts = defaultMinifyOptions();
+    real_opts.scope_local_rename = true;
+    const real = try realMinifySize(gpa, scope_local_boundary_source, real_opts);
+
+    try testing.expectEqual(@as(u32, @intCast(real)), full);
+    try testing.expectEqual(@as(u32, @intCast(real)), cheap);
+}
+
+// =========================================================================
 // Ground-truth parity on compute.toys shaders
 // =========================================================================
 
