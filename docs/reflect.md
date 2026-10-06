@@ -303,6 +303,26 @@ reflection with no renamer behind it has none at all.
 The legacy `bindings[]` array is still emitted in v2 as the union — adding the
 subset views doesn't remove anything.
 
+### Per-call-expression spans: the `callShape` query (not reflect)
+
+Reflection's `functions[].calls` records *outgoing edges* by callee name —
+which functions each body calls. It deliberately does not carry per-call
+spans. Consumers that need "which generated call did this edit land in, and
+what bytes does each argument occupy" (text editors mapping an edit back
+onto a call expression) use the separate `callShape(source, { function })`
+query on the WASM/npm surface (`wgslender_call_shape_json`), which reports
+every call expression per user function — callee name and span, whole-call
+span, each argument expression's span, nested calls included, all UTF-8
+byte offsets — plus a `kind` of `user` / `builtin` / `constructor`.
+
+**Stability class: Experimental** (the `root.zig` tier vocabulary): public
+and supported, but the JSON shape may shift between versions until a
+consumer has exercised it — unlike `findReferences` / stable-id queries,
+which are committed surface. Its parse-error discipline: the recovery
+parser's functions are always answered (nothing silently dropped) and
+`error` carries `"parse errors: N"`; a total parse failure returns
+`{"functions":[],"error":"parse error"}`.
+
 ## Invariants
 
 - Every returned `BindingInfo` has `group >= 0` and `binding >= 0`.

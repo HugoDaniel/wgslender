@@ -277,13 +277,20 @@ functions, so any editor or build tool can drive find-references, rename,
 and structural edits without an LSP session:
 
 ```javascript
-import { findReferences, renameApply, stableIdAtOffset, renameByStableId } from "wgslender";
+import { findReferences, renameApply, stableIdAtOffset, callShape } from "wgslender";
 
 const refs = findReferences(source, cursorByteOffset);       // { references: [{ start, end, isWrite }] }
 const { source: next } = renameApply(source, cursorByteOffset, "newName");
 
 const { stableId } = stableIdAtOffset(source, cursorByteOffset);
 renameByStableId(source, stableId, "newName");               // survives reparses + unrelated edits
+
+// Every call expression per function, with UTF-8 byte spans for the
+// callee, the whole call, and each argument — nested calls included.
+const shape = callShape(source, { function: "main" });
+// { functions: [{ name, name_offset, stable_id, calls: [
+//     { kind: "user"|"builtin"|"constructor", callee, callee_span,
+//       span, args: [[start, end], ...] } ] }], error? }
 ```
 
 Stable IDs survive reparses and edits that don't move the declaration across
@@ -293,6 +300,9 @@ return a usable `source` string (the original on failure). Also available:
 `rename`, `locateStableId`, `locateDeclaration`, `locateType`,
 `changeTypeByStableId`/`changeTypeApplyByStableId`,
 `removeDeclarationByStableId`/`removeDeclarationApplyByStableId`.
+`callShape` is **experimental** (its JSON shape may shift); broken source is
+answered for the functions the recovery parser kept, with
+`error: "parse errors: N"` noting what was skipped.
 
 </details>
 
