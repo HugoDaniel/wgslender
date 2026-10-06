@@ -187,6 +187,36 @@ pub fn minifyAndReflectJsonToJson(
     return finalize(buf);
 }
 
+/// Pretty-print `source` with every content transformation disabled: the
+/// same printer pass the LSP's `textDocument/formatting` runs, through the
+/// shared `Minifier.formattedOptions` factory, in the query layer's
+/// allocator-in/JSON-out shape.
+///
+/// Success returns `{"code":"..."}`. When the parser reported errors the
+/// formatter has no canonical text to offer, so `code` is the input
+/// unchanged and `error` carries `"parse errors: N"` — the package's
+/// "always return a usable source" convention, never an exception.
+pub fn formatToJson(alloc: Allocator, source: [:0]const u8) Allocator.Error![]u8 {
+    const result = Minifier.minify(alloc, source, Minifier.formattedOptions()) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+
+    const code = if (result.errors.len > 0) source else result.code;
+    const parse_errors: u32 = @intCast(result.errors.len);
+
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(alloc, "{\"code\":\"");
+    try Diagnostic.appendJsonEscaped(&buf, alloc, code);
+    try buf.append(alloc, '"');
+    if (parse_errors > 0) {
+        try buf.appendSlice(alloc, ",\"error\":\"parse errors: ");
+        try Diagnostic.appendInt(&buf, alloc, parse_errors);
+        try buf.append(alloc, '"');
+    }
+    try buf.append(alloc, '}');
+    return finalize(buf);
+}
+
 // =========================================================================
 // Validate
 // =========================================================================
@@ -1609,4 +1639,65 @@ test "callShapeToJson: clean source emits no error field" {
             "\"stable_id\":\"v1:fn:main\",\"calls\":[]}]}",
         json,
     );
+}
+
+test "formatToJson: golden JSON for a clean source" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "fn   f(){let x: f32 = 1.0; _ = x;}";
+    const json = try formatToJson(alloc, source);
+    try std.testing.expectEqualStrings(
+        "{\"code\":\"fn f() {\\n    let x: f32 = 1.0;\\n    _ = x;\\n}\\n\"}",
+        json,
+    );
+}
+
+test "formatToJson: content-preserving (helper kept, literal spelling kept)" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        "fn helper_unused(x: f32) -> f32 { return x * 2.0; }\n" ++
+        "@compute @workgroup_size(1) fn main() { let a = 1.0; _ = a; }";
+    const json = try formatToJson(alloc, source);
+    try std.testing.expect(std.mem.indexOf(u8, json, "helper_unused") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json, "1.0") != null);
+}
+
+test "formatToJson: parse failure keeps the input as code and names the error" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "fn { invalid }";
+    const json = try formatToJson(alloc, source);
+    try std.testing.expectEqualStrings(
+        "{\"code\":\"fn { invalid }\",\"error\":\"parse errors: 4\"}",
+        json,
+    );
+}
+
+test "formatToJson: idempotent over its own output" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "struct  S{ x: f32 }\nfn   f(s:S)->f32{return  s.x;}";
+    const first = try formatToJson(alloc, source);
+    var parsed = try std.json.parseFromSlice(std.json.Value, alloc, first, .{});
+    defer parsed.deinit();
+    const code = parsed.value.object.get("code").?.string;
+
+    const again = try alloc.dupeZ(u8, code);
+    const second = try formatToJson(alloc, again);
+    var parsed_again = try std.json.parseFromSlice(std.json.Value, alloc, second, .{});
+    defer parsed_again.deinit();
+    try std.testing.expectEqualStrings(code, parsed_again.value.object.get("code").?.string);
 }
