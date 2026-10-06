@@ -53,7 +53,7 @@ async function runSuite(wgslender, opts) {
   console.log(`\n=== ${variantName} ===\n`);
 
   const {
-    initialize, minify, reflect, minifyAndReflect, validate, isInitialized, getBindGroups,
+    initialize, minify, format, reflect, minifyAndReflect, validate, isInitialized, getBindGroups,
     findReferences, callShape, rename, renameApply,
     stableIdAtOffset, locateStableId, renameByStableId,
     locateDeclaration, locateType,
@@ -146,6 +146,43 @@ fn computeValue(index: u32) -> f32 { return f32(index) * uniforms.scale; }
     assert(r.sourceMap && typeof r.sourceMap === 'object' && r.sourceMap.version === 3,
       'Source map generation returns sourceMap field');
   }
+
+  // --- Format ---
+  console.log('\n--- Format ---');
+  {
+    const source = `struct  S  {  x:  f32  }
+fn   f(s:S)->f32{return   s.x;}`;
+    const expected = 'struct S {\n    x: f32\n}\nfn f(s: S) -> f32 {\n    return s.x;\n}\n';
+    const r = format(source);
+    assert(!r.error, `clean source: no error, got ${r.error}`);
+    assert(r.code === expected, `formatted bytes, got ${JSON.stringify(r.code)}`);
+
+    const again = format(r.code);
+    assert(again.code === r.code && !again.error, 'format is idempotent');
+
+    // The generic minify route with the four content-preserving flags runs
+    // the same pipeline; the dedicated export must not have drifted from it.
+    const generic = minify(source, {
+      minifyWhitespace: false, minifyIdentifiers: false, minifySyntax: false, treeShaking: false,
+    });
+    assert(generic.code === r.code,
+      'format matches generic minify with the four flags');
+  }
+  {
+    const source = 'fn helper_unused(x: f32) -> f32 { return x * 2.0; }\n@compute @workgroup_size(1) fn main() { let a = 1.0; _ = a; }';
+    const r = format(source);
+    assert(!r.error && r.code.includes('helper_unused'),
+      'unreachable helper preserved (no tree shaking)');
+    assert(r.code.includes('1.0'), 'literal spelling preserved (no syntax minification)');
+  }
+  {
+    const broken = 'fn { invalid }';
+    const r = format(broken);
+    assert(r.code === broken, 'parse failure returns the input as code');
+    assert(typeof r.error === 'string' && r.error.startsWith('parse errors: '),
+      `parse failure sets error, got ${r.error}`);
+  }
+  assertThrows(() => format(123), 'format(non-string) throws', TypeError);
 
   // --- Minify: Error/Edge Cases ---
   console.log('\n--- Minify: Error/Edge Cases ---');

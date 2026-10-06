@@ -963,6 +963,10 @@ pub fn build(b: *std.Build) void {
         .{ .name = "lsp", .module = lsp_mod },
     });
     _ = addTestStep(b, test_step, "tests/formatting_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // The plain `format(source)` export's goldens: byte-identical to the LSP
+    // handler's formatting over the shared fixtures + testdata, idempotent,
+    // and input-preserving on parse failure.
+    _ = addTestStep(b, test_step, "tests/format_parity_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/semantic_tokens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/selection_range_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/call_hierarchy_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });

@@ -1,5 +1,6 @@
 const std = @import("std");
 const Handler = @import("Handler");
+const fixtures = @import("formatting_fixtures.zig");
 
 fn setup(source: [:0]const u8) !struct { handler: *Handler } {
     const handler = try std.testing.allocator.create(Handler);
@@ -14,7 +15,7 @@ fn teardown(ctx: anytype) void {
 }
 
 test "formatting: produces output" {
-    const source: [:0]const u8 = "fn   f()   {   }";
+    const source: [:0]const u8 = fixtures.produces_output;
     const ctx = try setup(source);
     defer teardown(ctx);
     const edit = try ctx.handler.computeFormatting("test://file.wgsl");
@@ -28,7 +29,7 @@ test "formatting: produces output" {
 }
 
 test "formatting: parse error returns null" {
-    const source: [:0]const u8 = "fn { invalid }";
+    const source: [:0]const u8 = fixtures.parse_error;
     const ctx = try setup(source);
     defer teardown(ctx);
     const edit = try ctx.handler.computeFormatting("test://file.wgsl");
@@ -43,10 +44,7 @@ test "formatting: unknown document returns null" {
 }
 
 test "formatting: multi-line source" {
-    const source: [:0]const u8 =
-        \\struct  S  {  x:  f32  }
-        \\fn   f(s:S)->f32{return   s.x;}
-    ;
+    const source: [:0]const u8 = fixtures.multi_line;
     const ctx = try setup(source);
     defer teardown(ctx);
     const edit = try ctx.handler.computeFormatting("test://file.wgsl");
@@ -59,7 +57,7 @@ test "formatting: multi-line source" {
 }
 
 test "formatting: empty source" {
-    const source: [:0]const u8 = "";
+    const source: [:0]const u8 = fixtures.empty;
     const ctx = try setup(source);
     defer teardown(ctx);
     const edit = try ctx.handler.computeFormatting("test://file.wgsl");
@@ -70,7 +68,7 @@ test "formatting: empty source" {
 }
 
 test "formatting: valid shader formats cleanly" {
-    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() { let x: f32 = 1.0; }";
+    const source: [:0]const u8 = fixtures.valid_shader;
     const ctx = try setup(source);
     defer teardown(ctx);
     const edit = try ctx.handler.computeFormatting("test://file.wgsl");
@@ -86,10 +84,7 @@ test "formatting: preserves declarations unreachable from entry points" {
     // pipeline with whitespace/identifier minification off, but tree shaking
     // must be off too — otherwise Format Document silently deletes any
     // helper not yet called from an entry point.
-    const source: [:0]const u8 =
-        \\fn helper_unused(x: f32) -> f32 { return x * 2.0; }
-        \\@compute @workgroup_size(1) fn main() { let a = 1.0; _ = a; }
-    ;
+    const source: [:0]const u8 = fixtures.preserves_unreachable;
     const ctx = try setup(source);
     defer teardown(ctx);
     const edit = try ctx.handler.computeFormatting("test://file.wgsl");
@@ -99,7 +94,7 @@ test "formatting: preserves declarations unreachable from entry points" {
 }
 
 test "formatting: preserves literal spelling (no syntax minification)" {
-    const source: [:0]const u8 = "@compute @workgroup_size(1) fn main() { let a = 1.0; _ = a; }";
+    const source: [:0]const u8 = fixtures.valid_shader;
     const ctx = try setup(source);
     defer teardown(ctx);
     const edit = try ctx.handler.computeFormatting("test://file.wgsl");
@@ -109,7 +104,7 @@ test "formatting: preserves literal spelling (no syntax minification)" {
 }
 
 test "formatting: preserves struct content" {
-    const source: [:0]const u8 = "struct Vertex { position: vec3f, normal: vec3f }";
+    const source: [:0]const u8 = fixtures.preserves_struct;
     const ctx = try setup(source);
     defer teardown(ctx);
     const edit = try ctx.handler.computeFormatting("test://file.wgsl");
