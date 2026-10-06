@@ -54,7 +54,7 @@ async function runSuite(wgslender, opts) {
 
   const {
     initialize, minify, reflect, minifyAndReflect, validate, isInitialized, getBindGroups,
-    findReferences, rename, renameApply,
+    findReferences, callShape, rename, renameApply,
     stableIdAtOffset, locateStableId, renameByStableId,
     locateDeclaration, locateType,
     removeDeclarationByStableId, removeDeclarationApplyByStableId,
@@ -510,6 +510,67 @@ fn other(y: f32) -> f32 { return helper(y) + helper(1.0); }
   assertThrows(() => findReferences(123, 0), 'findReferences(non-string) throws', TypeError);
   assertThrows(() => findReferences('x', -1), 'findReferences(negative offset) throws', TypeError);
   assertThrows(() => findReferences('x', 'abc'), 'findReferences(non-numeric offset) throws', TypeError);
+
+  // --- Edits: callShape ---
+  console.log('\n--- Edits: callShape ---');
+  {
+    // Nested calls: outer first, nested second, argument span contains
+    // the nested call's whole span.
+    const source = `fn spOver(acc: f32, v: f32) -> f32 { return acc + v; }
+fn layer_sun(p: f32) -> f32 { return p; }
+@compute @workgroup_size(1) fn main() { let x = spOver(0.0, layer_sun(1.0)); }`;
+    const r = callShape(source);
+    assert(!r.error, `clean source: no error, got ${r.error}`);
+    assert(r.functions.length === 3, `3 functions, got ${r.functions.length}`);
+    const main = r.functions.find((f) => f.name === 'main');
+    assert(main && main.calls.length === 2, `main has 2 calls, got ${main && main.calls.length}`);
+    assert(main.calls[0].kind === 'user' && main.calls[0].callee === 'spOver', 'outer call is user spOver');
+    assert(main.calls[1].kind === 'user' && main.calls[1].callee === 'layer_sun', 'nested call reported after outer');
+    const [os, oe] = main.calls[0].span;
+    const [is, ie] = main.calls[1].span;
+    const [a1s, a1e] = main.calls[0].args[1];
+    assert(source.slice(os, oe) === 'spOver(0.0, layer_sun(1.0))', 'outer span spells the whole call');
+    assert(os < is && ie < oe, 'outer span contains the nested call');
+    assert(a1s <= is && ie <= a1e, 'outer second arg span contains the nested call span');
+    assert(main.calls[0].args.length === 2 && source.slice(...main.calls[0].args[0]) === '0.0',
+      'argument spans spell their expressions');
+    assert(main.stable_id === 'v1:fn:main', `stable id, got ${main.stable_id}`);
+  }
+  {
+    // Kinds — zero-arg constructor, builtin, nested constructor — and
+    // byte-exact spans on non-ASCII source: `é` is 2 UTF-8 bytes but 1
+    // UTF-16 code unit, so the returned byte offsets run one past JS
+    // string indices after it.
+    const byteSlice = (str, s, e) => new TextDecoder().decode(new TextEncoder().encode(str).subarray(s, e));
+    const source = '// éclair\nfn main() { let a = vec2f(); let b = min(1.0, 2.0); }';
+    const r = callShape(source);
+    const main = r.functions.find((f) => f.name === 'main');
+    assert(main.calls[0].kind === 'constructor' && main.calls[0].callee === 'vec2f',
+      'zero-arg constructor call');
+    assert(main.calls[0].args.length === 0, 'zero-arg call has empty args');
+    assert(main.calls[1].kind === 'builtin' && main.calls[1].callee === 'min', 'builtin call');
+    const [cs, ce] = main.calls[0].callee_span;
+    assert(byteSlice(source, cs, ce) === 'vec2f', 'callee span spells callee in bytes');
+    assert(cs === source.indexOf('vec2f()') + 1,
+      `callee span is a UTF-8 byte offset (byte ${cs} vs UTF-16 index ${source.indexOf('vec2f()')})`);
+  }
+  {
+    // Filter narrows to one function; parse errors are noted without
+    // dropping the functions the recovery parser kept.
+    const source = 'fn one() -> f32 { return sin(1.0); } fn two() -> f32 { return cos(2.0); }';
+    const r = callShape(source, { function: 'two' });
+    assert(r.functions.length === 1 && r.functions[0].name === 'two', 'filter narrows to one function');
+    assert(r.functions[0].calls[0].kind === 'builtin' && r.functions[0].calls[0].callee === 'cos',
+      'filtered function still carries its calls');
+
+    const broken = callShape('fn broken( { } fn good() -> f32 { return sin(1.0); }');
+    assert(typeof broken.error === 'string' && broken.error.startsWith('parse errors: '),
+      `recovery note rides in error, got ${broken.error}`);
+    assert(broken.functions.some((f) => f.name === 'good' && f.calls.length === 1),
+      'recovered function still reported with its calls');
+  }
+  assertThrows(() => callShape(123), 'callShape(non-string) throws', TypeError);
+  assertThrows(() => callShape('fn main() {}', { function: 42 }), 'callShape(non-string filter) throws', TypeError);
 
   // --- Edits: rename ---
   console.log('\n--- Edits: rename ---');
