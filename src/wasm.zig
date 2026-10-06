@@ -244,6 +244,28 @@ export fn wgslender_find_references(
     return packLenPrefixed(json);
 }
 
+/// Call-shape query: every call expression per user function with the
+/// callee's byte span, the whole call's span, and each argument's span.
+/// `filter_ptr` (with `filter_len`) optionally narrows to one function by
+/// name; pass null / 0 for all functions. Output: `[u32 json_len][u8... json]`
+/// where the JSON is `{"functions":[...],"error":?}` — see
+/// `api_json.callShapeToJson` for the shape and parse-error discipline.
+export fn wgslender_call_shape_json(
+    source_ptr: [*]const u8,
+    source_len: u32,
+    filter_ptr: ?[*]const u8,
+    filter_len: u32,
+) callconv(.c) ?[*]u8 {
+    var arena = std.heap.ArenaAllocator.init(wasm_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch return null;
+    const filter: ?[]const u8 = if (filter_ptr) |p| p[0..filter_len] else null;
+    const json = api_json.callShapeToJson(alloc, source, filter) catch return null;
+    return packLenPrefixed(json);
+}
+
 export fn wgslender_rename(
     source_ptr: [*]const u8,
     source_len: u32,
