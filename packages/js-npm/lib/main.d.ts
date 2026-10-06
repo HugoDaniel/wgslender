@@ -557,6 +557,32 @@ export function initialize(options?: InitializeOptions): Promise<void>;
 export function minify(source: string, options?: MinifyOptions): MinifyResult;
 
 /**
+ * Result of `format()`. `code` is the pretty-printed document, or the
+ * input unchanged when the source could not be parsed (see `error`).
+ */
+export interface FormatResult {
+  /** Pretty-printed source; the original input when `error` is set. */
+  code: string;
+  /**
+   * `"parse errors: N"` when the parser reported syntax errors — the
+   * formatter has no canonical text for broken source, so `code` is
+   * returned unchanged rather than throwing.
+   */
+  error?: string;
+}
+
+/**
+ * Pretty-print WGSL source — the same content-preserving formatting the
+ * language server applies on `textDocument/formatting`: whitespace and
+ * layout are normalized, but no declaration is tree-shaken, no literal is
+ * respelled (`1.0` stays `1.0`), and no identifier is renamed.
+ *
+ * Never throws for a malformed document: on parse failure `code` is the
+ * input unchanged and `error` is set.
+ */
+export function format(source: string): FormatResult;
+
+/**
  * Options for compiling a WGSL shader to a `.wasm` binary. Forwarded to the
  * minifier pass that runs before BPE compression and codegen.
  *

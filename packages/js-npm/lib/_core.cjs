@@ -87,6 +87,18 @@ function createWrapper({ loadWasm }) {
     return _readResultJson(resultPtr);
   }
 
+  function format(source) {
+    _ensureInit();
+    if (typeof source !== 'string') throw new TypeError('source must be a string');
+
+    const src = _writeString(source);
+    const resultPtr = _wasm.wgslender_format_json(src.ptr, src.len);
+    _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+
+    if (!resultPtr) throw new Error('format failed: WASM returned null');
+    return _readResultJson(resultPtr);
+  }
+
   function reflect(source) {
     _ensureInit();
     if (typeof source !== 'string') throw new TypeError('source must be a string');
@@ -492,6 +504,7 @@ function createWrapper({ loadWasm }) {
   return {
     initialize,
     minify,
+    format,
     compile,
     reflect,
     minifyAndReflect,

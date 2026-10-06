@@ -34,6 +34,7 @@ const wgslender = createWrapper({ loadWasm });
 
 export const initialize = wgslender.initialize;
 export const minify = wgslender.minify;
+export const format = wgslender.format;
 export const compile = wgslender.compile;
 export const reflect = wgslender.reflect;
 export const minifyAndReflect = wgslender.minifyAndReflect;
