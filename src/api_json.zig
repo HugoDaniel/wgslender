@@ -941,6 +941,85 @@ fn isPredeclaredConstructorName(name: []const u8) bool {
     return false;
 }
 
+/// The call-shape query: every call expression per user function, as JSON.
+///
+/// Shape (spans are `[start, end)` UTF-8 byte offsets into `source`):
+///
+/// ```json
+/// {"functions":[
+///   {"name":"main","name_offset":42,"stable_id":"v1:fn:main","calls":[
+///     {"kind":"user","callee":"spOver",
+///      "callee_span":[50,56],"span":[50,80],
+///      "args":[[57,60],[62,79]]}]}],
+///  "error":"parse errors: 2"}
+/// ```
+///
+/// Parse-error discipline: the parser is recovery-oriented, so the query
+/// answers for the functions that parsed — `functions` carries each with
+/// every call found in it — and appends `"error":"parse errors: N"`
+/// noting how many syntax errors were recovered, so a consumer can treat
+/// spans inside the broken regions with suspicion without discarding the
+/// clean ones. A total parse failure (no module at all) returns
+/// `{"functions":[],"error":"parse error"}`, matching the other query
+/// envelopes in this layer. `error` is never thrown — the package's
+/// no-throw convention.
+pub fn callShapeToJson(
+    alloc: Allocator,
+    source: [:0]const u8,
+    filter: ?[]const u8,
+) Allocator.Error![]u8 {
+    const shapes = (try collectCallShapes(alloc, source, filter)) orelse
+        return dupeLiteral(alloc, "{\"functions\":[],\"error\":\"parse error\"}");
+
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.appendSlice(alloc, "{\"functions\":[");
+    for (shapes.functions, 0..) |f, i| {
+        if (i > 0) try buf.append(alloc, ',');
+        try buf.appendSlice(alloc, "{\"name\":\"");
+        try Diagnostic.appendJsonEscaped(&buf, alloc, f.name);
+        try buf.appendSlice(alloc, "\",\"name_offset\":");
+        try Diagnostic.appendInt(&buf, alloc, f.name_offset);
+        try buf.appendSlice(alloc, ",\"stable_id\":\"");
+        try Diagnostic.appendJsonEscaped(&buf, alloc, f.stable_id);
+        try buf.appendSlice(alloc, "\",\"calls\":[");
+        for (f.calls, 0..) |c, j| {
+            if (j > 0) try buf.append(alloc, ',');
+            try buf.appendSlice(alloc, "{\"kind\":\"");
+            try buf.appendSlice(alloc, c.kind.jsonString());
+            try buf.appendSlice(alloc, "\",\"callee\":\"");
+            try Diagnostic.appendJsonEscaped(&buf, alloc, c.callee);
+            try buf.appendSlice(alloc, "\",\"callee_span\":");
+            try writeSpanArray(&buf, alloc, c.callee_span);
+            try buf.appendSlice(alloc, ",\"span\":");
+            try writeSpanArray(&buf, alloc, c.span);
+            try buf.appendSlice(alloc, ",\"args\":[");
+            for (c.args, 0..) |a, k| {
+                if (k > 0) try buf.append(alloc, ',');
+                try writeSpanArray(&buf, alloc, a);
+            }
+            try buf.appendSlice(alloc, "]}");
+        }
+        try buf.appendSlice(alloc, "]}");
+    }
+    try buf.append(alloc, ']');
+    if (shapes.parse_errors > 0) {
+        try buf.appendSlice(alloc, ",\"error\":\"parse errors: ");
+        try Diagnostic.appendInt(&buf, alloc, shapes.parse_errors);
+        try buf.append(alloc, '"');
+    }
+    try buf.append(alloc, '}');
+    return finalize(buf);
+}
+
+/// Append a span as a JSON `[start, end]` pair.
+fn writeSpanArray(buf: *std.ArrayList(u8), alloc: Allocator, span: Ast.Span) Allocator.Error!void {
+    try buf.append(alloc, '[');
+    try Diagnostic.appendInt(buf, alloc, span.start);
+    try buf.append(alloc, ',');
+    try Diagnostic.appendInt(buf, alloc, span.end);
+    try buf.append(alloc, ']');
+}
+
 // =========================================================================
 // Lint
 // =========================================================================
@@ -1404,4 +1483,130 @@ test "collectCallShapes: recovery parse keeps functions, counts parse errors" {
         }
     }
     try std.testing.expect(saw_good);
+}
+
+// -------------------------------------------------------------------------
+// Call shape — JSON golden tests
+// -------------------------------------------------------------------------
+
+test "callShapeToJson: golden JSON, nested calls and kinds" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        "fn inner(p: f32) -> f32 { return p; }" ++
+        "fn main() { let x = vec2f(1.0, inner(2.0)); }";
+    const json = try callShapeToJson(alloc, source, null);
+
+    const inner_off = std.mem.indexOf(u8, source, "inner").?; // declaration name
+    const main_off = std.mem.indexOf(u8, source, "main").?;
+    const outer = std.mem.indexOf(u8, source, "vec2f(1.0").?; // whole outer call
+    const nested = std.mem.indexOf(u8, source, "inner(2.0").?;
+    const expected = try std.fmt.allocPrint(
+        alloc,
+        "{{\"functions\":[" ++
+            "{{\"name\":\"inner\",\"name_offset\":{d},\"stable_id\":\"v1:fn:inner\",\"calls\":[]}}," ++
+            "{{\"name\":\"main\",\"name_offset\":{d},\"stable_id\":\"v1:fn:main\",\"calls\":[" ++
+            "{{\"kind\":\"constructor\",\"callee\":\"vec2f\",\"callee_span\":[{d},{d}]," ++
+            "\"span\":[{d},{d}],\"args\":[[{d},{d}],[{d},{d}]]}}," ++
+            "{{\"kind\":\"user\",\"callee\":\"inner\",\"callee_span\":[{d},{d}]," ++
+            "\"span\":[{d},{d}],\"args\":[[{d},{d}]]}}]}}]}}",
+        .{
+            inner_off, // fn inner name
+            main_off, //  fn main name
+            outer,          outer + 5, //  callee `vec2f`
+            outer,          outer + 22, // whole `vec2f(1.0, inner(2.0))`
+            outer + 6,      outer + 9, //  arg 1 `1.0`
+            nested,         nested + 10, // arg 2 `inner(2.0)`
+            nested,         nested + 5, //  callee `inner`
+            nested,         nested + 10, // whole `inner(2.0)`
+            nested + 6,     nested + 9, //  arg `2.0`
+        },
+    );
+    try std.testing.expectEqualStrings(expected, json);
+}
+
+test "callShapeToJson: golden JSON proves UTF-8 byte offsets on non-ASCII source" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `é` is 2 bytes in UTF-8 and 1 UTF-16 code unit; every span after it
+    // differs by 1 between the two conventions. Hand-computed golden:
+    //   "// ré\n" is 7 bytes, `main` at 10, `sin` at [27,30), call
+    //   [27,35), argument [31,34).
+    const source: [:0]const u8 = "// ré\nfn main() { let x = sin(1.0); }";
+    try std.testing.expectEqual(@as(usize, 7), std.mem.indexOf(u8, source, "fn main").?);
+    const json = try callShapeToJson(alloc, source, null);
+    try std.testing.expectEqualStrings(
+        "{\"functions\":[{\"name\":\"main\",\"name_offset\":10," ++
+            "\"stable_id\":\"v1:fn:main\",\"calls\":" ++
+            "[{\"kind\":\"builtin\",\"callee\":\"sin\"," ++
+            "\"callee_span\":[27,30],\"span\":[27,35],\"args\":[[31,34]]}]}]}",
+        json,
+    );
+}
+
+test "callShapeToJson: unicode identifier callee keeps byte-exact spans" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // `Över` is 5 bytes in UTF-8; the callee span must cover exactly
+    // those bytes (and JSON-escape nothing — it passes through as UTF-8).
+    const source: [:0]const u8 = "fn Över(x: f32) -> f32 { return x; } fn main() { let y = Över(1.0); }";
+    const call = std.mem.indexOf(u8, source, "Över(1.0").?;
+    const json = try callShapeToJson(alloc, source, "main");
+    const expected = try std.fmt.allocPrint(
+        alloc,
+        "{{\"functions\":[{{\"name\":\"main\",\"name_offset\":{d}," ++
+            "\"stable_id\":\"v1:fn:main\",\"calls\":[{{\"kind\":\"user\"," ++
+            "\"callee\":\"Över\",\"callee_span\":[{d},{d}],\"span\":[{d},{d}]," ++
+            "\"args\":[[{d},{d}]]}}]}}]}}",
+        .{
+            std.mem.indexOf(u8, source, "main").?,
+            call,        call + 5,
+            call,        call + 10,
+            call + 6,    call + 9,
+        },
+    );
+    try std.testing.expectEqualStrings(expected, json);
+}
+
+test "callShapeToJson: parse errors noted, recovered functions still reported" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        "fn broken( { let x = ; }" ++
+        "fn good() -> f32 { return sin(1.0); }";
+    const json = try callShapeToJson(alloc, source, null);
+    try std.testing.expect(std.mem.startsWith(u8, json, "{\"functions\":[{\"name\":\"broken\""));
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\":\"good\"") != null);
+    // The recovery note rides in `error` — functions are still present.
+    const note = std.mem.indexOf(u8, json, ",\"error\":\"parse errors: ").?;
+    try std.testing.expect(json[json.len - 2] == '"' and json[json.len - 1] == '}');
+    const count = json[note + ",\"error\":\"parse errors: ".len .. json.len - 2];
+    try std.testing.expect(count.len > 0);
+    for (count) |ch| try std.testing.expect(ch >= '0' and ch <= '9');
+}
+
+test "callShapeToJson: clean source emits no error field" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const json = try callShapeToJson(alloc, "fn main() {}", null);
+    try std.testing.expectEqualStrings(
+        "{\"functions\":[{\"name\":\"main\",\"name_offset\":3," ++
+            "\"stable_id\":\"v1:fn:main\",\"calls\":[]}]}",
+        json,
+    );
 }
