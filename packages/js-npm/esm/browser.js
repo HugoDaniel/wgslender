@@ -59,6 +59,7 @@ export const validate = wgslender.validate;
 export const lint = wgslender.lint;
 export const lintAndFix = wgslender.lintAndFix;
 export const findReferences = wgslender.findReferences;
+export const callShape = wgslender.callShape;
 export const rename = wgslender.rename;
 export const renameApply = wgslender.renameApply;
 export const stableIdAtOffset = wgslender.stableIdAtOffset;

@@ -276,6 +276,26 @@ function createWrapper({ loadWasm }) {
     return _readResultJson(resultPtr);
   }
 
+  function callShape(source, opts) {
+    _ensureInit();
+    if (typeof source !== 'string') throw new TypeError('source must be a string');
+    const fn = opts && opts.function;
+    if (fn !== undefined && typeof fn !== 'string') {
+      throw new TypeError('opts.function must be a string');
+    }
+    const src = _writeString(source);
+    const filter = fn ? _writeString(fn) : null;
+    const resultPtr = _wasm.wgslender_call_shape_json(
+      src.ptr, src.len,
+      filter ? filter.ptr : 0,
+      filter ? filter.len : 0,
+    );
+    _wasm.wgslender_dealloc(src.ptr, src.allocLen);
+    if (filter) _wasm.wgslender_dealloc(filter.ptr, filter.allocLen);
+    if (!resultPtr) throw new Error('callShape failed: WASM returned null');
+    return _readResultJson(resultPtr);
+  }
+
   function rename(source, offset, newName) {
     _ensureInit();
     if (typeof source !== 'string') throw new TypeError('source must be a string');
@@ -480,6 +500,7 @@ function createWrapper({ loadWasm }) {
     lint,
     lintAndFix,
     findReferences,
+    callShape,
     rename,
     renameApply,
     stableIdAtOffset,

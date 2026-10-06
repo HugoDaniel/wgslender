@@ -694,6 +694,63 @@ export function findReferences(
   includeDeclaration?: boolean
 ): FindReferencesResult;
 
+/** How a call expression's callee was classified. */
+export type CallShapeKind =
+  | 'user'         // a function declared in this module (or an unresolved name)
+  | 'builtin'      // a builtin function: textureSample, sin, bitcast<T>, ...
+  | 'constructor'; // a type constructor: vec2f, f32, vec3<f32>, array<T, N>, S(...)
+
+/** One call expression, with UTF-8 byte spans into the source. */
+export interface CallShapeCall {
+  /** Classification of the callee. */
+  kind: CallShapeKind;
+  /**
+   * Callee as written: `spOver`, `textureSample`, `vec2f` — the leading
+   * type name (`vec3`) for a templated constructor `vec3<f32>(...)`.
+   */
+  callee: string;
+  /** `[start, end)` byte span of the callee (the whole `vec3<f32>` type expression when templated). */
+  callee_span: [number, number];
+  /** `[start, end)` byte span of the whole call expression. */
+  span: [number, number];
+  /** `[start, end)` byte span of each argument expression, in source order. */
+  args: Array<[number, number]>;
+}
+
+/** One user function and every call expression in its body. */
+export interface CallShapeFunction {
+  name: string;
+  /** Byte offset of the function's name in the source. */
+  name_offset: number;
+  /** Stable ID of the function declaration; an empty string when it would exceed the length limit. */
+  stable_id: string;
+  /** Calls in source order, nested calls included. */
+  calls: CallShapeCall[];
+}
+
+/** Result of callShape. */
+export interface CallShapeResult {
+  functions: CallShapeFunction[];
+  /**
+   * `"parse errors: N"` when the recovery parser skipped regions — the
+   * functions it recovered are still reported, with every call found in
+   * them. `"parse error"` (with empty `functions`) when parsing failed
+   * outright.
+   */
+  error?: string;
+}
+
+/**
+ * Query every call expression per user function: the callee's name and
+ * byte span, the whole call expression's span, and each argument
+ * expression's span — nested calls included, in source order. All spans
+ * are `[start, end)` UTF-8 byte offsets, never UTF-16.
+ *
+ * `opts.function` narrows the result to the single function with that
+ * name. Never throws for a query failure: the result carries `error`.
+ */
+export function callShape(source: string, opts?: { function?: string }): CallShapeResult;
+
 /**
  * Compute text edits that rename the symbol under `offset` to `newName`.
  * Returns `{edits: [], error: ...}` if the rename cannot be applied
