@@ -25,6 +25,8 @@ const Config = @import("Config.zig");
 const Compiler = @import("Compiler.zig");
 const Edits = @import("Edits.zig");
 const StableId = @import("StableId.zig");
+const Builtins = @import("Builtins.zig");
+const Predeclared = @import("Predeclared.zig");
 const Linter = @import("lint/Linter.zig");
 
 // =========================================================================
@@ -594,6 +596,352 @@ pub fn changeTypeApplyByIdToJson(
 }
 
 // =========================================================================
+// Call shape
+// =========================================================================
+
+/// How a call expression's callee is classified. `user` — the callee
+/// resolves to a function declared in this module (`spOver(...)`), or is a
+/// name that resolves to nothing (only a user-declared function can be
+/// called by identifier in WGSL, so an unresolved callee is reported as
+/// `user` rather than guessed at). `builtin` — a builtin function
+/// (`textureSample`, `sin`, `bitcast<T>`). `constructor` — a type
+/// constructor: predeclared (`vec2f`, `f32`, `vec3<f32>`, `array<T, N>`)
+/// or user-declared struct / alias (`S(...)`).
+pub const CallShapeKind = enum {
+    user,
+    builtin,
+    constructor,
+
+    pub fn jsonString(self: CallShapeKind) []const u8 {
+        return switch (self) {
+            .user => "user",
+            .builtin => "builtin",
+            .constructor => "constructor",
+        };
+    }
+};
+
+/// One call expression, with UTF-8 byte spans into the analyzed source.
+/// All spans are half-open `[start, end)` offsets — the convention
+/// `Edits.zig` pins (byte offsets, not UTF-16, not line/column).
+pub const CallShapeCall = struct {
+    kind: CallShapeKind,
+    /// Callee as written: the identifier for `f(...)`, the leading type
+    /// name for `vec3<f32>(...)`. Empty on a recovery-synthesized call
+    /// that carries no callee at all.
+    callee: []const u8,
+    /// Span of the callee: the identifier for `f(...)`, the whole
+    /// `vec3<f32>` type expression for a templated constructor.
+    callee_span: Ast.Span,
+    /// Span of the whole call expression.
+    span: Ast.Span,
+    /// Each argument *expression's* span, in source order.
+    args: []Ast.Span,
+};
+
+/// One user function and every call expression its body contains.
+pub const CallShapeFunction = struct {
+    name: []const u8,
+    /// Byte offset of the function's name in the source.
+    name_offset: u32,
+    /// `StableId` of the function declaration. Empty when the ID would
+    /// exceed the length limit — dropped, not fatal, the same policy
+    /// `reflect` applies to `FunctionInfo.stable_id`.
+    stable_id: []const u8,
+    /// Calls in source order, nested calls included: an outer call
+    /// precedes every call nested inside its callee and arguments, and an
+    /// argument's span contains the whole span of a call nested in it.
+    calls: []CallShapeCall,
+};
+
+/// Result of `collectCallShapes`.
+pub const CallShapes = struct {
+    functions: []CallShapeFunction,
+    /// Syntax errors the recovery parser reported while producing the
+    /// module. Non-zero means some regions of the source were skipped;
+    /// every function the parser recovered is still reported, with every
+    /// call found in it. Nothing is silently dropped.
+    parse_errors: u32,
+};
+
+/// Parse `source` and collect every call expression per user function.
+///
+/// Runs the Lexer + Parser only — not the validator — mirroring `reflect`:
+/// the query answers what the text says, and the parser's own recovery
+/// error count stays cleanly separable from validation diagnostics.
+/// Returns null only when parsing failed outright (no module at all);
+/// allocation failure propagates as `error.OutOfMemory`.
+///
+/// `filter`, when non-null, narrows the result to the single function
+/// with that name; the walk itself is unaffected.
+pub fn collectCallShapes(
+    alloc: Allocator,
+    source: [:0]const u8,
+    filter: ?[]const u8,
+) Allocator.Error!?CallShapes {
+    const tokens = try Lexer.tokenize(alloc, source);
+    var parser = try Parser.init(alloc, source, tokens);
+    const module = parser.parse() catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return null,
+    };
+
+    var functions: std.ArrayList(CallShapeFunction) = .empty;
+    for (module.declarations.items) |decl| switch (decl) {
+        .function => |fn_decl| {
+            if (!fn_decl.name.isValid()) continue;
+            const idx = fn_decl.name.index();
+            if (idx >= module.symbols.items.len) continue;
+            const sym = module.symbols.items[idx];
+            if (filter) |f| {
+                if (!std.mem.eql(u8, f, sym.original_name)) continue;
+            }
+            try functions.append(alloc, try callShapeForFunction(alloc, module, fn_decl, sym));
+        },
+        else => {},
+    };
+
+    return .{
+        .functions = functions.items,
+        .parse_errors = @intCast(parser.errors.items.len),
+    };
+}
+
+fn callShapeForFunction(
+    alloc: Allocator,
+    module: *const Ast.Module,
+    fn_decl: *Ast.FunctionDecl,
+    sym: Ast.Symbol,
+) Allocator.Error!CallShapeFunction {
+    // Same error handling as `reflect/CallGraph.zig`: an over-long id is
+    // dropped, leaving `stable_id` empty, rather than failing the query.
+    var stable_id: []const u8 = "";
+    if (StableId.stableIdFor(alloc, module, fn_decl.name)) |maybe_id| {
+        if (maybe_id) |id| stable_id = id.bytes;
+    } else |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.IdTooLong => {},
+    }
+
+    var walk = CallShapeWalk{
+        .alloc = alloc,
+        .module = module,
+        .source = module.source,
+        .calls = .empty,
+    };
+    if (fn_decl.body) |body| try walk.walkBody(body);
+
+    // Pre-order on the parser's tree is already source order (a call's
+    // span starts before any span nested inside it); the stable sort is
+    // cheap insurance for recovery-shaped trees where spans may tie.
+    std.sort.insertion(CallShapeCall, walk.calls.items, {}, callSpanBefore);
+
+    return .{
+        .name = sym.original_name,
+        .name_offset = sym.loc,
+        .stable_id = stable_id,
+        .calls = walk.calls.items,
+    };
+}
+
+fn callSpanBefore(_: void, a: CallShapeCall, b: CallShapeCall) bool {
+    if (a.span.start != b.span.start) return a.span.start < b.span.start;
+    return a.span.end < b.span.end;
+}
+
+/// Body walker for one function: a read-only traversal in the shape of
+/// `reflect/CallGraph.zig`'s walk, recording every call expression it
+/// reaches, then descending into the callee expression and each argument
+/// so nested calls are collected too.
+const CallShapeWalk = struct {
+    alloc: Allocator,
+    module: *const Ast.Module,
+    source: []const u8,
+    calls: std.ArrayList(CallShapeCall),
+
+    fn walkBody(w: *CallShapeWalk, body: *Ast.CompoundStmt) Allocator.Error!void {
+        for (body.stmts.items) |stmt| try w.walkStmt(stmt);
+    }
+
+    fn walkStmt(w: *CallShapeWalk, stmt: Ast.Stmt) Allocator.Error!void {
+        switch (stmt) {
+            .compound => |s| try w.walkBody(s),
+            .@"return" => |s| if (s.value) |v| try w.walkExpr(v),
+            .@"if" => |s| {
+                try w.walkExpr(s.condition);
+                try w.walkBody(s.body);
+                if (s.else_branch) |e| try w.walkStmt(e);
+            },
+            .@"switch" => |s| {
+                try w.walkExpr(s.expr);
+                for (s.cases.items) |c| {
+                    for (c.selectors.items) |sel| try w.walkExpr(sel);
+                    try w.walkBody(c.body);
+                }
+            },
+            .@"for" => |s| {
+                if (s.init_stmt) |i| try w.walkStmt(i);
+                if (s.condition) |c| try w.walkExpr(c);
+                if (s.update) |u| try w.walkStmt(u);
+                try w.walkBody(s.body);
+            },
+            .@"while" => |s| {
+                try w.walkExpr(s.condition);
+                try w.walkBody(s.body);
+            },
+            .loop => |s| {
+                try w.walkBody(s.body);
+                if (s.continuing) |c| try w.walkBody(c);
+            },
+            .break_if => |s| try w.walkExpr(s.condition),
+            .assign => |s| {
+                try w.walkExpr(s.left);
+                try w.walkExpr(s.right);
+            },
+            // `_ = f(x);` evaluates its RHS like any other expression, so
+            // calls in it are part of the function's shape.
+            .phony => |s| try w.walkExpr(s.expr),
+            .incr_decr => |s| try w.walkExpr(s.expr),
+            .call => |s| try w.walkExpr(.{ .call = s.call }),
+            .decl => |s| switch (s.decl) {
+                .@"const" => |d| if (d.initializer) |e| try w.walkExpr(e),
+                .let => |d| if (d.initializer) |e| try w.walkExpr(e),
+                .@"var" => |d| if (d.initializer) |e| try w.walkExpr(e),
+                else => {},
+            },
+            .@"break", .@"continue", .discard => {},
+        }
+    }
+
+    fn walkExpr(w: *CallShapeWalk, expr: Ast.Expr) Allocator.Error!void {
+        switch (expr) {
+            .literal, .ident => {},
+            .paren => |p| try w.walkExpr(p.expr),
+            .unary => |u| try w.walkExpr(u.operand),
+            .binary => |b| {
+                try w.walkExpr(b.left);
+                try w.walkExpr(b.right);
+            },
+            .member => |m| try w.walkExpr(m.base),
+            .index => |ix| {
+                try w.walkExpr(ix.base);
+                try w.walkExpr(ix.idx);
+            },
+            .call => |c| {
+                try w.recordCall(c);
+                // Record the outer call first, then walk the callee
+                // expression and the arguments left-to-right: pre-order
+                // keeps the flat list in source order.
+                if (c.func) |f| try w.walkExpr(f);
+                for (c.args.items) |arg| try w.walkExpr(arg);
+            },
+        }
+    }
+
+    fn recordCall(w: *CallShapeWalk, call: *Ast.CallExpr) Allocator.Error!void {
+        const spans = try w.alloc.alloc(Ast.Span, call.args.items.len);
+        for (call.args.items, 0..) |arg, i| spans[i] = arg.span();
+
+        const callee = classifyCallee(w.module, w.source, call);
+
+        try w.calls.append(w.alloc, .{
+            .kind = callee.kind,
+            .callee = callee.name,
+            .callee_span = callee.span,
+            .span = call.span,
+            .args = spans,
+        });
+    }
+};
+
+const ClassifiedCallee = struct {
+    kind: CallShapeKind,
+    name: []const u8,
+    span: Ast.Span,
+};
+
+/// Resolve a call's callee to a name, a span, and a classification.
+/// Regular and `bitcast<T>` calls carry the callee as `func`; templated
+/// constructors (`vec3<f32>(...)`) carry it as `template_type` with
+/// `func == null`. A `(f)(x)` spelling is unwrapped; any other non-ident
+/// callee expression is reported by its source text.
+fn classifyCallee(module: *const Ast.Module, source: []const u8, call: *const Ast.CallExpr) ClassifiedCallee {
+    if (call.func) |func| {
+        var f = func;
+        while (f == .paren) f = f.paren.expr;
+        switch (f) {
+            .ident => |id| return .{
+                .kind = calleeKindForName(module, id.ref, id.name),
+                .name = id.name,
+                .span = id.span,
+            },
+            else => {
+                const span = f.span();
+                const text = span.slice(source);
+                return .{
+                    .kind = calleeKindForName(module, .none, text),
+                    .name = text,
+                    .span = span,
+                };
+            },
+        }
+    }
+    if (call.template_type) |tt| {
+        const span = tt.span();
+        const text = span.slice(source);
+        // `vec3<f32>` — the name is the leading identifier; the callee
+        // span is the whole type expression as written.
+        const name = if (std.mem.indexOfScalar(u8, text, '<')) |lt| text[0..lt] else text;
+        return .{
+            .kind = calleeKindForName(module, .none, name),
+            .name = name,
+            .span = span,
+        };
+    }
+    return .{ .kind = .user, .name = "", .span = .empty };
+}
+
+/// Decide the `kind` for a callee. A resolved symbol wins — a user `fn
+/// sin` shadows the builtin table, and a struct / alias target is a
+/// constructor — otherwise the name is matched against the predeclared
+/// type-name inventory (constructors) and then the builtin function
+/// table. An unresolved name is `user`: WGSL has no other way to spell a
+/// call by identifier.
+fn calleeKindForName(module: *const Ast.Module, ref: Ast.SymbolIndex, name: []const u8) CallShapeKind {
+    if (ref.isValid()) {
+        const idx = ref.index();
+        if (idx < module.symbols.items.len) {
+            switch (module.symbols.items[idx].kind) {
+                .function => return .user,
+                .@"struct", .alias => return .constructor,
+                else => {},
+            }
+        }
+    }
+    if (isPredeclaredConstructorName(name)) return .constructor;
+    if (Builtins.lookup(name) != null) return .builtin;
+    return .user;
+}
+
+/// True for predeclared *type-constructor* spellings: scalar type names
+/// (`f32`, `bool`, …), vec/mat shorthands (`vec2f`, `mat2x2`, …) and the
+/// non-shorthand template type names (`array`, `ptr`, `atomic`). The last
+/// group is not callable as a value constructor in valid WGSL, but a call
+/// spelled with one is still constructor-shaped, so it classifies through
+/// the same `Predeclared` inventory rather than a second table.
+fn isPredeclaredConstructorName(name: []const u8) bool {
+    for (Predeclared.scalar_type_names) |s| {
+        if (std.mem.eql(u8, s, name)) return true;
+    }
+    if (Predeclared.parseVecShorthand(name) != null) return true;
+    if (Predeclared.parseMatShorthand(name) != null) return true;
+    for (Predeclared.other_type_names) |s| {
+        if (std.mem.eql(u8, s, name)) return true;
+    }
+    return false;
+}
+
+// =========================================================================
 // Lint
 // =========================================================================
 
@@ -852,4 +1200,208 @@ test "compileToResult: produces a valid WASM header" {
     try std.testing.expect(r.wasm.len >= 8);
     try std.testing.expect(std.mem.eql(u8, r.wasm[0..4], "\x00asm"));
     try std.testing.expect(std.mem.eql(u8, r.errors_json, "[]"));
+}
+
+// -------------------------------------------------------------------------
+// Call shape — collection (traversal + classification)
+// -------------------------------------------------------------------------
+
+fn expectCallAt(
+    call: CallShapeCall,
+    source: []const u8,
+    expected_kind: CallShapeKind,
+    expected_callee: []const u8,
+) !void {
+    try std.testing.expectEqual(expected_kind, call.kind);
+    try std.testing.expectEqualStrings(expected_callee, call.callee);
+    // The callee span starts with the callee name inside the source and
+    // sits inside the whole call span. (For a templated constructor the
+    // span continues past the name — `vec3<f32>` — which the specific
+    // tests assert explicitly.)
+    try std.testing.expect(std.mem.startsWith(u8, call.callee_span.slice(source), expected_callee));
+    try std.testing.expect(call.span.start <= call.callee_span.start);
+    try std.testing.expect(call.callee_span.end <= call.span.end);
+}
+
+test "collectCallShapes: nested calls in source order, arg span contains inner call" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        "fn spOver(a: f32, b: f32) -> f32 { return a + b; }" ++
+        "fn layer_sun(p: f32) -> f32 { return p; }" ++
+        "fn main() { let x = spOver(1.0, layer_sun(2.0)); }";
+    const shapes = (try collectCallShapes(alloc, source, null)).?;
+    try std.testing.expectEqual(@as(u32, 0), shapes.parse_errors);
+    try std.testing.expectEqual(@as(usize, 3), shapes.functions.len);
+
+    // spOver and layer_sun have no calls of their own; main has exactly
+    // the two from the one statement, outer first.
+    const by_name = struct {
+        fn find(ss: []const CallShapeFunction, name: []const u8) ?CallShapeFunction {
+            for (ss) |f| if (std.mem.eql(u8, f.name, name)) return f;
+            return null;
+        }
+    };
+    const main = by_name.find(shapes.functions, "main") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 2), main.calls.len);
+
+    try expectCallAt(main.calls[0], source, .user, "spOver");
+    try expectCallAt(main.calls[1], source, .user, "layer_sun");
+
+    // Outer call's whole span starts at `spOver` and the second argument
+    // span contains the inner call's whole span.
+    try std.testing.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "spOver(1.0").?)), main.calls[0].span.start);
+    try std.testing.expectEqual(@as(usize, 2), main.calls[0].args.len);
+    const inner = main.calls[1];
+    try std.testing.expect(main.calls[0].args[1].start <= inner.span.start);
+    try std.testing.expect(inner.span.end <= main.calls[0].args[1].end);
+    // Argument spans spell their expressions.
+    try std.testing.expectEqualStrings("1.0", main.calls[0].args[0].slice(source));
+    try std.testing.expectEqualStrings("layer_sun(2.0)", main.calls[0].args[1].slice(source));
+}
+
+test "collectCallShapes: zero-arg, constructor, and builtin calls" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        "struct C { r: f32, g: f32, b: f32 }" ++
+        "fn main() {" ++
+        "  let a = vec2f();" ++
+        "  let b = vec3<f32>(1.0, 2.0, 3.0);" ++
+        "  let c = C(0.5, 0.5, 0.5);" ++
+        "  let d = f32(1);" ++
+        "  let e = min(a.x, b.x);" ++
+        "}";
+    const shapes = (try collectCallShapes(alloc, source, null)).?;
+    try std.testing.expectEqual(@as(usize, 1), shapes.functions.len);
+    const calls = shapes.functions[0].calls;
+
+    // Source order: vec2f, vec3<f32>, C, f32, min.
+    try std.testing.expectEqual(@as(usize, 5), calls.len);
+    try expectCallAt(calls[0], source, .constructor, "vec2f");
+    try std.testing.expectEqual(@as(usize, 0), calls[0].args.len);
+    try std.testing.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "vec2f()").?)), calls[0].span.start);
+
+    // Templated constructor: name is the leading identifier, callee span
+    // is the whole `vec3<f32>` type expression, all three args reported.
+    try expectCallAt(calls[1], source, .constructor, "vec3");
+    try std.testing.expectEqualStrings("vec3<f32>", calls[1].callee_span.slice(source));
+    try std.testing.expectEqual(@as(usize, 3), calls[1].args.len);
+    try std.testing.expectEqualStrings("2.0", calls[1].args[1].slice(source));
+
+    // User struct constructor and scalar conversion.
+    try expectCallAt(calls[2], source, .constructor, "C");
+    try expectCallAt(calls[3], source, .constructor, "f32");
+
+    // Builtin function call.
+    try expectCallAt(calls[4], source, .builtin, "min");
+    try std.testing.expectEqual(@as(usize, 2), calls[4].args.len);
+}
+
+test "collectCallShapes: filter narrows to one function by name" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        "fn one() -> f32 { return sin(1.0); }" ++
+        "fn two() -> f32 { return cos(2.0); }";
+    const all = (try collectCallShapes(alloc, source, null)).?;
+    try std.testing.expectEqual(@as(usize, 2), all.functions.len);
+
+    const filtered = (try collectCallShapes(alloc, source, "two")).?;
+    try std.testing.expectEqual(@as(usize, 1), filtered.functions.len);
+    try std.testing.expectEqualStrings("two", filtered.functions[0].name);
+    try std.testing.expectEqual(@as(usize, 1), filtered.functions[0].calls.len);
+    try expectCallAt(filtered.functions[0].calls[0], source, .builtin, "cos");
+
+    // A filter that matches nothing reports no functions, no error.
+    const none = (try collectCallShapes(alloc, source, "nope")).?;
+    try std.testing.expectEqual(@as(usize, 0), none.functions.len);
+}
+
+test "collectCallShapes: calls across statements and control flow" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 =
+        \\fn f(x: f32) -> f32 { return x; }
+        \\fn main() {
+        \\  var t = f(0.0);
+        \\  if (t > 0.5) { t = f(t); } else { t = f32(1); }
+        \\  for (var i = 0; i < 2; i++) { t += f(t); }
+        \\  switch (i32(t)) { case 1: { t = f(t); } default: {} }
+        \\  _ = f(t);
+        \\  while (t < 1.0) { t = f(t + 0.1); }
+        \\  return;
+        \\}
+    ;
+    const shapes = (try collectCallShapes(alloc, source, "main")).?;
+    try std.testing.expectEqual(@as(u32, 0), shapes.parse_errors);
+    const calls = shapes.functions[0].calls;
+    // var init, if-then, if-else (f32), for body, switch scrutinee (i32),
+    // switch case body, phony, while body — 8 calls in source order.
+    try std.testing.expectEqual(@as(usize, 8), calls.len);
+    for (calls, 0..) |call, i| {
+        const expected: []const u8 = switch (i) {
+            2 => "f32",
+            4 => "i32",
+            else => "f",
+        };
+        try std.testing.expectEqualStrings(expected, call.callee);
+    }
+    // Strictly increasing source order.
+    var prev_start: u32 = 0;
+    for (calls) |call| {
+        try std.testing.expect(call.span.start >= prev_start);
+        prev_start = call.span.start;
+    }
+}
+
+test "collectCallShapes: function identity carries name, offset, stable id" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source: [:0]const u8 = "fn helper() -> f32 { return 1.0; }";
+    const shapes = (try collectCallShapes(alloc, source, null)).?;
+    const f = shapes.functions[0];
+    try std.testing.expectEqualStrings("helper", f.name);
+    try std.testing.expectEqual(@as(u32, @intCast(std.mem.indexOf(u8, source, "helper").?)), f.name_offset);
+    try std.testing.expectEqualStrings("v1:fn:helper", f.stable_id);
+    try std.testing.expectEqual(@as(usize, 0), f.calls.len);
+}
+
+test "collectCallShapes: recovery parse keeps functions, counts parse errors" {
+    const a = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // One syntactically broken function followed by a good one: the
+    // recovery parser retains what it can and the error count is > 0.
+    const source: [:0]const u8 =
+        "fn broken( { let x = ; }" ++
+        "fn good() -> f32 { return sin(1.0); }";
+    const shapes = (try collectCallShapes(alloc, source, null)).?;
+    try std.testing.expect(shapes.parse_errors > 0);
+    var saw_good = false;
+    for (shapes.functions) |f| {
+        if (std.mem.eql(u8, f.name, "good")) {
+            saw_good = true;
+            try std.testing.expectEqual(@as(usize, 1), f.calls.len);
+            try expectCallAt(f.calls[0], source, .builtin, "sin");
+        }
+    }
+    try std.testing.expect(saw_good);
 }
