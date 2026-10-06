@@ -277,7 +277,13 @@ functions, so any editor or build tool can drive find-references, rename,
 and structural edits without an LSP session:
 
 ```javascript
-import { findReferences, renameApply, stableIdAtOffset, callShape } from "wgslender";
+import { format, findReferences, renameApply, stableIdAtOffset, callShape } from "wgslender";
+
+// The same content-preserving printer the language server runs for Format
+// Document: whitespace and layout are normalized; nothing is tree-shaken,
+// renamed, or respelled. A malformed document comes back as `code` ===
+// input with `error` set, never an exception.
+const { code, error } = format(source);
 
 const refs = findReferences(source, cursorByteOffset);       // { references: [{ start, end, isWrite }] }
 const { source: next } = renameApply(source, cursorByteOffset, "newName");
@@ -296,7 +302,8 @@ const shape = callShape(source, { function: "main" });
 Stable IDs survive reparses and edits that don't move the declaration across
 a block scope, so callers can cache them across keystrokes. Every function
 returns an `error` field instead of throwing, and `*Apply` variants always
-return a usable `source` string (the original on failure). Also available:
+return a usable `source` string (the original on failure); `format` likewise
+always returns a usable `code` (the original on failure). Also available:
 `rename`, `locateStableId`, `locateDeclaration`, `locateType`,
 `changeTypeByStableId`/`changeTypeApplyByStableId`,
 `removeDeclarationByStableId`/`removeDeclarationApplyByStableId`.

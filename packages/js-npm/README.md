@@ -62,8 +62,8 @@ console.log(result.code);
 
 ### `initialize(options)`
 
-Initialize the WASM module. Must be called before `minify()`, `reflect()`,
-`minifyAndReflect()`, or `validate()`.
+Initialize the WASM module. Must be called before `minify()`, `format()`,
+`reflect()`, `minifyAndReflect()`, or `validate()`.
 
 ```typescript
 interface InitializeOptions {
@@ -96,6 +96,28 @@ interface MinifyResult {
   minifiedSize: number; // Output size in bytes
   sourceMap?: string; // Source map JSON (if sourceMap: true)
 }
+```
+
+### `format(source)`
+
+Pretty-print WGSL source with the same content-preserving printer the
+language server runs for Format Document: whitespace and layout are
+normalized, but no declaration is tree-shaken, no literal is respelled
+(`1.0` stays `1.0`), and no identifier is renamed. A malformed document is
+not an exception: `code` is the input unchanged and `error` is set.
+
+```typescript
+interface FormatResult {
+  code: string; // Pretty-printed source; the input unchanged on parse failure
+  error?: string; // "parse errors: N" when the parser reported syntax errors
+}
+```
+
+```javascript
+import { format } from "wgslender";
+
+const { code, error } = format(source);
+if (error) console.warn(error); // code is still usable — it is the input
 ```
 
 ### `reflect(source)`
