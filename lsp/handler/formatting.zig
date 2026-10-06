@@ -14,15 +14,12 @@ pub fn computeFormatting(handler: *Handler, uri: []const u8) !?LspTextEdit {
     const doc = handler.documents.getPtr(uri) orelse return null;
     const source = doc.source;
 
-    // Parse and print with non-minified settings
+    // Parse and print with the shared content-preserving settings (the
+    // same factory the plain `format(source)` export consumes).
     const source_z = try handler.gpa.dupeZ(u8, source);
     defer handler.gpa.free(source_z);
 
-    var options = wgslender.Minifier.defaultOptions();
-    options.minify_whitespace = false;
-    options.minify_identifiers = false;
-    options.minify_syntax = false;
-    options.tree_shaking = false;
+    const options = wgslender.Minifier.formattedOptions();
 
     var result = try wgslender.minifyWithOptions(handler.gpa, source_z, options);
     defer result.deinit(handler.gpa);

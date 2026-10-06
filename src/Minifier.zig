@@ -106,6 +106,24 @@ pub fn defaultOptions() Options {
     return .{};
 }
 
+/// Options for the canonical, content-preserving pretty-printer: whatever
+/// the pipeline does to whitespace and layout, it must not change what the
+/// module says.
+///
+/// Tree shaking stays off — it would delete helpers not yet called from an
+/// entry point. Syntax minification stays off — it would respell literals
+/// like `1.0` as `1.`. Identifier minification stays off — formatting must
+/// not rename anything. One factory so the LSP's `textDocument/formatting`
+/// handler and the plain `format(source)` API export cannot drift.
+pub fn formattedOptions() Options {
+    var options = defaultOptions();
+    options.minify_whitespace = false;
+    options.minify_identifiers = false;
+    options.minify_syntax = false;
+    options.tree_shaking = false;
+    return options;
+}
+
 /// Minify WGSL source code. Returns the minified code and statistics.
 /// The returned code is owned by the arena allocator.
 pub fn minify(arena: Allocator, source: [:0]const u8, options: Options) !Result {
