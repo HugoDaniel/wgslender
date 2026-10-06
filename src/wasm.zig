@@ -132,6 +132,21 @@ export fn wgslender_minify_and_reflect(
     return packLenPrefixed(json);
 }
 
+/// Pretty-print WGSL: the same content-preserving printer the LSP's
+/// `textDocument/formatting` runs (shared `Minifier.formattedOptions`),
+/// as a plain query. Output: `[u32 json_len][u8... json]` where the JSON
+/// is `{"code":"..."}` or `{"code":"<input>","error":"parse errors: N"}`
+/// — see `api_json.formatToJson`.
+export fn wgslender_format_json(source_ptr: [*]const u8, source_len: u32) callconv(.c) ?[*]u8 {
+    var arena = std.heap.ArenaAllocator.init(wasm_allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const source = api_json.makeSentinelSource(alloc, source_ptr[0..source_len]) catch return null;
+    const json = api_json.formatToJson(alloc, source) catch return null;
+    return packLenPrefixed(json);
+}
+
 // =========================================================================
 // Validate
 // =========================================================================
