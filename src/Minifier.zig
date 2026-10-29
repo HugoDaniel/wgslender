@@ -66,6 +66,12 @@ pub const Options = struct {
     /// (a, b, c, ...) restarting per function. Makes structurally similar functions
     /// produce near-identical text, improving DEFLATE compression.
     scope_local_rename: bool = false,
+    /// Print unsuffixed float literals that are converted straight to f32 with
+    /// their shortest f32 round-trip digits (`0.2777273272234177` → `.27772734`),
+    /// as `f`-suffixed literals always are under `minify_syntax`. Runs the
+    /// validator to find them; literals feeding AbstractFloat const-expressions,
+    /// f16, or integer conversions keep their digits. Requires `minify_syntax`.
+    shorten_floats: bool = false,
 };
 
 comptime {
@@ -719,6 +725,38 @@ test "minifier: basic smoke test" {
     const result = try minify(arena.allocator(), source, .{});
     try std.testing.expect(result.code.len > 0);
     try std.testing.expect(result.errors.len == 0);
+}
+
+test "minifier: shorten_floats rounds only literals converted straight to f32" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const opts: Options = .{ .minify_whitespace = false, .minify_identifiers = false, .tree_shaking = false, .shorten_floats = true };
+    const cases = [_]struct { src: [:0]const u8, want: []const u8 }{
+        // Converted straight to f32: rounded.
+        .{ .src = "const C: f32 = 0.2777273272234177;", .want = "const C: f32 = .27772734;" },
+        .{ .src = "fn f() { let a = 0.2777273272234177; }", .want = "let a = .27772734;" },
+        .{ .src = "fn f(y: f32) -> f32 { return y * 0.2777273272234177; }", .want = "y * .27772734" },
+        .{ .src = "fn f() -> vec3f { return vec3f(-0.2777273272234177, 0., 0.); }", .want = "vec3f(-.27772734," },
+        .{ .src = "fn f(y: f32) -> f32 { return pow(y, 2.2777273272234177); }", .want = "pow(y, 2.2777274)" },
+        .{ .src = "fn f(y: vec3f) -> f32 { return dot(y, vec3(0.2126000000001, 0., 0.)); }", .want = "vec3(.2126," },
+        .{ .src = "fn f() { var y: f32; y += 0.2777273272234177; }", .want = "y += .27772734;" },
+        // AbstractFloat arithmetic, f16, integer conversion: digits kept.
+        .{ .src = "const A = 0.2777273272234177;", .want = "const A = .2777273272234177;" },
+        .{ .src = "fn f() { let b: f32 = 16777217.0 - 16777216.0; }", .want = "16777217. - 16777216." },
+        .{ .src = "fn f() -> f32 { return sqrt(2.2777273272234177); }", .want = "sqrt(2.2777273272234177)" },
+        .{ .src = "fn f() -> u32 { return u32(0.99999999); }", .want = "u32(.99999999)" },
+        .{ .src = "enable f16; fn f() { let h: f16 = 1.0004882812; }", .want = "1.0004882812" },
+    };
+    for (cases) |c| {
+        const result = try minify(arena.allocator(), c.src, opts);
+        if (std.mem.indexOf(u8, result.code, c.want) == null) {
+            std.debug.print("expected `{s}` in:\n{s}\n", .{ c.want, result.code });
+            return error.TestUnexpectedResult;
+        }
+    }
+    // Off by default: unsuffixed literals keep their digits.
+    const off = try minify(arena.allocator(), "const C: f32 = 0.2777273272234177;", .{});
+    try std.testing.expect(std.mem.indexOf(u8, off.code, ".2777273272234177") != null);
 }
 
 // The fallback guarantee behind `ScopeLocalRenamer.reserve`: a declaration

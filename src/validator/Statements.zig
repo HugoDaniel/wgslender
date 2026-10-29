@@ -267,7 +267,7 @@ pub fn validateReturnStmt(v: *Validator, s: *Ast.ReturnStmt) Allocator.Error!voi
                 break :blk &[_]Diagnostic.RelatedInfo{};
             } else &[_]Diagnostic.RelatedInfo{};
             v.addErrorWithRelatedDataR(exprSpan(s.value.?), Diagnostic.Code.type_mismatch, v.fmtError("cannot return '{s}' from function expecting '{s}'", .{ expr_type.string(), rt.string() }), related, .{ .type_mismatch = .{ .actual = expr_type.string(), .expected = rt.string() } });
-        }
+        } else try v.noteF32Conversion(s.value.?, rt);
     } else {
         const fn_name = if (v.fn_ctx.current_func) |f| v.symbolName(f.name) else "";
         v.addErrorWithCodeR(exprSpan(s.value.?), Diagnostic.Code.invalid_return, v.fmtError("cannot return a value from void function '{s}'", .{fn_name}));
@@ -489,7 +489,7 @@ pub fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!voi
         // Simple assignment: RHS must be convertible to LHS.
         if (!Types.canConvertTo(rhs_type, lhs_type)) {
             v.addErrorWithRelatedDataR(exprSpan(s.right), Diagnostic.Code.type_mismatch, v.fmtError("cannot assign '{s}' to '{s}'", .{ rhs_type.string(), lhs_type.string() }), v.makeRelatedR(exprRange(s.left), v.fmtError("left-hand side has type '{s}'", .{lhs_type.string()})), .{ .type_mismatch = .{ .actual = rhs_type.string(), .expected = lhs_type.string() } });
-        }
+        } else try v.noteF32Conversion(s.right, lhs_type);
         return;
     }
 
@@ -499,6 +499,8 @@ pub fn validateAssignStmt(v: *Validator, s: *Ast.AssignStmt) Allocator.Error!voi
         v.addErrorWithCodeR(op_range, Diagnostic.Code.invalid_operand, v.fmtError("invalid operands for '{s}': '{s}' and '{s}'", .{ s.op.string(), lhs_type.string(), rhs_type.string() }));
         return;
     }
+    // `v op= e` is `v = v op e`: an abstract `e` converts to `v`'s type.
+    try v.noteF32Conversion(s.right, lhs_type);
 
     if (!Types.canConvertTo(result_type.?, lhs_type)) {
         const op_range: LocRange = .{ .start = s.loc, .end = s.loc +| @as(u32, @intCast(s.op.string().len)) };

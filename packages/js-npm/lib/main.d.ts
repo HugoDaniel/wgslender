@@ -65,6 +65,17 @@ export interface MinifyOptions {
   scopeLocalRename?: boolean;
 
   /**
+   * Print unsuffixed float literals that are converted straight to f32 with
+   * their shortest f32 round-trip digits (`0.2777273272234177` → `.27772734`).
+   * Runs type analysis to find them; literals feeding AbstractFloat
+   * const-expressions, f16, or integer conversions keep their digits.
+   * `f`-suffixed literals are always shortened under `minifySyntax`.
+   * Requires `minifySyntax`.
+   * @default false
+   */
+  shortenFloats?: boolean;
+
+  /**
    * Generate a source map for the minified output.
    * @default false
    */

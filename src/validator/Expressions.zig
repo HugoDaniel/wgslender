@@ -112,6 +112,57 @@ pub fn checkExprE(v: *Validator, expr: Ast.Expr, exp: Expectation) Allocator.Err
     return result;
 }
 
+/// `expr` is implicitly converted to `target` at this point. Record every
+/// unsuffixed float literal in it whose value is converted *directly* to f32 —
+/// no AbstractFloat arithmetic happens first — so the minifier may round its
+/// text to f32 without changing what the shader compiler produces. Looks
+/// through parens, unary minus (rounding commutes with negation), and bare
+/// `vecN(…)` / `matCxR(…)` / `array(…)` packing, which converts element-wise.
+/// Anything else (binary ops, builtin calls, idents) stops the walk: an
+/// abstract value computed there is evaluated in f64 before conversion.
+pub fn noteF32Conversion(v: *Validator, expr: Ast.Expr, target: Types.Type) Allocator.Error!void {
+    if (!hasF32Leaf(target)) return;
+    switch (expr) {
+        .literal => |l| {
+            const last = if (l.value.len > 0) l.value[l.value.len - 1] else return;
+            if (l.kind == .float_literal and last != 'f' and last != 'h') {
+                try v.out.f32_literal_locs.put(v.arena, l.loc, {});
+            }
+        },
+        .paren => |p| try noteF32Conversion(v, p.expr, target),
+        .unary => |u| if (u.op == .neg) try noteF32Conversion(v, u.operand, target),
+        .call => |c| if (isBareAbstractPackingCtor(c)) {
+            for (c.args.items) |arg| try noteF32Conversion(v, arg, target);
+        },
+        else => {},
+    }
+}
+
+fn hasF32Leaf(t: Types.Type) bool {
+    return switch (t) {
+        .scalar => |s| s.kind == .f32,
+        .vector => |vv| vv.element.kind == .f32,
+        .matrix => |m| m.element.kind == .f32,
+        .array => |a| hasF32Leaf(a.element),
+        .reference => |r| hasF32Leaf(r.element),
+        else => false,
+    };
+}
+
+/// Predeclared, untemplated `vecN(…)` / `matCxR(…)` / `array(…)` — the forms
+/// that infer their element type from the arguments. Not a user declaration
+/// shadowing the name (`ref` would be valid).
+fn isBareAbstractPackingCtor(c: *const Ast.CallExpr) bool {
+    if (c.template_type != null) return false;
+    const func = c.func orelse return false;
+    if (func != .ident or func.ident.ref.isValid()) return false;
+    const n = func.ident.name;
+    if (std.mem.eql(u8, n, "array")) return true;
+    if (n.len == 4 and std.mem.startsWith(u8, n, "vec")) return n[3] >= '2' and n[3] <= '4';
+    return n.len == 6 and std.mem.startsWith(u8, n, "mat") and n[4] == 'x' and
+        n[3] >= '2' and n[3] <= '4' and n[5] >= '2' and n[5] <= '4';
+}
+
 pub fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) InferResult {
     const val = e.value;
     if (val.len == 0) return InferResult.some(Types.AbstractInt, .const_expr);
@@ -355,7 +406,7 @@ pub fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocat
 
     const er = exprRange(.{ .binary = e }); // operator range
     const op_str = e.op.string();
-    return switch (e.op) {
+    const r = try switch (e.op) {
         .logical_and, .logical_or, .@"and", .@"or", .xor => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .eq, .ne => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
         .lt, .le, .gt, .ge => binaryViaEngine(v, e.op, left_type, right_type, stage, er, op_str),
@@ -364,6 +415,13 @@ pub fn checkBinaryE(v: *Validator, e: *Ast.BinaryExpr, exp: Expectation) Allocat
         .mod => checkModBinary(v, e, left_type, right_type, stage, er),
         .shl, .shr => checkShiftBinary(v, e, left_type, right_type, stage, er, op_str),
     };
+    // An abstract operand meeting a concrete one converts to the concrete type
+    // before the operator runs.
+    if (r.typ != null) {
+        try noteF32Conversion(v, e.right, left_type);
+        try noteF32Conversion(v, e.left, right_type);
+    }
+    return r;
 }
 
 /// Shared binary-operator validation on the overload engine — the operator
@@ -1130,9 +1188,26 @@ pub fn checkBuiltinCall(v: *Validator, e: *Ast.CallExpr, callee_name: []const u8
             const sig = builtin_fn.overloads[ok.sig_index];
             const ret = try buildOverloadResult(v, sig.result, &ok.bindings, arg_types) orelse
                 return .{ .typ = null, .stage = call_stage };
+            if (sig.params.len == argc) for (sig.params, 0..) |p, i| {
+                if (paramElemKind(p, &ok.bindings) == .f32) try noteF32Conversion(v, e.args.items[i], Types.F32);
+            };
             return InferResult.some(ret, call_stage);
         },
     }
+}
+
+/// Element kind the winning overload bound a scalar/vector/matrix parameter
+/// to, or null for other parameter shapes.
+fn paramElemKind(p: Overload.Pattern, b: *const [Overload.max_tparams]Overload.Binding) ?Types.ScalarKind {
+    const idx = switch (p) {
+        .concrete => |t| return if (Types.scalarOf(t)) |s| s.scalar.kind else null,
+        .tparam_scalar => |ts| ts.idx,
+        .tparam_vector => |tv| tv.elem_idx,
+        .tparam_matrix => |tm| tm.elem_idx,
+        else => return null,
+    };
+    if (idx == Overload.Pattern.no_tparam or !b[idx].bound) return null;
+    return b[idx].scalar_kind;
 }
 
 /// Materialize the return type for an overload-resolved builtin call.
@@ -1320,6 +1395,7 @@ pub fn checkUserFunctionCall(v: *Validator, e: *Ast.CallExpr, ident: *Ast.IdentE
                                     v.addErrorWithRelatedR(call_range, Diagnostic.Code.invalid_arg_type, v.fmtError("argument {d} of '{s}' has type '{s}', expected '{s}'", .{ ai + 1, callee_name, at.string(), param_type.string() }), fn_related);
                                     return InferResult.fail;
                                 }
+                                try noteF32Conversion(v, arg, param_type);
                             }
                         }
                     }
@@ -1567,10 +1643,19 @@ pub fn checkTypeConstructor(v: *Validator, e: *Ast.CallExpr, callee_name: []cons
     // overload engine. `ctorSigsFor` yields an empty sig set for any other
     // target, but the constructibility gate above already excluded those, so
     // `else` is unreachable for a well-typed call and just passes t through.
-    return switch (t) {
+    const ret = switch (t) {
         .scalar, .vector, .matrix, .@"struct", .array => try ctorViaEngine(v, range, callee_name, t, arg_types),
         else => t,
+    } orelse return null;
+    // Each argument converts to the target's element (scalar/vector/matrix),
+    // array element, or struct member type.
+    for (e.args.items, 0..) |arg, i| switch (ret) {
+        .scalar, .vector, .matrix => try noteF32Conversion(v, arg, ret),
+        .array => |a| try noteF32Conversion(v, arg, a.element),
+        .@"struct" => |s| if (i < s.fields.len) try noteF32Conversion(v, arg, s.fields[i].typ),
+        else => {},
     };
+    return ret;
 }
 
 /// Per-invocation context handed to `ctorRefine` through the engine's opaque

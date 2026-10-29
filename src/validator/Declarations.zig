@@ -618,6 +618,7 @@ pub fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl, handling: AbstractHan
                 v.addErrorWithRelatedR(r, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, init_type.string(), dt.string() }), related);
                 return;
             }
+            try v.noteF32Conversion(d.initializer.?, dt);
         }
     } else {
         // Infer type from initializer. Module-scope `const` keeps abstract
@@ -731,7 +732,7 @@ pub fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error
                 } else {
                     v.addErrorWithCodeR(r, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
                 }
-            }
+            } else try v.noteF32Conversion(init, dt);
         }
     }
 
@@ -832,7 +833,7 @@ pub fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
                 } else {
                     v.addErrorWithCodeR(r, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
                 }
-            }
+            } else try v.noteF32Conversion(init, dt);
         }
     }
 
@@ -1082,6 +1083,7 @@ pub fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
         decl_type = try Types.concreteTypeAlloc(v.arena, init_type);
     }
 
+    if (decl_type) |dt| try v.noteF32Conversion(d.initializer.?, dt);
     try v.setSymbolType(d.name, decl_type);
 }
 
