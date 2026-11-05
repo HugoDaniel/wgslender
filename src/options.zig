@@ -851,6 +851,7 @@ pub const minifier_options_specs = [_]OptionSpec{
     .{ .field = "keep_names", .kind = .string_list, .cli_takes_value = true, .subcommands = &minify_subcommands, .summary = "Comma-separated identifiers that must never be renamed" },
     .{ .field = "sort_declarations", .kind = .bool_opt, .subcommands = &minify_subcommands, .summary = "Sort module-level declarations for better DEFLATE compression" },
     .{ .field = "scope_local_rename", .kind = .bool_opt, .subcommands = &minify_subcommands, .summary = "Rename locals canonically per function for better DEFLATE compression" },
+    .{ .field = "shorten_floats", .kind = .bool_opt, .subcommands = &minify_subcommands, .summary = "Shorten float literals used as f32 to their shortest round-trip digits (runs type analysis)" },
 };
 
 /// Source-map switches. JSON layer targets `Config.source_map*` (?bool);

@@ -57,8 +57,8 @@ mod parse;
 /// Every [`MinifyOptions`](wgslender_core::MinifyOptions) boolean is accepted
 /// under its own name too — `minify_whitespace`, `minify_identifiers`,
 /// `minify_syntax`, `tree_shaking`, `mangle_external_bindings`,
-/// `preserve_uniform_struct_types`, `sort_declarations`, `scope_local_rename` —
-/// each overriding one of wgslender's defaults.
+/// `preserve_uniform_struct_types`, `sort_declarations`, `scope_local_rename`,
+/// `shorten_floats` — each overriding one of wgslender's defaults.
 ///
 /// A key that cannot mean anything is an error rather than a silent no-op:
 /// `keep_names` next to `minify = false` names something no minifier is going

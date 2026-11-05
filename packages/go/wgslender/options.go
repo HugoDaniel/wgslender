@@ -45,6 +45,12 @@ type MinifyOptions struct {
 	// ScopeLocalRename reuses the same short names across sibling scopes,
 	// which compresses better. Off by default.
 	ScopeLocalRename Opt[bool] `json:"scopeLocalRename,omitzero"`
+	// ShortenFloats prints unsuffixed float literals that are converted
+	// straight to f32 with their shortest f32 round-trip digits, so
+	// 0.2777273272234177 becomes .27772734. It runs type analysis to find
+	// them; literals feeding abstract const-expressions, f16 or integer
+	// conversions keep their digits. Needs MinifySyntax. Off by default.
+	ShortenFloats Opt[bool] `json:"shortenFloats,omitzero"`
 	// SourceMap asks for a source map alongside the minified output, returned
 	// in [MinifyResult.SourceMap]. Off by default.
 	SourceMap Opt[bool] `json:"sourceMap,omitzero"`

@@ -74,6 +74,7 @@ wgslender compile shader.wgsl -o shader.wasm # binary shader (see below)
 | `--preserve-uniform-struct-types` | Keep struct names used in uniforms |
 | `--sort-declarations`        | Sort declarations by kind (compression) |
 | `--scope-local-rename`       | Per-function canonical naming (compression) |
+| `--shorten-floats`           | Shortest f32 digits for floats used as f32 (runs type analysis) |
 | `--source-map`               | Generate source map                  |
 | `--source-map-inline`        | Embed source map as inline data URI  |
 | `--source-map-sources`       | Include original source in source map|

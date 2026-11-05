@@ -31,6 +31,7 @@ const Liveness = @import("Liveness.zig");
 const RenamePolicy = @import("RenamePolicy.zig");
 const SourceMap = @import("SourceMap.zig");
 const Minifier = @import("Minifier.zig");
+const Validator = @import("Validator.zig");
 
 const Pipeline = @This();
 
@@ -283,6 +284,15 @@ fn runPrint(state: *State, options: Minifier.Options) Allocator.Error!void {
         state.renamer = renamer;
     }
 
+    // `shorten_floats` needs to know which unsuffixed literals the shader
+    // compiler converts straight to f32 — a typing question only the
+    // validator answers.
+    var analysis: ?Validator.AnalysisResult = null;
+    if (options.shorten_floats and options.minify_syntax) {
+        analysis = try Validator.analyze(state.arena, module, .{});
+    }
+    const f32_literal_locs = if (analysis) |*a| &a.f32_literal_locs else null;
+
     var printer = Printer.init(state.arena, .{
         .minify_whitespace = options.minify_whitespace,
         .minify_identifiers = options.minify_identifiers,
@@ -290,6 +300,7 @@ fn runPrint(state: *State, options: Minifier.Options) Allocator.Error!void {
         .tree_shaking = if (options.sort_declarations) false else options.tree_shaking,
         .renamer = renamer,
         .source_map_gen = state.source_map_gen,
+        .f32_literal_locs = f32_literal_locs,
     }, module.symbols.items);
 
     if (options.sort_declarations) {

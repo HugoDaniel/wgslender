@@ -220,6 +220,10 @@ pub const AnalysisResult = struct {
     /// Byte-offset of expression start → type + end-offset. Populated on the
     /// fly during the checkExpr walk; read by LSP hover and inlay hints.
     expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
+    /// `loc`s of unsuffixed float literals whose value is first observed as
+    /// f32 (see `Expressions.noteF32Conversion`). Read by the minifier's
+    /// `shorten_floats` pass.
+    f32_literal_locs: std.AutoHashMapUnmanaged(u32, void) = .{},
     /// Per-symbol use counts. After B.M5 this is a flat reference to
     /// `module.use_counts` — no separate snapshot.
     use_counts: UseCounts = .{ .counts = &.{} },
@@ -390,6 +394,8 @@ const Outputs = struct {
     const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
     /// Expression type cache: maps expression start offset -> type info.
     expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
+    /// Unsuffixed float literals converted straight to f32 (by `loc`).
+    f32_literal_locs: std.AutoHashMapUnmanaged(u32, void) = .{},
 };
 
 /// Phase-scoped working state — maps and flags each populated and consumed
@@ -579,6 +585,7 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
         .alias_types = v.out.alias_types,
         .const_values = v.out.const_values,
         .expr_types = v.out.expr_types,
+        .f32_literal_locs = v.out.f32_literal_locs,
         .use_counts = module.use_counts,
     };
 }
@@ -635,6 +642,7 @@ pub const isComputeInput = _Declarations.isComputeInput;
 pub const checkExpr = _Expressions.checkExpr;
 pub const checkExprE = _Expressions.checkExprE;
 pub const checkCallExpr = _Expressions.checkCallExpr;
+pub const noteF32Conversion = _Expressions.noteF32Conversion;
 
 // -- cross-submodule contract: type resolution reached from
 //    Declarations.zig / Expressions.zig. The per-kind resolvers

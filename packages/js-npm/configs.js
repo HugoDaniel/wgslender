@@ -182,6 +182,7 @@ const lspSettingsSchema = Object.freeze({
     keepNames: { type: 'array', items: { type: 'string' } },
     sortDeclarations: { type: 'boolean' },
     scopeLocalRename: { type: 'boolean' },
+    shortenFloats: { type: 'boolean' },
   },
 });
 

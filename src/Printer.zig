@@ -27,6 +27,10 @@ pub const Options = struct {
     /// to the generator's mappings. Only meaningful alongside `minify_whitespace`
     /// — pretty-printed output drifts from source positions unpredictably.
     source_map_gen: ?*SourceMap.Generator = null,
+    /// `loc`s of unsuffixed float literals that are converted straight to f32
+    /// (`Validator.AnalysisResult.f32_literal_locs`). Under `minify_syntax`
+    /// these print with their shortest f32 round-trip digits, like `f` literals.
+    f32_literal_locs: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
 };
 
 pub const Renamer = struct {
@@ -644,6 +648,7 @@ fn printTextureType(self: *Printer, t: *const Ast.TextureType) !void {
 fn optimizeNumericLiteral(
     value: []const u8,
     buf: *[64]u8,
+    is_f32: bool,
 ) []const u8 {
     if (value.len == 0 or value.len > 60) return value;
 
@@ -661,7 +666,14 @@ fn optimizeNumericLiteral(
 
     // Detect and strip type suffix (f, h, i, u).
     const suffix = classifySuffix(value);
-    const body = value[0 .. value.len - suffix.len];
+    // f32 literals: shortest digits that round-trip to the same f32
+    // (0.2777273272234177f → .27772734f). Unsuffixed (AbstractFloat) literals
+    // only when `is_f32` — the validator saw them converted straight to f32;
+    // otherwise they may be folded in f64 or become f16/integers.
+    var f32_buf: [64]u8 = undefined;
+    const raw_body = value[0 .. value.len - suffix.len];
+    const round = std.mem.eql(u8, suffix, "f") or (suffix.len == 0 and is_f32);
+    const body = if (round) shortestF32(raw_body, &f32_buf) else raw_body;
 
     // Only optimize floats (must contain '.').
     const dot_pos = std.mem.indexOfScalar(u8, body, '.') orelse
@@ -682,19 +694,13 @@ fn optimizeNumericLiteral(
         frac_end -= 1;
     }
 
-    // Guard: if integer part is empty and all fractional digits are zero,
-    // bail out to avoid producing a bare "." (invalid WGSL).
-    // e.g. ".00" → would become "." without this check.
-    // Note: "0.00" → "0." is fine (has integer part).
-    if (frac_end == 0 and int_part.len == 0) {
-        return value;
-    }
-
     // Strip leading zero: "0.5" → ".5" (but not "0." → ".")
     const skip_leading = int_part.len == 1 and
         int_part[0] == '0' and frac_end > 0;
 
-    const int_out = if (skip_leading) "" else int_part;
+    // All-zero literal with no integer part: ".00" → "0.", never a bare "."
+    // (invalid WGSL). ".0" stays ".0" via the length check below.
+    const int_out = if (skip_leading) "" else if (int_part.len == 0 and frac_end == 0) "0" else int_part;
     const frac_out = frac_part[0..frac_end];
 
     // Check if optimized form is actually shorter.
@@ -713,6 +719,17 @@ fn optimizeNumericLiteral(
     pos += suffix.len;
 
     return buf[0..pos];
+}
+
+fn shortestF32(body: []const u8, buf: *[64]u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, body, '.') == null) return body;
+    const v = std.fmt.parseFloat(f32, body) catch return body;
+    if (!std.math.isFinite(v)) return body;
+    const s = std.fmt.bufPrint(buf[0..63], "{d}", .{v}) catch return body;
+    if (s.len >= body.len) return body;
+    if (std.mem.indexOfScalar(u8, s, '.') != null) return s;
+    buf[s.len] = '.';
+    return buf[0 .. s.len + 1];
 }
 
 /// Classify trailing type suffix (f, h, i, u) or empty.
@@ -819,7 +836,8 @@ fn dispatchExpr(self: *Printer, ex: Ast.Expr, stack: *std.ArrayList(PrintWork)) 
                 (expr.kind == .float_literal or expr.kind == .int_literal))
             {
                 var buf: [64]u8 = undefined;
-                const opt = optimizeNumericLiteral(expr.value, &buf);
+                const is_f32 = if (self.options.f32_literal_locs) |locs| locs.contains(expr.loc) else false;
+                const opt = optimizeNumericLiteral(expr.value, &buf, is_f32);
                 try self.emit(opt);
             } else {
                 try self.emit(expr.value);
@@ -2191,11 +2209,12 @@ test "printer: minify syntax edge cases" {
 }
 
 test "printer: bare dot float literal must not be produced" {
-    // ".00" must NOT become "." (invalid WGSL). Must stay as ".00".
+    // ".00" must NOT become "." (invalid WGSL); it becomes "0." instead.
     // This triggered a shader compilation failure when unary minus
     // produced `-.` from `-.00` in minified output.
-    try expectPrintedMangle("const x = .00;", "const x = .00;\n");
-    try expectPrintedMangle("const x = .000;", "const x = .000;\n");
+    try expectPrintedMangle("const x = .00;", "const x = 0.;\n");
+    try expectPrintedMangle("const x = .000;", "const x = 0.;\n");
+    try expectPrintedMangle("const x = .000f;", "const x = 0.f;\n");
     // ".0" is already minimal — no change.
     try expectPrintedMangle("const x = .0;", "const x = .0;\n");
     // ".10" → ".1" is fine (non-zero fractional digit remains).
@@ -2205,8 +2224,17 @@ test "printer: bare dot float literal must not be produced" {
     // Negative context: unary minus + .00 in an expression.
     try expectPrintedMangle(
         "fn f() -> vec3f { return vec3f(-.00, .47, .58); }",
-        "fn f() -> vec3f {\n    return vec3f(-.00, .47, .58);\n}\n",
+        "fn f() -> vec3f {\n    return vec3f(-0., .47, .58);\n}\n",
     );
+}
+
+test "printer: f32 literals shortened to round-trip digits, abstract floats untouched" {
+    try expectPrintedMangle("const x = 0.2777273272234177f;", "const x = .27772734f;\n");
+    try expectPrintedMangle("const x = 16777217.0f;", "const x = 16777216.f;\n");
+    // AbstractFloat may be folded in f64 or become f16/integer — keep its digits.
+    try expectPrintedMangle("const x = 0.2777273272234177;", "const x = .2777273272234177;\n");
+    try expectPrintedMangle("const x = 0.99999999;", "const x = .99999999;\n");
+    try expectPrintedMangle("const x = 0.2777273272234177h;", "const x = .2777273272234177h;\n");
 }
 
 // -------------------------------------------------------------------------
