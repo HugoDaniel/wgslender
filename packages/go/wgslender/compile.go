@@ -85,7 +85,8 @@ func (e *CompileError) Error() string {
 // always sorts declarations and reuses short names across sibling scopes,
 // because both compress better, and it leaves the syntax rewrites off. So
 // setting MinifyWhitespace, MinifySyntax, SortDeclarations, ScopeLocalRename,
-// PreserveUniformStructTypes or either source-map option changes nothing here.
+// ShortenFloats, PreserveUniformStructTypes or either source-map option changes
+// nothing here.
 // They are ignored rather than refused, since they are the same options type
 // [Minify] takes.
 //

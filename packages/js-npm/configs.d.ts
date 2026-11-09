@@ -92,6 +92,7 @@ export interface LspSettings {
   keepNames?: string[];
   sortDeclarations?: boolean;
   scopeLocalRename?: boolean;
+  shortenFloats?: boolean;
 }
 
 /**

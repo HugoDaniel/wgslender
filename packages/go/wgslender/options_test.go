@@ -49,13 +49,14 @@ func TestMinifyOptionsJSON(t *testing.T) {
 				KeepNames:                  []string{"a", "b"},
 				SortDeclarations:           wgslender.Set(true),
 				ScopeLocalRename:           wgslender.Set(true),
+				ShortenFloats:              wgslender.Set(true),
 				SourceMap:                  wgslender.Set(true),
 				SourceMapSources:           wgslender.Set(true),
 			},
 			want: `{"minifyWhitespace":true,"minifyIdentifiers":true,"minifySyntax":true,` +
 				`"treeShaking":true,"mangleExternalBindings":true,"preserveUniformStructTypes":true,` +
 				`"keepNames":["a","b"],"sortDeclarations":true,"scopeLocalRename":true,` +
-				`"sourceMap":true,"sourceMapSources":true}`,
+				`"shortenFloats":true,"sourceMap":true,"sourceMapSources":true}`,
 		},
 		{
 			// omitzero drops a nil slice but keeps an explicitly empty one.

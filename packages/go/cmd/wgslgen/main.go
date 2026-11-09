@@ -215,6 +215,8 @@ var minifyOptionFlags = []struct {
 		func(o *wgslender.MinifyOptions) *wgslender.Opt[bool] { return &o.SortDeclarations }},
 	{"scope-local-rename", "reuse short names across sibling scopes, which compresses better",
 		func(o *wgslender.MinifyOptions) *wgslender.Opt[bool] { return &o.ScopeLocalRename }},
+	{"shorten-floats", "print floats used as f32 with their shortest round-trip digits",
+		func(o *wgslender.MinifyOptions) *wgslender.Opt[bool] { return &o.ShortenFloats }},
 }
 
 const usageText = `wgslgen embeds a WGSL shader in a Go source file, minified and checked while

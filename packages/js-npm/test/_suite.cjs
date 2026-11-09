@@ -131,6 +131,20 @@ fn computeValue(index: u32) -> f32 { return f32(index) * uniforms.scale; }
     assert(r.minifiedSize < r.originalSize, 'Size reduction verified (minifiedSize < originalSize)');
   }
   {
+    const input = 'const C: f32 = 0.2777273272234177;';
+    const options = { minifyIdentifiers: false, treeShaking: false };
+    const off = minify(input, options);
+    const on = minify(input, { ...options, shortenFloats: true });
+    assert(off.code.includes('.2777273272234177'), 'shortenFloats is off by default');
+    assert(on.code.includes('.27772734'), 'shortenFloats shortens direct f32 literals in shipped WASM');
+  }
+  {
+    const input = 'enable f16; fn f() -> vec2f { return vec2f(vec2(1.00048828125, 1.0h)); }';
+    const r = minify(input, { minifyIdentifiers: false, treeShaking: false, shortenFloats: true });
+    assert(r.code.includes('1.00048828125') && !r.code.includes('1.0004883'),
+      'shortenFloats preserves nested f16 conversion boundaries');
+  }
+  {
     const input = '@vertex fn vs() -> @builtin(position) vec4f { return vec4f(0); }';
     const r = minify(input, { minifyWhitespace: true, minifyIdentifiers: true });
     assert(r.code.includes('fn vs(') && r.errors.length === 0, 'Entry point names preserved');

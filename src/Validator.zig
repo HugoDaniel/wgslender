@@ -189,11 +189,13 @@ pub const AbstractHandling = enum { keep, concretize };
 /// Enriched analysis result: the validator's retained semantic state, kept
 /// alive for consumers that outlive the run — the LSP (hover, go-to-definition,
 /// inlay hints) and the lint rules. This is the materialized form of the
-/// validator's output contract: the five type/const caches (`symbol_types`,
-/// `struct_types`, `alias_types`, `const_values`, `expr_types`) are exactly
-/// the `Outputs` group, copied out verbatim by `analyze` and *only* there;
+/// validator's output contract: the semantic caches (`symbol_types`,
+/// `struct_types`, `alias_types`, `const_values`, `expr_types`,
+/// `f32_literal_locs`) are exactly the `Outputs` group, copied out verbatim
+/// by `analyze` and *only* there;
 /// nothing in the validator's `Scratch` maps or `FnContext` cursor reaches
-/// here. `use_counts` aliases `module.use_counts`; `liveness` is filled lazily
+/// here. The literal-conversion map supports the minifier's `shorten_floats`
+/// pass. `use_counts` aliases `module.use_counts`; `liveness` is filled lazily
 /// by whoever runs DCE. Stable surface: LSP handlers and lint `Context` read
 /// these fields by name, so the field names/layout are pinned (see the
 /// stability tiers in `root.zig`).
@@ -220,6 +222,10 @@ pub const AnalysisResult = struct {
     /// Byte-offset of expression start → type + end-offset. Populated on the
     /// fly during the checkExpr walk; read by LSP hover and inlay hints.
     expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
+    /// `loc`s of unsuffixed float literals whose value is first observed as
+    /// f32 (see `Expressions.noteF32Conversion`). Read by the minifier's
+    /// `shorten_floats` pass.
+    f32_literal_locs: std.AutoHashMapUnmanaged(u32, void) = .{},
     /// Per-symbol use counts. After B.M5 this is a flat reference to
     /// `module.use_counts` — no separate snapshot.
     use_counts: UseCounts = .{ .counts = &.{} },
@@ -390,6 +396,8 @@ const Outputs = struct {
     const_values: std.AutoHashMapUnmanaged(u32, i64) = .{},
     /// Expression type cache: maps expression start offset -> type info.
     expr_types: std.AutoHashMapUnmanaged(u32, ExprTypeInfo) = .{},
+    /// Unsuffixed float literals converted straight to f32 (by `loc`).
+    f32_literal_locs: std.AutoHashMapUnmanaged(u32, void) = .{},
 };
 
 /// Phase-scoped working state — maps and flags each populated and consumed
@@ -579,6 +587,7 @@ pub fn analyze(arena: Allocator, module: *Ast.Module, options: Options) !Analysi
         .alias_types = v.out.alias_types,
         .const_values = v.out.const_values,
         .expr_types = v.out.expr_types,
+        .f32_literal_locs = v.out.f32_literal_locs,
         .use_counts = module.use_counts,
     };
 }
@@ -635,6 +644,7 @@ pub const isComputeInput = _Declarations.isComputeInput;
 pub const checkExpr = _Expressions.checkExpr;
 pub const checkExprE = _Expressions.checkExprE;
 pub const checkCallExpr = _Expressions.checkCallExpr;
+pub const noteF32Conversion = _Expressions.noteF32Conversion;
 
 // -- cross-submodule contract: type resolution reached from
 //    Declarations.zig / Expressions.zig. The per-kind resolvers
@@ -1014,7 +1024,6 @@ pub fn classifyExprStageDepth(v: *const Validator, expr: Ast.Expr, depth: u32) E
         .member => |e| return v.classifyExprStageDepth(e.base, depth + 1),
     }
 }
-
 
 /// Look up an identifier by name in module-scope declarations to classify its stage.
 /// Used when the ident ref is unresolved (e.g., in attribute arguments).

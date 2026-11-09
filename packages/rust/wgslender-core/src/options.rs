@@ -46,6 +46,8 @@ pub struct MinifyOptions {
     sort_declarations: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scope_local_rename: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    shorten_floats: Option<bool>,
 }
 
 /// Generates the boolean setters, each with its own compiling example, so the
@@ -88,6 +90,7 @@ bool_setters! {
     preserve_uniform_struct_types => "Keeps the type names of uniform structs intact.",
     sort_declarations => "Groups similar declarations together, which compresses better.",
     scope_local_rename => "Reuses the same short names across sibling scopes, which compresses better.",
+    shorten_floats => "Prints float literals that are converted straight to `f32` with their shortest `f32` round-trip digits (`0.2777273272234177` becomes `.27772734`). Runs type analysis to find them; literals feeding abstract const-expressions, `f16` or integer conversions keep their digits. Needs `minify_syntax`.",
 }
 
 impl MinifyOptions {

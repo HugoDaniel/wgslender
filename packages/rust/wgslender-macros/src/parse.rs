@@ -132,6 +132,7 @@ passthrough_options! {
     preserve_uniform_struct_types,
     sort_declarations,
     scope_local_rename,
+    shorten_floats,
 }
 
 /// The keys handled here rather than handed to [`MinifyOptions`].

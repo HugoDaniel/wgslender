@@ -108,3 +108,40 @@ test "1.0f accepts" {
     defer r.deinit();
     try std.testing.expect(!anyError(r));
 }
+
+test "f32 literals that round to the finite maximum accept" {
+    const sources = [_][:0]const u8{
+        "const X = 340282346638528859811704183484516925440.0f;",
+        "const X = 34028235e31f;",
+        "const X = 34028234e31f;",
+    };
+    for (sources) |source| {
+        var r = try validate(source);
+        defer r.deinit();
+        if (anyError(r)) dump(source, r);
+        try std.testing.expect(!anyError(r));
+    }
+}
+
+test "f32 literal beyond the finite rounding boundary rejects" {
+    var r = try validate("const X = 34028236e31f;");
+    defer r.deinit();
+    try std.testing.expect(hasErrorWithCode(r, "E0314"));
+}
+
+test "f16 literals use the finite rounding boundary" {
+    const valid_sources = [_][:0]const u8{
+        "enable f16; const X = 65504.0h;",
+        "enable f16; const X = 65505.0h;",
+    };
+    for (valid_sources) |source| {
+        var r = try validate(source);
+        defer r.deinit();
+        if (anyError(r)) dump(source, r);
+        try std.testing.expect(!anyError(r));
+    }
+
+    var r = try validate("enable f16; const X = 65520.0h;");
+    defer r.deinit();
+    try std.testing.expect(hasErrorWithCode(r, "E0314"));
+}

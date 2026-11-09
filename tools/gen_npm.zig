@@ -333,6 +333,7 @@ const dts_body =
     \\  keepNames?: string[];
     \\  sortDeclarations?: boolean;
     \\  scopeLocalRename?: boolean;
+    \\  shortenFloats?: boolean;
     \\}
     \\
     \\/**

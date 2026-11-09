@@ -27,6 +27,10 @@ pub const Options = struct {
     /// to the generator's mappings. Only meaningful alongside `minify_whitespace`
     /// — pretty-printed output drifts from source positions unpredictably.
     source_map_gen: ?*SourceMap.Generator = null,
+    /// `loc`s of unsuffixed float literals that are converted straight to f32
+    /// (`Validator.AnalysisResult.f32_literal_locs`). Under `minify_syntax`
+    /// these print with their shortest f32 round-trip digits, like `f` literals.
+    f32_literal_locs: ?*const std.AutoHashMapUnmanaged(u32, void) = null,
 };
 
 pub const Renamer = struct {
@@ -636,7 +640,9 @@ fn printTextureType(self: *Printer, t: *const Ast.TextureType) !void {
 ///   "1000000.0" → "1e6"      (scientific notation when shorter)
 ///   "1500.0"    → "1500."    (only use sci when it saves bytes)
 ///
-/// Hex, suffixed (f/h/i/u), and scientific literals are returned as-is.
+/// Hex literals and forms already using an exponent are returned as-is.
+/// `f` literals and validator-approved AbstractFloat literals are first
+/// rewritten to their shortest f32 round-trip decimal.
 // Reason: 72-line unified float optimizer; sequential validate → suffix
 // → sci → strip-trailing-zero → strip-leading-zero → emit pipeline reads
 // straight through. Splitting into helpers would obscure the linear flow
@@ -644,6 +650,7 @@ fn printTextureType(self: *Printer, t: *const Ast.TextureType) !void {
 fn optimizeNumericLiteral(
     value: []const u8,
     buf: *[64]u8,
+    is_f32: bool,
 ) []const u8 {
     if (value.len == 0 or value.len > 60) return value;
 
@@ -661,7 +668,14 @@ fn optimizeNumericLiteral(
 
     // Detect and strip type suffix (f, h, i, u).
     const suffix = classifySuffix(value);
-    const body = value[0 .. value.len - suffix.len];
+    // f32 literals: shortest digits that round-trip to the same f32
+    // (0.2777273272234177f → .27772734f). Unsuffixed (AbstractFloat) literals
+    // only when `is_f32` — the validator saw them converted straight to f32;
+    // otherwise they may be folded in f64 or become f16/integers.
+    var f32_buf: [64]u8 = undefined;
+    const raw_body = value[0 .. value.len - suffix.len];
+    const round = std.mem.eql(u8, suffix, "f") or (suffix.len == 0 and is_f32);
+    const body = if (round) shortestF32(raw_body, &f32_buf) else raw_body;
 
     // Only optimize floats (must contain '.').
     const dot_pos = std.mem.indexOfScalar(u8, body, '.') orelse
@@ -682,19 +696,13 @@ fn optimizeNumericLiteral(
         frac_end -= 1;
     }
 
-    // Guard: if integer part is empty and all fractional digits are zero,
-    // bail out to avoid producing a bare "." (invalid WGSL).
-    // e.g. ".00" → would become "." without this check.
-    // Note: "0.00" → "0." is fine (has integer part).
-    if (frac_end == 0 and int_part.len == 0) {
-        return value;
-    }
-
     // Strip leading zero: "0.5" → ".5" (but not "0." → ".")
     const skip_leading = int_part.len == 1 and
         int_part[0] == '0' and frac_end > 0;
 
-    const int_out = if (skip_leading) "" else int_part;
+    // All-zero literal with no integer part: ".00" → "0.", never a bare "."
+    // (invalid WGSL). ".0" stays ".0" via the length check below.
+    const int_out = if (skip_leading) "" else if (int_part.len == 0 and frac_end == 0) "0" else int_part;
     const frac_out = frac_part[0..frac_end];
 
     // Check if optimized form is actually shorter.
@@ -713,6 +721,17 @@ fn optimizeNumericLiteral(
     pos += suffix.len;
 
     return buf[0..pos];
+}
+
+fn shortestF32(body: []const u8, buf: *[64]u8) []const u8 {
+    if (std.mem.indexOfScalar(u8, body, '.') == null) return body;
+    const v = std.fmt.parseFloat(f32, body) catch return body;
+    if (!std.math.isFinite(v)) return body;
+    const s = std.fmt.bufPrint(buf[0..63], "{d}", .{v}) catch return body;
+    if (s.len >= body.len) return body;
+    if (std.mem.indexOfScalar(u8, s, '.') != null) return s;
+    buf[s.len] = '.';
+    return buf[0 .. s.len + 1];
 }
 
 /// Classify trailing type suffix (f, h, i, u) or empty.
@@ -819,7 +838,8 @@ fn dispatchExpr(self: *Printer, ex: Ast.Expr, stack: *std.ArrayList(PrintWork)) 
                 (expr.kind == .float_literal or expr.kind == .int_literal))
             {
                 var buf: [64]u8 = undefined;
-                const opt = optimizeNumericLiteral(expr.value, &buf);
+                const is_f32 = if (self.options.f32_literal_locs) |locs| locs.contains(expr.loc) else false;
+                const opt = optimizeNumericLiteral(expr.value, &buf, is_f32);
                 try self.emit(opt);
             } else {
                 try self.emit(expr.value);
@@ -2191,11 +2211,12 @@ test "printer: minify syntax edge cases" {
 }
 
 test "printer: bare dot float literal must not be produced" {
-    // ".00" must NOT become "." (invalid WGSL). Must stay as ".00".
+    // ".00" must NOT become "." (invalid WGSL); it becomes "0." instead.
     // This triggered a shader compilation failure when unary minus
     // produced `-.` from `-.00` in minified output.
-    try expectPrintedMangle("const x = .00;", "const x = .00;\n");
-    try expectPrintedMangle("const x = .000;", "const x = .000;\n");
+    try expectPrintedMangle("const x = .00;", "const x = 0.;\n");
+    try expectPrintedMangle("const x = .000;", "const x = 0.;\n");
+    try expectPrintedMangle("const x = .000f;", "const x = 0.f;\n");
     // ".0" is already minimal — no change.
     try expectPrintedMangle("const x = .0;", "const x = .0;\n");
     // ".10" → ".1" is fine (non-zero fractional digit remains).
@@ -2205,8 +2226,77 @@ test "printer: bare dot float literal must not be produced" {
     // Negative context: unary minus + .00 in an expression.
     try expectPrintedMangle(
         "fn f() -> vec3f { return vec3f(-.00, .47, .58); }",
-        "fn f() -> vec3f {\n    return vec3f(-.00, .47, .58);\n}\n",
+        "fn f() -> vec3f {\n    return vec3f(-0., .47, .58);\n}\n",
     );
+}
+
+test "printer: f32 literals shortened to round-trip digits, abstract floats untouched" {
+    try expectPrintedMangle("const x = 0.2777273272234177f;", "const x = .27772734f;\n");
+    try expectPrintedMangle("const x = 16777217.0f;", "const x = 16777216.f;\n");
+    // AbstractFloat may be folded in f64 or become f16/integer — keep its digits.
+    try expectPrintedMangle("const x = 0.2777273272234177;", "const x = .2777273272234177;\n");
+    try expectPrintedMangle("const x = 0.99999999;", "const x = .99999999;\n");
+    try expectPrintedMangle("const x = 0.2777273272234177h;", "const x = .2777273272234177h;\n");
+}
+
+test "printer: f32 optimization round-trips edge and random bit patterns" {
+    try expectPrintedMangle("const x = -0.0f;", "const x = -0.f;\n");
+    try expectPrintedMangle("const x = 1.00048828125f;", "const x = 1.0004883f;\n");
+    try expectPrintedMangle(
+        "const x = 340282350000000000000000000000000000000.0f;",
+        "const x = 34028235e31f;\n",
+    );
+
+    const edge_bits = [_]u32{
+        0x0000_0000,
+        0x0000_0001,
+        0x0000_0002,
+        0x007f_ffff,
+        0x0080_0000,
+        0x0080_0001,
+        0x3f7f_ffff,
+        0x3f80_0000,
+        0x3f80_0001,
+        0x3f80_8000,
+        0x4b80_0000,
+        0x4b80_0001,
+        0x4cbe_b220,
+        0x7f7f_ffff,
+    };
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
+    for (0..4096) |i| {
+        const bits = if (i < edge_bits.len) edge_bits[i] else prng.random().int(u32) & 0x7fff_ffff;
+        if (bits >= 0x7f80_0000) continue;
+        const value: f32 = @bitCast(bits);
+
+        var decimal_buf: [128]u8 = undefined;
+        const decimal = try std.fmt.bufPrint(&decimal_buf, "{d}", .{value});
+        var literal_buf: [128]u8 = undefined;
+        const literal = if (std.mem.indexOfScalar(u8, decimal, '.') != null)
+            try std.fmt.bufPrint(&literal_buf, "{s}f", .{decimal})
+        else
+            try std.fmt.bufPrint(&literal_buf, "{s}.0f", .{decimal});
+
+        var optimized_buf: [64]u8 = undefined;
+        const optimized = optimizeNumericLiteral(literal, &optimized_buf, false);
+        try std.testing.expect(optimized.len <= literal.len);
+        const parsed = try std.fmt.parseFloat(f32, optimized[0 .. optimized.len - 1]);
+        try std.testing.expectEqual(bits, @as(u32, @bitCast(parsed)));
+
+        var second_buf: [64]u8 = undefined;
+        const second = optimizeNumericLiteral(optimized, &second_buf, false);
+        try std.testing.expectEqualStrings(optimized, second);
+
+        if (value >= 0.000001 and value <= 1000000) {
+            var long_buf: [128]u8 = undefined;
+            const long_literal = try std.fmt.bufPrint(&long_buf, "{d:.20}f", .{value});
+            var shortened_buf: [64]u8 = undefined;
+            const shortened = optimizeNumericLiteral(long_literal, &shortened_buf, false);
+            try std.testing.expect(shortened.len < long_literal.len);
+            const reparsed = try std.fmt.parseFloat(f32, shortened[0 .. shortened.len - 1]);
+            try std.testing.expectEqual(bits, @as(u32, @bitCast(reparsed)));
+        }
+    }
 }
 
 // -------------------------------------------------------------------------

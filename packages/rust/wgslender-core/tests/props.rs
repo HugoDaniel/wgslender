@@ -105,9 +105,9 @@ fn wgsl_soup() -> impl Strategy<Value = String> {
         .prop_map(|parts| parts.join(" "))
 }
 
-/// A point in the option space, over the eight flags that change the output.
+/// A point in the option space, over the nine flags that change the output.
 fn options() -> impl Strategy<Value = MinifyOptions> {
-    proptest::array::uniform8(any::<bool>()).prop_map(|flags| {
+    proptest::array::uniform9(any::<bool>()).prop_map(|flags| {
         let [
             whitespace,
             identifiers,
@@ -117,6 +117,7 @@ fn options() -> impl Strategy<Value = MinifyOptions> {
             preserve,
             sorting,
             scoped,
+            shorten,
         ] = flags;
         MinifyOptions::default()
             .minify_whitespace(whitespace)
@@ -127,6 +128,7 @@ fn options() -> impl Strategy<Value = MinifyOptions> {
             .preserve_uniform_struct_types(preserve)
             .sort_declarations(sorting)
             .scope_local_rename(scoped)
+            .shorten_floats(shorten)
     })
 }
 

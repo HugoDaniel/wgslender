@@ -108,6 +108,53 @@ fn testSemanticPreservation(allocator: std.mem.Allocator, source_bytes: []const 
     try std.testing.expectEqual(orig_reflect.bindings.items.len, min_reflect.bindings.items.len);
 }
 
+fn testShortenFloatsSemantic(allocator: std.mem.Allocator, source_bytes: []const u8) !bool {
+    const source = try makeSentinel(allocator, source_bytes);
+    const original_validation = try wgslender.validateWithOptions(allocator, source, .{});
+    if (!original_validation.valid) return false;
+
+    const options: wgslender.Minifier.Options = .{
+        .tree_shaking = false,
+        .shorten_floats = true,
+    };
+    const first = try wgslender.minifyWithOptions(allocator, source, options);
+    try std.testing.expectEqual(@as(usize, 0), first.errors.len);
+
+    const minified = try makeSentinel(allocator, first.code);
+    const minified_validation = try wgslender.validateWithOptions(allocator, minified, .{});
+    if (!minified_validation.valid) {
+        std.debug.print("\n=== shorten_floats output that failed validation ===\n{s}\n===\n", .{first.code});
+    }
+    try std.testing.expect(minified_validation.valid);
+
+    const second = try wgslender.minifyWithOptions(allocator, minified, options);
+    try std.testing.expectEqualStrings(first.code, second.code);
+    return true;
+}
+
+test "semantic: shorten_floats preserves the sample shader corpus" {
+    const shaders = [_][]const u8{
+        example_wgsl,
+        basic_vert_wgsl,
+        sceneW_wgsl,
+        sceneE_wgsl,
+        sceneY_wgsl,
+        starsParticlesModule_wgsl,
+        trailing_comma_wgsl,
+        blur_wgsl,
+        cornell_common_wgsl,
+        fullscreen_quad_wgsl,
+        shadow_fragment_wgsl,
+    };
+    var validated_count: usize = 0;
+    for (shaders) |shader| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        if (try testShortenFloatsSemantic(arena.allocator(), shader)) validated_count += 1;
+    }
+    try std.testing.expect(validated_count > 0);
+}
+
 /// Roundtrip stability test: parse -> print -> re-parse -> re-print; output must be identical.
 fn testRoundtripStability(allocator: std.mem.Allocator, source_bytes: []const u8) !void {
     const source = try makeSentinel(allocator, source_bytes);

@@ -627,6 +627,7 @@ pub fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl, handling: AbstractHan
             .concretize => Types.concreteType(init_type),
         };
     }
+    if (decl_type) |dt| try v.noteF32Conversion(d.initializer.?, dt);
 
     // const initializer must be a const-expression (not override or runtime).
     if (d.initializer) |_| {
@@ -731,7 +732,7 @@ pub fn validateOverrideDecl(v: *Validator, d: *Ast.OverrideDecl) Allocator.Error
                 } else {
                     v.addErrorWithCodeR(r, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
                 }
-            }
+            } else try v.noteF32Conversion(init, dt);
         }
     }
 
@@ -832,7 +833,7 @@ pub fn validateVarDecl(v: *Validator, d: *Ast.VarDecl) Allocator.Error!void {
                 } else {
                     v.addErrorWithCodeR(r, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, it.string(), dt.string() }));
                 }
-            }
+            } else try v.noteF32Conversion(init, dt);
         }
     }
 
@@ -1082,6 +1083,7 @@ pub fn validateLetDecl(v: *Validator, d: *Ast.LetDecl) Allocator.Error!void {
         decl_type = try Types.concreteTypeAlloc(v.arena, init_type);
     }
 
+    if (decl_type) |dt| try v.noteF32Conversion(d.initializer.?, dt);
     try v.setSymbolType(d.name, decl_type);
 }
 
@@ -1227,7 +1229,6 @@ pub fn registerFunctionSignatures(v: *Validator) Allocator.Error!void {
         }
     }
 }
-
 
 // =========================================================================
 // Phase 4 helpers + entry-point IO + builtin attribute checks

@@ -83,6 +83,22 @@ fn cases() -> Vec<Case> {
             },
         },
         Case {
+            name: "shorten_floats shortens direct f32 literals in the embedded engine",
+            source: "const C: f32 = 0.2777273272234177;",
+            options: Some(
+                MinifyOptions::default()
+                    .minify_identifiers(false)
+                    .tree_shaking(false)
+                    .shorten_floats(true),
+            ),
+            check: |_, minified| {
+                assert!(
+                    minified.contains(".27772734"),
+                    "shortest f32 literal missing: {minified}"
+                );
+            },
+        },
+        Case {
             name: "semantically invalid source is minified anyway",
             source: common::INVALID,
             options: None,
