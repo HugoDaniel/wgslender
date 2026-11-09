@@ -27,8 +27,10 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Ast = @import("Ast.zig");
+const Lexer = @import("Lexer.zig");
 const Parser = @import("Parser.zig");
 const Printer = @import("Printer.zig");
+const Validator = @import("Validator.zig");
 const RenamerMod = @import("Renamer.zig");
 const Dce = @import("Dce.zig");
 const RenamePolicy = @import("RenamePolicy.zig");
@@ -735,12 +737,17 @@ test "minifier: shorten_floats rounds only literals converted straight to f32" {
         // Converted straight to f32: rounded.
         .{ .src = "const C: f32 = 0.2777273272234177;", .want = "const C: f32 = .27772734;" },
         .{ .src = "fn f() { let a = 0.2777273272234177; }", .want = "let a = .27772734;" },
+        .{ .src = "fn f() { const a = 0.2777273272234177; }", .want = "const a = .27772734;" },
         .{ .src = "fn f(y: f32) -> f32 { return y * 0.2777273272234177; }", .want = "y * .27772734" },
         .{ .src = "fn f() -> vec3f { return vec3f(-0.2777273272234177, 0., 0.); }", .want = "vec3f(-.27772734," },
         .{ .src = "fn f(y: f32) -> f32 { return pow(y, 2.2777273272234177); }", .want = "pow(y, 2.2777274)" },
         .{ .src = "fn f(y: vec3f) -> f32 { return dot(y, vec3(0.2126000000001, 0., 0.)); }", .want = "vec3(.2126," },
+        .{ .src = "fn f() -> vec2f { return vec2f(vec2(0.2777273272234177, 1.0f)); }", .want = "vec2(.27772734," },
         .{ .src = "fn f() { var y: f32; y += 0.2777273272234177; }", .want = "y += .27772734;" },
         // AbstractFloat arithmetic, f16, integer conversion: digits kept.
+        // The f16 sibling determines the inner vec2's type, so the outer f32
+        // conversion must not make the halfway literal round through f32 first.
+        .{ .src = "enable f16; fn f() -> vec2f { return vec2f(vec2(1.00048828125, 1.0h)); }", .want = "vec2(1.00048828125," },
         .{ .src = "const A = 0.2777273272234177;", .want = "const A = .2777273272234177;" },
         .{ .src = "fn f() { let b: f32 = 16777217.0 - 16777216.0; }", .want = "16777217. - 16777216." },
         .{ .src = "fn f() -> f32 { return sqrt(2.2777273272234177); }", .want = "sqrt(2.2777273272234177)" },
@@ -757,6 +764,75 @@ test "minifier: shorten_floats rounds only literals converted straight to f32" {
     // Off by default: unsuffixed literals keep their digits.
     const off = try minify(arena.allocator(), "const C: f32 = 0.2777273272234177;", .{});
     try std.testing.expect(std.mem.indexOf(u8, off.code, ".2777273272234177") != null);
+
+    var no_syntax_opts = opts;
+    no_syntax_opts.minify_syntax = false;
+    const no_syntax = try minify(arena.allocator(), "const C: f32 = 0.2777273272234177;", no_syntax_opts);
+    try std.testing.expect(std.mem.indexOf(u8, no_syntax.code, "0.2777273272234177") != null);
+}
+
+fn expectValidMinifiedOutput(arena: Allocator, source: [:0]const u8) !void {
+    const tokens = try Lexer.tokenize(arena, source);
+    var parser = try Parser.init(arena, source, tokens);
+    const module = try parser.parse();
+    try std.testing.expect(parser.errors.items.len == 0);
+
+    const result = try Validator.validate(arena, module, .{});
+    if (!result.valid) {
+        for (result.diagnostics.diagnostics.items) |d| {
+            std.debug.print("[{s}] {s}: {s}\n", .{ d.code, d.severity.string(), d.message });
+        }
+    }
+    try std.testing.expect(result.valid);
+}
+
+test "minifier: shorten_floats long-tail boundaries stay valid and idempotent" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const opts: Options = .{ .minify_whitespace = false, .minify_identifiers = false, .tree_shaking = false, .shorten_floats = true };
+    const Case = struct {
+        src: [:0]const u8,
+        want: []const u8,
+        absent: ?[]const u8 = null,
+    };
+    const cases = [_]Case{
+        .{ .src = "const C = 340282346638528859811704183484516925440.0f;", .want = "34028235e31f" },
+        .{ .src = "fn f() -> vec4f { return vec4f(vec2(0.2777273272234177, 0.), vec2(0.2126000000001, 0.)); }", .want = ".27772734" },
+        .{ .src = "fn f() -> mat2x2f { return mat2x2f(mat2x2(0.2777273272234177, 0., 0., 0.)); }", .want = ".27772734" },
+        .{ .src = "enable f16; fn f() -> vec2f { return vec2f(vec2(1.00048828125, 1.0h)); }", .want = "1.00048828125", .absent = "1.0004883" },
+        .{ .src = "enable f16; fn f() -> mat2x2f { return mat2x2f(mat2x2(1.00048828125, 1.0h, 0., 0.)); }", .want = "1.00048828125", .absent = "1.0004883" },
+        .{ .src = "enable f16; fn f() -> vec2f { return vec2f((vec2((1.00048828125), 1.0h))); }", .want = "1.00048828125", .absent = "1.0004883" },
+        .{ .src = "enable f16; fn f() { let h = vec2(1.00048828125, 1.0h); }", .want = "1.00048828125", .absent = "1.0004883" },
+        .{ .src = "fn f() -> vec2f { return vec2f(vec2(16777217.0 - 16777216.0, 0.)); }", .want = "16777217. - 16777216.", .absent = "16777216. - 16777216." },
+        .{ .src = "fn f() { var a = array(0.2777273272234177, 0.); }", .want = "array(.27772734," },
+        .{ .src = "fn f() { let a: array<array<f32, 1>, 1> = array(array(0.2777273272234177)); }", .want = "array(array(.27772734))" },
+        .{ .src = "struct S { x: f32 } fn f() -> S { return S(0.2777273272234177); }", .want = "S(.27772734)" },
+        .{ .src = "fn g(x: f32) -> f32 { return x; } fn f() -> f32 { return g(0.2777273272234177); }", .want = "g(.27772734)" },
+        .{ .src = "fn f() -> f32 { return -((0.2777273272234177)); }", .want = "-((.27772734))" },
+        .{ .src = "override a = 0.2777273272234177;", .want = "override a = .27772734;" },
+    };
+    for (cases) |c| {
+        const first = try minify(alloc, c.src, opts);
+        if (std.mem.indexOf(u8, first.code, c.want) == null) {
+            std.debug.print("source:\n{s}\nexpected `{s}` in:\n{s}\n", .{ c.src, c.want, first.code });
+            return error.TestUnexpectedResult;
+        }
+        if (c.absent) |absent| {
+            if (std.mem.indexOf(u8, first.code, absent) != null) {
+                std.debug.print("source:\n{s}\ndid not expect `{s}` in:\n{s}\n", .{ c.src, absent, first.code });
+                return error.TestUnexpectedResult;
+            }
+        }
+
+        const output = try alloc.dupeZ(u8, first.code);
+        try expectValidMinifiedOutput(alloc, output);
+        const second = try minify(alloc, output, opts);
+        if (!std.mem.eql(u8, first.code, second.code)) {
+            std.debug.print("first:\n{s}\nsecond:\n{s}\n", .{ first.code, second.code });
+            return error.TestUnexpectedResult;
+        }
+    }
 }
 
 // The fallback guarantee behind `ScopeLocalRenamer.reserve`: a declaration

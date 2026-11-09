@@ -131,7 +131,7 @@ pub fn noteF32Conversion(v: *Validator, expr: Ast.Expr, target: Types.Type) Allo
         },
         .paren => |p| try noteF32Conversion(v, p.expr, target),
         .unary => |u| if (u.op == .neg) try noteF32Conversion(v, u.operand, target),
-        .call => |c| if (isBareAbstractPackingCtor(c)) {
+        .call => |c| if (isBareAbstractPackingCtor(c) and hasDirectF32PackingType(v, c)) {
             for (c.args.items) |arg| try noteF32Conversion(v, arg, target);
         },
         else => {},
@@ -161,6 +161,14 @@ fn isBareAbstractPackingCtor(c: *const Ast.CallExpr) bool {
     if (n.len == 4 and std.mem.startsWith(u8, n, "vec")) return n[3] >= '2' and n[3] <= '4';
     return n.len == 6 and std.mem.startsWith(u8, n, "mat") and n[4] == 'x' and
         n[3] >= '2' and n[3] <= '4' and n[5] >= '2' and n[5] <= '4';
+}
+
+/// A concrete sibling argument can make a nested bare constructor f16 even
+/// when its own result is subsequently converted to f32. Only abstract and
+/// f32 packing convert their unsuffixed scalar arguments directly to f32.
+fn hasDirectF32PackingType(v: *Validator, c: *const Ast.CallExpr) bool {
+    const info = v.out.expr_types.get(c.loc) orelse return false;
+    return !info.typ.isConcrete() or hasF32Leaf(info.typ);
 }
 
 pub fn checkLiteral(v: *Validator, e: *Ast.LiteralExpr) InferResult {
@@ -265,9 +273,9 @@ pub fn checkF16Enabled(v: *Validator, loc: u32) void {
 }
 
 /// Validate that a float literal fits its target type. NaN/Inf rejects every
-/// form. `f`-suffixed literals additionally must fit the finite f32 range,
-/// and `h`-suffixed must fit f16 — so `1e40f` and `1e10h` are caught even
-/// though they parse to finite f64 values.
+/// form. Suffixed literals must round to a finite value in that type, so
+/// `1e40f` and `1e10h` are caught even though they parse to finite f64 values.
+/// Values slightly above the type maximum are valid when they round down to it.
 pub fn checkFloatLiteralValue(v: *Validator, e: *Ast.LiteralExpr) void {
     // Strip suffix for parsing
     const raw = e.value;
@@ -285,21 +293,21 @@ pub fn checkFloatLiteralValue(v: *Validator, e: *Ast.LiteralExpr) void {
         v.addErrorWithCodeR(range, Diagnostic.Code.invalid_float_literal, "float literal evaluates to infinity");
         return;
     }
-    const abs_val = @abs(parsed);
-    switch (suffix) {
-        'f' => {
-            const f32_max: f64 = std.math.floatMax(f32);
-            if (abs_val > f32_max) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_float_literal, v.fmtError("f32 literal '{s}' is out of range (|value| > {e})", .{ raw, f32_max }));
-            }
+    const in_range = switch (suffix) {
+        'f' => blk: {
+            const rounded = std.fmt.parseFloat(f32, parse_str) catch break :blk false;
+            break :blk std.math.isFinite(rounded);
         },
-        'h' => {
-            const f16_max: f64 = std.math.floatMax(f16);
-            if (abs_val > f16_max) {
-                v.addErrorWithCodeR(range, Diagnostic.Code.invalid_float_literal, v.fmtError("f16 literal '{s}' is out of range (|value| > {e})", .{ raw, f16_max }));
-            }
+        'h' => blk: {
+            const rounded = std.fmt.parseFloat(f16, parse_str) catch break :blk false;
+            break :blk std.math.isFinite(rounded);
         },
-        else => {},
+        else => true,
+    };
+    if (!in_range) {
+        const type_name = if (suffix == 'f') "f32" else "f16";
+        const type_max: f64 = if (suffix == 'f') std.math.floatMax(f32) else std.math.floatMax(f16);
+        v.addErrorWithCodeR(range, Diagnostic.Code.invalid_float_literal, v.fmtError("{s} literal '{s}' is out of range (|value| > {e})", .{ type_name, raw, type_max }));
     }
 }
 

@@ -189,11 +189,13 @@ pub const AbstractHandling = enum { keep, concretize };
 /// Enriched analysis result: the validator's retained semantic state, kept
 /// alive for consumers that outlive the run — the LSP (hover, go-to-definition,
 /// inlay hints) and the lint rules. This is the materialized form of the
-/// validator's output contract: the five type/const caches (`symbol_types`,
-/// `struct_types`, `alias_types`, `const_values`, `expr_types`) are exactly
-/// the `Outputs` group, copied out verbatim by `analyze` and *only* there;
+/// validator's output contract: the semantic caches (`symbol_types`,
+/// `struct_types`, `alias_types`, `const_values`, `expr_types`,
+/// `f32_literal_locs`) are exactly the `Outputs` group, copied out verbatim
+/// by `analyze` and *only* there;
 /// nothing in the validator's `Scratch` maps or `FnContext` cursor reaches
-/// here. `use_counts` aliases `module.use_counts`; `liveness` is filled lazily
+/// here. The literal-conversion map supports the minifier's `shorten_floats`
+/// pass. `use_counts` aliases `module.use_counts`; `liveness` is filled lazily
 /// by whoever runs DCE. Stable surface: LSP handlers and lint `Context` read
 /// these fields by name, so the field names/layout are pinned (see the
 /// stability tiers in `root.zig`).
@@ -1022,7 +1024,6 @@ pub fn classifyExprStageDepth(v: *const Validator, expr: Ast.Expr, depth: u32) E
         .member => |e| return v.classifyExprStageDepth(e.base, depth + 1),
     }
 }
-
 
 /// Look up an identifier by name in module-scope declarations to classify its stage.
 /// Used when the ident ref is unresolved (e.g., in attribute arguments).

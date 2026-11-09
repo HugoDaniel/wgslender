@@ -56,6 +56,20 @@ func TestMinify(t *testing.T) {
 			},
 		},
 		{
+			name:   "ShortenFloats shortens direct f32 literals in the embedded engine",
+			source: "const C: f32 = 0.2777273272234177;",
+			opts: &wgslender.MinifyOptions{
+				MinifyIdentifiers: wgslender.Set(false),
+				TreeShaking:       wgslender.Set(false),
+				ShortenFloats:     wgslender.Set(true),
+			},
+			check: func(t *testing.T, _ string, got wgslender.MinifyResult) {
+				if !strings.Contains(got.Code, ".27772734") {
+					t.Errorf("shortest f32 literal missing:\n%s", got.Code)
+				}
+			},
+		},
+		{
 			name:   "whitespace-only leaves every identifier alone",
 			source: demoWGSL,
 			opts: &wgslender.MinifyOptions{

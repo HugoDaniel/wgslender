@@ -98,6 +98,12 @@ test "determinism: minify with sort+scope-local rename" {
     });
 }
 
+test "determinism: minify with shorten_floats" {
+    try runMinifyDeterminism(.{
+        .shorten_floats = true,
+    });
+}
+
 test "determinism: minify with tree shaking" {
     try runMinifyDeterminism(.{
         .tree_shaking = true,

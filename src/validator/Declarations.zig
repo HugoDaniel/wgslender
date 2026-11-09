@@ -618,7 +618,6 @@ pub fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl, handling: AbstractHan
                 v.addErrorWithRelatedR(r, Diagnostic.Code.type_mismatch, v.fmtError("cannot initialize '{s}' with type '{s}' (expected '{s}')", .{ name, init_type.string(), dt.string() }), related);
                 return;
             }
-            try v.noteF32Conversion(d.initializer.?, dt);
         }
     } else {
         // Infer type from initializer. Module-scope `const` keeps abstract
@@ -628,6 +627,7 @@ pub fn validateConstDecl(v: *Validator, d: *Ast.ConstDecl, handling: AbstractHan
             .concretize => Types.concreteType(init_type),
         };
     }
+    if (decl_type) |dt| try v.noteF32Conversion(d.initializer.?, dt);
 
     // const initializer must be a const-expression (not override or runtime).
     if (d.initializer) |_| {
@@ -1229,7 +1229,6 @@ pub fn registerFunctionSignatures(v: *Validator) Allocator.Error!void {
         }
     }
 }
-
 
 // =========================================================================
 // Phase 4 helpers + entry-point IO + builtin attribute checks

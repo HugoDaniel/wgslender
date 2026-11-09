@@ -119,6 +119,19 @@ test "public API: minify with source map — exhaustive OOM" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testMinifyWithSourceMap, .{});
 }
 
+fn testMinifyShortenFloats(allocator: std.mem.Allocator) !void {
+    var result = wgslender.minifyWithOptions(allocator, multi_fn, .{
+        .shorten_floats = true,
+    }) catch |e| switch (e) {
+        error.OutOfMemory => return error.OutOfMemory,
+    };
+    result.deinit(allocator);
+}
+
+test "public API: minify shorten_floats — exhaustive OOM" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testMinifyShortenFloats, .{});
+}
+
 fn testMinifySortAndScopeLocal(allocator: std.mem.Allocator) !void {
     var result = wgslender.minifyWithOptions(allocator, multi_fn, .{
         .sort_declarations = true,

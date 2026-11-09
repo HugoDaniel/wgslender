@@ -640,7 +640,9 @@ fn printTextureType(self: *Printer, t: *const Ast.TextureType) !void {
 ///   "1000000.0" → "1e6"      (scientific notation when shorter)
 ///   "1500.0"    → "1500."    (only use sci when it saves bytes)
 ///
-/// Hex, suffixed (f/h/i/u), and scientific literals are returned as-is.
+/// Hex literals and forms already using an exponent are returned as-is.
+/// `f` literals and validator-approved AbstractFloat literals are first
+/// rewritten to their shortest f32 round-trip decimal.
 // Reason: 72-line unified float optimizer; sequential validate → suffix
 // → sci → strip-trailing-zero → strip-leading-zero → emit pipeline reads
 // straight through. Splitting into helpers would obscure the linear flow
@@ -2235,6 +2237,66 @@ test "printer: f32 literals shortened to round-trip digits, abstract floats unto
     try expectPrintedMangle("const x = 0.2777273272234177;", "const x = .2777273272234177;\n");
     try expectPrintedMangle("const x = 0.99999999;", "const x = .99999999;\n");
     try expectPrintedMangle("const x = 0.2777273272234177h;", "const x = .2777273272234177h;\n");
+}
+
+test "printer: f32 optimization round-trips edge and random bit patterns" {
+    try expectPrintedMangle("const x = -0.0f;", "const x = -0.f;\n");
+    try expectPrintedMangle("const x = 1.00048828125f;", "const x = 1.0004883f;\n");
+    try expectPrintedMangle(
+        "const x = 340282350000000000000000000000000000000.0f;",
+        "const x = 34028235e31f;\n",
+    );
+
+    const edge_bits = [_]u32{
+        0x0000_0000,
+        0x0000_0001,
+        0x0000_0002,
+        0x007f_ffff,
+        0x0080_0000,
+        0x0080_0001,
+        0x3f7f_ffff,
+        0x3f80_0000,
+        0x3f80_0001,
+        0x3f80_8000,
+        0x4b80_0000,
+        0x4b80_0001,
+        0x4cbe_b220,
+        0x7f7f_ffff,
+    };
+    var prng = std.Random.DefaultPrng.init(std.testing.random_seed);
+    for (0..4096) |i| {
+        const bits = if (i < edge_bits.len) edge_bits[i] else prng.random().int(u32) & 0x7fff_ffff;
+        if (bits >= 0x7f80_0000) continue;
+        const value: f32 = @bitCast(bits);
+
+        var decimal_buf: [128]u8 = undefined;
+        const decimal = try std.fmt.bufPrint(&decimal_buf, "{d}", .{value});
+        var literal_buf: [128]u8 = undefined;
+        const literal = if (std.mem.indexOfScalar(u8, decimal, '.') != null)
+            try std.fmt.bufPrint(&literal_buf, "{s}f", .{decimal})
+        else
+            try std.fmt.bufPrint(&literal_buf, "{s}.0f", .{decimal});
+
+        var optimized_buf: [64]u8 = undefined;
+        const optimized = optimizeNumericLiteral(literal, &optimized_buf, false);
+        try std.testing.expect(optimized.len <= literal.len);
+        const parsed = try std.fmt.parseFloat(f32, optimized[0 .. optimized.len - 1]);
+        try std.testing.expectEqual(bits, @as(u32, @bitCast(parsed)));
+
+        var second_buf: [64]u8 = undefined;
+        const second = optimizeNumericLiteral(optimized, &second_buf, false);
+        try std.testing.expectEqualStrings(optimized, second);
+
+        if (value >= 0.000001 and value <= 1000000) {
+            var long_buf: [128]u8 = undefined;
+            const long_literal = try std.fmt.bufPrint(&long_buf, "{d:.20}f", .{value});
+            var shortened_buf: [64]u8 = undefined;
+            const shortened = optimizeNumericLiteral(long_literal, &shortened_buf, false);
+            try std.testing.expect(shortened.len < long_literal.len);
+            const reparsed = try std.fmt.parseFloat(f32, shortened[0 .. shortened.len - 1]);
+            try std.testing.expectEqual(bits, @as(u32, @bitCast(reparsed)));
+        }
+    }
 }
 
 // -------------------------------------------------------------------------
