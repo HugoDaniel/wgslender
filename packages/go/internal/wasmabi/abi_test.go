@@ -16,11 +16,13 @@ import (
 // under us.
 var guestExports = []string{
 	"wgslender_alloc",
+	"wgslender_call_shape_json",
 	"wgslender_change_type_apply_by_id",
 	"wgslender_change_type_by_id",
 	"wgslender_compile",
 	"wgslender_dealloc",
 	"wgslender_find_references",
+	"wgslender_format_json",
 	"wgslender_lint",
 	"wgslender_lint_fix",
 	"wgslender_locate_declaration",
@@ -266,8 +268,8 @@ func TestGuestSurface(t *testing.T) {
 	got := slices.Sorted(maps.Keys(a.compiled.ExportedFunctions()))
 	if !slices.Equal(got, guestExports) {
 		t.Errorf("exported functions have moved.\n got: %q\nwant: %q\n"+
-			"if src/wasm.zig gained or renamed an export, update guestExports here "+
-			"and the ABI table in docs/go-package-plan.md", got, guestExports)
+			"if src/wasm.zig gained or renamed an export, update the guestExports pin "+
+			"in this file to match it", got, guestExports)
 	}
 }
 
