@@ -187,13 +187,15 @@ test "references and rename reject a retired direct target" {
     var state = try Incremental.parseFull(gpa, src);
     defer state.deinit();
 
-    // A length-changing edit inside the body takes the compound splice and
-    // retires every declaration in the detached subtree.
+    // A semantic edit inside the body takes the compound splice and
+    // retires every declaration in the detached subtree. (Trivia-only
+    // edits — e.g. a space insert — no longer reach the splice: the
+    // task-B trivia shortcut handles them without retirement.)
     const ret_at: u32 = @intCast(std.mem.indexOf(u8, src, "return 0;").?);
     const next = try Incremental.reparse(gpa, &state, .{
         .start = ret_at,
         .end = ret_at,
-        .new_text = " ",
+        .new_text = "_ = 0; ",
     });
     state.deinit();
     state = next;

@@ -111,10 +111,12 @@ test "retired symbols neither reserve nor receive rename names" {
     const gpa = std.testing.allocator;
 
     // --- Module-wide Builder scans ignore tombstones ---------------------
-    // Real tombstone: a compound splice re-lowers the body, leaving the old
-    // `keep` declaration behind with `is_retired = true` and a fresh copy in
-    // the active subtree. `keep_names` is a name-based scan, so without the
-    // filter it would pin the tombstone too.
+    // Real tombstone: a semantic body edit re-lowers the compound, leaving
+    // the old `keep` declaration behind with `is_retired = true` and a
+    // fresh copy in the active subtree. `keep_names` is a name-based scan,
+    // so without the filter it would pin the tombstone too. (Trivia-only
+    // edits no longer reach the splice — the task-B trivia shortcut
+    // handles them without retirement.)
     const src: [:0]const u8 = "fn f() -> i32 { let keep: i32 = 1; _ = keep; return 0; }";
     var state = try Incremental.parseFull(gpa, src);
     defer state.deinit();
@@ -123,7 +125,7 @@ test "retired symbols neither reserve nor receive rename names" {
     const next = try Incremental.reparse(gpa, &state, .{
         .start = ret_at,
         .end = ret_at,
-        .new_text = " ",
+        .new_text = "_ = 0; ",
     });
     state.deinit();
     state = next;

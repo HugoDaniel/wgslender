@@ -490,13 +490,15 @@ test "edits: retired direct target yields no references or rename edits" {
     var state = try Incremental.parseFull(gpa, source);
     defer state.deinit();
 
-    // A non-zero-delta edit in the body re-lowers the compound and leaves
-    // the old `stale` declaration behind as a tombstone.
+    // A semantic body edit re-lowers the compound and leaves the old
+    // `stale` declaration behind as a tombstone. (Trivia-only edits no
+    // longer reach the splice — the task-B trivia shortcut handles them
+    // without retirement.)
     const ret_at: u32 = @intCast(std.mem.indexOf(u8, source, "return 0;").?);
     const next = try Incremental.reparse(gpa, &state, .{
         .start = ret_at,
         .end = ret_at,
-        .new_text = " ",
+        .new_text = "_ = 0; ",
     });
     state.deinit();
     state = next;

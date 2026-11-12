@@ -591,13 +591,14 @@ test "stable IDs never resolve through a retired symbol" {
     const old_bytes = try gpa.dupe(u8, old_id.bytes);
     defer gpa.free(old_bytes);
 
-    // Non-zero-delta body edit: the compound splice re-lowers the body and
-    // retires every declaration in the detached subtree.
+    // Semantic body edit: the compound splice re-lowers the body and
+    // retires every declaration in the detached subtree. (Trivia-only
+    // edits take the task-B trivia shortcut and retire nothing.)
     const ret_at: u32 = @intCast(std.mem.indexOf(u8, src, "return 0;").?);
     const next = try Incremental.reparse(gpa, &state, .{
         .start = ret_at,
         .end = ret_at,
-        .new_text = " ",
+        .new_text = "_ = 0; ",
     });
     state.deinit();
     state = next;

@@ -317,15 +317,54 @@ pub const Module = struct {
     /// If the owner already had a non-zero `interior_pending` from earlier
     /// edits (this decl was "after" a prior edit elsewhere), that bias is
     /// absorbed in the same walk before applying this edit's delta.
+    ///
+    /// Uses the splice boundary rule (start/end shift when `>= splice_end_old`).
+    /// For trivia edits prefer `shiftModuleForTriviaEdit`, whose asymmetric
+    /// boundary rules keep a preceding statement from absorbing inserted
+    /// trivia.
     pub fn shiftModuleForEdit(self: *Module, splice_end_old: u32, delta: i64) void {
-        if (delta == 0) {
+        self.shiftModuleWithPlan(ShiftPlan.splice(splice_end_old, delta), false) catch unreachable;
+    }
+
+    /// Checked, trivia-specific module shift. Boundary rules:
+    ///
+    ///   - start-like fields (`span.start`, `loc`): shift when `>= edit.end`
+    ///     — a following token starting at the insertion point shifts;
+    ///   - end-like fields (`span.end`, `end_loc`): shift when
+    ///     `> edit.start` — a preceding statement ending exactly at an
+    ///     insertion point must not absorb the inserted trivia.
+    ///
+    /// Runs a preflight pass that validates every candidate offset (no
+    /// under/overflow, span ordering preserved) without writing, then an
+    /// infallible application pass over the identical traversal. A
+    /// preflight failure leaves the module's span *values* untouched;
+    /// the caller must fall back to `parseFull`. (The owner decl's
+    /// `interior_pending` bias may still have been drained — that is a
+    /// coordinate-normalizing no-op, not a semantic mutation.) Deferred
+    /// `interior_pending` bumps for decls strictly after the edit are
+    /// saturating i64 adds that cannot fail mid-walk; their eventual
+    /// absorb shifts values that all sit `>= edit.end` by construction.
+    pub fn shiftModuleForTriviaEdit(self: *Module, edit_start: u32, edit_end: u32, delta: i64) ShiftError!void {
+        if (delta == 0) return; // Nothing moved; no walk needed.
+        // Drain the owner's pending bias first so the preflight and the
+        // apply passes traverse identical state (the owner's bias is 0 in
+        // both), keeping the apply pass deterministic.
+        self.absorbOwnerFor(.{ .start = edit_start, .end = edit_end });
+        const plan = ShiftPlan.trivia(edit_start, edit_end, delta);
+        try self.shiftModuleWithPlan(plan, true); // preflight (no writes)
+        try self.shiftModuleWithPlan(plan, false); // infallible apply
+    }
+
+    fn shiftModuleWithPlan(self: *Module, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
+        if (plan.delta == 0) {
             // Even zero-delta can happen for pure-text edits (e.g. let↔var
             // rename with equal length). No shifts to apply anywhere.
             return;
         }
+        const splice_end_old = plan.boundaryValue();
 
         // Directives are few and always module-level — shift eagerly.
-        for (self.directives.items) |*d| shiftDirectiveSpan(d, splice_end_old, delta);
+        for (self.directives.items) |*d| try shiftDirectiveSpan(d, plan, validate);
 
         // Find the owning top-level decl. It's the one whose effective
         // span (decl_span, or expr.span() for const_assert) contains
@@ -345,25 +384,31 @@ pub const Module = struct {
                 // this edit. Two passes are cheaper than a fused pass with
                 // different thresholds because the bias absorb phase uses
                 // threshold 0 (shift everything) while the edit phase uses
-                // splice_end_old.
+                // splice_end_old. `shiftModuleForTriviaEdit` pre-drains the
+                // owner's bias, so the absorb is a no-op on that path.
                 const existing_bias: i64 = declInteriorPending(d_ptr.*);
                 if (existing_bias != 0) {
                     // Absorb interior only; decl_span was shifted at bump
                     // time so it already sits in current coordinates.
-                    shiftDeclInteriorBy(d_ptr, existing_bias);
-                    clearDeclInteriorPending(d_ptr);
+                    if (!validate) {
+                        shiftDeclInteriorBy(d_ptr, existing_bias);
+                        clearDeclInteriorPending(d_ptr);
+                    }
                 }
-                shiftDeclInteriorPart(d_ptr, splice_end_old, delta);
+                try shiftDeclInteriorWithPlan(d_ptr, plan, validate);
                 // Shift decl_span boundary: owner's end extends past the
                 // edit (owner.decl_span.end >= splice_end_old).
-                shiftDeclSpanBoundary(d_ptr, splice_end_old, delta);
+                try shiftDeclSpanBoundary(d_ptr, plan, validate);
             } else {
                 const eff = declEffectiveSpan(d_ptr.*);
                 if (eff.start >= splice_end_old) {
                     // Strictly AFTER the edit — defer interior walk via
-                    // bias bump, and shift the external decl_span.
-                    bumpDeclInteriorPending(d_ptr, delta);
-                    shiftDeclSpanBoundary(d_ptr, splice_end_old, delta);
+                    // bias bump, and shift the external decl_span. The
+                    // bias bump is a saturating i64 add that cannot fail;
+                    // it is a write, so it runs only in the apply pass
+                    // (the preflight must not mutate).
+                    if (!validate) bumpDeclInteriorPending(d_ptr, plan.delta);
+                    try shiftDeclSpanBoundary(d_ptr, plan, validate);
                 }
                 // Strictly BEFORE: leave untouched.
             }
@@ -372,11 +417,17 @@ pub const Module = struct {
         // Symbol table: shift eagerly. Typical shader has ~1000 symbols;
         // a flat loop is cheap and avoids needing a per-decl association.
         for (self.symbols.items) |*sym| {
-            if (sym.loc >= splice_end_old) sym.loc = @intCast(@as(i64, sym.loc) + delta);
+            if (plan.shiftsStartLike(sym.loc)) {
+                const candidate = @as(i64, sym.loc) + plan.delta;
+                if (candidate < 0 or candidate > std.math.maxInt(u32)) {
+                    return error.TriviaShiftRangeInvalid;
+                }
+                if (!validate) sym.loc = @intCast(candidate);
+            }
         }
 
         // Scope tree: eager, the structure is small.
-        shiftScopeMembers(self.scope, splice_end_old, delta);
+        try shiftScopeMembers(self.scope, plan, validate);
     }
 
     /// Absorb one top-level decl's interior bias, if any. Intended for the
@@ -439,48 +490,57 @@ pub fn shiftDeclInteriorBy(decl: *Decl, bias: i64) void {
 /// Shift a decl's interior spans whose value is `>= splice_end_old` by
 /// `delta`. Used by the incremental splice to shift the owning decl's
 /// interior for this edit (in combination with an absorbing `+bias` pass).
+/// Thin wrapper over the plan-based interior walk (splice boundary rule).
 pub fn shiftDeclInteriorPart(decl: *Decl, splice_end_old: u32, delta: i64) void {
     if (delta == 0) return;
+    shiftDeclInteriorWithPlan(decl, ShiftPlan.splice(splice_end_old, delta), false) catch unreachable;
+}
+
+/// Plan-based interior walk shared by the splice path (via
+/// `shiftDeclInteriorPart`) and the checked trivia shift. `validate`
+/// computes candidate offsets and checks range/ordering without writing.
+pub fn shiftDeclInteriorWithPlan(decl: *Decl, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
+    if (plan.delta == 0) return;
     switch (decl.*) {
         .@"const" => |d| {
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            if (d.typ) |t| try shiftTypeSpans(t, plan, validate);
+            if (d.initializer) |e| try shiftExprSpans(e, plan, validate);
         },
         .override => |d| {
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
-            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            if (d.typ) |t| try shiftTypeSpans(t, plan, validate);
+            if (d.initializer) |e| try shiftExprSpans(e, plan, validate);
+            for (d.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
         },
         .@"var" => |d| {
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
-            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            if (d.typ) |t| try shiftTypeSpans(t, plan, validate);
+            if (d.initializer) |e| try shiftExprSpans(e, plan, validate);
+            for (d.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
         },
         .let => |d| {
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            if (d.typ) |t| try shiftTypeSpans(t, plan, validate);
+            if (d.initializer) |e| try shiftExprSpans(e, plan, validate);
         },
         .function => |d| {
-            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            for (d.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
             for (d.parameters.items) |*p| {
-                shiftTypeSpans(p.typ, splice_end_old, delta);
-                for (p.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+                try shiftTypeSpans(p.typ, plan, validate);
+                for (p.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
             }
-            if (d.return_type) |t| shiftTypeSpans(t, splice_end_old, delta);
-            for (d.return_attr.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
-            if (d.body) |body| shiftCompoundStmtSpans(body, splice_end_old, delta);
+            if (d.return_type) |t| try shiftTypeSpans(t, plan, validate);
+            for (d.return_attr.items) |*a| try shiftAttributeSpans(a, plan, validate);
+            if (d.body) |body| try shiftCompoundStmtSpans(body, plan, validate);
         },
         .@"struct" => |d| {
             for (d.members.items) |*m| {
-                shiftTypeSpans(m.typ, splice_end_old, delta);
-                for (m.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+                try shiftTypeSpans(m.typ, plan, validate);
+                for (m.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
             }
         },
         .alias => |d| {
-            shiftTypeSpans(d.typ, splice_end_old, delta);
+            try shiftTypeSpans(d.typ, plan, validate);
         },
         .const_assert => |d| {
-            shiftExprSpans(d.expr, splice_end_old, delta);
+            try shiftExprSpans(d.expr, plan, validate);
         },
     }
 }
@@ -509,15 +569,16 @@ pub fn declEffectiveSpan(decl: Decl) Span {
     };
 }
 
-/// Threshold-aware `decl_span` shift: only shifts endpoints `>= splice_end_old`
-/// by `delta`. Used by `shiftModuleForEdit` on the OWNER (only `end`
+/// Threshold-aware `decl_span` shift driven by a ShiftPlan: the start
+/// endpoint follows the start-like boundary, the end endpoint the end-like
+/// boundary. Used by `shiftModuleWithPlan` on the OWNER (only `end`
 /// typically qualifies because `start < splice_end_old`) and on non-owner
 /// decls strictly after the edit (both endpoints qualify).
-fn shiftDeclSpanBoundary(decl: *Decl, splice_end_old: u32, delta: i64) void {
-    if (delta == 0) return;
+fn shiftDeclSpanBoundary(decl: *Decl, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
+    if (plan.delta == 0) return;
     switch (decl.*) {
         .const_assert => {},
-        inline else => |d| shiftSpan(&d.decl_span, splice_end_old, delta),
+        inline else => |d| try shiftSpan(&d.decl_span, plan, validate),
     }
 }
 
@@ -1496,254 +1557,347 @@ pub fn markExprPurity(e: Expr, symbols: []const Symbol) void {
 }
 
 // =========================================================================
-// Span-shift walks (used by Module.flushShifts)
+// Span-shift walks
 // =========================================================================
 //
-// Pure structural traversal of every span/loc field. Kept private to
-// `Ast.zig` because the journal is the only legitimate caller — every
-// other consumer should go through `Module.flushShifts` /
-// `Module.applyPending`.
+// Pure structural traversal of every span/loc field, shared by the splice
+// path (`Module.shiftModuleForEdit`) and the checked trivia shift
+// (`Module.shiftModuleForTriviaEdit`). Kept private to `Ast.zig` — every
+// consumer goes through those two Module entry points.
 //
-// Boundary convention: `>=` (a span whose `start == splice_end_old`
-// shifts). Matches the eager `shiftAstSpans` semantics this replaced.
+// Boundary rules come from a ShiftPlan: the splice plan keeps the classic
+// `>=` convention on both endpoints (a span whose `start == splice_end_old`
+// shifts), while the trivia plan shifts start-like fields when
+// `>= edit.end` and end-like fields when `> edit.start` so a preceding
+// statement ending exactly at an insertion point does not absorb the
+// inserted trivia and a following token at that point does shift.
+//
+// Every walker is generic over `validate`: with `validate == true` it
+// computes each candidate offset and checks range + span ordering WITHOUT
+// writing (preflight); with `false` it performs the identical computation
+// and writes (apply). The preflight proving the checks pass makes the
+// apply pass infallible in practice.
 
-fn shiftSpan(sp: *Span, splice_end_old: u32, delta: i64) void {
-    if (sp.start >= splice_end_old) sp.start = @intCast(@as(i64, sp.start) + delta);
-    if (sp.end >= splice_end_old) sp.end = @intCast(@as(i64, sp.end) + delta);
+/// Error surface of the checked trivia shift preflight.
+pub const ShiftError = error{TriviaShiftRangeInvalid};
+
+/// Boundary rule for one class of offset fields under an incremental shift.
+pub const ShiftBoundary = union(enum) {
+    /// Shift when the value is `>= threshold`.
+    ge: u32,
+    /// Shift when the value is `> threshold`.
+    gt: u32,
+
+    fn shifts(self: ShiftBoundary, v: u32) bool {
+        return switch (self) {
+            .ge => |t| v >= t,
+            .gt => |t| v > t,
+        };
+    }
+};
+
+/// One incremental edit's coordinate transform: which offset fields shift
+/// and by how much.
+pub const ShiftPlan = struct {
+    start_like: ShiftBoundary,
+    end_like: ShiftBoundary,
+    delta: i64,
+
+    /// The splice rule used by `shiftModuleForEdit`: both span endpoints
+    /// (and `loc` / `end_loc`) shift when `>= splice_end_old`.
+    pub fn splice(splice_end_old: u32, delta: i64) ShiftPlan {
+        return .{
+            .start_like = .{ .ge = splice_end_old },
+            .end_like = .{ .ge = splice_end_old },
+            .delta = delta,
+        };
+    }
+
+    /// The trivia rule: start-like fields shift when `>= edit.end`; end-like
+    /// fields shift when `> edit.start`.
+    pub fn trivia(edit_start: u32, edit_end: u32, delta: i64) ShiftPlan {
+        return .{
+            .start_like = .{ .ge = edit_end },
+            .end_like = .{ .gt = edit_start },
+            .delta = delta,
+        };
+    }
+
+    fn shiftsStartLike(self: ShiftPlan, v: u32) bool {
+        return self.start_like.shifts(v);
+    }
+
+    /// The threshold used for Module-level owner/after decl classification.
+    /// For both plans this is the start-like `ge` threshold: the splice
+    /// end for splices, `edit.end` for trivia.
+    fn boundaryValue(self: ShiftPlan) u32 {
+        return switch (self.start_like) {
+            .ge => |t| t,
+            .gt => |t| t,
+        };
+    }
+};
+
+const max_u32_i64: i64 = std.math.maxInt(u32);
+
+fn shiftSpan(sp: *Span, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
+    const s_candidate: i64 = if (plan.shiftsStartLike(sp.start))
+        @as(i64, sp.start) + plan.delta
+    else
+        sp.start;
+    const e_candidate: i64 = if (plan.end_like.shifts(sp.end))
+        @as(i64, sp.end) + plan.delta
+    else
+        sp.end;
+    if (s_candidate < 0 or s_candidate > max_u32_i64 or
+        e_candidate < 0 or e_candidate > max_u32_i64 or
+        s_candidate > e_candidate)
+    {
+        return error.TriviaShiftRangeInvalid;
+    }
+    if (!validate) {
+        sp.start = @intCast(s_candidate);
+        sp.end = @intCast(e_candidate);
+    }
 }
 
-fn shiftLoc(loc: *u32, splice_end_old: u32, delta: i64) void {
-    if (loc.* >= splice_end_old) loc.* = @intCast(@as(i64, loc.*) + delta);
+fn shiftLocLike(loc: *u32, boundary: ShiftBoundary, delta: i64, comptime validate: bool) ShiftError!void {
+    const candidate: i64 = if (boundary.shifts(loc.*))
+        @as(i64, loc.*) + delta
+    else
+        @as(i64, loc.*);
+    if (candidate < 0 or candidate > max_u32_i64) {
+        return error.TriviaShiftRangeInvalid;
+    }
+    if (!validate) loc.* = @intCast(candidate);
 }
-
 /// Shift any `span`/`loc`/`decl_span`/`end_loc` field present on `node`
 /// (comptime). AST structs have heterogeneous shapes — some carry only
 /// `span`, some only `loc`, some both, some additionally `end_loc`.
 /// This helper papers over the differences without a match arm per
-/// struct.
-fn shiftNodeOffsets(node: anytype, splice_end_old: u32, delta: i64) void {
+/// struct. `loc` follows the start-like boundary, `end_loc` the end-like
+/// one; both span endpoints follow their own class.
+fn shiftNodeOffsets(node: anytype, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
     const T = @TypeOf(node.*);
-    if (@hasField(T, "span")) shiftSpan(&node.span, splice_end_old, delta);
-    if (@hasField(T, "loc")) shiftLoc(&node.loc, splice_end_old, delta);
-    if (@hasField(T, "decl_span")) shiftSpan(&node.decl_span, splice_end_old, delta);
-    if (@hasField(T, "end_loc")) shiftLoc(&node.end_loc, splice_end_old, delta);
+    if (@hasField(T, "span")) try shiftSpan(&node.span, plan, validate);
+    if (@hasField(T, "loc")) try shiftLocLike(&node.loc, plan.start_like, plan.delta, validate);
+    if (@hasField(T, "decl_span")) try shiftSpan(&node.decl_span, plan, validate);
+    if (@hasField(T, "end_loc")) try shiftLocLike(&node.end_loc, plan.end_like, plan.delta, validate);
 }
 
-fn shiftScopeMembers(scope: *Scope, splice_end_old: u32, delta: i64) void {
+fn shiftScopeMembers(scope: *Scope, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
     var it = scope.members.iterator();
     while (it.next()) |e| {
-        if (e.value_ptr.loc >= splice_end_old) {
-            e.value_ptr.loc = @intCast(@as(i64, e.value_ptr.loc) + delta);
-        }
+        try shiftLocLike(&e.value_ptr.loc, plan.start_like, plan.delta, validate);
     }
-    for (scope.children.items) |c| shiftScopeMembers(c, splice_end_old, delta);
+    for (scope.children.items) |c| try shiftScopeMembers(c, plan, validate);
 }
 
-fn shiftDirectiveSpan(dir: *Directive, splice_end_old: u32, delta: i64) void {
+fn shiftDirectiveSpan(dir: *Directive, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
     switch (dir.*) {
-        inline else => |*d| shiftNodeOffsets(d, splice_end_old, delta),
+        inline else => |*d| try shiftNodeOffsets(d, plan, validate),
     }
 }
 
-fn shiftDeclSpans(decl: *Decl, splice_end_old: u32, delta: i64) void {
+fn shiftDeclSpans(decl: *Decl, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
     switch (decl.*) {
         .@"const" => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            try shiftNodeOffsets(d, plan, validate);
+            if (d.typ) |t| try shiftTypeSpans(t, plan, validate);
+            if (d.initializer) |e| try shiftExprSpans(e, plan, validate);
         },
         .override => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
-            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            try shiftNodeOffsets(d, plan, validate);
+            if (d.typ) |t| try shiftTypeSpans(t, plan, validate);
+            if (d.initializer) |e| try shiftExprSpans(e, plan, validate);
+            for (d.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
         },
         .@"var" => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
-            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            try shiftNodeOffsets(d, plan, validate);
+            if (d.typ) |t| try shiftTypeSpans(t, plan, validate);
+            if (d.initializer) |e| try shiftExprSpans(e, plan, validate);
+            for (d.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
         },
         .let => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            if (d.typ) |t| shiftTypeSpans(t, splice_end_old, delta);
-            if (d.initializer) |e| shiftExprSpans(e, splice_end_old, delta);
+            try shiftNodeOffsets(d, plan, validate);
+            if (d.typ) |t| try shiftTypeSpans(t, plan, validate);
+            if (d.initializer) |e| try shiftExprSpans(e, plan, validate);
         },
         .function => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            for (d.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+            try shiftNodeOffsets(d, plan, validate);
+            for (d.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
             for (d.parameters.items) |*p| {
-                shiftTypeSpans(p.typ, splice_end_old, delta);
-                for (p.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+                try shiftTypeSpans(p.typ, plan, validate);
+                for (p.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
             }
-            if (d.return_type) |t| shiftTypeSpans(t, splice_end_old, delta);
-            for (d.return_attr.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
-            if (d.body) |body| shiftCompoundStmtSpans(body, splice_end_old, delta);
+            if (d.return_type) |t| try shiftTypeSpans(t, plan, validate);
+            for (d.return_attr.items) |*a| try shiftAttributeSpans(a, plan, validate);
+            if (d.body) |body| try shiftCompoundStmtSpans(body, plan, validate);
         },
         .@"struct" => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
+            try shiftNodeOffsets(d, plan, validate);
             for (d.members.items) |*m| {
-                shiftTypeSpans(m.typ, splice_end_old, delta);
-                for (m.attributes.items) |*a| shiftAttributeSpans(a, splice_end_old, delta);
+                try shiftTypeSpans(m.typ, plan, validate);
+                for (m.attributes.items) |*a| try shiftAttributeSpans(a, plan, validate);
             }
         },
         .alias => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            shiftTypeSpans(d.typ, splice_end_old, delta);
+            try shiftNodeOffsets(d, plan, validate);
+            try shiftTypeSpans(d.typ, plan, validate);
         },
         .const_assert => |d| {
-            shiftNodeOffsets(d, splice_end_old, delta);
-            shiftExprSpans(d.expr, splice_end_old, delta);
+            try shiftNodeOffsets(d, plan, validate);
+            try shiftExprSpans(d.expr, plan, validate);
         },
     }
 }
 
-fn shiftAttributeSpans(attr: *Attribute, splice_end_old: u32, delta: i64) void {
-    shiftNodeOffsets(attr, splice_end_old, delta);
-    for (attr.args.items) |e| shiftExprSpans(e, splice_end_old, delta);
+fn shiftAttributeSpans(attr: *Attribute, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
+    try shiftNodeOffsets(attr, plan, validate);
+    for (attr.args.items) |e| try shiftExprSpans(e, plan, validate);
 }
 
-fn shiftCompoundStmtSpans(body: *CompoundStmt, splice_end_old: u32, delta: i64) void {
-    shiftNodeOffsets(body, splice_end_old, delta);
-    for (body.stmts.items) |*s| shiftStmtSpans(s, splice_end_old, delta);
+fn shiftCompoundStmtSpans(body: *CompoundStmt, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
+    try shiftNodeOffsets(body, plan, validate);
+    for (body.stmts.items) |*s| try shiftStmtSpans(s, plan, validate);
 }
 
-fn shiftStmtSpans(stmt: *Stmt, splice_end_old: u32, delta: i64) void {
+fn shiftStmtSpans(stmt: *Stmt, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
     switch (stmt.*) {
-        .compound => |s| shiftCompoundStmtSpans(s, splice_end_old, delta),
+        .compound => |s| try shiftCompoundStmtSpans(s, plan, validate),
         .@"return" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            if (s.value) |e| shiftExprSpans(e, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            if (s.value) |e| try shiftExprSpans(e, plan, validate);
         },
         .@"if" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.condition, splice_end_old, delta);
-            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
-            if (s.else_branch) |_| shiftStmtSpans(&s.else_branch.?, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            try shiftExprSpans(s.condition, plan, validate);
+            try shiftCompoundStmtSpans(s.body, plan, validate);
+            if (s.else_branch) |_| try shiftStmtSpans(&s.else_branch.?, plan, validate);
         },
         .@"switch" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.expr, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            try shiftExprSpans(s.expr, plan, validate);
             for (s.cases.items) |*c| {
-                for (c.selectors.items) |e| shiftExprSpans(e, splice_end_old, delta);
-                shiftCompoundStmtSpans(c.body, splice_end_old, delta);
+                for (c.selectors.items) |e| try shiftExprSpans(e, plan, validate);
+                try shiftCompoundStmtSpans(c.body, plan, validate);
             }
         },
         .@"for" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            if (s.init_stmt) |_| shiftStmtSpans(&s.init_stmt.?, splice_end_old, delta);
-            if (s.condition) |e| shiftExprSpans(e, splice_end_old, delta);
-            if (s.update) |_| shiftStmtSpans(&s.update.?, splice_end_old, delta);
-            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            if (s.init_stmt) |_| try shiftStmtSpans(&s.init_stmt.?, plan, validate);
+            if (s.condition) |e| try shiftExprSpans(e, plan, validate);
+            if (s.update) |_| try shiftStmtSpans(&s.update.?, plan, validate);
+            try shiftCompoundStmtSpans(s.body, plan, validate);
         },
         .@"while" => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.condition, splice_end_old, delta);
-            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            try shiftExprSpans(s.condition, plan, validate);
+            try shiftCompoundStmtSpans(s.body, plan, validate);
         },
         .loop => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftCompoundStmtSpans(s.body, splice_end_old, delta);
-            if (s.continuing) |c| shiftCompoundStmtSpans(c, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            try shiftCompoundStmtSpans(s.body, plan, validate);
+            if (s.continuing) |c| try shiftCompoundStmtSpans(c, plan, validate);
         },
-        .@"break" => |s| shiftNodeOffsets(s, splice_end_old, delta),
+        .@"break" => |s| try shiftNodeOffsets(s, plan, validate),
         .break_if => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.condition, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            try shiftExprSpans(s.condition, plan, validate);
         },
-        .@"continue" => |s| shiftNodeOffsets(s, splice_end_old, delta),
-        .discard => |s| shiftNodeOffsets(s, splice_end_old, delta),
+        .@"continue" => |s| try shiftNodeOffsets(s, plan, validate),
+        .discard => |s| try shiftNodeOffsets(s, plan, validate),
         .assign => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.left, splice_end_old, delta);
-            shiftExprSpans(s.right, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            try shiftExprSpans(s.left, plan, validate);
+            try shiftExprSpans(s.right, plan, validate);
         },
         .phony => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.expr, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            try shiftExprSpans(s.expr, plan, validate);
         },
         .incr_decr => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            shiftExprSpans(s.expr, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            try shiftExprSpans(s.expr, plan, validate);
         },
         .call => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
-            if (s.call.func) |f| shiftExprSpans(f, splice_end_old, delta);
-            if (s.call.template_type) |t| shiftTypeSpans(t, splice_end_old, delta);
-            for (s.call.args.items) |a| shiftExprSpans(a, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
+            if (s.call.func) |f| try shiftExprSpans(f, plan, validate);
+            if (s.call.template_type) |t| try shiftTypeSpans(t, plan, validate);
+            for (s.call.args.items) |a| try shiftExprSpans(a, plan, validate);
         },
         .decl => |s| {
-            shiftNodeOffsets(s, splice_end_old, delta);
+            try shiftNodeOffsets(s, plan, validate);
             var inner = s.decl;
-            shiftDeclSpans(&inner, splice_end_old, delta);
-            s.decl = inner;
+            try shiftDeclSpans(&inner, plan, validate);
+            if (!validate) s.decl = inner;
         },
     }
 }
 
-fn shiftExprSpans(expr: Expr, splice_end_old: u32, delta: i64) void {
+fn shiftExprSpans(expr: Expr, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
     switch (expr) {
-        .literal => |e| shiftNodeOffsets(e, splice_end_old, delta),
-        .ident => |e| shiftNodeOffsets(e, splice_end_old, delta),
+        .literal => |e| try shiftNodeOffsets(e, plan, validate),
+        .ident => |e| try shiftNodeOffsets(e, plan, validate),
         .paren => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.expr, splice_end_old, delta);
+            try shiftNodeOffsets(e, plan, validate);
+            try shiftExprSpans(e.expr, plan, validate);
         },
         .binary => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.left, splice_end_old, delta);
-            shiftExprSpans(e.right, splice_end_old, delta);
+            try shiftNodeOffsets(e, plan, validate);
+            try shiftExprSpans(e.left, plan, validate);
+            try shiftExprSpans(e.right, plan, validate);
         },
         .unary => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.operand, splice_end_old, delta);
+            try shiftNodeOffsets(e, plan, validate);
+            try shiftExprSpans(e.operand, plan, validate);
         },
         .call => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            if (e.func) |f| shiftExprSpans(f, splice_end_old, delta);
-            if (e.template_type) |t| shiftTypeSpans(t, splice_end_old, delta);
-            for (e.args.items) |a| shiftExprSpans(a, splice_end_old, delta);
+            try shiftNodeOffsets(e, plan, validate);
+            if (e.func) |f| try shiftExprSpans(f, plan, validate);
+            if (e.template_type) |t| try shiftTypeSpans(t, plan, validate);
+            for (e.args.items) |a| try shiftExprSpans(a, plan, validate);
         },
         .index => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.base, splice_end_old, delta);
-            shiftExprSpans(e.idx, splice_end_old, delta);
+            try shiftNodeOffsets(e, plan, validate);
+            try shiftExprSpans(e.base, plan, validate);
+            try shiftExprSpans(e.idx, plan, validate);
         },
         .member => |e| {
-            shiftNodeOffsets(e, splice_end_old, delta);
-            shiftExprSpans(e.base, splice_end_old, delta);
+            try shiftNodeOffsets(e, plan, validate);
+            try shiftExprSpans(e.base, plan, validate);
         },
     }
 }
 
-fn shiftTypeSpans(typ: Type, splice_end_old: u32, delta: i64) void {
+fn shiftTypeSpans(typ: Type, plan: ShiftPlan, comptime validate: bool) ShiftError!void {
     switch (typ) {
-        .ident => |t| shiftNodeOffsets(t, splice_end_old, delta),
-        .sampler => |t| shiftNodeOffsets(t, splice_end_old, delta),
+        .ident => |t| try shiftNodeOffsets(t, plan, validate),
+        .sampler => |t| try shiftNodeOffsets(t, plan, validate),
         .vec => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
+            try shiftNodeOffsets(t, plan, validate);
+            if (t.elem_type) |et| try shiftTypeSpans(et, plan, validate);
         },
         .mat => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
+            try shiftNodeOffsets(t, plan, validate);
+            if (t.elem_type) |et| try shiftTypeSpans(et, plan, validate);
         },
         .array => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            if (t.elem_type) |et| shiftTypeSpans(et, splice_end_old, delta);
-            if (t.size) |e| shiftExprSpans(e, splice_end_old, delta);
+            try shiftNodeOffsets(t, plan, validate);
+            if (t.elem_type) |et| try shiftTypeSpans(et, plan, validate);
+            if (t.size) |e| try shiftExprSpans(e, plan, validate);
         },
         .ptr => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            shiftTypeSpans(t.elem_type, splice_end_old, delta);
+            try shiftNodeOffsets(t, plan, validate);
+            try shiftTypeSpans(t.elem_type, plan, validate);
         },
         .atomic => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            shiftTypeSpans(t.elem_type, splice_end_old, delta);
+            try shiftNodeOffsets(t, plan, validate);
+            try shiftTypeSpans(t.elem_type, plan, validate);
         },
         .texture => |t| {
-            shiftNodeOffsets(t, splice_end_old, delta);
-            if (t.sampled_type) |st| shiftTypeSpans(st, splice_end_old, delta);
+            try shiftNodeOffsets(t, plan, validate);
+            if (t.sampled_type) |st| try shiftTypeSpans(st, plan, validate);
         },
     }
 }

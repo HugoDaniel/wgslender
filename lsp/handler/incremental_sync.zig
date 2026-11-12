@@ -1,6 +1,9 @@
 //! Incremental Text Sync: apply LSP didChange ranges to a document
-//! and reconcile the cached parse + analysis. The fast trivia-only
-//! shortcut keeps the analysis cache hot across whitespace edits.
+//! and reconcile the cached parse + analysis. Trivia-gap edits keep
+//! the parse hot (module + symbol table reused); whether the ANALYSIS
+//! cache survives is decided by `module_version` alone — a zero-delta
+//! trivia edit preserves it, a non-zero-delta trivia edit bumps the
+//! version (offset-keyed caches move) and drops it.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
@@ -12,10 +15,16 @@ const Document = Handler.Document;
 /// Apply an incremental text change to an open document.
 /// The range specifies which portion of the source to replace.
 ///
-/// Fast path: if the edit only affects trivia (whitespace / comments),
-/// the cached `AnalysisResult` is left in place — the source bytes are
-/// updated but no validator work is scheduled. Semantic edits fall back
-/// to the classic invalidate-and-reanalyze behavior.
+/// Classification here only decides the source-buffer swap. Cache
+/// lifetime is decided one step later, in `updateParseAfterEdit`, by
+/// comparing `module_version`: a strictly gated zero-delta trivia edit
+/// preserves the version and the cached `AnalysisResult`; a
+/// non-zero-delta trivia edit bumps it — real-token CONTENT is
+/// unchanged but every offset-keyed cache entry (expr_types,
+/// f32_literal_locs, diagnostic ranges) moves with the delta — so
+/// trivia classification alone does NOT prove the cached analysis
+/// remains valid. Semantic edits fall back to the classic
+/// invalidate-and-reanalyze behavior.
 pub fn changeDocumentIncremental(handler: *Handler, uri: []const u8, range: Range, text: []const u8) !void {
     const doc = handler.documents.getPtr(uri) orelse return;
     const old_source = doc.source;
@@ -42,10 +51,13 @@ pub fn changeDocumentIncremental(handler: *Handler, uri: []const u8, range: Rang
     @memcpy(new_source[start + text.len ..], old_source[end..]);
 
     // Classify before swapping: if non-trivia tokens didn't change, the
-    // cached analysis is still correct against the new source (analysis
-    // holds its own sentinel-terminated source copy and AST byte offsets
-    // remain valid because they index into `doc.analysis_source`, not
-    // `doc.source`). Just swap buffers.
+    // reparse can take the trivia-gap shortcut and keep the parse (CST +
+    // AST module + symbol table) hot. Whether the cached ANALYSIS also
+    // survives is a separate question answered by `module_version` in
+    // `updateParseAfterEdit`: only a zero-delta confined trivia edit
+    // preserves it. (The analysis holds its own sentinel-terminated
+    // source copy and its byte offsets index `doc.analysis_source`, not
+    // `doc.source`.)
     const old_z = handler.gpa.dupeZ(u8, old_source) catch null;
     defer if (old_z) |z| handler.gpa.free(z);
     const new_z = handler.gpa.dupeZ(u8, new_source) catch null;
@@ -65,10 +77,9 @@ pub fn changeDocumentIncremental(handler: *Handler, uri: []const u8, range: Rang
             return;
         },
         .trivia_only => {
-            // Keep the cached analysis — module_version preservation in
-            // `updateParseAfterEdit` will honor this when the trivia
-            // shortcut fires. If the reparse takes a non-shortcut path,
-            // the version bump will invalidate the cache.
+            // Trivia-gap edit: swap the source bytes; `updateParseAfterEdit`
+            // decides the analysis cache by version (preserved only for a
+            // zero-delta edit; bumped — cache dropped — when offsets move).
             handler.gpa.free(doc.source);
             doc.source = new_source;
         },
@@ -110,10 +121,12 @@ fn updateParseAfterEdit(handler: *Handler, doc: *Document, edit: wgslender.Incre
         };
 
         if (updated.module_version != prev_version) {
-            // Any non-trivia-shortcut path bumps module_version. The
-            // cached symbol/struct/expr types all index off the module
-            // whose layout has changed; drop the cache before `prev`
-            // (and therefore prev.arena) is torn down.
+            // Any version-bumping path — semantic edits, anchor splices,
+            // AND non-zero-delta trivia — invalidates the cached analysis:
+            // its offset-keyed state (expr_types, f32_literal_locs,
+            // diagnostic ranges) no longer matches the module's layout.
+            // Drop the cache before `prev` (and therefore prev.arena) is
+            // torn down.
             handler.invalidateAnalysisAt(doc);
         } else if (doc.analysis) |a| {
             // Trivia shortcut fired. `module.source` got repointed at

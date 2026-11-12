@@ -279,6 +279,23 @@ pub fn classifyEdit(
     var new_tokens = try Lexer.tokenize(gpa, new_source);
     defer new_tokens.deinit(gpa);
 
+    if (!realTokenStreamsEqual(old_source, &old_tokens, new_source, &new_tokens)) {
+        return .semantic;
+    }
+    return .trivia_only;
+}
+
+/// True when both streams hold the same non-trivia token count with
+/// matching tags, lengths, and byte text. Used by the public
+/// `classifyEdit` (its two `Lexer.tokenize` arrays); the internal
+/// edit-aware gate has its own fused lockstep walk over all-token
+/// streams.
+fn realTokenStreamsEqual(
+    old_source: [:0]const u8,
+    old_tokens: *const std.MultiArrayList(Lexer.Token),
+    new_source: [:0]const u8,
+    new_tokens: *const std.MultiArrayList(Lexer.Token),
+) bool {
     const old_tags = old_tokens.items(.tag);
     const new_tags = new_tokens.items(.tag);
     const old_starts = old_tokens.items(.start);
@@ -286,16 +303,152 @@ pub fn classifyEdit(
     const old_ends = old_tokens.items(.end);
     const new_ends = new_tokens.items(.end);
 
-    // Same token count + same tag + same text ⇒ only trivia differs.
-    if (old_tags.len != new_tags.len) return .semantic;
+    if (old_tags.len != new_tags.len) return false;
     for (old_tags, new_tags, 0..) |ot, nt, i| {
-        if (ot != nt) return .semantic;
+        if (ot != nt) return false;
         const ol = old_ends[i] - old_starts[i];
         const nl = new_ends[i] - new_starts[i];
-        if (ol != nl) return .semantic;
+        if (ol != nl) return false;
         if (!std.mem.eql(u8, old_source[old_starts[i]..old_ends[i]], new_source[new_starts[i]..new_ends[i]])) {
-            return .semantic;
+            return false;
         }
     }
-    return .trivia_only;
+    return true;
+}
+
+/// Facts about a gate-passing trivia edit, consumed by the AST trivia
+/// shift (`Cst.retokenizeTrivia` re-derives the gap from the streams
+/// itself).
+pub const TriviaEdit = struct {
+    /// Replaced byte range, in OLD coordinates. The replacement range in
+    /// NEW coordinates is `[start, start + new_text.len)`.
+    start: u32,
+    end: u32,
+    new_text: []const u8,
+    /// `new_text.len - (end - start)`; equals the source-length delta.
+    delta: i64,
+};
+
+/// Internal edit-aware trivia gate for the incremental driver. Unlike the
+/// public `classifyEdit` (which the LSP uses to keep analysis caches hot),
+/// this classifier knows the byte-level edit and can therefore prove the
+/// stronger property the offset-reuse shortcut needs — that every real
+/// token satisfies
+///
+/// ```text
+/// new_start = old_start + (old_start >= edit.end ? delta : 0)
+/// ```
+///
+/// and that the old replaced range and the new replacement range are each
+/// confined to a single inter-non-trivia-token trivia gap (a pure
+/// insertion may not lie strictly inside a real token). This rejects a
+/// whole-range replacement that happens to preserve the token stream
+/// while redistributing whitespace internally, and closes the theoretical
+/// zero-delta offset hole (zero delta alone does not prove that every
+/// token stayed at its old offset).
+///
+/// Pure over the two ALL-token streams (`Lexer.tokenizeAll` output,
+/// trivia included): the caller passes `prev.cst.tokens` for the old side
+/// — no lex at all — and the SAME single `tokenizeAll` of the new source
+/// that `Cst.retokenizeTrivia` consumes for the rebuild. The gate never
+/// lexes anything itself (B3: no second lex for the gap check).
+///
+/// Returns `null` when the edit is not a confined trivia edit — the
+/// caller must fall back to the anchor path / `parseFull`.
+pub fn classifyTriviaEdit(
+    old_source: []const u8,
+    old_all: *const std.MultiArrayList(Lexer.Token),
+    new_source: []const u8,
+    new_all: *const std.MultiArrayList(Lexer.Token),
+    edit: Edit,
+) ?TriviaEdit {
+    const old_tags = old_all.items(.tag);
+    const new_tags = new_all.items(.tag);
+
+    // 1. No lexer errors on either side — an `.error` token means the
+    //    stream is truncated and the ordinal mapping below is unprovable.
+    for (old_tags) |t| {
+        if (t == .@"error") return null;
+    }
+    for (new_tags) |t| {
+        if (t == .@"error") return null;
+    }
+
+    const old_starts = old_all.items(.start);
+    const old_ends = old_all.items(.end);
+    const new_starts = new_all.items(.start);
+    const new_ends = new_all.items(.end);
+
+    const delta: i64 = @as(i64, @intCast(edit.new_text.len)) - @as(i64, edit.end - edit.start);
+    const new_range_end_i64: i64 = @as(i64, edit.start) + @as(i64, @intCast(edit.new_text.len));
+    const new_range_end: u32 = @intCast(new_range_end_i64);
+
+    // 2–5 fused into one lockstep walk over real tokens by ordinal
+    //    (trivia skipped in both streams): identical count, tags,
+    //    lengths, and byte text; the per-ordinal coordinate transform;
+    //    and one-gap confinement. Gap containment is checked streaming —
+    //    between consecutive real tokens at most one trivia gap can
+    //    contain a byte range, so ordinal-indexed arrays are unneeded.
+    //    `ordinal == -1` is the leading gap; the `.eof` token is a real
+    //    (zero-length) token at source end, so the gap before it is the
+    //    trailing gap and nothing follows it.
+    var gap: ?i32 = null;
+    var oi: u32 = 0;
+    var ni: u32 = 0;
+    var ordinal: i32 = -1;
+    var prev_old_end: u32 = 0;
+    var prev_new_end: u32 = 0;
+    while (true) {
+        while (oi < old_tags.len and old_tags[oi].isTrivia()) oi += 1;
+        while (ni < new_tags.len and new_tags[ni].isTrivia()) ni += 1;
+        const old_done = oi == old_tags.len;
+        const new_done = ni == new_tags.len;
+        // Identical non-trivia token count.
+        if (old_done != new_done) return null;
+
+        if (gap == null) {
+            const old_gap_end: u32 = if (old_done) @intCast(old_source.len) else old_starts[oi];
+            const new_gap_end: u32 = if (new_done) @intCast(new_source.len) else new_starts[ni];
+            // Both ranges must sit in the SAME ordinal's gap: the old
+            // replaced range in the old gap, the new replacement range in
+            // the new gap (an empty range at a boundary belongs to that
+            // gap — a pure insertion at `p` may sit at either end).
+            if (prev_old_end <= edit.start and edit.end <= old_gap_end and
+                prev_new_end <= edit.start and new_range_end <= new_gap_end)
+            {
+                gap = ordinal;
+            }
+        }
+
+        if (old_done) break;
+
+        // Identical tag, length, byte text.
+        if (old_tags[oi] != new_tags[ni]) return null;
+        if (old_ends[oi] - old_starts[oi] != new_ends[ni] - new_starts[ni]) return null;
+        if (!std.mem.eql(
+            u8,
+            old_source[old_starts[oi]..old_ends[oi]],
+            new_source[new_starts[ni]..new_ends[ni]],
+        )) return null;
+
+        // Coordinate transform per real-token ordinal.
+        const shift: i64 = if (old_starts[oi] >= edit.end) delta else 0;
+        if (@as(i64, new_starts[ni]) != @as(i64, old_starts[oi]) + shift) return null;
+        if (@as(i64, new_ends[ni]) != @as(i64, old_ends[oi]) + shift) return null;
+
+        prev_old_end = old_ends[oi];
+        prev_new_end = new_ends[ni];
+        ordinal += 1;
+        oi += 1;
+        ni += 1;
+    }
+    // Both ranges must have been confined to one gap.
+    if (gap == null) return null;
+
+    return .{
+        .start = edit.start,
+        .end = edit.end,
+        .new_text = edit.new_text,
+        .delta = delta,
+    };
 }

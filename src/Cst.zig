@@ -885,8 +885,328 @@ pub fn spliceSubtree(
 }
 
 // =========================================================================
-// Cursor — red-tree navigation over a green tree.
+// Trivia-gap retokenization
 // =========================================================================
+
+/// Rebuild a `Tree` for a trivia-gap edit: the real-token ordinal stream,
+/// node count, preorder indices, kinds, parent links, and scope-opener
+/// indices are all preserved; only the edited gap's trivia tokens are
+/// replaced (their count may change) and every affected byte range is
+/// recomputed.
+///
+/// `new_tokens` must be `Lexer.tokenizeAll(new_source)` — the lossless
+/// stream the CST rebuild needs (classification's trivia-free arrays
+/// cannot reconstruct trivia ownership). The old stream is reused from
+/// `old_tree.tokens`; neither input is mutated.
+///
+/// Gap/ownership model. `emitCurrentTokenToCst` flushes every trivia token
+/// between two consecutive real tokens in ONE builder call, as children of
+/// whatever node is open when the FOLLOWING real token is consumed; EOF-gap
+/// trivia is flushed with the `.eof` token onto the module node. The gap's
+/// trivia tokens therefore appear as one consecutive run of token child
+/// entries ending exactly at the entry for the real token after the gap.
+/// This helper locates that run (or, for an empty gap, the following real
+/// token's entry) and splices the new gap's trivia in front of it, then
+/// rebuilds node ranges bottom-up from descendant tokens — matching
+/// `Builder.finish` semantics (start = min descendant token start through
+/// touched chains; end = max descendant token end). Childless nodes keep
+/// the Builder's collapsed position: the start of the next token in stream
+/// order, which after the edit is `old_position + delta` for positions
+/// `>= edit_end`, unchanged before `edit_start`, and an error in between
+/// (anchored inside the replaced range — layout not provable, fall back).
+///
+/// Confinement proof (why the new range sits in the same gap as the old):
+/// real token boundaries transform as `new = old + (old_start >= edit_end
+/// ? delta : 0)` (verified by the gate), so for the old gap
+/// `[end_g, start_{g+1})` containing `[edit_start, edit_end)` we get
+/// `end'_g = end_g <= edit_start` (token `g` starts before `edit_end`) and
+/// `start'_{g+1} = start_{g+1} + delta >= edit_end + delta >= edit_start +
+/// new_text.len`.
+///
+/// Returns an error for any unsupported or malformed layout instead of
+/// guessing trivia ownership — callers fall back to `parseFull`.
+pub fn retokenizeTrivia(
+    arena: std.mem.Allocator,
+    old_tree: *const Tree,
+    edit_start: u32,
+    edit_end: u32,
+    new_source: [:0]const u8,
+    new_tokens: std.MultiArrayList(Lexer.Token),
+) !Tree {
+    const old_tags = old_tree.tokens.items(.tag);
+    const old_starts = old_tree.tokens.items(.start);
+    const old_ends = old_tree.tokens.items(.end);
+    const new_tags = new_tokens.items(.tag);
+    const new_starts = new_tokens.items(.start);
+    const new_ends = new_tokens.items(.end);
+
+    const delta: i64 = @as(i64, @intCast(new_source.len)) - @as(i64, @intCast(old_tree.source.len));
+
+    // ---- 1. Locate the edited gap in both all-streams --------------------
+    const old_gap = locateGap(old_tags, old_starts, old_ends, edit_start, edit_end) orelse
+        return error.TriviaGapNotFound;
+    // The replacement range in NEW coordinates is
+    // [edit_start, edit_start + new_text.len) == [edit_start, edit_end + delta).
+    const new_range_end_i64: i64 = @as(i64, edit_end) + delta;
+    if (new_range_end_i64 < 0 or new_range_end_i64 > std.math.maxInt(u32)) return error.TriviaGapNotFound;
+    const new_gap = locateGap(new_tags, new_starts, new_ends, edit_start, @intCast(new_range_end_i64)) orelse
+        return error.TriviaGapNotFound;
+
+    // Defensive stream verification: prefix identical, suffix shifted.
+    if (old_gap.lo != new_gap.lo) return error.TriviaStreamMismatch;
+    {
+        var i: u32 = 0;
+        while (i < old_gap.lo) : (i += 1) {
+            if (old_tags[i] != new_tags[i] or old_starts[i] != new_starts[i] or old_ends[i] != new_ends[i]) {
+                return error.TriviaStreamMismatch;
+            }
+        }
+        const old_suffix_len: u32 = @intCast(old_tags.len - old_gap.hi);
+        const new_suffix_len: u32 = @intCast(new_tags.len - new_gap.hi);
+        if (old_suffix_len != new_suffix_len) return error.TriviaStreamMismatch;
+        var j: u32 = 0;
+        while (j < old_suffix_len) : (j += 1) {
+            const oi = old_gap.hi + j;
+            const ni = new_gap.hi + j;
+            if (old_tags[oi] != new_tags[ni]) return error.TriviaStreamMismatch;
+            if (@as(i64, new_starts[ni]) != @as(i64, old_starts[oi]) + delta) return error.TriviaStreamMismatch;
+            if (@as(i64, new_ends[ni]) != @as(i64, old_ends[oi]) + delta) return error.TriviaStreamMismatch;
+        }
+    }
+    const d_tok: i64 = @as(i64, new_gap.hi) - @as(i64, new_gap.lo) - (@as(i64, old_gap.hi) - @as(i64, old_gap.lo));
+    const old_run_len: u32 = old_gap.hi - old_gap.lo;
+    const new_run_len: u32 = new_gap.hi - new_gap.lo;
+
+    // ---- 2. Locate the gap's owner in the children table -----------------
+    var anchor_pos: ?u32 = null;
+    for (old_tree.children, 0..) |el, pos| {
+        if (el.asToken()) |t| {
+            if (t == old_gap.hi) {
+                anchor_pos = @intCast(pos);
+                break;
+            }
+        }
+    }
+    const q: u32 = anchor_pos orelse return error.TriviaOwnerNotFound;
+    const run_start: u32 = q - old_run_len;
+
+    // The run must be exactly the old gap's trivia tokens, in order.
+    if (old_run_len > 0) {
+        var k: u32 = 0;
+        while (k < old_run_len) : (k += 1) {
+            const el = old_tree.children[run_start + k];
+            const t = el.asToken() orelse return error.TriviaOwnerNotFound;
+            if (t != old_gap.lo + k) return error.TriviaOwnerNotFound;
+        }
+    }
+
+    // ---- 3. Rebuild the children table ------------------------------------
+    const total_ct: u32 = @intCast(@as(i64, @intCast(old_tree.children.len)) + d_tok);
+    const children_buf = try arena.alloc(Tree.Element, total_ct);
+    errdefer arena.free(children_buf);
+
+    // Region 1: entries before the run.
+    for (old_tree.children[0..run_start], 0..) |el, i| {
+        children_buf[i] = remapTriviaElement(el, old_gap.lo, d_tok);
+    }
+    // Region 2: the new gap's trivia tokens.
+    {
+        var k: u32 = 0;
+        while (k < new_run_len) : (k += 1) {
+            children_buf[run_start + k] = Tree.Element.fromToken(new_gap.lo + k);
+        }
+    }
+    // Region 3: entries from the anchor (real token after the gap) on.
+    for (old_tree.children[q..], 0..) |el, i| {
+        children_buf[run_start + new_run_len + @as(u32, @intCast(i))] = remapTriviaElement(el, old_gap.lo, d_tok);
+    }
+
+    // ---- 4. Rebuild nodes: same count / kinds / parents; shifted child
+    //         table offsets; ranges recomputed bottom-up.
+
+    // The gap run lives inside exactly one node's child window — the node
+    // owning the real token after the gap (entry q). Entry positions
+    // change as `[run_start, q) -> new_run_len entries`, i.e. a boundary
+    // at p maps to p (p <= run_start) or p + d_tok (p >= q). No run can
+    // start strictly inside the owner's window, so `first_child > q`
+    // selects exactly the windows that begin after the swapped run —
+    // including the owner's own start when the old gap is empty
+    // (run_start == q == owner.first_child), which must NOT move. The
+    // owner's window width changes by d_tok with the run swap.
+    var owner: u32 = std.math.maxInt(u32);
+    {
+        const o_fc = old_tree.nodes.items(.first_child);
+        const o_cc = old_tree.nodes.items(.child_count);
+        for (o_fc, o_cc, 0..) |fc, cc, i| {
+            if (fc <= q and q < fc + cc) {
+                owner = @intCast(i);
+                break;
+            }
+        }
+        if (owner == std.math.maxInt(u32)) return error.TriviaOwnerNotFound;
+    }
+
+    var nodes: std.MultiArrayList(Tree.Node) = .empty;
+    errdefer nodes.deinit(arena);
+    try nodes.ensureTotalCapacity(arena, old_tree.nodes.len);
+
+    const old_node_kinds = old_tree.nodes.items(.kind);
+    const old_node_starts = old_tree.nodes.items(.start);
+    const old_node_ends = old_tree.nodes.items(.end);
+    const old_node_parents = old_tree.nodes.items(.parent);
+    const old_node_fc = old_tree.nodes.items(.first_child);
+    const old_node_cc = old_tree.nodes.items(.child_count);
+
+    // `touched[i]`: node i's subtree contains at least one token, so its
+    // range comes from descendant tokens (Builder's `touched` propagation).
+    const touched = try arena.alloc(bool, old_tree.nodes.len);
+    defer arena.free(touched);
+
+    {
+        var i: u32 = 0;
+        while (i < old_tree.nodes.len) : (i += 1) {
+            const old_fc = old_node_fc[i];
+            const new_fc: u32 = if (old_fc > q)
+                @intCast(@as(i64, old_fc) + d_tok)
+            else
+                old_fc;
+            const new_cc: u32 = if (i == owner)
+                @intCast(@as(i64, old_node_cc[i]) + d_tok)
+            else
+                old_node_cc[i];
+            nodes.appendAssumeCapacity(.{
+                .kind = old_node_kinds[i],
+                .start = old_node_starts[i],
+                .end = old_node_ends[i],
+                .parent = old_node_parents[i],
+                .first_child = new_fc,
+                .child_count = new_cc,
+            });
+        }
+    }
+
+    // Bottom-up (reverse preorder): recompute ranges from the NEW token
+    // coordinates. Nodes are in preorder (parents before descendants), so
+    // iterating backwards visits every child before its parent.
+    {
+        const node_starts = nodes.items(.start);
+        const node_ends = nodes.items(.end);
+        const node_fc = nodes.items(.first_child);
+        const node_cc = nodes.items(.child_count);
+
+        var i: u32 = @intCast(old_tree.nodes.len);
+        while (i > 0) {
+            i -= 1;
+            const fc = node_fc[i];
+            const cc = node_cc[i];
+            var s: u32 = std.math.maxInt(u32);
+            var e: u32 = 0;
+            var any = false;
+            var c: u32 = 0;
+            while (c < cc) : (c += 1) {
+                const el = children_buf[fc + c];
+                if (el.asToken()) |t| {
+                    if (!any or new_starts[t] < s) s = new_starts[t];
+                    if (!any or new_ends[t] > e) e = new_ends[t];
+                    any = true;
+                } else if (el.asNode()) |child| {
+                    if (!touched[child.raw()]) continue;
+                    if (!any or node_starts[child.raw()] < s) s = node_starts[child.raw()];
+                    if (!any or node_ends[child.raw()] > e) e = node_ends[child.raw()];
+                    any = true;
+                }
+            }
+            if (any) {
+                node_starts[i] = s;
+                node_ends[i] = e;
+                touched[i] = true;
+            } else {
+                // Childless (or all-childless) node: keep the Builder's
+                // collapsed position — the start of the next token in
+                // stream order — shifted through the edit.
+                touched[i] = false;
+                const p = old_node_starts[i];
+                if (old_node_ends[i] != p) return error.TriviaEmptyNodeRange;
+                if (p < edit_start) {
+                    // Before the edit: unchanged.
+                } else if (p >= edit_end) {
+                    const shifted = @as(i64, p) + delta;
+                    if (shifted < 0 or shifted > std.math.maxInt(u32)) return error.TriviaEmptyNodeRange;
+                    node_starts[i] = @intCast(shifted);
+                    node_ends[i] = @intCast(shifted);
+                } else {
+                    // Collapsed at a token that the replacement removed —
+                    // ownership not provable; fall back.
+                    return error.TriviaEmptyNodeRange;
+                }
+            }
+        }
+    }
+
+    // ---- 5. Errors: preserved by node index (indices are unchanged).
+    const errors_buf = try arena.alloc(Tree.ErrorEntry, old_tree.errors.len);
+    errdefer arena.free(errors_buf);
+    @memcpy(errors_buf, old_tree.errors);
+
+    return .{
+        .arena = arena,
+        .source = new_source,
+        .tokens = new_tokens,
+        .nodes = nodes,
+        .children = children_buf,
+        .errors = errors_buf,
+    };
+}
+
+const GapLocation = struct {
+    /// All-stream index of the first trivia token in the gap.
+    lo: u32,
+    /// All-stream index of the first token after the gap (the real token
+    /// following it, EOF included).
+    hi: u32,
+};
+
+/// Find the trivia gap containing `[range_start, range_end)` in an
+/// all-token stream, mirroring the gate's ordinal logic. Returns null when
+/// no single gap contains the range.
+fn locateGap(
+    tags: []const Lexer.Tag,
+    starts: []const u32,
+    ends: []const u32,
+    range_start: u32,
+    range_end: u32,
+) ?GapLocation {
+    var prev_real_end: u32 = 0;
+    var after_prev_real: u32 = 0;
+    var i: u32 = 0;
+    while (i < tags.len) : (i += 1) {
+        if (tags[i].isTrivia()) continue;
+        if (prev_real_end <= range_start and range_end <= starts[i]) {
+            return .{ .lo = after_prev_real, .hi = i };
+        }
+        prev_real_end = ends[i];
+        after_prev_real = i + 1;
+    }
+    return null;
+}
+
+/// Remap one children-table element outside the spliced run: token indices
+/// before the gap are unchanged, tokens after shift by `d_tok`; node indices
+/// are preserved. No `gap_hi` bound is needed: every token index appears in
+/// the children table exactly once (each `.token` event appends one entry to
+/// one node's pending list, committed once), and the verification above found
+/// all of `[gap_lo, gap_hi)` inside the run `[run_start, q)`. So an element
+/// outside that run carries a token that is either `< gap_lo` or `> gap_hi`,
+/// making `t < gap_lo` a complete before/after test.
+fn remapTriviaElement(el: Tree.Element, gap_lo: u32, d_tok: i64) Tree.Element {
+    if (el.asToken()) |t| {
+        if (t < gap_lo) return el;
+        // t > gap_hi: after the gap.
+        const shifted = @as(i64, t) + d_tok;
+        return Tree.Element.fromToken(@intCast(shifted));
+    }
+    return el;
+}
 
 pub const Cursor = struct {
     tree: *const Tree,

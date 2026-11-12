@@ -261,14 +261,16 @@ test "compound retirement covers nested blocks and for-init declarations" {
     const struct_member = symbolByName(module, "m").?;
     const symbols_before = module.symbols.items.len;
 
-    // Insert one space before `return K;` — a non-zero-delta edit inside the
-    // function body. The anchor is the outer compound, so the re-lower
-    // appends fresh copies of every declaration in the detached subtree.
+    // Insert a phony statement before `return K;` — a semantic edit inside
+    // the function body (a trivia-only edit would take the task-B trivia
+    // shortcut and retire nothing). The anchor is the outer compound, so
+    // the re-lower appends fresh copies of every declaration in the
+    // detached subtree.
     const ret_at: u32 = @intCast(std.mem.indexOf(u8, src, "return K;").?);
     const next = try Incremental.reparse(gpa, &state, .{
         .start = ret_at,
         .end = ret_at,
-        .new_text = " ",
+        .new_text = "_ = 0; ",
     });
     state.deinit();
     state = next;
@@ -427,7 +429,7 @@ test "struct members and external references are not retired" {
     const next = try Incremental.reparse(gpa, &state, .{
         .start = ret_at,
         .end = ret_at,
-        .new_text = " ",
+        .new_text = "_ = 0; ",
     });
     state.deinit();
     state = next;

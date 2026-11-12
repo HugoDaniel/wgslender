@@ -6,9 +6,12 @@
 //! reusing as much of the previous parse as the edit shape allows.
 //!
 //! `reparse` dispatches on the edit:
-//!   - **Trivia-only zero-delta** (`classifyEdit` ⇒ `.trivia_only` and
-//!     `new_text.len == end - start`) — swap the source pointer in place,
-//!     reuse prev's module, CST, symbol table, and errors byte-for-byte.
+//!   - **Trivia-gap shortcut** (`Anchor.classifyTriviaEdit` gate passes) —
+//!     an edit at ANY delta confined to a single inter-real-token trivia
+//!     gap with an unchanged real-token ordinal stream reuses the module,
+//!     symbol table, scope map, and CST topology: the source is swapped,
+//!     the edited trivia gap retokenized, and byte offsets shifted. No
+//!     re-lower, no symbol churn, nothing retired.
 //!   - **Anchor splice** (`tryIncrementalReparseInPlace`) — find the
 //!     smallest reparse-able CST subtree containing the edit, reparse
 //!     just that anchor, splice the new subtree into prev's CST, then
@@ -131,8 +134,11 @@ pub const ReparseResult = struct {
     /// Monotonic counter over "module has been mutated in a way that
     /// invalidates semantic caches (types, expr_types, struct_types,
     /// symbol_types, const_values, diagnostic line index)". Preserved
-    /// by `tryTriviaOnlyShortcut` (zero-delta trivia cannot affect any
-    /// of the above). Bumped by every other successful path, including
+    /// only by a strictly gated zero-delta trivia edit (real-token
+    /// offsets cannot have moved); bumped by every other successful
+    /// path — including non-zero-delta trivia, whose real-token CONTENT
+    /// is unchanged but whose offset-keyed state (expr_types keys,
+    /// f32_literal_locs, diagnostic ranges) moves with the delta,
     /// symbol-free anchors (which mutate AST pointers), compound_stmt
     /// and decl_stmt (symbol table mutations), and `parseFull` (fresh
     /// module). Consumers that cache analysis results keyed off a
@@ -146,12 +152,12 @@ pub const ReparseResult = struct {
     /// byte-watermark (`prev.arena.queryCapacity() > 8 * source.len`)
     /// bounds memory growth per edit, but can lag hundreds of edits on
     /// a tiny shader before the 256 KiB floor is passed. This counter
-    /// backstops that: `tryIncrementalReparseInPlace` bails with
-    /// `error.EditCountWatermarkTripped` when it reaches
-    /// `HOT_EDIT_COALESCE_MAX`, yielding one forced `parseFull` per
-    /// 256-edit burst. `parseFull` resets the counter to 0; the
-    /// trivia-only shortcut preserves it (trivia costs nothing but also
-    /// doesn't discharge accumulated debt on prev.arena).
+    /// backstops that: both the anchor-splice path and the trivia
+    /// shortcut bail with `error.EditCountWatermarkTripped` when it
+    /// reaches `HOT_EDIT_COALESCE_MAX`, yielding one forced `parseFull`
+    /// per 256-edit burst — every trivia edit (zero-delta included)
+    /// allocates a fresh source copy and possibly token/node/child-table
+    /// storage, so it counts. `parseFull` resets the counter to 0.
     hot_edits_since_full: u16 = 0,
     /// Side-table mapping scope-opener CST nodes (fn_decl, compound_stmt,
     /// for_stmt) to the AST scope they correspond to. Populated by
@@ -328,23 +334,22 @@ fn reparseImpl(
         prev.source[edit.end..],
     );
 
-    // Trivia-only fast path. A zero-delta edit (new_text.len equals
-    // the replaced byte range) that leaves every non-trivia token
-    // tag/length/text unchanged cannot affect the AST or the CST's
-    // node ranges — just the source bytes and trivia content. Swap
-    // the source pointer in place and reuse prev's module + CST
-    // without re-lex, re-parse, or re-lower. Non-zero-delta trivia
-    // edits (whitespace insert/delete, comment length changes) still
-    // require shifting CST ranges and AST spans — they fall through
-    // to the regular path.
-    if (edit.new_text.len == (edit.end - edit.start)) {
-        if (classifyEdit(gpa, prev.source, new_buf)) |kind| {
-            if (kind == .trivia_only) {
-                return tryTriviaOnlyShortcut(gpa, prev, new_buf);
-            }
-        } else |_| {
-            // classifyEdit OOM'd — fall through to the regular path.
-        }
+    // Trivia shortcut at ANY delta. `classifyTriviaEdit` is the edit-aware
+    // gate: identical non-trivia token count/tags/lengths/text, no error
+    // tokens, the old and new edit ranges each confined to one
+    // inter-non-trivia-token trivia gap, and every real token satisfying
+    // the coordinate transform `new = old + (old >= edit.end ? delta : 0)`.
+    // A passing gate means the shortcut can reuse prev's module, symbol
+    // table, and CST topology: only the source bytes, one trivia gap, and
+    // downstream byte offsets change. Any failure (watermark, gate, CST
+    // rebuild, shift preflight) cascades to the anchor path and then
+    // `parseFull` — the correctness oracle.
+    if (tryTriviaOnlyShortcut(gpa, prev, edit, new_buf)) |result| {
+        return result;
+    } else |_| {
+        // Watermark trips subsume the anchor path's thresholds (the trivia
+        // floor is the largest of the three), so the cascade below lands on
+        // `parseFull` exactly when the ruling requires it.
     }
 
     // Attempt the hot path. On any fallback trigger, fall through to
@@ -364,43 +369,121 @@ fn reparseImpl(
     return result;
 }
 
-/// Zero-delta trivia-only shortcut. Copies the new source into
-/// prev.arena, repoints `prev.module.source` at it, and transfers
-/// prev's arena + retained list + scope map into the result. prev's
-/// module pointer, CST struct, and symbol table are reused byte-for-
-/// byte — callers can compare `result.module == prev_module_pointer`
-/// to confirm the shortcut fired.
+/// Trivia-only shortcut (any delta). For an edit the edit-aware gate in
+/// `Anchor.classifyTriviaEdit` proves confined to one trivia gap with an
+/// unchanged real-token ordinal stream, this reuses prev's module, symbol
+/// table, scope map, and CST topology — no re-lower, no symbol churn, no
+/// retirement. Only the source bytes, the edited gap's trivia tokens, and
+/// downstream byte offsets change:
+///
+///   - The CST is rebuilt by `Cst.retokenizeTrivia` (node indices, kinds,
+///     parents, and child structure preserved; ranges recomputed).
+///   - AST spans / symbol locs / scope-member locs move through the
+///     checked `Module.shiftModuleForTriviaEdit` (preflight + infallible
+///     apply).
+///   - Parse errors are spliced through `Errors.fixupErrors` with the
+///     actual edited span and delta, allocated BEFORE the module is
+///     mutated.
+///   - `module_version` is bumped iff `delta != 0` (offset-keyed analysis
+///     state — expr_types, f32_literal_locs, diagnostic ranges — moves),
+///     and preserved for a strictly gated zero-delta edit.
+///   - `hot_edits_since_full` increments: trivia edits allocate a new
+///     source copy plus token/node/child-table storage comparable to the
+///     splice paths, so they count toward both watermarks (4 MiB floor,
+///     8 x source ratio, and HOT_EDIT_COALESCE_MAX).
+///
+/// A zero-delta subcase whose COMPLETE token stream (trivia included) is
+/// identical may reuse the old CST node/child arrays directly — offsets
+/// cannot have moved.
+///
+/// Callers can compare `result.module == prev_module_pointer` to confirm
+/// the shortcut fired. On any failure the error cascades to the anchor
+/// path; `prev` is left un-moved (speculative arena allocations may
+/// remain — they are not visible semantic mutations).
 fn tryTriviaOnlyShortcut(
     gpa: Allocator,
     prev: *ReparseResult,
-    new_buf: []const u8,
+    edit: Edit,
+    new_buf: [:0]const u8,
 ) !ReparseResult {
+    // Watermarks first, before any gate work. Both of these cascade to
+    // `parseFull` (see reparseImpl).
+    if (prev.hot_edits_since_full >= HOT_EDIT_COALESCE_MAX) return error.EditCountWatermarkTripped;
+    const trivia_floor: usize = 4 * 1024 * 1024;
+    const trivia_threshold: usize = @max(trivia_floor, prev.source.len * 8);
+    if (prev.arena.queryCapacity() > trivia_threshold) return error.ArenaWatermarkTripped;
+
     const arena = prev.arena.allocator();
     const owned = try arena.allocSentinel(u8, new_buf.len, 0);
     @memcpy(owned, new_buf);
 
+    // ONE lossless lex of the new source serves BOTH the edit-aware gate
+    // and the CST rebuild (B3: the gate must not lex again; the old
+    // side's all-token stream is `prev.cst.tokens` — no lex at all).
+    // Both allocations are speculative on gate failure; the ruling allows
+    // them to remain in `prev.arena` until normal `prev.deinit`.
+    var new_all_tokens = try Lexer.tokenizeAll(arena, owned);
+
+    // Edit-aware gate — pure over the two all-token streams.
+    const facts = Anchor.classifyTriviaEdit(prev.cst.source, &prev.cst.tokens, owned, &new_all_tokens, edit) orelse
+        return error.NotTriviaConfined;
+
+    // Zero-delta subcase with an identical COMPLETE token stream (trivia
+    // tags, counts, and ranges included): nothing moved anywhere; reuse
+    // the old node/child arrays byte-for-byte.
+    const streams_identical = triviaStreamsIdentical(&prev.cst.tokens, &new_all_tokens);
+
+    var new_tree: Cst.Tree = undefined;
+    var new_errors: []Parser.ParseError = undefined;
+    if (streams_identical) {
+        new_tree = prev.cst;
+        new_tree.source = owned;
+        // Error positions cannot have moved; pass prev's list through.
+        new_errors = prev.errors;
+    } else {
+        // Rebuild the trivia gap in the CST (fallible — unsupported
+        // layouts bail to the anchor path).
+        new_tree = try Cst.retokenizeTrivia(arena, &prev.cst, edit.start, edit.end, owned, new_all_tokens);
+
+        // Splice the parse-error list across the edited span BEFORE
+        // mutating the module: earlier entries unchanged, later pos/end
+        // shifted by delta, pure insertions an empty old span. `prev.errors`
+        // is never mutated.
+        new_errors = try Errors.fixupErrors(
+            arena,
+            prev.errors,
+            .{ .start = edit.start, .end = edit.end },
+            facts.delta,
+        );
+    }
+
+    // AST + symbol + scope-member offsets. The checked entry point
+    // preflights every shifted offset and span ordering before an
+    // infallible apply; a preflight failure cascades to `parseFull`
+    // with prev still un-moved. Errors were already reallocated above,
+    // so no fallible step remains after the module starts mutating.
+    try prev.module.shiftModuleForTriviaEdit(edit.start, edit.end, facts.delta);
+
     prev.module.source = owned;
 
-    // Trivia-only shortcut runs only when new_text.len == (end - start)
-    // (zero-delta). No anchor is replaced, so prev's errors pass through
-    // unchanged — same byte positions are still valid in the new source.
-    // `hot_edits_since_full` is preserved: trivia doesn't allocate new
-    // arena bytes but also doesn't discharge existing debt.
     const result = ReparseResult{
         .gpa = gpa,
         .arena = prev.arena,
         .source = owned,
         .module = prev.module,
-        .cst = prev.cst,
+        .cst = new_tree,
         .reused = true,
         .scope_for_cst_node = prev.scope_for_cst_node,
         .retained_arenas = prev.retained_arenas,
-        .errors = prev.errors,
-        .hot_edits_since_full = prev.hot_edits_since_full,
-        // Trivia-only zero-delta: non-trivia tokens are byte-identical,
-        // spans unchanged, symbol table unchanged. Analysis caches keyed
-        // off this version stay valid without a Validator re-run.
-        .module_version = prev.module_version,
+        .errors = new_errors,
+        .hot_edits_since_full = prev.hot_edits_since_full + 1,
+        // Bump whenever delta != 0: offset-keyed analysis state moves even
+        // though the real-token CONTENT is unchanged. Preserve for a safe
+        // zero-delta edit — real-token offsets did not move.
+        .module_version = if (facts.delta != 0)
+            prev.module_version +% 1
+        else
+            prev.module_version,
     };
 
     prev.arena = &sentinel_stub;
@@ -410,6 +493,25 @@ fn tryTriviaOnlyShortcut(
     prev.moved = true;
 
     return result;
+}
+
+/// True when two all-token streams agree on count, tags, and byte ranges —
+/// the precondition for reusing the old CST arrays wholesale.
+fn triviaStreamsIdentical(
+    a: *const std.MultiArrayList(Lexer.Token),
+    b: *const std.MultiArrayList(Lexer.Token),
+) bool {
+    if (a.len != b.len) return false;
+    const at = a.items(.tag);
+    const bt = b.items(.tag);
+    const as = a.items(.start);
+    const bs = b.items(.start);
+    const ae = a.items(.end);
+    const be = b.items(.end);
+    for (0..a.len) |i| {
+        if (at[i] != bt[i] or as[i] != bs[i] or ae[i] != be[i]) return false;
+    }
+    return true;
 }
 
 // =========================================================================
@@ -809,4 +911,3 @@ test "Incremental.findAnchor: edit bridging two decls promotes to module" {
     // not itself a reparse anchor. Concretely: should be null.
     try testing.expectEqual(@as(?Cst.Cursor, null), anchor);
 }
-

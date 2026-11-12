@@ -569,6 +569,11 @@ pub fn build(b: *std.Build) void {
     // inside the old anchor, shift downstream by delta, append add-walk
     // E0102s) verified against a parseFull oracle on the new source.
     _ = addTestStep(b, test_step, "tests/incremental_error_fixup_test.zig", target, optimize, &.{w});
+    // Incremental.reparse — non-zero-delta trivia shortcut: gap-confined
+    // comment/whitespace edits reuse the module + CST without symbol churn,
+    // match a full-parse oracle for CST/AST/errors, and gate token-boundary
+    // and watermark behavior.
+    _ = addTestStep(b, test_step, "tests/incremental_trivia_test.zig", target, optimize, &.{w});
     // Per-decl `interior_pending` bias mechanism — bias state assertions,
     // burst amortization, and reader absorption contracts.
     _ = addTestStep(b, test_step, "tests/incremental_interior_pending_test.zig", target, optimize, &.{w});
