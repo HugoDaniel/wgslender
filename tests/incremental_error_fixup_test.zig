@@ -585,6 +585,73 @@ test "F-TRIVIA-01: comment swap leaves an unrelated E0102 untouched" {
     try std.testing.expectEqualStrings("E0102", updated.errors[0].code);
 }
 
+test "F-TRIVIA-02: non-zero comment insertion shifts downstream errors to oracle positions" {
+    // The trivia shortcut at ANY delta must shift later `pos`/`end` by
+    // exactly `delta`, leave earlier entries byte-identical, and match a
+    // fresh parse of the new source.
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "fn a() -> i32 { return z; let z: i32 = 1; return z; }\n" ++
+        "fn f() -> i32 { return 0; }\n" ++
+        "fn g() -> i32 { return q; let q: i32 = 1; return q; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+    try std.testing.expectEqual(@as(usize, 2), prev.errors.len);
+    const early_pos = prev.errors[0].pos;
+    const early_end = prev.errors[0].end;
+
+    const ins_at: u32 = at(base_src, "return 0;");
+    const prev_late_pos = prev.errors[1].pos;
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = ins_at,
+        .end = ins_at,
+        .new_text = "// note\n",
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectErrorsMatch(updated.errors, oracle.errors);
+
+    // Earlier entry is unchanged (the insertion happened strictly after it).
+    try std.testing.expectEqual(@as(usize, 2), updated.errors.len);
+    try std.testing.expectEqual(early_pos, updated.errors[0].pos);
+    try std.testing.expectEqual(early_end, updated.errors[0].end);
+    // The later entry moved by exactly +8.
+    try std.testing.expectEqual(prev_late_pos + 8, updated.errors[1].pos);
+}
+
+test "F-TRIVIA-03: non-zero whitespace deletion in a directive gap shifts a downstream error" {
+    const gpa = std.testing.allocator;
+    const base_src: [:0]const u8 =
+        "enable f16;   fn g() -> i32 { return q; let q: i32 = 1; return q; }";
+    var prev = try Incremental.parseFull(gpa, base_src);
+    defer prev.deinit();
+    try std.testing.expectEqual(@as(usize, 1), prev.errors.len);
+
+    // Snapshot before the reparse: a successful shortcut MOVES `prev`
+    // (errors reset to empty, `moved = true`), so `prev.errors` must not
+    // be read afterwards.
+    const prev_error_pos = prev.errors[0].pos;
+
+    // Shrink the whitespace run after the directive from 3 bytes to 1.
+    const ws: u32 = at(base_src, ";   ") + 1;
+    var updated = try Incremental.reparse(gpa, &prev, .{
+        .start = ws,
+        .end = ws + 2,
+        .new_text = " ",
+    });
+    defer updated.deinit();
+    try std.testing.expect(updated.reused);
+
+    var oracle = try Incremental.parseFull(gpa, updated.source);
+    defer oracle.deinit();
+    try expectErrorsMatch(updated.errors, oracle.errors);
+    // Two spaces replaced by one: the downstream error moves by exactly -1.
+    try std.testing.expectEqual(prev_error_pos - 1, updated.errors[0].pos);
+}
+
 // =========================================================================
 // F-FALLBACK — non-symbol-free anchors and full re-lower paths.
 // =========================================================================

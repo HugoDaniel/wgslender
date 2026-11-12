@@ -126,6 +126,59 @@ test "incremental sync: non-zero-delta trivia edit invalidates cache" {
     try std.testing.expectEqualStrings("// comment\nfn f() {}", doc2.source);
 }
 
+test "incremental sync: non-zero trivia bumps version and invalidates analysis; zero-delta confined trivia preserves it" {
+    const ctx = try setup("// hdr\nfn myfn(a: i32) -> i32 { return a; }");
+    defer teardown(ctx);
+
+    const before = try ctx.handler.analyzeDocument("test://file.wgsl");
+    const doc = ctx.handler.documents.getPtr("test://file.wgsl").?;
+    try std.testing.expect(doc.analysis != null);
+    const v0 = doc.parse.?.module_version;
+
+    // Zero-delta confined trivia edit: swap "hdr" for "abc" (3 -> 3).
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 3 },
+        .end = .{ .line = 0, .character = 6 },
+    }, "abc");
+    {
+        const doc2 = ctx.handler.documents.getPtr("test://file.wgsl").?;
+        try std.testing.expect(doc2.parse.?.reused);
+        try std.testing.expectEqual(v0, doc2.parse.?.module_version);
+        // Cache pointer preserved — the trivia shortcut kept the version.
+        try std.testing.expectEqual(before, doc2.analysis.?);
+        try std.testing.expectEqualStrings("// abc\nfn myfn(a: i32) -> i32 { return a; }", doc2.source);
+    }
+
+    // Non-zero trivia edit: insert a comment at byte 0 (delta = +8).
+    // Real-token coordinates shift, so module_version must bump and the
+    // cached analysis (offset-keyed expr_types / f32_literal_locs /
+    // diagnostic ranges) must be dropped even though token CONTENT is
+    // unchanged. Trivia classification alone does not prove cache validity.
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = 0 },
+    }, "// note\n");
+    {
+        const doc2 = ctx.handler.documents.getPtr("test://file.wgsl").?;
+        try std.testing.expectEqualStrings(
+            "// note\n// abc\nfn myfn(a: i32) -> i32 { return a; }",
+            doc2.source,
+        );
+        try std.testing.expect(doc2.parse.?.module_version != v0);
+        try std.testing.expect(doc2.analysis == null);
+    }
+
+    // Re-analysis is consistent and hover resolves at the shifted position.
+    _ = try ctx.handler.analyzeDocument("test://file.wgsl");
+    const src = ctx.handler.getDocumentSource("test://file.wgsl") orelse return error.TestUnexpectedResult;
+    const a_off: u32 = @intCast(std.mem.lastIndexOf(u8, src, "return a;").? + 7);
+    const pos = Handler.offsetToLspPosition(src, a_off) orelse return error.TestUnexpectedResult;
+    const hover = try ctx.handler.computeHover("test://file.wgsl", pos);
+    try std.testing.expect(hover != null);
+    defer std.testing.allocator.free(hover.?.contents);
+    try std.testing.expect(std.mem.indexOf(u8, hover.?.contents, "a") != null);
+}
+
 test "L1: literal edit in a function body sets doc.parse.reused = true" {
     const ctx = try setup("fn f() -> i32 { return 42; }");
     defer teardown(ctx);

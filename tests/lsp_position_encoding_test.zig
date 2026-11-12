@@ -165,3 +165,41 @@ test "round-trip: offsetToLspPosition ∘ lspPositionToOffset on mixed-width sou
         try std.testing.expectEqual(@as(usize, off), back);
     }
 }
+
+test "trivia edit: UTF-8 identifiers after trivia insertion retain UTF-16 LSP ranges" {
+    // A non-zero trivia edit (comment insert) shifts byte offsets of the
+    // CJK comment line; UTF-16 columns and definition targets must track
+    // the new bytes and match a freshly opened document with equal text.
+    const base: [:0]const u8 = "// " ++ cjk ++ "\nconst x: i32 = 1; fn f() { let y = x; }";
+    const ctx = try setup(base);
+    defer teardown(ctx);
+
+    // Insert a multi-byte trivia prefix at byte 0 (delta = +6: "// 注\n"
+    // is 2 + 3 + 1 bytes).
+    const trivia = "// " ++ cjk ++ "\n";
+    try ctx.handler.changeDocumentIncremental("test://file.wgsl", .{
+        .start = .{ .line = 0, .character = 0 },
+        .end = .{ .line = 0, .character = 0 },
+    }, trivia);
+
+    const edited = ctx.handler.getDocumentSource("test://file.wgsl") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(trivia ++ base, edited);
+
+    // The declaration moved down one line and shifted; UTF-16 columns on
+    // the CJK-bearing comment line must stay exact.
+    const x_usage = std.mem.lastIndexOf(u8, edited, "x") orelse return error.TestUnexpectedResult;
+    const pos = Handler.offsetToLspPosition(edited, @intCast(x_usage)) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 2), pos.line);
+
+    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(@as(u32, 2), result.?.start.line);
+    try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
+
+    // Byte/UTF-16 divergence survives the shift: the comment line's
+    // CJK chars still count as UTF-16 units, not bytes.
+    const comment_end: u32 = @intCast(trivia.len);
+    const comment_pos = Handler.offsetToLspPosition(edited, comment_end - 1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(u32, 0), comment_pos.line);
+    try std.testing.expectEqual(@as(u32, 4), comment_pos.character); // "// " (3) + 中 (1 unit)
+}

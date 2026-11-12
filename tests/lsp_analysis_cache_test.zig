@@ -823,3 +823,89 @@ test "LA20: compound_stmt edit preserves stable IDs of other top-level decls" {
     // And the full analysis still matches a fresh oracle.
     try expectConsistencyOracle(handler, uri);
 }
+
+// =========================================================================
+// LA21 — Offset-keyed caches are rebuilt after a non-zero trivia insertion.
+//
+// expr_types keys and f32_literal_locs entries are byte offsets. A trivia
+// edit with delta != 0 moves them, so the cached AnalysisResult must be
+// dropped (module_version bump) and the re-analysis must carry the NEW
+// offsets. Hover / inlay lookups at the new positions must match what a
+// freshly opened document with identical text produces.
+// =========================================================================
+
+test "LA21: offset-keyed caches are rebuilt after trivia insertion" {
+    const handler = try setup("fn f() -> f32 { let v: f32 = 1.0; return v; }");
+    defer teardown(handler);
+    const uri = "test://file.wgsl";
+
+    const first = try handler.analyzeDocument(uri);
+    {
+        const doc = handler.documents.getPtr(uri).?;
+        try std.testing.expect(doc.analysis != null);
+        // The f32-converted literal is recorded at its pre-edit offset.
+        const lit_off = at(doc.source, "1.0");
+        try std.testing.expect(first.f32_literal_locs.contains(lit_off));
+        try std.testing.expect(first.expr_types.contains(lit_off));
+    }
+    const version_before = (handler.documents.getPtr(uri).?).parse.?.module_version;
+
+    // Insert a comment at byte 0 (delta = +9). Token content is unchanged
+    // but every downstream offset moves, so the cached offsets are stale.
+    const doc = handler.documents.getPtr(uri).?;
+    try handler.changeDocumentIncremental(
+        uri,
+        rangeFor(doc.source, 0, 0),
+        "// note\n\n",
+    );
+    {
+        const doc2 = handler.documents.getPtr(uri).?;
+        try std.testing.expectEqualStrings(
+            "// note\n\nfn f() -> f32 { let v: f32 = 1.0; return v; }",
+            doc2.source,
+        );
+        try std.testing.expect(doc2.parse.?.reused);
+        try std.testing.expect(doc2.parse.?.module_version != version_before);
+        try std.testing.expect(doc2.analysis == null);
+    }
+
+    const rebuilt = try handler.analyzeDocument(uri);
+    {
+        const doc2 = handler.documents.getPtr(uri).?;
+        const old_lit_off = at("fn f() -> f32 { let v: f32 = 1.0; return v; }", "1.0");
+        const new_lit_off = at(doc2.source, "1.0");
+        try std.testing.expect(new_lit_off != old_lit_off);
+        try std.testing.expect(rebuilt.f32_literal_locs.contains(new_lit_off));
+        try std.testing.expect(!rebuilt.f32_literal_locs.contains(old_lit_off));
+        try std.testing.expect(rebuilt.expr_types.contains(new_lit_off));
+    }
+
+    // Behavioral parity: hover and inlay hints at the shifted positions
+    // equal those of a freshly opened document with the same text.
+    try handler.openDocument("test://fresh.wgsl", "// note\n\nfn f() -> f32 { let v: f32 = 1.0; return v; }", 1);
+    _ = try handler.analyzeDocument("test://fresh.wgsl");
+
+    const edited_src = handler.getDocumentSource(uri) orelse return error.DocumentNotFound;
+    const v_off: u32 = @intCast(std.mem.lastIndexOf(u8, edited_src, "return v;").? + 7);
+    const pos = Handler.offsetToLspPosition(edited_src, v_off) orelse return error.TestUnexpectedResult;
+
+    const hover_edited = try handler.computeHover(uri, pos);
+    const hover_fresh = try handler.computeHover("test://fresh.wgsl", pos);
+    try std.testing.expect(hover_edited != null);
+    try std.testing.expect(hover_fresh != null);
+    defer std.testing.allocator.free(hover_edited.?.contents);
+    defer std.testing.allocator.free(hover_fresh.?.contents);
+    try std.testing.expectEqualStrings(hover_fresh.?.contents, hover_edited.?.contents);
+
+    const full_range = Handler.Range{ .start = .{ .line = 0, .character = 0 }, .end = Handler.offsetToLspPosition(edited_src, @intCast(edited_src.len)) orelse return error.TestUnexpectedResult };
+    const inlay_edited = try handler.computeInlayHints(uri, full_range);
+    defer std.testing.allocator.free(inlay_edited);
+    const inlay_fresh = try handler.computeInlayHints("test://fresh.wgsl", full_range);
+    defer std.testing.allocator.free(inlay_fresh);
+    try std.testing.expectEqual(inlay_fresh.len, inlay_edited.len);
+    for (inlay_edited, inlay_fresh) |e, f| {
+        try std.testing.expectEqual(f.position.line, e.position.line);
+        try std.testing.expectEqual(f.position.character, e.position.character);
+        try std.testing.expectEqualStrings(f.label, e.label);
+    }
+}
