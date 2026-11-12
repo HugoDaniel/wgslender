@@ -426,3 +426,50 @@ test "semantic tokens: a token after non-ASCII text starts at the right column" 
     const name = tokenAtOffset(data, source, name_off) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u32, 2), name.length); // 中 (1) + f (1)
 }
+
+// =========================================================================
+// Retired tombstones
+// =========================================================================
+
+test "semantic tokens: name fallbacks hide retired locals" {
+    const uri = "test://file.wgsl";
+    const source: [:0]const u8 =
+        "fn f() { let ret = 1; _ = ret; }\n@compute @workgroup_size(ret) fn main() {}";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+
+    // Replace f's body: the compound splice retires `ret` and the fresh
+    // body declares nothing by that name. The only remaining textual `ret`
+    // is the attribute argument, which Pass 2 never binds.
+    const fn_f = std.mem.indexOf(u8, source, "fn f()").?;
+    const body_open = std.mem.indexOfScalarPos(u8, source, fn_f, '{').?;
+    const body_close = std.mem.indexOfScalarPos(u8, source, body_open, '}').?;
+    const start_pos = Handler.offsetToLspPosition(source, @intCast(body_open)) orelse
+        return error.TestUnexpectedResult;
+    const end_pos = Handler.offsetToLspPosition(source, @intCast(body_close + 1)) orelse
+        return error.TestUnexpectedResult;
+    try ctx.handler.changeDocumentIncremental(uri, .{ .start = start_pos, .end = end_pos }, "{}");
+
+    const doc = ctx.handler.documents.getPtr(uri).?;
+    try std.testing.expect(doc.parse != null);
+    try std.testing.expect(doc.parse.?.reused);
+    var retired: usize = 0;
+    for (doc.parse.?.module.symbols.items) |sym| {
+        if (sym.flags.is_retired) retired += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), retired);
+
+    const source_after = ctx.handler.getDocumentSource(uri).?;
+    const incremental = try ctx.handler.computeSemanticTokens(uri);
+    defer std.testing.allocator.free(incremental);
+
+    // Oracle: a fresh parse of the same text has no tombstone, so the
+    // unbound `ret` token is left unclassified.
+    var fresh_handler = Handler.init(std.testing.allocator);
+    defer fresh_handler.deinit();
+    try fresh_handler.openDocument(uri, source_after, 2);
+    const fresh = try fresh_handler.computeSemanticTokens(uri);
+    defer std.testing.allocator.free(fresh);
+
+    try std.testing.expectEqualSlices(u32, fresh, incremental);
+}

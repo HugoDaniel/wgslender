@@ -282,6 +282,9 @@ fn resolveConstIntExprDepth(expr: Ast.Expr, const_values: *const std.AutoHashMap
             }
             // Fallback: look up by name in module symbols (for unbound attribute args)
             for (module.symbols.items, 0..) |sym, idx| {
+                // A tombstone has no constant value and must not shadow the
+                // fresh declaration under the same name.
+                if (sym.flags.is_retired) continue;
                 if (sym.kind == .@"const" and std.mem.eql(u8, sym.original_name, ident.name)) {
                     if (const_values.get(@intCast(idx))) |val| {
                         if (val >= 0 and val <= std.math.maxInt(u32)) return @intCast(val);

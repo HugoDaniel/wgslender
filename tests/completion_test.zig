@@ -434,3 +434,70 @@ test "completion: dot on a vector base offers swizzle components" {
     try std.testing.expect(hasItem(items, "x"));
     try std.testing.expect(hasItem(items, "rgba"[0..1]));
 }
+
+// =========================================================================
+// Retired tombstones
+// =========================================================================
+
+fn changeByteRange(
+    handler: *Handler,
+    uri: []const u8,
+    source: []const u8,
+    start: u32,
+    end: u32,
+    text: []const u8,
+) !void {
+    const start_pos = Handler.offsetToLspPosition(source, start) orelse return error.TestUnexpectedResult;
+    const end_pos = Handler.offsetToLspPosition(source, end) orelse return error.TestUnexpectedResult;
+    try handler.changeDocumentIncremental(uri, .{ .start = start_pos, .end = end_pos }, text);
+}
+
+fn countLabel(items: []const Handler.CompletionItem, label: []const u8) usize {
+    var n: usize = 0;
+    for (items) |item| {
+        if (std.mem.eql(u8, item.label, label)) n += 1;
+    }
+    return n;
+}
+
+test "completion: name fallbacks hide retired locals" {
+    const uri = "test://file.wgsl";
+    const source: [:0]const u8 =
+        "struct S { field: f32 } fn f() { let p = 1; _ = p; } var<private> p: S; fn main() { p. }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+
+    // Replace f's body: the compound splice retires its `p` local and the
+    // fresh body does not declare another one. The module-level `p` is the
+    // only active symbol by that name afterwards.
+    const fn_f = std.mem.indexOf(u8, source, "fn f()").?;
+    const body_start: u32 = @intCast(std.mem.indexOfScalarPos(u8, source, fn_f, '{').?);
+    const body_end: u32 = @intCast(std.mem.indexOfScalarPos(u8, source, body_start, '}').? + 1);
+    try changeByteRange(ctx.handler, uri, source, body_start, body_end, "{}");
+
+    const doc = ctx.handler.documents.getPtr(uri).?;
+    try std.testing.expect(doc.parse != null);
+    try std.testing.expect(doc.parse.?.reused);
+    var retired: usize = 0;
+    for (doc.parse.?.module.symbols.items) |sym| {
+        if (sym.flags.is_retired) retired += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), retired);
+
+    const source_after = ctx.handler.getDocumentSource(uri).?;
+
+    // Cursor right after the dot in `p.` — error recovery leaves no AST
+    // node, so `memberCompletion` uses its whole-module name fallback. The
+    // tombstone must not shadow the active module-scope `p: S`.
+    const after_dot = std.mem.lastIndexOf(u8, source_after, "p.").? + 2;
+    const pos = Handler.offsetToLspPosition(source_after, @intCast(after_dot)) orelse
+        return error.TestUnexpectedResult;
+    const items = try ctx.handler.computeCompletion(uri, pos);
+    defer std.testing.allocator.free(items);
+    try std.testing.expect(hasItem(items, "field"));
+
+    // General completion has exactly one `p` item — the active module var.
+    const general = try ctx.handler.computeCompletion(uri, .{ .line = 0, .character = 0 });
+    defer std.testing.allocator.free(general);
+    try std.testing.expectEqual(@as(usize, 1), countLabel(general, "p"));
+}

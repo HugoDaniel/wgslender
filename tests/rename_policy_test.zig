@@ -11,7 +11,10 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Ast = wgslender.Ast;
+const Incremental = wgslender.Incremental;
 const RenamePolicy = wgslender.RenamePolicy;
+const Renamer = wgslender.Renamer;
+const UseCounts = wgslender.UseCounts;
 const parseOk = @import("parse_ok.zig").parseOk;
 
 // =========================================================================
@@ -98,4 +101,106 @@ test "rename_policy: builder pins entry points + bindings on compute.toys corpus
         return;
     }
     std.debug.print("rename_policy builder pin parity: verified on {d} compute.toys shaders\n", .{n});
+}
+
+// =========================================================================
+// Retired tombstones
+// =========================================================================
+
+test "retired symbols neither reserve nor receive rename names" {
+    const gpa = std.testing.allocator;
+
+    // --- Module-wide Builder scans ignore tombstones ---------------------
+    // Real tombstone: a compound splice re-lowers the body, leaving the old
+    // `keep` declaration behind with `is_retired = true` and a fresh copy in
+    // the active subtree. `keep_names` is a name-based scan, so without the
+    // filter it would pin the tombstone too.
+    const src: [:0]const u8 = "fn f() -> i32 { let keep: i32 = 1; _ = keep; return 0; }";
+    var state = try Incremental.parseFull(gpa, src);
+    defer state.deinit();
+
+    const ret_at: u32 = @intCast(std.mem.indexOf(u8, src, "return 0;").?);
+    const next = try Incremental.reparse(gpa, &state, .{
+        .start = ret_at,
+        .end = ret_at,
+        .new_text = " ",
+    });
+    state.deinit();
+    state = next;
+    try std.testing.expect(state.reused);
+
+    var retired: ?Ast.SymbolIndex = null;
+    var fresh: ?Ast.SymbolIndex = null;
+    for (state.module.symbols.items, 0..) |sym, i| {
+        if (sym.kind != .let or !std.mem.eql(u8, sym.original_name, "keep")) continue;
+        const ref: Ast.SymbolIndex = @enumFromInt(@as(u32, @intCast(i)));
+        if (sym.flags.is_retired) retired = ref else fresh = ref;
+    }
+    try std.testing.expect(retired != null);
+    try std.testing.expect(fresh != null);
+
+    var policy_arena = std.heap.ArenaAllocator.init(gpa);
+    defer policy_arena.deinit();
+    var builder = try RenamePolicy.Builder.init(policy_arena.allocator(), state.module.symbols.items.len);
+    builder.markKeepNames(state.module, &.{"keep"});
+    const policy = builder.build();
+
+    try std.testing.expect(!policy.mustNotRename(retired.?));
+    try std.testing.expectEqual(RenamePolicy.Reason.none, policy.reasonFor(retired.?));
+    try std.testing.expect(policy.mustNotRename(fresh.?));
+    try std.testing.expectEqual(RenamePolicy.Reason.keep_names, policy.reasonFor(fresh.?));
+
+    // --- Renamer slot allocation / reservation --------------------------
+    // Pure unit style: `MinifyRenamer` only reads the symbol slice and its
+    // side tables, so no scope tree is involved. The retired symbol carries
+    // a higher use count than the active one; a tombstone must neither take
+    // the shortest slot nor reserve its short name away from the live
+    // declaration.
+    var symbols = [_]Ast.Symbol{
+        .{ .original_name = "a", .kind = .let, .flags = .{ .is_retired = true } },
+        .{ .original_name = "z", .kind = .let, .flags = .{} },
+    };
+
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var use_counts = try UseCounts.init(arena, symbols.len);
+    var none_policy = try RenamePolicy.init(arena, symbols.len);
+    const reserved = std.StringHashMapUnmanaged(void){};
+
+    var renamer = Renamer.MinifyRenamer.init(arena, &symbols, reserved);
+    renamer.setSideTables(&use_counts, &none_policy);
+    renamer.renamer.ptr = @ptrCast(&renamer);
+    defer {
+        renamer.slots.deinit(arena);
+        renamer.top_level_slots.deinit(arena);
+        renamer.name_buf.deinit(arena);
+        renamer.name_offsets.deinit(arena);
+    }
+
+    var uses = std.AutoHashMapUnmanaged(Ast.SymbolIndex, u32){};
+    defer uses.deinit(arena);
+    try uses.put(arena, @as(Ast.SymbolIndex, @enumFromInt(0)), 5);
+    try uses.put(arena, @as(Ast.SymbolIndex, @enumFromInt(1)), 1);
+
+    renamer.accumulateSymbolUseCounts(&uses);
+    // The retired count never reaches the canonical side-table.
+    try std.testing.expectEqual(@as(u32, 0), use_counts.counts[0]);
+
+    try renamer.allocateSlots();
+    try renamer.reserveUnrenamedSymbolNames();
+    try renamer.assignNames();
+
+    // Direct lookup on the tombstone is empty, not its original name.
+    try std.testing.expectEqualStrings(
+        "",
+        renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))),
+    );
+    // The active symbol gets the first name; the tombstone's `a` was not
+    // reserved because it belongs only to a retired declaration.
+    try std.testing.expectEqualStrings(
+        "a",
+        renamer.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(1))),
+    );
 }

@@ -44,6 +44,8 @@ pub fn prepareCallHierarchy(handler: *Handler, uri: []const u8, position: Positi
     };
     if (!sym_idx.isValid()) return null;
     const sym = module.symbols.items[sym_idx.index()];
+    // A tombstone is not a function in the active module.
+    if (sym.flags.is_retired) return null;
     if (sym.kind != .function) return null;
 
     const sel_range = Handler.offsetRangeToLspRange(source, sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len))) orelse return null;
@@ -68,6 +70,18 @@ pub fn computeIncomingCalls(handler: *Handler, uri: []const u8, target_name: []c
     var calls: std.ArrayList(IncomingCall) = .empty;
     defer calls.deinit(handler.gpa);
 
+    // A retired target has no active declaration, so calls to its name in
+    // stale text are not a hierarchy. Name scans must skip tombstones.
+    var target_active = false;
+    for (module.symbols.items) |sym| {
+        if (sym.flags.is_retired) continue;
+        if (sym.kind == .function and std.mem.eql(u8, sym.original_name, target_name)) {
+            target_active = true;
+            break;
+        }
+    }
+    if (!target_active) return try handler.gpa.dupe(IncomingCall, calls.items);
+
     // For each function, check if it calls the target
     for (module.declarations.items) |decl| {
         switch (decl) {
@@ -75,6 +89,7 @@ pub fn computeIncomingCalls(handler: *Handler, uri: []const u8, target_name: []c
                 if (!f.name.isValid()) continue;
                 if (f.body == null) continue;
                 const caller_sym = module.symbols.items[f.name.index()];
+                if (caller_sym.flags.is_retired) continue;
                 if (std.mem.eql(u8, caller_sym.original_name, target_name)) continue; // skip self
 
                 // Scan for calls to target in this function body
@@ -119,6 +134,7 @@ pub fn computeOutgoingCalls(handler: *Handler, uri: []const u8, caller_name: []c
                 if (!f.name.isValid()) continue;
                 if (f.body == null) continue;
                 const sym = module.symbols.items[f.name.index()];
+                if (sym.flags.is_retired) continue;
                 if (!std.mem.eql(u8, sym.original_name, caller_name)) continue;
 
                 // Collect all outgoing calls
@@ -137,8 +153,10 @@ pub fn computeOutgoingCalls(handler: *Handler, uri: []const u8, caller_name: []c
                 var it = calls_map.iterator();
                 while (it.next()) |entry| {
                     const callee_name = entry.key_ptr.*;
-                    // Find callee symbol for range info
+                    // Find callee symbol for range info. Skip tombstones so
+                    // the report points at the active declaration.
                     for (module.symbols.items) |callee_sym| {
+                        if (callee_sym.flags.is_retired) continue;
                         if (std.mem.eql(u8, callee_sym.original_name, callee_name) and callee_sym.kind == .function) {
                             const sel_range = pm.range(callee_sym.loc, callee_sym.loc + @as(u32, @intCast(callee_sym.original_name.len))) orelse break;
                             results.append(handler.gpa, .{
@@ -353,10 +371,11 @@ fn collectOutgoingCallsExpr(
             if (e.func) |func| {
                 switch (func) {
                     .ident => |id| {
-                        // Only track user function calls (not builtins)
+                        // Only track user function calls (not builtins).
+                        // A retired ref cannot name an active callee.
                         if (id.ref.isValid()) {
                             const sym = module.symbols.items[id.ref.index()];
-                            if (sym.kind == .function) {
+                            if (sym.kind == .function and !sym.flags.is_retired) {
                                 if (pm.range(id.loc, id.loc + @as(u32, @intCast(id.name.len)))) |range| {
                                     const gop = calls_map.getOrPut(gpa, id.name) catch return;
                                     if (!gop.found_existing) gop.value_ptr.* = .empty;

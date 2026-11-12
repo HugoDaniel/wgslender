@@ -39,6 +39,9 @@ pub const NoOpRenamer = struct {
         if (!ref.isValid()) return "";
         const idx = ref.index();
         if (idx >= self.symbols.len) return "";
+        // Retired tombstones are not part of the active module; a direct
+        // lookup must not answer with a name no fresh parse would print.
+        if (self.symbols[idx].flags.is_retired) return "";
         return self.symbols[idx].original_name;
     }
 };
@@ -169,6 +172,10 @@ pub const MinifyRenamer = struct {
 
     pub fn reserveUnrenamedSymbolNames(self: *MinifyRenamer) Allocator.Error!void {
         for (self.symbols, 0..) |*sym, i| {
+            // A retired declaration never prints, so reserving its name
+            // would burn a short name an active declaration could use and
+            // break byte-for-byte parity with a fresh parse.
+            if (sym.flags.is_retired) continue;
             if (!self.top_level_slots.contains(@intCast(i))) {
                 try self.reserved_names.put(self.arena, sym.original_name, {});
             }
@@ -217,6 +224,9 @@ pub const MinifyRenamer = struct {
         const idx = ref.index();
         if (idx >= self.symbols.len) return "";
         const sym = &self.symbols[idx];
+        // A retired tombstone has no printable name. Empty is the printer's
+        // "symbol does not exist" signal, matching NoOpRenamer.
+        if (sym.flags.is_retired) return "";
         if (mustNotBeRenamed(self, idx, sym)) return sym.original_name;
         if (self.top_level_slots.get(idx)) |slot_idx| {
             const ns = self.name_offsets.items[slot_idx];
@@ -229,7 +239,12 @@ pub const MinifyRenamer = struct {
 /// Reads the per-pipeline `RenamePolicy` for this symbol. Tests that
 /// build a renamer without a policy see "always renameable".
 fn mustNotBeRenamed(self: *const MinifyRenamer, idx: u32, sym: *const Ast.Symbol) bool {
-    _ = sym;
+    // Retired tombstones are outside the active module: they must not
+    // consume a rename slot (which would shorten an active symbol's name)
+    // or have their use counts folded into the canonical table. This is
+    // also what keeps the renamer's slot sequence identical to a fresh
+    // parse's.
+    if (sym.flags.is_retired) return true;
     if (self.rename_policy) |pol| return pol.mustNotRename(@enumFromInt(idx));
     return false;
 }

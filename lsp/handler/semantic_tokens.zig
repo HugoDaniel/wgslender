@@ -379,6 +379,9 @@ fn resolveIdentSymbol(module: *const Ast.Module, cursor: *DeclCursor, loc: u32, 
     if (ref.isValid()) return module.symbols.items[ref.index()];
 
     for (module.symbols.items) |sym| {
+        // A tombstone shares the fresh declaration's name; coloring it would
+        // paint a token the active module no longer contains.
+        if (sym.flags.is_retired) continue;
         if (std.mem.eql(u8, sym.original_name, name)) return sym;
     }
     return null;
@@ -386,7 +389,13 @@ fn resolveIdentSymbol(module: *const Ast.Module, cursor: *DeclCursor, loc: u32, 
 
 fn symbolAt(module: *const Ast.Module, ref: Ast.SymbolIndex) ?Ast.Symbol {
     if (!ref.isValid()) return null;
-    return module.symbols.items[ref.index()];
+    const idx = ref.index();
+    if (idx >= module.symbols.items.len) return null;
+    const sym = module.symbols.items[idx];
+    // Defensive: a direct ref left over from a detached subtree is not a
+    // token the active source declares.
+    if (sym.flags.is_retired) return null;
+    return sym;
 }
 
 fn isBuiltinTypeName(name: []const u8) bool {

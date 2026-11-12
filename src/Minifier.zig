@@ -561,6 +561,10 @@ pub const ScopeLocalRenamer = struct {
 
         for (module.symbols.items, 0..) |sym, i| {
             if (sym.kind == .member) continue;
+            // A retired declaration is not printed and not a candidate, so
+            // its name must not reserve a short canonical name an active
+            // local needs — otherwise output drifts from a fresh parse.
+            if (sym.flags.is_retired) continue;
             const index: u32 = @intCast(i);
             if (self.candidates.all.contains(index)) continue;
             const base_name = base.nameForSymbol(@enumFromInt(index));

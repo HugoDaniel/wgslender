@@ -270,6 +270,14 @@ pub fn findReferences(
     defer refs.deinit(gpa);
 
     if (!target.isValid()) return try gpa.dupe(Reference, refs.items);
+    if (target.index() >= module.symbols.items.len) return try gpa.dupe(Reference, refs.items);
+    // Tombstone from an incremental splice: its declaration was detached,
+    // so nothing in the active source refers to it. Treat it like an
+    // unknown symbol; otherwise a stale retain/rename could edit a fresh
+    // declaration that now occupies a similar span.
+    if (module.symbols.items[target.index()].flags.is_retired) {
+        return try gpa.dupe(Reference, refs.items);
+    }
 
     if (include_declaration) {
         const sym = module.symbols.items[target.index()];
@@ -467,6 +475,10 @@ pub fn renameEdits(
 ) Allocator.Error!?[]TextEdit {
     if (!isValidWgslIdentifier(new_name)) return null;
     if (!target.isValid()) return null;
+    if (target.index() >= module.symbols.items.len) return null;
+    // A retired direct target has no edits to produce. Returning null (not
+    // an empty list) matches the "cannot rename an unknown symbol" contract.
+    if (module.symbols.items[target.index()].flags.is_retired) return null;
 
     // `findReferences` absorbs any deferred bias for us.
     const refs = try findReferences(gpa, module, target, true);

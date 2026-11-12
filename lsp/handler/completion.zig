@@ -96,6 +96,10 @@ fn memberCompletion(handler: *Handler, uri: []const u8, source: []const u8, dot_
     // pick the wrong same-named symbol, but wrong fields beat no fields.
     if (base_type == null) {
         for (module.symbols.items, 0..) |sym, idx| {
+            // A tombstone can shadow the active declaration by name; its
+            // type entry no longer exists (analysis runs on the active AST),
+            // so matching it would return no fields at all.
+            if (sym.flags.is_retired) continue;
             if (std.mem.eql(u8, sym.original_name, base_name)) {
                 base_type = analysis.symbol_types.get(@intCast(idx));
                 break;
@@ -246,6 +250,8 @@ fn generalCompletion(handler: *Handler, uri: []const u8, offset: u32) ![]Complet
             defer module_level.deinit(handler.gpa);
 
             for (module.symbols.items, 0..) |sym, idx| {
+                // Detached declarations are not visible at any cursor.
+                if (sym.flags.is_retired) continue;
                 if (sym.original_name.len == 0) continue;
                 const kind: CompletionKind = switch (sym.kind) {
                     .function => .function,

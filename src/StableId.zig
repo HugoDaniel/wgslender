@@ -78,6 +78,12 @@ pub fn stableIdFor(
     const idx = sym.index();
     if (idx >= module.symbols.items.len) return null;
     const s = module.symbols.items[idx];
+    // A retired symbol is a tombstone from an incremental splice: its
+    // declaration no longer exists in the module. Handing out an ID for it
+    // would let rename/reference consumers address a symbol no fresh parse
+    // can produce. (Reverse lookup stays scope-based and resolves the fresh
+    // replacement, never the retired copy.)
+    if (s.flags.is_retired) return null;
     if (s.original_name.len == 0) return null;
 
     var buf: std.ArrayList(u8) = .empty;

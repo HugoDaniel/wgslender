@@ -134,3 +134,50 @@ test "call hierarchy: incoming calls from nested expressions" {
     try std.testing.expectEqual(@as(usize, 1), calls.len);
     try std.testing.expectEqual(@as(usize, 2), calls[0].from_ranges.len);
 }
+
+// =========================================================================
+// Retired tombstones
+// =========================================================================
+
+test "call hierarchy: retired functions do not appear in name-scan results" {
+    const uri = "test://file.wgsl";
+    const source: [:0]const u8 =
+        "fn dup() {} fn dup() -> i32 { return 1; } fn caller() -> i32 { return dup(); }";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+
+    const doc = ctx.handler.documents.getPtr(uri).?;
+    const module = doc.parse.?.module;
+
+    // No splice path detaches a module-level function today, so synthesize
+    // the tombstone on a real duplicate-function module: the first `dup`
+    // symbol is marked retired exactly as a splice would mark a detached
+    // declaration, while the scope map still names the second, active copy.
+    var dup_syms: [2]usize = undefined;
+    var n: usize = 0;
+    for (module.symbols.items, 0..) |sym, i| {
+        if (sym.kind == .function and std.mem.eql(u8, sym.original_name, "dup")) {
+            if (n < dup_syms.len) dup_syms[n] = i;
+            n += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), n);
+    const retired_idx = dup_syms[0];
+    const active_idx = dup_syms[1];
+    try std.testing.expect(!module.symbols.items[retired_idx].flags.is_retired);
+    module.symbols.items[retired_idx].flags.is_retired = true;
+
+    const calls = try ctx.handler.computeOutgoingCalls(uri, "caller");
+    defer {
+        for (calls) |c| std.testing.allocator.free(c.from_ranges);
+        std.testing.allocator.free(calls);
+    }
+    try std.testing.expectEqual(@as(usize, 1), calls.len);
+
+    // The range must point at the active declaration, never the tombstone.
+    const active_loc = module.symbols.items[active_idx].loc;
+    const active_pos = Handler.offsetToLspPosition(source, active_loc) orelse
+        return error.TestUnexpectedResult;
+    try std.testing.expectEqual(active_pos.line, calls[0].to.range.start.line);
+    try std.testing.expectEqual(active_pos.character, calls[0].to.range.start.character);
+}

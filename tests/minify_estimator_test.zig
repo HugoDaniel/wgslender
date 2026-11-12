@@ -16,6 +16,7 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Ast = wgslender.Ast;
+const Incremental = wgslender.Incremental;
 const MinifyEstimator = wgslender.MinifyEstimator;
 const Minifier = wgslender.Minifier;
 const Renamer = wgslender.Renamer;
@@ -663,4 +664,83 @@ test "estimateRenameLength skips reserved words identically to assignNames" {
     try testing.expectEqual(@as(u32, 1), out[0]);
     try testing.expectEqual(@as(u32, 1), out[1]);
     try testing.expectEqual(@as(u32, 1), out[2]);
+}
+
+// =========================================================================
+// Retired tombstones
+// =========================================================================
+
+test "estimate after a splice matches a fresh module" {
+    const gpa = testing.allocator;
+    const old_src: [:0]const u8 =
+        \\fn f() -> i32 {
+        \\    let a: i32 = 1;
+        \\    _ = a;
+        \\    return 0;
+        \\}
+    ;
+
+    var state = try Incremental.parseFull(gpa, old_src);
+    defer state.deinit();
+
+    // Replace the whole body. The compound splice retires the old `a`
+    // declaration; the fresh body no longer declares it. Sixty-two used
+    // locals force the tail of the one-character name sequence (a..Z) into
+    // two-character names, so reserving even one stale short name changes
+    // the byte total.
+    var body: std.ArrayListUnmanaged(u8) = .empty;
+    defer body.deinit(gpa);
+    try body.appendSlice(gpa, "{\n");
+    for (0..62) |i| {
+        var line_buf: [64]u8 = undefined;
+        const line = try std.fmt.bufPrint(&line_buf, "    let v{d}: i32 = 0;\n", .{i});
+        try body.appendSlice(gpa, line);
+    }
+    try body.appendSlice(gpa, "    _ = ");
+    for (0..62) |i| {
+        if (i > 0) try body.appendSlice(gpa, " + ");
+        var name_buf: [16]u8 = undefined;
+        const name = try std.fmt.bufPrint(&name_buf, "v{d}", .{i});
+        try body.appendSlice(gpa, name);
+    }
+    try body.appendSlice(gpa, ";\n}");
+
+    const body_start: u32 = @intCast(std.mem.indexOfScalar(u8, old_src, '{').?);
+    const body_end: u32 = @intCast(std.mem.lastIndexOfScalar(u8, old_src, '}').? + 1);
+    const next = try Incremental.reparse(gpa, &state, .{
+        .start = body_start,
+        .end = body_end,
+        .new_text = body.items,
+    });
+    state.deinit();
+    state = next;
+    try testing.expect(state.reused);
+
+    var retired: usize = 0;
+    for (state.module.symbols.items) |sym| {
+        if (sym.flags.is_retired) retired += 1;
+    }
+    try testing.expect(retired > 0);
+
+    var oracle = try Incremental.parseFull(gpa, state.source);
+    defer oracle.deinit();
+
+    for ([_]MinifyEstimator.Options{ .{}, .{ .use_full_minify = true } }) |options| {
+        var inc_arena = std.heap.ArenaAllocator.init(gpa);
+        defer inc_arena.deinit();
+        const inc = try MinifyEstimator.estimate(inc_arena.allocator(), state.module, options);
+
+        var fresh_arena = std.heap.ArenaAllocator.init(gpa);
+        defer fresh_arena.deinit();
+        const fresh = try MinifyEstimator.estimate(fresh_arena.allocator(), oracle.module, options);
+
+        if (inc.total_min != fresh.total_min or inc.total_gz != fresh.total_gz) {
+            std.debug.print(
+                "estimate mismatch (full_minify={}): incremental {d}/{d} fresh {d}/{d}\n",
+                .{ options.use_full_minify, inc.total_min, inc.total_gz, fresh.total_min, fresh.total_gz },
+            );
+        }
+        try testing.expectEqual(fresh.total_min, inc.total_min);
+        try testing.expectEqual(fresh.total_gz, inc.total_gz);
+    }
 }

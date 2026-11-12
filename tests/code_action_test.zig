@@ -1155,3 +1155,58 @@ test "code action: E0900 feature not enabled offers enable f16" {
     try std.testing.expectEqual(@as(u32, 0), actions[0].edits[0].range.start.line);
     try std.testing.expectEqual(@as(u32, 0), actions[0].edits[0].range.start.character);
 }
+
+// =========================================================================
+// Retired tombstones
+// =========================================================================
+
+test "code action: retired unused declarations produce no remove-unused action" {
+    const uri = "test://file.wgsl";
+    const source: [:0]const u8 =
+        \\fn f() -> i32 {
+        \\    let gone_unused: i32 = 1;
+        \\    let stay_unused: i32 = 2;
+        \\    return 0;
+        \\}
+    ;
+
+    const handler = try std.testing.allocator.create(Handler);
+    handler.* = Handler.init(std.testing.allocator);
+    try handler.openDocument(uri, source, 1);
+
+    // Replace the whole body. The compound splice retires both old locals;
+    // the fresh body declares only `stay_unused`, which really is unused.
+    const body_open = std.mem.indexOfScalar(u8, source, '{').?;
+    const body_close = std.mem.lastIndexOfScalar(u8, source, '}').?;
+    const new_body =
+        \\{
+        \\    let stay_unused: i32 = 2;
+        \\    return 0;
+        \\}
+    ;
+    const start_pos = Handler.offsetToLspPosition(source, @intCast(body_open)) orelse
+        return error.TestUnexpectedResult;
+    const end_pos = Handler.offsetToLspPosition(source, @intCast(body_close + 1)) orelse
+        return error.TestUnexpectedResult;
+    try handler.changeDocumentIncremental(uri, .{ .start = start_pos, .end = end_pos }, new_body);
+
+    const doc = handler.documents.getPtr(uri).?;
+    try std.testing.expect(doc.parse != null);
+    try std.testing.expect(doc.parse.?.reused);
+
+    var retired_gone = false;
+    for (doc.parse.?.module.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.original_name, "gone_unused") and sym.flags.is_retired) {
+            retired_gone = true;
+        }
+    }
+    try std.testing.expect(retired_gone);
+
+    const diags = try handler.validateDocumentFull(uri);
+    const actions = try handler.computeCodeActions(diags);
+    const result = TestResult{ .actions = actions, .handler = handler, .diags = diags };
+    defer cleanup(result);
+
+    try std.testing.expect(findActionByTitle(actions, "Remove unused 'stay_unused'") != null);
+    try std.testing.expect(findActionByTitle(actions, "gone_unused") == null);
+}

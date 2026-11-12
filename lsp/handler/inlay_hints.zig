@@ -456,6 +456,8 @@ fn structDefRange(module: *const Ast.Module, pm: *const Handler.PositionMapper, 
         else => return null,
     };
     for (module.symbols.items) |sym| {
+        // Never point a definition hint at a detached declaration.
+        if (sym.flags.is_retired) continue;
         if (sym.kind == .@"struct" and std.mem.eql(u8, sym.original_name, name)) {
             return pm.range(sym.loc, sym.loc + @as(u32, @intCast(sym.original_name.len)));
         }

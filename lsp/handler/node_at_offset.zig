@@ -40,11 +40,21 @@ pub fn find(module: *const Ast.Module, offset: u32) NodeAtPosition {
 /// Mirrors the fallback already used by `resolveConstIntExprDepth`.
 fn lookupSymbolByName(module: *const Ast.Module, name: []const u8) Ast.SymbolIndex {
     for (module.symbols.items, 0..) |sym, idx| {
+        // Tombstones share names with their fresh replacements. Returning
+        // one would point hover/definition/rename at a detached span.
+        if (sym.flags.is_retired) continue;
         if (std.mem.eql(u8, sym.original_name, name)) {
             return @enumFromInt(@as(u32, @intCast(idx)));
         }
     }
     return .none;
+}
+
+fn isRetired(module: *const Ast.Module, ref: Ast.SymbolIndex) bool {
+    if (!ref.isValid()) return false;
+    const idx = ref.index();
+    if (idx >= module.symbols.items.len) return false;
+    return module.symbols.items[idx].flags.is_retired;
 }
 
 /// Find the AST node at `offset` within a single declaration.
@@ -158,6 +168,9 @@ fn findInDecl(module: *const Ast.Module, decl: Ast.Decl, offset: u32) NodeAtPosi
 
 fn checkDeclName(module: *const Ast.Module, sym_idx: Ast.SymbolIndex, offset: u32) ?NodeAtPosition {
     if (!sym_idx.isValid()) return null;
+    // Defensive: the active AST should never carry a retired declaration
+    // name, but if a stale node survives recovery it is not addressable.
+    if (isRetired(module, sym_idx)) return null;
     const sym = module.symbols.items[sym_idx.index()];
     if (offset >= sym.loc and offset < sym.loc + @as(u32, @intCast(sym.original_name.len))) {
         return .{ .decl_name = .{ .sym_idx = sym_idx, .loc = sym.loc } };
@@ -169,7 +182,13 @@ fn findInType(module: *const Ast.Module, typ: Ast.Type, offset: u32) ?NodeAtPosi
     switch (typ) {
         .ident => |t| {
             if (offset >= t.loc and offset < t.loc + @as(u32, @intCast(t.name.len))) {
-                return .{ .type_ref = .{ .name = t.name, .ref = t.ref, .loc = t.loc } };
+                // A type ref bound to a retired declaration is stale. Fall
+                // back to the name scan so the active replacement wins.
+                const ref: Ast.SymbolIndex = if (t.ref.isValid() and !isRetired(module, t.ref))
+                    t.ref
+                else
+                    lookupSymbolByName(module, t.name);
+                return .{ .type_ref = .{ .name = t.name, .ref = ref, .loc = t.loc } };
             }
         },
         .vec => |t| {
@@ -264,7 +283,13 @@ fn findInExpr(module: *const Ast.Module, expr: Ast.Expr, offset: u32) ?NodeAtPos
     switch (expr) {
         .ident => |e| {
             if (offset >= e.loc and offset < e.loc + @as(u32, @intCast(e.name.len))) {
-                const ref = if (e.ref.isValid()) e.ref else lookupSymbolByName(module, e.name);
+                // A direct ref to a tombstone is not addressable. Fall back
+                // to the name scan (which skips retired symbols) rather than
+                // returning the stale index.
+                const ref = if (e.ref.isValid() and !isRetired(module, e.ref))
+                    e.ref
+                else
+                    lookupSymbolByName(module, e.name);
                 return .{ .ident = .{ .name = e.name, .ref = ref, .loc = e.loc } };
             }
         },

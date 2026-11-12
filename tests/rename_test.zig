@@ -1,5 +1,10 @@
 const std = @import("std");
 const Handler = @import("Handler");
+const wgslender = @import("wgslender");
+
+const Ast = wgslender.Ast;
+const Edits = wgslender.Edits;
+const Incremental = wgslender.Incremental;
 
 fn setup(source: [:0]const u8) !struct { handler: *Handler, source: [:0]const u8 } {
     const handler = try std.testing.allocator.create(Handler);
@@ -169,6 +174,78 @@ test "rename: underscore prefix valid (single underscore)" {
     try std.testing.expect(Handler.isValidWgslIdentifier("_x"));
     try std.testing.expect(Handler.isValidWgslIdentifier("_"));
     try std.testing.expect(!Handler.isValidWgslIdentifier("__x")); // double underscore reserved
+}
+
+// =========================================================================
+// Retired tombstones
+// =========================================================================
+
+test "references and rename reject a retired direct target" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 = "fn f() -> i32 { let stale: i32 = 1; _ = stale; return 0; }";
+
+    var state = try Incremental.parseFull(gpa, src);
+    defer state.deinit();
+
+    // A length-changing edit inside the body takes the compound splice and
+    // retires every declaration in the detached subtree.
+    const ret_at: u32 = @intCast(std.mem.indexOf(u8, src, "return 0;").?);
+    const next = try Incremental.reparse(gpa, &state, .{
+        .start = ret_at,
+        .end = ret_at,
+        .new_text = " ",
+    });
+    state.deinit();
+    state = next;
+    try std.testing.expect(state.reused);
+
+    var retired: ?Ast.SymbolIndex = null;
+    var fresh: ?Ast.SymbolIndex = null;
+    for (state.module.symbols.items, 0..) |sym, i| {
+        if (sym.kind != .let or !std.mem.eql(u8, sym.original_name, "stale")) continue;
+        const ref: Ast.SymbolIndex = @enumFromInt(@as(u32, @intCast(i)));
+        if (sym.flags.is_retired) retired = ref else fresh = ref;
+    }
+    try std.testing.expect(retired != null);
+    try std.testing.expect(fresh != null);
+
+    // The tombstone has no references — not even its old declaration site.
+    const retired_refs = try Edits.findReferences(gpa, state.module, retired.?, true);
+    defer gpa.free(retired_refs);
+    try std.testing.expectEqual(@as(usize, 0), retired_refs.len);
+    try std.testing.expect((try Edits.renameEdits(gpa, state.module, retired.?, "renamed")) == null);
+
+    // The replacement still renames normally.
+    const fresh_refs = try Edits.findReferences(gpa, state.module, fresh.?, true);
+    defer gpa.free(fresh_refs);
+    try std.testing.expectEqual(@as(usize, 2), fresh_refs.len);
+
+    const edits = (try Edits.renameEdits(gpa, state.module, fresh.?, "renamed")) orelse
+        return error.TestUnexpectedResult;
+    defer gpa.free(edits);
+    try std.testing.expectEqual(fresh_refs.len, edits.len);
+
+    const rewritten = try Edits.applyEdits(gpa, state.source, edits);
+    defer gpa.free(rewritten);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "stale") == null);
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, rewritten, "renamed"));
+}
+
+test "no-op renamer returns empty for a retired ref" {
+    var symbols = [_]Ast.Symbol{
+        .{ .original_name = "live", .kind = .function, .flags = .{} },
+        .{ .original_name = "dead", .kind = .function, .flags = .{ .is_retired = true } },
+    };
+    var noop = wgslender.Renamer.NoOpRenamer.init(&symbols);
+    noop.renamer.ptr = @ptrCast(&noop);
+    try std.testing.expectEqualStrings(
+        "live",
+        noop.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(0))),
+    );
+    try std.testing.expectEqualStrings(
+        "",
+        noop.renamer.nameForSymbol(@as(Ast.SymbolIndex, @enumFromInt(1))),
+    );
 }
 
 test "rename: position past end returns null" {

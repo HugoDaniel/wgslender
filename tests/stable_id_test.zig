@@ -13,6 +13,7 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 const Ast = wgslender.Ast;
 const StableId = wgslender.StableId;
+const Incremental = wgslender.Incremental;
 
 fn parse(a: std.mem.Allocator, source: [:0]const u8) !wgslender.Validator.AnalysisResult {
     return wgslender.analyze(a, source);
@@ -571,6 +572,58 @@ test "invariant: inserting a new block statement shifts later blocks but keeps n
     const a_src_a = (try idFor(ar, an_a.module.?, .let, "a")).?;
     const a_src_b = (try idFor(ar, an_b.module.?, .let, "a")).?;
     try std.testing.expect(!std.mem.eql(u8, a_src_a, a_src_b));
+}
+
+test "stable IDs never resolve through a retired symbol" {
+    const gpa = std.testing.allocator;
+    const src: [:0]const u8 = "fn f() -> i32 { let stale: i32 = 1; _ = stale; return 0; }";
+
+    var state = try Incremental.parseFull(gpa, src);
+    defer state.deinit();
+
+    const old = findSym(state.module, .let, "stale");
+    try std.testing.expect(old.isValid());
+
+    var id_arena = std.heap.ArenaAllocator.init(gpa);
+    defer id_arena.deinit();
+    const id_alloc = id_arena.allocator();
+    const old_id = (try StableId.stableIdFor(id_alloc, state.module, old)).?;
+    const old_bytes = try gpa.dupe(u8, old_id.bytes);
+    defer gpa.free(old_bytes);
+
+    // Non-zero-delta body edit: the compound splice re-lowers the body and
+    // retires every declaration in the detached subtree.
+    const ret_at: u32 = @intCast(std.mem.indexOf(u8, src, "return 0;").?);
+    const next = try Incremental.reparse(gpa, &state, .{
+        .start = ret_at,
+        .end = ret_at,
+        .new_text = " ",
+    });
+    state.deinit();
+    state = next;
+    try std.testing.expect(state.reused);
+
+    var retired: ?Ast.SymbolIndex = null;
+    var fresh: ?Ast.SymbolIndex = null;
+    for (state.module.symbols.items, 0..) |sym, i| {
+        if (sym.kind != .let or !std.mem.eql(u8, sym.original_name, "stale")) continue;
+        const ref: Ast.SymbolIndex = @enumFromInt(@as(u32, @intCast(i)));
+        if (sym.flags.is_retired) retired = ref else fresh = ref;
+    }
+    try std.testing.expect(retired != null);
+    try std.testing.expect(fresh != null);
+    try std.testing.expectEqual(old, retired.?);
+    try std.testing.expect(retired.? != fresh.?);
+
+    // Forward lookup never names a tombstone.
+    try std.testing.expect((try StableId.stableIdFor(id_alloc, state.module, retired.?)) == null);
+
+    // Reverse lookup stays scope-based and lands on the replacement.
+    const resolved = StableId.symbolForStableId(state.module, old_bytes);
+    try std.testing.expectEqual(fresh.?, resolved);
+    try std.testing.expect(!state.module.symbols.items[resolved.index()].flags.is_retired);
+    const fresh_id = (try StableId.stableIdFor(id_alloc, state.module, resolved)).?;
+    try std.testing.expectEqualStrings(old_bytes, fresh_id.bytes);
 }
 
 test "stale ID after deletion returns .none" {

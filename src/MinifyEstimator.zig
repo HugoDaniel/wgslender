@@ -129,6 +129,11 @@ pub fn estimate(arena: Allocator, module: *Ast.Module, options: Options) !Estima
     // short name that would collide with an un-renamed symbol.
     var reserved = try Renamer.computeReservedNames(arena);
     for (module.symbols.items, 0..) |*sym, i| {
+        // Tombstones never print, so their names must not enter the
+        // reserved set. (They are "not renameable" in the active-module
+        // sense, but treating them like an unrenamed live symbol here would
+        // reserve a short name and inflate the estimate.)
+        if (sym.flags.is_retired) continue;
         if (!isRenameable(@intCast(i), sym, policy_box, options)) {
             try reserved.put(arena, sym.original_name, {});
         }
@@ -265,6 +270,9 @@ const EstimateSink = struct {
 };
 
 fn isRenameable(idx: u32, sym: *const Ast.Symbol, policy: *const RenamePolicy, options: Options) bool {
+    // A retired tombstone is not in the active module: it must not be
+    // ranked (a stale use count would consume a slot) or printed.
+    if (sym.flags.is_retired) return false;
     if (policy.mustNotRename(@enumFromInt(idx))) return false;
     if (sym.flags.is_entry_point) return false;
     if (sym.kind == .builtin or sym.kind == .override) return false;
@@ -384,6 +392,7 @@ fn buildLengthRenamer(
     var name_buf: [16]u8 = undefined;
     for (module.symbols.items, 0..) |*sym, i| {
         const idx: u32 = @intCast(i);
+        if (sym.flags.is_retired) continue;
         if (!globals.contains(idx) and isRenameable(idx, sym, policy, options)) continue;
         if (rank_of.get(idx)) |rank| {
             const name = Renamer.numberToMinifiedName(&name_buf, rank_indices[rank]);

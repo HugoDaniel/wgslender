@@ -8,6 +8,10 @@
 const std = @import("std");
 const wgslender = @import("wgslender");
 
+const Ast = wgslender.Ast;
+const Edits = wgslender.Edits;
+const Incremental = wgslender.Incremental;
+
 fn findOffsetOf(source: []const u8, needle: []const u8) u32 {
     return @intCast(std.mem.indexOf(u8, source, needle) orelse unreachable);
 }
@@ -467,4 +471,58 @@ test "scenario: rename function used inside a loop body" {
     defer a.free(rewritten);
     try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, rewritten, "hash"));
     try std.testing.expectEqual(@as(usize, 0), std.mem.count(u8, rewritten, "noisy"));
+}
+
+// =========================================================================
+// Retired tombstones
+// =========================================================================
+
+test "edits: retired direct target yields no references or rename edits" {
+    const gpa = std.testing.allocator;
+    const source: [:0]const u8 =
+        \\fn f() -> i32 {
+        \\    let stale: i32 = 1;
+        \\    _ = stale;
+        \\    return 0;
+        \\}
+    ;
+
+    var state = try Incremental.parseFull(gpa, source);
+    defer state.deinit();
+
+    // A non-zero-delta edit in the body re-lowers the compound and leaves
+    // the old `stale` declaration behind as a tombstone.
+    const ret_at: u32 = @intCast(std.mem.indexOf(u8, source, "return 0;").?);
+    const next = try Incremental.reparse(gpa, &state, .{
+        .start = ret_at,
+        .end = ret_at,
+        .new_text = " ",
+    });
+    state.deinit();
+    state = next;
+    try std.testing.expect(state.reused);
+
+    var retired: ?Ast.SymbolIndex = null;
+    var fresh: ?Ast.SymbolIndex = null;
+    for (state.module.symbols.items, 0..) |sym, i| {
+        if (sym.kind != .let or !std.mem.eql(u8, sym.original_name, "stale")) continue;
+        const ref: Ast.SymbolIndex = @enumFromInt(@as(u32, @intCast(i)));
+        if (sym.flags.is_retired) retired = ref else fresh = ref;
+    }
+    try std.testing.expect(retired != null);
+    try std.testing.expect(fresh != null);
+
+    const refs = try Edits.findReferences(gpa, state.module, retired.?, true);
+    defer gpa.free(refs);
+    try std.testing.expectEqual(@as(usize, 0), refs.len);
+
+    try std.testing.expect((try Edits.renameEdits(gpa, state.module, retired.?, "renamed")) == null);
+
+    // The live replacement is unaffected.
+    const fresh_edits = (try Edits.renameEdits(gpa, state.module, fresh.?, "renamed")) orelse
+        return error.TestUnexpectedResult;
+    defer gpa.free(fresh_edits);
+    const rewritten = try Edits.applyEdits(gpa, state.source, fresh_edits);
+    defer gpa.free(rewritten);
+    try std.testing.expect(std.mem.indexOf(u8, rewritten, "stale") == null);
 }

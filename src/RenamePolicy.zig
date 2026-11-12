@@ -84,12 +84,17 @@ pub const Builder = struct {
 
     pub fn markEntryPoints(self: *Builder, module: *const Ast.Module) void {
         for (module.symbols.items, 0..) |sym, i| {
+            // Tombstones from an incremental splice are not declarations in
+            // the active module. Pinning one would make the policy disagree
+            // with a fresh parse's (and could keep a stale reason alive).
+            if (sym.flags.is_retired) continue;
             if (sym.flags.is_entry_point) self.markIdx(@intCast(i), .entry_point);
         }
     }
 
     pub fn markBuiltinsAndOverrides(self: *Builder, module: *const Ast.Module) void {
         for (module.symbols.items, 0..) |sym, i| {
+            if (sym.flags.is_retired) continue;
             switch (sym.kind) {
                 .builtin => self.markIdx(@intCast(i), .builtin),
                 .override => self.markIdx(@intCast(i), .override_kind),
@@ -103,6 +108,7 @@ pub const Builder = struct {
     /// unconditionally marks every external binding.
     pub fn markExternalBindings(self: *Builder, module: *const Ast.Module) void {
         for (module.symbols.items, 0..) |sym, i| {
+            if (sym.flags.is_retired) continue;
             if (sym.flags.is_external_binding) self.markIdx(@intCast(i), .external_binding);
         }
     }
@@ -110,6 +116,9 @@ pub const Builder = struct {
     pub fn markKeepNames(self: *Builder, module: *const Ast.Module, names: []const []const u8) void {
         if (names.len == 0) return;
         for (module.symbols.items, 0..) |sym, i| {
+            // A tombstone shares its name with the fresh replacement; the
+            // name-based scan must only pin the active declaration.
+            if (sym.flags.is_retired) continue;
             for (names) |name| {
                 if (std.mem.eql(u8, sym.original_name, name)) {
                     self.markIdx(@intCast(i), .keep_names);
@@ -130,6 +139,7 @@ pub const Builder = struct {
             if (!var_decl.name.isValid()) continue;
             const var_idx = var_decl.name.index();
             if (var_idx >= module.symbols.items.len) continue;
+            if (module.symbols.items[var_idx].flags.is_retired) continue;
             if (!module.symbols.items[var_idx].flags.is_external_binding) continue;
             const typ = var_decl.typ orelse continue;
             if (typ != .ident) continue;
