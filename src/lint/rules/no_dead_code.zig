@@ -98,10 +98,13 @@ fn buildEnclosingFnMap(
         .function => |fd| {
             if (!fd.name.isValid()) continue;
             const fn_idx = fd.name.index();
+            if (module.symbols.items[fn_idx].flags.is_retired) continue;
 
             for (fd.parameters.items) |p| {
                 if (!p.name.isValid()) continue;
-                try out.put(arena, p.name.index(), fn_idx);
+                const p_idx = p.name.index();
+                if (module.symbols.items[p_idx].flags.is_retired) continue;
+                try out.put(arena, p_idx, fn_idx);
             }
 
             const body = fd.body orelse continue;
@@ -110,6 +113,7 @@ fn buildEnclosingFnMap(
             if (body_end <= body_start) continue;
 
             for (module.symbols.items, 0..) |sym, i| {
+                if (sym.flags.is_retired) continue;
                 if (sym.loc <= body_start) continue;
                 if (sym.loc >= body_end) continue;
                 try out.put(arena, @intCast(i), fn_idx);

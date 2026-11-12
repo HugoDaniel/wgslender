@@ -708,6 +708,10 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/unused_warnings_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/code_lens_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     _ = addTestStep(b, test_step, "tests/incremental_sync_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
+    // Incremental splice retirement — detached declaration symbols are
+    // tombstoned (`Symbol.Flags.is_retired`) and every reporting surface
+    // must filter them.
+    _ = addTestStep(b, test_step, "tests/incremental_retire_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // LSP-driven analysis cache + wiring tests: every scenario drives
     // openDocument → changeDocumentIncremental → analyzeDocument and
     // cross-checks diagnostics against a fresh analyzeWithOptions oracle

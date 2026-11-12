@@ -2066,3 +2066,119 @@ test "lint: public API repeated calls no accumulation" {
         r.deinit(std.testing.allocator);
     }
 }
+
+// =========================================================================
+// Retirement — scans that walk `module.symbols` directly must skip
+// tombstones from the incremental splice path.
+// =========================================================================
+
+fn findRetireSymbol(module: *const wgslender.Ast.Module, name: []const u8) ?usize {
+    for (module.symbols.items, 0..) |sym, i| {
+        if (std.mem.eql(u8, sym.original_name, name)) return i;
+    }
+    return null;
+}
+
+fn retireSymbol(module: *wgslender.Ast.Module, idx: usize) void {
+    if (comptime @hasField(wgslender.Ast.Symbol.Flags, "is_retired")) {
+        @field(module.symbols.items[idx].flags, "is_retired") = true;
+    }
+}
+
+fn countDiagnosticCode(diags: *const wgslender.Diagnostic, code: []const u8) usize {
+    var n: usize = 0;
+    for (diags.items()) |d| {
+        if (std.mem.eql(u8, d.code, code)) n += 1;
+    }
+    return n;
+}
+
+fn lintHasCodeContaining(
+    result: *const wgslender.Linter.Result,
+    code: []const u8,
+    needle: []const u8,
+) bool {
+    for (result.diagnostics.items()) |d| {
+        if (!std.mem.eql(u8, d.code, code)) continue;
+        if (std.mem.indexOf(u8, d.message, needle) != null) return true;
+    }
+    return false;
+}
+
+test "reserved-name scan ignores retired declarations" {
+    const src: [:0]const u8 =
+        \\var __retired_bad: i32;
+        \\var __active_bad: i32;
+    ;
+    var parsed = try wgslender.Incremental.parseFull(std.testing.allocator, src);
+    defer parsed.deinit();
+
+    const retired_idx = findRetireSymbol(parsed.module, "__retired_bad").?;
+    retireSymbol(parsed.module, retired_idx);
+
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    var analysis = try wgslender.Validator.analyze(arena_inst.allocator(), parsed.module, .{});
+
+    try std.testing.expectEqual(@as(usize, 1), countDiagnosticCode(analysis.diagnostics, "E0105"));
+    for (analysis.diagnostics.items()) |d| {
+        if (!std.mem.eql(u8, d.code, "E0105")) continue;
+        try std.testing.expect(std.mem.indexOf(u8, d.message, "__active_bad") != null);
+        try std.testing.expect(std.mem.indexOf(u8, d.message, "__retired_bad") == null);
+    }
+}
+
+test "naming scan ignores retired declarations" {
+    const src: [:0]const u8 =
+        \\fn snake_retired() -> f32 { return 1.0; }
+        \\fn snake_active() -> f32 { return 2.0; }
+    ;
+    var parsed = try wgslender.Incremental.parseFull(std.testing.allocator, src);
+    defer parsed.deinit();
+
+    const retired_idx = findRetireSymbol(parsed.module, "snake_retired").?;
+    retireSymbol(parsed.module, retired_idx);
+
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    var analysis = try wgslender.Validator.analyze(arena_inst.allocator(), parsed.module, .{});
+
+    var r = try wgslender.Linter.run(std.testing.allocator, &analysis, naming_opts);
+    defer r.deinit(std.testing.allocator);
+
+    try std.testing.expect(!lintHasCodeContaining(&r, "W0200", "snake_retired"));
+    try std.testing.expect(lintHasCodeContaining(&r, "W0200", "snake_active"));
+}
+
+test "dead-code scan ignores retired declarations" {
+    const src: [:0]const u8 =
+        \\fn outer() -> i32 { return helper(); }
+        \\fn helper() -> i32 {
+        \\    let retired_scratch: i32 = 1;
+        \\    let active_scratch: i32 = 2;
+        \\    return retired_scratch + active_scratch;
+        \\}
+        \\@compute @workgroup_size(1) fn main() { _ = 1; }
+    ;
+    var parsed = try wgslender.Incremental.parseFull(std.testing.allocator, src);
+    defer parsed.deinit();
+
+    const retired_idx = findRetireSymbol(parsed.module, "retired_scratch").?;
+    retireSymbol(parsed.module, retired_idx);
+
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    var analysis = try wgslender.Validator.analyze(arena_inst.allocator(), parsed.module, .{});
+
+    // Populate liveness the way the production LSP/lint path does; the
+    // rule cannot report W0002 without it.
+    var liveness = try wgslender.Liveness.init(arena_inst.allocator(), parsed.module.symbols.items.len);
+    _ = try wgslender.Dce.mark(arena_inst.allocator(), parsed.module, &liveness);
+    analysis.liveness = liveness;
+
+    var r = try wgslender.Linter.run(std.testing.allocator, &analysis, recommended_opts);
+    defer r.deinit(std.testing.allocator);
+
+    try std.testing.expect(!lintHasCodeContaining(&r, "W0002", "retired_scratch"));
+    try std.testing.expect(lintHasCodeContaining(&r, "W0002", "active_scratch"));
+}

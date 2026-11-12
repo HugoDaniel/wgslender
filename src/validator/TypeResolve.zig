@@ -362,6 +362,7 @@ pub fn suggestIdentifier(v: *Validator, name: []const u8) ?[]const u8 {
     assert(best_dist > 0);
     // User-defined symbols
     for (v.module.symbols.items) |sym| {
+        if (sym.flags.is_retired) continue;
         if (sym.original_name.len == 0 or sym.kind == .unbound) continue;
         const d = levenshteinBounded(name, sym.original_name, best_dist);
         if (d < best_dist) {
@@ -396,6 +397,7 @@ pub fn suggestCallable(v: *Validator, name: []const u8, arg_count: ?usize) ?[]co
     }
     // User-defined functions
     for (v.module.symbols.items) |sym| {
+        if (sym.flags.is_retired) continue;
         if (sym.kind != .function or sym.original_name.len == 0) continue;
         const d = levenshteinBounded(name, sym.original_name, best_dist);
         if (d < best_dist) {

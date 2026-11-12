@@ -38,6 +38,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
     if (mangleExternalBindings(ctx)) return;
 
     for (ctx.module.symbols.items) |sym| {
+        if (sym.flags.is_retired) continue;
         if (!sym.flags.is_external_binding) continue;
         if (sym.original_name.len == 0) continue;
 

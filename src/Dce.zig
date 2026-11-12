@@ -31,19 +31,24 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
     }
     try buildDependencyGraph(arena, module, &deps);
 
-    // Find entry points
+    // Find entry points. Retired symbols are tombstones from the
+    // incremental splice path, not declarations — never roots.
     var entry_points: std.ArrayList(u32) = .empty;
     defer entry_points.deinit(arena);
     for (module.symbols.items, 0..) |sym, i| {
+        if (sym.flags.is_retired) continue;
         if (sym.flags.is_entry_point) {
             try entry_points.append(arena, @intCast(i));
         }
     }
 
     // No entry points means this is a shader library — we can't know what's
-    // used externally, so conservatively keep everything.
+    // used externally, so conservatively keep every active symbol. Retired
+    // bits stay unset (consumers test `is_retired` first).
     if (entry_points.items.len == 0) {
-        out.markAllLive();
+        for (module.symbols.items, 0..) |sym, i| {
+            if (!sym.flags.is_retired) out.markLive(@intCast(i));
+        }
         return 0;
     }
 
@@ -65,10 +70,16 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
         try visited.put(arena, idx, {});
 
         std.debug.assert(idx < module.symbols.items.len);
-        if (idx < module.symbols.items.len) out.markLive(idx);
+        if (idx < module.symbols.items.len) {
+            // Defensive: a retired symbol must never be found live, even
+            // if something enqueued it.
+            if (module.symbols.items[idx].flags.is_retired) continue;
+            out.markLive(idx);
+        }
 
         if (deps.get(idx)) |dep_list| {
             for (dep_list.items) |dep_idx| {
+                if (module.symbols.items[dep_idx].flags.is_retired) continue;
                 if (!visited.contains(dep_idx)) {
                     try queue.append(arena, dep_idx);
                 }
@@ -79,11 +90,23 @@ pub fn mark(arena: Allocator, module: *Ast.Module, out: *Liveness) Allocator.Err
     // BFS completeness: visited count must equal live count.
     std.debug.assert(visited.count() <= module.symbols.items.len);
 
-    const live = out.countLive();
-    const dead: u32 = @intCast(module.symbols.items.len - live);
-
-    // Post-conditions: live + dead == total, all entry points are live.
+    // Retired tombstones are not declarations: exclude them from the dead
+    // count. Their liveness bits stay unset and meaningless.
+    var retired: u32 = 0;
+    var dead: u32 = 0;
     for (module.symbols.items, 0..) |sym, i| {
+        if (sym.flags.is_retired) {
+            retired += 1;
+            continue;
+        }
+        if (!out.isLive(@intCast(i))) dead += 1;
+    }
+
+    // Post-conditions: active live + dead == active total, all active
+    // entry points are live.
+    std.debug.assert(out.countLive() + dead == @as(u32, @intCast(module.symbols.items.len)) - retired);
+    for (module.symbols.items, 0..) |sym, i| {
+        if (sym.flags.is_retired) continue;
         if (sym.flags.is_entry_point) std.debug.assert(out.isLive(@intCast(i)));
     }
 

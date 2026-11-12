@@ -99,3 +99,70 @@ test "liveness: minify drops dead decls per fresh Dce on synthetic shader" {
     ;
     try checkMinifyDceDecls(std.testing.allocator, src);
 }
+
+// =========================================================================
+// Retirement — DCE must never treat a retired symbol as a root, must
+// never mark one live, and must exclude it from the dead count.
+// =========================================================================
+
+fn findSymbol(module: *const Ast.Module, name: []const u8) ?usize {
+    for (module.symbols.items, 0..) |sym, i| {
+        if (std.mem.eql(u8, sym.original_name, name)) return i;
+    }
+    return null;
+}
+
+fn retireSymbol(module: *Ast.Module, idx: usize) void {
+    if (comptime @hasField(Ast.Symbol.Flags, "is_retired")) {
+        @field(module.symbols.items[idx].flags, "is_retired") = true;
+    }
+}
+
+test "liveness: DCE excludes retired symbols from roots and the dead count" {
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    const arena = arena_inst.allocator();
+
+    const src: [:0]const u8 =
+        \\fn activeHelper() -> i32 { return 1; }
+        \\fn activeDead() -> i32 { return 2; }
+        \\fn retiredHelper() -> i32 { return 3; }
+        \\@compute @workgroup_size(1) fn main() {
+        \\    let retiredLocal: i32 = 1;
+        \\    let x = activeHelper();
+        \\    _ = x;
+        \\}
+        \\@compute @workgroup_size(1) fn retiredMain() { _ = retiredHelper(); }
+    ;
+    const module = try parseOk(arena, src);
+
+    const retired_local = findSymbol(module, "retiredLocal").?;
+    const retired_main = findSymbol(module, "retiredMain").?;
+    const retired_helper = findSymbol(module, "retiredHelper").?;
+    const active_dead = findSymbol(module, "activeDead").?;
+    const main = findSymbol(module, "main").?;
+    const active_helper = findSymbol(module, "activeHelper").?;
+    const x = findSymbol(module, "x").?;
+
+    retireSymbol(module, retired_local);
+    retireSymbol(module, retired_main);
+    retireSymbol(module, retired_helper);
+
+    var liveness = try Liveness.init(arena, module.symbols.items.len);
+    const dead = try Dce.mark(arena, module, &liveness);
+
+    // Only the genuinely unreachable active function counts as dead; the
+    // retired local and the retired entry point's subtree do not.
+    try std.testing.expectEqual(@as(u32, 1), dead);
+    try std.testing.expect(!liveness.isLive(@intCast(active_dead)));
+
+    // Retired bits stay unset — consumers must test `is_retired` first.
+    try std.testing.expect(!liveness.isLive(@intCast(retired_local)));
+    try std.testing.expect(!liveness.isLive(@intCast(retired_main)));
+    try std.testing.expect(!liveness.isLive(@intCast(retired_helper)));
+
+    // Active reachability is unchanged.
+    try std.testing.expect(liveness.isLive(@intCast(main)));
+    try std.testing.expect(liveness.isLive(@intCast(active_helper)));
+    try std.testing.expect(liveness.isLive(@intCast(x)));
+}

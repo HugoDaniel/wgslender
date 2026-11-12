@@ -289,3 +289,54 @@ test "incremental sync: doc.parse survives trivia-only edit" {
     try std.testing.expectEqualStrings("// header\nfn f() {}", parse.source);
     try std.testing.expectEqualStrings(parse.source, doc.source);
 }
+
+fn expectNoDocumentDiagnostics(handler: *Handler, uri: []const u8) !void {
+    const diags = try handler.validateDocumentFull(uri);
+    defer Handler.freeDiagnostics(std.testing.allocator, diags);
+    if (diags.len != 0) {
+        for (diags) |d| {
+            std.debug.print("  unexpected {s}:{d}:{d} {s}\n", .{
+                d.code, d.range.start.line, d.range.start.character, d.message,
+            });
+        }
+        return error.UnexpectedDiagnostics;
+    }
+}
+
+test "incremental sync: comment insert/delete leaves no residual unused warnings" {
+    // A non-zero-delta trivia edit inside a function body takes the
+    // append-only compound/decl splice path, which retires the previous
+    // declaration symbols. Those tombstones must not surface as W0001.
+    const source: [:0]const u8 =
+        \\@compute @workgroup_size(1) fn main() {
+        \\    let a: i32 = 1;
+        \\    let b: i32 = a + 1;
+        \\    _ = b;
+        \\}
+    ;
+    const uri = "test://file.wgsl";
+    const ctx = try setup(source);
+    defer teardown(ctx);
+
+    try expectNoDocumentDiagnostics(ctx.handler, uri);
+
+    // Insert a trailing `//` after the last body statement, then delete it
+    // again so the document is byte-identical to the clean source.
+    const stmt_end: u32 = @intCast(std.mem.indexOf(u8, source, "_ = b;").? + "_ = b;".len);
+    const doc = ctx.handler.documents.getPtr(uri).?;
+    const insert_range = Handler.offsetRangeToLspRange(doc.source, stmt_end, stmt_end).?;
+    try ctx.handler.changeDocumentIncremental(uri, insert_range, "//");
+    try expectNoDocumentDiagnostics(ctx.handler, uri);
+
+    const mid = ctx.handler.getDocumentSource(uri).?;
+    const delete_range = Handler.offsetRangeToLspRange(mid, stmt_end, stmt_end + 2).?;
+    try ctx.handler.changeDocumentIncremental(uri, delete_range, "");
+    try std.testing.expectEqualStrings(source, ctx.handler.getDocumentSource(uri).?);
+
+    try expectNoDocumentDiagnostics(ctx.handler, uri);
+
+    // Same final bytes opened fresh must produce the same (empty) set.
+    const fresh = try setup(source);
+    defer teardown(fresh);
+    try expectNoDocumentDiagnostics(fresh.handler, uri);
+}

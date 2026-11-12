@@ -296,6 +296,13 @@ pub fn tryCompoundSpliceInPlace(
 
     const old_compound = findCompoundBySpan(prev.module, old_anchor_span) orelse return error.AstSlotNotFound;
 
+    // 1b. Retire every declaration in the detached subtree BEFORE step 7
+    //     overwrites `old_compound`. The walk is recursive and AST-based
+    //     (not `Scope.members`-based) so duplicate declarations the scope
+    //     map overwrote are still tombstoned; references, parameters,
+    //     module-level declarations and struct members are untouched.
+    retireCompound(prev.module, old_compound);
+
     // 2. Sub-walk the old compound. Scopes_in_order is the DFS listing
     //    starting with the compound's own scope (the walker calls
     //    `enterNextScope` once on entering the compound).
@@ -514,6 +521,11 @@ pub fn tryDeclStmtSpliceInPlace(
     };
     const old_stmt = parent_compound.stmts.items[slot_idx];
 
+    // 3b. Retire exactly the declaration being replaced, before the slot
+    //     is overwritten in step 8. Nothing else in the parent block is
+    //     detached by this splice.
+    retireName(prev.module, old_stmt.decl.decl.nameRef());
+
     // 4. Remove the OLD decl's name from parent_scope.members, but only
     //    if it currently points at the OLD decl's symbol — a duplicate
     //    earlier decl with the same name (E0101 territory) should keep
@@ -612,6 +624,61 @@ pub fn tryDeclStmtSpliceInPlace(
 
     // 10. Commit — see commitInPlace.
     return commitInPlace(gpa, prev, prev_arena, new_source, new_tree, tmp_result.scope_for_cst_node, old_anchor_span, delta, add_errors.items);
+}
+
+// =========================================================================
+// Retirement.
+//
+// `module.symbols` is append-only: re-lowering a detached block appends
+// fresh symbols for its declarations and leaves the old copies behind
+// with `use_count == 0`. Before the old AST subtree is overwritten, every
+// declaration it owns is marked `is_retired` so reporting predicates can
+// distinguish a tombstone from a genuinely-unused declaration.
+//
+// The walk covers the whole detached statement subtree, not just
+// `Scope.members`: `Parser.declareSymbol` overwrites a same-name scope
+// entry while still appending its symbol, so earlier duplicates can be
+// absent from the scope map yet present in the AST. References are not
+// declarations and are never retired.
+// =========================================================================
+
+fn retireName(module: *Ast.Module, name: Ast.SymbolIndex) void {
+    if (!name.isValid()) return;
+    const idx = name.index();
+    if (idx >= module.symbols.items.len) return;
+    module.symbols.items[idx].flags.is_retired = true;
+}
+
+fn retireCompound(module: *Ast.Module, compound: *const Ast.CompoundStmt) void {
+    for (compound.stmts.items) |stmt| retireStmtSubtree(module, stmt);
+}
+
+fn retireStmtSubtree(module: *Ast.Module, stmt: Ast.Stmt) void {
+    switch (stmt) {
+        .decl => |s| retireName(module, s.decl.nameRef()),
+        .compound => |s| retireCompound(module, s),
+        .@"if" => |s| {
+            retireCompound(module, s.body);
+            if (s.else_branch) |eb| retireStmtSubtree(module, eb);
+        },
+        .@"switch" => |s| {
+            for (s.cases.items) |case| retireCompound(module, case.body);
+        },
+        .@"for" => |s| {
+            // `for` initializers (and updates, which grammar-wise cannot
+            // declare, but walk uniformly) live in stmt slots, not the body.
+            if (s.init_stmt) |is| retireStmtSubtree(module, is);
+            if (s.update) |u| retireStmtSubtree(module, u);
+            retireCompound(module, s.body);
+        },
+        .@"while" => |s| retireCompound(module, s.body),
+        .loop => |s| {
+            retireCompound(module, s.body);
+            if (s.continuing) |c| retireCompound(module, c);
+        },
+        // Other statement kinds cannot introduce declarations.
+        else => {},
+    }
 }
 
 // =========================================================================

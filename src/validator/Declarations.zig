@@ -140,6 +140,8 @@ pub fn processDirectives(v: *Validator) Allocator.Error!void {
 /// the single owner of the message; the parser emits nothing.
 pub fn checkReservedIdentifiers(v: *Validator) void {
     for (v.module.symbols.items, 0..) |sym, i| {
+        // A detached declaration is no longer part of the module.
+        if (sym.flags.is_retired) continue;
         switch (sym.kind) {
             .unbound, .builtin => continue,
             else => {},
@@ -986,6 +988,7 @@ pub fn checkSuspiciousBindingPatterns(v: *Validator) void {
 pub fn countEntryPoints(module: *const Ast.Module) u32 {
     var count: u32 = 0;
     for (module.symbols.items) |sym| {
+        if (sym.flags.is_retired) continue;
         if (sym.flags.is_entry_point) count += 1;
     }
     return count;
@@ -1005,6 +1008,7 @@ pub fn validatePerEntryPointBindings(v: *Validator) Allocator.Error!void {
 
     // For each entry point, BFS to find reachable symbols, then check binding collisions
     for (v.module.symbols.items, 0..) |sym, idx| {
+        if (sym.flags.is_retired) continue;
         if (!sym.flags.is_entry_point) continue;
 
         // BFS from this entry point

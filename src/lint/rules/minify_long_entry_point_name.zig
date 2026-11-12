@@ -36,6 +36,7 @@ const DEFAULT_MAX: u32 = 8;
 fn run(ctx: *Context) error{OutOfMemory}!void {
     const max = readMax(ctx);
     for (ctx.module.symbols.items) |sym| {
+        if (sym.flags.is_retired) continue;
         if (sym.kind != .function) continue;
         if (!sym.flags.is_entry_point) continue;
         if (sym.original_name.len == 0) continue;

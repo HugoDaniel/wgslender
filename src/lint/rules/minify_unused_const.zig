@@ -33,6 +33,7 @@ pub const rule = Rule{
 
 fn run(ctx: *Context) error{OutOfMemory}!void {
     for (ctx.module.symbols.items, 0..) |sym, i| {
+        if (sym.flags.is_retired) continue;
         if (sym.kind != .@"const") continue;
         if (ctx.useCount(@intCast(i)) > 0) continue;
         if (sym.original_name.len == 0) continue;

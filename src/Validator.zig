@@ -261,6 +261,9 @@ pub const AnalysisResult = struct {
         const module = self.module orelse return false;
         if (sym_idx >= module.symbols.items.len) return false;
         const sym = module.symbols.items[sym_idx];
+        // Tombstone from an incremental splice: the declaration no longer
+        // exists in the module, so it cannot be "unused".
+        if (sym.flags.is_retired) return false;
         if (self.useCount(sym_idx) > 0) return false;
         if (sym.original_name.len == 0) return false;
         // A `_` symbol only exists because the parser accepted `_` in a
@@ -290,6 +293,7 @@ pub const AnalysisResult = struct {
         // samplers as plain unused variables (W0001) instead of unused
         // bindings, losing the "consumes a bind group layout slot" message
         // for exactly the bindings most likely to be forgotten.
+        if (sym.flags.is_retired) return false;
         if (!sym.flags.is_api_facing) return false;
         if (self.useCount(sym_idx) > 0) return false;
         if (sym.original_name.len == 0) return false;
@@ -304,6 +308,7 @@ pub const AnalysisResult = struct {
     pub fn hasEntryPoints(self: *const AnalysisResult) bool {
         const module = self.module orelse return false;
         for (module.symbols.items) |sym| {
+            if (sym.flags.is_retired) continue;
             if (sym.flags.is_entry_point) return true;
         }
         return false;
@@ -325,6 +330,8 @@ pub const AnalysisResult = struct {
         const module = self.module orelse return false;
         if (sym_idx >= module.symbols.items.len) return false;
         const sym = module.symbols.items[sym_idx];
+        // Retired liveness bits are not meaningful — test retirement first.
+        if (sym.flags.is_retired) return false;
         const liv = self.liveness orelse return false;
         if (liv.isLive(sym_idx)) return false;
         // use_count == 0 is W0001's territory (never referenced at all).

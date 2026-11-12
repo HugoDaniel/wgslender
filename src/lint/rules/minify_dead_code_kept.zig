@@ -38,6 +38,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
     // flag. Skip identically to `no-dead-code`.
     var has_entry_points = false;
     for (module.symbols.items) |sym| {
+        if (sym.flags.is_retired) continue;
         if (sym.flags.is_entry_point) {
             has_entry_points = true;
             break;
@@ -46,6 +47,7 @@ fn run(ctx: *Context) error{OutOfMemory}!void {
     if (!has_entry_points) return;
 
     for (module.symbols.items, 0..) |sym, i| {
+        if (sym.flags.is_retired) continue;
         if (ctx.isLive(@intCast(i))) continue;
         // Never-referenced symbols belong to `no-unused-vars` /
         // `minify/unused-const` — this rule only fires when something

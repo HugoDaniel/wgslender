@@ -27,7 +27,10 @@
 //!     - Module.scope is a tree of binding maps (`scope.parent` walks
 //!       outward); each scope holds the symbol indices declared in it.
 //!
-//!   Side-tables (B.M5): the Symbol record is immutable after Pass 1.
+//!   Side-tables (B.M5): the Symbol record is immutable after Pass 1,
+//!   with exactly one lifecycle carve-out: `Symbol.Flags.is_retired`,
+//!   set by the incremental splice path when a declaration's AST subtree
+//!   is detached (the symbol table is append-only, so the record stays).
 //!   Per-pipeline analysis state lives off-record:
 //!     - use counts on `Module.use_counts` (UseCounts)
 //!     - liveness on `Module.liveness` (Liveness)
@@ -43,8 +46,10 @@
 //!   - `Module.source` is sentinel-terminated and the AST's `loc` and
 //!     `span` fields index into it directly.
 //!   - Symbol fields are write-once (set by the Parser at declaration
-//!     time, then read-only). Analysis state lives in `Module.use_counts`,
-//!     `Module.liveness`, and per-call `RenamePolicy`.
+//!     time, then read-only) except `flags.is_retired`, which the
+//!     incremental splice path sets once when it detaches a declaration.
+//!     Analysis state lives in `Module.use_counts`, `Module.liveness`,
+//!     and per-call `RenamePolicy`.
 
 const std = @import("std");
 const Lexer = @import("Lexer.zig");
@@ -105,12 +110,14 @@ pub const Symbol = struct {
     /// Declaration category (var / const / fn / struct / …). Determines
     /// which kinds of references can bind and how Dce treats the symbol.
     kind: Kind,
-    /// Packed flag bits (entry point, api facing, builtin, external binding).
-    /// B.M5 removed mutable analysis flags (`use_count`, `is_live`,
+    /// Packed flag bits (entry point, api facing, builtin, external binding,
+    /// retired). B.M5 removed mutable analysis flags (`use_count`, `is_live`,
     /// `must_not_be_renamed`, `parser_wants_no_rename`) — they live on
     /// per-pipeline side-tables (`Module.use_counts`, `Module.liveness`,
     /// per-call `RenamePolicy`) so the symbol record stays immutable past
-    /// Pass 1.
+    /// Pass 1. `is_retired` is the single lifecycle exception: the
+    /// incremental splice path flips it on a symbol whose declaration
+    /// subtree was detached, and readers filter the tombstone out.
     flags: Flags,
     /// Byte offset in source where this symbol is declared.
     loc: u32 = 0,
@@ -129,7 +136,7 @@ pub const Symbol = struct {
         member,
     };
 
-    /// Bit-packed symbol flags (4 bools + 4-bit padding = 1 byte).
+    /// Bit-packed symbol flags (5 bools + 3-bit padding = 1 byte).
     /// Layout is fixed — see comptime assertion at end of file.
     /// B.M6 shrunk the backing type from `u16` to `u8` after B.M5
     /// removed the four mutable analysis bits.
@@ -149,7 +156,14 @@ pub const Symbol = struct {
         /// for every shader with a texture. Do not use it to mean "is a
         /// binding" — that is what `is_api_facing` is for.
         is_external_binding: bool = false,
-        _padding: u4 = 0,
+        /// Set by the incremental splice path on a declaration symbol
+        /// whose AST subtree was detached and re-lowered. The symbol
+        /// table is append-only, so the tombstone remains; every reader
+        /// that scans `module.symbols` must skip retired entries (the
+        /// shared reporting predicates do this first). Fresh `parseFull`
+        /// symbols are always `false`.
+        is_retired: bool = false,
+        _padding: u3 = 0,
     };
 };
 

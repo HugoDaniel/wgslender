@@ -878,3 +878,68 @@ test "@wgslender/minify pack lists M0500 (silent without maxBytes)" {
     try std.testing.expect(!hasCode(r, "M0500"));
 }
 
+// =========================================================================
+// Retirement — the M-rules that scan `module.symbols` directly must skip
+// tombstones while equivalent active entries still report.
+// =========================================================================
+
+fn findSymbol(module: *const wgslender.Ast.Module, name: []const u8) ?usize {
+    for (module.symbols.items, 0..) |sym, i| {
+        if (std.mem.eql(u8, sym.original_name, name)) return i;
+    }
+    return null;
+}
+
+fn retireSymbol(module: *wgslender.Ast.Module, idx: usize) void {
+    if (comptime @hasField(wgslender.Ast.Symbol.Flags, "is_retired")) {
+        @field(module.symbols.items[idx].flags, "is_retired") = true;
+    }
+}
+
+fn lintResultHasCodeContaining(
+    result: *const wgslender.Linter.Result,
+    code: []const u8,
+    needle: []const u8,
+) bool {
+    for (result.diagnostics.items()) |d| {
+        if (!std.mem.eql(u8, d.code, code)) continue;
+        if (std.mem.indexOf(u8, d.message, needle) != null) return true;
+    }
+    return false;
+}
+
+test "M-rules ignore retired symbols" {
+    const src: [:0]const u8 =
+        \\const RETIRED_CONST: f32 = 1.0;
+        \\const ACTIVE_CONST: f32 = 2.0;
+        \\@id(0) override RETIRED_OVERRIDE: u32 = 8;
+        \\@id(1) override ACTIVE_OVERRIDE: u32 = 9;
+        \\fn deadRetired() -> i32 { return 1; }
+        \\fn deadActive() -> i32 { return 2; }
+        \\fn caller() -> i32 { return deadRetired() + deadActive(); }
+        \\@compute @workgroup_size(1) fn main() { _ = 1; }
+    ;
+
+    var analysis = try wgslender.analyzeWithOptions(std.testing.allocator, src, .{});
+    defer analysis.deinit();
+    const module = analysis.module.?;
+
+    retireSymbol(module, findSymbol(module, "RETIRED_CONST").?);
+    retireSymbol(module, findSymbol(module, "RETIRED_OVERRIDE").?);
+    retireSymbol(module, findSymbol(module, "deadRetired").?);
+
+    var r = try wgslender.Linter.run(std.testing.allocator, &analysis, minify_opts);
+    defer r.deinit(std.testing.allocator);
+
+    // M0201 — minify/unused-const.
+    try std.testing.expect(!lintResultHasCodeContaining(&r, "M0201", "RETIRED_CONST"));
+    try std.testing.expect(lintResultHasCodeContaining(&r, "M0201", "ACTIVE_CONST"));
+
+    // M0202 — minify/unused-override.
+    try std.testing.expect(!lintResultHasCodeContaining(&r, "M0202", "RETIRED_OVERRIDE"));
+    try std.testing.expect(lintResultHasCodeContaining(&r, "M0202", "ACTIVE_OVERRIDE"));
+
+    // M0200 — minify/dead-code-kept (entry-point scan + report scan).
+    try std.testing.expect(!lintResultHasCodeContaining(&r, "M0200", "deadRetired"));
+    try std.testing.expect(lintResultHasCodeContaining(&r, "M0200", "deadActive"));
+}

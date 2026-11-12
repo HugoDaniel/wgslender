@@ -113,6 +113,7 @@ fn conventionForKind(kind_tag: anytype) ?Convention {
 
 fn run(ctx: *Context) error{OutOfMemory}!void {
     for (ctx.module.symbols.items) |sym| {
+        if (sym.flags.is_retired) continue;
         if (sym.original_name.len == 0) continue;
         if (sym.flags.is_builtin) continue;
         if (sym.flags.is_entry_point) continue;

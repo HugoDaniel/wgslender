@@ -1,6 +1,7 @@
 const std = @import("std");
 const Handler = @import("Handler");
 const wgslender = @import("wgslender");
+const Ast = wgslender.Ast;
 
 fn getUnusedWarnings(source: [:0]const u8) ![]Handler.LspDiagnostic {
     var result = try wgslender.analyzeWithOptions(std.testing.allocator, source, .{});
@@ -392,4 +393,97 @@ test "unused binding: private var not treated as binding" {
     defer freeWarnings(warnings);
     // Private vars are not bindings, should not appear here
     try std.testing.expectEqual(@as(usize, 0), warnings.len);
+}
+
+// =========================================================================
+// Retirement — tombstones from the incremental splice path must not reach
+// any of the three W000x predicates or their LSP passes.
+// =========================================================================
+
+fn findSymbol(module: *const Ast.Module, name: []const u8) ?usize {
+    for (module.symbols.items, 0..) |sym, i| {
+        if (std.mem.eql(u8, sym.original_name, name)) return i;
+    }
+    return null;
+}
+
+fn retireSymbol(module: *Ast.Module, idx: usize) void {
+    if (comptime @hasField(Ast.Symbol.Flags, "is_retired")) {
+        @field(module.symbols.items[idx].flags, "is_retired") = true;
+    }
+}
+
+fn warnsAbout(warnings: []const Handler.LspDiagnostic, name: []const u8) bool {
+    return messageContaining(warnings, name) != null;
+}
+
+test "retired symbols are suppressed by W0001/W0002/W0003 predicates" {
+    const source: [:0]const u8 =
+        \\fn deadRetired() -> i32 { return 1; }
+        \\fn deadActive() -> i32 { return 2; }
+        \\fn caller() -> i32 { return deadRetired() + deadActive(); }
+        \\fn unusedRetired() { let retired_let: i32 = 1; }
+        \\fn unusedActive() { let active_let: i32 = 1; }
+        \\@group(0) @binding(0) var<uniform> retired_binding: f32;
+        \\@group(0) @binding(1) var<uniform> active_binding: f32;
+        \\@compute @workgroup_size(1) fn main() { _ = 1; }
+    ;
+
+    var analysis = try wgslender.analyzeWithOptions(std.testing.allocator, source, .{});
+    defer analysis.deinit();
+    const module = analysis.module.?;
+
+    const retired_let = findSymbol(module, "retired_let").?;
+    const active_let = findSymbol(module, "active_let").?;
+    const retired_binding = findSymbol(module, "retired_binding").?;
+    const active_binding = findSymbol(module, "active_binding").?;
+    const retired_dead = findSymbol(module, "deadRetired").?;
+    const active_dead = findSymbol(module, "deadActive").?;
+
+    retireSymbol(module, retired_let);
+    retireSymbol(module, retired_binding);
+    retireSymbol(module, retired_dead);
+
+    // W0001 — declared but never used.
+    try std.testing.expect(!analysis.isUnusedReportable(@intCast(retired_let)));
+    try std.testing.expect(analysis.isUnusedReportable(@intCast(active_let)));
+
+    // W0003 — declared but never used binding.
+    try std.testing.expect(!analysis.isUnusedBindingReportable(@intCast(retired_binding)));
+    try std.testing.expect(analysis.isUnusedBindingReportable(@intCast(active_binding)));
+
+    // W0002 — referenced but unreachable from any active entry point.
+    var arena_inst = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_inst.deinit();
+    var liveness = try wgslender.Liveness.init(arena_inst.allocator(), module.symbols.items.len);
+    _ = try wgslender.Dce.mark(arena_inst.allocator(), module, &liveness);
+    analysis.liveness = liveness;
+
+    try std.testing.expect(!analysis.isDeadCodeReportable(@intCast(retired_dead)));
+    try std.testing.expect(analysis.isDeadCodeReportable(@intCast(active_dead)));
+
+    // The LSP passes share those predicates, so they must agree.
+    var diags: std.ArrayListUnmanaged(Handler.LspDiagnostic) = .empty;
+    defer {
+        for (diags.items) |d| {
+            std.testing.allocator.free(d.message);
+            switch (d.data) {
+                .unused_symbol => |s| std.testing.allocator.free(s),
+                else => {},
+            }
+        }
+        diags.deinit(std.testing.allocator);
+    }
+
+    Handler.appendUnusedWarnings(std.testing.allocator, &analysis, &diags);
+    try std.testing.expect(!warnsAbout(diags.items, "retired_let"));
+    try std.testing.expect(warnsAbout(diags.items, "active_let"));
+
+    Handler.appendUnusedBindingWarnings(std.testing.allocator, &analysis, &diags);
+    try std.testing.expect(!warnsAbout(diags.items, "retired_binding"));
+    try std.testing.expect(warnsAbout(diags.items, "active_binding"));
+
+    Handler.appendDeadCodeWarnings(std.testing.allocator, &analysis, &diags);
+    try std.testing.expect(!warnsAbout(diags.items, "deadRetired"));
+    try std.testing.expect(warnsAbout(diags.items, "deadActive"));
 }
