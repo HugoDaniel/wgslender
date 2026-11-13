@@ -16,11 +16,64 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // Read the `lsp` switch before any module declaration: it decides
+    // which module graph gets wired (the sjon block right below) and
+    // where the early return for `-Dlsp=false` cuts the build in two
+    // (after the release-assets step).
+    const want_lsp = b.option(
+        bool,
+        "lsp",
+        "Declare the steps that need the lsp_kit and sjon dependencies — " ++
+            "the LSP, the tests and the generators. False leaves only " ++
+            "run/wasm/lib/lib-pic-check/lsp-wasm/release-assets and " ++
+            "fetches nothing (default: true)",
+    ) orelse true;
+
+    // pngine project support (pngine-shaders phase 01): SJON, pinned by
+    // URL+hash in build.zig.zon, resolved lazily, native graphs only.
+    // The call itself is the fetch trigger — merely asking for a lazy
+    // dependency makes the build runner download it — so it is guarded
+    // by `want_lsp`; a `-Dlsp=false` build never reaches it and stays
+    // offline. `plugin-exec=false` keeps the dependency
+    // declarative-only: no libwasmtime link (the same resolution pngine
+    // itself makes, ../pngine/build.zig). Until the first fetch
+    // completes this returns null and the runner re-runs build(); on
+    // that pass the native graph is configured without project support,
+    // exactly like `-Dlsp=false`.
+    const sjon_dep = if (want_lsp) b.lazyDependency("sjon", .{
+        .target = target,
+        .optimize = optimize,
+        .@"plugin-exec" = false,
+    }) else null;
+    const sjon_mod = if (sjon_dep) |dep| dep.module("sjon") else null;
+
+    // Generated `pngine_support` build option, threaded into every graph
+    // that compiles src/root.zig:
+    //   * native — true exactly when SJON resolved above, and paired
+    //     with the `sjon` module import, so src/pngine/* compiles only
+    //     where the dependency was resolved;
+    //   * core — false, for the wasm/lib/lsp-wasm graphs, which never
+    //     see the sjon import. root.zig compiles the pngine exports out
+    //     wherever the flag is false: no runtime "maybe SJON exists"
+    //     mode exists anywhere.
+    const native_options = b.addOptions();
+    native_options.addOption(bool, "pngine_support", sjon_mod != null);
+    const native_options_mod = native_options.createModule();
+    const core_options = b.addOptions();
+    core_options.addOption(bool, "pngine_support", false);
+    const core_options_mod = core_options.createModule();
+
     // Core library module
     const wgslender_mod = b.addModule("wgslender", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = if (sjon_mod) |m| &.{
+            .{ .name = "build_options", .module = native_options_mod },
+            .{ .name = "sjon", .module = m },
+        } else &.{
+            .{ .name = "build_options", .module = native_options_mod },
+        },
     });
 
     // Native CLI
@@ -50,12 +103,18 @@ pub fn build(b: *std.Build) void {
         .cpu_arch = .wasm32,
         .os_tag = .freestanding,
     });
+    // src/wasm.zig reaches src/root.zig by relative import, so the
+    // build_options import (the pngine gating root.zig reads) must ride
+    // this module too — project-free, hence the core (false) options.
     const wasm = b.addExecutable(.{
         .name = "wgslender",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/wasm.zig"),
             .target = wasm_target,
             .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "build_options", .module = core_options_mod },
+            },
         }),
     });
     wasm.entry = .disabled;
@@ -66,7 +125,7 @@ pub fn build(b: *std.Build) void {
     wasm_step.dependOn(&install_wasm.step);
 
     // C static library
-    const lib = staticLibrary(b, target, optimize);
+    const lib = staticLibrary(b, target, optimize, core_options_mod);
     const install_lib = b.addInstallArtifact(lib, .{});
     const install_header = b.addInstallFile(b.path("include/wgslender.h"), "include/wgslender.h");
     const lib_step = b.step("lib", "Build C static library (libwgslender.a)");
@@ -87,7 +146,7 @@ pub fn build(b: *std.Build) void {
     );
     for ([_][]const u8{ "x86_64-linux-gnu", "aarch64-linux-gnu" }) |triple| {
         const query = std.Target.Query.parse(.{ .arch_os_abi = triple }) catch unreachable;
-        const archive = staticLibrary(b, b.resolveTargetQuery(query), .ReleaseFast);
+        const archive = staticLibrary(b, b.resolveTargetQuery(query), .ReleaseFast, core_options_mod);
         const link = b.addSystemCommand(&.{ b.graph.zig_exe, "cc", "-target", triple, "-shared", "-Wl,--whole-archive" });
         link.addFileArg(archive.getEmittedBin());
         link.addArgs(&.{ "-Wl,--no-whole-archive", "-o" });
@@ -96,32 +155,177 @@ pub fn build(b: *std.Build) void {
         lib_pic_check_step.dependOn(&link.step);
     }
 
-    // `-Dlsp=false` returns here, which leaves only the four steps declared
-    // above it: `run`, `wasm`, `lib` and `lib-pic-check`. Everything below — the LSP, the tests,
-    // the generators — is gone, so this is a switch for a build that wants the
-    // library and nothing else, not a way to trim the LSP out of a normal one.
+    // LSP server (WASM). Declared above the `-Dlsp=false` return —
+    // unlike the native LSP it needs no `lsp_kit` (lsp/wasm.zig rolls
+    // its own JSON-RPC dispatcher over the wire modules) and no `sjon`
+    // (project support is native-only), so it stays on the core side of
+    // the boundary even though it is an LSP artefact.
+    const wgslender_wasm_mod = b.addModule("wgslender-wasm", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "build_options", .module = core_options_mod },
+        },
+    });
+    // Wasm-target Handler module — referenced by `lsp/wasm/<feature>.zig`
+    // adapters via `@import("Handler")` so they don't need cross-directory
+    // relative imports (Zig forbids `../` reaches outside a test module's
+    // root path).
+    const handler_wasm_mod = b.addModule("Handler-wasm", .{
+        .root_source_file = b.path("lsp/Handler.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "wgslender", .module = wgslender_wasm_mod },
+        },
+    });
+    // Wire codec tree — manual-JSON helpers shared by every wasm/<feature>.zig
+    // adapter. Registered as a build module so `lsp/wasm/<feature>.zig` and
+    // its tests can reach `wire/primitives.zig` without a `../`-style
+    // relative import (forbidden across module roots).
+    const wire_wasm_mod = b.addModule("wire-wasm", .{
+        .root_source_file = b.path("lsp/wire_root.zig"),
+        .target = wasm_target,
+        .optimize = .ReleaseSmall,
+        .imports = &.{
+            .{ .name = "Handler", .module = handler_wasm_mod },
+            .{ .name = "wgslender", .module = wgslender_wasm_mod },
+        },
+    });
+    const lsp_wasm = b.addExecutable(.{
+        .name = "wgslender-lsp",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("lsp/wasm.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "wgslender", .module = wgslender_wasm_mod },
+                .{ .name = "Handler", .module = handler_wasm_mod },
+                .{ .name = "wire", .module = wire_wasm_mod },
+            },
+        }),
+    });
+    lsp_wasm.entry = .disabled;
+    lsp_wasm.rdynamic = true;
+
+    const install_lsp_wasm = b.addInstallArtifact(lsp_wasm, .{});
+    const lsp_wasm_step = b.step("lsp-wasm", "Build the WGSL LSP WASM module");
+    lsp_wasm_step.dependOn(&install_lsp_wasm.step);
+
+    // Release assets — every in-tree copy of the two WASM modules, written
+    // from one build.
     //
-    // What it buys is the fetch. `b.lazyDependency` registers `lsp_kit` as
-    // wanted and *then* returns null, so the build runner downloads the tarball
-    // and re-runs `build()` even when the requested step is `lib` and the
-    // `orelse return` below skips the whole LSP graph. The download needs the
-    // network, and Zig materializes the result in `zig-pkg/` beside the
-    // sources. `wgslender-sys/build.rs` can afford neither: it builds from a
-    // crate a consumer unpacked, which cargo checksums and which may well be on
-    // a machine that is offline.
-    const want_lsp = b.option(
-        bool,
-        "lsp",
-        "Declare the steps that need the lsp_kit dependency — the LSP, the " ++
-            "tests and the generators. False leaves only run/wasm/lib/lib-pic-check and " ++
-            "fetches nothing (default: true)",
-    ) orelse true;
+    // This used to feed npm/wgslender-vscode/dist/ only, and the other three
+    // destinations were copied by hand or by a package's own prepublish
+    // script. npm/wgslender-lsp/wgslender-lsp.wasm had no writer at all and
+    // went stale for a stretch of LSP commits — silently, because a drifted
+    // WASM does not crash, it answers questions using the old wire format.
+    // Anything shipping a WASM copy belongs in this list.
+    //
+    // packages/go keeps its own copy because `go:embed` cannot reach outside
+    // the module (see packages/go/internal/wasmabi/abi.go). That duplication
+    // is unavoidable; what changes here is that a build step writes it.
+    //
+    // Lives above the `-Dlsp=false` return because it packages only the two
+    // wasm artefacts declared above — no lsp_kit, no sjon.
+    //
+    // Paths are relative to the install prefix (zig-out), hence the `../`.
+    const release_asset_copies = [_]*std.Build.Step.InstallFile{
+        b.addInstallFile(wasm.getEmittedBin(), "../packages/js-npm/wgslender.wasm"),
+        b.addInstallFile(wasm.getEmittedBin(), "../packages/go/internal/wasmabi/wgslender.wasm"),
+        b.addInstallFile(wasm.getEmittedBin(), "../npm/wgslender-vscode/dist/wgslender.wasm"),
+        b.addInstallFile(lsp_wasm.getEmittedBin(), "../npm/wgslender-lsp/wgslender-lsp.wasm"),
+        b.addInstallFile(lsp_wasm.getEmittedBin(), "../npm/wgslender-vscode/dist/wgslender-lsp.wasm"),
+    };
+    const release_assets_step = b.step("release-assets", "Copy the WASM artefacts into every package that ships one");
+    // Kept as an alias: `vscode-assets` is referenced from the extension's
+    // own docs and from muscle memory.
+    const vscode_assets_step = b.step("vscode-assets", "Alias for release-assets");
+    for (release_asset_copies) |copy| {
+        release_assets_step.dependOn(&copy.step);
+    }
+    vscode_assets_step.dependOn(release_assets_step);
+
+    // Compile-level proof that the three project-free graphs stay
+    // project-free (pngine-shaders phase 01). The check file carries
+    // comptime assertions — `pngine_support` must be false and
+    // `wgslender.Pngine` must be compiled out — and is compiled as an
+    // object per graph, wired into that graph's step, so
+    // `zig build wasm|lib|lsp-wasm` fails if project support ever leaks
+    // into one of them. Compile-level rather than a test because the
+    // property is per-compilation: the native test binary always
+    // carries SJON and cannot see inside another graph.
+    //
+    // wasm + lsp-wasm share the wasm-target `wgslender-wasm` module —
+    // the exact instance lsp-wasm links, and the same file+options the
+    // `wasm` executable compiles through src/wasm.zig's relative import.
+    const project_free_wasm = b.addObject(.{
+        .name = "pngine-project-free-wasm",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/pngine_project_free_check.zig"),
+            .target = wasm_target,
+            .optimize = .ReleaseSmall,
+            .imports = &.{
+                .{ .name = "build_options", .module = core_options_mod },
+                .{ .name = "wgslender", .module = wgslender_wasm_mod },
+            },
+        }),
+    });
+    wasm_step.dependOn(&project_free_wasm.step);
+    lsp_wasm_step.dependOn(&project_free_wasm.step);
+    // The lib graph compiles src/root.zig inside src/lib.zig's own module
+    // (relative import), so there is no named root module to hook; this
+    // check compiles src/root.zig under the lib graph's exact
+    // target/optimize/options — the configuration staticLibrary() builds.
+    const project_free_lib_root = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = core_options_mod },
+        },
+    });
+    const project_free_lib = b.addObject(.{
+        .name = "pngine-project-free-lib",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/pngine_project_free_check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = core_options_mod },
+                .{ .name = "wgslender", .module = project_free_lib_root },
+            },
+        }),
+    });
+    lib_step.dependOn(&project_free_lib.step);
+
+    // `-Dlsp=false` returns here, which leaves the six steps declared
+    // above it: `run`, `wasm`, `lib`, `lib-pic-check`, `lsp-wasm` and
+    // `release-assets` (plus the `vscode-assets` alias). Everything
+    // below — the native LSP, the tests, the generators — is gone, so
+    // this is a switch for a build that wants the library and nothing
+    // else, not a way to trim the LSP out of a normal one.
+    //
+    // What it buys is the fetch. `b.lazyDependency` registers the
+    // dependency as wanted and *then* returns null, so the build runner
+    // downloads the tarball and re-runs `build()` even when the
+    // requested step is `lib` and the return below skips the whole
+    // LSP/test graph. That covers two dependencies now — `lsp_kit`
+    // (asked for below) and `sjon` (asked for at the top, native path
+    // only) — and each download needs the network, with Zig
+    // materializing the result in `zig-pkg/` beside the sources.
+    // `wgslender-sys/build.rs` can afford neither: it builds from a
+    // crate a consumer unpacked, which cargo checksums and which may
+    // well be on a machine that is offline. `-Dlsp=false` asks for
+    // neither dependency, so it fetches nothing.
     if (!want_lsp) return;
 
     // LSP server (native). lsp_kit is marked `.lazy = true`, so it's only
     // fetched when a step that actually needs it is in the build graph
-    // (lsp / lsp-wasm / test). If it hasn't been fetched yet, skip the
-    // LSP graph — Zig will re-invoke build() after the fetch completes.
+    // (lsp / test — the wasm LSP above rolls its own JSON-RPC and never
+    // needed it). If it hasn't been fetched yet, skip the LSP graph —
+    // Zig will re-invoke build() after the fetch completes.
     const lsp_kit_dep = b.lazyDependency("lsp_kit", .{
         .target = target,
         .optimize = optimize,
@@ -343,88 +547,6 @@ pub fn build(b: *std.Build) void {
     const lsp_step = b.step("lsp", "Build the WGSL LSP server");
     lsp_step.dependOn(&install_lsp.step);
 
-    // LSP server (WASM)
-    const wgslender_wasm_mod = b.addModule("wgslender-wasm", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = wasm_target,
-        .optimize = .ReleaseSmall,
-    });
-    // Wasm-target Handler module — referenced by `lsp/wasm/<feature>.zig`
-    // adapters via `@import("Handler")` so they don't need cross-directory
-    // relative imports (Zig forbids `../` reaches outside a test module's
-    // root path).
-    const handler_wasm_mod = b.addModule("Handler-wasm", .{
-        .root_source_file = b.path("lsp/Handler.zig"),
-        .target = wasm_target,
-        .optimize = .ReleaseSmall,
-        .imports = &.{
-            .{ .name = "wgslender", .module = wgslender_wasm_mod },
-        },
-    });
-    // Wire codec tree — manual-JSON helpers shared by every wasm/<feature>.zig
-    // adapter. Registered as a build module so `lsp/wasm/<feature>.zig` and
-    // its tests can reach `wire/primitives.zig` without a `../`-style
-    // relative import (forbidden across module roots).
-    const wire_wasm_mod = b.addModule("wire-wasm", .{
-        .root_source_file = b.path("lsp/wire_root.zig"),
-        .target = wasm_target,
-        .optimize = .ReleaseSmall,
-        .imports = &.{
-            .{ .name = "Handler", .module = handler_wasm_mod },
-            .{ .name = "wgslender", .module = wgslender_wasm_mod },
-        },
-    });
-    const lsp_wasm = b.addExecutable(.{
-        .name = "wgslender-lsp",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("lsp/wasm.zig"),
-            .target = wasm_target,
-            .optimize = .ReleaseSmall,
-            .imports = &.{
-                .{ .name = "wgslender", .module = wgslender_wasm_mod },
-                .{ .name = "Handler", .module = handler_wasm_mod },
-                .{ .name = "wire", .module = wire_wasm_mod },
-            },
-        }),
-    });
-    lsp_wasm.entry = .disabled;
-    lsp_wasm.rdynamic = true;
-
-    const install_lsp_wasm = b.addInstallArtifact(lsp_wasm, .{});
-    const lsp_wasm_step = b.step("lsp-wasm", "Build the WGSL LSP WASM module");
-    lsp_wasm_step.dependOn(&install_lsp_wasm.step);
-
-    // Release assets — every in-tree copy of the two WASM modules, written
-    // from one build.
-    //
-    // This used to feed npm/wgslender-vscode/dist/ only, and the other three
-    // destinations were copied by hand or by a package's own prepublish
-    // script. npm/wgslender-lsp/wgslender-lsp.wasm had no writer at all and
-    // went stale for a stretch of LSP commits — silently, because a drifted
-    // WASM does not crash, it answers questions using the old wire format.
-    // Anything shipping a WASM copy belongs in this list.
-    //
-    // packages/go keeps its own copy because `go:embed` cannot reach outside
-    // the module (see packages/go/internal/wasmabi/abi.go). That duplication
-    // is unavoidable; what changes here is that a build step writes it.
-    //
-    // Paths are relative to the install prefix (zig-out), hence the `../`.
-    const release_asset_copies = [_]*std.Build.Step.InstallFile{
-        b.addInstallFile(wasm.getEmittedBin(), "../packages/js-npm/wgslender.wasm"),
-        b.addInstallFile(wasm.getEmittedBin(), "../packages/go/internal/wasmabi/wgslender.wasm"),
-        b.addInstallFile(wasm.getEmittedBin(), "../npm/wgslender-vscode/dist/wgslender.wasm"),
-        b.addInstallFile(lsp_wasm.getEmittedBin(), "../npm/wgslender-lsp/wgslender-lsp.wasm"),
-        b.addInstallFile(lsp_wasm.getEmittedBin(), "../npm/wgslender-vscode/dist/wgslender-lsp.wasm"),
-    };
-    const release_assets_step = b.step("release-assets", "Copy the WASM artefacts into every package that ships one");
-    // Kept as an alias: `vscode-assets` is referenced from the extension's
-    // own docs and from muscle memory.
-    const vscode_assets_step = b.step("vscode-assets", "Alias for release-assets");
-    for (release_asset_copies) |copy| {
-        release_assets_step.dependOn(&copy.step);
-    }
-    vscode_assets_step.dependOn(release_assets_step);
-
     // Test data modules
     const validation_data_mod = b.addModule("validation_data", .{
         .root_source_file = b.path("tests/testdata_validation.zig"),
@@ -453,8 +575,16 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run all tests");
     const w: std.Build.Module.Import = .{ .name = "wgslender", .module = wgslender_mod };
 
-    // Unit tests (src/)
-    _ = addTestStep(b, test_step, "src/root.zig", target, optimize, &.{});
+    // Unit tests (src/). src/root.zig reads `build_options` (pngine
+    // gating) and analyzes src/pngine/Pngine.zig when support resolved,
+    // so this test module needs the same imports the wgslender module
+    // carries — the native options plus sjon itself.
+    _ = addTestStep(b, test_step, "src/root.zig", target, optimize, if (sjon_mod) |m| &.{
+        .{ .name = "build_options", .module = native_options_mod },
+        .{ .name = "sjon", .module = m },
+    } else &.{
+        .{ .name = "build_options", .module = native_options_mod },
+    });
     // Snapshot tests
     _ = addTestStep(b, test_step, "tests/snapshot_test.zig", target, optimize, &.{w});
     // Validation tests
@@ -688,6 +818,18 @@ pub fn build(b: *std.Build) void {
     // version pin. Deliberately *not* a freshness proof; see the file's
     // header for why only `scripts/release.sh` can be one.
     _ = addTestStep(b, test_step, "tests/wasm_freshness_test.zig", target, optimize, &.{w});
+    // pngine build-boundary test (pngine-shaders phase 01, Task 1): the
+    // native graph resolved SJON, so `pngine_support` is true, a
+    // corpus-shaped `(wgsl …)` form is readable through SJON's public
+    // AST readers, and `wgslender.Pngine` is present. Registered only
+    // when the dependency resolved — on a null (pre-fetch) pass the
+    // runner is about to fetch sjon and re-run build() anyway.
+    if (sjon_mod) |m| {
+        _ = addTestStep(b, test_step, "tests/pngine_build_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "sjon", .module = m },
+        });
+    }
 
     // LSP Handler tests
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
@@ -1074,6 +1216,7 @@ fn staticLibrary(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    build_options_mod: *std.Build.Module,
 ) *std.Build.Step.Compile {
     return b.addLibrary(.{
         .name = "wgslender",
@@ -1083,6 +1226,13 @@ fn staticLibrary(
             .target = target,
             .optimize = optimize,
             .pic = true,
+            // src/lib.zig reaches src/root.zig by relative import, so the
+            // build_options import (the pngine gating root.zig reads) rides
+            // this module — always the core (pngine_support=false) options:
+            // the C library is a project-free graph.
+            .imports = &.{
+                .{ .name = "build_options", .module = build_options_mod },
+            },
         }),
     });
 }

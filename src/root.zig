@@ -8,6 +8,11 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
+// Generated per graph by build.zig (see the `pngine_support` option
+// there). Every module rooted here carries it; only the native
+// CLI/LSP/tests graph resolves it to true alongside the `sjon` import.
+const build_options = @import("build_options");
+
 pub const version = "1.5.1";
 
 // Re-exported modules, grouped by stability tier:
@@ -72,6 +77,13 @@ pub const MinifySettings = @import("MinifySettings.zig");
 pub const MinifyEstimator = @import("MinifyEstimator.zig");
 pub const MultiVisitor = @import("lint/MultiVisitor.zig");
 pub const OptionsSpec = @import("options.zig");
+/// Experimental pngine shader-project support, native graphs only.
+/// `void` wherever `pngine_support` compiled it out — `wasm`, `lib`,
+/// `lsp-wasm`, and every `-Dlsp=false` build never resolve the SJON
+/// dependency, so those graphs expose no project entry point at all
+/// rather than a runtime "maybe" mode. build.zig wires the `sjon`
+/// module import exactly when this flag is true.
+pub const Pngine = if (build_options.pngine_support) @import("pngine/Pngine.zig") else void;
 /// Shared const-expression evaluator consumed by `Reflect` (wrapping mode)
 /// and the `Validator` const-folding family (saturating mode). See
 /// `docs/deferred/consteval-extraction.md`.
@@ -99,6 +111,9 @@ test {
     // callers live in the LSP layer under `lsp/`, a separate compilation unit.)
     _ = Incremental;
     _ = OptionsSpec;
+    // Keep the pngine export's own tests (once it has any) in the native
+    // test build; a no-op where Pngine compiled out to void.
+    _ = Pngine;
 }
 
 // =========================================================================

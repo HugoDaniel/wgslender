@@ -22,5 +22,24 @@
             .hash = "lsp_kit-0.1.0-bi_PL_kyDACVTEhLaMq2-PJx0MocqRyjXDAN0ybMUyQQ",
             .lazy = true,
         },
+        // SJON — the pngine project-document parser (pngine-shaders
+        // phase 01). Same URL+hash rule as lsp_kit above: a path into the
+        // sibling checkout resolves on one machine only, and the build
+        // runner opens every declared path before it looks at the
+        // requested step. Pinned to upstream tag v1.7.0 (commit
+        // 3dcbf5ffd2876b13a4d91c787e7f30f232241712) by commit archive
+        // URL — the tag is mutable, the commit is not; v1.7.1 is
+        // excluded because `src/version.zig` reports 1.7.1 there and the
+        // plans are written against the 1.7.0 API. `.lazy = true` keeps
+        // it off every build that does not ask for it: only the native
+        // path in build.zig calls `b.lazyDependency("sjon", …)`, so
+        // `-Dlsp=false` (and the offline `wgslender-sys/build.rs` lane)
+        // never fetches it. Resolved with `plugin-exec=false` — no
+        // libwasmtime link, declarative plugins only.
+        .sjon = .{
+            .url = "https://github.com/HugoDaniel/SJON/archive/3dcbf5ffd2876b13a4d91c787e7f30f232241712.tar.gz",
+            .hash = "sjon-1.7.0-QUbZyxHcfwDiZqFZGDixxbTWrlKyTfA3M-6gqNXh2F2V",
+            .lazy = true,
+        },
     },
 }
