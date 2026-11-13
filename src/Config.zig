@@ -76,6 +76,10 @@ lsp_diagnostics_enabled: ?bool = null,
 /// `@wgslender/recommended`) in the LSP diagnostics path. Independent of
 /// `lsp_diagnostics_enabled`, which gates the validator's own output too.
 lsp_lint_enabled: ?bool = null,
+/// `lsp.pngine.enabled` — discover pngine shader projects and use composed
+/// project context (default true). When false the store returns an empty
+/// membership set and the legacy single-document path is unchanged.
+lsp_pngine_enabled: ?bool = null,
 
 pub const config_file_names = [_][]const u8{
     "wgslender.json",

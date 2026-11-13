@@ -895,6 +895,7 @@ pub const lsp_toggle_specs = [_]OptionSpec{
     .{ .field = "lsp_inlay_type_annotations", .kind = .bool_opt, .cli_simple = false, .json_override = "inlayHints.typeAnnotations", .summary = "Show inferred-type inlay hints (off by default)" },
     .{ .field = "lsp_diagnostics_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "diagnostics.enabled", .summary = "Publish diagnostics from the LSP server" },
     .{ .field = "lsp_lint_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "lint.enabled", .summary = "Run the configured lint packs in LSP diagnostics" },
+    .{ .field = "lsp_pngine_enabled", .kind = .bool_opt, .cli_simple = false, .json_override = "pngine.enabled", .summary = "Discover pngine shader projects and use composed project context (default true)" },
 };
 
 /// All spec entries that drive the JSON parser today. Any new bool /

@@ -8,6 +8,10 @@
 
 const std = @import("std");
 const wgslender = @import("wgslender");
+const build_options = @import("build_options");
+
+const pngine_support = build_options.pngine_support;
+const PngineStore = if (pngine_support) wgslender.Pngine.Store else void;
 
 const WgslDiagnostic = wgslender.Diagnostic;
 const MinifySettings = wgslender.MinifySettings;
@@ -65,6 +69,10 @@ workspace_config: wgslender.Config = .{},
 /// the silenced diagnostic. Both contributions only ever increase, so
 /// the composed id can never revisit an old value.
 config_generation: u32 = 0,
+/// Native project store (pngine-shaders phase 01). `null` until the
+/// native host binds one; the wasm graph compiles the field out and has
+/// no project capability.
+pngine_store: if (pngine_support) ?*PngineStore else void = if (pngine_support) null else {},
 
 pub const Document = struct {
     source: []u8,
@@ -175,6 +183,47 @@ pub fn init(gpa: std.mem.Allocator) Handler {
         .gpa = gpa,
         .documents = .empty,
     };
+}
+
+/// Bind the native project store. The host owns the store; the handler only
+/// forwards document lifecycle events and the resolved `lsp.pngine.enabled`
+/// setting. Compiles to a no-op in graphs without project support.
+pub fn setPngineStore(self: *Handler, store: ?*PngineStore) void {
+    if (comptime pngine_support) {
+        self.pngine_store = store;
+        if (store) |bound| bound.setEnabled(self.pngineEnabled());
+    } else {
+        std.mem.doNotOptimizeAway(store);
+    }
+}
+
+/// Effective `lsp.pngine.enabled`: workspace settings win over project
+/// settings; both unset means enabled.
+pub fn pngineEnabled(self: *const Handler) bool {
+    return self.workspace_config.lsp_pngine_enabled orelse
+        self.project_config.lsp_pngine_enabled orelse
+        true;
+}
+
+fn syncPngineEnabled(self: *Handler) void {
+    if (comptime pngine_support) {
+        if (self.pngine_store) |store| store.setEnabled(self.pngineEnabled());
+    }
+}
+
+/// Mirror an open/change/incremental text update into the project store.
+pub fn notifyPngineBuffer(self: *Handler, uri: []const u8, text: []const u8) void {
+    if (comptime pngine_support) {
+        if (self.pngine_store) |store| {
+            store.upsertBuffer(uri, text, .open_buffer) catch {};
+        }
+    }
+}
+
+fn notifyPngineClosed(self: *Handler, uri: []const u8) void {
+    if (comptime pngine_support) {
+        if (self.pngine_store) |store| store.removeBuffer(uri);
+    }
 }
 
 /// Frees all tracked documents and their sources.
@@ -295,6 +344,7 @@ pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: 
     gop.value_ptr.* = .{ .source = new_source, .version = version };
     self.rebuildParse(gop.value_ptr);
     self.rebuildMagic(gop.value_ptr);
+    self.notifyPngineBuffer(uri, gop.value_ptr.source);
 }
 
 /// Replaces the source text of an already-open document.
@@ -313,10 +363,12 @@ pub fn changeDocument(self: *Handler, uri: []const u8, text: []const u8) !void {
     self.rebuildParse(doc);
     if (doc.parse) |*p| p.module_version = prev_version +% 1;
     self.rebuildMagic(doc);
+    self.notifyPngineBuffer(uri, doc.source);
 }
 
 /// Removes a document and frees its source and URI.
 pub fn closeDocument(self: *Handler, uri: []const u8) void {
+    self.notifyPngineClosed(uri);
     self.invalidateAnalysis(uri);
     const entry = self.documents.fetchRemove(uri) orelse return;
     var value = entry.value;
@@ -370,6 +422,7 @@ pub fn discoverProjectConfig(self: *Handler, io: std.Io, start_dir: ?[]const u8)
     // config. Cheap because `discoverProjectConfig` runs once at startup
     // before any documents are open.
     self.invalidateAllMinifyCaches();
+    self.syncPngineEnabled();
 }
 
 /// Replace `self.workspace_config` with the contents of a fresh client
@@ -391,6 +444,7 @@ pub fn applyClientConfig(self: *Handler, value: std.json.Value) void {
         self.workspace_config.deinit(self.gpa);
         self.workspace_config = .{};
     };
+    self.syncPngineEnabled();
 }
 
 /// Resolve the effective minifier-mode state for callers without a

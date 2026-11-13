@@ -105,6 +105,7 @@ pub fn changeDocumentIncremental(handler: *Handler, uri: []const u8, range: Rang
     // Magic-comment scan reads `doc.source` directly; re-run after any
     // source mutation so the cached layer tracks the current document.
     handler.rebuildMagic(doc);
+    handler.notifyPngineBuffer(uri, doc.source);
 }
 
 fn updateParseAfterEdit(handler: *Handler, doc: *Document, edit: wgslender.Incremental.Edit) void {

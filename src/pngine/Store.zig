@@ -32,6 +32,13 @@ const SourceRecord = struct {
     hash: [32]u8,
 };
 
+const SourceRefresh = struct {
+    status: types.SourceStatus,
+    /// True when the refreshed bytes differ from a previously cached read,
+    /// or an unreadable source became readable/unreadable.
+    changed: bool,
+};
+
 pub const Store = struct {
     gpa: Allocator,
     provider: types.SourceProvider,
@@ -48,6 +55,13 @@ pub const Store = struct {
     memberships: []types.Membership = &.{},
     membership_index: std.StringHashMapUnmanaged([]u32) = .{},
     sources: std.StringHashMapUnmanaged(SourceRecord) = .{},
+    /// Open buffers, keyed by canonical path. Precedence above injected and
+    /// disk text.
+    buffers: std.StringHashMapUnmanaged([]u8) = .{},
+    /// Provider-injected text (reserved for a future wasm host).
+    injected: std.StringHashMapUnmanaged([]u8) = .{},
+    /// Per-root revision; bumped only for roots containing an edited part.
+    root_revisions: std.AutoHashMapUnmanaged(types.PartId, u64) = .{},
 
     state: types.DiscoveryState = .none,
     reason: ?[]u8 = null,
@@ -89,6 +103,22 @@ pub const Store = struct {
         }
         self.sources.deinit(self.gpa);
 
+        var buffer_it = self.buffers.iterator();
+        while (buffer_it.next()) |entry| {
+            self.gpa.free(entry.key_ptr.*);
+            self.gpa.free(entry.value_ptr.*);
+        }
+        self.buffers.deinit(self.gpa);
+
+        var injected_it = self.injected.iterator();
+        while (injected_it.next()) |entry| {
+            self.gpa.free(entry.key_ptr.*);
+            self.gpa.free(entry.value_ptr.*);
+        }
+        self.injected.deinit(self.gpa);
+
+        self.root_revisions.deinit(self.gpa);
+
         self.clearReason();
         self.* = undefined;
     }
@@ -120,6 +150,173 @@ pub const Store = struct {
     pub fn programRevision(self: *const Store, id: types.ProgramId) u64 {
         if (id >= self.program_revisions.items.len) return 0;
         return self.program_revisions.items[id];
+    }
+
+    /// Root cache revision. Starts at 0 and increases only when a root
+    /// containing the part sees a content change.
+    pub fn rootRevision(self: *const Store, id: types.PartId) u64 {
+        return self.root_revisions.get(id) orelse 0;
+    }
+
+    /// SHA-256 of the cached provider (disk) text for `source_path`, when it
+    /// is currently readable. Overlays are reported by `textForPart`, not
+    /// here.
+    pub fn sourceHash(self: *Store, source_path: []const u8) ?[32]u8 {
+        const normalized = path_mod.normalizeLexical(self.gpa, source_path) catch return null;
+        defer self.gpa.free(normalized);
+        const record = self.sources.get(normalized) orelse return null;
+        return record.hash;
+    }
+
+    /// Store or replace an overlay. `origin` selects open-buffer or injected
+    /// authority; `disk` is not an overlay and is ignored.
+    pub fn upsertBuffer(
+        self: *Store,
+        uri: []const u8,
+        text: []const u8,
+        origin: types.SourceOrigin,
+    ) !void {
+        if (origin == .disk) return;
+        const key = try self.pathKey(uri);
+        defer self.gpa.free(key);
+
+        const map = switch (origin) {
+            .open_buffer => &self.buffers,
+            .injected => &self.injected,
+            .disk => return,
+        };
+
+        if (map.getPtr(key)) |value| {
+            if (std.mem.eql(u8, value.*, text)) return;
+            self.gpa.free(value.*);
+            value.* = try self.gpa.dupe(u8, text);
+        } else {
+            const owned_key = try self.gpa.dupe(u8, key);
+            errdefer self.gpa.free(owned_key);
+            const owned_text = try self.gpa.dupe(u8, text);
+            errdefer self.gpa.free(owned_text);
+            try map.put(self.gpa, owned_key, owned_text);
+        }
+
+        self.content_generation += 1;
+        try self.bumpRootsForPath(key);
+    }
+
+    /// Remove both overlay layers for `uri`. The next source query falls
+    /// back to provider text.
+    pub fn removeBuffer(self: *Store, uri: []const u8) void {
+        const key = self.pathKey(uri) catch return;
+        defer self.gpa.free(key);
+
+        var changed = false;
+        if (self.buffers.fetchRemove(key)) |entry| {
+            self.gpa.free(entry.key);
+            self.gpa.free(entry.value);
+            changed = true;
+        }
+        if (self.injected.fetchRemove(key)) |entry| {
+            self.gpa.free(entry.key);
+            self.gpa.free(entry.value);
+            changed = true;
+        }
+        if (!changed) return;
+
+        self.content_generation += 1;
+        self.bumpRootsForPath(key) catch {};
+    }
+
+    /// True when an open-buffer or injected overlay exists for `uri`.
+    pub fn hasOverlay(self: *Store, uri: []const u8) bool {
+        const key = self.pathKey(uri) catch return false;
+        defer self.gpa.free(key);
+        return self.buffers.contains(key) or self.injected.contains(key);
+    }
+
+    /// Resolve a part's current text under
+    /// `open buffer > provider-injected > provider disk`, with the SHA-256 of
+    /// exactly the returned bytes. Caller owns the returned text.
+    pub fn textForPart(self: *Store, id: types.PartId) !types.SourceText {
+        const source_part = self.part(id) orelse return error.UnknownPart;
+        switch (source_part.origin) {
+            .inline_code => |source| {
+                const text = try self.gpa.dupe(u8, source.code);
+                return .{
+                    .text = text,
+                    .origin = .disk,
+                    .content_hash = types.contentHash(text),
+                };
+            },
+            .file => |file| {
+                const program_value = self.program(id.program) orelse return error.UnknownProgram;
+                const source_path = try resolveFile(self.gpa, program_value.document_path, file.path);
+                defer self.gpa.free(source_path);
+                return self.textForPath(source_path);
+            },
+        }
+    }
+
+    fn textForPath(self: *Store, source_path: []const u8) !types.SourceText {
+        if (self.buffers.get(source_path)) |text| {
+            const owned = try self.gpa.dupe(u8, text);
+            return .{
+                .text = owned,
+                .origin = .open_buffer,
+                .content_hash = types.contentHash(owned),
+            };
+        }
+        if (self.injected.get(source_path)) |text| {
+            const owned = try self.gpa.dupe(u8, text);
+            return .{
+                .text = owned,
+                .origin = .injected,
+                .content_hash = types.contentHash(owned),
+            };
+        }
+        if (self.sources.get(source_path)) |record| {
+            return .{
+                .text = try self.gpa.dupe(u8, record.text),
+                .origin = .disk,
+                .content_hash = record.hash,
+            };
+        }
+
+        const refresh = self.refreshSource(source_path) catch return error.SourceUnavailable;
+        if (refresh.status == .unreadable) return error.SourceUnavailable;
+        const record = self.sources.get(source_path) orelse return error.SourceUnavailable;
+        return .{
+            .text = try self.gpa.dupe(u8, record.text),
+            .origin = .disk,
+            .content_hash = record.hash,
+        };
+    }
+
+    /// Re-read one path. A `.sjon` path refreshes only that program (or
+    /// removes it on deletion); a marker reruns discovery; any other path is
+    /// treated as WGSL source and invalidates only its dependent roots.
+    pub fn invalidatePath(self: *Store, path: []const u8) void {
+        self.invalidatePathInner(path) catch |err| {
+            self.setReason(@errorName(err)) catch {};
+        };
+    }
+
+    fn invalidatePathInner(self: *Store, path: []const u8) !void {
+        const normalized = try path_mod.normalizeLexical(self.gpa, path);
+        defer self.gpa.free(normalized);
+
+        if (std.mem.eql(u8, std.fs.path.basename(normalized), discovery.marker_name)) {
+            try self.refreshWorkspace();
+            return;
+        }
+        if (std.mem.endsWith(u8, normalized, ".sjon")) {
+            if (self.document_slots.contains(normalized)) {
+                try self.refreshDocument(normalized);
+            } else {
+                try self.refreshWorkspace();
+            }
+            return;
+        }
+
+        try self.invalidateSource(normalized);
     }
 
     /// Replace the workspace roots and refresh discovery over all of them.
@@ -235,6 +432,75 @@ pub const Store = struct {
 
         try self.rebuildIndexes();
         try self.recomputeState();
+    }
+
+    fn refreshDocument(self: *Store, document_path: []const u8) !void {
+        self.discovery_generation += 1;
+        // A document-level refresh replaces the old reason: the graph now
+        // either parses (complete) or contributes its own new reason.
+        self.clearReason();
+        const external = if (self.document_slots.get(document_path)) |id|
+            if (self.programs.items[id]) |record| record.external else false
+        else
+            false;
+
+        const text = self.provider.readText(self.gpa, document_path) catch {
+            try self.removeDocument(document_path);
+            try self.rebuildIndexes();
+            try self.recomputeState();
+            return;
+        };
+        defer self.gpa.free(text);
+
+        try self.syncDocument(document_path, text, external);
+        try self.rebuildIndexes();
+        try self.recomputeState();
+    }
+
+    fn removeDocument(self: *Store, document_path: []const u8) !void {
+        const removed = self.document_slots.fetchRemove(document_path) orelse return;
+        const id = removed.value;
+        if (id < self.programs.items.len) {
+            if (self.programs.items[id]) |*record| {
+                if (record.program) |*value| value.deinit(self.gpa);
+            }
+            self.programs.items[id] = null;
+        }
+        self.gpa.free(removed.key);
+        if (id < self.program_revisions.items.len) self.program_revisions.items[id] += 1;
+        self.content_generation += 1;
+    }
+
+    fn invalidateSource(self: *Store, source_path: []const u8) !void {
+        const refresh = try self.refreshSource(source_path);
+        if (self.membership_index.get(source_path)) |indices| {
+            for (indices) |index| {
+                self.memberships[index].source_status = refresh.status;
+            }
+        }
+        // An open/injected overlay is authoritative; an external disk change
+        // must not invalidate roots whose analysis uses the overlay text.
+        const has_overlay = self.buffers.contains(source_path) or self.injected.contains(source_path);
+        if (refresh.changed and !has_overlay) {
+            self.content_generation += 1;
+            try self.bumpRootsForPath(source_path);
+        }
+    }
+
+    fn bumpRootsForPath(self: *Store, source_path: []const u8) !void {
+        const indices = self.membership_index.get(source_path) orelse return;
+        for (indices) |index| {
+            const membership = self.memberships[index];
+            for (membership.containing_roots) |root_index| {
+                const key: types.PartId = .{
+                    .program = membership.program,
+                    .index = root_index,
+                };
+                const gop = try self.root_revisions.getOrPut(self.gpa, key);
+                if (!gop.found_existing) gop.value_ptr.* = 0;
+                gop.value_ptr.* += 1;
+            }
+        }
     }
 
     fn syncDocument(self: *Store, document_path: []const u8, text: []const u8, external: bool) !void {
@@ -392,7 +658,7 @@ pub const Store = struct {
             entries.deinit(self.gpa);
         }
 
-        var refreshed: std.StringHashMapUnmanaged(types.SourceStatus) = .{};
+        var refreshed: std.StringHashMapUnmanaged(SourceRefresh) = .{};
         defer {
             var it = refreshed.iterator();
             while (it.next()) |entry| self.gpa.free(entry.key_ptr.*);
@@ -430,13 +696,13 @@ pub const Store = struct {
                 errdefer self.gpa.free(resolved);
 
                 const status = if (refreshed.get(resolved)) |cached|
-                    cached
+                    cached.status
                 else blk: {
-                    const status = try self.refreshSource(resolved);
+                    const refresh = try self.refreshSource(resolved);
                     const owned = try self.gpa.dupe(u8, resolved);
                     errdefer self.gpa.free(owned);
-                    try refreshed.put(self.gpa, owned, status);
-                    break :blk status;
+                    try refreshed.put(self.gpa, owned, refresh);
+                    break :blk refresh.status;
                 };
 
                 var roots: std.ArrayList(u32) = .empty;
@@ -511,6 +777,15 @@ pub const Store = struct {
         self.memberships = owned_memberships;
         for (entries.items) |entry| self.gpa.free(entry.path);
         entries.deinit(self.gpa);
+
+        // A content change found during this rebuild invalidates only roots
+        // that actually contain the changed file.
+        var changed_it = refreshed.iterator();
+        while (changed_it.next()) |entry| {
+            if (!entry.value_ptr.changed) continue;
+            self.content_generation += 1;
+            try self.bumpRootsForPath(entry.key_ptr.*);
+        }
     }
 
     fn freeMemberships(self: *Store) void {
@@ -532,17 +807,21 @@ pub const Store = struct {
         self.membership_index = .{};
     }
 
-    fn refreshSource(self: *Store, source_path: []const u8) !types.SourceStatus {
+    fn refreshSource(self: *Store, source_path: []const u8) !SourceRefresh {
+        const previous_hash: ?[32]u8 = if (self.sources.get(source_path)) |record| record.hash else null;
+
         const text = self.provider.readText(self.gpa, source_path) catch {
-            if (self.sources.fetchRemove(source_path)) |entry| {
+            const changed = if (self.sources.fetchRemove(source_path)) |entry| blk: {
                 self.gpa.free(entry.key);
                 self.gpa.free(entry.value.text);
-            }
-            return .unreadable;
+                break :blk true;
+            } else false;
+            return .{ .status = .unreadable, .changed = changed };
         };
         errdefer self.gpa.free(text);
 
         const hash = types.contentHash(text);
+        const changed = if (previous_hash) |old| !std.mem.eql(u8, &old, &hash) else true;
         if (self.sources.getPtr(source_path)) |record| {
             self.gpa.free(record.text);
             record.text = text;
@@ -552,7 +831,7 @@ pub const Store = struct {
             errdefer self.gpa.free(owned_path);
             try self.sources.put(self.gpa, owned_path, .{ .text = text, .hash = hash });
         }
-        return .readable;
+        return .{ .status = .readable, .changed = changed };
     }
 
     fn pathKey(self: *Store, uri: []const u8) ![]u8 {

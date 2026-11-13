@@ -192,6 +192,7 @@ pub fn build(b: *std.Build) void {
         .optimize = .ReleaseSmall,
         .imports = &.{
             .{ .name = "wgslender", .module = wgslender_wasm_mod },
+            .{ .name = "build_options", .module = core_options_mod },
         },
     });
     // Wire codec tree — manual-JSON helpers shared by every wasm/<feature>.zig
@@ -356,6 +357,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "wgslender", .module = wgslender_mod },
+            .{ .name = "build_options", .module = native_options_mod },
         },
     });
     // Per-feature native adapters live under lsp/native/. Each one takes
@@ -851,7 +853,10 @@ pub fn build(b: *std.Build) void {
     }
 
     // LSP Handler tests
-    _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
+    _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{
+        w,
+        .{ .name = "build_options", .module = native_options_mod },
+    });
     // LSP URI helper tests. The conversion itself lives in the pure
     // `src/pngine/Path.zig` module so the native project identity and the
     // LSP workspace-root decode cannot drift.
@@ -886,6 +891,13 @@ pub fn build(b: *std.Build) void {
         // the production Handler reaches them; they bind the in-memory
         // provider in `tests/pngine_test_provider.zig`.
         _ = addTestStep(b, test_step, "tests/pngine_discovery_test.zig", target, optimize, &.{w});
+        // pngine store overlays / hashes / invalidation / opt-out (Task 5).
+        // Imports Handler so the document-lifecycle hooks are exercised as
+        // the native LSP wires them.
+        _ = addTestStep(b, test_step, "tests/pngine_store_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+        });
     }
     // Code action integration tests
     _ = addTestStep(b, test_step, "tests/code_action_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
