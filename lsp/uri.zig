@@ -1,52 +1,23 @@
-//! `file://` URI → filesystem path conversion. Used by the native LSP
-//! entry to honor `InitializeParams.{workspaceFolders,rootUri}` when
-//! picking a `wgslender.json` discovery root.
+//! `file://` URI ↔ filesystem path conversion for the native LSP entry.
+//! Used to honor `InitializeParams.{workspaceFolders,rootUri}` when picking
+//! a `wgslender.json` discovery root, and by the pngine project identity.
 //!
-//! Posix-only today: paths under a `file:///...` triple-slash URI with
-//! `%XX` percent-decoding. The Windows `file:///C:/...` form would
-//! decode to `/C:/...` and break `Dir.openDir`, so the entry point
-//! falls back to cwd in that case (clean follow-up if Windows support
-//! lands).
+//! The conversion itself lives in `src/pngine/Path.zig`, the pure module
+//! shared with the project store, so the LSP workspace decode and the
+//! project's canonical identity cannot drift into two implementations.
+//! POSIX keeps the historical rule: `file:///...` only, percent-decoded,
+//! and `file://host/path` rejected. Windows uses the drive/UNC rules in
+//! `Path.zig`; `Path.nativeFlavor()` selects between them. `pathToFileUri`
+//! is the inverse, kept separate from canonical filesystem identity
+//! (`Path.canonicalExisting`) because responses must preserve the caller's
+//! URI spelling.
+
+const pngine_path = @import("pngine_path");
+
+pub const fileUriToPath = pngine_path.fileUriToPath;
+pub const pathToFileUri = pngine_path.pathToFileUri;
 
 const std = @import("std");
-
-/// Convert `file:///path` to a freshly-allocated filesystem path.
-/// Returns `null` for non-`file://` URIs, the `file://host/path` form
-/// (no triple slash), or an empty path. The caller owns the returned
-/// slice and must free it with `allocator`.
-pub fn fileUriToPath(allocator: std.mem.Allocator, uri: []const u8) !?[]u8 {
-    const prefix = "file://";
-    if (!std.mem.startsWith(u8, uri, prefix)) return null;
-    const after_scheme = uri[prefix.len..];
-    // Posix file URIs require `file:///` (three slashes), so the
-    // remainder must start with `/`. Reject `file://hostname/path` —
-    // we don't speak SMB-style paths.
-    if (after_scheme.len == 0 or after_scheme[0] != '/') return null;
-
-    var out: std.ArrayList(u8) = .empty;
-    errdefer out.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < after_scheme.len) : (i += 1) {
-        const c = after_scheme[i];
-        if (c == '%' and i + 2 < after_scheme.len) {
-            const hi = std.fmt.charToDigit(after_scheme[i + 1], 16) catch {
-                try out.append(allocator, c);
-                continue;
-            };
-            const lo = std.fmt.charToDigit(after_scheme[i + 2], 16) catch {
-                try out.append(allocator, c);
-                continue;
-            };
-            try out.append(allocator, (hi << 4) | lo);
-            i += 2;
-        } else {
-            try out.append(allocator, c);
-        }
-    }
-
-    return try out.toOwnedSlice(allocator);
-}
 
 test "fileUriToPath: simple posix" {
     const alloc = std.testing.allocator;
@@ -101,6 +72,16 @@ test "fileUriToPath: rejects file:// with empty path" {
 test "fileUriToPath: root path file:/// returns /" {
     const alloc = std.testing.allocator;
     const path = (try fileUriToPath(alloc, "file:///")).?;
+    defer alloc.free(path);
+    try std.testing.expectEqualStrings("/", path);
+}
+
+test "pathToFileUri: posix root round-trips to file:///" {
+    const alloc = std.testing.allocator;
+    const uri = try pathToFileUri(alloc, "/");
+    defer alloc.free(uri);
+    try std.testing.expectEqualStrings("file:///", uri);
+    const path = (try fileUriToPath(alloc, uri)).?;
     defer alloc.free(path);
     try std.testing.expectEqualStrings("/", path);
 }

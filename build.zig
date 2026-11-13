@@ -507,6 +507,16 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Pure URI/path identity for the pngine project store (phase 01,
+    // Task 2). It has no dependency on SJON or on the LSP, so the
+    // standalone `lsp/uri.zig` test and the NativeServer module can share
+    // the one implementation instead of each keeping a POSIX-only copy.
+    const pngine_path_mod = b.addModule("pngine_path", .{
+        .root_source_file = b.path("src/pngine/Path.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // NativeServer dispatcher — extracted from main.zig so the Phase 7
     // perf tests can drive the timer-thread + debouncer integration
     // without spawning a real stdio LSP.
@@ -516,6 +526,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "pngine_path", .module = pngine_path_mod },
             .{ .name = "wgslender", .module = wgslender_mod },
             .{ .name = "Handler", .module = handler_mod },
             .{ .name = "bridge", .module = bridge_mod },
@@ -833,8 +844,18 @@ pub fn build(b: *std.Build) void {
 
     // LSP Handler tests
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{w});
-    // LSP URI helper tests (no imports needed beyond stdlib)
-    _ = addTestStep(b, test_step, "lsp/uri.zig", target, optimize, &.{});
+    // LSP URI helper tests. The conversion itself lives in the pure
+    // `src/pngine/Path.zig` module so the native project identity and the
+    // LSP workspace-root decode cannot drift.
+    _ = addTestStep(b, test_step, "lsp/uri.zig", target, optimize, &.{
+        .{ .name = "pngine_path", .module = pngine_path_mod },
+    });
+    // pngine path identity (pngine-shaders phase 01, Task 2). Pure std;
+    // no SJON and no `wgslender` module, so this runs on the null
+    // lazy-dependency pass too.
+    _ = addTestStep(b, test_step, "tests/pngine_path_test.zig", target, optimize, &.{
+        .{ .name = "pngine_path", .module = pngine_path_mod },
+    });
     // Code action integration tests
     _ = addTestStep(b, test_step, "tests/code_action_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // Node-at-position tests
