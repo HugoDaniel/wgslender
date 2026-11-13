@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Discover every pngine part referencing a WGSL file and maintain a content-correct, incrementally invalidated project graph on native and WASM.
+**Goal:** Discover every pngine part referencing a WGSL file and maintain a content-correct, incrementally invalidated project graph on the native CLI and native LSP.
 
-**Architecture:** A `wgslender.Pngine.Store` owns canonical documents, programs, parts, memberships, and source overlays. Native discovery reads through `std.Io`; WASM receives SJON catalogs and requested WGSL text from the host. Markers guide candidate discovery but references alone establish membership.
+**Architecture:** A `wgslender.Pngine.Store` owns canonical documents, programs, parts, memberships, and source overlays. Discovery reads only through the injected `SourceProvider`; the native binding is the filesystem and a future wasm host would inject text (reserved follow-on). Markers guide candidate discovery but references alone establish membership.
 
-**Tech Stack:** Zig 0.16, SJON 1.7.0, existing wgslender build/LSP infrastructure, VS Code `workspace.fs` and file watchers.
+**Tech Stack:** Zig 0.16, SJON 1.7.0, existing wgslender build/LSP infrastructure, VS Code file watchers for the native host.
 
 **Spec:** `docs/plans/pngine-shaders/README.md`
 
@@ -15,9 +15,11 @@
 - No dependency on pngine at runtime.
 - No typed graph from an SJON tree with error-severity parse diagnostics.
 - No marker-only membership.
-- Open buffer > injected source > disk.
+- Open buffer > provider-injected source > provider disk.
+- All project text reads and candidate enumeration go through `SourceProvider`; no task assumes it is the filesystem.
+- Project support ships only in the native CLI and native LSP; `wasm`, `lib`, and `lsp-wasm` stay single-source.
 - Preserve all valid memberships; never choose first.
-- `-Dlsp=false` neither fetches SJON nor exposes project entry points.
+- `-Dlsp=false` returns before `lsp_kit` or SJON resolution, fetches neither, exposes no project entry points, and stays offline.
 - New configuration goes through `src/options.zig`.
 - No private `tests/exhaustive/` dependency.
 
@@ -26,13 +28,13 @@
 - `sjon.parse(gpa, source)` and `sjon.Parser.parse` (`SJON/src/root.zig:348-354`).
 - `Ast.Tree.formHeader`, `kvpairHeader`, `vectorElements`, `stringText`, `symbolText`, and `spanOf` (`SJON/src/Ast.zig:1340-1387`, `:1523-1538`).
 - `Handler.openDocument`, `changeDocument`, `changeDocumentIncremental`, and `closeDocument` (`lsp/Handler.zig:275-329`).
-- Existing native/WASM document-sync adapters.
+- Existing native document-sync adapters. (The wasm host transport is the reserved follow-on in the README.)
 
 ## Interfaces produced
 
 ```zig
 pub const Store = struct {
-    pub fn init(gpa: std.mem.Allocator) Store;
+    pub fn init(gpa: std.mem.Allocator, provider: SourceProvider) Store;
     pub fn deinit(self: *Store) void;
 
     pub fn setWorkspaceRoots(
@@ -52,7 +54,6 @@ pub const Store = struct {
 
     pub fn membershipsFor(
         self: *Store,
-        io: ?std.Io,
         wgsl_uri: []const u8,
     ) !MembershipSet;
 
@@ -62,21 +63,20 @@ pub const Store = struct {
 };
 ```
 
-`MembershipSet` owns a stable, path-sorted slice of `{program, part, containing_roots}` records. `SourceOrigin` is `open_buffer`, `injected`, or `disk`. `textForPart` resolves a part's current text under that precedence and returns a `SourceText` carrying `text`, `origin`, and `content_hash` — the source query D37/D38 exercise here, so phase 02 consumes the member rather than adding it. `Store` also exposes monotonically increasing `discovery_generation` and `content_generation` counters for later result IDs.
+`Store.init` takes the `SourceProvider` the `Handler` owns — conceptually `readText(canonical_path) ![]u8` and `candidates(dir) ![]Path`. Those two calls are the only way the store reaches project text or candidate documents; the native CLI/LSP binding is a filesystem implementation. `MembershipSet` owns a stable, path-sorted slice of `{program, part, containing_roots}` records. `SourceOrigin` is `open_buffer`, `injected`, or `disk`. `textForPart` resolves a part's current text under that precedence and returns a `SourceText` carrying `text`, `origin`, and `content_hash` — the source query D37/D38 exercise here, so phase 02 consumes the member rather than adding it. `Store` also exposes monotonically increasing `discovery_generation` and `content_generation` counters for later result IDs.
 
 ## File structure
 
 - Create `src/pngine/Pngine.zig`: public exports and shared constants.
-- Create `src/pngine/Types.zig`: IDs, origins, parts, roots, diagnostics, memberships.
-- Create `src/pngine/Store.zig`: source overlays, caches, reverse index.
-- Create `src/pngine/Discovery.zig`: workspace/ancestor/bundle discovery.
+- Create `src/pngine/Types.zig`: IDs, origins, parts, roots, diagnostics, memberships, source-provider type.
+- Create `src/pngine/Store.zig`: source overlays through the provider, caches, reverse index.
+- Create `src/pngine/Discovery.zig`: workspace/ancestor/bundle discovery through `SourceProvider`.
 - Create `src/pngine/Extract.zig`: strict SJON-to-graph extraction.
 - Create `src/pngine/Path.zig`: URI/path normalization and identity.
 - Modify `src/root.zig`: experimental `Pngine` export when enabled.
 - Modify `src/Config.zig`, `src/options.zig`: `lsp.pngine.enabled`, default `true`.
-- Modify `build.zig.zon`, `build.zig`: pinned dependency and build option.
-- Modify native/WASM lifecycle/document-sync dispatch for roots and watched files.
-- Create `npm/wgslender-vscode/src/pngine-sync.ts`; modify both extension entry points and `client-options.ts`.
+- Modify `build.zig.zon`, `build.zig`: pinned lazy dependency and build option (Task 1).
+- Modify native lifecycle/document-sync and watcher dispatch; do not add project routes to `lsp/wasm.zig` or the npm LSP package in this set.
 - Create focused tests named in the tasks.
 
 ## Ordered work
@@ -85,15 +85,16 @@ pub const Store = struct {
 
 **Files:** `build.zig.zon`, `build.zig`, `src/root.zig`, `tests/pngine_build_test.zig`.
 
-- [ ] Add a compile/fixture test that imports `sjon`, parses a fragment document, and is referenced from a WASM smoke object.
-- [ ] Run the new native and WASM smoke steps; expect failure before the dependency exists.
-- [ ] Add SJON by URL + hash at the approved 1.7.0 source revision. Record the actual revision/hash in the commit; do not substitute a local path.
-- [ ] Resolve it with `plugin-exec=false`; add `pngine_support` to native CLI, Handler, tests, and both WASM graphs.
-- [ ] Keep `-Dlsp=false` ahead of SJON resolution and compile project calls out of that CLI/core variant.
-- [ ] Verify `zig build test -j1`, `zig build wasm`, `zig build lsp-wasm`, and `zig build -Dlsp=false`; all must exit `0`.
+- [ ] Add a native compile/fixture test that imports `sjon`, parses a fragment document, and asserts `src/pngine/*` is present; add a second compile test proving the `wasm`, `lib`, and `lsp-wasm` graphs build with `pngine_support=false` and no `sjon` import.
+- [ ] Run the native fixture test and the project-free `wasm`/`lib`/`lsp-wasm` builds; the native test fails before the dependency exists, and the project-free builds must stay green.
+- [ ] Add SJON by URL + hash at the approved 1.7.0 source revision, with `.lazy = true`. Record the actual revision/hash in the commit; do not substitute a local path.
+- [ ] Resolve it with `plugin-exec=false` and `b.lazyDependency("sjon", …)` only on the native-LSP/CLI path. Read the `lsp` option before the module declarations; a `-Dlsp=false` build declares the core, CLI, `wasm`, `lib`, `lsp-wasm`, and `release-assets` graphs and returns before `lsp_kit` or SJON is asked for (`build.zig:99-129`).
+- [ ] Thread the resolved module into the native `wgslender` module (or add it as an optional import) so `src/pngine/*` compiles only where SJON was resolved. `wasm` (`src/wasm.zig` → `src/root.zig`), `lib` (`src/lib.zig`), and `lsp-wasm` (`lsp/wasm.zig`) carry `pngine_support=false` permanently; they do not import SJON and never call `lazyDependency`.
+- [ ] Keep the dependency lazy, never eager: `wgslender-sys/build.rs` must build offline, and merely asking for a lazy dependency makes the build runner fetch it (`build.zig:104-111`, `scripts/release.sh:78-87`).
+- [ ] Verify `zig build test -j1`, `zig build`, `zig build lsp`, `zig build wasm`, `zig build lib`, `zig build lsp-wasm`, and `zig build -Dlsp=false`; all must exit `0`, and the project-free graphs must record no SJON fetch.
 - [ ] Commit: `build: add optional pngine project parser dependency`.
 
-**Stop:** If the pinned SJON revision cannot compile `sjon.parse` for `wasm32-freestanding` without libc, stop and report the import chain; do not add a filesystem shim or enable executable plugins.
+**Stop:** If the pinned SJON revision cannot compile on the native targets with `plugin-exec=false`, stop and report the import chain; do not add a filesystem shim, enable executable plugins, or let a project-free graph resolve it.
 
 ### Task 2: Canonical path and source identity
 
@@ -103,6 +104,7 @@ pub const Store = struct {
 - [ ] Run `zig test` for the new suite through a named build step; expect missing-module failure.
 - [ ] Implement `fileUriToPath`, `pathToFileUri`, `normalizeLexical`, and `canonicalExisting`. Extend rather than duplicate the POSIX-only helper documented at `lsp/uri.zig:1-17`.
 - [ ] Keep URI spelling for responses separate from canonical filesystem identity.
+- [ ] Keep path identity and content access separate: stat/canonicalize may touch the filesystem for the native binding, but every project text read goes through `SourceProvider.readText` and no project module opens a path directly.
 - [ ] Run the path suite and existing `lsp/uri.zig` tests; all pass with no allocation leaks.
 - [ ] Commit: `feat: canonicalize pngine project paths`.
 
@@ -125,6 +127,7 @@ pub const Store = struct {
 **Files:** `src/pngine/Discovery.zig`, `src/pngine/Store.zig`, `tests/pngine_discovery_test.zig`.
 
 - [ ] Add red temp-tree tests for every `D*` inventory row.
+- [ ] Enumerate and read every candidate and ancestor document through `SourceProvider` (`candidates(dir)`, `readText`); tests bind a fake provider, and the native binding is the only filesystem implementation.
 - [ ] Implement workspace-root scanning, marker bundle expansion, ancestor fallback, dedupe by canonical document path, and bounded discovery.
 - [ ] Treat malformed markers as unavailable candidate indexes; continue with direct `.sjon` candidates and report incomplete discovery.
 - [ ] Build `canonical WGSL path → memberships` and `part → containing roots` indexes in stable path/form order.
@@ -137,29 +140,31 @@ pub const Store = struct {
 
 **Files:** `src/pngine/Store.zig`, `lsp/Handler.zig`, `lsp/handler/incremental_sync.zig`, `tests/pngine_store_test.zig`.
 
-- [ ] Write red tests proving open-text precedence, sibling overlays, selective invalidation, same-mtime content changes, and deletion.
-- [ ] Store SHA-256 per source and program. Rehash after a refresh read; never use mtime as equality.
-- [ ] Expose `Store.textForPart` returning the resolved `SourceText` (open buffer > injected > disk) with its content hash; D37/D38 cover it.
+- [ ] Write red tests proving open-text precedence, sibling overlays, selective invalidation, same-mtime content changes, provider read failure, and deletion.
+- [ ] Store SHA-256 per source and program. Rehash after a provider refresh read; never use mtime as equality.
+- [ ] Expose `Store.textForPart` returning the resolved `SourceText` (open buffer > provider injection > provider disk) with its content hash; D37/D38 cover it.
 - [ ] Hook every open/change/incremental-change/close path into `Store.upsertBuffer` or `removeBuffer`.
 - [ ] Invalidate only dependent root IDs on WGSL edits. SJON/marker edits rebuild only affected programs and the reverse index.
+- [ ] Keep every disk refresh on `SourceProvider.readText`; the Store never opens a path itself, and tests use a fake provider.
 - [ ] Add `pngineEnabled()` using the new spec-driven LSP option; disabling returns an empty membership set and preserves legacy behavior.
 - [ ] Run store, incremental-sync, and analysis-cache tests; all pass.
 - [ ] Commit: `feat: cache pngine graphs with buffer overlays`.
 
-### Task 6: Watchers and WASM source supply
+### Task 6: Watchers and provider source supply
 
-**Files:** `lsp/NativeServer.zig`, `lsp/wasm.zig`, new WASM project adapter, `npm/wgslender-vscode/src/pngine-sync.ts`, both extension entry points, `npm/wgslender-vscode/src/client-options.ts`, `npm/wgslender-lsp/test.js`, `tests/pngine_transport_test.zig`.
+**Files:** `lsp/NativeServer.zig`, `lsp/Handler.zig`, `src/pngine/Store.zig`, `tests/pngine_transport_test.zig`.
 
-- [ ] Add red native/WASM tests for watched SJON/WGSL changes, deletion, `pngineRead` missing files, and open-buffer precedence.
+- [ ] Add red native tests for watched SJON/WGSL changes, deletion, a provider `readText` failure, and open-buffer precedence.
 - [ ] Add a red no-watcher test: a client that never sends `workspace/didChangeWatchedFiles` still gets content-checked refresh at `didOpen`, `didSave`, and explicit project selection (D45).
-- [ ] Route `workspace/didChangeWatchedFiles` into `Store.invalidatePath`; schedule affected open documents for later diagnostic refresh.
-- [ ] Implement `wgslender/pngineCatalog` and `wgslender/pngineRead` without changing the npm package’s exported JavaScript API.
-- [ ] In VS Code, catalog workspace SJON documents, answer `pngineRead` through `workspace.fs`, and register SJON/WGSL file events in the shared client options.
-- [ ] Coalesce catalog changes; never send a snapshot on an ordinary WGSL keystroke.
-- [ ] Run transport parity and `npm test` in `npm/wgslender-lsp`; native and WASM shapes agree and all tests pass.
-- [ ] Commit: `feat: feed pngine project sources to both LSP transports`.
+- [ ] Route `workspace/didChangeWatchedFiles` into provider-backed `Store.invalidatePath`; schedule affected open documents for later diagnostic refresh.
+- [ ] Keep the store’s only source reads on the injected `SourceProvider`; the native Handler binds a filesystem provider, and the test suite binds a fake one.
+- [ ] Do not add `wgslender/pngineCatalog` or `wgslender/pngineRead` routes to `lsp/wasm.zig`, a wasm project adapter, or VS Code sync code in this set. D43/D44 describe the reserved wasm host contract and are not phase-01 gates.
+- [ ] Run native transport and watcher tests plus the existing `npm/wgslender-lsp` suite; native shapes agree and the wasm package keeps its exported JavaScript API and single-source behaviour.
+- [ ] Commit: `feat: feed pngine project sources to the native LSP`.
 
 ## Exhaustive use-case inventory
+
+Rows marked **reserved** describe the wasm host contract recorded in the README; they are not gates for this set.
 
 | ID | Fixture or synthetic input | Action | Expected result | Why phase 01 |
 |---|---|---|---|---|
@@ -197,7 +202,7 @@ pub const Store = struct {
 | D32 | Symlinked WGSL path and real path | Discover both | Existing targets share membership; response retains caller URI. | Symlink identity. |
 | D33 | `file:///C:/…`, UNC, and `%20` paths | Normalize | Correct native identity and valid URI round-trip. | Windows/file-URI requirement. |
 | D34 | `Foo.wgsl` vs `foo.wgsl` | Lookup on target rules | Distinct on POSIX; folded under Windows identity rules. | Case-sensitivity contract. |
-| D35 | `untitled:` or test URI | Discover | No filesystem access; only exact injected/open membership can match. | Non-file URI safety. |
+| D35 | `untitled:` or test URI | Discover | No filesystem access; only exact open-buffer/provider membership can match. | Non-file URI safety. |
 | D36 | SJON `(import :file "base.sjon")` | Extract | `unsupported_document_import`; no partial assembled graph. | Fail-closed non-goal. |
 | D37 | Open current WGSL differs from disk | Membership/source query | Open text and hash win. | Current unsaved buffer. |
 | D38 | Open sibling differs from disk | Source query from another part | Sibling’s open text wins. | Cross-part unsaved buffers. |
@@ -205,33 +210,36 @@ pub const Store = struct {
 | D40 | Edit unrelated file | Invalidate | Roots not containing it retain cache keys. | Incremental scope. |
 | D41 | `lsp.pngine.enabled=false` | Open composed file | Store returns no project context; legacy path remains available. | Opt-out/degradation. |
 | D42 | Discovery exceeds directory/document/byte cap | Discover | `incomplete`, explicit reason; never a false `none`. | Bounded hostile workspaces. |
-| D43 | WASM host cannot supply a requested WGSL file | `pngineRead` response | Missing-source state; no empty synthetic WGSL. | WASM negative path. |
-| D44 | WASM disk snapshot changes while document is open | Catalog/read then edit | Open buffer remains authoritative. | Transport overlay precedence. |
+| D43 | **Reserved:** WASM host cannot supply a requested WGSL file | Provider `readText` response | Missing-source state; no empty synthetic WGSL. | Reserved follow-on; not a phase-01 gate. |
+| D44 | **Reserved:** WASM disk snapshot changes while document is open | Catalog/read then edit | Open buffer remains authoritative. | Reserved follow-on; not a phase-01 gate. |
 | D45 | Client never sends `workspace/didChangeWatchedFiles` | didOpen/didSave/explicit selection | Content-checked refresh at each boundary; memberships and dependent caches are current without any notification. | No-watcher fallback policy. |
 
 ## Red-first and gate commands
 
 - Register each new suite through `addTestStep`; none is allowed to depend on `tests/exhaustive`.
-- `zig build test -j1`: exit `0`, including all new `D01–D45` assertions and existing tests.
-- `zig build lsp && zig build lsp-wasm`: both exit `0`.
-- `zig build -Dlsp=false`: exits `0` with project symbols compiled out and no SJON dependency resolution.
-- `(cd npm/wgslender-lsp && npm test)`: exit `0`.
-- Store instrumentation test: after warm discovery, 200 WGSL edits cause **0 SJON parses and 0 discovery scans**.
+- `zig build test -j1`: exit `0`, including all in-scope `D01–D45` assertions and existing tests; reserved D43/D44 are not gates.
+- `zig build lsp && zig build lsp-wasm`: both exit `0`; `lsp-wasm` has no project capability and no SJON import.
+- `zig build wasm -Dlsp=false && zig build lib -Dlsp=false`: both exit `0` with `pngine_support=false` and no SJON fetch.
+- `zig build -Dlsp=false`: exits `0` with project symbols compiled out and neither `lsp_kit` nor SJON resolved.
+- `(cd npm/wgslender-lsp && npm test)`: exit `0`; the package exposes no new project API and embeds a module with no SJON import.
+- Store instrumentation test: after warm discovery, 200 WGSL edits cause **0 SJON parses, 0 discovery scans, and 0 project provider reads**.
 
 ## Stop-and-report conditions
 
 - A required SJON AST accessor is not public or cannot retain author spans.
-- The dependency cannot build native and WASM without libc.
+- The dependency cannot build the native CLI/LSP with `plugin-exec=false`, or a project-free graph starts resolving it.
 - Correct bundle expansion would require loading executable plugins.
 - Canonicalization cannot distinguish the Windows/UNC cases without changing existing URI behavior.
 - Supporting an SJON `(import …)` fixture appears to work only because a partial graph was built; mark it unsupported instead.
+- Any project text read bypasses `SourceProvider`, or a test assumes the provider is the filesystem.
 
 ## Risks
 
 - **Workspace scan cost:** bounded and cached; explicit project selection is the fallback.
 - **Stale graph during SJON syntax recovery:** visibly marked and replaced on the next valid refresh.
 - **Filesystem identity differences:** isolated in `Path.zig` with target-specific tests.
-- **WASM source round-trips:** requests are limited to referenced files and never occur per keystroke.
+- **Provider source round-trips:** requests are limited to referenced files and never occur per keystroke; tests bind a fake provider and native is the only filesystem implementation.
 - **Graph-name collisions:** program-scoped tables and stable root IDs prevent cross-program capture.
+- **Scope drift:** project code compiling into `wasm`, `lib`, or `lsp-wasm` is caught by `pngine_support=false`, no-import compile tests, and no-fetch gates.
 
 ---

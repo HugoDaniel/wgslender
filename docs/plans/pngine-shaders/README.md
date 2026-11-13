@@ -64,13 +64,28 @@ pngine validates before minification and maps diagnostics through its assembly (
 
 Use `sjon.parse`/`sjon.Parser.parse` and the public `Ast.Tree` readers. SJON returns a recovered tree with diagnostics rather than throwing on syntax errors (`SJON/src/Parser.zig:8-21`); wgslender must not typed-walk an erroneous tree as though it were authoritative, following SJON’s own configuration reader precedent (`SJON/src/lsp/editor_config.zig:154-178`).
 
-SJON 1.7.0 is the dependency baseline (`SJON/src/version.zig:8`). Its ordinary Zig consumption is `b.dependency(...).module("sjon")` and `@import("sjon")` (`SJON/README.md:85-108`). The `wasm32-freestanding` path is already exercised with `plugin-exec=false`, no libc, and `sjon.parse` forced through code generation (`pngine/build.zig:958-983`, `pngine/src/dsl_sjon/wasm_smoke.zig:13-23`).
+SJON 1.7.0 is the dependency baseline (`SJON/src/version.zig:8`). Its ordinary Zig consumption is `b.dependency(...).module("sjon")` and `@import("sjon")` (`SJON/README.md:85-108`). The `wasm32-freestanding` path is already exercised with `plugin-exec=false`, no libc, and `sjon.parse` forced through code generation (`pngine/build.zig:958-983`, `pngine/src/dsl_sjon/wasm_smoke.zig:13-23`), which keeps the reserved wasm follow-on feasible without making it a deliverable here.
 
 ### Packaging
 
-Add SJON as a pinned **URL + hash** dependency, not a path dependency. The existing comments explain why a submodule/path-only solution breaks release archives (`wgslender/build.zig.zon:14-24`).
+Project support ships **native only**: the native CLI (`wgslender` subcommands) and the native LSP (`zig build lsp`). That is the whole shipping surface of phases 01–05.
 
-Project support is mandatory in normal CLI/LSP/LSP-WASM builds. The existing `-Dlsp=false` core-only build returns before LSP dependencies are resolved (`build.zig:99-129`); that mode remains single-source and does not fetch SJON. A generated build option, `pngine_support`, compiles out project entry points in that mode. There is no undetected “maybe SJON exists” runtime mode.
+Add SJON as a pinned **URL + hash** dependency, not a path dependency. The existing comments explain why a submodule/path-only solution breaks release archives (`build.zig.zon:14-24`). Mark it lazy in the same manifest:
+
+```zig
+.sjon = .{ .url = "…", .hash = "…", .lazy = true },
+```
+
+The build boundary, concretely:
+
+1. Read the `lsp` option **before** the module declarations (today it is read at `build.zig:112-119`). A `-Dlsp=false` build declares the core, CLI, `wasm`, `lib`, `lsp-wasm`, and `release-assets` graphs and returns before `lsp_kit` or SJON is asked for (`build.zig:99-129`), so a core-only build fetches neither. `lsp-wasm` uses no `lsp_kit`, and `release-assets` builds only `wasm` and `lsp-wasm`, so both stay on the core side of that return even though they are LSP/release artefacts.
+2. On the native-LSP/CLI path, resolve SJON with `b.lazyDependency("sjon", …)` and thread its module into the `wgslender` module (or add it as an optional import), so `src/pngine/*` compiles only where the dependency was resolved.
+3. `zig build wasm` (`src/wasm.zig` → `src/root.zig`), `zig build lib` (`src/lib.zig`), and `zig build lsp-wasm` (`lsp/wasm.zig`, the npm `wgslender-lsp` package behind the VS Code extension) carry `pngine_support = false` permanently. They advertise no project capability, keep today’s single-source behaviour, do not import SJON, and never call `lazyDependency("sjon")`. The npm minify/validate/reflect API does not gain project awareness.
+4. A generated build option, `pngine_support`, compiles project entry points out of every graph that did not resolve the dependency. There is no undetected “maybe SJON exists” runtime mode.
+
+The dependency stays lazy, never eager: `wgslender-sys/build.rs` must build offline from a vendored source tree, and merely asking for a lazy dependency makes the build runner fetch it (`build.zig:104-111`). The Rust packaging path packages that constraint today (`scripts/release.sh:78-87`).
+
+This is the shape the build already has for `lsp_kit`, and project support adds no new network requirement to a lane that had none: a default (`lsp=true`) `zig build wasm` already asks for the lazy dependency and the runner fetches it (`build.zig:99-129`), while `-Dlsp=false` fetches nothing.
 
 ### LSP integration
 
@@ -80,7 +95,7 @@ Current diagnostics use one document’s `PositionMapper` (`lsp/handler/diagnost
 
 Current definition/reference/rename results are also single-document: definitions return a range (`lsp/handler/definition.zig:16-25`), native adapters attach the request URI (`lsp/native/navigation.zig:25-35`, `:62-75`), and rename emits a one-key `WorkspaceEdit` (`lsp/lspkit/edits.zig:32-43`).
 
-Watched-file invalidation must be added to both dispatchers; the current WASM method table has no such route (`lsp/wasm.zig:99-137`). Push and pull diagnostics must remain equivalent.
+Watched-file invalidation is added to the native dispatcher; the WASM method table stays unchanged in this set (`lsp/wasm.zig:99-137`). Push and pull diagnostics must remain equivalent.
 
 ### CLI
 
@@ -112,6 +127,10 @@ SJON supplies parsing; wgslender owns discovery, graph caching, byte-exact assem
 
 ## Project model
 
+### Source provider invariant
+
+The project store reads project text and enumerates candidate documents only through a `SourceProvider` owned by the `Handler` — conceptually `SourceProvider { readText(canonical_path) ![]u8, candidates(dir) ![]Path }`. The native CLI and native LSP bind a filesystem provider. Nothing in phases 01–04 reads a project file outside that provider, and no task may assume the provider is the filesystem. A future wasm host binds an injected provider over the reserved message below; that is the one seam that keeps the door open, not a delivery in this set.
+
 ### Identity
 
 - **Program:** the graph extracted from one valid `.sjon` root document. Its identity is the canonical document path.
@@ -135,6 +154,8 @@ A file may be a fragment in one program and a root in another. That is represent
 6. Index only exact file references recovered from valid forms. Do not infer membership from directory layout, marker presence, or fragment name.
 7. Preserve every candidate. LSP requests operate on all resulting contexts; CLI artifact-producing commands require explicit selection when needed.
 
+Every read and directory enumeration in these steps goes through `SourceProvider`; the native binding is a filesystem implementation. No project code opens a path directly.
+
 Discovery is bounded by a per-refresh limit of `4096` visited directories, `1024` candidate SJON documents, and `64 MiB` of SJON input. Exceeding a limit produces a project-incomplete result and a request for explicit `--project` in the CLI; it never silently returns “not in a project.”
 
 ### Text authority and caching
@@ -142,8 +163,8 @@ Discovery is bounded by a per-refresh limit of `4096` visited directories, `1024
 The precedence for a part is:
 
 1. open buffer;
-2. WASM-injected source;
-3. disk.
+2. provider-injected text (reserved for a future wasm host; native has none);
+3. text returned by the provider (native: disk).
 
 Each cached document/part carries a SHA-256 content hash. Each root cache key contains the graph revision and the hashes of all contributing parts. Mtime may be used only as a hint to avoid a read; equality always depends on content.
 
@@ -237,7 +258,7 @@ An inline `:code` part has no file path. Give it a stable virtual URI:
 wgslender-pngine://part/<percent-encoded-program-path>/<form-occurrence>
 ```
 
-The VS Code extension registers a `TextDocumentContentProvider` backed by a custom `wgslender/pnginePart` request. Hover and references can therefore display inline text, and definition can land on its exact WGSL range. Native and WASM use the same URI and location shapes.
+The VS Code extension registers a `TextDocumentContentProvider` backed by a custom `wgslender/pnginePart` request. Hover and references can therefore display inline text, and definition can land on its exact WGSL range. The native CLI and native LSP use the same URI and location shapes; a future wasm host would reuse them (reserved follow-on).
 
 A client that cannot open that scheme still receives the controlling `.sjon` form as related information where available. Rename and quick fixes never write the virtual document.
 
@@ -253,7 +274,7 @@ A client that cannot open that scheme still receives the controlling `.sjon` for
 | LSP `format` | Current part only; no assembly. |
 | Zig library | Add experimental `wgslender.Pngine` project/assembly/mapping APIs; existing source functions remain unchanged. |
 | npm/C/Go/Rust single-source APIs | No project call and no signature change. |
-| WASM LSP | Same composed behavior through an injected document/source protocol. |
+| WASM LSP | No project behavior in this set: today’s single-source responses, no new capability, no SJON import. The injected-source protocol is the reserved follow-on below. |
 
 New CLI flags, registered through `src/options.zig`:
 
@@ -280,20 +301,22 @@ Unmapped single-source JSON remains byte-compatible.
 
 Minify source maps are remapped from assembled coordinates to author origins, with one `sources[]` entry per contributing file/virtual part. Reflection does not claim those offsets are author-local.
 
-## WASM project input contract
+## WASM project input contract (reserved follow-on)
 
-WASM cannot synchronously read the workspace filesystem. Add transport-neutral store support plus two JSON-RPC extensions:
+**Out of scope for phases 01–05.** `zig build lsp-wasm` (`lsp/wasm.zig`, the npm `wgslender-lsp` package behind the VS Code extension) ships with no project capability: it advertises nothing new, keeps today’s single-source behaviour, and does not import SJON.
 
-- `wgslender/pngineCatalog` notification: supplies changed SJON documents as `{uri,text}` and removals.
-- `wgslender/pngineRead` request: asks the host for referenced WGSL documents; the response contains `{uri,text|null}` entries.
+The contract is recorded so the native implementation does not close the door. WASM cannot synchronously read the workspace filesystem, so a future host would scan the workspace itself and inject the `.sjon` documents and sibling `.wgsl` texts over a new LSP message:
 
-The VS Code desktop and web entry points share one implementation. Open buffers still arrive through normal LSP synchronization and override injected text. `npm/wgslender-lsp`’s `initialize`, `sendMessage`, and `createTransport` signatures remain unchanged.
+- `wgslender/pngineCatalog` notification: supplies changed `.sjon` documents as `{uri,text}` and removals.
+- `wgslender/pngineRead` request: asks the host for referenced sibling `.wgsl` documents; the response contains `{uri,text|null}` entries.
+
+The VS Code desktop and web entry points would share one implementation. Open buffers still arrive through normal LSP synchronization and override injected text. `npm/wgslender-lsp`’s `initialize`, `sendMessage`, and `createTransport` signatures remain unchanged.
 
 ## Phase index
 
 | Phase | Ships |
 |---|---|
-| [01-discovery-and-graph](01-discovery-and-graph.md) | SJON dependency, canonical identity, discovery, graph extraction, source overlays, invalidation, native/WASM project input. |
+| [01-discovery-and-graph](01-discovery-and-graph.md) | SJON dependency, canonical identity, discovery through the provider seam, graph extraction, source overlays, invalidation, native project input. The wasm host contract is reserved. |
 | [02-assembly-and-mapping](02-assembly-and-mapping.md) | Byte-exact pngine assembly, directive hoist, bidirectional map, cross-repo parity gate. |
 | [03-composed-diagnostics](03-composed-diagnostics.md) | Per-root analysis, mapped push/pull diagnostics, lint policy, corpus acceptance, cache/performance gates. |
 | [04-implicit-inclusion](04-implicit-inclusion.md) | Cross-part hover, definitions, references, completion, rename, semantic/inlay filtering, inline-code locations. |
@@ -316,12 +339,12 @@ The pngine harness builds both assemblers in one test process using pngine’s e
 - pngine and wgslender produce identical assembled bytes and line rows for synthetic cases and all four corpus projects.
 - The measured clock false positives are gone; demo’s shared palette is correct across all four roots.
 - Unsaved current and sibling buffers are honored.
-- Native/WASM responses agree, including cross-file related information and multi-file edits.
-- A 200-edit burst performs zero SJON reparses and zero project disk refreshes.
-- `zig build test -j1`, native/WASM builds, release assets, npm LSP tests, and the release packaging check pass without the private exhaustive submodule.
+- Native CLI and native LSP responses agree, including cross-file related information and multi-file edits. The wasm LSP keeps its existing single-source responses.
+- A 200-edit burst performs zero SJON reparses and zero project `SourceProvider` reads beyond the defined refresh boundaries.
+- `zig build test -j1`, native builds, the project-free wasm/lib/lsp-wasm builds, release assets, npm LSP tests, and the release packaging check pass without the private exhaustive submodule.
 
 ## What this plan set does not cover
 
-SJON document-import/rebinding support, generated pass semantics, pngine lowering/specialization, closed-file workspace diagnostics, inline-code mutation, cross-part call hierarchy, and project-aware versions of the single-source package APIs. Each has an explicit safe fallback rather than partial or accidental behavior.
+SJON document-import/rebinding support, generated pass semantics, pngine lowering/specialization, closed-file workspace diagnostics, inline-code mutation, cross-part call hierarchy, and project-aware versions of the single-source package APIs. Each has an explicit safe fallback rather than partial or accidental behavior. The wasm host contract (a JS-side workspace scan and injected project documents) is a named follow-on, not a phase here.
 
 ---

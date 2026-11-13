@@ -21,10 +21,12 @@
 - Reflection offsets are documented as assembled-text offsets.
 - Source maps point to author origins.
 - No required private exhaustive tier or sibling checkout for ordinary builds.
+- Project support ships only in the native CLI and native LSP; `wasm`, `lib`, and `lsp-wasm` stay single-source and never resolve SJON.
+- The CLI reads project text only through the store’s `SourceProvider`; it never opens a project file directly.
 
 ## Interfaces consumed
 
-- Phase-01 `Store`, discovery, source overlays.
+- Phase-01 `Store`, its `SourceProvider`, discovery, source overlays.
 - Phase-02 `Assembled` and mapping.
 - Phase-03 diagnostic projection and lint merge.
 - Existing `runValidate`, `runLint`, `runReflect`, `runMinify`, `runCompile` (`cli/main.zig:686-993`).
@@ -41,13 +43,14 @@ pub const ProjectSelection = struct {
 
 pub fn selectProject(
     store: *Store,
-    io: std.Io,
     input_path: ?[]const u8,
     project_path: ?[]const u8,
     root_name: ?[]const u8,
     no_project: bool,
 ) !ProjectSelection;
 ```
+
+`selectProject` performs no filesystem access of its own: the `Store` resolves every document and candidate through its `SourceProvider`, and the native CLI binds the filesystem implementation.
 
 Experimental Zig exports:
 
@@ -84,7 +87,7 @@ The existing `validate`, `lint`, `reflect`, `minify`, and `compile` function sig
 - [ ] Add red parser/selection tests for every `X01–X17` case.
 - [ ] Add string-valued `project`/`root` specs and boolean `no-project` support through the option-spec machinery; do not hand-parse them beside the spec table. `OptionKind` has no single-value string kind today (`src/options.zig:33-75`), so this task extends it with one — `?[]const u8`, CLI value form takes the next token — and the three new specs live in a CLI-only table beside `cli_validate_specs` (`cli/main.zig:79-110`), never in `config_specs` (`src/options.zig:903`), so no `wgslender.json` key appears.
 - [ ] Implement canonical explicit-document loading and discovery-based selection.
-- [ ] Load the explicit `--project` document by dupeZ into `sjon.parse`'s `[:0]const u8` and reject an over-size document (above SJON's `MAX_FILE_SIZE`, `1 << 28`, `SJON/src/BinaryFormat.zig:89`) with a located usage error, not an assert — discovery's 64 MiB budget does not guard this path.
+- [ ] Load the explicit `--project` document through the store’s `SourceProvider.readText` and dupeZ into `sjon.parse`’s `[:0]const u8`; never open the path directly. Reject an over-size document (above SJON's `MAX_FILE_SIZE`, `1 << 28`, `SJON/src/BinaryFormat.zig:89`) with a located usage error, not an assert — discovery's 64 MiB budget does not guard this path.
 - [ ] Reject unknown roots, duplicate root names, project-less `--root`, directory `--project`, and stdin without both selectors as usage errors.
 - [ ] For validate/lint, select all containing shader-module roots unless `--root` narrows the set. For other commands require exactly one.
 - [ ] With stdin plus selectors, replace only the selected root’s own text; pass roots refuse with exit `2`.
@@ -133,11 +136,11 @@ The existing `validate`, `lint`, `reflect`, `minify`, and `compile` function sig
 
 **Files:** `src/root.zig`, `src/pngine/Pngine.zig`, API docs/tests, package tests.
 
-- [ ] Add red compile tests showing project APIs available in normal builds and absent by design in `-Dlsp=false`.
+- [ ] Add red compile tests showing project APIs available in the native CLI/LSP builds and absent by design in `-Dlsp=false`, `wasm`, `lib`, and `lsp-wasm`.
 - [ ] Export only the experimental store/program/assembly/mapping/source-map types documented above; do not expose LSP handler types through core.
-- [ ] Document allocator ownership, source precedence, error sets, and the fact that discovery performs filesystem work only when given `std.Io`.
+- [ ] Document allocator ownership, source precedence, error sets, and that discovery reads only through the injected `SourceProvider`; the native binding performs filesystem work and a future wasm binding is the reserved follow-on.
 - [ ] Keep existing single-source functions as the implementation used by npm/WASM/C/Go/Rust calls.
-- [ ] Add a JS LSP test using the JSON-RPC project protocol without adding a new npm function.
+- [ ] Add a native LSP fixture test that exercises the project protocol; keep `npm/wgslender-lsp`’s exported function surface unchanged and its existing tests green.
 - [ ] Run core, CLI, LSP, and package tests; all pass.
 - [ ] Commit: `docs: define experimental pngine Zig API boundaries`.
 
@@ -146,11 +149,14 @@ The existing `validate`, `lint`, `reflect`, `minify`, and `compile` function sig
 **Files:** test/build registration and release documentation/scripts as needed.
 
 - [ ] Register all public tests with `addTestStep`; prove a checkout without `tests/exhaustive/` configures and runs.
-- [ ] Run the complete native/WASM/test matrix and pngine parity/corpus gates.
-- [ ] Rebuild every committed WASM artifact with `release-assets`.
-- [ ] Run npm LSP tests and VS Code project tests.
+- [ ] Run the complete native/test matrix and pngine parity/corpus gates; run the project-free `wasm`, `lib`, and `lsp-wasm` builds and prove they have no project symbols or SJON import.
+- [ ] Rebuild every committed WASM artifact with `release-assets` through the project-free graph (`zig build release-assets -Dlsp=false`); update the asset step at `scripts/release.sh:60-61` to pass that boundary, so it builds only `wasm` and `lsp-wasm` and resolves no SJON.
+- [ ] Run the existing npm LSP tests and VS Code extension tests; neither package gains a project API or a new project capability.
+- [ ] From an unpacked release tarball with no `../SJON` checkout and an empty SJON cache, build `wasm`, `lib`, and `lsp-wasm` through the project-free graph (`-Dlsp=false`) and assert zero SJON fetches.
+- [ ] From the same tarball, build the native CLI and native LSP: each resolves the lazy SJON dependency once by URL + hash, and a second build with the network unavailable exits `0` because the fetched dependency is reused from `zig-pkg/` exactly as `lsp_kit` is today.
+- [ ] Run `zig build -Dlsp=false` and assert that neither `lsp_kit` nor SJON is resolved and no project entry points are compiled.
 - [ ] Run `scripts/release.sh --check`; green requires its existing final clean-tree gate (`scripts/release.sh:122-145`) plus all new gates.
-- [ ] Exercise the existing Rust packaging path, which vendors and unpacks Zig sources (`scripts/release.sh:78-87`), and verify the project-enabled normal build fetches SJON by URL while `-Dlsp=false` remains offline/core-only.
+- [ ] Exercise the existing Rust packaging path, which vendors and unpacks Zig sources (`scripts/release.sh:78-87`), and verify it still passes `-Dlsp=false` and needs no network; the project-enabled normal build is covered by the native tarball gate above.
 - [ ] Commit: `test: gate pngine project support for release`.
 
 ## Exhaustive use-case inventory
@@ -201,19 +207,24 @@ The existing `validate`, `lint`, `reflect`, `minify`, and `compile` function sig
 | X42 | No mappings/empty source | Minify map | Valid empty SourceMap v3 result. | Empty input. |
 | X43 | `format` request/CLI surface | Inspect/use | No new CLI format subcommand; LSP formatting remains local. | Explicit command boundary. |
 | X44 | Zig consumer uses `wgslender.Pngine` | Compile/run | Experimental APIs obey ownership and source precedence. | Library exposure. |
-| X45 | `-Dlsp=false` consumer | Build | No SJON fetch/import and existing source APIs work. | Offline/core build. |
+| X45 | `-Dlsp=false` consumer | Build | No `lsp_kit` or SJON fetch/import, no project entry points, and existing source APIs work. | Offline/core build. |
 | X46 | npm/C/Go/Rust single-source call | Package tests | No project discovery and no API signature change. | Package boundary. |
-| X47 | WASM LSP project fixture | JSON-RPC test | Same composed output as native using injected sources. | WASM parity. |
-| X48 | Release tarball normal build | Package gate | URL+hash dependency resolves; no sibling `../SJON` requirement. | Tarball correctness. |
-| X49 | Release assets | `release-assets` | Both committed WASM modules rebuilt and freshness checks pass. | Shipped-editor parity. |
+| X47 | WASM LSP on a project fixture | JSON-RPC test | No project capability: no new advertisement, no SJON import, and today’s single-source results. | Scope guard, not a project gate. |
+| X48 | Release tarball normal build | Package gate | Native CLI/LSP resolve the lazy URL+hash dependency; `wasm`, `lib`, and `lsp-wasm` do not; no sibling `../SJON` requirement. | Tarball correctness. |
+| X49 | Release assets | `release-assets` | Both project-free WASM modules rebuilt and freshness checks pass. | Shipped-editor parity. |
 | X50 | Full release check | `scripts/release.sh --check` | Exit `0`, clean tree, all public gates green without private exhaustive tests. | Final completion gate. |
+| X51 | Release tarball, empty SJON cache, no `../SJON` | `zig build wasm`, `zig build lib`, `zig build lsp-wasm` through the project-free graph | Exit `0`; zero SJON fetches; no project symbols or imports. | Project-free artefact boundary. |
+| X52 | Same tarball, native CLI/LSP | `zig build`, `zig build lsp` | Lazy SJON resolves once by URL+hash; a second offline build exits `0` with the dependency in `zig-pkg/`. | Native dependency and offline reuse. |
+| X53 | Core-only configure | `zig build -Dlsp=false` | Neither `lsp_kit` nor SJON is resolved; project entry points are compiled out. | Core-only boundary. |
 
 ## Red-first and gate commands
 
-- `zig build test -j1`: exit `0`; all `X01–X50` and existing suites pass.
-- `zig build && zig build lsp && zig build wasm && zig build lsp-wasm`: every build exits `0`.
-- `zig build -Dlsp=false`: exit `0` without SJON resolution.
-- `zig build release-assets`: exit `0`; committed asset copies match.
+- `zig build test -j1`: exit `0`; all in-scope `X01–X53` and existing suites pass.
+- `zig build && zig build lsp && zig build wasm && zig build lib && zig build lsp-wasm`: every build exits `0`.
+- `zig build -Dlsp=false`: exit `0` without `lsp_kit` or SJON resolution.
+- Tarball boundary: from a tree with no `../SJON` and no SJON cache, `zig build wasm`, `zig build lib`, and `zig build lsp-wasm` through the project-free graph fetch no SJON and import none.
+- Native tarball: `zig build && zig build lsp` fetch SJON once by URL+hash, then exit `0` on a second run with the network unavailable.
+- `zig build release-assets -Dlsp=false`: exit `0`; committed asset copies match and no SJON is resolved.
 - `(cd npm/wgslender-lsp && npm test)`: exit `0`.
 - From pngine: `zig build test-wgslender-assembly-parity -Dinercia=../inercia-2026`: exit `0`.
 - `SKIP_FOREIGN=1 ./scripts/release.sh --check`: Zig-only release gate exits `0` and leaves the tree clean.
@@ -226,7 +237,9 @@ The existing `validate`, `lint`, `reflect`, `minify`, and `compile` function sig
 - Source-map remapping loses generated positions or invents an author source.
 - Reflection consumers require author-local offsets; report that as a separate API-design request instead of silently changing the established reflection schema.
 - Release packaging requires a sibling path, private submodule, or unrecorded dependency hash.
+- A project-free artefact (`wasm`, `lib`, or `lsp-wasm`) starts resolving, fetching, or importing SJON.
 - Existing package tests reveal an accidental project lookup in a single-source API.
+- Any project text read bypasses the store’s `SourceProvider`.
 
 ## Risks
 
@@ -235,3 +248,4 @@ The existing `validate`, `lint`, `reflect`, `minify`, and `compile` function sig
 - **Source-map complexity:** decode/re-encode tests cover names, multiple sources, and every mapping category.
 - **Reflection offset expectations:** the assembled-coordinate contract is explicit and tested.
 - **Release regressions:** the existing clean-tree and vendored-package gates remain mandatory.
+- **Build-boundary drift:** project code compiling into a project-free graph is caught by `pngine_support=false`, compile tests, and the no-fetch tarball gate.

@@ -19,6 +19,7 @@
 - No recursion or unbounded traversal.
 - Open-buffer text is already resolved by `Store`.
 - No minification or pngine lowering in `Assembled.text`.
+- Every project text read goes through `SourceProvider`; the pure assembler opens no files and never assumes the provider is the filesystem.
 
 ## Interfaces consumed
 
@@ -28,7 +29,7 @@ Store.part(id) ?*const Part
 Store.textForPart(id: PartId) !SourceText
 ```
 
-`SourceText` carries `text`, `origin`, `content_hash`, and whether it came from an open buffer, injection, or disk. `textForPart` is part of the phase-01 `Store` interface (produced in 01 Task 5); this phase consumes it as-is.
+`SourceText` carries `text`, `origin`, `content_hash`, and whether it came from an open buffer, provider injection (reserved for a future wasm host), or provider disk. `textForPart` is part of the phase-01 `Store` interface (produced in 01 Task 5); this phase consumes it as-is.
 
 ## Interfaces produced
 
@@ -103,8 +104,8 @@ pub const Assembled = struct {
 
 **Files:** `src/pngine/Store.zig`, `src/pngine/Assemble.zig`, `tests/pngine_store_test.zig`.
 
-- [ ] Add red tests for current-buffer edits, sibling edits, closed-disk edits, multi-root independence, and missing source recovery.
-- [ ] Assemble through `Store.textForPart`, never directly from disk inside the pure assembler.
+- [ ] Add red tests for current-buffer edits, sibling edits, closed-disk edits, multi-root independence, provider read failure, and missing source recovery.
+- [ ] Assemble through `Store.textForPart`; the Store resolves it through `SourceProvider.readText`, and the pure assembler never opens a file.
 - [ ] Cache `Assembled` by `(RootId, graph generation, ordered part hashes)`; preserve unrelated roots on an edit.
 - [ ] Bump `content_generation` when any assembled result changes.
 - [ ] Verify repeated assembly without changes performs no reads or allocations beyond cache lookup.
@@ -175,7 +176,7 @@ The harness compiles the wgslender side itself: a module rooted in the planned `
 ## Red-first and gate commands
 
 - `zig build test -j1`: exit `0`; all `A01–A42` cases and OOM sweeps pass.
-- `zig build wasm && zig build lsp-wasm`: both exit `0`.
+- `zig build wasm -Dlsp=false && zig build lsp-wasm -Dlsp=false`: both exit `0`; both remain project-free and fetch no SJON.
 - From pngine: `zig build test-wgslender-assembly-parity -Dinercia=../inercia-2026`: exit `0`, with one compared result per corpus root and no byte/row differences.
 - Cache test: warm `sceneCode`, edit `clock_scene.wgsl`, and verify only `sceneCode`-dependent entries rebuild; demo root caches remain untouched.
 

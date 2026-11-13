@@ -6,7 +6,7 @@
 
 **Architecture:** A per-root analysis cache owns assembled text, `Validator.AnalysisResult`, lint state, and optional minify estimates. A diagnostic projector maps entries to origins, merges multi-root results, and feeds existing push/pull transports. The legacy single-document path remains intact for non-project files and no-import roots.
 
-**Tech Stack:** Zig 0.16, wgslender Validator/Linter/DCE, phase-02 assembly/map, native and WASM LSP transports.
+**Tech Stack:** Zig 0.16, wgslender Validator/Linter/DCE, phase-02 assembly/map, the native LSP transport. The wasm LSP stays single-source.
 
 **Spec:** `docs/plans/pngine-shaders/README.md`
 
@@ -19,6 +19,8 @@
 - Push and pull return identical diagnostic sets.
 - Existing no-project/no-import diagnostics remain unchanged.
 - No closed-file workspace diagnostics requirement.
+- Project behavior is native-only; the wasm LSP advertises nothing new and keeps today’s single-source diagnostics.
+- No project text read outside `SourceProvider`.
 - No private exhaustive tests.
 
 ## Interfaces consumed
@@ -60,7 +62,7 @@ pub fn affectedOpenDocuments(
 - Create `lsp/handler/pngine_diagnostics.zig`: projection, merge, project errors.
 - Modify `lsp/Handler.zig`, `lsp/handler/diagnostics.zig`.
 - Modify `src/Diagnostic.zig` only if shared JSON origin fields are needed by phase 05; no LSP-specific field belongs in core diagnostics.
-- Modify native/WASM diagnostic codecs, document sync, lifecycle capabilities.
+- Modify native diagnostic codecs, document sync, and lifecycle capabilities; do not add project routes to the wasm LSP.
 - Create `tests/pngine_diagnostics_test.zig`, `tests/pngine_lint_test.zig`, `tests/pngine_diagnostic_transport_test.zig`, `tests/pngine_perf_test.zig`.
 
 ## Ordered work
@@ -79,14 +81,14 @@ pub fn affectedOpenDocuments(
 
 ### Task 2: Diagnostic projection and related locations
 
-**Files:** `lsp/handler/pngine_diagnostics.zig`, `lsp/Handler.zig`, both diagnostic codecs, `tests/pngine_diagnostics_test.zig`, existing diagnostic parity tests.
+**Files:** `lsp/handler/pngine_diagnostics.zig`, `lsp/Handler.zig`, the native diagnostic codecs, `tests/pngine_diagnostics_test.zig`, existing diagnostic parity tests.
 
 - [ ] Add red tests for file/inline origins, hoisted directives, part boundaries, related information on another file, and EOF.
 - [ ] Convert assembled ranges with `Assembled.toOrigin`; discard only entries with no safe author representation and emit one `P0001` explaining the degraded projection.
-- [ ] Extend related-information encoders to use each item’s URI rather than always using the current URI (`lsp/lspkit/diagnostics.zig:58-72`, `lsp/wire/diagnostics.zig:72-90`).
+- [ ] Extend the native related-information encoder to use each item’s URI rather than always using the current URI (`lsp/lspkit/diagnostics.zig:58-72`); leave the wasm wire codec unchanged (`lsp/wire/diagnostics.zig:72-90`).
 - [ ] Keep primary diagnostics in the requested document’s report; related entries may point to SJON or another WGSL part.
 - [ ] Preserve quick-fix payloads only when their primary and fix ranges map to that document.
-- [ ] Run native/WASM byte-parity tests; all pass.
+- [ ] Run native diagnostic parity tests; the wasm single-source byte-parity suites remain green.
 - [ ] Commit: `feat: project composed diagnostics to author files`.
 
 ### Task 3: Multi-root validation and graph/hole errors
@@ -117,15 +119,15 @@ pub fn affectedOpenDocuments(
 
 ### Task 5: Push, pull, refresh, and result IDs
 
-**Files:** `lsp/Handler.zig`, `lsp/handler/diagnostics.zig`, `lsp/NativeServer.zig`, WASM document sync/lifecycle, native lifecycle, transport tests.
+**Files:** `lsp/Handler.zig`, `lsp/handler/diagnostics.zig`, `lsp/NativeServer.zig`, native lifecycle, transport tests. The wasm document sync and lifecycle stay untouched.
 
 - [ ] Add red tests proving an edit to a shared sibling republishes every affected open document and changes pull result IDs.
 - [ ] Route composed files through `validatePngineDocument` on cheap/full paths.
 - [ ] Republish affected open documents, not only the edited URI; arm each for the existing debounced full pass.
 - [ ] Include project generations in pull result IDs without reintroducing numeric wrap/collision ambiguity.
-- [ ] Set `diagnosticProvider.interFileDependencies=true` in both capability implementations; leave workspace diagnostics false.
+- [ ] Set `diagnosticProvider.interFileDependencies=true` in the native capability implementation; the wasm LSP advertises nothing new; leave workspace diagnostics false.
 - [ ] Send diagnostic refresh after watched project changes; do not require clients to support refresh for correctness of subsequent pulls.
-- [ ] Run push/pull/capability/config-refresh suites on both transports; all pass.
+- [ ] Run push/pull/capability/config-refresh suites on the native transport; the wasm single-source suite remains green.
 - [ ] Commit: `feat: publish and pull pngine-aware diagnostics`.
 
 ### Task 6: Corpus and performance acceptance
@@ -136,7 +138,7 @@ pub fn affectedOpenDocuments(
 - [ ] Pin the measured clock failures as red before the composed path is enabled: the baseline is the set of W0001s that standalone `wgslender lint` reports on `clock/kernels/scene_lib.wgsl` today, recorded as named fixtures — the derivation is the contract, not a remembered count.
 - [ ] Verify no W0001 for any of those fixture names when used by the project, no missing `Transform2D`/`Surface`, and no false not-callable findings for the named scene functions.
 - [ ] Verify demo diagnostics cover all four roots and bounce/veclock match legacy output.
-- [ ] After warm discovery, run 200 edits: require zero SJON parses, zero discovery scans, zero unrelated-root analyses, and no project disk reads.
+- [ ] After warm discovery, run 200 edits: require zero SJON parses, zero discovery scans, zero unrelated-root analyses, and no project `SourceProvider` reads.
 - [ ] Commit: `test: gate pngine diagnostics on the inercia corpus`.
 
 ## Exhaustive use-case inventory
@@ -190,17 +192,17 @@ pub fn affectedOpenDocuments(
 | C45 | Pull immediately after sibling edit | `textDocument/diagnostic` | Same set as full push; previous ID does not return Unchanged. | Pull freshness. |
 | C46 | Pull twice with no relevant change | Pull | Second returns Unchanged. | Result-ID caching. |
 | C47 | Diagnostics/lint disabled | Push/pull | Existing empty/disabled behavior is preserved. | Config compatibility. |
-| C48 | WASM project source missing | Push/pull | Honest incomplete-project result, no empty module validation. | WASM negative case. |
+| C48 | **Reserved:** WASM project source missing | Push/pull | Not applicable in this set; the wasm LSP never asks for project sources. | Reserved follow-on; not a phase-03 gate. |
 | C49 | `bounce` and `veclock` | Validate/lint | Legacy no-import output unchanged. | No-regression corpus. |
-| C50 | 200 warm-cache edits | Performance gate | Zero SJON parses/scans/disk refreshes; only dependent roots analyze. | Keystroke budget. |
+| C50 | 200 warm-cache edits | Performance gate | Zero SJON parses/scans/provider reads; only dependent roots analyze. | Keystroke budget. |
 
 ## Red-first and gate commands
 
-- `zig build test -j1`: exit `0`; all `C01–C50`, existing diagnostic, pull, publish, and parity suites pass.
-- `zig build lsp && zig build lsp-wasm`: both exit `0`.
-- `(cd npm/wgslender-lsp && npm test)`: exit `0`.
+- `zig build test -j1`: exit `0`; all in-scope `C01–C50`, existing diagnostic, pull, publish, and native parity suites pass; reserved C48 is not a gate.
+- `zig build lsp && zig build lsp-wasm -Dlsp=false`: both exit `0`; `lsp-wasm` advertises no project capability and fetches no SJON.
+- `(cd npm/wgslender-lsp && npm test)`: exit `0`; the package exposes no project API.
 - Corpus gate: all clock/demo composed roots valid under author-text semantics except explicitly injected negative fixtures; bounce/veclock remain valid.
-- Performance test prints counters; green shape is exactly zero SJON/discovery/disk-refresh counts during the warm 200-edit burst.
+- Performance test prints counters; green shape is exactly zero SJON/discovery/provider-read counts during the warm 200-edit burst.
 
 ## Stop-and-report conditions
 
@@ -208,14 +210,14 @@ pub fn affectedOpenDocuments(
 - Correct lint behavior requires changing core rule semantics rather than merging root results.
 - Push and pull cannot share a result set without transport-specific behavior.
 - A pass/corpus result needs generated text or pngine lowering.
-- The performance counter shows any SJON parse or discovery scan on the WGSL edit path.
+- The performance counter shows any SJON parse, discovery scan, or project provider read on the WGSL edit path.
 
 ## Risks
 
 - **Multi-root diagnostic volume:** exact dedupe and explicit root relations keep it bounded by actual findings.
 - **Lint suppression hiding a root-specific issue:** only W0001/W0002/W0003 use intersection; the diagnostic policy documents why.
 - **Stale cache pointers:** assembly and analysis share an owner and are replaced atomically.
-- **Cross-file related-info compatibility:** additive URI use is covered by native/WASM wire tests.
+- **Cross-file related-info compatibility:** additive URI use is covered by native wire tests; the wasm single-source codecs are unchanged.
 - **Warm-edit cost:** counter-based tests gate project work independently of noisy wall-clock timings.
 
 ---

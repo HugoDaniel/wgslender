@@ -20,13 +20,16 @@
 - Inline virtual documents are read-only to edits/refactors.
 - Formatting stays local.
 - Existing standalone responses remain semantically unchanged.
+- Project behavior is native-only; the wasm LSP keeps today’s single-source responses.
+- Every project text read goes through `SourceProvider`; no feature opens a project file directly.
 
 ## Interfaces consumed
 
 - `Handler.analyzeRoot` and phase-03 root caches.
 - `Assembled.offsetFromOrigin`, `offsetToOrigin`, and range mapping.
 - Existing `NodeAtOffset.find`, `Edits.findReferences`, completion/hover/signature helpers.
-- Existing native/WASM navigation and edit codecs.
+- Existing native navigation and edit codecs; the wasm codecs stay single-source.
+- The injected `SourceProvider` and phase-01 project text; no feature reads a project file directly.
 
 ## Interfaces produced
 
@@ -63,8 +66,8 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 - Create `lsp/handler/pngine_context.zig`: request contexts and symbol identity.
 - Create `lsp/handler/pngine_symbols.zig`: cross-root reference/edit collection.
 - Modify hover, definition, references_rename, completion, signature_help, semantic_tokens, inlay_hints, code_actions.
-- Modify native/WASM navigation, symbols, editing, and wire/lspkit codecs.
-- Create `npm/wgslender-vscode/src/pngine-parts.ts` and register the virtual provider in both hosts.
+- Modify native navigation, symbols, editing, and wire/lspkit codecs; do not add project routes to the wasm adapters.
+- Create `npm/wgslender-vscode/src/pngine-parts.ts` and register the virtual provider in the native/desktop host; the web/wasm host keeps single-source behaviour.
 - Create `tests/pngine_navigation_test.zig`, `tests/pngine_rename_test.zig`, `tests/pngine_completion_test.zig`, `tests/pngine_editing_test.zig`.
 
 ## Ordered work
@@ -90,7 +93,7 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 - [ ] Map the returned hover range back to the request’s own origin.
 - [ ] Apply the same location path to declaration and type definition.
 - [ ] Keep builtin hover/completion behavior when no user symbol resolves.
-- [ ] Run hover/definition/type/signature and native/WASM parity tests; all pass.
+- [ ] Run hover/definition/type/signature tests on the native LSP; the wasm single-source suites remain green.
 - [ ] Commit: `feat: navigate pngine symbols across parts`.
 
 ### Task 3: References, highlights, and safe multi-file rename
@@ -104,7 +107,7 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 - [ ] Validate `new_name` with the existing WGSL identifier check and verify no affected root gains a declaration collision.
 - [ ] Group edits by URI; refuse if any edit targets inline virtual text.
 - [ ] Ensure open unsaved siblings receive edits against their current ranges.
-- [ ] Run references/highlight/rename and wire-parity tests; all pass.
+- [ ] Run references/highlight/rename and native wire tests; the wasm single-source suites remain green.
 - [ ] Commit: `feat: rename symbols across pngine file parts`.
 
 ### Task 4: Completion and member resolution
@@ -116,7 +119,7 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 - [ ] Keep the existing `VisibleLocals` source-order rules (`completion.zig:135-222`) but evaluate them at each assembled cursor offset.
 - [ ] Resolve member bases through the mapped AST/symbol first. Restrict the error-recovery name fallback to compatible active symbols; do not use the first same-named symbol across all roots (`completion.zig:92-108`).
 - [ ] Preserve attribute, builtin, keyword, type, and swizzle lists.
-- [ ] Run completion tests on native and WASM; all pass.
+- [ ] Run completion tests on the native LSP; the wasm single-source completion suite remains green.
 - [ ] Commit: `feat: complete names from composed pngine modules`.
 
 ### Task 5: Semantic tokens, inlay hints, code actions, and formatting boundary
@@ -129,18 +132,18 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 - [ ] Keep document symbols, folding, selection range, and ordinary highlights scoped to the current part; do not synthesize an assembled outline.
 - [ ] Reuse phase-03 mapped diagnostics for code actions; reject edits crossing origins or touching inline code.
 - [ ] Leave `computeFormatting` on the current buffer so a fragment with unresolved-alone holes still formats through the content-preserving parser path.
-- [ ] Run all existing feature suites and native/WASM editing parity; all pass.
+- [ ] Run all existing feature suites and native editing tests; the wasm single-source editing suite remains green.
 - [ ] Commit: `feat: preserve per-file editing views in pngine projects`.
 
-### Task 6: Inline virtual documents and WASM parity
+### Task 6: Inline virtual documents and native parity
 
-**Files:** `pngine-parts.ts` as named above, extension entry points, WASM/native adapters, tests and npm fixtures.
+**Files:** `pngine-parts.ts` as named above, the desktop extension entry point, native adapters, tests and npm fixtures.
 
 - [ ] Add red tests for URI escaping, reopened/stale inline parts, provider missing part, and exact definition ranges.
-- [ ] Implement the stable virtual URI encoder/decoder in shared project code and the VS Code provider.
+- [ ] Implement the stable virtual URI encoder/decoder in shared project code and the VS Code desktop provider.
 - [ ] Answer `wgslender/pnginePart` with current author text and language ID WGSL; invalidate the provider when the SJON part changes or disappears.
-- [ ] Ensure native and WASM return identical location/edit JSON for the same in-memory project.
-- [ ] Run `npm test` for the LSP package and VS Code extension tests covering desktop/web provider registration.
+- [ ] Ensure every native LSP result shape is identical whether the project text came from open buffers or the filesystem provider; the wasm host parity is the reserved follow-on.
+- [ ] Run the existing `npm test` suites for the LSP package and the VS Code desktop extension tests covering provider registration; no web/wasm project path is added.
 - [ ] Commit: `feat: expose pngine inline WGSL parts to editors`.
 
 ## Exhaustive use-case inventory
@@ -194,15 +197,15 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 | N45 | No valid root/cycle/missing file | Feature request | Use available local behavior or null; never resolve through stale assembled offsets. | Broken-graph degradation. |
 | N46 | Pass-only context | Hover/definition | Author-text links work; generated prelude names have no definition. | Pass boundary. |
 | N47 | Multi-root workspace with duplicate URI spellings | References/rename | Canonical identity dedupes results while response URIs remain valid for the client. | URI identity. |
-| N48 | Native and WASM same in-memory fixture | Compare responses | Byte-equivalent locations, references, completion, and WorkspaceEdit JSON. | Transport parity. |
+| N48 | Native LSP, same fixture in memory and through the filesystem provider | Compare responses | Location/edit/completion JSON is independent of whether provider text is open-buffer or filesystem; wasm parity is the reserved follow-on. | Native transport consistency. |
 
 ## Red-first and gate commands
 
 - `zig build test -j1`: exit `0`; all `N01–N48` plus existing hover/definition/reference/rename/completion/editing suites pass.
-- `zig build lsp && zig build lsp-wasm`: both exit `0`.
-- `(cd npm/wgslender-lsp && npm test)`: exit `0`.
-- VS Code extension tests: desktop and web register the provider, open an inline definition, and apply a file-backed multi-file rename; all pass.
-- Performance guard: repeated hover/completion against an unchanged root reuse phase-03 analysis and perform no SJON parse or assembly.
+- `zig build lsp && zig build lsp-wasm -Dlsp=false`: both exit `0`; `lsp-wasm` advertises no project capability and fetches no SJON.
+- `(cd npm/wgslender-lsp && npm test)`: exit `0`; the package exposes no project API.
+- VS Code desktop extension tests: the provider registers, opens an inline definition, and applies a file-backed multi-file rename; the web host stays single-source.
+- Performance guard: repeated hover/completion against an unchanged root reuse phase-03 analysis and perform no SJON parse, assembly, or project provider read.
 
 ## Stop-and-report conditions
 
@@ -217,7 +220,7 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 - **Large cross-root reference sets:** dedupe by URI/range and reuse cached analyses.
 - **Incorrect rename semantics:** declaration identity and all-root collision checks are mandatory gates.
 - **Virtual-document lifecycle:** explicit invalidation and missing-part responses prevent stale content.
-- **Feature regressions:** existing suites remain on the identity-context path and transport parity is retained.
+- **Feature regressions:** existing suites remain on the identity-context path and native transport parity is retained; the wasm path is unchanged.
 - **Presentation conflicts:** omit or label root variants rather than letting hash order choose output.
 
 ---
