@@ -856,6 +856,23 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/pngine_path_test.zig", target, optimize, &.{
         .{ .name = "pngine_path", .module = pngine_path_mod },
     });
+    // pngine strict extraction (pngine-shaders phase 01, Task 3). The
+    // extractor imports SJON, so the module and the suite exist only
+    // when the lazy dependency resolved.
+    if (sjon_mod) |m| {
+        const pngine_extract_mod = b.addModule("pngine_extract", .{
+            .root_source_file = b.path("src/pngine/Extract.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "sjon", .module = m },
+            },
+        });
+        _ = addTestStep(b, test_step, "tests/pngine_extract_test.zig", target, optimize, &.{
+            .{ .name = "pngine_extract", .module = pngine_extract_mod },
+            .{ .name = "sjon", .module = m },
+        });
+    }
     // Code action integration tests
     _ = addTestStep(b, test_step, "tests/code_action_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
     // Node-at-position tests

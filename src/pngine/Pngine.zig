@@ -23,6 +23,11 @@ const sjon = @import("sjon");
 /// there is no runtime "maybe" mode to ask.
 pub const enabled = build_options.pngine_support;
 
+/// Graph vocabulary shared by extraction, discovery, and the store.
+pub const Types = @import("Types.zig");
+/// Strict SJON → graph extraction (Task 3).
+pub const Extract = @import("Extract.zig");
+
 /// True when any top-level form in the SJON document `source` has head
 /// `head` (e.g. "wgsl", "shader-module", "pass").
 ///
