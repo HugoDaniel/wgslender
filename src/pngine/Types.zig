@@ -154,6 +154,13 @@ pub const Diagnostic = struct {
 pub const Program = struct {
     /// Canonical document path; identity, not response spelling.
     document_path: []const u8,
+    /// SHA-256 of the document text that produced this graph. The store
+    /// compares content, never mtime.
+    document_hash: [32]u8 = [_]u8{0} ** 32,
+    /// True when a later refresh failed to parse the document and this
+    /// graph is the last known good snapshot (D28). Never true after the
+    /// document is deleted (D29).
+    stale: bool = false,
     /// Every pngine part in source order.
     parts: []Part,
     /// Source-order part indices for `shader-module` and `pass` roots.
@@ -212,6 +219,141 @@ pub const Result = struct {
         return false;
     }
 };
+
+// =========================================================================
+// Store / discovery vocabulary (phase 01, Tasks 4–5)
+// =========================================================================
+
+/// Where a part's text came from at query time. The precedence is
+/// `open_buffer` > `injected` > `disk`.
+pub const SourceOrigin = enum { open_buffer, injected, disk };
+
+/// Whether the last refresh could read a referenced file-backed part.
+pub const SourceStatus = enum { readable, unreadable };
+
+/// Project discovery outcome. `none` means no project document was found;
+/// `complete` means every discovered candidate was read and parsed;
+/// `incomplete` means a limit, missing marker document, or syntax error left
+/// the result partial; `unsupported` means an SJON document uses `(import …)`
+/// composition, which this phase fails closed on.
+pub const DiscoveryState = enum { none, complete, incomplete, unsupported };
+
+/// Stable program slot in a `Store`. Slots are never reused, so IDs minted by
+/// one refresh stay meaningful until their program is deleted.
+pub const ProgramId = u32;
+
+/// `(program, source-order part index)` — a part identity, not its name.
+pub const PartId = struct {
+    program: ProgramId,
+    index: u32,
+};
+
+/// One immediate child of a directory, as enumerated through the provider.
+pub const CandidateKind = enum { file, directory };
+
+/// An owned directory entry. `path` is absolute or provider-canonical.
+pub const Candidate = struct {
+    path: []u8,
+    kind: CandidateKind,
+};
+
+/// The only two operations the store/discovery code may use to reach project
+/// text or candidate documents. The native host binds a filesystem
+/// implementation; tests bind an in-memory one and no project code opens a
+/// path itself.
+///
+/// `candidates` carries a file/directory kind because a bounded recursive
+/// scan needs to know which entries to descend into; the plan's prose says
+/// `[]Path`, which cannot express that and would force a second metadata
+/// call outside the provider.
+pub const SourceProvider = struct {
+    context: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        read_text: *const fn (
+            context: *anyopaque,
+            allocator: Allocator,
+            path: []const u8,
+        ) anyerror![]u8,
+        candidates: *const fn (
+            context: *anyopaque,
+            allocator: Allocator,
+            dir: []const u8,
+        ) anyerror![]Candidate,
+    };
+
+    pub fn readText(self: SourceProvider, allocator: Allocator, path: []const u8) anyerror![]u8 {
+        return self.vtable.read_text(self.context, allocator, path);
+    }
+
+    pub fn candidates(self: SourceProvider, allocator: Allocator, dir: []const u8) anyerror![]Candidate {
+        return self.vtable.candidates(self.context, allocator, dir);
+    }
+};
+
+/// Free every path in a candidate list, then the list itself.
+pub fn deinitCandidates(gpa: Allocator, candidates: []Candidate) void {
+    for (candidates) |candidate| gpa.free(candidate.path);
+    if (candidates.len > 0) gpa.free(candidates);
+}
+
+/// One `canonical WGSL path → membership` record.
+///
+/// `containing_roots` are source-order part indices of the roots whose import
+/// closure contains the part; a root's list is itself. `dependants` are the
+/// parts that import the target directly, in source order (the four
+/// fragments in D01, the four roots in D04).
+pub const Membership = struct {
+    program: ProgramId,
+    part: PartId,
+    containing_roots: []const u32,
+    dependants: []const u32,
+    source_status: SourceStatus,
+};
+
+/// A stable, program-path/part-index-sorted membership result. The caller
+/// owns it and calls `deinit` exactly once.
+pub const MembershipSet = struct {
+    items: []Membership = &.{},
+
+    pub fn deinit(self: *MembershipSet, gpa: Allocator) void {
+        for (self.items) |membership| {
+            if (membership.containing_roots.len > 0) gpa.free(membership.containing_roots);
+            if (membership.dependants.len > 0) gpa.free(membership.dependants);
+        }
+        if (self.items.len > 0) gpa.free(self.items);
+        self.* = .{};
+    }
+};
+
+/// Resolved source text under the documented precedence, with the SHA-256 of
+/// exactly those bytes. `text` is owned by the caller.
+pub const SourceText = struct {
+    text: []u8,
+    origin: SourceOrigin,
+    content_hash: [32]u8,
+
+    pub fn deinit(self: *SourceText, gpa: Allocator) void {
+        gpa.free(self.text);
+        self.* = undefined;
+    }
+};
+
+/// Bounds for one discovery pass. The defaults are the approved phase-01
+/// limits; tests may lower them to exercise each arm cheaply.
+pub const DiscoveryLimits = struct {
+    max_directories: usize = 4096,
+    max_candidates: usize = 1024,
+    max_input_bytes: usize = 64 * 1024 * 1024,
+};
+
+/// SHA-256 of `bytes` as a fixed-size value.
+pub fn contentHash(bytes: []const u8) [32]u8 {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    return digest;
+}
 
 /// Free one part's owned names, path, code, and list slices.
 pub fn deinitPart(gpa: Allocator, part: Part) void {

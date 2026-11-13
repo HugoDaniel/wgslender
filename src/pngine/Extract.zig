@@ -247,6 +247,7 @@ pub fn extractWithOptions(
         .status = .ok,
         .program = .{
             .document_path = owned_document_path,
+            .document_hash = types.contentHash(source),
             .parts = owned_parts,
             .roots = roots,
             .diagnostics = owned_program_diagnostics,

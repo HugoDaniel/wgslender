@@ -1,0 +1,1 @@
+(shader-module :name clockVecCode :file "clock_vec.wgsl")

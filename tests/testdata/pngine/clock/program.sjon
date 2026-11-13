@@ -1,0 +1,6 @@
+(wgsl :name sceneLib :file "kernels/scene_lib.wgsl")
+(wgsl :name clockScene :file "kernels/clock_scene.wgsl" :imports [sceneLib])
+(wgsl :name clockVecScene :file "kernels/clock_vec.wgsl" :imports [sceneLib])
+(wgsl :name clockFrag :file "kernels/clock_frag.wgsl" :imports [sceneLib])
+(wgsl :name clockPost :file "kernels/clock_post.wgsl" :imports [sceneLib])
+(shader-module :name sceneCode :file "shaders/scene.wgsl" :imports [clockScene clockVecScene clockFrag clockPost])

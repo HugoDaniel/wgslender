@@ -1,0 +1,5 @@
+(wgsl :name palette :file "palette.wgsl")
+(shader-module :name bgCode :file "bg.wgsl" :imports [palette])
+(shader-module :name squaresCode :file "squares.wgsl" :imports [palette])
+(shader-module :name postCode :file "post.wgsl" :imports [palette])
+(shader-module :name compositeCode :file "composite.wgsl" :imports [palette])

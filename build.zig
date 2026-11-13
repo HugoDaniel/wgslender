@@ -63,6 +63,18 @@ pub fn build(b: *std.Build) void {
     core_options.addOption(bool, "pngine_support", false);
     const core_options_mod = core_options.createModule();
 
+    // Pure URI/path identity for the pngine project store (phase 01,
+    // Task 2). It has no dependency on SJON or on the LSP, so the native
+    // `wgslender` graph (through `Pngine.Store`), the standalone
+    // `lsp/uri.zig` test, and the native server can all share the one
+    // implementation instead of each keeping a POSIX-only copy. Declared
+    // before `wgslender_mod` so the store can import it by name.
+    const pngine_path_mod = b.addModule("pngine_path", .{
+        .root_source_file = b.path("src/pngine/Path.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Core library module
     const wgslender_mod = b.addModule("wgslender", .{
         .root_source_file = b.path("src/root.zig"),
@@ -71,8 +83,10 @@ pub fn build(b: *std.Build) void {
         .imports = if (sjon_mod) |m| &.{
             .{ .name = "build_options", .module = native_options_mod },
             .{ .name = "sjon", .module = m },
+            .{ .name = "pngine_path", .module = pngine_path_mod },
         } else &.{
             .{ .name = "build_options", .module = native_options_mod },
+            .{ .name = "pngine_path", .module = pngine_path_mod },
         },
     });
 
@@ -507,15 +521,9 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    // Pure URI/path identity for the pngine project store (phase 01,
-    // Task 2). It has no dependency on SJON or on the LSP, so the
-    // standalone `lsp/uri.zig` test and the NativeServer module can share
-    // the one implementation instead of each keeping a POSIX-only copy.
-    const pngine_path_mod = b.addModule("pngine_path", .{
-        .root_source_file = b.path("src/pngine/Path.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // Pure URI/path identity is declared above `wgslender_mod` so the
+    // project store can import the same module instance the native server
+    // and `lsp/uri.zig` use.
 
     // NativeServer dispatcher — extracted from main.zig so the Phase 7
     // perf tests can drive the timer-thread + debouncer integration
@@ -872,6 +880,12 @@ pub fn build(b: *std.Build) void {
             .{ .name = "pngine_extract", .module = pngine_extract_mod },
             .{ .name = "sjon", .module = m },
         });
+        // pngine discovery and reverse membership (pngine-shaders phase 01,
+        // Task 4). These suites import the native `wgslender` graph because
+        // `Pngine.Discovery`/`Pngine.Store` must be reachable exactly where
+        // the production Handler reaches them; they bind the in-memory
+        // provider in `tests/pngine_test_provider.zig`.
+        _ = addTestStep(b, test_step, "tests/pngine_discovery_test.zig", target, optimize, &.{w});
     }
     // Code action integration tests
     _ = addTestStep(b, test_step, "tests/code_action_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });

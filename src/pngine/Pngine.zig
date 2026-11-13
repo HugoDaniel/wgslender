@@ -27,6 +27,10 @@ pub const enabled = build_options.pngine_support;
 pub const Types = @import("Types.zig");
 /// Strict SJON → graph extraction (Task 3).
 pub const Extract = @import("Extract.zig");
+/// Provider-only workspace/ancestor discovery (Task 4).
+pub const Discovery = @import("Discovery.zig");
+/// Project store, reverse membership, overlays, and invalidation (Tasks 4–5).
+pub const Store = @import("Store.zig").Store;
 
 /// True when any top-level form in the SJON document `source` has head
 /// `head` (e.g. "wgsl", "shader-module", "pass").
