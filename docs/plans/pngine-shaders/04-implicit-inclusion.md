@@ -71,7 +71,7 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 
 ### Task 1: Request mapping and location shapes
 
-**Files:** `pn gine_context.zig` as named above, `Handler.zig`, navigation/edit codecs, tests.
+**Files:** `pngine_context.zig` as named above, `Handler.zig`, navigation/edit codecs, tests.
 
 - [ ] Add red tests for local→assembled→local round trips, multi-root contexts, inline origins, and invalid positions.
 - [ ] Implement `contextsAt`, `declarationKey`, and origin-aware `Location`/`WorkspaceChanges`.
@@ -82,7 +82,7 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 
 ### Task 2: Hover, definitions, and signature help
 
-**Files:** `hover.zig`, `definition.zig`, `signature_help.zig`, `pn gine_context.zig` as above, tests.
+**Files:** `hover.zig`, `definition.zig`, `signature_help.zig`, `pngine_context.zig` as above, tests.
 
 - [ ] Add red cases for sibling function/type hover, root-to-fragment and fragment-to-root definition, inline definitions, and root-varying holes.
 - [ ] Resolve `NodeAtOffset` at each mapped assembled offset; never call it with an author-local offset against assembled text.
@@ -95,7 +95,7 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 
 ### Task 3: References, highlights, and safe multi-file rename
 
-**Files:** `references_rename.zig`, `pn gine_symbols.zig`, symbols adapters/codecs, tests.
+**Files:** `references_rename.zig`, `pngine_symbols.zig`, symbols adapters/codecs, tests.
 
 - [ ] Add red tests for shared declarations, divergent root bindings, include/exclude declaration, inline references, duplicate dedupe, and multi-file edits.
 - [ ] Resolve the target in every root and compare `SymbolKey`. If keys differ, references report the ambiguity and rename/prepareRename decline rather than merging unrelated symbols.
@@ -134,7 +134,7 @@ Existing `computeDefinition`, `computeTypeDefinition`, and `computeReferences` m
 
 ### Task 6: Inline virtual documents and WASM parity
 
-**Files:** `pn gine-parts.ts` as named above, extension entry points, WASM/native adapters, tests and npm fixtures.
+**Files:** `pngine-parts.ts` as named above, extension entry points, WASM/native adapters, tests and npm fixtures.
 
 - [ ] Add red tests for URI escaping, reopened/stale inline parts, provider missing part, and exact definition ranges.
 - [ ] Implement the stable virtual URI encoder/decoder in shared project code and the VS Code provider.

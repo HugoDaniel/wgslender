@@ -58,10 +58,11 @@ pub const Store = struct {
 
     pub fn program(self: *const Store, id: ProgramId) ?*const Program;
     pub fn part(self: *const Store, id: PartId) ?*const Part;
+    pub fn textForPart(self: *Store, id: PartId) !SourceText;
 };
 ```
 
-`MembershipSet` owns a stable, path-sorted slice of `{program, part, containing_roots}` records. `SourceOrigin` is `open_buffer`, `injected`, or `disk`. `Store` also exposes monotonically increasing `discovery_generation` and `content_generation` counters for later result IDs.
+`MembershipSet` owns a stable, path-sorted slice of `{program, part, containing_roots}` records. `SourceOrigin` is `open_buffer`, `injected`, or `disk`. `textForPart` resolves a part's current text under that precedence and returns a `SourceText` carrying `text`, `origin`, and `content_hash` — the source query D37/D38 exercise here, so phase 02 consumes the member rather than adding it. `Store` also exposes monotonically increasing `discovery_generation` and `content_generation` counters for later result IDs.
 
 ## File structure
 
@@ -110,8 +111,9 @@ pub const Store = struct {
 **Files:** `src/pngine/Types.zig`, `src/pngine/Extract.zig`, `tests/pngine_extract_test.zig`.
 
 - [ ] Add red fixtures for `wgsl`, `shader-module`, `pass`, `:code`, `:file`, imports, requires, malformed forms, duplicates, and unsupported SJON imports.
+- [ ] dupeZ every SJON input before `sjon.parse`: the signature takes `[:0]const u8` and asserts `Binary.MAX_FILE_SIZE` (`SJON/src/root.zig:350-354`), and SJON's own reader dupeZ's first (`SJON/src/lsp/editor_config.zig:152-154`); an over-size document is a per-document failure, never an assert.
 - [ ] Implement a non-recursive form walk using SJON’s public AST readers. Record form/name/file/code/import spans.
-- [ ] Reject both/neither `:code` and `:file`, missing names, non-symbol imports, and pass `:file` roots as graph errors; never invent a path or empty fragment.
+- [ ] Reject both/neither `:code` and `:file`, missing names, and non-symbol imports as graph errors; never invent a path or empty fragment. A pass's `:file` is a data-file-list — WASM data segments, not WGSL source (`pngine/schema/pngine.sjon:2571-2572`, defined `:1140-1142`) — so extraction ignores it; only a pass missing its required `:code` (`pngine/schema/pngine.sjon:2538-2540`) is a graph error.
 - [ ] Scope fragment lookup to one `Program`; duplicate names produce a program error rather than last-wins behavior.
 - [ ] Represent `:requires` as borrowed WGSL-name records with SJON spans.
 - [ ] Detect an `(import …)` head and mark the program `unsupported_document_import`; do not build a partial graph.
@@ -137,6 +139,7 @@ pub const Store = struct {
 
 - [ ] Write red tests proving open-text precedence, sibling overlays, selective invalidation, same-mtime content changes, and deletion.
 - [ ] Store SHA-256 per source and program. Rehash after a refresh read; never use mtime as equality.
+- [ ] Expose `Store.textForPart` returning the resolved `SourceText` (open buffer > injected > disk) with its content hash; D37/D38 cover it.
 - [ ] Hook every open/change/incremental-change/close path into `Store.upsertBuffer` or `removeBuffer`.
 - [ ] Invalidate only dependent root IDs on WGSL edits. SJON/marker edits rebuild only affected programs and the reverse index.
 - [ ] Add `pngineEnabled()` using the new spec-driven LSP option; disabling returns an empty membership set and preserves legacy behavior.
@@ -148,6 +151,7 @@ pub const Store = struct {
 **Files:** `lsp/NativeServer.zig`, `lsp/wasm.zig`, new WASM project adapter, `npm/wgslender-vscode/src/pngine-sync.ts`, both extension entry points, `npm/wgslender-vscode/src/client-options.ts`, `npm/wgslender-lsp/test.js`, `tests/pngine_transport_test.zig`.
 
 - [ ] Add red native/WASM tests for watched SJON/WGSL changes, deletion, `pngineRead` missing files, and open-buffer precedence.
+- [ ] Add a red no-watcher test: a client that never sends `workspace/didChangeWatchedFiles` still gets content-checked refresh at `didOpen`, `didSave`, and explicit project selection (D45).
 - [ ] Route `workspace/didChangeWatchedFiles` into `Store.invalidatePath`; schedule affected open documents for later diagnostic refresh.
 - [ ] Implement `wgslender/pngineCatalog` and `wgslender/pngineRead` without changing the npm package’s exported JavaScript API.
 - [ ] In VS Code, catalog workspace SJON documents, answer `pngineRead` through `workspace.fs`, and register SJON/WGSL file events in the shared client options.
@@ -177,7 +181,7 @@ pub const Store = struct {
 | D16 | Inline `wgsl :code` imported by file root | Discover file root | Inline part exists in graph but creates no file membership. | `:code` model. |
 | D17 | Inline `shader-module :code` | Extract | Root origin is inline with document/form/code spans. | Inline root identity. |
 | D18 | Inline `pass :code :imports [f]` | Extract | Pass root and file membership for `f`; no synthetic post root. | Pass graph without lowering. |
-| D19 | Pass with a WGSL `:file` | Extract | Invalid root graph error. | Pass schema is inline-only. |
+| D19 | Pass without `:code` | Extract | Invalid root graph error. | Pass WGSL source is the required `:code` key; its `:file` is a data-file-list, not WGSL. |
 | D20 | Fragment with both `:code` and `:file` | Extract | Invalid part; no arbitrary source choice. | Exclusive source forms. |
 | D21 | Fragment with neither source key | Extract | Invalid part. | Required source. |
 | D22 | Fragment with `:requires [noise]` | Extract | Requirement and SJON span retained. | Later hole diagnostics. |
@@ -203,11 +207,12 @@ pub const Store = struct {
 | D42 | Discovery exceeds directory/document/byte cap | Discover | `incomplete`, explicit reason; never a false `none`. | Bounded hostile workspaces. |
 | D43 | WASM host cannot supply a requested WGSL file | `pngineRead` response | Missing-source state; no empty synthetic WGSL. | WASM negative path. |
 | D44 | WASM disk snapshot changes while document is open | Catalog/read then edit | Open buffer remains authoritative. | Transport overlay precedence. |
+| D45 | Client never sends `workspace/didChangeWatchedFiles` | didOpen/didSave/explicit selection | Content-checked refresh at each boundary; memberships and dependent caches are current without any notification. | No-watcher fallback policy. |
 
 ## Red-first and gate commands
 
 - Register each new suite through `addTestStep`; none is allowed to depend on `tests/exhaustive`.
-- `zig build test -j1`: exit `0`, including all new `D01–D44` assertions and existing tests.
+- `zig build test -j1`: exit `0`, including all new `D01–D45` assertions and existing tests.
 - `zig build lsp && zig build lsp-wasm`: both exit `0`.
 - `zig build -Dlsp=false`: exits `0` with project symbols compiled out and no SJON dependency resolution.
 - `(cd npm/wgslender-lsp && npm test)`: exit `0`.

@@ -133,8 +133,8 @@ pub fn affectedOpenDocuments(
 **Files:** corpus gate tests and `tests/pngine_perf_test.zig`.
 
 - [ ] Encode the four corpus projects as read-only gate inputs; synthetic copies inside wgslender keep ordinary tests self-contained.
-- [ ] Pin the measured clock failures as red before the composed path is enabled.
-- [ ] Verify no W0001 for the twelve measured scene-library names when used by the project, no missing `Transform2D`/`Surface`, and no false not-callable findings for the named scene functions.
+- [ ] Pin the measured clock failures as red before the composed path is enabled: the baseline is the set of W0001s that standalone `wgslender lint` reports on `clock/kernels/scene_lib.wgsl` today, recorded as named fixtures — the derivation is the contract, not a remembered count.
+- [ ] Verify no W0001 for any of those fixture names when used by the project, no missing `Transform2D`/`Surface`, and no false not-callable findings for the named scene functions.
 - [ ] Verify demo diagnostics cover all four roots and bounce/veclock match legacy output.
 - [ ] After warm discovery, run 200 edits: require zero SJON parses, zero discovery scans, zero unrelated-root analyses, and no project disk reads.
 - [ ] Commit: `test: gate pngine diagnostics on the inercia corpus`.

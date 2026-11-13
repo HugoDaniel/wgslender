@@ -82,8 +82,9 @@ The existing `validate`, `lint`, `reflect`, `minify`, and `compile` function sig
 **Files:** `src/options.zig`, `cli/main.zig`, `cli/PngineSelection.zig`, options/CLI tests.
 
 - [ ] Add red parser/selection tests for every `X01–X17` case.
-- [ ] Add string-valued `project`/`root` specs and boolean `no-project` support through the option-spec machinery; do not hand-parse them beside the spec table.
+- [ ] Add string-valued `project`/`root` specs and boolean `no-project` support through the option-spec machinery; do not hand-parse them beside the spec table. `OptionKind` has no single-value string kind today (`src/options.zig:33-75`), so this task extends it with one — `?[]const u8`, CLI value form takes the next token — and the three new specs live in a CLI-only table beside `cli_validate_specs` (`cli/main.zig:79-110`), never in `config_specs` (`src/options.zig:903`), so no `wgslender.json` key appears.
 - [ ] Implement canonical explicit-document loading and discovery-based selection.
+- [ ] Load the explicit `--project` document by dupeZ into `sjon.parse`'s `[:0]const u8` and reject an over-size document (above SJON's `MAX_FILE_SIZE`, `1 << 28`, `SJON/src/BinaryFormat.zig:89`) with a located usage error, not an assert — discovery's 64 MiB budget does not guard this path.
 - [ ] Reject unknown roots, duplicate root names, project-less `--root`, directory `--project`, and stdin without both selectors as usage errors.
 - [ ] For validate/lint, select all containing shader-module roots unless `--root` narrows the set. For other commands require exactly one.
 - [ ] With stdin plus selectors, replace only the selected root’s own text; pass roots refuse with exit `2`.

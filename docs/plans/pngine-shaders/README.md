@@ -308,7 +308,7 @@ The VS Code desktop and web entry points share one implementation. Open buffers 
 | inercia-2026 | Four-project corpus and expected composed outcomes. | Read-only gate input; no generated files in the corpus. |
 | wgslender | Discovery, mapping, analysis, editing, CLI, packaging. | All production changes planned here. |
 
-The pngine harness builds both assemblers in one test process using pngine’s existing path dependency on wgslender. A dedicated `-Dinercia=…` option supplies the corpus. Ordinary wgslender tests do not require a pngine or inercia checkout.
+The pngine harness builds both assemblers in one test process using pngine’s existing path dependency on wgslender, compiling wgslender’s `src/pngine/*` library with pngine’s own SJON module injected (02 Task 5) so exactly one SJON instance is linked. A dedicated `-Dinercia=…` option supplies the corpus. Ordinary wgslender tests do not require a pngine or inercia checkout.
 
 ## Completion criteria
 

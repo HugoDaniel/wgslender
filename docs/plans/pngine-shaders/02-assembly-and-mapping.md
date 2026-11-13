@@ -28,7 +28,7 @@ Store.part(id) ?*const Part
 Store.textForPart(id: PartId) !SourceText
 ```
 
-`SourceText` carries `text`, `origin`, `content_hash`, and whether it came from an open buffer, injection, or disk.
+`SourceText` carries `text`, `origin`, `content_hash`, and whether it came from an open buffer, injection, or disk. `textForPart` is part of the phase-01 `Store` interface (produced in 01 Task 5); this phase consumes it as-is.
 
 ## Interfaces produced
 
@@ -113,6 +113,8 @@ pub const Assembled = struct {
 ### Task 5: Cross-repo parity gate
 
 **Files:** pngine test harness/build step, wgslender parity fixture descriptors.
+
+The harness compiles the wgslender side itself: a module rooted in the planned `src/pngine/*` library, reached through pngine's path dependency but constructed like pngine's other test modules, with pngine's own `sjon` module injected as the `sjon` import. It must not consume `wgslender_dep.module("wgslender")` (`pngine/build.zig:33-37`): wgslender pins SJON by URL + hash, so that module would resolve wgslender's dependency graph and fetch a second SJON instance into the test process. Injection is safe because the planned `src/pngine/*` modules are pure library code that never imports `build_options` — the `pngine_support` gate lives in the build graphs, the `src/root.zig` export, the CLI, and the Handler, none of which this parity module compiles (wgslender imports no `build_options` anywhere today).
 
 - [ ] Add a failing comparison for one clock root before wiring the expected values.
 - [ ] In pngine’s test process, construct its native `fragments.Table` and wgslender’s phase-01 graph from the same fixture descriptors.
