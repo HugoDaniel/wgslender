@@ -37,8 +37,9 @@ pub const BridgedDiagnostics = struct {
 /// `QuickFixHint` payload strings). The caller must keep `handler_diags`
 /// alive until the serialized JSON is written.
 ///
-/// `uri` is attached as the `location.uri` of every relatedInformation
-/// entry (WGSL diagnostics are always intra-document).
+/// A related item's own `uri` becomes `location.uri`; an empty one falls
+/// back to the document `uri`, preserving single-document behaviour for
+/// every pre-project constructor.
 ///
 /// Fails only if the top-level diagnostics slice can't be allocated.
 /// Sub-slice allocations degrade to `null` on OOM so the rest of the
@@ -61,7 +62,7 @@ pub fn toLspKitDiagnosticsBorrowed(
                 for (d.related, 0..) |rel_item, ri| {
                     rel[ri] = .{
                         .location = .{
-                            .uri = uri,
+                            .uri = if (rel_item.uri.len > 0) rel_item.uri else uri,
                             .range = .{
                                 .start = .{ .line = rel_item.range.start.line, .character = rel_item.range.start.character },
                                 .end = .{ .line = rel_item.range.end.line, .character = rel_item.range.end.character },
@@ -130,7 +131,10 @@ pub fn toLspKitDiagnosticsOwned(
                 for (d.related, 0..) |rel_item, ri| {
                     rel[ri] = .{
                         .location = .{
-                            .uri = uri_dup,
+                            .uri = if (rel_item.uri.len > 0)
+                                arena.dupe(u8, rel_item.uri) catch ""
+                            else
+                                uri_dup,
                             .range = .{
                                 .start = .{ .line = rel_item.range.start.line, .character = rel_item.range.start.character },
                                 .end = .{ .line = rel_item.range.end.line, .character = rel_item.range.end.character },
@@ -455,6 +459,42 @@ test "Diagnostic.data: .none is null (field omitted entirely)" {
 
     try testing.expect(quickFixHintToLspKitBorrowed(aa, .none) == null);
     try testing.expectEqual(Diagnostic.QuickFixHint.none, quickFixHintFromLspKit(null));
+}
+
+test "relatedInformation keeps each item's URI and defaults to the document URI" {
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const related = [_]Handler.LspRelatedInfo{
+        .{
+            .uri = "file:///ws/lib.wgsl",
+            .range = .{ .start = .{ .line = 3, .character = 4 }, .end = .{ .line = 3, .character = 9 } },
+            .message = "declared here",
+        },
+        .{
+            .range = .{ .start = .{ .line = 0, .character = 1 }, .end = .{ .line = 0, .character = 2 } },
+            .message = "current document",
+        },
+    };
+    const handler_diags = [_]Handler.LspDiagnostic{.{
+        .range = .{ .start = .{ .line = 7, .character = 2 }, .end = .{ .line = 7, .character = 8 } },
+        .severity = .@"error",
+        .message = "duplicate binding",
+        .related = &related,
+    }};
+
+    var bridged = try toLspKitDiagnosticsBorrowed(testing.allocator, &handler_diags, "file:///ws/use.wgsl");
+    defer bridged.deinit();
+    const borrowed_related = bridged.diagnostics[0].relatedInformation.?;
+    try testing.expectEqualStrings("file:///ws/lib.wgsl", borrowed_related[0].location.uri);
+    try testing.expectEqualStrings("file:///ws/use.wgsl", borrowed_related[1].location.uri);
+    try testing.expectEqual(@as(u32, 3), borrowed_related[0].location.range.start.line);
+
+    const owned = try toLspKitDiagnosticsOwned(aa, &handler_diags, "file:///ws/use.wgsl");
+    const owned_related = owned[0].relatedInformation.?;
+    try testing.expectEqualStrings("file:///ws/lib.wgsl", owned_related[0].location.uri);
+    try testing.expectEqualStrings("file:///ws/use.wgsl", owned_related[1].location.uri);
 }
 
 test "Diagnostic.data: Owned variant outlives the input" {

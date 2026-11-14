@@ -14,6 +14,9 @@ const pngine_support = build_options.pngine_support;
 const PngineStore = if (pngine_support) wgslender.Pngine.Store else void;
 const PngineAnalysis = @import("handler/pngine_analysis.zig");
 pub const RootAnalysis = PngineAnalysis.RootAnalysis;
+/// Composed-diagnostic projection (pngine-shaders phase 03, Task 2).
+pub const PngineDiagnostics = @import("handler/pngine_diagnostics.zig");
+pub const PngineValidateOptions = PngineDiagnostics.ValidateOptions;
 
 const WgslDiagnostic = wgslender.Diagnostic;
 const MinifySettings = wgslender.MinifySettings;
@@ -132,6 +135,10 @@ pub const DiagnosticSeverity = enum(u32) {
 };
 
 pub const LspRelatedInfo = struct {
+    /// Location's document. Empty means "the document this diagnostic is
+    /// reported for", which is what every pre-project constructor relies on;
+    /// composed pngine diagnostics fill it with the related part's own URI.
+    uri: []const u8 = "",
     range: Range,
     message: []const u8,
 };
@@ -257,6 +264,24 @@ pub fn analyzeRoot(
     if (comptime pngine_support) {
         const store = self.pngine_store orelse return error.PngineStoreUnbound;
         return self.pngine_analysis.analyzeRoot(self.gpa, store, root);
+    } else {
+        return error.PngineUnsupported;
+    }
+}
+
+/// Validate a pngine document in every assembled shader-module context
+/// that contains it (pngine-shaders phase 03, Task 2). Each validator
+/// diagnostic is mapped through its root's `Assembled.toOrigin`; only
+/// entries whose primary range maps to `uri` are returned. Unmappable
+/// entries are reported once per call as `P0001`. The legacy
+/// `validateDocument*` path is unchanged for standalone callers.
+pub fn validatePngineDocument(
+    self: *Handler,
+    uri: []const u8,
+    options: PngineValidateOptions,
+) ![]LspDiagnostic {
+    if (comptime pngine_support) {
+        return PngineDiagnostics.validateDocument(self, uri, options);
     } else {
         return error.PngineUnsupported;
     }

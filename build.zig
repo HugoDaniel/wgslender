@@ -203,6 +203,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "wgslender", .module = wgslender_wasm_mod },
             .{ .name = "build_options", .module = core_options_mod },
+            .{ .name = "pngine_path", .module = pngine_path_mod },
         },
     });
     // Wire codec tree — manual-JSON helpers shared by every wasm/<feature>.zig
@@ -368,6 +369,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "wgslender", .module = wgslender_mod },
             .{ .name = "build_options", .module = native_options_mod },
+            .{ .name = "pngine_path", .module = pngine_path_mod },
         },
     });
     // Per-feature native adapters live under lsp/native/. Each one takes
@@ -933,6 +935,13 @@ pub fn build(b: *std.Build) void {
         // validation, content-keyed analysis cache, unsaved-buffer
         // authority and the per-root minify-estimate slot.
         _ = addTestStep(b, test_step, "tests/pngine_analysis_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+        });
+        // pngine composed diagnostic projection (phase 03, Task 2): mapped
+        // validator ranges, hoisted directives, part boundaries, related
+        // information on another file, EOF fallback and quick-fix safety.
+        _ = addTestStep(b, test_step, "tests/pngine_diagnostics_test.zig", target, optimize, &.{
             w,
             .{ .name = "Handler", .module = handler_mod },
         });

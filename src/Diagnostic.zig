@@ -941,6 +941,15 @@ pub const Code = struct {
     // minifier-mode design note). Higher M-code buckets land with each
     // minifier-mode rule phase.
     pub const unknown_minify_directive: []const u8 = "M0000";
+
+    // pngine project diagnostics (P00xx). These describe the project
+    // context itself, not a WGSL construct, so they deliberately carry no
+    // spec_ref. P0002–P0004 land with phases 03 Tasks 3–4; the constants
+    // are registered here so the project code namespace has one owner.
+    pub const pngine_context_incomplete: []const u8 = "P0001";
+    pub const pngine_module_unassemblable: []const u8 = "P0002";
+    pub const pngine_missing_requirement: []const u8 = "P0003";
+    pub const pngine_pass_unsupported: []const u8 = "P0004";
 };
 
 /// Canonical message templates for the three unused-symbol warnings

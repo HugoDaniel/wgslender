@@ -332,11 +332,12 @@ fn buildRuleOverrides(
     return overrides.toOwnedSlice(arena);
 }
 
-fn freeSingleDiagnostic(gpa: std.mem.Allocator, d: LspDiagnostic) void {
+pub fn freeSingleDiagnostic(gpa: std.mem.Allocator, d: LspDiagnostic) void {
     if (d.message.len > 0) gpa.free(d.message);
     if (d.spec_url.len > 0) gpa.free(d.spec_url);
     if (d.related.len > 0) {
         for (d.related) |r| {
+            if (r.uri.len > 0) gpa.free(r.uri);
             if (r.message.len > 0) gpa.free(r.message);
         }
         gpa.free(d.related);
@@ -344,7 +345,7 @@ fn freeSingleDiagnostic(gpa: std.mem.Allocator, d: LspDiagnostic) void {
     freeQuickFixHint(gpa, d.data);
 }
 
-fn freeQuickFixHint(gpa: std.mem.Allocator, data: WgslDiagnostic.QuickFixHint) void {
+pub fn freeQuickFixHint(gpa: std.mem.Allocator, data: WgslDiagnostic.QuickFixHint) void {
     switch (data) {
         .none, .duplicate_location, .vertex_missing_builtin_position => {},
         .did_you_mean, .unused_symbol, .feature_not_enabled => |s| {
@@ -360,7 +361,7 @@ fn freeQuickFixHint(gpa: std.mem.Allocator, data: WgslDiagnostic.QuickFixHint) v
     }
 }
 
-fn dupeQuickFixHint(gpa: std.mem.Allocator, data: WgslDiagnostic.QuickFixHint) WgslDiagnostic.QuickFixHint {
+pub fn dupeQuickFixHint(gpa: std.mem.Allocator, data: WgslDiagnostic.QuickFixHint) WgslDiagnostic.QuickFixHint {
     return switch (data) {
         .none, .duplicate_location, .vertex_missing_builtin_position => data,
         .did_you_mean => |s| .{ .did_you_mean = gpa.dupe(u8, s) catch "" },
@@ -399,7 +400,7 @@ fn hintFromEntryFix(
     } };
 }
 
-const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
+pub const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
 
 /// Convert a wgslender `Diagnostic.Entry` (1-based line/column, byte
 /// `offset` field) to an LSP `Diagnostic` (0-based line, UTF-16 code-unit
@@ -475,17 +476,7 @@ pub fn convertDiagnostic(
 
 /// Frees all allocations within a diagnostics slice (messages, related info, the slice itself).
 pub fn freeDiagnostics(gpa: std.mem.Allocator, diags: []LspDiagnostic) void {
-    for (diags) |d| {
-        if (d.related.len > 0) {
-            for (d.related) |r| {
-                if (r.message.len > 0) gpa.free(r.message);
-            }
-            gpa.free(d.related);
-        }
-        if (d.message.len > 0) gpa.free(d.message);
-        if (d.spec_url.len > 0) gpa.free(d.spec_url);
-        freeQuickFixHint(gpa, d.data);
-    }
+    for (diags) |d| freeSingleDiagnostic(gpa, d);
     gpa.free(diags);
 }
 
