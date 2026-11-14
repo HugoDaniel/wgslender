@@ -100,6 +100,32 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // pngine CLI selection (phase 05, Task 1). The selection module lives
+    // beside the native CLI; the exe and its focused tests both import it by
+    // module name so the file belongs to exactly one module.
+    const pngine_selection_mod = b.addModule("PngineSelection", .{
+        .root_source_file = b.path("cli/PngineSelection.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "wgslender", .module = wgslender_mod },
+            .{ .name = "build_options", .module = native_options_mod },
+        },
+    });
+
+    // Composed CLI validate/lint output (phase 05, Task 2). Shares the
+    // projector/analysis engine through `wgslender.Pngine`.
+    const pngine_output_mod = b.addModule("PngineOutput", .{
+        .root_source_file = b.path("cli/PngineOutput.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "wgslender", .module = wgslender_mod },
+            .{ .name = "build_options", .module = native_options_mod },
+            .{ .name = "PngineSelection", .module = pngine_selection_mod },
+        },
+    });
+
     // Native CLI
     const exe = b.addExecutable(.{
         .name = "wgslender",
@@ -110,6 +136,8 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "wgslender", .module = wgslender_mod },
                 .{ .name = "build_options", .module = native_options_mod },
+                .{ .name = "PngineSelection", .module = pngine_selection_mod },
+                .{ .name = "PngineOutput", .module = pngine_output_mod },
             },
         }),
     });
@@ -864,27 +892,25 @@ pub fn build(b: *std.Build) void {
             w,
             .{ .name = "sjon", .module = m },
         });
-        // pngine CLI selection (phase 05, Task 1). The selection module
-        // lives beside the native CLI; the test imports it by module name
-        // because `tests/` cannot reach `cli/` through a relative import.
-        const pngine_selection_mod = b.addModule("PngineSelection", .{
-            .root_source_file = b.path("cli/PngineSelection.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                w,
-                .{ .name = "build_options", .module = native_options_mod },
-            },
-        });
+        // Selection tests import the module defined beside the CLI exe.
         _ = addTestStep(b, test_step, "tests/pngine_cli_test.zig", target, optimize, &.{
             w,
             .{ .name = "PngineSelection", .module = pngine_selection_mod },
+        });
+        // Composed CLI output (phase 05, Task 2): mapped text/JSON output,
+        // root-specific diagnostics, graph errors, and fix scoping.
+        _ = addTestStep(b, test_step, "tests/pngine_cli_output_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "PngineSelection", .module = pngine_selection_mod },
+            .{ .name = "PngineOutput", .module = pngine_output_mod },
         });
         // Flag-table tests live with the CLI so the private spec table is
         // testable without widening its visibility.
         _ = addTestStep(b, test_step, "cli/main.zig", target, optimize, &.{
             w,
             .{ .name = "build_options", .module = native_options_mod },
+            .{ .name = "PngineSelection", .module = pngine_selection_mod },
+            .{ .name = "PngineOutput", .module = pngine_output_mod },
         });
     }
 

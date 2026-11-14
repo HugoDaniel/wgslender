@@ -85,6 +85,19 @@ pub const Range = struct {
 pub const RelatedInfo = struct {
     range: Range = .{},
     message: []const u8 = "",
+    /// Author file for a related location in a composed project. Empty for
+    /// single-source diagnostics, which keeps the historical JSON shape
+    /// byte-identical.
+    file: []const u8 = "",
+};
+
+/// Author/project identity of a mapped diagnostic in a pngine project.
+/// Every field is empty on the single-source path, so the JSON serializer
+/// emits no origin keys and remains byte-compatible.
+pub const EntryOrigin = struct {
+    file: []const u8 = "",
+    project: []const u8 = "",
+    root: []const u8 = "",
 };
 
 /// A source-text rewrite attached to a diagnostic. Applied by the linter's
@@ -188,6 +201,9 @@ pub const Entry = struct {
     /// the LSP to re-parse `message`. Defaults to `.none` for the vast
     /// majority of diagnostics where no quickfix is available.
     data: QuickFixHint = .none,
+    /// Composed-project origin for this entry. Empty on every standalone
+    /// path; the JSON writer appends `file`/`project`/`root` only when set.
+    origin: EntryOrigin = .{},
 
     /// Format as "line:col: severity: message".
     pub fn format(self: *const Entry, writer: anytype) !void {
@@ -233,7 +249,13 @@ pub fn entryToJson(buf: *std.ArrayList(u8), allocator: Allocator, entry: *const 
         try buf.appendSlice(allocator, ",\"related\":[");
         for (entry.related, 0..) |rel, ri| {
             if (ri > 0) try buf.append(allocator, ',');
-            try buf.appendSlice(allocator, "{\"line\":");
+            try buf.append(allocator, '{');
+            if (rel.file.len > 0) {
+                try buf.appendSlice(allocator, "\"file\":\"");
+                try appendJsonEscaped(buf, allocator, rel.file);
+                try buf.appendSlice(allocator, "\",");
+            }
+            try buf.appendSlice(allocator, "\"line\":");
             try appendInt(buf, allocator, rel.range.start.line);
             try buf.appendSlice(allocator, ",\"column\":");
             try appendInt(buf, allocator, rel.range.start.column);
@@ -266,6 +288,22 @@ pub fn entryToJson(buf: *std.ArrayList(u8), allocator: Allocator, entry: *const 
         try buf.appendSlice(allocator, "},\"text\":\"");
         try appendJsonEscaped(buf, allocator, f.text);
         try buf.appendSlice(allocator, "\"}");
+    }
+
+    if (entry.origin.file.len > 0) {
+        try buf.appendSlice(allocator, ",\"file\":\"");
+        try appendJsonEscaped(buf, allocator, entry.origin.file);
+        try buf.append(allocator, '"');
+    }
+    if (entry.origin.project.len > 0) {
+        try buf.appendSlice(allocator, ",\"project\":\"");
+        try appendJsonEscaped(buf, allocator, entry.origin.project);
+        try buf.append(allocator, '"');
+    }
+    if (entry.origin.root.len > 0) {
+        try buf.appendSlice(allocator, ",\"root\":\"");
+        try appendJsonEscaped(buf, allocator, entry.origin.root);
+        try buf.append(allocator, '"');
     }
 
     try buf.append(allocator, '}');
@@ -1251,6 +1289,69 @@ test "diagnostic: DiagnosticFilter" {
     try std.testing.expect(filter.isDisabled("subgroup_uniformity"));
     // Disabled rule returns default when queried (caller should check isDisabled)
     try std.testing.expectEqual(Severity.@"error", filter.getSeverity("subgroup_uniformity", .@"error"));
+}
+
+test "entryToJson: standalone entry keeps its byte-identical shape" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    const entry = Entry{
+        .severity = .warning,
+        .message = "shadow",
+        .code = "W0100",
+        .range = .{
+            .start = .{ .offset = 5, .line = 2, .column = 3 },
+            .end = .{ .offset = 6, .line = 2, .column = 4 },
+        },
+    };
+    try entryToJson(&buf, std.testing.allocator, &entry);
+    try std.testing.expectEqualStrings(
+        "{\"severity\":\"warning\",\"message\":\"shadow\",\"code\":\"W0100\",\"line\":2,\"column\":3}",
+        buf.items,
+    );
+}
+
+test "entryToJson: origin fields appear only for mapped entries" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    const entry = Entry{
+        .severity = .@"error",
+        .message = "missing",
+        .code = "E0100",
+        .range = .{ .start = .{ .line = 1, .column = 2 } },
+        .origin = .{
+            .file = "/ws/lib.wgsl",
+            .project = "/ws/program.sjon",
+            .root = "main",
+        },
+    };
+    try entryToJson(&buf, std.testing.allocator, &entry);
+    try std.testing.expectEqualStrings(
+        "{\"severity\":\"error\",\"message\":\"missing\",\"code\":\"E0100\",\"line\":1,\"column\":2," ++
+            "\"file\":\"/ws/lib.wgsl\",\"project\":\"/ws/program.sjon\",\"root\":\"main\"}",
+        buf.items,
+    );
+}
+
+test "entryToJson: related file appears only when set" {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(std.testing.allocator);
+    const related = [_]RelatedInfo{.{
+        .file = "/ws/program.sjon",
+        .range = .{ .start = .{ .line = 3, .column = 1 } },
+        .message = "root 'main'",
+    }};
+    const entry = Entry{
+        .severity = .@"error",
+        .message = "missing",
+        .range = .{ .start = .{ .line = 1, .column = 2 } },
+        .related = &related,
+    };
+    try entryToJson(&buf, std.testing.allocator, &entry);
+    try std.testing.expectEqualStrings(
+        "{\"severity\":\"error\",\"message\":\"missing\",\"line\":1,\"column\":2," ++
+            "\"related\":[{\"file\":\"/ws/program.sjon\",\"line\":3,\"column\":1,\"message\":\"root 'main'\"}]}",
+        buf.items,
+    );
 }
 
 test "entryToJson: propagates OOM" {

@@ -1,0 +1,2 @@
+(wgsl :name lib :file "lib.wgsl")
+(shader-module :name main :file "root.wgsl" :imports [lib nope])

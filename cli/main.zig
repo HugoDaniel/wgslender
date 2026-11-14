@@ -6,7 +6,8 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const wgslender = @import("wgslender");
-const PngineSelection = @import("PngineSelection.zig");
+const PngineSelection = @import("PngineSelection");
+const PngineOutput = if (build_options.pngine_support) @import("PngineOutput") else struct {};
 
 const pngine_support = build_options.pngine_support;
 
@@ -166,18 +167,22 @@ pub fn main(init: std.process.Init) !void {
         return err;
     };
 
-    // Project selection is a validation layer in Task 1: the selected
-    // program/roots and stdin overlay are resolved and checked here; the
-    // composed diagnostic projection that consumes them lands in Task 2.
-    // On `-Dlsp=false` the graph has no SJON and therefore no pngine types
-    // to name; the flags still parse but any selector fails shape/usage
-    // checks above rather than reaching this block.
+    // Project selection and the composed validate/lint run share the Store
+    // through dispatch: validate/lint may process every selected root, and
+    // the store owns the assembled units the projector reads. On
+    // `-Dlsp=false` the graph has no SJON and therefore no pngine types to
+    // name; the flags still parse but any selector fails shape/usage checks
+    // above rather than reaching this block.
+    var cli_provider = PngineSelection.FileProvider{ .io = io };
+    var pngine_store: ?PngineSelection.Store = null;
+    defer if (comptime pngine_support) {
+        if (pngine_store) |*store| store.deinit();
+    };
+    var pngine_selection: ?PngineSelection.ProjectSelection = null;
+    defer if (comptime pngine_support) {
+        if (pngine_selection) |*selected| selected.deinit(arena);
+    };
     if (comptime pngine_support) {
-        var cli_provider = PngineSelection.FileProvider{ .io = io };
-        var pngine_store: ?PngineSelection.Store = null;
-        defer if (pngine_store) |*store| store.deinit();
-        var pngine_selection: ?PngineSelection.ProjectSelection = null;
-        defer if (pngine_selection) |*selection| selection.deinit(arena);
         if (PngineSelection.selectionRequested(args.pngine)) {
             pngine_store = PngineSelection.Store.init(arena, cli_provider.sourceProvider());
             const store = &pngine_store.?;
@@ -214,26 +219,46 @@ pub fn main(init: std.process.Init) !void {
     }
 
     switch (args.subcommand) {
-        .validate => try runValidate(
-            arena,
-            io,
-            source,
-            args.validate_options.format,
-            args.validate_options.strict,
-            args.validate_options.line_offset,
-            args.input_path,
-        ),
+        .validate => {
+            if (comptime pngine_support) {
+                if (pngine_store) |*store| {
+                    if (pngine_selection) |*selected| {
+                        try runProject(arena, io, store, selected, .validate, args);
+                        return;
+                    }
+                }
+            }
+            try runValidate(
+                arena,
+                io,
+                source,
+                args.validate_options.format,
+                args.validate_options.strict,
+                args.validate_options.line_offset,
+                args.input_path,
+            );
+        },
         .reflect => try runReflect(arena, io, source, args.output_path, args.reflect_options.compact, args.reflect_options.reflect_format),
         .compile => try runCompile(arena, io, source, args.output_path, args.input_path, args.options),
-        .lint => try runLint(
-            arena,
-            io,
-            source,
-            args.validate_options.format,
-            args.validate_options.line_offset,
-            args.input_path,
-            args.lint_options,
-        ),
+        .lint => {
+            if (comptime pngine_support) {
+                if (pngine_store) |*store| {
+                    if (pngine_selection) |*selected| {
+                        try runProject(arena, io, store, selected, .lint, args);
+                        return;
+                    }
+                }
+            }
+            try runLint(
+                arena,
+                io,
+                source,
+                args.validate_options.format,
+                args.validate_options.line_offset,
+                args.input_path,
+                args.lint_options,
+            );
+        },
         .minify => try runMinify(
             arena,
             io,
@@ -244,6 +269,94 @@ pub fn main(init: std.process.Init) !void {
             args.source_map_flags.source_map_inline,
         ),
     }
+}
+
+/// Composed project run for validate/lint. Mirrors the standalone output
+/// channels: diagnostics to stderr (text/stylish) and the envelope/data to
+/// stdout (JSON, validate summary, or `--fix-dry-run` source).
+fn runProject(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    store: *PngineSelection.Store,
+    selected: *const PngineSelection.ProjectSelection,
+    command: PngineOutput.Command,
+    args: CliArgs,
+) !void {
+    if (comptime !pngine_support) return;
+
+    const File = std.Io.File;
+    const Dir = std.Io.Dir;
+
+    const format: PngineOutput.Format = switch (args.validate_options.format) {
+        .text => .text,
+        .json => .json,
+        .stylish => .stylish,
+    };
+    const config: PngineOutput.Config = .{
+        .format = format,
+        .strict = args.validate_options.strict,
+        .line_offset = args.validate_options.line_offset,
+        .quiet = args.lint_options.quiet,
+        .max_warnings = args.lint_options.max_warnings,
+        .lint_extends = args.lint_options.lint_extends,
+        .lint_rules = args.lint_options.lint_rules,
+        .report_unused_disable_directives = args.lint_options.report_unused_disable_directives,
+        .input_path = args.input_path,
+    };
+
+    var report = try PngineOutput.run(
+        arena,
+        store,
+        selected.program,
+        selected.input_part,
+        selected.roots,
+        command,
+        config,
+    );
+    defer report.deinit(arena);
+
+    if (command == .lint and (args.lint_options.fix or args.lint_options.fix_dry_run)) {
+        const fixed = (try report.fixedInput(arena)) orelse {
+            try File.stderr().writeStreamingAll(io, "error: --fix requires an input part; use --fix-dry-run only with a selected author part\n");
+            std.process.exit(2);
+        };
+        if (args.lint_options.fix_dry_run) {
+            try File.stdout().writeStreamingAll(io, fixed);
+            return;
+        }
+        if (args.input_path) |path| {
+            const file = try Dir.cwd().createFile(io, path, .{});
+            defer file.close(io);
+            try file.writeStreamingAll(io, fixed);
+            try File.stderr().writeStreamingAll(io, "Applied fixes to ");
+            try File.stderr().writeStreamingAll(io, path);
+            try File.stderr().writeStreamingAll(io, "\n");
+            return;
+        }
+        try File.stderr().writeStreamingAll(io, "error: --fix requires a file input; use --fix-dry-run for stdin\n");
+        std.process.exit(2);
+    }
+
+    switch (format) {
+        .json => {
+            if (command == .validate) {
+                const json = try report.renderValidateJson(arena);
+                try File.stdout().writeStreamingAll(io, json);
+            } else {
+                const json = try report.renderLintJson(arena);
+                try File.stdout().writeStreamingAll(io, json);
+            }
+        },
+        .text, .stylish => {
+            const text = try report.renderText(arena);
+            try File.stderr().writeStreamingAll(io, text);
+            if (command == .validate) {
+                try File.stdout().writeStreamingAll(io, if (report.valid) "valid\n" else "invalid\n");
+            }
+        },
+    }
+
+    if (report.exit_code != 0) std.process.exit(report.exit_code);
 }
 
 /// Tracks which flag *categories* the user passed, so we can warn when a

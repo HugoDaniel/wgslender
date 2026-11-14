@@ -250,49 +250,16 @@ fn buildAnalysis(
     assembled: *const Pngine.Assembled,
     key: CacheKey,
 ) !*RootAnalysisImpl {
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    errdefer arena.deinit();
-    const alloc = arena.allocator();
-
-    const owned_source = try alloc.allocSentinel(u8, assembled.text.len, 0);
-    @memcpy(owned_source, assembled.text);
-
-    const tokens = try wgslender.Lexer.tokenize(alloc, owned_source);
-    var parser = try wgslender.Parser.init(alloc, owned_source, tokens);
-    const module = parser.parse() catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        else => {
-            const diags = try alloc.create(wgslender.Diagnostic);
-            diags.* = try wgslender.Diagnostic.init(alloc, owned_source);
-            wgslender.Parser.mergeErrorsInto(parser.errors.items, diags, alloc);
-            var failed = wgslender.Validator.AnalysisResult{
-                .valid = false,
-                .diagnostics = diags,
-            };
-            failed._arena = arena;
-            return adopt(gpa, root, assembled, key, failed);
-        },
-    };
-
-    var analyzed = try wgslender.Validator.analyze(alloc, module, .{});
-    wgslender.Parser.mergeErrorsInto(parser.errors.items, analyzed.diagnostics, alloc);
-    if (parser.errors.items.len > 0) analyzed.valid = false;
-
-    // B.M5: liveness is a side-table owned by the analysis arena. Mirror
-    // `Handler.analyzeFromParse` so composed lint can consume it unchanged.
-    if (wgslender.Liveness.init(alloc, module.symbols.items.len)) |liveness_init| {
-        var liveness = liveness_init;
-        _ = wgslender.Dce.mark(alloc, module, &liveness) catch {};
-        analyzed.liveness = liveness;
-    } else |_| {}
-
-    analyzed._arena = arena;
+    // The assembly-to-analysis pipeline is shared with the CLI
+    // (`Pngine.Analysis`); this cache owns only invalidation and retention.
+    const analyzed = try Pngine.Analysis.analyze(gpa, assembled, .{});
     return adopt(gpa, root, assembled, key, analyzed);
 }
 
-/// Move a finished analysis value into its heap-owned box. The caller's
-/// `errdefer arena.deinit()` owns the arena until this returns successfully;
-/// on any failure here it releases the whole arena exactly once.
+/// Move a finished analysis value into its heap-owned box. The analysis
+/// owns its arena; if either allocation below fails, the arena must be
+/// released here rather than leaked. Ownership is transferred by clearing
+/// `_arena` once the value is stored in its heap box.
 fn adopt(
     gpa: Allocator,
     root: Pngine.RootId,
@@ -300,12 +267,18 @@ fn adopt(
     key: CacheKey,
     analysis: wgslender.Validator.AnalysisResult,
 ) !*RootAnalysisImpl {
+    var owned = analysis;
+    errdefer owned.deinit();
+
     const result = try gpa.create(wgslender.Validator.AnalysisResult);
     errdefer gpa.destroy(result);
-    result.* = analysis;
-
     const entry = try gpa.create(RootAnalysisImpl);
     errdefer gpa.destroy(entry);
+
+    // Both owners exist; transfer the arena to the box so the local's
+    // errdefer cannot free it a second time.
+    result.* = owned;
+    owned._arena = null;
     entry.* = .{
         .root = root,
         .assembled = assembled,

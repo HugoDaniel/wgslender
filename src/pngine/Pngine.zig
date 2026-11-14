@@ -35,6 +35,12 @@ pub const Store = @import("Store.zig").Store;
 pub const Assemble = @import("Assemble.zig");
 /// Bidirectional assembled↔author byte and line mapping (phase 02, Task 3).
 pub const Mapping = @import("Mapping.zig");
+/// Shared per-root analysis (phase 05, Task 2): assembled text to a retained
+/// validator/lint analysis. Used by the native LSP and the CLI.
+pub const Analysis = @import("Analysis.zig");
+/// Shared composed diagnostic projection (phase 05, Task 2): mapped
+/// diagnostics, multi-root merge, graph errors, and whole-unit lint policy.
+pub const Projection = @import("Projection.zig");
 /// An assembled module: author text, pngine-compatible rows, byte segments.
 pub const Assembled = Assemble.Assembled;
 /// One assembled byte range's author origin.

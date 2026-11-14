@@ -1,0 +1,3 @@
+(wgsl :name cyc_a :file "cyc_a.wgsl" :imports [cyc_b])
+(wgsl :name cyc_b :file "cyc_b.wgsl" :imports [cyc_a])
+(shader-module :name main :file "root.wgsl" :imports [cyc_a])
