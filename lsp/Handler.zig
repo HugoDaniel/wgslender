@@ -12,6 +12,8 @@ const build_options = @import("build_options");
 
 const pngine_support = build_options.pngine_support;
 const PngineStore = if (pngine_support) wgslender.Pngine.Store else void;
+const PngineAnalysis = @import("handler/pngine_analysis.zig");
+pub const RootAnalysis = PngineAnalysis.RootAnalysis;
 
 const WgslDiagnostic = wgslender.Diagnostic;
 const MinifySettings = wgslender.MinifySettings;
@@ -73,6 +75,10 @@ config_generation: u32 = 0,
 /// native host binds one; the wasm graph compiles the field out and has
 /// no project capability.
 pngine_store: if (pngine_support) ?*PngineStore else void = if (pngine_support) null else {},
+/// Per-root assembled analysis cache (pngine-shaders phase 03). Empty in
+/// graph families without project support; a no-op `deinit` keeps the
+/// Handler lifecycle uniform.
+pngine_analysis: PngineAnalysis.State = .{},
 
 pub const Document = struct {
     source: []u8,
@@ -190,6 +196,9 @@ pub fn init(gpa: std.mem.Allocator) Handler {
 /// setting. Compiles to a no-op in graphs without project support.
 pub fn setPngineStore(self: *Handler, store: ?*PngineStore) void {
     if (comptime pngine_support) {
+        // Analyses borrow an `Assembled` owned by the store being replaced
+        // (or dropped), so none may outlive the binding.
+        self.pngine_analysis.clear(self.gpa);
         self.pngine_store = store;
         if (store) |bound| bound.setEnabled(self.pngineEnabled());
     } else {
@@ -236,8 +245,44 @@ fn notifyPngineBoundary(self: *Handler, uri: []const u8) void {
     }
 }
 
+/// Analyze the assembled unit for `root` (pngine-shaders phase 03, Task 1).
+/// The returned result and its borrowed `Assembled` are owned by the
+/// Handler's root cache; the pointer is stable until that root's content
+/// key changes or the Handler/store is torn down. The legacy
+/// `analyzeDocument` path is untouched for standalone callers.
+pub fn analyzeRoot(
+    self: *Handler,
+    root: PngineAnalysis.RootId,
+) !*PngineAnalysis.RootAnalysis {
+    if (comptime pngine_support) {
+        const store = self.pngine_store orelse return error.PngineStoreUnbound;
+        return self.pngine_analysis.analyzeRoot(self.gpa, store, root);
+    } else {
+        return error.PngineUnsupported;
+    }
+}
+
+/// Return the cached minify estimate for an assembled root, computing it
+/// once per `(analysis, options)` pair. A repeat request does no
+/// estimation and no provider read. Mirrors `getMinifyEstimate` for
+/// standalone documents so Task 2's full diagnostics pass can hand a
+/// root-level estimate to M-rules.
+pub fn getRootMinifyEstimate(
+    self: *Handler,
+    root: PngineAnalysis.RootId,
+    options: MinifyEstimator.Options,
+) !*const MinifyEstimator.EstimateResult {
+    if (comptime pngine_support) {
+        const store = self.pngine_store orelse return error.PngineStoreUnbound;
+        return self.pngine_analysis.getMinifyEstimate(self.gpa, store, root, options);
+    } else {
+        return error.PngineUnsupported;
+    }
+}
+
 /// Frees all tracked documents and their sources.
 pub fn deinit(self: *Handler) void {
+    self.pngine_analysis.deinit(self.gpa);
     var it = self.documents.iterator();
     while (it.next()) |entry| {
         if (entry.value_ptr.analysis) |a| {

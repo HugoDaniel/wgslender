@@ -929,6 +929,13 @@ pub fn build(b: *std.Build) void {
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "NativeServer", .module = native_server_mod },
         });
+        // pngine per-root composed analysis (phase 03, Task 1): assembled
+        // validation, content-keyed analysis cache, unsaved-buffer
+        // authority and the per-root minify-estimate slot.
+        _ = addTestStep(b, test_step, "tests/pngine_analysis_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+        });
     }
     // Code action integration tests
     _ = addTestStep(b, test_step, "tests/code_action_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
