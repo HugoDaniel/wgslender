@@ -1,17 +1,26 @@
-//! pngine project store (pngine-shaders phase 01, Tasks 4–5).
+//! pngine project store (pngine-shaders phase 01, Tasks 4–5; phase 02,
+//! Task 4).
 //!
 //! The store owns the discovered programs, the forward/reverse membership
-//! indexes, and the source cache. Every project text read and every candidate
-//! enumeration goes through the injected `Types.SourceProvider`; this file
-//! never opens a path. Program identity is the canonical document path and a
-//! `ProgramId` slot survives a refresh as long as the document does, so root
-//! revision keys do not churn when another project changes.
+//! indexes, the source cache, and the content-keyed assembly cache. Every
+//! project text read and every candidate enumeration goes through the
+//! injected `Types.SourceProvider`; this file never opens a path. Program
+//! identity is the canonical document path and a `ProgramId` slot survives a
+//! refresh as long as the document does, so root revision keys do not churn
+//! when another project changes.
+//!
+//! `assembleRoot` is the only consumer of the pure `Assemble.zig` walk: the
+//! Store resolves each reached part's text through `textForPart` (open
+//! buffer > injected > disk), hands the texts to the assembler, and caches
+//! the resulting unit by `(RootId, program revision, ordered part hashes)`.
+//! The assembler never opens a file; the Store never parses WGSL.
 
 const std = @import("std");
 const path_mod = @import("pngine_path");
 const types = @import("Types.zig");
 const discovery = @import("Discovery.zig");
 const extract = @import("Extract.zig");
+const assemble = @import("Assemble.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -39,6 +48,44 @@ const SourceRefresh = struct {
     changed: bool,
 };
 
+/// One part's contribution to an assembled unit's content key, in the
+/// assembler's walk order. `path` is the resolved canonical file path the
+/// hash was read under (null for inline `:code`); keeping it lets a cache
+/// lookup rehash the already-cached text without a provider read or a path
+/// allocation.
+const CachedPart = struct {
+    part: types.PartId,
+    path: ?[]u8,
+    hash: [32]u8,
+};
+
+/// One cached assembled root. Allocated separately so the pointer returned
+/// by `assembleRoot` survives other roots being inserted or removed.
+const AssembledEntry = struct {
+    /// The owning `Program`'s revision. Rows and `root_name` borrow that
+    /// Program's strings, so a different revision can never be reused.
+    program_revision: u64,
+    /// Phase-01 root revision at the last validation. Bumped only for roots
+    /// containing an edited part; unrelated roots keep this value.
+    root_revision: u64,
+    /// Ordered content key: post-order fragments, then the root.
+    parts: []CachedPart,
+    assembled: assemble.Assembled,
+};
+
+/// A freshly built unit plus the content key that produced it, before the
+/// cache adopts or discards it.
+const BuiltAssembly = struct {
+    unit: assemble.Assembled,
+    parts: []CachedPart,
+
+    fn deinit(self: *BuiltAssembly, gpa: Allocator) void {
+        self.unit.deinit(gpa);
+        freeCachedParts(gpa, self.parts);
+        self.* = undefined;
+    }
+};
+
 pub const Store = struct {
     gpa: Allocator,
     provider: types.SourceProvider,
@@ -62,6 +109,9 @@ pub const Store = struct {
     injected: std.StringHashMapUnmanaged([]u8) = .{},
     /// Per-root revision; bumped only for roots containing an edited part.
     root_revisions: std.AutoHashMapUnmanaged(types.PartId, u64) = .{},
+    /// Content-keyed assembled units. Entries are allocated separately so
+    /// the `*const Assembled` handed to callers stays put across map growth.
+    assembled: std.AutoHashMapUnmanaged(types.PartId, *AssembledEntry) = .{},
 
     state: types.DiscoveryState = .none,
     reason: ?[]u8 = null,
@@ -118,6 +168,10 @@ pub const Store = struct {
         self.injected.deinit(self.gpa);
 
         self.root_revisions.deinit(self.gpa);
+
+        var assembled_it = self.assembled.iterator();
+        while (assembled_it.next()) |entry| self.freeAssembledEntry(entry.value_ptr.*);
+        self.assembled.deinit(self.gpa);
 
         self.clearReason();
         self.* = undefined;
@@ -408,6 +462,205 @@ pub const Store = struct {
         return &program_value.parts[id.index];
     }
 
+    /// Assemble one root from its transitive parts, resolving every reached
+    /// text through `textForPart` (open buffer > injected > disk). The pure
+    /// assembler never opens a file; this store never parses WGSL.
+    ///
+    /// Units are cached by `(RootId, program revision, ordered part hashes)`
+    /// and owned by the store. The returned pointer stays valid until that
+    /// root is invalidated or the store is deinitialized. A cache hit does no
+    /// provider read and no allocation; a root revision bump alone does not
+    /// force a rebuild when the ordered content hashes still match.
+    pub fn assembleRoot(self: *Store, root: types.PartId) !*const assemble.Assembled {
+        const program_value = self.program(root.program) orelse return error.UnknownProgram;
+        if (root.index >= program_value.parts.len) return error.UnknownPart;
+        if (!program_value.parts[root.index].isRoot()) return error.NotARoot;
+
+        const program_revision = self.programRevision(root.program);
+        if (self.assembled.get(root)) |entry| {
+            if (entry.program_revision == program_revision and self.reuseAssembledEntry(entry, root))
+                return &entry.assembled;
+        }
+
+        var failure: assemble.Failure = .{ .root = root };
+        const order = assemble.collectOrderWithLimits(self.gpa, program_value, root, .{}, &failure) catch |err| return err;
+        defer if (order.len > 0) self.gpa.free(order);
+
+        const built = try self.buildAssembly(program_value, root, order);
+        return self.storeAssembly(root, program_revision, built);
+    }
+
+    /// True when the cached unit still matches the store's content key.
+    /// The root revision is the cheap trigger; when it moved, rehash the
+    /// already-cached parts so an edit-and-revert (or an identical overlay)
+    /// keeps the same unit instead of rebuilding it.
+    fn reuseAssembledEntry(self: *Store, entry: *AssembledEntry, root: types.PartId) bool {
+        const revision = self.rootRevision(root);
+        if (entry.root_revision == revision) return true;
+        for (entry.parts) |cached| {
+            const hash = self.currentPartHash(cached) orelse return false;
+            if (!std.mem.eql(u8, &hash, &cached.hash)) return false;
+        }
+        entry.root_revision = revision;
+        return true;
+    }
+
+    /// Hash a part from the store's already-resolved layers only. `null`
+    /// means no layer is cached, so a rebuild must query the provider.
+    fn currentPartHash(self: *const Store, cached: CachedPart) ?[32]u8 {
+        if (cached.path) |path| {
+            if (self.buffers.get(path)) |text| return types.contentHash(text);
+            if (self.injected.get(path)) |text| return types.contentHash(text);
+            if (self.sources.get(path)) |record| return record.hash;
+            return null;
+        }
+        const source_part = self.part(cached.part) orelse return null;
+        const code = source_part.inlineCode() orelse return null;
+        return types.contentHash(code);
+    }
+
+    /// Resolve every part the assembler will read, in walk order, and build
+    /// the owned text view plus the content key. No cache mutation happens
+    /// here: a failure leaves the previous entry untouched.
+    fn buildAssembly(
+        self: *Store,
+        graph: *const types.Program,
+        root: types.PartId,
+        order: []const u32,
+    ) !BuiltAssembly {
+        const gpa = self.gpa;
+        const sources = try gpa.alloc(?[]const u8, graph.parts.len);
+        defer gpa.free(sources);
+        @memset(sources, null);
+        defer for (sources) |maybe_text| {
+            if (maybe_text) |text| gpa.free(@constCast(text));
+        };
+
+        var parts: std.ArrayList(CachedPart) = .empty;
+        errdefer {
+            for (parts.items) |cached| {
+                if (cached.path) |path| gpa.free(path);
+            }
+            parts.deinit(gpa);
+        }
+        try parts.ensureTotalCapacity(gpa, order.len + 1);
+
+        for (order) |part_index| try self.loadAssemblyPart(graph, root, part_index, sources, &parts);
+        try self.loadAssemblyPart(graph, root, root.index, sources, &parts);
+
+        var failure: assemble.Failure = .{ .root = root };
+        var unit = try assemble.assembleWithLimits(gpa, graph, sources, root, .{}, &failure);
+        errdefer unit.deinit(gpa);
+
+        const owned_parts = parts.toOwnedSlice(gpa) catch return error.OutOfMemory;
+        return .{ .unit = unit, .parts = owned_parts };
+    }
+
+    /// Resolve one reached part's text and its contribution to the content
+    /// key. `sources` takes ownership of the dupe; `parts` takes ownership
+    /// of the resolved path.
+    fn loadAssemblyPart(
+        self: *Store,
+        graph: *const types.Program,
+        root: types.PartId,
+        part_index: u32,
+        sources: []?[]const u8,
+        parts: *std.ArrayList(CachedPart),
+    ) !void {
+        const gpa = self.gpa;
+        const source_part = &graph.parts[part_index];
+        const id: types.PartId = .{ .program = root.program, .index = part_index };
+
+        var path: ?[]u8 = null;
+        errdefer if (path) |owned| gpa.free(owned);
+        switch (source_part.origin) {
+            .inline_code => {},
+            .file => |file| path = try resolveFile(gpa, graph.document_path, file.path),
+        }
+
+        const source = self.textForPart(id) catch |err| switch (err) {
+            error.SourceUnavailable, error.UnknownPart, error.UnknownProgram => return error.MissingSource,
+            else => |other| return other,
+        };
+        sources[part_index] = source.text;
+
+        try parts.append(gpa, .{ .part = id, .path = path, .hash = source.content_hash });
+        path = null; // owned by `parts`
+    }
+
+    /// Adopt a built unit, or keep the old unit when the assembled bytes and
+    /// tables are unchanged. The cache owns both allocations from here; the
+    /// caller must not free `built` afterwards.
+    fn storeAssembly(
+        self: *Store,
+        root: types.PartId,
+        program_revision: u64,
+        built: BuiltAssembly,
+    ) !*const assemble.Assembled {
+        const gpa = self.gpa;
+        const revision = self.rootRevision(root);
+
+        if (self.assembled.get(root)) |entry| {
+            if (entry.program_revision == program_revision and assembledEqual(&entry.assembled, &built.unit)) {
+                var discard = built;
+                freeCachedParts(gpa, entry.parts);
+                entry.parts = discard.parts;
+                entry.root_revision = revision;
+                discard.parts = &.{};
+                discard.unit.deinit(gpa);
+                return &entry.assembled;
+            }
+        }
+
+        const new_entry = gpa.create(AssembledEntry) catch |err| {
+            var discard = built;
+            discard.deinit(gpa);
+            return err;
+        };
+        new_entry.* = .{
+            .program_revision = program_revision,
+            .root_revision = revision,
+            .parts = built.parts,
+            .assembled = built.unit,
+        };
+
+        const gop = self.assembled.getOrPut(gpa, root) catch |err| {
+            self.freeAssembledEntry(new_entry);
+            return err;
+        };
+        if (gop.found_existing) {
+            self.freeAssembledEntry(gop.value_ptr.*);
+            // The assembled result changed (or the old unit belonged to a
+            // previous graph generation).
+            self.content_generation += 1;
+        }
+        gop.value_ptr.* = new_entry;
+        return &new_entry.assembled;
+    }
+
+    fn freeAssembledEntry(self: *Store, entry: *AssembledEntry) void {
+        entry.assembled.deinit(self.gpa);
+        freeCachedParts(self.gpa, entry.parts);
+        self.gpa.destroy(entry);
+    }
+
+    /// Free every cached unit whose origin Program is being replaced or
+    /// removed. Their rows borrow that Program's strings.
+    fn evictProgramAssemblies(self: *Store, program_id: types.ProgramId) void {
+        while (true) {
+            var found: ?types.PartId = null;
+            var it = self.assembled.iterator();
+            while (it.next()) |entry| {
+                if (entry.key_ptr.program == program_id) {
+                    found = entry.key_ptr.*;
+                    break;
+                }
+            }
+            const key = found orelse return;
+            if (self.assembled.fetchRemove(key)) |removed| self.freeAssembledEntry(removed.value);
+        }
+    }
+
     // ---------------------------------------------------------------------
     // Discovery / refresh
     // ---------------------------------------------------------------------
@@ -536,6 +789,7 @@ pub const Store = struct {
     fn removeDocument(self: *Store, document_path: []const u8) !void {
         const removed = self.document_slots.fetchRemove(document_path) orelse return;
         const id = removed.value;
+        self.evictProgramAssemblies(id);
         if (id < self.programs.items.len) {
             if (self.programs.items[id]) |*record| {
                 if (record.program) |*value| value.deinit(self.gpa);
@@ -595,6 +849,10 @@ pub const Store = struct {
         const record = &slot.*.?;
         switch (result.status) {
             .ok => {
+                // Assembled rows and root names borrow the Program's
+                // strings; a replacement invalidates every unit built from
+                // the old graph before the old Program is freed.
+                self.evictProgramAssemblies(id);
                 if (record.program) |*old| old.deinit(self.gpa);
                 var program_value = result.program.?;
                 result.program = null;
@@ -644,6 +902,7 @@ pub const Store = struct {
         for (remove_paths.items) |document_path| {
             const removed = self.document_slots.fetchRemove(document_path) orelse continue;
             const id = removed.value;
+            self.evictProgramAssemblies(id);
             if (id < self.programs.items.len) {
                 if (self.programs.items[id]) |*record| {
                     if (record.program) |*value| value.deinit(self.gpa);
@@ -934,6 +1193,41 @@ pub const Store = struct {
 fn isDocumentPath(path: []const u8) bool {
     return std.mem.eql(u8, std.fs.path.basename(path), discovery.marker_name) or
         std.mem.endsWith(u8, path, ".sjon");
+}
+
+fn freeCachedParts(gpa: Allocator, parts: []CachedPart) void {
+    for (parts) |cached| {
+        if (cached.path) |path| gpa.free(path);
+    }
+    if (parts.len > 0) gpa.free(parts);
+}
+
+fn samePart(a: types.PartId, b: types.PartId) bool {
+    return a.program == b.program and a.index == b.index;
+}
+
+/// Compare everything a caller can observe from an assembled unit. Used to
+/// avoid replacing (and bumping `content_generation` for) a unit whose
+/// source bytes changed but whose rendered module did not.
+fn assembledEqual(a: *const assemble.Assembled, b: *const assemble.Assembled) bool {
+    if (!samePart(a.root, b.root)) return false;
+    if (!std.mem.eql(u8, a.root_name, b.root_name)) return false;
+    if (!std.mem.eql(u8, a.text, b.text)) return false;
+    if (a.rows.len != b.rows.len) return false;
+    for (a.rows, b.rows) |x, y| {
+        if (!samePart(x.origin, y.origin)) return false;
+        if (!std.mem.eql(u8, x.name, y.name)) return false;
+        if (x.first_line != y.first_line or x.line_count != y.line_count or
+            x.src_line != y.src_line or x.is_root != y.is_root) return false;
+    }
+    if (a.segments.len != b.segments.len) return false;
+    for (a.segments, b.segments) |x, y| {
+        if (x.assembled.start != y.assembled.start or x.assembled.end != y.assembled.end) return false;
+        if (!samePart(x.origin, y.origin)) return false;
+        if (x.source.start != y.source.start or x.source.end != y.source.end) return false;
+        if (x.kind != y.kind) return false;
+    }
+    return true;
 }
 
 fn resolveFile(allocator: Allocator, document_path: []const u8, relative: []const u8) ![]u8 {

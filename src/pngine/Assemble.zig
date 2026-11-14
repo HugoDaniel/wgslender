@@ -223,6 +223,52 @@ pub fn assemble(
     return assembleWithLimits(gpa, program, sources, root, .{}, failure);
 }
 
+/// Collect the post-order fragment indices for `root`, exactly the walk
+/// `assemble` performs, without touching any source text.
+///
+/// The root's own index is not included. The returned slice is owned by
+/// the caller when it is non-empty; the no-import fast path returns the
+/// static empty slice. A Store uses this to resolve only the parts the
+/// assembler will actually read.
+pub fn collectOrder(
+    gpa: Allocator,
+    program: *const types.Program,
+    root: RootId,
+    failure: ?*Failure,
+) Error![]u32 {
+    return collectOrderWithLimits(gpa, program, root, .{}, failure);
+}
+
+/// `collectOrder` with explicit bounds, mirroring `assembleWithLimits`.
+pub fn collectOrderWithLimits(
+    gpa: Allocator,
+    program: *const types.Program,
+    root: RootId,
+    limits: Limits,
+    failure: ?*Failure,
+) Error![]u32 {
+    std.debug.assert(limits.max_depth > 0);
+    std.debug.assert(limits.max_fragments > 0);
+    std.debug.assert(limits.max_imports > 0);
+    std.debug.assert(root.index < program.parts.len);
+    if (failure) |f| f.* = .{ .root = root };
+
+    const root_part = program.parts[root.index];
+    std.debug.assert(root_part.isRoot());
+
+    // The fast path: no imports means the root's own text IS the module.
+    if (root_part.imports.len == 0) return &.{};
+    if (root_part.imports.len > limits.max_imports) {
+        if (failure) |f| f.at = root;
+        return error.TooDeep;
+    }
+
+    var order: std.ArrayList(u32) = .empty;
+    errdefer order.deinit(gpa);
+    try postOrder(gpa, program, root, root_part.imports, limits, &order, failure);
+    return order.toOwnedSlice(gpa) catch return error.OutOfMemory;
+}
+
 /// `assemble` with explicit bounds. Production callers use the defaults;
 /// tests lower `max_depth`, `max_fragments`, or `max_imports` to reach a
 /// boundary without a large fixture.
@@ -234,28 +280,16 @@ pub fn assembleWithLimits(
     limits: Limits,
     failure: ?*Failure,
 ) Error!Assembled {
-    std.debug.assert(limits.max_depth > 0);
-    std.debug.assert(limits.max_fragments > 0);
-    std.debug.assert(limits.max_imports > 0);
     std.debug.assert(root.index < program.parts.len);
-    if (failure) |f| f.* = .{ .root = root };
 
     const root_part = program.parts[root.index];
-    std.debug.assert(root_part.isRoot());
 
     // The fast path: no imports means the root's own text IS the module.
     // No rows, mirroring pngine's empty line table; one body segment so
     // byte mapping still has an origin without special-casing callers.
+    const order = try collectOrderWithLimits(gpa, program, root, limits, failure);
+    defer if (order.len > 0) gpa.free(order);
     if (root_part.imports.len == 0) return fastPath(gpa, sources, root, root_part.name, failure);
-
-    if (root_part.imports.len > limits.max_imports) {
-        if (failure) |f| f.at = root;
-        return error.TooDeep;
-    }
-
-    var order: std.ArrayList(u32) = .empty;
-    defer order.deinit(gpa);
-    try postOrder(gpa, program, root, root_part.imports, limits, &order, failure);
 
     // THE DIRECTIVE HOIST, first half: scan every reached part's leading
     // region in walk order, before a byte is written. A part whose text is
@@ -264,7 +298,7 @@ pub fn assembleWithLimits(
     defer hoisted.deinit(gpa);
     var part_directives: std.ArrayList(directives.Directive) = .empty;
     defer part_directives.deinit(gpa);
-    for (order.items, 0..) |part_index, position| {
+    for (order, 0..) |part_index, position| {
         const text = sourceAt(sources, part_index) orelse {
             if (failure) |f| f.at = partId(root, part_index);
             return error.MissingSource;
@@ -278,7 +312,7 @@ pub fn assembleWithLimits(
     try scanPart(
         gpa,
         root_text,
-        @intCast(order.items.len),
+        @intCast(order.len),
         root.index,
         &part_directives,
         &hoisted,
@@ -300,7 +334,7 @@ pub fn assembleWithLimits(
     // author wrote is what ships, minus the repeats.
     for (hoisted.items) |h| {
         if (!h.first) continue;
-        const part_index = if (h.part == order.items.len) root.index else order.items[h.part];
+        const part_index = if (h.part == order.len) root.index else order[h.part];
         const origin = partId(root, part_index);
         const part = program.parts[part_index];
         const start: u32 = @intCast(out.items.len);
@@ -330,7 +364,7 @@ pub fn assembleWithLimits(
         line += h.directive.lines;
     }
 
-    for (order.items, 0..) |part_index, position| {
+    for (order, 0..) |part_index, position| {
         const part = program.parts[part_index];
         const text = sourceAt(sources, part_index).?;
         const origin = partId(root, part_index);
@@ -352,7 +386,7 @@ pub fn assembleWithLimits(
         root,
         root_text,
         hoisted.items,
-        @intCast(order.items.len),
+        @intCast(order.len),
     );
     try rows.append(gpa, .{
         .origin = root,
