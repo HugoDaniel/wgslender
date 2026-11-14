@@ -41,6 +41,13 @@ pub const OptionKind = union(enum) {
     /// CLI value form (`cli_takes_value = true`) is comma-split (single
     /// invocation, multiple entries — matches `--keep-names a,b,c`).
     string_list,
+    /// `?[]const u8` field carrying one literal string. CLI value form
+    /// (`cli_takes_value = true`) consumes the next argv token and stores
+    /// it verbatim (the slice aliases the caller's argv arena, matching
+    /// `string_list`'s lifetime contract). There is deliberately no JSON
+    /// arm: this kind exists for per-invocation CLI selectors such as
+    /// `--project`, which must never become `wgslender.json` keys.
+    string_opt,
     /// `?u32` (or `u32`) field. JSON value must be a non-negative integer
     /// in `[0, maxInt(u32)]`. Out-of-range / wrong-type silently ignored.
     u32_opt,
@@ -209,6 +216,7 @@ pub fn cliFlag(comptime spec: OptionSpec) []const u8 {
 /// Type matching:
 ///   * `.bool_opt` ⇒ `?bool` or `bool`
 ///   * `.string_list` ⇒ `[]const []const u8`
+///   * `.string_opt` ⇒ `?[]const u8`
 ///   * `.u32_opt` ⇒ `?u32` or `u32`
 ///   * `.i32_opt` ⇒ `?i32` or `i32`
 ///   * `.enum_opt = E` ⇒ `?E` or `E`
@@ -223,6 +231,7 @@ pub fn assertSpecFieldsExist(comptime Target: type, comptime specs: []const Opti
         switch (spec.kind) {
             .bool_opt => if (FT != ?bool and FT != bool) @compileError("OptionSpec '" ++ spec.field ++ "' kind=bool_opt requires ?bool or bool field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .string_list => if (FT != []const []const u8) @compileError("OptionSpec '" ++ spec.field ++ "' kind=string_list requires []const []const u8 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
+            .string_opt => if (FT != ?[]const u8) @compileError("OptionSpec '" ++ spec.field ++ "' kind=string_opt requires ?[]const u8 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .u32_opt => if (FT != ?u32 and FT != u32) @compileError("OptionSpec '" ++ spec.field ++ "' kind=u32_opt requires ?u32 or u32 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .i32_opt => if (FT != ?i32 and FT != i32) @compileError("OptionSpec '" ++ spec.field ++ "' kind=i32_opt requires ?i32 or i32 field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
             .enum_opt => |E| if (FT != ?E and FT != E) @compileError("OptionSpec '" ++ spec.field ++ "' kind=enum_opt requires ?" ++ @typeName(E) ++ " or " ++ @typeName(E) ++ " field on " ++ @typeName(Target) ++ ", got " ++ @typeName(FT)),
@@ -284,6 +293,12 @@ pub fn applyJson(
                         // allocator's size check.
                         @field(target, spec.field) = try names.toOwnedSlice(allocator);
                     }
+                },
+                .string_opt => {
+                    // Intentionally ignored: the kind exists for CLI-only
+                    // selectors, and no `config_specs` entry uses it. A
+                    // future JSON-facing string knob must grow an explicit
+                    // arm here rather than silently inheriting this shape.
                 },
                 .u32_opt => {
                     if (value == .integer and value.integer >= 0 and value.integer <= std.math.maxInt(u32)) {
@@ -610,6 +625,13 @@ pub fn applyValue(
             @field(target, spec.field) = names.items;
             return true;
         },
+        .string_opt => {
+            // The slice aliases `value` (the caller's argv arena owns it),
+            // exactly like `string_list`'s elements. No copy: the selector
+            // is read-only for the rest of the invocation.
+            @field(target, spec.field) = value;
+            return true;
+        },
         .u32_opt => {
             const n = std.fmt.parseInt(u32, value, 10) catch return false;
             @field(target, spec.field) = n;
@@ -731,6 +753,10 @@ pub fn applyDefaults(
             .string_list => {
                 const list = @field(source, spec.field);
                 if (list.len > 0) @field(target, spec.field) = list;
+            },
+            .string_opt => {
+                // See the `applyJson` arm: no config layer carries this
+                // kind, so there is nothing to forward.
             },
             .u32_opt => {
                 if (@field(source, spec.field)) |v| @field(target, spec.field) = v;
@@ -1270,6 +1296,49 @@ test "matchFlag dispatches simple bool specs" {
     // its derived flag (`--keep-names`) would syntactically match.
     try std.testing.expectEqual(MatchResult.no_match, try matchFlag("--keep-names", &it, arena.allocator(), .minify, &specs, &target));
     try std.testing.expectEqual(@as(usize, 0), target.keep_names.len);
+}
+
+test "matchFlag string_opt: consumes exactly the next token and aliases it" {
+    const Target = struct { project: ?[]const u8 = null, root: ?[]const u8 = null };
+    const specs = [_]OptionSpec{
+        .{ .field = "project", .kind = .string_opt, .cli_takes_value = true },
+        .{ .field = "root", .kind = .string_opt, .cli_takes_value = true },
+    };
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    var target: Target = .{};
+
+    // The value token is consumed (the iterator advances past it) and the
+    // field aliases that token; nothing is comma-split or copied.
+    var it = ValueIter(2){ .values = .{ "program.sjon", "sceneCode" } };
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--project", &it, alloc, .validate, &specs, &target));
+    try std.testing.expectEqualStrings("program.sjon", target.project.?);
+    try std.testing.expectEqual(@as(usize, 1), it.idx);
+    try std.testing.expectEqual(@as(?[]const u8, null), target.root);
+
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--root", &it, alloc, .minify, &specs, &target));
+    try std.testing.expectEqualStrings("sceneCode", target.root.?);
+    try std.testing.expectEqual(@as(usize, 2), it.idx);
+
+    // A trailing flag with no value matches but leaves the field unset;
+    // callers surface the missing-value usage error themselves.
+    var empty = ValueIter(0){ .values = .{} };
+    target.root = null;
+    try std.testing.expectEqual(MatchResult.matched, try matchFlag("--root", &empty, alloc, .validate, &specs, &target));
+    try std.testing.expectEqual(@as(?[]const u8, null), target.root);
+}
+
+test "string_opt appears in no JSON config spec" {
+    // The three selectors are CLI-only by design: a `wgslender.json` key
+    // would let a config file silently change project identity.
+    const cli_only = [_][]const u8{ "project", "root", "no_project" };
+    inline for (cli_only) |field| {
+        inline for (config_specs) |spec| {
+            try std.testing.expect(!std.mem.eql(u8, spec.field, field));
+        }
+    }
 }
 
 test "matchFlag rejects flags whose subcommands list excludes the current subcommand" {

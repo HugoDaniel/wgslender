@@ -109,6 +109,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "wgslender", .module = wgslender_mod },
+                .{ .name = "build_options", .module = native_options_mod },
             },
         }),
     });
@@ -862,6 +863,28 @@ pub fn build(b: *std.Build) void {
         _ = addTestStep(b, test_step, "tests/pngine_build_test.zig", target, optimize, &.{
             w,
             .{ .name = "sjon", .module = m },
+        });
+        // pngine CLI selection (phase 05, Task 1). The selection module
+        // lives beside the native CLI; the test imports it by module name
+        // because `tests/` cannot reach `cli/` through a relative import.
+        const pngine_selection_mod = b.addModule("PngineSelection", .{
+            .root_source_file = b.path("cli/PngineSelection.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                w,
+                .{ .name = "build_options", .module = native_options_mod },
+            },
+        });
+        _ = addTestStep(b, test_step, "tests/pngine_cli_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "PngineSelection", .module = pngine_selection_mod },
+        });
+        // Flag-table tests live with the CLI so the private spec table is
+        // testable without widening its visibility.
+        _ = addTestStep(b, test_step, "cli/main.zig", target, optimize, &.{
+            w,
+            .{ .name = "build_options", .module = native_options_mod },
         });
     }
 

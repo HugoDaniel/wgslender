@@ -4,11 +4,19 @@
 //! validator, reflector, or binary shader compiler.
 
 const std = @import("std");
+const build_options = @import("build_options");
 const wgslender = @import("wgslender");
+const PngineSelection = @import("PngineSelection.zig");
+
+const pngine_support = build_options.pngine_support;
 
 const CliArgs = struct {
     input_path: ?[]const u8 = null,
     output_path: ?[]const u8 = null,
+    /// pngine project selectors (`--project`, `--root`, `--no-project`).
+    /// CLI-only: these specs live beside `cli_validate_specs`, never in
+    /// `OptionsSpec.config_specs`.
+    pngine: PngineSelection.Flags = .{},
     /// Resolved minifier options. Written once in `parseArgs`, after the
     /// argv loop, by layering defaults < config file < CLI flags
     /// (`Config.mergeMinifierOptions`) — the flags themselves accumulate
@@ -92,6 +100,17 @@ const cli_reflect_specs = [_]wgslender.OptionsSpec.OptionSpec{
     .{ .field = "reflect_format", .kind = .{ .enum_opt = wgslender.Reflect.JsonVersion }, .cli_takes_value = true, .subcommands = &[_]wgslender.OptionsSpec.Subcommand{.reflect}, .summary = "Reflect JSON schema: v1|v2 (default: v2)" },
 };
 
+/// pngine project selectors (phase 05, Task 1). CLI-only by construction:
+/// none of these fields appears in `OptionsSpec.config_specs`, so a
+/// `wgslender.json` file can never change project identity. `project` and
+/// `root` are single-value strings whose value form consumes the next argv
+/// token; `no-project` is the single-source escape hatch.
+const cli_pngine_specs = [_]wgslender.OptionsSpec.OptionSpec{
+    .{ .field = "project", .kind = .string_opt, .cli_takes_value = true, .summary = "Use this pngine project document (bypasses discovery)" },
+    .{ .field = "root", .kind = .string_opt, .cli_takes_value = true, .summary = "Select one root of the pngine project" },
+    .{ .field = "no_project", .kind = .bool_opt, .summary = "Ignore pngine projects; process the input as a single source" },
+};
+
 /// CLI-only lint flags that don't have a JSON shape. The accumulators
 /// (`lint_extends`, `lint_rules`) and `report_unused_disable_directives`
 /// stay in `OptionsSpec.lint_specs` because they share their target
@@ -113,6 +132,7 @@ comptime {
     wgslender.OptionsSpec.assertSpecFieldsExist(CliArgs.ValidateOptions, &cli_validate_specs);
     wgslender.OptionsSpec.assertSpecFieldsExist(CliArgs.ReflectOptions, &cli_reflect_specs);
     wgslender.OptionsSpec.assertSpecFieldsExist(CliArgs.LintOptions, &cli_lint_extra_specs);
+    wgslender.OptionsSpec.assertSpecFieldsExist(PngineSelection.Flags, &cli_pngine_specs);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -121,8 +141,77 @@ pub fn main(init: std.process.Init) !void {
 
     const args = parseArgs(arena, init.minimal.args, io) orelse return;
 
+    // Selector shape is checked before stdin is read: `--project` or
+    // `--root` alone with piped input must exit 2 without waiting on a
+    // pipe that may never close.
+    var selection_failure = PngineSelection.Failure{};
+    defer selection_failure.deinit(arena);
+    PngineSelection.validateFlagShape(
+        args.pngine,
+        args.input_path == null,
+        &selection_failure,
+        arena,
+    ) catch exitSelectionFailure(io, &selection_failure);
+
     // Read input
-    const source = try readSource(arena, io, args.input_path);
+    const source = readSource(arena, io, args.input_path) catch |err| {
+        if (PngineSelection.selectionRequested(args.pngine)) {
+            const path = args.input_path orelse "<stdin>";
+            selection_failure = .{
+                .kind = err,
+                .message = std.fmt.allocPrint(arena, "cannot read input file '{s}': {s}", .{ path, @errorName(err) }) catch &.{},
+            };
+            exitSelectionFailure(io, &selection_failure);
+        }
+        return err;
+    };
+
+    // Project selection is a validation layer in Task 1: the selected
+    // program/roots and stdin overlay are resolved and checked here; the
+    // composed diagnostic projection that consumes them lands in Task 2.
+    // On `-Dlsp=false` the graph has no SJON and therefore no pngine types
+    // to name; the flags still parse but any selector fails shape/usage
+    // checks above rather than reaching this block.
+    if (comptime pngine_support) {
+        var cli_provider = PngineSelection.FileProvider{ .io = io };
+        var pngine_store: ?PngineSelection.Store = null;
+        defer if (pngine_store) |*store| store.deinit();
+        var pngine_selection: ?PngineSelection.ProjectSelection = null;
+        defer if (pngine_selection) |*selection| selection.deinit(arena);
+        if (PngineSelection.selectionRequested(args.pngine)) {
+            pngine_store = PngineSelection.Store.init(arena, cli_provider.sourceProvider());
+            const store = &pngine_store.?;
+
+            pngine_selection = PngineSelection.selectProjectWithFailure(
+                store,
+                args.input_path,
+                args.pngine.project,
+                args.pngine.root,
+                args.pngine.no_project,
+                &selection_failure,
+            ) catch exitSelectionFailure(io, &selection_failure);
+
+            if (args.input_path == null) {
+                PngineSelection.applyStdinOverlay(
+                    store,
+                    &pngine_selection.?,
+                    source,
+                    &selection_failure,
+                    arena,
+                ) catch exitSelectionFailure(io, &selection_failure);
+            }
+
+            if (args.subcommand != .validate and args.subcommand != .lint) {
+                _ = PngineSelection.requireSingleRoot(
+                    store,
+                    &pngine_selection.?,
+                    args.input_path,
+                    &selection_failure,
+                    arena,
+                ) catch exitSelectionFailure(io, &selection_failure);
+            }
+        }
+    }
 
     switch (args.subcommand) {
         .validate => try runValidate(
@@ -261,6 +350,7 @@ fn parseArgs(arena: std.mem.Allocator, raw_args: anytype, io: std.Io) ?CliArgs {
             &args.source_map_flags,
             &args.validate_options,
             &args.reflect_options,
+            &args.pngine,
             &passed,
             io,
         ) catch return null)) {
@@ -366,6 +456,7 @@ fn dispatchSpecFlag(
     source_map_target: *CliArgs.SourceMapFlags,
     validate_target: *CliArgs.ValidateOptions,
     reflect_target: *CliArgs.ReflectOptions,
+    pngine_target: *PngineSelection.Flags,
     passed: *Passed,
     io: std.Io,
 ) DispatchError!bool {
@@ -514,8 +605,47 @@ fn dispatchSpecFlag(
             warnInvalidValue(io, arg);
             return error.InvalidCliValue;
         },
+        .no_match => {},
+    }
+
+    // pngine project selectors (--project, --root, --no-project). Accepted
+    // on every subcommand; the selection layer decides whether the
+    // invocation can honor them.
+    const pngine_result = try wgslender.OptionsSpec.matchFlag(
+        arg,
+        args_iter,
+        arena,
+        subcommand,
+        &cli_pngine_specs,
+        pngine_target,
+    );
+    switch (pngine_result) {
+        .matched => return true,
+        .wrong_subcommand => {
+            warnFlagIgnored(io, arg, subcommand);
+            return true;
+        },
+        .invalid_value => {
+            warnInvalidValue(io, arg);
+            return error.InvalidCliValue;
+        },
         .no_match => return false,
     }
+}
+
+/// Print one selection usage error and exit 2. Selection failures are
+/// invocation errors (bad flag, unknown root, missing project), never
+/// author diagnostics, so they share the parse-error exit code.
+fn exitSelectionFailure(io: std.Io, failure: *const PngineSelection.Failure) noreturn {
+    const f = std.Io.File.stderr();
+    f.writeStreamingAll(io, "error: ") catch {};
+    if (failure.message.len > 0) {
+        f.writeStreamingAll(io, failure.message) catch {};
+    } else {
+        f.writeStreamingAll(io, "pngine project selection failed") catch {};
+    }
+    f.writeStreamingAll(io, "\n") catch {};
+    std.process.exit(2);
 }
 
 fn warnInvalidValue(io: std.Io, arg: []const u8) void {
@@ -1098,6 +1228,9 @@ fn printUsage(arena: std.mem.Allocator, io: std.Io) !void {
     try buf.appendSlice(arena, "\nReflect:\n");
     try wgslender.OptionsSpec.printHelp(&buf, arena, &cli_reflect_specs, null);
 
+    try buf.appendSlice(arena, "\nProject selection:\n");
+    try wgslender.OptionsSpec.printHelp(&buf, arena, &cli_pngine_specs, null);
+
     try buf.appendSlice(arena, "\nValidate / lint:\n");
     try wgslender.OptionsSpec.printHelp(&buf, arena, &cli_validate_specs, null);
     try buf.appendSlice(arena, usage_validate_outliers);
@@ -1160,3 +1293,62 @@ const usage_epilogue =
     \\If no input file is given, reads from stdin.
     \\
 ;
+
+// =========================================================================
+// Tests
+// =========================================================================
+
+const testing = std.testing;
+
+fn CliValueIter(comptime n: usize) type {
+    return struct {
+        values: [n][]const u8,
+        idx: usize = 0,
+        pub fn next(self: *@This()) ?[]const u8 {
+            if (self.idx >= self.values.len) return null;
+            defer self.idx += 1;
+            return self.values[self.idx];
+        }
+    };
+}
+
+test "project and root consume one value; no-project is boolean" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    var flags = PngineSelection.Flags{};
+    var it = CliValueIter(3){ .values = .{ "/ws/demo/program.sjon", "bgCode", "--ignored" } };
+
+    try testing.expectEqual(
+        wgslender.OptionsSpec.MatchResult.matched,
+        try wgslender.OptionsSpec.matchFlag("--project", &it, alloc, .validate, &cli_pngine_specs, &flags),
+    );
+    try testing.expectEqualStrings("/ws/demo/program.sjon", flags.project.?);
+    try testing.expectEqual(@as(?[]const u8, null), flags.root);
+
+    try testing.expectEqual(
+        wgslender.OptionsSpec.MatchResult.matched,
+        try wgslender.OptionsSpec.matchFlag("--root", &it, alloc, .minify, &cli_pngine_specs, &flags),
+    );
+    try testing.expectEqualStrings("bgCode", flags.root.?);
+
+    try testing.expectEqual(
+        wgslender.OptionsSpec.MatchResult.matched,
+        try wgslender.OptionsSpec.matchFlag("--no-project", &it, alloc, .compile, &cli_pngine_specs, &flags),
+    );
+    try testing.expectEqual(true, flags.no_project);
+}
+
+test "selection specs have no wgslender.json counterpart" {
+    inline for (cli_pngine_specs) |cli_spec| {
+        inline for (wgslender.OptionsSpec.config_specs) |config_spec| {
+            try testing.expect(!std.mem.eql(u8, cli_spec.field, config_spec.field));
+            try testing.expect(!std.mem.eql(
+                u8,
+                wgslender.OptionsSpec.jsonKey(cli_spec),
+                wgslender.OptionsSpec.jsonKey(config_spec),
+            ));
+        }
+    }
+}
