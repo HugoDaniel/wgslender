@@ -18,17 +18,24 @@ fn teardown(ctx: anytype) void {
     std.testing.allocator.destroy(ctx.handler);
 }
 
+/// A standalone rename still yields exactly one document.
+fn singleDocument(changes: Handler.WorkspaceChanges) ![]const Handler.LspTextEdit {
+    if (changes.documents.len != 1) return error.ExpectedOneDocument;
+    return changes.documents[0].edits;
+}
+
 test "rename: variable updates all occurrences" {
     const source: [:0]const u8 = "const x: f32 = 1.0; fn f() -> f32 { return x; }";
     const ctx = try setup(source);
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 6) orelse return error.TestUnexpectedResult;
-    const edits = try ctx.handler.computeRename("test://file.wgsl", pos, "y");
-    try std.testing.expect(edits != null);
-    defer std.testing.allocator.free(edits.?);
+    const changes = try ctx.handler.computeRename("test://file.wgsl", pos, "y");
+    try std.testing.expect(changes != null);
+    defer Handler.freeWorkspaceChanges(ctx.handler, changes.?);
     // Should have 2 edits: declaration + usage
-    try std.testing.expectEqual(@as(usize, 2), edits.?.len);
-    for (edits.?) |edit| {
+    const edits = try singleDocument(changes.?);
+    try std.testing.expectEqual(@as(usize, 2), edits.len);
+    for (edits) |edit| {
         try std.testing.expectEqualStrings("y", edit.new_text);
     }
 }
@@ -93,11 +100,12 @@ test "rename: struct updates type annotations" {
     const ctx = try setup(source);
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 7) orelse return error.TestUnexpectedResult; // 'P' in "Pt"
-    const edits = try ctx.handler.computeRename("test://file.wgsl", pos, "Point");
-    try std.testing.expect(edits != null);
-    defer std.testing.allocator.free(edits.?);
+    const changes = try ctx.handler.computeRename("test://file.wgsl", pos, "Point");
+    try std.testing.expect(changes != null);
+    defer Handler.freeWorkspaceChanges(ctx.handler, changes.?);
     // Declaration + type ref = 2
-    try std.testing.expectEqual(@as(usize, 2), edits.?.len);
+    const edits = try singleDocument(changes.?);
+    try std.testing.expectEqual(@as(usize, 2), edits.len);
 }
 
 test "isValidWgslIdentifier: valid names" {
@@ -129,11 +137,12 @@ test "rename: function used across multiple call sites" {
     const ctx = try setup(source);
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult;
-    const edits = try ctx.handler.computeRename("test://file.wgsl", pos, "util");
-    try std.testing.expect(edits != null);
-    defer std.testing.allocator.free(edits.?);
+    const changes = try ctx.handler.computeRename("test://file.wgsl", pos, "util");
+    try std.testing.expect(changes != null);
+    defer Handler.freeWorkspaceChanges(ctx.handler, changes.?);
     // Declaration + 2 call sites = 3 edits
-    try std.testing.expectEqual(@as(usize, 3), edits.?.len);
+    const edits = try singleDocument(changes.?);
+    try std.testing.expectEqual(@as(usize, 3), edits.len);
 }
 
 test "rename: reject all WGSL keywords" {
@@ -164,10 +173,11 @@ test "rename: single-character valid names" {
     const ctx = try setup(source);
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult;
-    const edits = try ctx.handler.computeRename("test://file.wgsl", pos, "g");
-    try std.testing.expect(edits != null);
-    defer std.testing.allocator.free(edits.?);
-    try std.testing.expectEqual(@as(usize, 1), edits.?.len);
+    const changes = try ctx.handler.computeRename("test://file.wgsl", pos, "g");
+    try std.testing.expect(changes != null);
+    defer Handler.freeWorkspaceChanges(ctx.handler, changes.?);
+    const edits = try singleDocument(changes.?);
+    try std.testing.expectEqual(@as(usize, 1), edits.len);
 }
 
 test "rename: underscore prefix valid (single underscore)" {

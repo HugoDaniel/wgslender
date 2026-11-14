@@ -90,16 +90,21 @@ pub fn handleReferences(
         params.context.includeDeclaration,
     ) catch return null;
     const handler_refs = refs orelse return null;
-    defer h.gpa.free(handler_refs);
+    defer h.freeReferences(handler_refs);
 
-    // The legacy computation is single-document; wrap each range with the
-    // request URI so the origin-aware codec is the only result path. A
-    // composition-aware computation replaces this in phase-04 Task 3.
+    // Inline `:code` origins have no file URI (the virtual document layer
+    // is a later task); omit them rather than fabricating a path. Every
+    // remaining entry carries its own author document URI, and the URI
+    // string moves onto the response arena because the codec borrows it.
     const locations = arena.alloc(Handler.Location, handler_refs.len) catch return null;
-    for (handler_refs, 0..) |ref, i| {
-        locations[i] = .{ .uri = params.textDocument.uri, .range = ref };
+    var count: usize = 0;
+    for (handler_refs) |ref| {
+        const uri = ref.uri orelse continue;
+        const owned_uri = arena.dupe(u8, uri) catch return null;
+        locations[count] = .{ .uri = owned_uri, .range = ref.range };
+        count += 1;
     }
-    return nav.toLspKitLocationsWithUris(arena, locations) catch null;
+    return nav.toLspKitLocationsWithUris(arena, locations[0..count]) catch null;
 }
 
 pub fn handleDocumentHighlight(

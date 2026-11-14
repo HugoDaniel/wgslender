@@ -21,7 +21,7 @@ test "references: variable with multiple usages" {
     const pos = Handler.offsetToLspPosition(source, 6) orelse return error.TestUnexpectedResult; // 'x' in "const x"
     const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
     try std.testing.expect(refs != null);
-    defer std.testing.allocator.free(refs.?);
+    defer Handler.freeReferences(ctx.handler, refs.?);
     // Declaration + 3 usages = 4
     try std.testing.expectEqual(@as(usize, 4), refs.?.len);
 }
@@ -33,10 +33,10 @@ test "references: exclude declaration" {
     const pos = Handler.offsetToLspPosition(source, 6) orelse return error.TestUnexpectedResult;
     const refs_with = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
     try std.testing.expect(refs_with != null);
-    defer std.testing.allocator.free(refs_with.?);
+    defer Handler.freeReferences(ctx.handler, refs_with.?);
     const refs_without = try ctx.handler.computeReferences("test://file.wgsl", pos, false);
     try std.testing.expect(refs_without != null);
-    defer std.testing.allocator.free(refs_without.?);
+    defer Handler.freeReferences(ctx.handler, refs_without.?);
     try std.testing.expect(refs_with.?.len == refs_without.?.len + 1);
 }
 
@@ -48,7 +48,7 @@ test "references: struct type used in annotations" {
     const pos = Handler.offsetToLspPosition(source, 7) orelse return error.TestUnexpectedResult; // 'S' in "struct S"
     const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
     try std.testing.expect(refs != null);
-    defer std.testing.allocator.free(refs.?);
+    defer Handler.freeReferences(ctx.handler, refs.?);
     // Declaration + 2 type refs = 3
     try std.testing.expectEqual(@as(usize, 3), refs.?.len);
 }
@@ -60,7 +60,7 @@ test "references: unused symbol returns only declaration" {
     const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult;
     const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
     try std.testing.expect(refs != null);
-    defer std.testing.allocator.free(refs.?);
+    defer Handler.freeReferences(ctx.handler, refs.?);
     try std.testing.expectEqual(@as(usize, 1), refs.?.len);
 }
 
@@ -90,7 +90,7 @@ test "references: function used as callee in nested expressions" {
     const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult; // 'h' in helper decl
     const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, false);
     try std.testing.expect(refs != null);
-    defer std.testing.allocator.free(refs.?);
+    defer Handler.freeReferences(ctx.handler, refs.?);
     // helper is called 5 times (lines 2, 3x2, 4x2)
     try std.testing.expect(refs.?.len >= 4);
 }
@@ -107,7 +107,7 @@ test "references: struct used in multiple type positions" {
     const pos = Handler.offsetToLspPosition(source, 7) orelse return error.TestUnexpectedResult; // 'V' in struct Vec2
     const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
     try std.testing.expect(refs != null);
-    defer std.testing.allocator.free(refs.?);
+    defer Handler.freeReferences(ctx.handler, refs.?);
     // Declaration + return type + constructor calls + param type + const type
     try std.testing.expect(refs.?.len >= 4);
 }
@@ -121,7 +121,7 @@ test "references: parameter referenced in function body" {
     const pos = Handler.offsetToLspPosition(source, @intCast(val_pos)) orelse return error.TestUnexpectedResult;
     const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
     try std.testing.expect(refs != null);
-    defer std.testing.allocator.free(refs.?);
+    defer Handler.freeReferences(ctx.handler, refs.?);
     // Declaration + 3 usages
     try std.testing.expectEqual(@as(usize, 4), refs.?.len);
 }
@@ -149,7 +149,7 @@ test "references: variable in for loop body" {
     const pos = Handler.offsetToLspPosition(source, 6) orelse return error.TestUnexpectedResult; // 'N' in const
     const refs = try ctx.handler.computeReferences("test://file.wgsl", pos, true);
     try std.testing.expect(refs != null);
-    defer std.testing.allocator.free(refs.?);
+    defer Handler.freeReferences(ctx.handler, refs.?);
     // Declaration + 2 usages in for loop
     try std.testing.expect(refs.?.len >= 3);
 }

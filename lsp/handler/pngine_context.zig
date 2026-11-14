@@ -78,6 +78,13 @@ pub const RootAnalysis = PngineAnalysis.RootAnalysis;
 pub const OriginKey = if (pngine_support) Pngine.OriginKey else UnsupportedOriginKey;
 const UnsupportedOriginKey = struct { program: u32 = 0, index: u32 = 0 };
 
+/// One assembled range mapped back to an author part.
+pub const OriginRange = if (pngine_support) Pngine.OriginRange else UnsupportedOriginRange;
+const UnsupportedOriginRange = struct {
+    origin: UnsupportedOriginKey = .{},
+    range: UnsupportedByteRange = .{},
+};
+
 /// A half-open author-local byte range.
 pub const ByteRange = if (pngine_support) Pngine.Mapping.ByteRange else UnsupportedByteRange;
 const UnsupportedByteRange = struct { start: u32 = 0, end: u32 = 0 };
@@ -254,6 +261,22 @@ pub fn originText(handler: *Handler, origin: OriginKey) anyerror!AuthorText {
         return .{ .text = text.text, .owned = true };
     } else {
         return error.PngineUnsupported;
+    }
+}
+
+/// The author part and local range a composed context's assembled range maps
+/// to, or `null` for a standalone context / a range no single author range
+/// represents. Consumers that need any origin (references, rename) use this;
+/// `toAuthorRange` additionally requires the request's own origin.
+pub fn originRange(context: *const RequestContext, start: u32, end: u32) ?OriginRange {
+    if (comptime pngine_support) {
+        const analysis = context.analysis orelse return null;
+        return analysis.assembled.toOrigin(.{ .start = start, .end = end });
+    } else {
+        std.mem.doNotOptimizeAway(context);
+        std.mem.doNotOptimizeAway(start);
+        std.mem.doNotOptimizeAway(end);
+        return null;
     }
 }
 

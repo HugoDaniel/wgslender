@@ -23,12 +23,12 @@ pub fn handleRename(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) voi
     const params = root.getPtr("params") orelse return ctx.sendResult(id, "null");
     const new_name = json.strVal(json.objGet(params, "newName")) orelse return ctx.sendResult(id, "null");
 
-    const edits = ctx.handler.computeRename(p.uri, .{ .line = p.line, .character = p.char }, new_name) catch return ctx.sendResult(id, "null");
-    const handler_edits = edits orelse return ctx.sendResult(id, "null");
-    defer ctx.handler.gpa.free(handler_edits);
+    const changes = ctx.handler.computeRename(p.uri, .{ .line = p.line, .character = p.char }, new_name) catch return ctx.sendResult(id, "null");
+    const workspace_changes = changes orelse return ctx.sendResult(id, "null");
+    defer Handler.freeWorkspaceChanges(ctx.handler, workspace_changes);
 
     var buf: std.ArrayList(u8) = .empty;
-    wire_edits.appendWorkspaceEdit(&buf, ctx.gpa, p.uri, handler_edits);
+    wire_edits.appendWorkspaceChanges(&buf, ctx.gpa, workspace_changes);
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
 }
 

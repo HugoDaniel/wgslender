@@ -953,6 +953,19 @@ pub fn build(b: *std.Build) void {
             .{ .name = "native_navigation", .module = native_navigation_mod },
             .{ .name = "native_symbols", .module = native_symbols_mod },
         });
+        // pngine references, document highlights, and safe multi-file rename
+        // (phase 04, Task 3): shared declaration identity and dedupe,
+        // divergent-root refusal, includeDeclaration, inline reference/edit
+        // boundary, unsaved sibling ranges, collision safety and local
+        // highlights.
+        _ = addTestStep(b, test_step, "tests/pngine_rename_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
+            .{ .name = "native_navigation", .module = native_navigation_mod },
+            .{ .name = "native_symbols", .module = native_symbols_mod },
+        });
         // pngine composed diagnostic projection (phase 03, Task 2): mapped
         // validator ranges, hoisted directives, part boundaries, related
         // information on another file, EOF fallback and quick-fix safety.

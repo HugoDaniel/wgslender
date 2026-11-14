@@ -1,137 +1,70 @@
-//! References, Document Highlight, and Rename: all three resolve a
-//! cursor to a `SymbolIndex` and walk every reference in the module.
-//! References + Highlight return ranges; Rename produces text edits.
+//! References, Document Highlight, and Rename: resolve the cursor to a
+//! declaration identity and project every bound reference back to its
+//! author document. The collection itself lives in `pngine_symbols.zig`;
+//! these wrappers are the Handler's public, graph-independent names.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Handler = @import("../Handler.zig");
-const NodeAtOffset = @import("node_at_offset.zig");
+const PngineSymbols = @import("pngine_symbols.zig");
+
 const Position = Handler.Position;
 const Range = Handler.Range;
 const DocumentHighlight = Handler.DocumentHighlight;
-const LspTextEdit = Handler.LspTextEdit;
-const Ast = wgslender.Ast;
+const WorkspaceChanges = Handler.WorkspaceChanges;
 const Edits = wgslender.Edits;
+
+pub const ReferenceLocation = PngineSymbols.ReferenceLocation;
 
 pub const isValidWgslIdentifier = Edits.isValidWgslIdentifier;
 
-pub fn computeReferences(handler: *Handler, uri: []const u8, position: Position, include_declaration: bool) !?[]Range {
-    const doc = handler.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(Handler.lspPositionToOffset(source, position) orelse return null);
-    const analysis = try handler.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-
-    const node = NodeAtOffset.find(module, offset);
-    const target: Ast.SymbolIndex = switch (node) {
-        .ident => |id| id.ref,
-        .decl_name => |dn| dn.sym_idx,
-        .type_ref => |tr| tr.ref,
-        else => return null,
-    };
-    if (!target.isValid()) return null;
-
-    const refs = try Edits.findReferences(handler.gpa, module, target, include_declaration);
-    defer handler.gpa.free(refs);
-
-    // One line index for the request: renaming a hot symbol converts
-    // hundreds of offsets, and `offsetRangeToLspRange` scans from byte 0.
-    var pm = try Handler.PositionMapper.init(handler.gpa, source);
-    defer pm.deinit(handler.gpa);
-
-    var ranges: std.ArrayList(Range) = .empty;
-    defer ranges.deinit(handler.gpa);
-    try ranges.ensureTotalCapacity(handler.gpa, refs.len);
-    for (refs) |r| {
-        if (pm.range(r.start, r.end)) |range| {
-            ranges.appendAssumeCapacity(range);
-        }
-    }
-    return try handler.gpa.dupe(Range, ranges.items);
+/// Every reference bound to the declaration selected at `position`, in
+/// every containing root, each with its own author URI and range. Inline
+/// `:code` references carry `uri == null`; the adapters filter them.
+pub fn computeReferences(
+    handler: *Handler,
+    uri: []const u8,
+    position: Position,
+    include_declaration: bool,
+) !?[]ReferenceLocation {
+    return PngineSymbols.references(handler, uri, position, include_declaration);
 }
 
-pub fn computeDocumentHighlight(handler: *Handler, uri: []const u8, position: Position) !?[]DocumentHighlight {
-    const doc = handler.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(Handler.lspPositionToOffset(source, position) orelse return null);
-    const analysis = try handler.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-
-    const node = NodeAtOffset.find(module, offset);
-    const target: Ast.SymbolIndex = switch (node) {
-        .ident => |id| id.ref,
-        .decl_name => |dn| dn.sym_idx,
-        .type_ref => |tr| tr.ref,
-        else => return null,
-    };
-    if (!target.isValid()) return null;
-
-    const refs = try Edits.findReferences(handler.gpa, module, target, true);
-    defer handler.gpa.free(refs);
-
-    var pm = try Handler.PositionMapper.init(handler.gpa, source);
-    defer pm.deinit(handler.gpa);
-
-    var highlights: std.ArrayList(DocumentHighlight) = .empty;
-    defer highlights.deinit(handler.gpa);
-    try highlights.ensureTotalCapacity(handler.gpa, refs.len);
-    for (refs) |r| {
-        if (pm.range(r.start, r.end)) |range| {
-            highlights.appendAssumeCapacity(.{
-                .range = range,
-                .kind = if (r.is_write) .write else .read,
-            });
-        }
-    }
-    return try handler.gpa.dupe(DocumentHighlight, highlights.items);
+/// Release a slice returned by `computeReferences`.
+pub fn freeReferences(handler: *Handler, refs: []ReferenceLocation) void {
+    PngineSymbols.freeReferences(handler, refs);
 }
 
+/// The reference set filtered to the requested author document, keeping
+/// the declaration/assignment read/write classification.
+pub fn computeDocumentHighlight(
+    handler: *Handler,
+    uri: []const u8,
+    position: Position,
+) !?[]DocumentHighlight {
+    return PngineSymbols.highlights(handler, uri, position);
+}
+
+/// The token range in the requested document when the rename is safe: one
+/// declared identity across roots and no edit that would write inline text.
 pub fn prepareRename(handler: *Handler, uri: []const u8, position: Position) !?Range {
-    const doc = handler.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(Handler.lspPositionToOffset(source, position) orelse return null);
-    const analysis = try handler.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
-
-    const node = NodeAtOffset.find(module, offset);
-    switch (node) {
-        .ident => |id| {
-            if (!id.ref.isValid()) return null;
-            const sym = module.symbols.items[id.ref.index()];
-            if (sym.flags.is_builtin) return null;
-            return Handler.offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len)));
-        },
-        .decl_name => |dn| {
-            if (!dn.sym_idx.isValid()) return null;
-            const sym = module.symbols.items[dn.sym_idx.index()];
-            if (sym.flags.is_builtin) return null;
-            return Handler.offsetRangeToLspRange(source, dn.loc, dn.loc + @as(u32, @intCast(sym.original_name.len)));
-        },
-        .type_ref => |tr| {
-            if (!tr.ref.isValid()) return null;
-            const sym = module.symbols.items[tr.ref.index()];
-            if (sym.flags.is_builtin) return null;
-            return Handler.offsetRangeToLspRange(source, tr.loc, tr.loc + @as(u32, @intCast(tr.name.len)));
-        },
-        else => return null,
-    }
+    return PngineSymbols.prepareRename(handler, uri, position);
 }
 
-pub fn computeRename(handler: *Handler, uri: []const u8, position: Position, new_name: []const u8) !?[]LspTextEdit {
-    if (!isValidWgslIdentifier(new_name)) return null;
+/// A multi-file `WorkspaceEdit.changes` payload. A standalone document
+/// still yields exactly one document; an ambiguous or inline-crossing
+/// rename returns `null` with no partial edits.
+pub fn computeRename(
+    handler: *Handler,
+    uri: []const u8,
+    position: Position,
+    new_name: []const u8,
+) !?WorkspaceChanges {
+    return PngineSymbols.rename(handler, uri, position, new_name);
+}
 
-    const refs = (try computeReferences(handler, uri, position, true)) orelse return null;
-    defer handler.gpa.free(refs);
-
-    if (refs.len == 0) return null;
-
-    const edits = try handler.gpa.alloc(LspTextEdit, refs.len);
-    for (refs, 0..) |ref_range, i| {
-        edits[i] = .{
-            .range = ref_range,
-            .new_text = new_name,
-        };
-    }
-    return edits;
+/// Release a value returned by `computeRename`.
+pub fn freeWorkspaceChanges(handler: *Handler, changes: WorkspaceChanges) void {
+    PngineSymbols.freeWorkspaceChanges(handler, changes);
 }

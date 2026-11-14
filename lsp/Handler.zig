@@ -1084,10 +1084,13 @@ pub const freeDefinitionLocations = Definition.freeLocations;
 // =========================================================================
 
 pub const ReferencesRename = @import("handler/references_rename.zig");
+pub const ReferenceLocation = ReferencesRename.ReferenceLocation;
 pub const computeReferences = ReferencesRename.computeReferences;
+pub const freeReferences = ReferencesRename.freeReferences;
 pub const computeDocumentHighlight = ReferencesRename.computeDocumentHighlight;
 pub const prepareRename = ReferencesRename.prepareRename;
 pub const computeRename = ReferencesRename.computeRename;
+pub const freeWorkspaceChanges = ReferencesRename.freeWorkspaceChanges;
 pub const isValidWgslIdentifier = ReferencesRename.isValidWgslIdentifier;
 
 // =========================================================================

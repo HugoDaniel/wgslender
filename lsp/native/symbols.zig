@@ -15,18 +15,25 @@ pub fn handleRename(
     arena: std.mem.Allocator,
     params: lsp.types.rename.Params,
 ) ?lsp.types.WorkspaceEdit {
-    const edits = h.computeRename(
+    const changes = h.computeRename(
         params.textDocument.uri,
         codec.fromLspKitPosition(params.position),
         params.newName,
     ) catch return null;
-    const handler_edits = edits orelse return null;
-    defer h.gpa.free(handler_edits);
-    const document: Handler.DocumentEdits = .{
-        .uri = params.textDocument.uri,
-        .edits = handler_edits,
-    };
-    return edits_codec.toLspKitWorkspaceChanges(arena, .{ .documents = &.{document} }) catch null;
+    const workspace_changes = changes orelse return null;
+    defer h.freeWorkspaceChanges(workspace_changes);
+
+    // The codec borrows each document URI and each `newText` string. The
+    // new name belongs to `params`, but the Handler-owned URIs must move
+    // onto the response arena before the changes are released.
+    const documents = arena.alloc(Handler.DocumentEdits, workspace_changes.documents.len) catch return null;
+    for (workspace_changes.documents, 0..) |document, index| {
+        documents[index] = .{
+            .uri = arena.dupe(u8, document.uri) catch return null,
+            .edits = document.edits,
+        };
+    }
+    return edits_codec.toLspKitWorkspaceChanges(arena, .{ .documents = documents }) catch null;
 }
 
 pub fn handlePrepareRename(

@@ -59,6 +59,26 @@ pub fn appendWorkspaceEdit(
     primitives.appendStr(buf, gpa, "}}");
 }
 
+/// Append an origin-aware `WorkspaceEdit` body, one `changes` key per
+/// document in input order. The wasm adapter always supplies exactly one
+/// document, so its bytes are identical to `appendWorkspaceEdit`; the
+/// native path uses the lsp-kit codec.
+pub fn appendWorkspaceChanges(
+    buf: *std.ArrayList(u8),
+    gpa: std.mem.Allocator,
+    changes: Handler.WorkspaceChanges,
+) void {
+    primitives.appendStr(buf, gpa, "{\"changes\":{");
+    for (changes.documents, 0..) |document, index| {
+        if (index > 0) buf.append(gpa, ',') catch {};
+        buf.append(gpa, '"') catch {};
+        Diagnostic.appendJsonEscaped(buf, gpa, document.uri) catch {};
+        primitives.appendStr(buf, gpa, "\":");
+        appendTextEdits(buf, gpa, document.edits);
+    }
+    primitives.appendStr(buf, gpa, "}}");
+}
+
 // =========================================================================
 // Tests
 // =========================================================================
@@ -129,4 +149,57 @@ test "appendWorkspaceEdit: escapes uri" {
     const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
     const changes = v.object.get("changes").?.object;
     try testing.expect(changes.get("test://a\"b.wgsl") != null);
+}
+
+test "appendWorkspaceChanges: one document is byte-identical to appendWorkspaceEdit" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const edits = [_]Handler.LspTextEdit{
+        .{ .range = sample_range, .new_text = "x" },
+        .{ .range = sample_range, .new_text = "y" },
+    };
+
+    var legacy: std.ArrayList(u8) = .empty;
+    appendWorkspaceEdit(&legacy, aa, "test://a.wgsl", &edits);
+
+    var origin_aware: std.ArrayList(u8) = .empty;
+    appendWorkspaceChanges(&origin_aware, aa, .{ .documents = &.{.{
+        .uri = "test://a.wgsl",
+        .edits = &edits,
+    }} });
+
+    try testing.expectEqualStrings(legacy.items, origin_aware.items);
+}
+
+test "appendWorkspaceChanges: each document keeps its own changes key" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const a_edits = [_]Handler.LspTextEdit{
+        .{ .range = sample_range, .new_text = "a" },
+    };
+    const b_edits = [_]Handler.LspTextEdit{
+        .{ .range = sample_range, .new_text = "b" },
+    };
+
+    var buf: std.ArrayList(u8) = .empty;
+    appendWorkspaceChanges(&buf, aa, .{ .documents = &.{
+        .{ .uri = "test://a.wgsl", .edits = &a_edits },
+        .{ .uri = "test://b.wgsl", .edits = &b_edits },
+    } });
+
+    const v = try std.json.parseFromSliceLeaky(std.json.Value, aa, buf.items, .{});
+    const changes = v.object.get("changes").?.object;
+    try testing.expectEqual(@as(usize, 2), changes.count());
+    try testing.expectEqualStrings(
+        "a",
+        changes.get("test://a.wgsl").?.array.items[0].object.get("newText").?.string,
+    );
+    try testing.expectEqualStrings(
+        "b",
+        changes.get("test://b.wgsl").?.array.items[0].object.get("newText").?.string,
+    );
 }

@@ -59,13 +59,16 @@ pub fn handleReferences(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value)
 
     const refs = ctx.handler.computeReferences(p.uri, .{ .line = p.line, .character = p.char }, include_decl) catch return ctx.sendResult(id, "null");
     const handler_refs = refs orelse return ctx.sendResult(id, "null");
-    defer ctx.handler.gpa.free(handler_refs);
+    defer ctx.handler.freeReferences(handler_refs);
 
     var buf: std.ArrayList(u8) = .empty;
     buf.append(ctx.gpa, '[') catch return;
-    for (handler_refs, 0..) |ref, i| {
-        if (i > 0) buf.append(ctx.gpa, ',') catch {};
-        wire_nav.appendLocation(&buf, ctx.gpa, p.uri, ref);
+    var emitted: usize = 0;
+    for (handler_refs) |ref| {
+        const uri = ref.uri orelse continue;
+        if (emitted > 0) buf.append(ctx.gpa, ',') catch {};
+        wire_nav.appendLocation(&buf, ctx.gpa, uri, ref.range);
+        emitted += 1;
     }
     buf.append(ctx.gpa, ']') catch return;
     ctx.sendResult(id, buf.toOwnedSlice(ctx.gpa) catch return);
