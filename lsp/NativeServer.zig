@@ -71,6 +71,13 @@ pending_config_id: ?i64 = null,
 /// registered when the client does not advertise it.
 client_watcher_dynamic_registration: bool = false,
 
+/// True iff the client advertised `workspace.diagnostics.refreshSupport`.
+/// Gates the `workspace/diagnostic/refresh` request sent after a watched
+/// project change. Pull correctness never depends on it: the result id
+/// changes independently, so an unsupporting client still gets a fresh
+/// Full on its next pull.
+client_supports_diagnostic_refresh: bool = false,
+
 /// Pngine project store (pngine-shaders phase 01). Allocated by
 /// `initialize`, owned by this server, destroyed at shutdown/deinit. The
 /// native graph is the only graph that reaches these fields.
@@ -225,10 +232,14 @@ pub fn initialize(
     self.lock();
     defer self.unlock();
     self.client_watcher_dynamic_registration = false;
+    self.client_supports_diagnostic_refresh = false;
     if (params.capabilities.workspace) |ws| {
         if (ws.configuration orelse false) self.client_supports_configuration = true;
         if (ws.didChangeWatchedFiles) |watched| {
             self.client_watcher_dynamic_registration = watched.dynamicRegistration orelse false;
+        }
+        if (ws.diagnostics) |diagnostics| {
+            self.client_supports_diagnostic_refresh = diagnostics.refreshSupport orelse false;
         }
     }
     // Workspace-root precedence chain — see `pickWorkspaceRoot` doc.
@@ -383,17 +394,57 @@ pub fn @"workspace/didChangeWatchedFiles"(
     defer self.unlock();
     if (comptime pngine_support) {
         const store = self.pngine_store orelse return;
+        var arm_all = false;
+        var affected: std.ArrayList([]const u8) = .empty;
+        defer affected.deinit(self.handler.gpa);
+
         for (params.changes) |event| {
-            const decoded = uri_module.fileUriToPath(arena, event.uri) catch null;
-            if (decoded) |path| store.invalidatePath(path);
+            const decoded = uri_module.fileUriToPath(arena, event.uri) catch continue;
+            const path = decoded orelse continue;
+            store.invalidatePath(path);
+
+            // A project document/change can reshape discovery for every open
+            // document; a WGSL change only affects open members of roots
+            // that contain it.
+            if (isProjectDocumentPath(path)) {
+                arm_all = true;
+                continue;
+            }
+            const docs = self.handler.affectedOpenDocuments(path) catch continue;
+            defer self.handler.gpa.free(docs);
+            for (docs) |doc_uri| {
+                if (!containsUri(affected.items, doc_uri)) {
+                    affected.append(self.handler.gpa, doc_uri) catch {};
+                }
+            }
         }
-        // Reuse the Phase 7 debouncer + timer thread: any project edit can
-        // change the project context of any open member, so re-arm them all
-        // and let `tick` publish. No second timer, no synchronous refresh.
-        const deadline = self.nowMs() + self.debounce_ms;
-        var it = self.handler.documents.iterator();
-        while (it.next()) |entry| self.debouncer.arm(entry.key_ptr.*, deadline) catch {};
+
+        // Reuse the Phase 7 debouncer + timer thread. No second timer, no
+        // synchronous publish from this notification.
+        if (arm_all) {
+            const deadline = self.nowMs() + self.debounce_ms;
+            var it = self.handler.documents.iterator();
+            while (it.next()) |entry| self.debouncer.arm(entry.key_ptr.*, deadline) catch {};
+        } else {
+            for (affected.items) |doc_uri| self.armLocked(doc_uri);
+        }
+
+        // Tell pull-model clients to re-pull, but only when they advertised
+        // refresh support. The result id changes independently, so later
+        // pulls stay correct either way.
+        if (arm_all or affected.items.len > 0) self.sendWatchedDiagnosticRefreshLocked();
     }
+}
+
+fn isProjectDocumentPath(path: []const u8) bool {
+    return std.mem.endsWith(u8, path, ".sjon");
+}
+
+fn containsUri(uris: []const []const u8, uri: []const u8) bool {
+    for (uris) |item| {
+        if (std.mem.eql(u8, item, uri)) return true;
+    }
+    return false;
 }
 
 /// Handles LSP shutdown; releases the project store before the client exits.
@@ -473,11 +524,12 @@ pub fn @"textDocument/didChange"(
     self.lock();
     defer self.unlock();
     try native_document_sync.handleDidChange(&self.handler, notification);
-    // Hot path: cheap publish on every keystroke. The debounce timer
-    // will republish with M-rule diagnostics once the burst settles.
+    // Hot path: cheap publish on every keystroke. A project edit can change
+    // the diagnostics of every open document sharing one of its roots, so
+    // publish/arm the whole affected set. The debounce timer republishes
+    // each with the full pass once the burst settles.
     const uri = notification.textDocument.uri;
-    self.publishCheapDiagnosticsLocked(uri);
-    self.armIfActiveLocked(uri);
+    self.publishCheapForEditLocked(uri);
 }
 
 /// Removes a closed document and clears its published diagnostics.
@@ -835,6 +887,38 @@ pub fn @"textDocument/formatting"(
 // Helpers (assume `handler_mutex` is held by the caller)
 // =========================================================================
 
+/// Cheap publish for one edit. Project members fan out to every open
+/// document sharing a containing root; each affected member is also armed
+/// for the existing debounced full pass (no second timer, no synchronous
+/// full pass here). Standalone documents keep the old single-URI path and
+/// the old activity-gated arming exactly.
+fn publishCheapForEditLocked(self: *NativeServer, uri: []const u8) void {
+    if (comptime pngine_support) {
+        const affected = self.handler.affectedOpenDocuments(uri) catch {
+            self.publishCheapDiagnosticsLocked(uri);
+            self.armIfActiveLocked(uri);
+            return;
+        };
+        defer self.handler.gpa.free(affected);
+
+        var published_self = false;
+        for (affected) |affected_uri| {
+            if (std.mem.eql(u8, affected_uri, uri)) published_self = true;
+            self.publishCheapDiagnosticsLocked(affected_uri);
+            // A project member's full pass carries the composed set and the
+            // future whole-unit lint; arm it regardless of minify mode.
+            self.armLocked(affected_uri);
+        }
+        if (!published_self) {
+            self.publishCheapDiagnosticsLocked(uri);
+            self.armIfActiveLocked(uri);
+        }
+    } else {
+        self.publishCheapDiagnosticsLocked(uri);
+        self.armIfActiveLocked(uri);
+    }
+}
+
 /// Cheap path: validator + unused/dead-code warnings, no M-rules.
 /// Used by every push-on-edit path so a 100-keystroke burst never
 /// enters the estimator-heavy minify lint pipeline.
@@ -885,6 +969,24 @@ fn sendConfigurationRequestLocked(self: *NativeServer) void {
         .{ .emit_null_optional_fields = false },
     ) catch return;
     self.pending_config_id = id;
+}
+
+/// `workspace/diagnostic/refresh` after a watched project change, gated on
+/// the client's `workspace.diagnostics.refreshSupport`. Configuration
+/// changes keep their existing unconditional three-method refresh.
+fn sendWatchedDiagnosticRefreshLocked(self: *NativeServer) void {
+    if (!self.client_supports_diagnostic_refresh) return;
+    const id = self.next_request_id;
+    self.next_request_id +%= 1;
+    self.transport.writeRequest(
+        self.io,
+        self.handler.gpa,
+        .{ .number = id },
+        "workspace/diagnostic/refresh",
+        ?u8,
+        null,
+        .{ .emit_null_optional_fields = false },
+    ) catch {};
 }
 
 /// Ask the client to re-pull everything whose result depends on settings.
@@ -944,6 +1046,11 @@ fn republishAllDocumentsLocked(self: *NativeServer) void {
 fn armIfActiveLocked(self: *NativeServer, uri: []const u8) void {
     const eff = self.handler.effectiveMinifyFor(uri);
     if (!eff.insightsActive() and !eff.lintsActive()) return;
+    self.armLocked(uri);
+}
+
+/// Arm `uri` unconditionally for the existing debounce deadline.
+fn armLocked(self: *NativeServer, uri: []const u8) void {
     const deadline = self.nowMs() + self.debounce_ms;
     self.debouncer.arm(uri, deadline) catch {};
 }

@@ -64,7 +64,10 @@ pub const server_capabilities: lsp.types.ServerCapabilities = .{
     },
     .diagnosticProvider = .{
         .diagnostic_options = .{
-            .interFileDependencies = false,
+            // Composed pngine diagnostics: editing a sibling can change the
+            // requested document's set. Workspace diagnostics stay off —
+            // only open documents are published/pulled.
+            .interFileDependencies = true,
             .workspaceDiagnostics = false,
         },
     },

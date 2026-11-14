@@ -448,6 +448,26 @@ pub const Store = struct {
         return .{ .items = items };
     }
 
+    /// Cheap project-membership gate for the diagnostic transport: "is this
+    /// path named by any valid program part right now?" — no discovery, no
+    /// membership copies, no root resolution.
+    ///
+    /// The document lifecycle owns the discovery boundary:
+    /// `openDocument`/`didSave` call `refreshAtBoundary`, and watched-file
+    /// invalidation rebuilds the index before any publish or pull. Keeping
+    /// this gate read-only matters because a repeated ancestor walk would
+    /// bump `discovery_generation` on every keystroke of a standalone file
+    /// and needlessly invalidate every project document's pull result id.
+    /// A non-absolute identity (a virtual/test URI) can never have a
+    /// filesystem-backed project membership.
+    pub fn hasMembershipsFor(self: *Store, wgsl_uri: []const u8) !bool {
+        if (!self.enabled) return false;
+        const key = try self.pathKey(wgsl_uri);
+        defer self.gpa.free(key);
+        if (!std.fs.path.isAbsolute(key)) return false;
+        return self.membership_index.contains(key);
+    }
+
     pub fn program(self: *const Store, id: types.ProgramId) ?*const types.Program {
         if (id >= self.programs.items.len) return null;
         if (self.programs.items[id]) |*record| {

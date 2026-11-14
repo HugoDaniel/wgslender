@@ -44,6 +44,9 @@ pub fn validateDocument(handler: *Handler, source: []const u8) ![]LspDiagnostic 
 /// linter so M0500 (and any future M-rule) shares the per-document
 /// cache instead of re-running the estimator from scratch.
 pub fn validateDocumentFull(handler: *Handler, uri: []const u8) ![]LspDiagnostic {
+    if (try handler.hasPngineMemberships(uri)) {
+        return handler.validatePngineDocument(uri, .{ .include_minify_lints = true });
+    }
     return validateDocumentInner(handler, uri, .{ .include_minify_lints = true });
 }
 
@@ -58,6 +61,9 @@ pub fn validateDocumentFull(handler: *Handler, uri: []const u8) ![]LspDiagnostic
 /// general: the configured packs carry no estimator cost, so they run on
 /// both paths and unused/dead-code warnings keep up with every keystroke.
 pub fn validateDocumentCheap(handler: *Handler, uri: []const u8) ![]LspDiagnostic {
+    if (try handler.hasPngineMemberships(uri)) {
+        return handler.validatePngineDocument(uri, .{ .include_minify_lints = false });
+    }
     return validateDocumentInner(handler, uri, .{ .include_minify_lints = false });
 }
 
@@ -102,17 +108,20 @@ pub fn producePullReport(
     if (!handler.diagnosticsEnabled()) return .{ .full = .{ .items = &.{}, .result_id = null } };
     if (handler.getDocumentSource(uri) == null) return .{ .full = .{ .items = &.{}, .result_id = null } };
 
-    const current_id: ?[]const u8 = if (handler.currentResultId(uri)) |v|
-        try std.fmt.allocPrint(allocator, "{d}", .{v})
-    else
-        null;
-    errdefer if (current_id) |c| allocator.free(c);
-
+    const current_id = try handler.currentResultId(allocator, uri);
     if (current_id) |cur| if (previous_result_id) |prev|
         if (std.mem.eql(u8, prev, cur)) return .{ .unchanged = .{ .result_id = cur } };
 
+    // Validation may assemble a root for the first time (or adopt a unit
+    // whose content key moved), bumping the store generations. The id a
+    // client must send back is the post-validation one; otherwise the next
+    // pull with an unchanged project would answer Full once more.
+    if (current_id) |cur| allocator.free(cur);
+
     const items = try validateDocumentFull(handler, uri);
-    return .{ .full = .{ .items = items, .result_id = current_id } };
+    errdefer freeDiagnostics(handler.gpa, items);
+    const result_id = try handler.currentResultId(allocator, uri);
+    return .{ .full = .{ .items = items, .result_id = result_id } };
 }
 
 const ValidateOptions = struct {

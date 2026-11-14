@@ -8,9 +8,15 @@
 //! transport and silently missing from the other (editors never call a
 //! method that isn't advertised, so the drift is invisible at runtime).
 //!
-//! The one sanctioned divergence is `executeCommandProvider`: the
-//! command *lists* differ by design (`command_ids.native` vs
-//! `command_ids.shared`), so that key is compared for presence only.
+//! Two divergences are sanctioned:
+//!   * `executeCommandProvider`: the command *lists* differ by design
+//!     (`command_ids.native` vs `command_ids.shared`), so that key is
+//!     compared for presence only.
+//!   * `diagnosticProvider.interFileDependencies`: native composes pngine
+//!     projects (editing a sibling can change another document's set),
+//!     while the wasm LSP stays single-source and advertises nothing new.
+//!     `workspaceDiagnostics` remains false on both. The dedicated test at
+//!     the bottom pins the exact shape.
 
 const std = @import("std");
 const lsp = @import("lsp");
@@ -61,7 +67,7 @@ test "parity: native and wasm advertise the same capability keys" {
     try expectSameKeySet(native, wasm, "native");
 }
 
-test "parity: capability values are identical except executeCommandProvider" {
+test "parity: capability values are identical except the sanctioned divergences" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -74,6 +80,7 @@ test "parity: capability values are identical except executeCommandProvider" {
     while (it.next()) |entry| {
         const key = entry.key_ptr.*;
         if (std.mem.eql(u8, key, "executeCommandProvider")) continue;
+        if (std.mem.eql(u8, key, "diagnosticProvider")) continue;
         const native_value = native.get(key) orelse continue; // key-set test reports absence
         if (!helpers.jsonEql(entry.value_ptr.*, native_value)) {
             std.debug.print("capability {s} differs between transports\n", .{key});
@@ -81,6 +88,23 @@ test "parity: capability values are identical except executeCommandProvider" {
         }
     }
     try std.testing.expect(ok);
+}
+
+test "parity: diagnosticProvider differs only in interFileDependencies" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const native = try parseNative(arena);
+    const wasm = try parseWasm(arena);
+
+    const native_provider = native.get("diagnosticProvider").?.object;
+    const wasm_provider = wasm.get("diagnosticProvider").?.object;
+
+    try std.testing.expectEqual(true, native_provider.get("interFileDependencies").?.bool);
+    try std.testing.expectEqual(false, wasm_provider.get("interFileDependencies").?.bool);
+    try std.testing.expectEqual(false, native_provider.get("workspaceDiagnostics").?.bool);
+    try std.testing.expectEqual(false, wasm_provider.get("workspaceDiagnostics").?.bool);
 }
 
 test "both transports advertise the full go-to navigation family" {

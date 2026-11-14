@@ -12,6 +12,7 @@ const build_options = @import("build_options");
 
 const pngine_support = build_options.pngine_support;
 const PngineStore = if (pngine_support) wgslender.Pngine.Store else void;
+const PngineMembership = if (pngine_support) wgslender.Pngine.Types.Membership else void;
 const PngineAnalysis = @import("handler/pngine_analysis.zig");
 pub const RootAnalysis = PngineAnalysis.RootAnalysis;
 /// Composed-diagnostic projection (pngine-shaders phase 03, Task 2).
@@ -469,17 +470,116 @@ pub fn getDocumentSource(self: *const Handler, uri: []const u8) ?[]const u8 {
 /// Returns a revision key for pull-mode diagnostics (LSP `resultId`).
 /// Two successive pulls that return the same value describe the same
 /// diagnostic set — the server may reply with `Unchanged` in that case.
+/// The caller owns the returned string and frees it with `allocator`.
 ///
-/// The key is `doc.parse.module_version`: bumped on every reparse that
-/// could shift diagnostics, preserved by the trivia-only shortcut, and
-/// kept monotonic across full-text replaces by `changeDocument`.
+/// Standalone documents keep the legacy single-document id: the decimal
+/// `module_version + config_generation` value the single-source pull path
+/// has always emitted. Project members get a structured string instead:
+/// document parse version, config generation, and the store's content and
+/// discovery generations. Formatting each component separately means two
+/// independent changes can never alias through arithmetic, and the u64
+/// project generations have no u32 wrap.
+///
 /// Returns `null` for unknown URIs or when the initial parse failed.
-pub fn currentResultId(self: *const Handler, uri: []const u8) ?u32 {
+pub fn currentResultId(
+    self: *const Handler,
+    allocator: std.mem.Allocator,
+    uri: []const u8,
+) !?[]const u8 {
     const doc = self.documents.get(uri) orelse return null;
     const p = doc.parse orelse return null;
-    // Content version + settings generation: the pull report depends on
-    // both, so the id must change when either does.
-    return p.module_version +% self.config_generation;
+    if (comptime pngine_support) {
+        if (self.pngine_store) |store| {
+            if (try store.hasMembershipsFor(uri)) {
+                return try std.fmt.allocPrint(
+                    allocator,
+                    "d{d}:c{d}:p{d}:g{d}",
+                    .{
+                        p.module_version,
+                        self.config_generation,
+                        store.contentGeneration(),
+                        store.discoveryGeneration(),
+                    },
+                );
+            }
+        }
+    }
+    // Content version + settings generation: the standalone pull report
+    // depends on both, so the id must change when either does.
+    return try std.fmt.allocPrint(allocator, "{d}", .{p.module_version +% self.config_generation});
+}
+
+/// True when `uri` is named by at least one valid pngine program part.
+/// Project members take the composed diagnostic path; every other document
+/// (and every graph without project support) keeps the standalone path.
+/// Discovery failures propagate so a pull/push cannot silently downgrade a
+/// project document to misleading standalone semantics.
+pub fn hasPngineMemberships(self: *const Handler, uri: []const u8) !bool {
+    if (comptime pngine_support) {
+        const store = self.pngine_store orelse return false;
+        return store.hasMembershipsFor(uri);
+    }
+    return false;
+}
+
+/// Open documents whose diagnostic set can change when `changed_uri`'s
+/// content changes: every open member of a root that contains the edited
+/// file (the edited document itself included). Returns URIs owned by the
+/// Handler's document map; the caller owns only the outer slice.
+pub fn affectedOpenDocuments(
+    self: *const Handler,
+    changed_uri: []const u8,
+) ![]const []const u8 {
+    if (comptime pngine_support) {
+        const store = self.pngine_store orelse return self.gpa.alloc([]const u8, 0);
+        if (!store.isEnabled()) return self.gpa.alloc([]const u8, 0);
+
+        var changed = try store.membershipsFor(changed_uri);
+        defer changed.deinit(self.gpa);
+        if (changed.items.len == 0) return self.gpa.alloc([]const u8, 0);
+
+        var affected: std.ArrayList([]const u8) = .empty;
+        errdefer affected.deinit(self.gpa);
+        var it = self.documents.iterator();
+        while (it.next()) |entry| {
+            const open_uri = entry.key_ptr.*;
+            var open = store.membershipsFor(open_uri) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                // An unreadable traversal cannot prove this document is
+                // unaffected, but it also cannot name a root to republish.
+                else => continue,
+            };
+            defer open.deinit(self.gpa);
+            if (membershipsShareRoot(changed.items, open.items)) {
+                try affected.append(self.gpa, open_uri);
+            }
+        }
+        return affected.toOwnedSlice(self.gpa);
+    } else {
+        return self.gpa.alloc([]const u8, 0);
+    }
+}
+
+/// Two memberships share an affected root when they name the same program
+/// and at least one containing root index is identical. Root IDs are
+/// `(program, part index)`, so no cross-program comparison is valid.
+fn membershipsShareRoot(
+    changed: []const PngineMembership,
+    open: []const PngineMembership,
+) bool {
+    if (comptime pngine_support) {
+        for (changed) |a| {
+            for (open) |b| {
+                if (a.program != b.program) continue;
+                for (a.containing_roots) |root_a| {
+                    for (b.containing_roots) |root_b| {
+                        if (root_a == root_b) return true;
+                    }
+                }
+            }
+        }
+    }
+    return false;
 }
 
 /// Handles a `textDocument/didSave` notification. The client remains the
@@ -964,7 +1064,6 @@ pub const CompletionItem = Completion.CompletionItem;
 pub const CompletionKind = Completion.CompletionKind;
 pub const computeCompletion = Completion.computeCompletion;
 
-
 // =========================================================================
 // LSP Feature: Signature Help — see lsp/handler/signature_help.zig
 // =========================================================================
@@ -1114,8 +1213,6 @@ test "analyzeDocument returns semantic data" {
     // Should have at least the struct declaration symbol
     try std.testing.expect(module.symbols.items.len > 0);
 }
-
-
 
 test "offsetToLspPosition: basic" {
     const source = "line1\nline2\nline3";
@@ -1420,7 +1517,6 @@ test "offsetRangeToLspRange: range spans a 4-byte char" {
     // 3 ASCII + 2 surrogate units = 5.
     try std.testing.expectEqual(@as(u32, 5), range.end.character);
 }
-
 
 /// Mapper over an empty document, for the `convertDiagnostic` unit tests
 /// below: their entries carry zero offsets, so every range resolves to

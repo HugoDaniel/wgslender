@@ -869,6 +869,7 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "lsp/Handler.zig", target, optimize, &.{
         w,
         .{ .name = "build_options", .module = native_options_mod },
+        .{ .name = "pngine_path", .module = pngine_path_mod },
     });
     // LSP URI helper tests. The conversion itself lives in the pure
     // `src/pngine/Path.zig` module so the native project identity and the
@@ -944,6 +945,15 @@ pub fn build(b: *std.Build) void {
         _ = addTestStep(b, test_step, "tests/pngine_diagnostics_test.zig", target, optimize, &.{
             w,
             .{ .name = "Handler", .module = handler_mod },
+        });
+        // pngine composed push/pull diagnostics (phase 03, Task 5): sibling
+        // republish fanout, pull freshness/result ids, standalone parity,
+        // capability advertisement and watched-change refresh requests.
+        _ = addTestStep(b, test_step, "tests/pngine_diagnostic_transport_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "NativeServer", .module = native_server_mod },
         });
     }
     // Code action integration tests
