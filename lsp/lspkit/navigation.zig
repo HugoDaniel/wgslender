@@ -23,14 +23,32 @@ pub fn toLspKitHover(result: Handler.HoverResult) lsp.types.Hover {
 /// `textDocument/definition` and `textDocument/typeDefinition` since
 /// they share the same response type.
 pub fn toLspKitDefinitionLocation(uri: []const u8, range: Handler.Range) lsp.types.Definition.Result {
+    return toLspKitDefinitionAt(.{ .uri = uri, .range = range });
+}
+
+/// Build a single-Location `Definition.Result` from an origin-aware
+/// `Handler.Location`. This is the phase-04 shape: the URI travels with the
+/// range instead of being taken from the request document.
+pub fn toLspKitDefinitionAt(location: Handler.Location) lsp.types.Definition.Result {
     return .{
         .definition = .{
             .location = .{
-                .uri = uri,
-                .range = primitives.toLspKitRange(range),
+                .uri = location.uri,
+                .range = primitives.toLspKitRange(location.range),
             },
         },
     };
+}
+
+/// Build a `Definition.Result` from origin-aware locations. One location
+/// keeps the legacy single-object shape; two or more become the LSP
+/// `Location[]` form, each carrying its own URI.
+pub fn toLspKitDefinitionWithUris(
+    arena: std.mem.Allocator,
+    locations: []const Handler.Location,
+) !lsp.types.Definition.Result {
+    if (locations.len == 1) return toLspKitDefinitionAt(locations[0]);
+    return .{ .definition = .{ .locations = try toLspKitLocationsWithUris(arena, locations) } };
 }
 
 /// Allocate `[]lsp.types.Location` on `arena` from a Handler reference
@@ -49,6 +67,23 @@ pub fn toLspKitLocations(
         };
     }
     return locations;
+}
+
+/// Allocate `[]lsp.types.Location` on `arena` from origin-aware Handler
+/// locations. Every entry keeps its own URI; strings are borrowed from the
+/// input.
+pub fn toLspKitLocationsWithUris(
+    arena: std.mem.Allocator,
+    locations: []const Handler.Location,
+) ![]lsp.types.Location {
+    const out = try arena.alloc(lsp.types.Location, locations.len);
+    for (locations, 0..) |location, i| {
+        out[i] = .{
+            .uri = location.uri,
+            .range = primitives.toLspKitRange(location.range),
+        };
+    }
+    return out;
 }
 
 /// Allocate `[]lsp.types.DocumentHighlight` on `arena`.

@@ -22,7 +22,11 @@ pub fn handleRename(
     ) catch return null;
     const handler_edits = edits orelse return null;
     defer h.gpa.free(handler_edits);
-    return edits_codec.toLspKitWorkspaceEdit(arena, params.textDocument.uri, handler_edits) catch null;
+    const document: Handler.DocumentEdits = .{
+        .uri = params.textDocument.uri,
+        .edits = handler_edits,
+    };
+    return edits_codec.toLspKitWorkspaceChanges(arena, .{ .documents = &.{document} }) catch null;
 }
 
 pub fn handlePrepareRename(

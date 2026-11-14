@@ -18,6 +18,17 @@ pub const RootAnalysis = PngineAnalysis.RootAnalysis;
 /// Composed-diagnostic projection (pngine-shaders phase 03, Task 2).
 pub const PngineDiagnostics = @import("handler/pngine_diagnostics.zig");
 pub const PngineValidateOptions = PngineDiagnostics.ValidateOptions;
+/// Request contexts and declaration identity (pngine-shaders phase 04,
+/// Task 1). The shapes compile in every graph; the project-aware bodies are
+/// compiled only when `pngine_support` is true.
+pub const PngineContext = @import("handler/pngine_context.zig");
+pub const RequestContext = PngineContext.RequestContext;
+pub const SymbolKey = PngineContext.SymbolKey;
+pub const contextsAt = PngineContext.contextsAt;
+pub const contextsForPart = PngineContext.contextsForPart;
+pub const freeContexts = PngineContext.freeContexts;
+pub const declarationKey = PngineContext.declarationKey;
+pub const originUri = PngineContext.originUri;
 
 const WgslDiagnostic = wgslender.Diagnostic;
 const MinifySettings = wgslender.MinifySettings;
@@ -167,6 +178,28 @@ pub const LspDiagnostic = struct {
 pub const LspTextEdit = struct {
     range: Range,
     new_text: []const u8,
+};
+
+/// One author-facing result location. Unlike the pre-phase-04 navigation
+/// bridge, the URI belongs to the result: a composed answer may point at a
+/// sibling file. Inline `:code` origins have no URI before the virtual
+/// document layer and must be omitted from results, never given a
+/// fabricated path.
+pub const Location = struct {
+    uri: []const u8,
+    range: Range,
+};
+
+/// One document's batch of edits for a `WorkspaceEdit.changes` map.
+pub const DocumentEdits = struct {
+    uri: []const u8,
+    edits: []const LspTextEdit,
+};
+
+/// Origin-aware workspace edit payload. The native codec groups these by
+/// `uri`; a standalone rename still produces exactly one document.
+pub const WorkspaceChanges = struct {
+    documents: []const DocumentEdits,
 };
 
 pub const LspCodeAction = struct {

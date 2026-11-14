@@ -36,10 +36,38 @@ pub fn toLspKitWorkspaceEdit(
     uri: []const u8,
     edits: []const Handler.LspTextEdit,
 ) !lsp.types.WorkspaceEdit {
-    const text_edits = try toLspKitTextEdits(arena, edits);
-    var changes: std.json.ArrayHashMap([]const lsp.types.TextEdit) = .{};
-    try changes.map.put(arena, uri, text_edits);
-    return .{ .changes = changes };
+    return toLspKitWorkspaceChanges(arena, .{ .documents = &.{.{
+        .uri = uri,
+        .edits = edits,
+    }} });
+}
+
+/// Build a multi-document `WorkspaceEdit` from origin-aware changes.
+///
+/// Every result carries its own document URI; entries naming the same URI
+/// are merged in input order so a declaration and a reference reported
+/// twice cannot produce duplicate `changes` keys. A single document still
+/// serializes as the legacy one-key map. Strings are borrowed from
+/// `changes`.
+pub fn toLspKitWorkspaceChanges(
+    arena: std.mem.Allocator,
+    changes: Handler.WorkspaceChanges,
+) !lsp.types.WorkspaceEdit {
+    var map: std.json.ArrayHashMap([]const lsp.types.TextEdit) = .{};
+    for (changes.documents) |document| {
+        const converted = try toLspKitTextEdits(arena, document.edits);
+        const entry = try map.map.getOrPut(arena, document.uri);
+        if (!entry.found_existing) {
+            entry.value_ptr.* = converted;
+            continue;
+        }
+        const previous = entry.value_ptr.*;
+        const merged = try arena.alloc(lsp.types.TextEdit, previous.len + converted.len);
+        @memcpy(merged[0..previous.len], previous);
+        @memcpy(merged[previous.len..], converted);
+        entry.value_ptr.* = merged;
+    }
+    return .{ .changes = map };
 }
 
 // =========================================================================

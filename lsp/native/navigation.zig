@@ -31,7 +31,7 @@ pub fn handleDefinition(
         codec.fromLspKitPosition(params.position),
     ) catch return null;
     const r = range orelse return null;
-    return nav.toLspKitDefinitionLocation(params.textDocument.uri, r);
+    return nav.toLspKitDefinitionAt(.{ .uri = params.textDocument.uri, .range = r });
 }
 
 /// WGSL has no forward declarations, so a symbol's declaration IS its
@@ -56,7 +56,7 @@ pub fn handleTypeDefinition(
         codec.fromLspKitPosition(params.position),
     ) catch return null;
     const r = range orelse return null;
-    return nav.toLspKitDefinitionLocation(params.textDocument.uri, r);
+    return nav.toLspKitDefinitionAt(.{ .uri = params.textDocument.uri, .range = r });
 }
 
 pub fn handleReferences(
@@ -71,7 +71,15 @@ pub fn handleReferences(
     ) catch return null;
     const handler_refs = refs orelse return null;
     defer h.gpa.free(handler_refs);
-    return nav.toLspKitLocations(arena, params.textDocument.uri, handler_refs) catch null;
+
+    // The legacy computation is single-document; wrap each range with the
+    // request URI so the origin-aware codec is the only result path. A
+    // composition-aware computation replaces this in phase-04 Task 3.
+    const locations = arena.alloc(Handler.Location, handler_refs.len) catch return null;
+    for (handler_refs, 0..) |ref, i| {
+        locations[i] = .{ .uri = params.textDocument.uri, .range = ref };
+    }
+    return nav.toLspKitLocationsWithUris(arena, locations) catch null;
 }
 
 pub fn handleDocumentHighlight(

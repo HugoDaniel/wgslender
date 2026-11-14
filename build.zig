@@ -939,6 +939,20 @@ pub fn build(b: *std.Build) void {
             w,
             .{ .name = "Handler", .module = handler_mod },
         });
+        // pngine request mapping and origin-aware result shapes (phase 04,
+        // Task 1): author↔assembled round trips, multi-root contexts, inline
+        // origins, invalid positions, and the native Location /
+        // WorkspaceChanges codecs. The native adapter cases prove the
+        // standalone response shapes did not move.
+        _ = addTestStep(b, test_step, "tests/pngine_navigation_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
+            .{ .name = "wire", .module = wire_mod },
+            .{ .name = "native_navigation", .module = native_navigation_mod },
+            .{ .name = "native_symbols", .module = native_symbols_mod },
+        });
         // pngine composed diagnostic projection (phase 03, Task 2): mapped
         // validator ranges, hoisted directives, part boundaries, related
         // information on another file, EOF fallback and quick-fix safety.
