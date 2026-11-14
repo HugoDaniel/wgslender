@@ -49,6 +49,8 @@ pub const ByteRange = Mapping.ByteRange;
 pub const OriginKey = Assemble.OriginKey;
 /// A root's stable identity: program slot plus source-order part index.
 pub const RootId = Assemble.RootId;
+/// Stable virtual-document URIs for inline `:code` parts (phase 04, Task 6).
+pub const VirtualUri = @import("VirtualUri.zig");
 
 /// True when any top-level form in the SJON document `source` has head
 /// `head` (e.g. "wgsl", "shader-module", "pass").

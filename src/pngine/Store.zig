@@ -476,6 +476,14 @@ pub const Store = struct {
         return null;
     }
 
+    /// The live program whose canonical document path is `document_path`.
+    /// A deleted or invalid-with-no-snapshot document returns `null`.
+    pub fn programForDocument(self: *const Store, document_path: []const u8) ?types.ProgramId {
+        const id = self.document_slots.get(document_path) orelse return null;
+        if (self.program(id) == null) return null;
+        return id;
+    }
+
     pub fn part(self: *const Store, id: types.PartId) ?*const types.Part {
         const program_value = self.program(id.program) orelse return null;
         if (id.index >= program_value.parts.len) return null;

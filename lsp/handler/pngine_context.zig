@@ -31,11 +31,15 @@
 //!
 //! ## URIs and inline parts
 //!
-//! A `:file` part has a file URI; a `:code` part does not. Before the
-//! virtual-document layer exists, `originUri` returns `null` for inline
-//! parts rather than inventing a path, and a part-addressed context carries
-//! no request URI. `Location` results must omit such origins; the codec
-//! never fabricates a URI.
+//! A `:file` part has a file URI; a `:code` part does not. Inline parts mint
+//! a stable `wgslender-pngine://part/<encoded program>/<index>/<hash>` URI
+//! (see `pngine/VirtualUri.zig`) whose hash is the content the URI was
+//! minted for. `originUri` returns that URI; a feature request that arrives
+//! on one is decoded back to the exact `(program, part index)` and refused
+//! when the part disappeared or its text changed. `partDocument` is the
+//! `wgslender/pnginePart` handler: it serves the current author text with
+//! language id `wgsl`, or reports `MissingPart`/`StalePart` rather than
+//! inventing bytes. No codec fabricates a path.
 //!
 //! ## Standalone documents
 //!
@@ -92,11 +96,12 @@ const UnsupportedByteRange = struct { start: u32 = 0, end: u32 = 0 };
 /// One identity context for a request in one root.
 pub const RequestContext = struct {
     /// The URI the request arrived with, when it arrived through a URI.
-    /// `null` for a part-addressed request (an inline `:code` part, or the
-    /// future virtual-document decoder calling `contextsForPart`).
+    /// `null` for a part-addressed request (an inline `:code` part resolved
+    /// by `contextsForPart`). A virtual-document request carries its
+    /// `wgslender-pngine:` spelling.
     request_uri: ?[]const u8 = null,
-    /// The file URI of `origin`, when that part is file-backed. `null` for
-    /// inline `:code` parts: no path may be invented.
+    /// The URI of `origin`. A virtual-document request uses its own
+    /// `wgslender-pngine:` spelling; a file-backed part uses the file URI.
     origin_uri: ?[]const u8 = null,
     /// Author-local byte offset of the requested position.
     author_offset: u32 = 0,
@@ -141,6 +146,7 @@ pub const SymbolKey = struct {
 /// owned by the caller; release it with `freeContexts`.
 pub fn contextsAt(handler: *Handler, uri: []const u8, position: Handler.Position) ![]RequestContext {
     if (comptime pngine_support) {
+        if (try virtualContextsAt(handler, uri, position)) |contexts| return contexts;
         return contextsAtSupported(handler, uri, position);
     } else {
         // Graph families without project support still serve standalone
@@ -162,6 +168,7 @@ pub fn contextsAt(handler: *Handler, uri: []const u8, position: Handler.Position
 /// exactly the one identity context `contextsAt` would produce.
 pub fn contextsForDocument(handler: *Handler, uri: []const u8) ![]RequestContext {
     if (comptime pngine_support) {
+        if (try virtualContextsForDocument(handler, uri)) |contexts| return contexts;
         if (handler.pngine_store) |store| {
             var memberships = try store.membershipsFor(uri);
             defer memberships.deinit(handler.gpa);
@@ -200,17 +207,16 @@ pub fn contextsForDocument(handler: *Handler, uri: []const u8) ![]RequestContext
 }
 
 /// Resolve `position` in a known part without a URI. This is the entry point
-/// for an inline `:code` part, which has an author origin and no file URI
-/// yet. The returned contexts carry `request_uri == null`; file-backed
-/// origins still expose `origin_uri == null` here because the caller did not
-/// supply a spelling — use `originUri` for the part's URI.
+/// for an inline `:code` part when a caller already has its `OriginKey`.
+/// The returned contexts carry `request_uri == null`; a virtual-document
+/// request goes through `contextsAt` with its own URI instead.
 pub fn contextsForPart(
     handler: *Handler,
     part: OriginKey,
     position: Handler.Position,
 ) ![]RequestContext {
     if (comptime pngine_support) {
-        return contextsForPartSupported(handler, part, position);
+        return contextsForPartSupported(handler, part, position, null);
     } else {
         return error.PngineUnsupported;
     }
@@ -309,6 +315,18 @@ pub const AuthorText = struct {
     }
 };
 
+/// One inline part's response to `wgslender/pnginePart`. `text` is owned by
+/// the caller; `language_id` is the fixed WGSL language id.
+pub const PartDocument = struct {
+    text: []u8,
+    language_id: []const u8 = "wgsl",
+
+    pub fn deinit(self: *PartDocument, gpa: Allocator) void {
+        gpa.free(self.text);
+        self.* = undefined;
+    }
+};
+
 /// The validator result a context's features must read. Composed contexts
 /// borrow it from the root cache; a standalone context analyzes the open
 /// document exactly as the pre-project path did.
@@ -356,6 +374,50 @@ pub fn originText(handler: *Handler, origin: OriginKey) anyerror!AuthorText {
         const text = try store.textForPart(origin);
         return .{ .text = text.text, .owned = true };
     } else {
+        return error.PngineUnsupported;
+    }
+}
+
+/// Serve one inline part for the `wgslender/pnginePart` request. The URI
+/// must decode to a live inline part; a missing part is `MissingPart`, and a
+/// content hash that no longer matches the current author text is
+/// `StalePart`. The caller owns the returned text.
+pub fn partDocument(
+    handler: *Handler,
+    allocator: Allocator,
+    uri: []const u8,
+) anyerror!PartDocument {
+    if (comptime pngine_support) {
+        var decoded = Pngine.VirtualUri.decode(allocator, uri) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return error.InvalidPartUri,
+        };
+        defer decoded.deinit(allocator);
+
+        const store = handler.pngine_store orelse return error.PngineStoreUnbound;
+        const program = store.programForDocument(decoded.program_path) orelse
+            return error.MissingPart;
+        const origin: OriginKey = .{ .program = program, .index = decoded.part_index };
+        const part = store.part(origin) orelse return error.MissingPart;
+        switch (part.origin) {
+            .inline_code => {},
+            // A virtual URI names an inline identity. If the slot is now
+            // file-backed, the inline part it was minted for is gone; never
+            // reinterpret the old URI as the file that replaced it.
+            .file => return error.MissingPart,
+        }
+
+        var text = store.textForPart(origin) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return error.MissingPart,
+        };
+        if (!std.mem.eql(u8, &text.content_hash, &decoded.content_hash)) {
+            text.deinit(allocator);
+            return error.StalePart;
+        }
+        return .{ .text = text.text };
+    } else {
+        std.mem.doNotOptimizeAway(uri);
         return error.PngineUnsupported;
     }
 }
@@ -427,12 +489,14 @@ pub fn contextLabel(context: *const RequestContext) ?[]const u8 {
     }
 }
 
-/// The file URI of a file-backed origin, or `null` for an inline `:code`
-/// part. The caller owns the returned string.
+/// The URI of one part: the canonical file URI for a file-backed origin and
+/// the stable `wgslender-pngine:` virtual URI for an inline `:code` origin.
+/// The caller owns the returned string.
 ///
 /// This is the identity spelling (`Path.pathToFileUri` of the part's
-/// resolved source path), not the request's spelling. Callers that answer in
-/// the requested document must keep the request URI for that origin.
+/// resolved source path, or the virtual codec), not the request's spelling.
+/// Callers that answer in the requested document must keep the request URI
+/// for that origin.
 pub fn originUri(
     handler: *Handler,
     allocator: Allocator,
@@ -441,17 +505,27 @@ pub fn originUri(
     if (comptime pngine_support) {
         const store = handler.pngine_store orelse return null;
         const part = store.part(origin) orelse return null;
-        const file = switch (part.origin) {
-            .file => |source| source,
-            .inline_code => return null,
-        };
         const program = store.program(origin.program) orelse return null;
-        const path = try resolvePath(allocator, program.document_path, file.path);
-        defer allocator.free(path);
-        return pngine_path.pathToFileUri(allocator, path) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => return null,
-        };
+        switch (part.origin) {
+            .inline_code => {
+                var text = store.textForPart(origin) catch return null;
+                defer text.deinit(allocator);
+                return try Pngine.VirtualUri.encode(
+                    allocator,
+                    program.document_path,
+                    origin.index,
+                    text.content_hash,
+                );
+            },
+            .file => |source| {
+                const path = try resolvePath(allocator, program.document_path, source.path);
+                defer allocator.free(path);
+                return pngine_path.pathToFileUri(allocator, path) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => return null,
+                };
+            },
+        }
     } else {
         return null;
     }
@@ -498,6 +572,7 @@ fn contextsForPartSupported(
     handler: *Handler,
     part: Pngine.OriginKey,
     position: Handler.Position,
+    request_uri: ?[]const u8,
 ) ![]RequestContext {
     const store = handler.pngine_store orelse return error.PngineStoreUnbound;
     const program = store.program(part.program) orelse return handler.gpa.alloc(RequestContext, 0);
@@ -508,11 +583,111 @@ fn contextsForPartSupported(
     for (program.roots) |root_index| {
         const root: Pngine.RootId = .{ .program = part.program, .index = root_index };
         if (!rootContainsPart(handler.gpa, program, root, part)) continue;
-        if (try contextForRoot(handler, store, root, part, position, null)) |context| {
+        if (try contextForRoot(handler, store, root, part, position, request_uri)) |context| {
             try appendUnique(handler.gpa, &contexts, context);
         }
     }
     return contexts.toOwnedSlice(handler.gpa);
+}
+
+/// Whole-document contexts for a virtual part identity. Unlike a
+/// part-addressed request, `request_uri` and `origin_uri` are the virtual
+/// spelling so features inside the virtual document can map result ranges
+/// back into it.
+fn contextsForPartDocumentSupported(
+    handler: *Handler,
+    part: Pngine.OriginKey,
+    request_uri: []const u8,
+) ![]RequestContext {
+    const store = handler.pngine_store orelse return error.PngineStoreUnbound;
+    const program = store.program(part.program) orelse return handler.gpa.alloc(RequestContext, 0);
+
+    var contexts: std.ArrayList(RequestContext) = .empty;
+    errdefer contexts.deinit(handler.gpa);
+
+    for (program.roots) |root_index| {
+        const root: Pngine.RootId = .{ .program = part.program, .index = root_index };
+        if (!rootContainsPart(handler.gpa, program, root, part)) continue;
+        const analysis = handler.analyzeRoot(root) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        try appendUnique(handler.gpa, &contexts, .{
+            .request_uri = request_uri,
+            .origin_uri = request_uri,
+            .root = root,
+            .analysis = analysis,
+            .origin = part,
+        });
+    }
+    return contexts.toOwnedSlice(handler.gpa);
+}
+
+/// Decode and verify a virtual part URI against the current Store. `null`
+/// means the URI is not a virtual part URI; an invalid, missing, stale, or
+/// file-backed identity also yields no contexts, because no author byte can
+/// be trusted. OOM propagates.
+fn virtualContextsAt(
+    handler: *Handler,
+    uri: []const u8,
+    position: Handler.Position,
+) !?[]RequestContext {
+    const verified = try verifiedVirtualPart(handler, uri) orelse return null;
+    defer {
+        var text = verified.text;
+        text.deinit(handler.gpa);
+    }
+    return try contextsForPartSupported(handler, verified.origin, position, uri);
+}
+
+fn virtualContextsForDocument(
+    handler: *Handler,
+    uri: []const u8,
+) !?[]RequestContext {
+    const verified = try verifiedVirtualPart(handler, uri) orelse return null;
+    defer {
+        var text = verified.text;
+        text.deinit(handler.gpa);
+    }
+    return try contextsForPartDocumentSupported(handler, verified.origin, uri);
+}
+
+const VerifiedVirtualPart = struct {
+    origin: Pngine.OriginKey,
+    text: Pngine.Types.SourceText,
+};
+
+/// Decode a virtual URI and prove its hash matches the part's current author
+/// text. `null` covers "not a virtual URI" and every unusable identity
+/// (malformed, missing part, changed text, file-backed part).
+fn verifiedVirtualPart(handler: *Handler, uri: []const u8) !?VerifiedVirtualPart {
+    if (!std.mem.startsWith(u8, uri, Pngine.VirtualUri.prefix)) return null;
+    const store = handler.pngine_store orelse return null;
+
+    var decoded = Pngine.VirtualUri.decode(handler.gpa, uri) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    defer decoded.deinit(handler.gpa);
+
+    const program = store.programForDocument(decoded.program_path) orelse return null;
+    const origin: Pngine.OriginKey = .{ .program = program, .index = decoded.part_index };
+    const part = store.part(origin) orelse return null;
+    switch (part.origin) {
+        .inline_code => {},
+        .file => return null,
+    }
+
+    var text = store.textForPart(origin) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
+    errdefer text.deinit(handler.gpa);
+    if (!std.mem.eql(u8, &text.content_hash, &decoded.content_hash)) {
+        text.deinit(handler.gpa);
+        return null;
+    }
+    return .{ .origin = origin, .text = text };
 }
 
 /// Build one context, or `null` when this root cannot honestly map the

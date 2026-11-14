@@ -9,9 +9,9 @@
 //!     rename/prepareRename decline instead of merging them;
 //!   * `includeDeclaration` behaves on the composed path exactly as the
 //!     standalone path does;
-//!   * a use inside an inline `:code` part is a reference with no file URI
-//!     (the virtual-document layer arrives later) and rename/prepareRename
-//!     refuse because the edit set would write that virtual text;
+//!   * a use inside an inline `:code` part is a reference on its stable
+//!     virtual document URI and rename/prepareRename refuse because the
+//!     edit set would write that read-only text;
 //!   * a use reachable through two roots appears once per `(URI, range)`;
 //!   * rename produces a multi-file `WorkspaceEdit` grouped by URI, and an
 //!     open unsaved sibling is measured from its current buffer text;
@@ -84,6 +84,22 @@ fn bindStore(fake: *FakeProvider, store: *Store, handler: *Handler) !void {
     try store.setWorkspaceRoots(&roots);
     handler.* = Handler.init(testing.allocator);
     handler.setPngineStore(store);
+}
+
+fn partFor(store: *Store, program: Types.ProgramId, name: []const u8) Types.PartId {
+    const program_value = store.program(program) orelse unreachable;
+    const index = program_value.findFragment(name) orelse unreachable;
+    return .{ .program = program, .index = index };
+}
+
+fn rootFor(store: *Store, path: []const u8) !Types.PartId {
+    var buffer: [512]u8 = undefined;
+    var set = try store.membershipsFor(try fileUri(&buffer, path));
+    defer set.deinit(testing.allocator);
+    if (set.items.len == 0) return error.TestExpectedMembership;
+    const membership = set.items[0];
+    if (membership.containing_roots.len == 0) return error.TestExpectedRoot;
+    return .{ .program = membership.program, .index = membership.containing_roots[0] };
 }
 
 fn uriEql(a: ?[]const u8, b: ?[]const u8) bool {
@@ -330,7 +346,7 @@ const inline_use = "fn file_use() -> f32 { return shared_value(); }";
 const inline_root =
     "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(file_use()); }";
 
-test "T3-4 inline references have no file URI and refuse rename" {
+test "T3-4 inline references carry the virtual URI and still refuse rename" {
     var fake = FakeProvider.init(testing.allocator);
     defer fake.deinit();
     try fake.addFile("/ws/program.sjon", inline_program);
@@ -349,23 +365,30 @@ test "T3-4 inline references have no file URI and refuse rename" {
     var use_buffer: [256]u8 = undefined;
     const use_uri = try fileUri(&use_buffer, "/ws/use.wgsl");
 
+    const root = try rootFor(&store, "/ws/use.wgsl");
+    const inline_part = partFor(&store, root.program, "inlinepart");
+    const inline_uri = (try Handler.originUri(&handler, testing.allocator, inline_part)) orelse
+        return error.MissingVirtualUri;
+    defer testing.allocator.free(inline_uri);
+    try testing.expect(std.mem.startsWith(u8, inline_uri, "wgslender-pngine://part/"));
+
     const position = positionOf(inline_lib, "shared_value", 2);
     const refs = (try handler.computeReferences(lib_uri, position, true)) orelse
         return error.MissingReferences;
     defer Handler.freeReferences(&handler, refs);
 
-    // Library declaration + file use + inline use.
+    // Library declaration + file use + inline use on the virtual document.
     try testing.expectEqual(@as(usize, 3), refs.len);
     try expectReference(refs, lib_uri, rangeIn(inline_lib, "shared_value", 0, 12));
     try expectReference(refs, use_uri, rangeIn(inline_use, "shared_value", 0, 12));
-    try expectReference(refs, null, rangeIn(inline_code, "shared_value", 0, 12));
+    try expectReference(refs, inline_uri, rangeIn(inline_code, "shared_value", 0, 12));
 
     // An edit set that includes the inline use would have to write a virtual
     // document; both prepare and rename refuse the whole rename.
     try testing.expect((try handler.prepareRename(lib_uri, position)) == null);
     try testing.expect((try handler.computeRename(lib_uri, position, "renamed_value")) == null);
 
-    // The adapter omits the inline entry rather than inventing a URI.
+    // The native adapter carries the same virtual location, not a null URI.
     var arena: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena.deinit();
     const locations = native_navigation.handleReferences(&handler, arena.allocator(), .{
@@ -373,7 +396,12 @@ test "T3-4 inline references have no file URI and refuse rename" {
         .position = lspkit.primitives.toLspKitPosition(position),
         .context = .{ .includeDeclaration = true },
     }) orelse return error.MissingNativeReferences;
-    try testing.expectEqual(@as(usize, 2), locations.len);
+    try testing.expectEqual(@as(usize, 3), locations.len);
+    var saw_inline = false;
+    for (locations) |location| {
+        if (std.mem.eql(u8, location.uri, inline_uri)) saw_inline = true;
+    }
+    try testing.expect(saw_inline);
 }
 
 // =========================================================================

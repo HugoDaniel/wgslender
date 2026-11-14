@@ -7,8 +7,9 @@
 //!     part and offset — for body text and for a hoisted directive line;
 //!   * a file contained by several roots yields one context per root, each
 //!     with its own `Assembled` and mapping, without cross-contamination;
-//!   * an inline `:code` origin has no file URI: the context and the origin
-//!     URI helper say so instead of inventing a path;
+//!   * an inline `:code` origin mints a stable virtual URI from the program
+//!     path, part index and content hash; the part-addressed context still
+//!     carries no request URI;
 //!   * a past-EOF position, a duplicate blanked directive, and a synthetic
 //!     terminator have no context — never a clamp to a neighbouring part;
 //!   * a standalone document still yields one identity context;
@@ -290,7 +291,7 @@ test "T2 a shared file yields one context per root with its own mapping" {
 }
 
 // =========================================================================
-// T3 — inline `:code` origins have no file URI.
+// T3 — inline `:code` origins mint stable virtual URIs.
 // =========================================================================
 
 const inline_program =
@@ -303,7 +304,7 @@ const inline_code = "fn inline_value() -> f32 { return 3.0; }";
 const inline_use = "fn lit() -> f32 { return inline_value(); }";
 const inline_root = "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(lit()); }";
 
-test "T3 an inline origin reports no file URI instead of inventing one" {
+test "T3 an inline origin mints a stable virtual URI instead of a path" {
     var fake = FakeProvider.init(testing.allocator);
     defer fake.deinit();
     try fake.addFile("/ws/program.sjon", inline_program);
@@ -351,18 +352,26 @@ test "T3 an inline origin reports no file URI instead of inventing one" {
         inline_context.author_offset,
     );
 
-    // The URI helper refuses to fabricate a path for an inline part.
-    try testing.expectEqual(
-        @as(?[]u8, null),
-        try Handler.originUri(&handler, testing.allocator, inline_part),
-    );
+    // The URI helper mints the stable virtual identity for an inline part.
+    const inline_uri = (try Handler.originUri(&handler, testing.allocator, inline_part)) orelse
+        return error.MissingVirtualUri;
+    defer testing.allocator.free(inline_uri);
+    try testing.expect(std.mem.startsWith(u8, inline_uri, "wgslender-pngine://part/"));
+    var decoded = try pngine.VirtualUri.decode(testing.allocator, inline_uri);
+    defer decoded.deinit(testing.allocator);
+    try testing.expectEqualStrings("/ws/program.sjon", decoded.program_path);
+    try testing.expectEqual(inline_part.index, decoded.part_index);
+    var inline_text = store.textForPart(inline_part) catch return error.MissingText;
+    defer inline_text.deinit(testing.allocator);
+    try testing.expectEqualSlices(u8, &inline_text.content_hash, &decoded.content_hash);
+
     const use_origin_uri = (try Handler.originUri(&handler, testing.allocator, use_part)) orelse
         return error.MissingOriginUri;
     defer testing.allocator.free(use_origin_uri);
     try testing.expectEqualStrings(use_uri, use_origin_uri);
 
     // Symbol identity records the inline origin and its author-local byte
-    // range; no URI is attached because none exists yet.
+    // range; its URI is the same virtual spelling.
     const module = use_context.analysis.?.result.module orelse return error.ExpectedModule;
     const inline_symbol = symbolByName(module, "inline_value") orelse return error.MissingSymbol;
     const inline_key = Handler.declarationKey(&use_context, inline_symbol) orelse
@@ -373,10 +382,10 @@ test "T3 an inline origin reports no file URI instead of inventing one" {
         offsetOf(inline_code, "inline_value", 0) + @as(u32, @intCast("inline_value".len)),
         inline_key.declaration_range.end,
     );
-    try testing.expectEqual(
-        @as(?[]u8, null),
-        try Handler.originUri(&handler, testing.allocator, inline_key.origin),
-    );
+    const inline_key_uri = (try Handler.originUri(&handler, testing.allocator, inline_key.origin)) orelse
+        return error.MissingVirtualUri;
+    defer testing.allocator.free(inline_key_uri);
+    try testing.expectEqualStrings(inline_uri, inline_key_uri);
 
     // A file-backed declaration in the same analysis maps to the file part.
     const file_symbol = symbolByName(module, "lit") orelse return error.MissingSymbol;
@@ -847,7 +856,7 @@ const inline_nav_code = "fn inline_value() -> f32 { return 3.0; }";
 const inline_nav_use = "fn lit() -> f32 { return inline_value(); }";
 const inline_nav_root = "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(lit()); }";
 
-test "T10 inline targets have no file representation" {
+test "T10 inline targets navigate to the exact virtual document range" {
     var fake = FakeProvider.init(testing.allocator);
     defer fake.deinit();
     try fake.addFile("/ws/program.sjon", inline_nav_program);
@@ -864,11 +873,23 @@ test "T10 inline targets have no file representation" {
     const use_uri = try fileUri(&uri_buffer, "/ws/use.wgsl");
     const root = try rootFor(&store, "/ws/use.wgsl");
     const inline_part = partFor(&store, root.program, "inlinepart");
+    const inline_uri = (try Handler.originUri(&handler, testing.allocator, inline_part)) orelse
+        return error.MissingVirtualUri;
+    defer testing.allocator.free(inline_uri);
 
-    // The target is inline text: there is no file URI to return, so the
-    // definition omits it instead of inventing a path or an assembled range.
-    const definition = try handler.computeDefinition(use_uri, positionOf(inline_nav_use, "inline_value", 1));
-    try testing.expect(definition == null);
+    // The target is inline text: definition lands on the stable virtual
+    // document with the declaration's exact author-local range.
+    const definition = (try handler.computeDefinition(
+        use_uri,
+        positionOf(inline_nav_use, "inline_value", 1),
+    )) orelse return error.MissingDefinition;
+    defer Handler.freeDefinitionLocations(&handler, definition);
+    try testing.expectEqual(@as(usize, 1), definition.len);
+    try testing.expectEqualStrings(inline_uri, definition[0].uri);
+    try testing.expectEqualDeep(
+        rangeIn(inline_nav_code, "inline_value", 0, 12),
+        definition[0].range,
+    );
 
     // Hovering the reference is representable in the requesting file.
     const hover = (try handler.computeHover(use_uri, positionOf(inline_nav_use, "inline_value", 1))) orelse
@@ -882,7 +903,7 @@ test "T10 inline targets have no file representation" {
     );
 
     // A part-addressed hover has content but no document to place a range
-    // in; reporting an inline-local range would fabricate a location.
+    // in; the caller did not supply the virtual spelling.
     const part_hover = (try Handler.computeHoverForPart(
         &handler,
         inline_part,
@@ -891,6 +912,18 @@ test "T10 inline targets have no file representation" {
     defer testing.allocator.free(part_hover.contents);
     try testing.expect(std.mem.indexOf(u8, part_hover.contents, "inline_value") != null);
     try testing.expect(part_hover.range == null);
+
+    // A hover requested on the virtual document itself places its range in
+    // that document rather than reporting an assembled offset.
+    const virtual_hover = (try handler.computeHover(
+        inline_uri,
+        positionOf(inline_nav_code, "inline_value", 2),
+    )) orelse return error.MissingHover;
+    defer testing.allocator.free(virtual_hover.contents);
+    try testing.expectEqualDeep(
+        @as(?Handler.Range, rangeIn(inline_nav_code, "inline_value", 0, 12)),
+        virtual_hover.range,
+    );
 }
 
 const varying_program =

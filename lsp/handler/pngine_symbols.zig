@@ -28,11 +28,10 @@
 //!
 //! ## Inline `:code` origins
 //!
-//! An inline part has an author origin but no file URI before the virtual
-//! document layer exists. Its references are reported with `uri == null` so
-//! the ambiguity is visible to tests and to the rename safety check, but the
-//! wire adapters filter them out rather than inventing a path. Any edit set
-//! that would have to write inline text refuses the whole rename.
+//! An inline part has a stable virtual document URI minted from the program
+//! path, part index and current content hash. Its references are reported on
+//! that URI; the URI is read-only and any edit set that would have to write
+//! inline text refuses the whole rename.
 //!
 //! ## Unsaved text
 //!
@@ -60,9 +59,8 @@ const LspTextEdit = Handler.LspTextEdit;
 const DocumentEdits = Handler.DocumentEdits;
 const WorkspaceChanges = Handler.WorkspaceChanges;
 
-/// One author-facing reference. `uri == null` means the reference lives in
-/// inline `:code` text, which has no file representation yet; the adapters
-/// omit it instead of fabricating one.
+/// One author-facing reference. `uri` is the part's file URI or, for inline
+/// `:code` text, its read-only virtual document URI.
 pub const ReferenceLocation = struct {
     uri: ?[]const u8,
     range: Range,

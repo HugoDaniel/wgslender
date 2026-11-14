@@ -4,11 +4,10 @@
 //!
 //! The request position is author-local; `NodeAtOffset` is always queried at
 //! the assembled offset `contextsAt` mapped it to. A declaration is projected
-//! back through the same root's `Assembled`, so an inline `:code` target has
-//! no fabricated file location: `originUri` returns `null` and the location
-//! is omitted. Reaching one declaration through several roots yields one
-//! `(URI, range)` entry; genuinely distinct root resolutions yield all of
-//! them.
+//! back through the same root's `Assembled`, so an inline `:code` target
+//! lands on its stable virtual document URI and never on an assembled range.
+//! Reaching one declaration through several roots yields one `(URI, range)`
+//! entry; genuinely distinct root resolutions yield all of them.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
@@ -119,8 +118,8 @@ fn locationsForContexts(
 
 /// The declaration location of `sym_idx` in `context`'s root. Standalone
 /// documents stay on their own text; a composed symbol is mapped through
-/// `declarationKey`, and a file-backed target gets its own URI. An inline
-/// target has no file representation and returns `null`.
+/// `declarationKey`, and each target gets its own URI — a sibling file's
+/// canonical spelling or an inline part's virtual document.
 fn locationForSymbol(
     handler: *Handler,
     context: *const Handler.RequestContext,

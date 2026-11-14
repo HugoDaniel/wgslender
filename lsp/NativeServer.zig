@@ -275,6 +275,36 @@ pub fn @"workspace/executeCommand"(
     return result;
 }
 
+/// Params and result of the native-only `wgslender/pnginePart` request.
+/// The custom method cannot ride lsp-kit's typed request union, so
+/// `lsp/main.zig` intercepts it before `basic_server` and calls this body.
+pub const PnginePartParams = struct {
+    uri: []const u8,
+};
+
+pub const PnginePartResult = struct {
+    text: []u8,
+    languageId: []const u8,
+};
+
+/// Serve the current author text of one inline `:code` part. Missing and
+/// stale parts are distinct errors; neither path invents content.
+pub fn pnginePart(
+    self: *NativeServer,
+    allocator: std.mem.Allocator,
+    params: PnginePartParams,
+) !PnginePartResult {
+    if (comptime pngine_support) {
+        self.lock();
+        defer self.unlock();
+        const document = try Handler.pnginePart(&self.handler, allocator, params.uri);
+        return .{ .text = document.text, .languageId = document.language_id };
+    } else {
+        std.mem.doNotOptimizeAway(params);
+        return error.PngineUnsupported;
+    }
+}
+
 fn pickWorkspaceRoot(
     arena: std.mem.Allocator,
     params: lsp.types.InitializeParams,

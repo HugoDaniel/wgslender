@@ -92,10 +92,10 @@ pub fn handleReferences(
     const handler_refs = refs orelse return null;
     defer h.freeReferences(handler_refs);
 
-    // Inline `:code` origins have no file URI (the virtual document layer
-    // is a later task); omit them rather than fabricating a path. Every
-    // remaining entry carries its own author document URI, and the URI
-    // string moves onto the response arena because the codec borrows it.
+    // Inline `:code` origins carry their stable virtual document URI; no
+    // location is fabricated and no real location is dropped. Every entry
+    // carries its own author document URI, and the URI string moves onto
+    // the response arena because the codec borrows it.
     const locations = arena.alloc(Handler.Location, handler_refs.len) catch return null;
     var count: usize = 0;
     for (handler_refs) |ref| {

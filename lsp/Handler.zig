@@ -29,6 +29,7 @@ pub const contextsForPart = PngineContext.contextsForPart;
 pub const freeContexts = PngineContext.freeContexts;
 pub const declarationKey = PngineContext.declarationKey;
 pub const originUri = PngineContext.originUri;
+pub const pnginePart = PngineContext.partDocument;
 
 const WgslDiagnostic = wgslender.Diagnostic;
 const MinifySettings = wgslender.MinifySettings;

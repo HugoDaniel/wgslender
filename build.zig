@@ -982,6 +982,20 @@ pub fn build(b: *std.Build) void {
             w,
             .{ .name = "Handler", .module = handler_mod },
         });
+        // pngine inline virtual documents and native provider parity
+        // (phase 04, Task 6): stable URI codec, inline part serving,
+        // missing/stale invalidation, cross-boundary navigation and the
+        // open-buffer vs filesystem result-shape parity.
+        _ = addTestStep(b, test_step, "tests/pngine_virtual_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "lspkit", .module = lspkit_mod },
+            .{ .name = "wire", .module = wire_mod },
+            .{ .name = "native_editing", .module = native_editing_mod },
+            .{ .name = "native_navigation", .module = native_navigation_mod },
+            .{ .name = "NativeServer", .module = native_server_mod },
+        });
         // pngine composed diagnostic projection (phase 03, Task 2): mapped
         // validator ranges, hoisted directives, part boundaries, related
         // information on another file, EOF fallback and quick-fix safety.

@@ -61,8 +61,9 @@ pub fn computeCompletion(handler: *Handler, uri: []const u8, position: Position)
 }
 
 /// Complete at a position in a part-addressed document (an inline `:code`
-/// part). There is no request URI and no virtual document yet, so only the
-/// label/kind/detail items exist — no location is invented for them.
+/// part). Only the label/kind/detail items exist — `CompletionItem` has no
+/// location field, so no URI is attached; a virtual-document request goes
+/// through `computeCompletion` with the virtual URI instead.
 pub fn computeCompletionForPart(
     handler: *Handler,
     part: PngineContext.OriginKey,
