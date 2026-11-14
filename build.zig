@@ -885,6 +885,11 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/pngine_assemble_test.zig", target, optimize, &.{
         .{ .name = "pngine_assemble", .module = pngine_assemble_mod },
     });
+    // pngine origin mapping (pngine-shaders phase 02, Task 3). Consumes the
+    // assembly suite's module types, so it is registered beside it.
+    _ = addTestStep(b, test_step, "tests/pngine_mapping_test.zig", target, optimize, &.{
+        .{ .name = "pngine_assemble", .module = pngine_assemble_mod },
+    });
     // pngine strict extraction (pngine-shaders phase 01, Task 3). The
     // extractor imports SJON, so the module and the suite exist only
     // when the lazy dependency resolved.

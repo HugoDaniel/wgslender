@@ -29,6 +29,7 @@ const std = @import("std");
 
 const types = @import("Types.zig");
 const directives = @import("Directives.zig");
+const mapping = @import("Mapping.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -52,65 +53,38 @@ pub const MAX_DEPTH: u32 = 64;
 /// `MAX_DIRECTIVES`; duplicates count against the bound.
 pub const MAX_DIRECTIVES: u32 = directives.MAX_DIRECTIVES;
 
+/// Bidirectional origin mapping and its shared coordinate vocabulary.
+pub const Mapping = mapping;
+
 /// A root's stable identity: `(program slot, source-order part index)`.
-pub const RootId = types.PartId;
+pub const RootId = mapping.RootId;
 
 /// The part an assembled range came from. Byte ranges are local to that
 /// part's own author text, never to the assembled module.
-pub const OriginKey = types.PartId;
+pub const OriginKey = mapping.OriginKey;
 
 /// A half-open byte range. `end` is exclusive.
-pub const ByteRange = struct {
-    start: u32,
-    end: u32,
-};
+pub const ByteRange = mapping.ByteRange;
 
 /// One row of the assembled line table: which part wrote assembled lines
 /// `[first_line, first_line + line_count)`.
-pub const LineRow = struct {
-    /// The part the lines came from.
-    origin: OriginKey,
-    /// That part's form name, so a diagnostic can name its origin without
-    /// a second lookup.
-    name: []const u8,
-    /// 1-based first line in the assembled text.
-    first_line: u32,
-    /// How many assembled lines this row covers. At least one.
-    line_count: u32,
-    /// 1-based line in the origin's own text where this row starts. A body
-    /// row is always 1; a hoisted directive row is the line the author
-    /// wrote it on.
-    src_line: u32 = 1,
-    /// True for the row holding the root module's own text.
-    is_root: bool = false,
-};
+pub const LineRow = mapping.LineRow;
 
 /// What a byte segment represents.
-pub const SegmentKind = enum {
-    /// Author body bytes copied unchanged.
-    body,
-    /// A hoisted directive's copy at the top of the assembled text.
-    hoisted,
-    /// An original directive blanked in place: its bytes became spaces,
-    /// newlines kept, so later columns did not move.
-    blanked,
-    /// A newline appended because a part did not end with one. Its source
-    /// range is zero-width at that part's EOF.
-    terminator,
-};
+pub const SegmentKind = mapping.SegmentKind;
 
 /// One ordered piece of the assembled text and the author range it came
-/// from. Segments are the byte-offset half of mapping; `LineRow` remains
-/// the parity contract with pngine.
-pub const Segment = struct {
-    /// Range in the assembled text.
-    assembled: ByteRange,
-    /// Part whose author text this piece represents.
-    origin: OriginKey,
-    /// Range in that part's own text. Zero-width for a `.terminator`.
-    source: ByteRange,
-    kind: SegmentKind,
-};
+/// from.
+pub const Segment = mapping.Segment;
+
+/// A located line: pngine's `locate` answer.
+pub const LocatedLine = mapping.LocatedLine;
+
+/// A byte range plus the author part it belongs to.
+pub const OriginRange = mapping.OriginRange;
+
+/// An author-local byte offset and the part it belongs to.
+pub const OriginOffset = mapping.OriginOffset;
 
 /// An assembled module: the text wgslender analyzes, the pngine-compatible
 /// line table, and the byte segments Task 3 converts in both directions.
@@ -119,6 +93,10 @@ pub const Assembled = struct {
     rows: []const LineRow,
     segments: []const Segment,
     root: RootId,
+    /// The root form's name. Borrowed from the `Program`; it answers
+    /// `locateLine` on the no-rows fast path, where there is no row to
+    /// carry it.
+    root_name: []const u8,
 
     /// Release the text and every table. Safe on every successfully
     /// returned value, including the no-import fast path.
@@ -127,6 +105,37 @@ pub const Assembled = struct {
         if (self.rows.len > 0) gpa.free(@constCast(self.rows));
         if (self.segments.len > 0) gpa.free(@constCast(self.segments));
         self.* = undefined;
+    }
+
+    /// Map a 1-based assembled line back to the part and line that wrote
+    /// it. Mirrors pngine's `locate`, including the last-row fallback past
+    /// EOF. Allocation-free.
+    pub fn locateLine(self: *const Assembled, line: u32) LocatedLine {
+        return mapping.locateLine(self.rows, self.root, self.root_name, line);
+    }
+
+    /// Map an assembled byte range to one contiguous author range, or
+    /// `null` when no single author range represents it. Allocation-free.
+    pub fn toOrigin(self: *const Assembled, range: ByteRange) ?OriginRange {
+        return mapping.toOrigin(self.text.len, self.segments, self.root, range);
+    }
+
+    /// Map an author-local range to its assembled range. `null` covers both
+    /// "no author representation" and duplicate blanked directives with no
+    /// semantic copy. Allocation-free.
+    pub fn fromOrigin(self: *const Assembled, origin: OriginKey, range: ByteRange) ?ByteRange {
+        return mapping.fromOrigin(self.segments, origin, range);
+    }
+
+    /// Map one assembled byte offset to its author part and local offset.
+    /// At or past assembled EOF this is the root's author EOF.
+    pub fn offsetToOrigin(self: *const Assembled, offset: u32) ?OriginOffset {
+        return mapping.offsetToOrigin(self.text.len, self.segments, self.root, offset);
+    }
+
+    /// Map one author-local offset to its assembled offset. Allocation-free.
+    pub fn offsetFromOrigin(self: *const Assembled, origin: OriginOffset) ?u32 {
+        return mapping.offsetFromOrigin(self.segments, origin);
     }
 };
 
@@ -237,7 +246,7 @@ pub fn assembleWithLimits(
     // The fast path: no imports means the root's own text IS the module.
     // No rows, mirroring pngine's empty line table; one body segment so
     // byte mapping still has an origin without special-casing callers.
-    if (root_part.imports.len == 0) return fastPath(gpa, sources, root, failure);
+    if (root_part.imports.len == 0) return fastPath(gpa, sources, root, root_part.name, failure);
 
     if (root_part.imports.len > limits.max_imports) {
         if (failure) |f| f.at = root;
@@ -367,6 +376,7 @@ pub fn assembleWithLimits(
         .rows = row_slice,
         .segments = segment_slice,
         .root = root,
+        .root_name = root_part.name,
     };
 }
 
@@ -374,6 +384,7 @@ fn fastPath(
     gpa: Allocator,
     sources: []const ?[]const u8,
     root: RootId,
+    root_name: []const u8,
     failure: ?*Failure,
 ) Error!Assembled {
     const source = sourceAt(sources, root.index) orelse {
@@ -394,6 +405,7 @@ fn fastPath(
         .rows = &.{},
         .segments = segment_slice,
         .root = root,
+        .root_name = root_name,
     };
 }
 

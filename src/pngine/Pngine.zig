@@ -33,8 +33,18 @@ pub const Discovery = @import("Discovery.zig");
 pub const Store = @import("Store.zig").Store;
 /// Pure fragment assembly and its line/byte tables (phase 02, Tasks 1–3).
 pub const Assemble = @import("Assemble.zig");
+/// Bidirectional assembled↔author byte and line mapping (phase 02, Task 3).
+pub const Mapping = @import("Mapping.zig");
 /// An assembled module: author text, pngine-compatible rows, byte segments.
 pub const Assembled = Assemble.Assembled;
+/// One assembled byte range's author origin.
+pub const OriginRange = Mapping.OriginRange;
+/// One author-local byte offset's assembled location.
+pub const OriginOffset = Mapping.OriginOffset;
+/// A located assembled line.
+pub const LocatedLine = Mapping.LocatedLine;
+/// A half-open byte range in either domain; the field's owner says which.
+pub const ByteRange = Mapping.ByteRange;
 /// A contributing part's stable identity, used by the origin mapping.
 pub const OriginKey = Assemble.OriginKey;
 /// A root's stable identity: program slot plus source-order part index.
