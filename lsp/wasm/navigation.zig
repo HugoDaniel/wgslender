@@ -33,16 +33,22 @@ fn sendSingleLocation(ctx: Ctx, id: ?std.json.Value, uri: []const u8, range: Han
 
 pub fn handleDefinition(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
     const p = json.extractUriAndPosition(root) orelse return ctx.sendResult(id, "null");
-    const range = ctx.handler.computeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return ctx.sendResult(id, "null");
-    const r = range orelse return ctx.sendResult(id, "null");
-    sendSingleLocation(ctx, id, p.uri, r);
+    const locations = ctx.handler.computeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return ctx.sendResult(id, "null");
+    const list = locations orelse return ctx.sendResult(id, "null");
+    defer Handler.freeDefinitionLocations(ctx.handler, list);
+    if (list.len == 0) return ctx.sendResult(id, "null");
+    // Project graphs are native-only; the wasm LSP keeps today's
+    // single-source response shape.
+    sendSingleLocation(ctx, id, list[0].uri, list[0].range);
 }
 
 pub fn handleTypeDefinition(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {
     const p = json.extractUriAndPosition(root) orelse return ctx.sendResult(id, "null");
-    const range = ctx.handler.computeTypeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return ctx.sendResult(id, "null");
-    const r = range orelse return ctx.sendResult(id, "null");
-    sendSingleLocation(ctx, id, p.uri, r);
+    const locations = ctx.handler.computeTypeDefinition(p.uri, .{ .line = p.line, .character = p.char }) catch return ctx.sendResult(id, "null");
+    const list = locations orelse return ctx.sendResult(id, "null");
+    defer Handler.freeDefinitionLocations(ctx.handler, list);
+    if (list.len == 0) return ctx.sendResult(id, "null");
+    sendSingleLocation(ctx, id, list[0].uri, list[0].range);
 }
 
 pub fn handleReferences(ctx: Ctx, root: std.json.ObjectMap, id: ?std.json.Value) void {

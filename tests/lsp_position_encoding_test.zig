@@ -24,6 +24,13 @@ fn teardown(ctx: anytype) void {
     std.testing.allocator.destroy(ctx.handler);
 }
 
+fn definitionRange(handler: *Handler, uri: []const u8, pos: Handler.Position) !?Handler.Range {
+    const locations = (try handler.computeDefinition(uri, pos)) orelse return null;
+    defer Handler.freeDefinitionLocations(handler, locations);
+    if (locations.len == 0) return null;
+    return locations[0].range;
+}
+
 test "definition: identifier on a line preceded by a CJK comment" {
     // 中文 comment uses 3-byte UTF-8 chars. The usage of `x` sits later on
     // line 1; the goto-def target is `const x` on line 1 (column 6 in
@@ -34,7 +41,7 @@ test "definition: identifier on a line preceded by a CJK comment" {
 
     const x_usage = std.mem.lastIndexOf(u8, source, "x") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(x_usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // `const x` is on line 1, column 6 (UTF-16 units; same as bytes here
     // because the second line is ASCII).
@@ -54,7 +61,7 @@ test "definition: identifier preceded by a 4-byte emoji on the same line" {
 
     const x_usage = std.mem.lastIndexOf(u8, source, "x") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(x_usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // The declaration `const x` sits on line 0 at character 6.
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -145,7 +152,7 @@ test "definition: identifier contains a UTF-16 surrogate pair" {
 
     const call_site = std.mem.lastIndexOf(u8, source, ext) orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(call_site)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // The declaration sits on line 0; the supplementary-plane name starts
     // at byte offset 3 / UTF-16 column 3 (preceded by `fn ` — 3 ASCII chars).
@@ -191,7 +198,7 @@ test "trivia edit: UTF-8 identifiers after trivia insertion retain UTF-16 LSP ra
     const pos = Handler.offsetToLspPosition(edited, @intCast(x_usage)) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(u32, 2), pos.line);
 
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 2), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 6), result.?.start.character);

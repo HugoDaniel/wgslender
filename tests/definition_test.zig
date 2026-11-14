@@ -13,6 +13,15 @@ fn teardown(ctx: anytype) void {
     std.testing.allocator.destroy(ctx.handler);
 }
 
+/// The single-document tests assert the legacy one-range answer; the
+/// location list is the origin-aware shape now.
+fn definitionRange(handler: *Handler, uri: []const u8, pos: Handler.Position) !?Handler.Range {
+    const locations = (try handler.computeDefinition(uri, pos)) orelse return null;
+    defer Handler.freeDefinitionLocations(handler, locations);
+    if (locations.len == 0) return null;
+    return locations[0].range;
+}
+
 test "definition: variable usage jumps to declaration" {
     const source: [:0]const u8 = "const x: f32 = 1.0; fn f() -> f32 { return x; }";
     const ctx = try setup(source);
@@ -20,7 +29,7 @@ test "definition: variable usage jumps to declaration" {
     // Find the usage of 'x' in "return x"
     const x_usage = std.mem.lastIndexOf(u8, source, "x") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(x_usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // Should point to "const x" at line 0, char 6
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -34,7 +43,7 @@ test "definition: function call jumps to fn declaration" {
     // Find "helper()" call (second occurrence)
     const call_pos = std.mem.lastIndexOf(u8, source, "helper") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(call_pos)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // Should point to "fn helper" at line 0, char 3
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -48,7 +57,7 @@ test "definition: type annotation jumps to struct" {
     // Find "Point" in parameter type
     const type_pos = std.mem.lastIndexOf(u8, source, "Point") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(type_pos)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // Should point to "struct Point" at line 0, char 7
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -60,7 +69,7 @@ test "definition: on declaration name itself returns own location" {
     const ctx = try setup(source);
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 3) orelse return error.TestUnexpectedResult; // 'm' in my_fn
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 3), result.?.start.character);
 }
@@ -69,14 +78,14 @@ test "definition: whitespace returns null" {
     const source: [:0]const u8 = "fn f() { }";
     const ctx = try setup(source);
     defer teardown(ctx);
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", .{ .line = 0, .character = 2 });
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", .{ .line = 0, .character = 2 });
     try std.testing.expect(result == null);
 }
 
 test "definition: unknown document returns null" {
     var handler = Handler.init(std.testing.allocator);
     defer handler.deinit();
-    const result = try handler.computeDefinition("test://nonexistent.wgsl", .{ .line = 0, .character = 0 });
+    const result = try definitionRange(&handler, "test://nonexistent.wgsl", .{ .line = 0, .character = 0 });
     try std.testing.expect(result == null);
 }
 
@@ -98,7 +107,7 @@ test "definition: multi-line function parameter usage" {
     // Jump from 'x' in "return x + y" to 'x' parameter declaration
     const x_usage = std.mem.lastIndexOf(u8, source, "x") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(x_usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // Parameter 'x' at line 1, char 2 (after "  ")
     try std.testing.expectEqual(@as(u32, 1), result.?.start.line);
@@ -118,7 +127,7 @@ test "definition: const used across multiple functions" {
     // Jump from last 'PI' usage to declaration
     const pi_usage = std.mem.lastIndexOf(u8, source, "PI") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(pi_usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'PI' declared at line 0, char 6 (after "const ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -137,7 +146,7 @@ test "definition: struct used as function return type" {
     // Jump from "Color" return type to struct
     const color_in_ret = std.mem.indexOf(u8, source, "-> Color") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(color_in_ret + 3)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'Color' declared at line 0, char 7 (after "struct ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -150,7 +159,7 @@ test "definition: position past end of file returns null" {
     const source: [:0]const u8 = "fn f() {}";
     const ctx = try setup(source);
     defer teardown(ctx);
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", .{ .line = 99, .character = 0 });
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", .{ .line = 99, .character = 0 });
     try std.testing.expect(result == null);
 }
 
@@ -158,7 +167,7 @@ test "definition: empty source returns null" {
     const source: [:0]const u8 = "";
     const ctx = try setup(source);
     defer teardown(ctx);
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", .{ .line = 0, .character = 0 });
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", .{ .line = 0, .character = 0 });
     try std.testing.expect(result == null);
 }
 
@@ -169,7 +178,7 @@ test "definition: override declaration" {
     // Jump from WG usage in function body to override declaration
     const wg_usage = std.mem.lastIndexOf(u8, source, "WG") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(wg_usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'WG' declared at line 0, char 16 (after "@id(0) override ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -185,7 +194,7 @@ test "definition: alias type reference" {
     // Jump from Float usage to alias declaration
     const float_usage = std.mem.lastIndexOf(u8, source, "Float") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(float_usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'Float' declared at line 0, char 6 (after "alias ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -205,7 +214,7 @@ test "definition: struct field on parameter base" {
     // Cursor on the 'x' in 'p.x'
     const dot = std.mem.lastIndexOf(u8, source, ".x") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(dot + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'x' is declared at offset 11 ("struct P { x"); single-char field.
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -220,7 +229,7 @@ test "definition: struct field on local var base" {
     defer teardown(ctx);
     const dot = std.mem.lastIndexOf(u8, source, ".x") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(dot + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 11), result.?.start.character);
@@ -235,7 +244,7 @@ test "definition: chained member access jumps to deepest field" {
     // Cursor on the 'v' in 'a.b.v'
     const dot_v = std.mem.lastIndexOf(u8, source, ".v") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(dot_v + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'v' declared at offset 11 in "struct B { v: f32 }"
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -251,7 +260,7 @@ test "definition: chained member access jumps to intermediate field" {
     // Cursor on the 'b' in 'a.b.v' — should jump to A's field 'b'
     const dot_b = std.mem.lastIndexOf(u8, source, ".b") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(dot_b + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'b' declared at offset 31 in "struct A { b: B }"
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -267,7 +276,7 @@ test "definition: pointer-base field via explicit deref" {
     // Cursor on the 'x' in '(*q).x'
     const dot = std.mem.lastIndexOf(u8, source, ").x") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(dot + 2)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 11), result.?.start.character);
@@ -281,7 +290,7 @@ test "definition: vector swizzle returns null" {
     defer teardown(ctx);
     const dot = std.mem.lastIndexOf(u8, source, ".xyz") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(dot + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }
 
@@ -291,7 +300,7 @@ test "definition: unknown struct member returns null" {
     defer teardown(ctx);
     const dot = std.mem.lastIndexOf(u8, source, ".nope") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(dot + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }
 
@@ -301,7 +310,7 @@ test "definition: const in @group attribute argument" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "BG_INDEX") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
@@ -313,7 +322,7 @@ test "definition: const in @binding attribute argument" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "BIND_IDX") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
@@ -325,7 +334,7 @@ test "definition: override in @workgroup_size attribute argument" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "WG_X") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 9), result.?.start.character);
@@ -337,7 +346,7 @@ test "definition: const in struct member @location attribute argument" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "LOC") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
@@ -349,7 +358,7 @@ test "definition: const in fn parameter @location attribute argument" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "PARAM_LOC") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
@@ -361,7 +370,7 @@ test "definition: const in return-type @location attribute argument" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "RET_LOC") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
@@ -373,7 +382,7 @@ test "definition: unknown ident in attribute argument returns null" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "NOPE_INDEX") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }
 
@@ -384,7 +393,7 @@ test "definition: literal arg in attribute returns null" {
     // First '0' lives at offset 7 (right after '@group(')
     const usage = std.mem.indexOf(u8, source, "0") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }
 
@@ -399,7 +408,7 @@ test "definition: constructor call jumps to user struct" {
     // Cursor on 'P' immediately before '(0.0)'
     const ctor = std.mem.lastIndexOf(u8, source, "P(") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(ctor)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'P' declared at line 0, char 7 (after "struct ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -415,7 +424,7 @@ test "definition: constructor call jumps to alias" {
     // Cursor on 'V' immediately before '('
     const ctor = std.mem.lastIndexOf(u8, source, "V(") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(ctor)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'V' declared at line 0, char 6 (after "alias ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -443,7 +452,7 @@ test "definition: for-init i shadows outer i — body usage" {
     // Cursor on 'i' in 'let x = i;' — should resolve to for-init i (line 2, char 11)
     const body_use = std.mem.indexOf(u8, source, "let x = i") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(body_use + 8)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 2), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 11), result.?.start.character);
@@ -466,7 +475,7 @@ test "definition: for-init i — update LHS resolves to for-init" {
     // Cursor on the LHS 'i' of 'i = i + 1u' (the update clause)
     const update = std.mem.indexOf(u8, source, "; i = i + 1u") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(update + 2)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // For-init 'i' at line 2, char 11
     try std.testing.expectEqual(@as(u32, 2), result.?.start.line);
@@ -490,7 +499,7 @@ test "definition: i after for ends resolves to outer i" {
     // Cursor on 'i' in 'let y = i;' — resolves to outer i (line 1, char 6)
     const post_use = std.mem.indexOf(u8, source, "let y = i") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(post_use + 8)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 1), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 6), result.?.start.character);
@@ -509,7 +518,7 @@ test "definition: const ref inside loop continuing resolves to module decl" {
     // Cursor on 'STEP' inside continuing
     const use = std.mem.lastIndexOf(u8, source, "STEP") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(use)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'STEP' declared at line 0, char 6 (after "const ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -525,7 +534,7 @@ test "definition: fn-scope var ref inside loop continuing resolves to var decl" 
     // Cursor on the LHS 'i' of 'i = i + STEP' inside continuing
     const cont_assign = std.mem.lastIndexOf(u8, source, "i = i + STEP") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(cont_assign)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'i' declared at line 0, char 35 (within "fn f() { var i: ...")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -545,7 +554,7 @@ test "definition: ident in const_assert expression jumps to decl" {
     // Cursor on 'N' inside the const_assert expression
     const use = std.mem.lastIndexOf(u8, source, "N >") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(use)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'N' declared at line 0, char 6 (after "const ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -565,7 +574,7 @@ test "definition: array element type jumps to struct" {
     // Cursor on 'S' inside array<S, 10>
     const elem = std.mem.indexOf(u8, source, "<S,") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(elem + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'S' declared at line 0, char 7 (after "struct ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -581,7 +590,7 @@ test "definition: array size ident jumps to const decl" {
     // Cursor on 'N' as the array size
     const size = std.mem.lastIndexOf(u8, source, ", N>") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(size + 2)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'N' declared at line 0, char 6 (after "const ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -601,7 +610,7 @@ test "definition: ptr type arg jumps to struct" {
     // Cursor on 'P' inside ptr<function, P>
     const arg = std.mem.lastIndexOf(u8, source, ", P>") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(arg + 2)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // 'P' declared at line 0, char 7 (after "struct ")
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -620,7 +629,7 @@ test "definition: var<uniform> usage jumps to declaration" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "params") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     const decl: u32 = @intCast(std.mem.indexOf(u8, source, "params").?);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -634,7 +643,7 @@ test "definition: var<storage, read_write> usage jumps to declaration" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "data") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     const decl: u32 = @intCast(std.mem.indexOf(u8, source, "data").?);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -648,7 +657,7 @@ test "definition: var<private> usage jumps to declaration" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "counter") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 13), result.?.start.character);
@@ -661,7 +670,7 @@ test "definition: texture handle var usage jumps to declaration" {
     defer teardown(ctx);
     const usage = std.mem.indexOf(u8, source, "(tex,") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     const decl: u32 = @intCast(std.mem.indexOf(u8, source, "tex:").?);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -675,7 +684,7 @@ test "definition: sampler handle var usage jumps to declaration" {
     defer teardown(ctx);
     const usage = std.mem.indexOf(u8, source, " smp,") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     const decl: u32 = @intCast(std.mem.indexOf(u8, source, "smp:").?);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -693,7 +702,7 @@ test "definition: local let usage jumps to declaration" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "scale") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 20), result.?.start.character);
@@ -706,7 +715,7 @@ test "definition: function-scope const usage jumps to declaration" {
     defer teardown(ctx);
     const usage = std.mem.lastIndexOf(u8, source, "K") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(usage)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
     try std.testing.expectEqual(@as(u32, 22), result.?.start.character);
@@ -722,7 +731,7 @@ test "definition: on struct name returns own location" {
     const ctx = try setup(source);
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 7) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 7), result.?.start.character);
     try std.testing.expectEqual(@as(u32, 12), result.?.end.character);
@@ -733,7 +742,7 @@ test "definition: on struct member name returns own location" {
     const ctx = try setup(source);
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 15) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, 15), result.?.start.character);
     try std.testing.expectEqual(@as(u32, 24), result.?.end.character);
@@ -745,7 +754,7 @@ test "definition: on module var name returns own location" {
     defer teardown(ctx);
     const decl = std.mem.indexOf(u8, source, "params") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(decl)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     try std.testing.expectEqual(@as(u32, @intCast(decl)), result.?.start.character);
     try std.testing.expectEqual(@as(u32, @intCast(decl + 6)), result.?.end.character);
@@ -761,7 +770,7 @@ test "definition: numeric literal returns null" {
     defer teardown(ctx);
     const lit = std.mem.indexOf(u8, source, "42u") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(lit)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }
 
@@ -771,7 +780,7 @@ test "definition: builtin function name returns null" {
     defer teardown(ctx);
     const builtin = std.mem.indexOf(u8, source, "vec3f") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(builtin)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }
 
@@ -782,6 +791,6 @@ test "definition: builtin type name returns null" {
     // First 'f32' is the parameter type
     const typ = std.mem.indexOf(u8, source, "f32") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(typ)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeDefinition("test://file.wgsl", pos);
+    const result = try definitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }

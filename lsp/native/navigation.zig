@@ -24,14 +24,17 @@ pub fn handleHover(
 
 pub fn handleDefinition(
     h: *Handler,
+    arena: std.mem.Allocator,
     params: lsp.types.Definition.Params,
 ) ?lsp.types.Definition.Result {
-    const range = h.computeDefinition(
+    const locations = h.computeDefinition(
         params.textDocument.uri,
         codec.fromLspKitPosition(params.position),
     ) catch return null;
-    const r = range orelse return null;
-    return nav.toLspKitDefinitionAt(.{ .uri = params.textDocument.uri, .range = r });
+    const list = locations orelse return null;
+    defer h.freeDefinitionLocations(list);
+    const owned = copyLocations(arena, list) catch return null;
+    return nav.toLspKitDefinitionWithUris(arena, owned) catch null;
 }
 
 /// WGSL has no forward declarations, so a symbol's declaration IS its
@@ -39,9 +42,10 @@ pub fn handleDefinition(
 /// `textDocument/definition` answers.
 pub fn handleDeclaration(
     h: *Handler,
+    arena: std.mem.Allocator,
     params: lsp.types.declaration.Params,
 ) ?lsp.types.Definition.Result {
-    return handleDefinition(h, .{
+    return handleDefinition(h, arena, .{
         .textDocument = params.textDocument,
         .position = params.position,
     });
@@ -49,14 +53,30 @@ pub fn handleDeclaration(
 
 pub fn handleTypeDefinition(
     h: *Handler,
+    arena: std.mem.Allocator,
     params: lsp.types.type_definition.Params,
 ) ?lsp.types.Definition.Result {
-    const range = h.computeTypeDefinition(
+    const locations = h.computeTypeDefinition(
         params.textDocument.uri,
         codec.fromLspKitPosition(params.position),
     ) catch return null;
-    const r = range orelse return null;
-    return nav.toLspKitDefinitionAt(.{ .uri = params.textDocument.uri, .range = r });
+    const list = locations orelse return null;
+    defer h.freeDefinitionLocations(list);
+    const owned = copyLocations(arena, list) catch return null;
+    return nav.toLspKitDefinitionWithUris(arena, owned) catch null;
+}
+
+/// The lsp-kit definition shape borrows its URI strings, so move them onto
+/// the response arena before the Handler-owned result is released.
+fn copyLocations(arena: std.mem.Allocator, locations: []const Handler.Location) ![]Handler.Location {
+    const owned = try arena.alloc(Handler.Location, locations.len);
+    for (locations, 0..) |location, i| {
+        owned[i] = .{
+            .uri = try arena.dupe(u8, location.uri),
+            .range = location.range,
+        };
+    }
+    return owned;
 }
 
 pub fn handleReferences(

@@ -637,22 +637,22 @@ pub fn @"textDocument/hover"(
 
 pub fn @"textDocument/definition"(
     self: *NativeServer,
-    _: std.mem.Allocator,
+    arena: std.mem.Allocator,
     params: lsp.types.Definition.Params,
 ) ?lsp.types.Definition.Result {
     self.lock();
     defer self.unlock();
-    return native_navigation.handleDefinition(&self.handler, params);
+    return native_navigation.handleDefinition(&self.handler, arena, params);
 }
 
 pub fn @"textDocument/declaration"(
     self: *NativeServer,
-    _: std.mem.Allocator,
+    arena: std.mem.Allocator,
     params: lsp.types.declaration.Params,
 ) ?lsp.types.Definition.Result {
     self.lock();
     defer self.unlock();
-    return native_navigation.handleDeclaration(&self.handler, params);
+    return native_navigation.handleDeclaration(&self.handler, arena, params);
 }
 
 pub fn @"textDocument/references"(
@@ -771,12 +771,12 @@ pub fn @"textDocument/foldingRange"(
 
 pub fn @"textDocument/typeDefinition"(
     self: *NativeServer,
-    _: std.mem.Allocator,
+    arena: std.mem.Allocator,
     params: lsp.types.type_definition.Params,
 ) ?lsp.types.Definition.Result {
     self.lock();
     defer self.unlock();
-    return native_navigation.handleTypeDefinition(&self.handler, params);
+    return native_navigation.handleTypeDefinition(&self.handler, arena, params);
 }
 
 // =========================================================================

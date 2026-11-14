@@ -614,6 +614,500 @@ test "T6 multi-document WorkspaceChanges groups by URI and merges duplicates" {
 // T7 — native adapter legacy shape: standalone definition and rename.
 // =========================================================================
 
+// =========================================================================
+// T8/T9/T13 — cross-part hover, definition, and signature help.
+// =========================================================================
+
+const parts_program =
+    \\(wgsl :name lib :file "lib.wgsl")
+    \\(wgsl :name frag :file "frag.wgsl" :imports [lib])
+    \\(shader-module :name root :file "root.wgsl" :imports [frag])
+;
+
+/// Long enough that the fragment's author offsets and the assembled offsets
+/// it is analyzed at differ by more than a kilobyte.
+const parts_pad = "// 0123456789abcdef0123456789abcdef\n";
+
+fn buildPartsLib(allocator: std.mem.Allocator) ![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+    for (0..40) |_| try out.appendSlice(allocator, parts_pad);
+    try out.appendSlice(
+        allocator,
+        "const TAU: f32 = 6.2831855;\n\n" ++
+            "struct Light {\n  dir: vec3<f32>,\n}\n\n" ++
+            "fn shade(light: Light) -> f32 {\n  return light.dir.x;\n}\n",
+    );
+    return out.toOwnedSlice(allocator);
+}
+
+const parts_frag =
+    \\fn lit(light: Light) -> f32 {
+    \\  return shade(light) + TAU * root_scale;
+    \\}
+    \\
+;
+
+const parts_root =
+    \\const root_scale: f32 = 2.0;
+    \\
+    \\@fragment
+    \\fn fs_main() -> @location(0) vec4<f32> {
+    \\  return vec4<f32>(lit(Light(vec3<f32>(1.0))));
+    \\}
+    \\
+;
+
+fn rangeIn(source: []const u8, needle: []const u8, delta: u32, len: u32) Handler.Range {
+    const start = offsetOf(source, needle, delta);
+    return Handler.offsetRangeToLspRange(source, start, start + len) orelse unreachable;
+}
+
+test "T8 sibling const, function, and type hover map back to the fragment" {
+    var fake = FakeProvider.init(testing.allocator);
+    defer fake.deinit();
+    const lib = try buildPartsLib(testing.allocator);
+    defer testing.allocator.free(lib);
+    try fake.addFile("/ws/program.sjon", parts_program);
+    try fake.addFile("/ws/lib.wgsl", lib);
+    try fake.addFile("/ws/frag.wgsl", parts_frag);
+    try fake.addFile("/ws/root.wgsl", parts_root);
+
+    var store: Store = undefined;
+    var handler: Handler = undefined;
+    try bindStore(&fake, &store, &handler);
+    defer handler.deinit();
+    defer store.deinit();
+
+    var uri_buffer: [512]u8 = undefined;
+    const frag_uri = try fileUri(&uri_buffer, "/ws/frag.wgsl");
+
+    // A library const hovered from the fragment reports the library's type
+    // text, and the returned range is the fragment's own token range.
+    const tau_hover = (try handler.computeHover(frag_uri, positionOf(parts_frag, "TAU", 2))) orelse
+        return error.MissingHover;
+    defer testing.allocator.free(tau_hover.contents);
+    try testing.expect(std.mem.indexOf(u8, tau_hover.contents, "TAU") != null);
+    try testing.expect(std.mem.indexOf(u8, tau_hover.contents, "f32") != null);
+    try testing.expectEqualDeep(
+        @as(?Handler.Range, rangeIn(parts_frag, "TAU", 0, 3)),
+        @as(?Handler.Range, tau_hover.range),
+    );
+
+    // The request is resolved at the mapped assembled offset. At the
+    // fragment's author offset the assembled text holds padding from the
+    // library, so an author-offset lookup would answer the wrong question.
+    const contexts = try Handler.contextsAt(&handler, frag_uri, positionOf(parts_frag, "TAU", 2));
+    defer Handler.freeContexts(&handler, contexts);
+    try testing.expectEqual(@as(usize, 1), contexts.len);
+    try testing.expect(contexts[0].assembled_offset > contexts[0].author_offset + 1024);
+    try testing.expect(!std.mem.startsWith(
+        u8,
+        contexts[0].analysis.?.assembled.text[contexts[0].author_offset..],
+        "TAU",
+    ));
+
+    // A library function hovered at its call site in the fragment.
+    const shade_hover = (try handler.computeHover(frag_uri, positionOf(parts_frag, "shade", 1))) orelse
+        return error.MissingHover;
+    defer testing.allocator.free(shade_hover.contents);
+    try testing.expect(std.mem.indexOf(u8, shade_hover.contents, "fn shade(light: Light) -> f32") != null);
+    try testing.expectEqualDeep(
+        @as(?Handler.Range, rangeIn(parts_frag, "shade", 0, 5)),
+        @as(?Handler.Range, shade_hover.range),
+    );
+
+    // A library type hovered in the fragment's type annotation.
+    const light_hover = (try handler.computeHover(frag_uri, positionOf(parts_frag, "Light", 1))) orelse
+        return error.MissingHover;
+    defer testing.allocator.free(light_hover.contents);
+    try testing.expect(std.mem.indexOf(u8, light_hover.contents, "struct Light") != null);
+    try testing.expect(std.mem.indexOf(u8, light_hover.contents, "dir: vec3<f32>") != null);
+    try testing.expectEqualDeep(
+        @as(?Handler.Range, rangeIn(parts_frag, "Light", 0, 5)),
+        @as(?Handler.Range, light_hover.range),
+    );
+}
+
+test "T12 builtin hover still resolves through the context path" {
+    const program =
+        \\(wgsl :name frag :file "frag.wgsl")
+        \\(shader-module :name root :file "root.wgsl" :imports [frag])
+    ;
+    const frag = "fn choose(x: f32) -> f32 { return select(x, 0.0, x > 0.0); }";
+    const root = "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(choose(1.0)); }";
+
+    var fake = FakeProvider.init(testing.allocator);
+    defer fake.deinit();
+    try fake.addFile("/ws/program.sjon", program);
+    try fake.addFile("/ws/frag.wgsl", frag);
+    try fake.addFile("/ws/root.wgsl", root);
+
+    var store: Store = undefined;
+    var handler: Handler = undefined;
+    try bindStore(&fake, &store, &handler);
+    defer handler.deinit();
+    defer store.deinit();
+
+    var uri_buffer: [512]u8 = undefined;
+    const frag_uri = try fileUri(&uri_buffer, "/ws/frag.wgsl");
+    const hover = (try handler.computeHover(frag_uri, positionOf(frag, "select", 1))) orelse
+        return error.MissingHover;
+    defer testing.allocator.free(hover.contents);
+    try testing.expect(std.mem.indexOf(u8, hover.contents, "fn select(f: T, t: T, cond: bool) -> T") != null);
+    try testing.expect(std.mem.indexOf(u8, hover.contents, "Returns t when cond is true") != null);
+    try testing.expectEqualDeep(
+        @as(?Handler.Range, rangeIn(frag, "select", 0, 6)),
+        @as(?Handler.Range, hover.range),
+    );
+
+    // A builtin has no user declaration: no fabricated project location.
+    const definition = try handler.computeDefinition(frag_uri, positionOf(frag, "select", 1));
+    try testing.expect(definition == null);
+}
+
+fn findLocation(locations: []const Handler.Location, uri: []const u8) ?Handler.Location {
+    for (locations) |location| {
+        if (std.mem.eql(u8, location.uri, uri)) return location;
+    }
+    return null;
+}
+
+test "T9 definitions cross parts with each target's own URI and range" {
+    var fake = FakeProvider.init(testing.allocator);
+    defer fake.deinit();
+    const lib = try buildPartsLib(testing.allocator);
+    defer testing.allocator.free(lib);
+    try fake.addFile("/ws/program.sjon", parts_program);
+    try fake.addFile("/ws/lib.wgsl", lib);
+    try fake.addFile("/ws/frag.wgsl", parts_frag);
+    try fake.addFile("/ws/root.wgsl", parts_root);
+
+    var store: Store = undefined;
+    var handler: Handler = undefined;
+    try bindStore(&fake, &store, &handler);
+    defer handler.deinit();
+    defer store.deinit();
+
+    var uri_buffer: [512]u8 = undefined;
+    const frag_uri = try fileUri(&uri_buffer, "/ws/frag.wgsl");
+    var lib_buffer: [512]u8 = undefined;
+    const lib_uri = try fileUri(&lib_buffer, "/ws/lib.wgsl");
+    var root_buffer: [512]u8 = undefined;
+    const root_uri = try fileUri(&root_buffer, "/ws/root.wgsl");
+
+    // Fragment call to a library function -> the library's own range.
+    {
+        const locations = (try handler.computeDefinition(frag_uri, positionOf(parts_frag, "shade", 1))) orelse
+            return error.MissingDefinition;
+        defer Handler.freeDefinitionLocations(&handler, locations);
+        try testing.expectEqual(@as(usize, 1), locations.len);
+        try testing.expectEqualStrings(lib_uri, locations[0].uri);
+        try testing.expectEqualDeep(rangeIn(lib, "shade", 0, 5), locations[0].range);
+    }
+
+    // Root call to a fragment-declared function -> the fragment's range.
+    {
+        const locations = (try handler.computeDefinition(root_uri, positionOf(parts_root, "lit(", 1))) orelse
+            return error.MissingDefinition;
+        defer Handler.freeDefinitionLocations(&handler, locations);
+        try testing.expectEqual(@as(usize, 1), locations.len);
+        try testing.expectEqualStrings(frag_uri, locations[0].uri);
+        try testing.expectEqualDeep(rangeIn(parts_frag, "lit", 0, 3), locations[0].range);
+    }
+
+    // Fragment reference to a root-supplied declaration -> the root file.
+    {
+        const locations = (try handler.computeDefinition(frag_uri, positionOf(parts_frag, "root_scale", 1))) orelse
+            return error.MissingDefinition;
+        defer Handler.freeDefinitionLocations(&handler, locations);
+        try testing.expectEqual(@as(usize, 1), locations.len);
+        try testing.expectEqualStrings(root_uri, locations[0].uri);
+        try testing.expectEqualDeep(rangeIn(parts_root, "root_scale", 0, 10), locations[0].range);
+    }
+
+    // Type definition from the fragment's parameter follows the same path.
+    {
+        const locations = (try handler.computeTypeDefinition(frag_uri, positionOf(parts_frag, "lit(light", 4))) orelse
+            return error.MissingTypeDefinition;
+        defer Handler.freeDefinitionLocations(&handler, locations);
+        try testing.expectEqual(@as(usize, 1), locations.len);
+        try testing.expectEqualStrings(lib_uri, locations[0].uri);
+        try testing.expectEqualDeep(rangeIn(lib, "struct Light", 7, 5), locations[0].range);
+    }
+}
+
+const inline_nav_program =
+    \\(wgsl :name inlinepart :code "fn inline_value() -> f32 { return 3.0; }")
+    \\(wgsl :name use :file "use.wgsl" :imports [inlinepart])
+    \\(shader-module :name main :file "nav_root.wgsl" :imports [use])
+;
+
+const inline_nav_code = "fn inline_value() -> f32 { return 3.0; }";
+const inline_nav_use = "fn lit() -> f32 { return inline_value(); }";
+const inline_nav_root = "@fragment fn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(lit()); }";
+
+test "T10 inline targets have no file representation" {
+    var fake = FakeProvider.init(testing.allocator);
+    defer fake.deinit();
+    try fake.addFile("/ws/program.sjon", inline_nav_program);
+    try fake.addFile("/ws/use.wgsl", inline_nav_use);
+    try fake.addFile("/ws/nav_root.wgsl", inline_nav_root);
+
+    var store: Store = undefined;
+    var handler: Handler = undefined;
+    try bindStore(&fake, &store, &handler);
+    defer handler.deinit();
+    defer store.deinit();
+
+    var uri_buffer: [512]u8 = undefined;
+    const use_uri = try fileUri(&uri_buffer, "/ws/use.wgsl");
+    const root = try rootFor(&store, "/ws/use.wgsl");
+    const inline_part = partFor(&store, root.program, "inlinepart");
+
+    // The target is inline text: there is no file URI to return, so the
+    // definition omits it instead of inventing a path or an assembled range.
+    const definition = try handler.computeDefinition(use_uri, positionOf(inline_nav_use, "inline_value", 1));
+    try testing.expect(definition == null);
+
+    // Hovering the reference is representable in the requesting file.
+    const hover = (try handler.computeHover(use_uri, positionOf(inline_nav_use, "inline_value", 1))) orelse
+        return error.MissingHover;
+    defer testing.allocator.free(hover.contents);
+    try testing.expect(std.mem.indexOf(u8, hover.contents, "inline_value") != null);
+    try testing.expect(hover.range != null);
+    try testing.expectEqualDeep(
+        @as(?Handler.Range, rangeIn(inline_nav_use, "inline_value", 0, 12)),
+        hover.range,
+    );
+
+    // A part-addressed hover has content but no document to place a range
+    // in; reporting an inline-local range would fabricate a location.
+    const part_hover = (try Handler.computeHoverForPart(
+        &handler,
+        inline_part,
+        positionOf(inline_nav_code, "inline_value", 2),
+    )) orelse return error.MissingHover;
+    defer testing.allocator.free(part_hover.contents);
+    try testing.expect(std.mem.indexOf(u8, part_hover.contents, "inline_value") != null);
+    try testing.expect(part_hover.range == null);
+}
+
+const varying_program =
+    \\(wgsl :name lib :file "shared.wgsl")
+    \\(wgsl :name sup_a :file "sup_a.wgsl")
+    \\(wgsl :name sup_b :file "sup_b.wgsl")
+    \\(wgsl :name extra :file "extra.wgsl")
+    \\(wgsl :name frag :file "frag.wgsl" :requires [Hole only_a])
+    \\(shader-module :name root_a :file "root_a.wgsl" :imports [lib sup_a extra frag])
+    \\(shader-module :name root_b :file "root_b.wgsl" :imports [lib sup_b frag])
+;
+
+const varying_lib = "const SHARED: f32 = 1.0;\nfn helper() -> f32 { return SHARED; }";
+const varying_sup_a = "struct Hole {\n  a: f32,\n}";
+const varying_sup_b = "struct Hole {\n  a: f32,\n  b: f32,\n}";
+const varying_extra = "const only_a: f32 = 3.0;";
+const varying_frag =
+    \\fn sample() -> f32 {
+    \\  var h: Hole;
+    \\  return h.a + only_a + SHARED + helper();
+    \\}
+;
+const varying_root_a =
+    "@fragment fn fs_a() -> @location(0) vec4<f32> { return vec4<f32>(sample()); }";
+const varying_root_b =
+    "@fragment fn fs_b() -> @location(0) vec4<f32> { return vec4<f32>(sample()); }";
+
+test "T11 root-varying hover labels variants and deduplicates agreement" {
+    var fake = FakeProvider.init(testing.allocator);
+    defer fake.deinit();
+    try fake.addFile("/ws/program.sjon", varying_program);
+    try fake.addFile("/ws/shared.wgsl", varying_lib);
+    try fake.addFile("/ws/sup_a.wgsl", varying_sup_a);
+    try fake.addFile("/ws/sup_b.wgsl", varying_sup_b);
+    try fake.addFile("/ws/extra.wgsl", varying_extra);
+    try fake.addFile("/ws/frag.wgsl", varying_frag);
+    try fake.addFile("/ws/root_a.wgsl", varying_root_a);
+    try fake.addFile("/ws/root_b.wgsl", varying_root_b);
+
+    var store: Store = undefined;
+    var handler: Handler = undefined;
+    try bindStore(&fake, &store, &handler);
+    defer handler.deinit();
+    defer store.deinit();
+
+    var uri_buffer: [512]u8 = undefined;
+    const frag_uri = try fileUri(&uri_buffer, "/ws/frag.wgsl");
+
+    // The same hole is a different struct in each root: both layouts are
+    // reported, labelled, and the common request range is kept.
+    {
+        const hover = (try handler.computeHover(frag_uri, positionOf(varying_frag, "Hole", 1))) orelse
+            return error.MissingHover;
+        defer testing.allocator.free(hover.contents);
+        try testing.expect(std.mem.indexOf(u8, hover.contents, "root_a") != null);
+        try testing.expect(std.mem.indexOf(u8, hover.contents, "root_b") != null);
+        try testing.expect(std.mem.indexOf(u8, hover.contents, "size: 4B") != null);
+        try testing.expect(std.mem.indexOf(u8, hover.contents, "size: 8B") != null);
+        try testing.expectEqualDeep(
+            @as(?Handler.Range, rangeIn(varying_frag, "Hole", 0, 4)),
+            hover.range,
+        );
+    }
+
+    // A hole that only one root supplies is labelled, not silently chosen.
+    {
+        const hover = (try handler.computeHover(frag_uri, positionOf(varying_frag, "only_a", 1))) orelse
+            return error.MissingHover;
+        defer testing.allocator.free(hover.contents);
+        try testing.expect(std.mem.indexOf(u8, hover.contents, "root_a") != null);
+        try testing.expect(std.mem.indexOf(u8, hover.contents, "root_b") == null);
+        try testing.expect(std.mem.indexOf(u8, hover.contents, "only_a") != null);
+        try testing.expectEqualDeep(
+            @as(?Handler.Range, rangeIn(varying_frag, "only_a", 0, 6)),
+            hover.range,
+        );
+    }
+
+    // Identical answers are one entry with no root label.
+    {
+        const hover = (try handler.computeHover(frag_uri, positionOf(varying_frag, "SHARED", 1))) orelse
+            return error.MissingHover;
+        defer testing.allocator.free(hover.contents);
+        try testing.expect(std.mem.indexOf(u8, hover.contents, "root_a") == null);
+        try testing.expect(std.mem.indexOf(u8, hover.contents, "root_b") == null);
+        try testing.expectEqual(@as(usize, 1), std.mem.count(u8, hover.contents, "SHARED"));
+        try testing.expectEqualDeep(
+            @as(?Handler.Range, rangeIn(varying_frag, "SHARED", 0, 6)),
+            hover.range,
+        );
+    }
+
+    // Definitions: distinct declarations in distinct files, never merged.
+    {
+        const locations = (try handler.computeDefinition(frag_uri, positionOf(varying_frag, "Hole", 1))) orelse
+            return error.MissingDefinition;
+        defer Handler.freeDefinitionLocations(&handler, locations);
+        try testing.expectEqual(@as(usize, 2), locations.len);
+        var sup_buffer_a: [512]u8 = undefined;
+        const sup_uri_a = try fileUri(&sup_buffer_a, "/ws/sup_a.wgsl");
+        var sup_buffer_b: [512]u8 = undefined;
+        const sup_uri_b = try fileUri(&sup_buffer_b, "/ws/sup_b.wgsl");
+        const a_location = findLocation(locations, sup_uri_a) orelse return error.MissingLocationA;
+        const b_location = findLocation(locations, sup_uri_b) orelse return error.MissingLocationB;
+        try testing.expectEqualDeep(rangeIn(varying_sup_a, "Hole", 0, 4), a_location.range);
+        try testing.expectEqualDeep(rangeIn(varying_sup_b, "Hole", 0, 4), b_location.range);
+    }
+
+    // A one-root declaration has exactly one location.
+    {
+        const locations = (try handler.computeDefinition(frag_uri, positionOf(varying_frag, "only_a", 1))) orelse
+            return error.MissingDefinition;
+        defer Handler.freeDefinitionLocations(&handler, locations);
+        try testing.expectEqual(@as(usize, 1), locations.len);
+        var extra_buffer: [512]u8 = undefined;
+        const extra_uri = try fileUri(&extra_buffer, "/ws/extra.wgsl");
+        try testing.expectEqualStrings(extra_uri, locations[0].uri);
+        try testing.expectEqualDeep(rangeIn(varying_extra, "only_a", 0, 6), locations[0].range);
+    }
+
+    // A declaration shared by both roots is deduplicated by its identity.
+    {
+        const locations = (try handler.computeDefinition(frag_uri, positionOf(varying_frag, "SHARED", 1))) orelse
+            return error.MissingDefinition;
+        defer Handler.freeDefinitionLocations(&handler, locations);
+        try testing.expectEqual(@as(usize, 1), locations.len);
+        var lib_buffer: [512]u8 = undefined;
+        const lib_uri = try fileUri(&lib_buffer, "/ws/shared.wgsl");
+        try testing.expectEqualStrings(lib_uri, locations[0].uri);
+        try testing.expectEqualDeep(rangeIn(varying_lib, "SHARED", 0, 6), locations[0].range);
+    }
+
+    // Signature help dedupes the same cross-part callee in both roots.
+    {
+        const info = (try handler.computeSignatureHelp(frag_uri, positionOf(varying_frag, "helper(", 7))) orelse
+            return error.MissingSignature;
+        defer testing.allocator.free(info.label);
+        if (info.parameters.len > 0) testing.allocator.free(info.parameters);
+        try testing.expect(std.mem.indexOf(u8, info.label, "fn helper() -> f32") != null);
+        try testing.expect(std.mem.indexOf(u8, info.label, "root_a") == null);
+        try testing.expect(std.mem.indexOf(u8, info.label, "root_b") == null);
+    }
+}
+
+const signature_hole_program =
+    \\(wgsl :name sup_a :code "alias Measure = f32;")
+    \\(wgsl :name sup_b :code "alias Measure = i32;")
+    \\(wgsl :name frag :file "frag.wgsl" :requires [Measure])
+    \\(shader-module :name root_a :file "root_a.wgsl" :imports [sup_a frag])
+    \\(shader-module :name root_b :file "root_b.wgsl" :imports [sup_b frag])
+;
+
+const signature_hole_frag =
+    \\fn take(x: Measure) -> f32 { return 1.0; }
+    \\fn caller() -> f32 { return take(1.0); }
+;
+const signature_hole_root_a =
+    "@fragment fn fs_a() -> @location(0) vec4<f32> { return vec4<f32>(caller()); }";
+const signature_hole_root_b =
+    "@fragment fn fs_b() -> @location(0) vec4<f32> { return vec4<f32>(caller()); }";
+
+test "T13 signature help resolves cross-part callees and labels root variants" {
+    var fake = FakeProvider.init(testing.allocator);
+    defer fake.deinit();
+    const lib = try buildPartsLib(testing.allocator);
+    defer testing.allocator.free(lib);
+    try fake.addFile("/ws/program.sjon", parts_program);
+    try fake.addFile("/ws/lib.wgsl", lib);
+    try fake.addFile("/ws/frag.wgsl", parts_frag);
+    try fake.addFile("/ws/root.wgsl", parts_root);
+
+    var store: Store = undefined;
+    var handler: Handler = undefined;
+    try bindStore(&fake, &store, &handler);
+    defer handler.deinit();
+    defer store.deinit();
+
+    var uri_buffer: [512]u8 = undefined;
+    const frag_uri = try fileUri(&uri_buffer, "/ws/frag.wgsl");
+
+    // The callee is declared in the library; the request and its argument
+    // are in the fragment.
+    const info = (try handler.computeSignatureHelp(frag_uri, positionOf(parts_frag, "shade(", 6))) orelse
+        return error.MissingSignature;
+    defer testing.allocator.free(info.label);
+    if (info.parameters.len > 0) testing.allocator.free(info.parameters);
+    try testing.expect(std.mem.indexOf(u8, info.label, "shade") != null);
+    try testing.expect(std.mem.indexOf(u8, info.label, "Light") != null);
+    try testing.expect(std.mem.indexOf(u8, info.label, "-> f32") != null);
+    try testing.expectEqual(@as(u32, 0), info.active_parameter);
+
+    // A hole whose alias differs per root makes the resolved label differ.
+    var hole_fake = FakeProvider.init(testing.allocator);
+    defer hole_fake.deinit();
+    try hole_fake.addFile("/ws/program.sjon", signature_hole_program);
+    try hole_fake.addFile("/ws/frag.wgsl", signature_hole_frag);
+    try hole_fake.addFile("/ws/root_a.wgsl", signature_hole_root_a);
+    try hole_fake.addFile("/ws/root_b.wgsl", signature_hole_root_b);
+
+    var hole_store: Store = undefined;
+    var hole_handler: Handler = undefined;
+    try bindStore(&hole_fake, &hole_store, &hole_handler);
+    defer hole_handler.deinit();
+    defer hole_store.deinit();
+
+    var hole_buffer: [512]u8 = undefined;
+    const hole_uri = try fileUri(&hole_buffer, "/ws/frag.wgsl");
+    const variants = (try hole_handler.computeSignatureHelp(hole_uri, positionOf(signature_hole_frag, "take(1.0)", 5))) orelse
+        return error.MissingSignature;
+    defer testing.allocator.free(variants.label);
+    if (variants.parameters.len > 0) testing.allocator.free(variants.parameters);
+    try testing.expect(std.mem.indexOf(u8, variants.label, "root_a") != null);
+    try testing.expect(std.mem.indexOf(u8, variants.label, "root_b") != null);
+    try testing.expect(std.mem.indexOf(u8, variants.label, "f32") != null);
+    try testing.expect(std.mem.indexOf(u8, variants.label, "i32") != null);
+}
+
 test "T7 standalone definition is one Location and rename one changes key" {
     var handler = Handler.init(testing.allocator);
     defer handler.deinit();
@@ -631,7 +1125,11 @@ test "T7 standalone definition is one Location and rename one changes key" {
         offsetOf(source, "twice", 0) + 5,
     ) orelse return error.MissingRange;
 
-    const definition = native_navigation.handleDefinition(&handler, .{
+    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const definition = native_navigation.handleDefinition(&handler, aa, .{
         .textDocument = .{ .uri = uri },
         .position = lspkit.primitives.toLspKitPosition(call_position),
     }) orelse return error.MissingDefinition;
@@ -648,10 +1146,6 @@ test "T7 standalone definition is one Location and rename one changes key" {
         },
         .definition_links => return error.DefinitionShouldNotBeLinks,
     }
-
-    var arena: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena.deinit();
-    const aa = arena.allocator();
 
     const rename = native_symbols.handleRename(&handler, aa, .{
         .textDocument = .{ .uri = uri },

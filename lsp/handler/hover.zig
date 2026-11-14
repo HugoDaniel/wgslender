@@ -11,6 +11,7 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Handler = @import("../Handler.zig");
+const PngineContext = @import("pngine_context.zig");
 const NodeAtOffset = @import("node_at_offset.zig");
 const Position = Handler.Position;
 const Range = Handler.Range;
@@ -19,7 +20,11 @@ const Builtins = wgslender.Builtins;
 
 pub const HoverResult = struct {
     contents: []const u8,
-    range: Range,
+    /// The token range in the request's own document. `null` when the
+    /// request doc is unknown (a part-addressed request) or when the AST
+    /// range cannot be represented by one author range. An assembled range
+    /// is never reported as an author range.
+    range: ?Range = null,
 };
 
 pub const DocumentHighlight = struct {
@@ -66,24 +71,140 @@ fn fenced(gpa: std.mem.Allocator, code: []const u8, prose: []const u8) ![]const 
     return out.toOwnedSlice(gpa);
 }
 
+/// Hover a position in `uri`. Every containing root is consulted; a text
+/// that is identical across roots is returned once, and differing texts are
+/// emitted as root-labelled sections rather than taking the first root.
 pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?HoverResult {
-    const doc = handler.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(Handler.lspPositionToOffset(source, position) orelse return null);
-    const analysis = try handler.analyzeDocument(uri);
-    const module = analysis.module orelse return null;
+    const contexts = try Handler.contextsAt(handler, uri, position);
+    defer Handler.freeContexts(handler, contexts);
+    return hoverForContexts(handler, contexts);
+}
 
-    const node = NodeAtOffset.find(module, offset);
+/// Hover a position in a part-addressed document (an inline `:code` part).
+/// There is no request URI, so a result can carry text but no range: a range
+/// without a document to place it in would be a fabricated location.
+pub fn computeHoverForPart(
+    handler: *Handler,
+    part: PngineContext.OriginKey,
+    position: Position,
+) !?HoverResult {
+    const contexts = try Handler.contextsForPart(handler, part, position);
+    defer Handler.freeContexts(handler, contexts);
+    return hoverForContexts(handler, contexts);
+}
+
+const HoverVariant = struct {
+    contents: []const u8,
+    label: ?[]const u8,
+};
+
+fn hoverForContexts(handler: *Handler, contexts: []Handler.RequestContext) !?HoverResult {
+    if (contexts.len == 0) return null;
+
+    var variants: std.ArrayList(HoverVariant) = .empty;
+    defer variants.deinit(handler.gpa);
+    defer for (variants.items) |variant| handler.gpa.free(variant.contents);
+
+    var successful: usize = 0;
+    var range_seen = false;
+    var ranges_agree = true;
+    var common_range: ?Range = null;
+
+    for (contexts) |*context| {
+        var author = PngineContext.authorText(handler, context) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer author.deinit(handler.gpa);
+
+        const analysis = PngineContext.analysisFor(handler, context) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        const module = analysis.module orelse continue;
+
+        const found = (try nodeHover(handler, analysis, module, NodeAtOffset.find(module, context.assembled_offset))) orelse
+            continue;
+        errdefer handler.gpa.free(found.contents);
+        successful += 1;
+
+        const range = hoverRange(context, author.text, found.loc, found.len);
+        if (range) |value| {
+            if (!range_seen) {
+                common_range = value;
+                range_seen = true;
+            } else if (!std.meta.eql(common_range.?, value)) {
+                ranges_agree = false;
+            }
+        } else {
+            ranges_agree = false;
+        }
+
+        var duplicate = false;
+        for (variants.items) |variant| {
+            if (std.mem.eql(u8, variant.contents, found.contents)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            handler.gpa.free(found.contents);
+            continue;
+        }
+        try variants.append(handler.gpa, .{
+            .contents = found.contents,
+            .label = PngineContext.contextLabel(context),
+        });
+    }
+
+    if (variants.items.len == 0) return null;
+    const final_range: ?Range = if (ranges_agree and range_seen) common_range else null;
+
+    // All roots produced the same answer (or there is only one answer):
+    // one unlabelled entry, exactly as the single-document shape.
+    if (variants.items.len == 1 and successful == contexts.len) {
+        const contents = variants.items[0].contents;
+        variants.items[0].contents = "";
+        return .{ .contents = contents, .range = final_range };
+    }
+
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(handler.gpa);
+    for (variants.items, 0..) |variant, index| {
+        if (index > 0) try out.appendSlice(handler.gpa, "\n\n");
+        try out.appendSlice(handler.gpa, "### ");
+        try out.appendSlice(handler.gpa, variant.label orelse "");
+        try out.appendSlice(handler.gpa, "\n\n");
+        try out.appendSlice(handler.gpa, variant.contents);
+    }
+    return .{ .contents = try out.toOwnedSlice(handler.gpa), .range = final_range };
+}
+
+const NodeHover = struct {
+    contents: []const u8,
+    loc: u32,
+    len: u32,
+};
+
+/// Build the markdown payload for one AST node. `loc`/`len` are in the
+/// module's own (assembled or author) coordinate space; the caller maps them
+/// back to the request document.
+fn nodeHover(
+    handler: *Handler,
+    analysis: *const wgslender.Validator.AnalysisResult,
+    module: *const Ast.Module,
+    node: NodeAtOffset.NodeAtPosition,
+) !?NodeHover {
     var buf: [1024]u8 = undefined;
     switch (node) {
         .ident => |id| {
             if (!id.ref.isValid()) {
                 // Check if this is a builtin function name
                 if (Builtins.lookup(id.name)) |builtin| {
-                    const contents = try formatBuiltinHover(handler, &buf, id.name, builtin);
                     return .{
-                        .contents = contents,
-                        .range = Handler.offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len))) orelse return null,
+                        .contents = try formatBuiltinHover(handler, &buf, id.name, builtin),
+                        .loc = id.loc,
+                        .len = @intCast(id.name.len),
                     };
                 }
                 return null;
@@ -114,7 +235,8 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
             };
             return .{
                 .contents = contents,
-                .range = Handler.offsetRangeToLspRange(source, id.loc, id.loc + @as(u32, @intCast(id.name.len))) orelse return null,
+                .loc = id.loc,
+                .len = @intCast(id.name.len),
             };
         },
         .decl_name => |dn| {
@@ -145,17 +267,18 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
             };
             return .{
                 .contents = contents,
-                .range = Handler.offsetRangeToLspRange(source, dn.loc, dn.loc + @as(u32, @intCast(sym.original_name.len))) orelse return null,
+                .loc = dn.loc,
+                .len = @intCast(sym.original_name.len),
             };
         },
         .type_ref => |tr| {
             if (analysis.struct_types.get(tr.name)) |st| {
                 const layout = try formatStructLayout(handler.gpa, tr.name, st);
                 defer handler.gpa.free(layout);
-                const contents = try fenced(handler.gpa, layout, "");
                 return .{
-                    .contents = contents,
-                    .range = Handler.offsetRangeToLspRange(source, tr.loc, tr.loc + @as(u32, @intCast(tr.name.len))) orelse return null,
+                    .contents = try fenced(handler.gpa, layout, ""),
+                    .loc = tr.loc,
+                    .len = @intCast(tr.name.len),
                 };
             }
             return null;
@@ -191,7 +314,8 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
             };
             return .{
                 .contents = contents,
-                .range = Handler.offsetRangeToLspRange(source, ma.loc, ma.loc + @as(u32, @intCast(ma.member.len))) orelse return null,
+                .loc = ma.loc,
+                .len = @intCast(ma.member.len),
             };
         },
         .binary_expr => |be| {
@@ -215,11 +339,21 @@ pub fn computeHover(handler: *Handler, uri: []const u8, position: Position) !?Ho
             }
             return .{
                 .contents = try fenced(handler.gpa, buf[0..pos], ""),
-                .range = Handler.offsetRangeToLspRange(source, be.loc, be.loc + be.op_len) orelse return null,
+                .loc = be.loc,
+                .len = be.op_len,
             };
         },
         .none => return null,
     }
+}
+
+/// Map one node's module-local range back to the request's document. A
+/// part-addressed request has no document, and an unmappable range is
+/// dropped instead of being reported in assembled coordinates.
+fn hoverRange(context: *const Handler.RequestContext, author_source: []const u8, loc: u32, len: u32) ?Range {
+    if (context.request_uri == null) return null;
+    const mapped = PngineContext.toAuthorRange(context, loc, loc + len) orelse return null;
+    return Handler.offsetRangeToLspRange(author_source, mapped.start, mapped.end);
 }
 
 /// Resolve an expression to its underlying SymbolIndex (walks through parens and member bases).

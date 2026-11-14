@@ -6,6 +6,7 @@ const std = @import("std");
 const wgslender = @import("wgslender");
 
 const Handler = @import("../Handler.zig");
+const PngineContext = @import("pngine_context.zig");
 const hover = @import("hover.zig");
 const Position = Handler.Position;
 const Builtins = wgslender.Builtins;
@@ -28,15 +29,20 @@ fn astTypeString(typ: wgslender.Ast.Type) []const u8 {
     };
 }
 
-pub fn computeSignatureHelp(handler: *Handler, uri: []const u8, position: Position) !?SignatureInfo {
-    const doc = handler.documents.getPtr(uri) orelse return null;
-    const source = doc.source;
-    const offset: u32 = @intCast(Handler.lspPositionToOffset(source, position) orelse return null);
+/// Locate the innermost call whose argument list contains `offset`, in the
+/// coordinate space of `source` (the assembled unit for a composed context).
+const CallSite = struct {
+    name: []const u8,
+    comma_count: u32,
+};
+
+fn scanCall(source: []const u8, offset: u32) ?CallSite {
+    const end: usize = @min(@as(usize, offset), source.len);
 
     // Scan backward to find enclosing '(' and the function name before it
     var paren_depth: i32 = 0;
     var comma_count: u32 = 0;
-    var i: u32 = offset;
+    var i: usize = end;
     while (i > 0) {
         i -= 1;
         const c = source[i];
@@ -60,39 +66,157 @@ pub fn computeSignatureHelp(handler: *Handler, uri: []const u8, position: Positi
     if (name_end == 0) return null;
     var name_start = name_end;
     while (name_start > 0 and (std.ascii.isAlphanumeric(source[name_start - 1]) or source[name_start - 1] == '_')) name_start -= 1;
-    const func_name = source[name_start..name_end];
-    if (func_name.len == 0) return null;
+    const name = source[name_start..name_end];
+    if (name.len == 0) return null;
+
+    return .{ .name = name, .comma_count = comma_count };
+}
+
+const SignatureVariant = struct {
+    info: SignatureInfo,
+    label: ?[]const u8,
+};
+
+fn freeSignature(handler: *Handler, info: SignatureInfo) void {
+    handler.gpa.free(info.label);
+    if (info.parameters.len > 0) handler.gpa.free(info.parameters);
+}
+
+fn signaturesEqual(a: SignatureInfo, b: SignatureInfo) bool {
+    if (!std.mem.eql(u8, a.label, b.label)) return false;
+    if (a.parameters.len != b.parameters.len) return false;
+    for (a.parameters, b.parameters) |left, right| {
+        if (!std.mem.eql(u8, left, right)) return false;
+    }
+    return true;
+}
+
+/// Signature help follows the same request mapping as hover and definition:
+/// the enclosing call is found in assembled coordinates, the callee is
+/// resolved from the same root's analysis, and identical root answers are
+/// deduplicated. Differing answers carry root labels instead of the first
+/// root winning silently.
+pub fn computeSignatureHelp(handler: *Handler, uri: []const u8, position: Position) !?SignatureInfo {
+    const contexts = try Handler.contextsAt(handler, uri, position);
+    defer Handler.freeContexts(handler, contexts);
+    if (contexts.len == 0) return null;
+
+    var variants: std.ArrayList(SignatureVariant) = .empty;
+    defer variants.deinit(handler.gpa);
+    defer for (variants.items) |variant| freeSignature(handler, variant.info);
+
+    var successful: usize = 0;
+    for (contexts) |*context| {
+        const info = (try signatureAtContext(handler, context)) orelse continue;
+        errdefer freeSignature(handler, info);
+        successful += 1;
+
+        var duplicate = false;
+        for (variants.items) |variant| {
+            if (signaturesEqual(variant.info, info)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) {
+            freeSignature(handler, info);
+            continue;
+        }
+        try variants.append(handler.gpa, .{
+            .info = info,
+            .label = PngineContext.contextLabel(context),
+        });
+    }
+
+    if (variants.items.len == 0) return null;
+
+    if (variants.items.len == 1 and successful == contexts.len) {
+        const info = variants.items[0].info;
+        variants.items[0].info.label = "";
+        variants.items[0].info.parameters = &.{};
+        return info;
+    }
+
+    // Different roots (or a root with no answer) — keep every distinct
+    // label and say which root produced it. Parameters are only meaningful
+    // when one signature survived; with several, the combined label is all
+    // we can honestly show.
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(handler.gpa);
+    for (variants.items, 0..) |variant, index| {
+        if (index > 0) try out.append(handler.gpa, '\n');
+        try out.appendSlice(handler.gpa, variant.info.label);
+        if (variant.label) |label| {
+            try out.appendSlice(handler.gpa, " (");
+            try out.appendSlice(handler.gpa, label);
+            try out.append(handler.gpa, ')');
+        }
+    }
+
+    const keep_parameters = variants.items.len == 1;
+    const parameters: []const []const u8 = if (keep_parameters)
+        variants.items[0].info.parameters
+    else
+        &.{};
+    if (keep_parameters) variants.items[0].info.parameters = &.{};
+
+    return .{
+        .label = try out.toOwnedSlice(handler.gpa),
+        .parameters = parameters,
+        .active_parameter = variants.items[0].info.active_parameter,
+    };
+}
+
+fn signatureAtContext(handler: *Handler, context: *const Handler.RequestContext) !?SignatureInfo {
+    var author: ?PngineContext.AuthorText = null;
+    defer if (author) |*value| value.deinit(handler.gpa);
+
+    // The call is found in the root's own coordinate space. A composed
+    // context scans the assembled unit, so a call whose argument list lives
+    // in another part still sees its commas and its callee.
+    const source: []const u8 = PngineContext.assembledText(context) orelse blk: {
+        author = PngineContext.authorText(handler, context) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => return null,
+        };
+        break :blk author.?.text;
+    };
+
+    const call = scanCall(source, context.assembled_offset) orelse return null;
 
     // Check if it's a builtin. `Builtins.lookup` already hands back the row's
     // `doc`, so the WGSL-spec signature is right there — no second lookup.
-    if (Builtins.lookup(func_name)) |builtin| {
+    if (Builtins.lookup(call.name)) |builtin| {
         if (builtin.doc.signature.len > 0) {
             return .{
                 .label = try handler.gpa.dupe(u8, builtin.doc.signature),
                 .parameters = &.{},
-                .active_parameter = comma_count,
+                .active_parameter = call.comma_count,
             };
         }
         // Defensive only: `src/Builtins.zig`'s "every row carries overloads and
         // documentation" invariant test asserts every signature is non-empty.
         var buf: [256]u8 = undefined;
-        const label = std.fmt.bufPrint(&buf, "{s}({d}..{d} args)", .{ func_name, builtin.min_args, builtin.max_args }) catch return null;
+        const label = std.fmt.bufPrint(&buf, "{s}({d}..{d} args)", .{ call.name, builtin.min_args, builtin.max_args }) catch return null;
         return .{
             .label = try handler.gpa.dupe(u8, label),
             .parameters = &.{},
-            .active_parameter = comma_count,
+            .active_parameter = call.comma_count,
         };
     }
 
-    // Check if it's a user-defined function
-    const analysis = try handler.analyzeDocument(uri);
+    // Check if it's a user-defined function in this root's analysis.
+    const analysis = PngineContext.analysisFor(handler, context) catch |err| switch (err) {
+        error.OutOfMemory => return err,
+        else => return null,
+    };
     const module = analysis.module orelse return null;
     for (module.declarations.items) |decl| {
         switch (decl) {
             .function => |f| {
                 if (!f.name.isValid()) continue;
                 const sym = module.symbols.items[f.name.index()];
-                if (!std.mem.eql(u8, sym.original_name, func_name)) continue;
+                if (!std.mem.eql(u8, sym.original_name, call.name)) continue;
 
                 // Parameter names are ours either way — `formatFunctionSignature`
                 // returns only the label.
@@ -117,7 +241,7 @@ pub fn computeSignatureHelp(handler: *Handler, uri: []const u8, position: Positi
                             return .{
                                 .label = try handler.gpa.dupe(u8, sig),
                                 .parameters = param_names,
-                                .active_parameter = comma_count,
+                                .active_parameter = call.comma_count,
                             };
                         }
                     }
@@ -127,7 +251,7 @@ pub fn computeSignatureHelp(handler: *Handler, uri: []const u8, position: Positi
                 // render what the AST alone can spell.
                 var buf: [512]u8 = undefined;
                 var pos_in_buf: usize = 0;
-                const header = std.fmt.bufPrint(&buf, "fn {s}(", .{func_name}) catch return null;
+                const header = std.fmt.bufPrint(&buf, "fn {s}(", .{call.name}) catch return null;
                 pos_in_buf = header.len;
 
                 for (f.parameters.items, 0..) |param, pi| {
@@ -149,7 +273,7 @@ pub fn computeSignatureHelp(handler: *Handler, uri: []const u8, position: Positi
                 return .{
                     .label = try handler.gpa.dupe(u8, buf[0..pos_in_buf]),
                     .parameters = param_names,
-                    .active_parameter = comma_count,
+                    .active_parameter = call.comma_count,
                 };
             },
             else => {},

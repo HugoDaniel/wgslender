@@ -1068,6 +1068,7 @@ pub const HoverResult = Hover.HoverResult;
 pub const DocumentHighlight = Hover.DocumentHighlight;
 pub const HighlightKind = Hover.HighlightKind;
 pub const computeHover = Hover.computeHover;
+pub const computeHoverForPart = Hover.computeHoverForPart;
 
 // =========================================================================
 // LSP Feature: Go-to-Definition + Go-to-Type-Definition — see lsp/handler/definition.zig
@@ -1076,6 +1077,7 @@ pub const computeHover = Hover.computeHover;
 pub const Definition = @import("handler/definition.zig");
 pub const computeDefinition = Definition.computeDefinition;
 pub const computeTypeDefinition = Definition.computeTypeDefinition;
+pub const freeDefinitionLocations = Definition.freeLocations;
 
 // =========================================================================
 // LSP Feature: References, Document Highlight, Rename — see lsp/handler/references_rename.zig

@@ -48,8 +48,9 @@ pub fn appendDocumentHighlight(
 }
 
 /// Append `{"contents":{"kind":"markdown","value":"…"},"range":{…}}` —
-/// the LSP `Hover` shape. The caller owns `hover.contents`; it is escaped
-/// inline.
+/// the LSP `Hover` shape. `range` is optional in LSP and omitted when the
+/// handler could not map it into the request's own document. The caller owns
+/// `hover.contents`; it is escaped inline.
 pub fn appendHover(
     buf: *std.ArrayList(u8),
     gpa: std.mem.Allocator,
@@ -57,8 +58,11 @@ pub fn appendHover(
 ) void {
     primitives.appendStr(buf, gpa, "{\"contents\":{\"kind\":\"markdown\",\"value\":\"");
     Diagnostic.appendJsonEscaped(buf, gpa, hover.contents) catch return;
-    primitives.appendStr(buf, gpa, "\"},\"range\":");
-    primitives.formatRange(buf, gpa, hover.range);
+    primitives.appendStr(buf, gpa, "\"}");
+    if (hover.range) |range| {
+        primitives.appendStr(buf, gpa, ",\"range\":");
+        primitives.formatRange(buf, gpa, range);
+    }
     buf.append(gpa, '}') catch {};
 }
 

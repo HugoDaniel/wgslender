@@ -136,7 +136,10 @@ pub fn contextsAt(handler: *Handler, uri: []const u8, position: Handler.Position
     if (comptime pngine_support) {
         return contextsAtSupported(handler, uri, position);
     } else {
-        return error.PngineUnsupported;
+        // Graph families without project support still serve standalone
+        // documents; the identity context keeps that path on the same shape
+        // as the composed one.
+        return standaloneContext(handler, uri, position);
     }
 }
 
@@ -186,6 +189,99 @@ pub fn declarationKey(
         const end: u32 = start + @as(u32, @intCast(sym.original_name.len));
         const mapped = analysis.assembled.toOrigin(.{ .start = start, .end = end }) orelse return null;
         return .{ .origin = mapped.origin, .declaration_range = mapped.range };
+    } else {
+        return null;
+    }
+}
+
+/// Text of one author part, borrowed from the Handler's open documents or
+/// copied out of the Store. Release with `deinit`.
+pub const AuthorText = struct {
+    text: []u8,
+    owned: bool,
+
+    pub fn deinit(self: *AuthorText, gpa: Allocator) void {
+        if (self.owned) gpa.free(self.text);
+        self.* = undefined;
+    }
+};
+
+/// The validator result a context's features must read. Composed contexts
+/// borrow it from the root cache; a standalone context analyzes the open
+/// document exactly as the pre-project path did.
+pub fn analysisFor(
+    handler: *Handler,
+    context: *const RequestContext,
+) anyerror!*wgslender.Validator.AnalysisResult {
+    if (comptime pngine_support) {
+        if (context.analysis) |root| return root.result;
+    }
+    const uri = context.request_uri orelse return error.NoRequestUri;
+    return handler.analyzeDocument(uri);
+}
+
+/// The assembled text a composed context's analysis ran on, or `null` for a
+/// standalone context. The slice is borrowed from the Store's unit.
+pub fn assembledText(context: *const RequestContext) ?[]const u8 {
+    if (comptime pngine_support) {
+        const analysis = context.analysis orelse return null;
+        return analysis.assembled.text;
+    } else {
+        return null;
+    }
+}
+
+/// The request document's own text at `context`'s origin. A standalone
+/// context borrows the open document; a composed context owns a Store copy.
+pub fn authorText(handler: *Handler, context: *const RequestContext) anyerror!AuthorText {
+    if (comptime pngine_support) {
+        if (context.analysis != null) {
+            const origin = context.origin orelse return error.NoAuthorOrigin;
+            return originText(handler, origin);
+        }
+    }
+    const uri = context.request_uri orelse return error.NoRequestUri;
+    const doc = handler.documents.getPtr(uri) orelse return error.DocumentNotOpen;
+    return .{ .text = doc.source, .owned = false };
+}
+
+/// The current author text of any file-backed or inline origin. The caller
+/// owns the returned buffer.
+pub fn originText(handler: *Handler, origin: OriginKey) anyerror!AuthorText {
+    if (comptime pngine_support) {
+        const store = handler.pngine_store orelse return error.PngineStoreUnbound;
+        const text = try store.textForPart(origin);
+        return .{ .text = text.text, .owned = true };
+    } else {
+        return error.PngineUnsupported;
+    }
+}
+
+/// Map an assembled byte range back to `context`'s request origin.
+///
+/// Standalone offsets are already author offsets. A composed range is mapped
+/// through the root's `Assembled`; a range that belongs to another part, or
+/// that no single author range represents, returns `null` rather than an
+/// assembled offset.
+pub fn toAuthorRange(context: *const RequestContext, start: u32, end: u32) ?ByteRange {
+    if (!context.isComposed()) return .{ .start = start, .end = end };
+    if (comptime pngine_support) {
+        const analysis = context.analysis orelse return null;
+        const mapped = analysis.assembled.toOrigin(.{ .start = start, .end = end }) orelse return null;
+        const origin = context.origin orelse return null;
+        if (mapped.origin.program != origin.program or mapped.origin.index != origin.index) return null;
+        return mapped.range;
+    } else {
+        return null;
+    }
+}
+
+/// The human label of the root a context was resolved in, or `null` for a
+/// standalone document. Used only when root results disagree.
+pub fn contextLabel(context: *const RequestContext) ?[]const u8 {
+    if (comptime pngine_support) {
+        const analysis = context.analysis orelse return null;
+        return analysis.assembled.root_name;
     } else {
         return null;
     }

@@ -15,7 +15,7 @@ const primitives = @import("primitives.zig");
 pub fn toLspKitHover(result: Handler.HoverResult) lsp.types.Hover {
     return .{
         .contents = .{ .markup_content = .{ .kind = .markdown, .value = result.contents } },
-        .range = primitives.toLspKitRange(result.range),
+        .range = if (result.range) |range| primitives.toLspKitRange(range) else null,
     };
 }
 

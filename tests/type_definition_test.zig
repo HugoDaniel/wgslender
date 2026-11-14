@@ -13,6 +13,15 @@ fn teardown(ctx: anytype) void {
     std.testing.allocator.destroy(ctx.handler);
 }
 
+/// The single-document tests assert the legacy one-range answer; the
+/// location list is the origin-aware shape now.
+fn typeDefinitionRange(handler: *Handler, uri: []const u8, pos: Handler.Position) !?Handler.Range {
+    const locations = (try handler.computeTypeDefinition(uri, pos)) orelse return null;
+    defer Handler.freeDefinitionLocations(handler, locations);
+    if (locations.len == 0) return null;
+    return locations[0].range;
+}
+
 test "type definition: variable of struct type" {
     const source: [:0]const u8 = "struct Point { x: f32, y: f32 } fn f(p: Point) {}";
     const ctx = try setup(source);
@@ -20,7 +29,7 @@ test "type definition: variable of struct type" {
     // Find 'p' parameter
     const p_pos = std.mem.indexOf(u8, source, "(p:") orelse return error.TestUnexpectedResult;
     const pos = Handler.offsetToLspPosition(source, @intCast(p_pos + 1)) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeTypeDefinition("test://file.wgsl", pos);
+    const result = try typeDefinitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result != null);
     // Should point to "Point" in struct declaration
     try std.testing.expectEqual(@as(u32, 0), result.?.start.line);
@@ -32,7 +41,7 @@ test "type definition: scalar type returns null" {
     const ctx = try setup(source);
     defer teardown(ctx);
     const pos = Handler.offsetToLspPosition(source, 13) orelse return error.TestUnexpectedResult; // 'x'
-    const result = try ctx.handler.computeTypeDefinition("test://file.wgsl", pos);
+    const result = try typeDefinitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }
 
@@ -40,14 +49,14 @@ test "type definition: whitespace returns null" {
     const source: [:0]const u8 = "fn f() {}";
     const ctx = try setup(source);
     defer teardown(ctx);
-    const result = try ctx.handler.computeTypeDefinition("test://file.wgsl", .{ .line = 0, .character = 2 });
+    const result = try typeDefinitionRange(ctx.handler, "test://file.wgsl", .{ .line = 0, .character = 2 });
     try std.testing.expect(result == null);
 }
 
 test "type definition: unknown document" {
     var handler = Handler.init(std.testing.allocator);
     defer handler.deinit();
-    const result = try handler.computeTypeDefinition("test://nonexistent.wgsl", .{ .line = 0, .character = 0 });
+    const result = try typeDefinitionRange(&handler, "test://nonexistent.wgsl", .{ .line = 0, .character = 0 });
     try std.testing.expect(result == null);
 }
 
@@ -57,7 +66,7 @@ test "type definition: vector type returns null (builtin)" {
     defer teardown(ctx);
     // Hover on 'v' — its type is vec3f which has no user declaration
     const pos = Handler.offsetToLspPosition(source, 13) orelse return error.TestUnexpectedResult;
-    const result = try ctx.handler.computeTypeDefinition("test://file.wgsl", pos);
+    const result = try typeDefinitionRange(ctx.handler, "test://file.wgsl", pos);
     try std.testing.expect(result == null);
 }
 
@@ -65,7 +74,7 @@ test "type definition: position past end" {
     const source: [:0]const u8 = "fn f() {}";
     const ctx = try setup(source);
     defer teardown(ctx);
-    const result = try ctx.handler.computeTypeDefinition("test://file.wgsl", .{ .line = 99, .character = 0 });
+    const result = try typeDefinitionRange(ctx.handler, "test://file.wgsl", .{ .line = 99, .character = 0 });
     try std.testing.expect(result == null);
 }
 
@@ -73,6 +82,6 @@ test "type definition: empty source" {
     const source: [:0]const u8 = "";
     const ctx = try setup(source);
     defer teardown(ctx);
-    const result = try ctx.handler.computeTypeDefinition("test://file.wgsl", .{ .line = 0, .character = 0 });
+    const result = try typeDefinitionRange(ctx.handler, "test://file.wgsl", .{ .line = 0, .character = 0 });
     try std.testing.expect(result == null);
 }
