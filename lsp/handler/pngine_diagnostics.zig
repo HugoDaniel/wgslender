@@ -40,6 +40,28 @@
 //!   no usable shader-module root additionally gets local parse diagnostics
 //!   and one `P0001`, but never standalone semantic diagnostics.
 //!
+//! Task 4 adds whole-unit lint semantics on top of the same projection:
+//!
+//! - Configured packs run once per containing root against the cached
+//!   `RootAnalysis`, using the standalone path's extends/override
+//!   construction. `include_minify_lints` adds `@wgslender/minify`; the
+//!   cheap path keeps running only the general packs, exactly as the
+//!   single-document split does.
+//! - `W0001`/`W0002`/`W0003` are liveness findings: they are emitted only
+//!   when every lint-capable root that contains the requested file also
+//!   produced them. A declaration used by one root is unused nowhere, so
+//!   the report drops the finding rather than choosing a root.
+//! - Every other lint finding is unioned and deduplicated by mapped
+//!   author range, code, and message — a style rule fires once per origin,
+//!   not once per root.
+//! - `M0500` is a whole-module size claim. It is disabled when more than
+//!   one shader-module root contains the requested part; no root's byte
+//!   count is a property of a shared fragment.
+//! - A lint quick fix survives only when its whole edit range maps to the
+//!   requested author file and every root offering that fix agrees on the
+//!   replacement. Cross-part, inline-`code`, and conflicting fixes are
+//!   withheld while the diagnostic itself remains.
+//!
 //! The projector reads only the Store's already-resolved author texts. It
 //! never parses or rescans assembled text; all identity comes from the
 //! phase-02 segments. Requirement holes are judged against the assembled
@@ -50,18 +72,28 @@ const wgslender = @import("wgslender");
 const build_options = @import("build_options");
 const pngine_path = @import("pngine_path");
 const Handler = @import("../Handler.zig");
+const Diagnostics = Handler.Diagnostics;
 
 const pngine_support = build_options.pngine_support;
 const Pngine = if (pngine_support) wgslender.Pngine else void;
 const WgslDiagnostic = wgslender.Diagnostic;
 const LspDiagnostic = Handler.LspDiagnostic;
 const LspRelatedInfo = Handler.LspRelatedInfo;
+const MinifySettings = wgslender.MinifySettings;
 
 const Allocator = std.mem.Allocator;
 const Ast = wgslender.Ast;
 
-/// Options accepted by `Handler.validatePngineDocument`. Task 2 projects
-/// validator entries only; Task 4 extends this with lint/M-rule switches.
+/// `@wgslender/minify`'s estimator-backed module-size rule. It is the one
+/// lint finding whose meaning is a property of the whole assembled module
+/// rather than the author part it anchors on.
+const code_minify_size = "M0500";
+const id_minify_size = "minify/shader-exceeds-size-budget";
+
+/// Options accepted by `Handler.validatePngineDocument`. `include_minify_lints`
+/// mirrors the standalone cheap/full split: general packs always run when the
+/// LSP lint setting is on, while the `@wgslender/minify` pack (and the
+/// estimator-backed M-rules) only joins on the full path.
 pub const ValidateOptions = struct {
     include_minify_lints: bool = false,
 };
@@ -91,8 +123,6 @@ fn validateSupported(
     uri: []const u8,
     options: ValidateOptions,
 ) ![]LspDiagnostic {
-    _ = options; // Task 4 adds lint; Task 3 is validator/graph projection.
-
     const store = handler.pngine_store orelse return error.PngineStoreUnbound;
     var memberships = try store.membershipsFor(uri);
     defer memberships.deinit(handler.gpa);
@@ -100,6 +130,17 @@ fn validateSupported(
 
     var report = ReportImpl.init(handler.gpa, store, uri, memberships.items);
     defer report.deinit();
+
+    // Resolve the same config contributions the standalone path builds,
+    // once per request. The magic-comment layer belongs to the requested
+    // author document, exactly as it does for `validateDocument*`.
+    const lint_active = handler.lintEnabled();
+    const eff_minify = handler.effectiveMinifyFor(uri);
+    const minify_active = options.include_minify_lints and eff_minify.lintsActive();
+    // A module-size finding is a claim about one assembled root. When the
+    // requested part is shared, no single root's size describes it, so the
+    // rule is disabled rather than allowed to pick one.
+    const suppress_size = report.requestRootCount() > 1;
 
     // A file can be reachable through several memberships of the same root
     // (for example a file named twice in one program). Analyse and project
@@ -144,6 +185,24 @@ fn validateSupported(
             try report.addFromRoot(analysis.assembled, root, entry);
         }
         try report.checkRequirements(root, analysis.result.module);
+
+        // Liveness intersection is judged only among roots whose assembled
+        // module actually parsed; a root that cannot produce a module
+        // cannot prove a declaration unused or dead.
+        try report.noteRootAnalyzed(root, analysis.result.module != null);
+        if (lint_active or minify_active) {
+            try lintRoot(
+                handler,
+                &report,
+                analysis,
+                root,
+                uri,
+                eff_minify,
+                lint_active,
+                minify_active,
+                suppress_size,
+            );
+        }
     }
 
     // C29: a mixed pass/shader-module context keeps the shader-module
@@ -186,6 +245,66 @@ fn containsRoot(roots: []const Pngine.RootId, id: Pngine.RootId) bool {
     return false;
 }
 
+/// Run the configured lint packs against one cached root analysis and
+/// project every entry through the same `Report` the validator uses.
+///
+/// The extends/override construction is the standalone pipeline's, not a
+/// second config path: `buildExtendsList` and `buildRuleOverrides` are
+/// shared with `validateDocumentInner`. The only composed-path addition is
+/// the disabled `M0500` override when the requested part has several root
+/// contexts.
+fn lintRoot(
+    handler: *Handler,
+    report: *ReportImpl,
+    analysis: *Handler.RootAnalysis,
+    root: Pngine.RootId,
+    uri: []const u8,
+    eff_minify: MinifySettings.Effective,
+    lint_active: bool,
+    minify_active: bool,
+    suppress_size: bool,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(handler.gpa);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const extends = try Diagnostics.buildExtendsList(handler, alloc, lint_active, minify_active);
+    const base_overrides = try Diagnostics.buildRuleOverrides(
+        handler,
+        alloc,
+        eff_minify,
+        handler.mangleExternalBindings(),
+        minify_active,
+    );
+
+    var overrides: std.ArrayList(wgslender.Linter.Options.RuleOverride) = .empty;
+    try overrides.appendSlice(alloc, base_overrides);
+    if (suppress_size) try overrides.append(alloc, .{
+        .id = id_minify_size,
+        .severity = .disabled,
+    });
+
+    // M0500 can read the root's cached estimate, so the full path runs the
+    // estimator at most once per root analysis. A suppressed size rule is
+    // not worth estimating for.
+    const cached_estimate: ?*const wgslender.MinifyEstimator.EstimateResult =
+        if (minify_active and !suppress_size)
+            handler.getRootMinifyEstimate(root, handler.estimatorOptionsFor(uri)) catch null
+        else
+            null;
+
+    var result = try wgslender.Linter.run(handler.gpa, analysis.result, .{
+        .extends = extends,
+        .rules = overrides.items,
+        .cached_minify_estimate = cached_estimate,
+    });
+    defer result.deinit(handler.gpa);
+
+    for (result.diagnostics.items()) |entry| {
+        try report.addLintFromRoot(analysis.assembled, root, &entry);
+    }
+}
+
 const OriginDoc = struct {
     /// URI emitted for this origin. Requested-document parts use the
     /// caller's spelling; other file-backed parts get a canonical file URI.
@@ -216,10 +335,22 @@ const ProjectDoc = struct {
     }
 };
 
-/// One deduplicated validator finding. `roots` records every root whose
-/// analysis produced it; root relations are materialised at `finish` only
-/// for multi-root groups (and always for E0100).
+/// One deduplicated validator or lint finding. `roots` records every root
+/// whose analysis produced it; root relations are materialised at `finish`
+/// only for multi-root groups (and always for E0100).
+const FindingKind = enum { validator, lint };
+
+/// A lint rewrite projected into the requested document's coordinates.
+/// Several roots may offer one for the same finding; `finish` keeps the
+/// replacement only when they agree byte-for-byte.
+const FixCandidate = struct {
+    range: Handler.Range,
+    /// Owned by the Report when non-empty; `""` is the shared empty slice.
+    text: []const u8,
+};
+
 const Finding = struct {
+    kind: FindingKind = .validator,
     range: Handler.Range,
     severity: Handler.DiagnosticSeverity,
     code: []const u8,
@@ -228,15 +359,66 @@ const Finding = struct {
     related: std.ArrayList(LspRelatedInfo) = .empty,
     data: WgslDiagnostic.QuickFixHint = .none,
     roots: std.ArrayList(Pngine.RootId) = .empty,
+    /// Lint-only: every root's projected rewrite, in first-seen order.
+    fix_candidates: std.ArrayList(FixCandidate) = .empty,
+    /// Lint-only: a range had competing rewrites, so no fix is offered.
+    fix_conflicted: bool = false,
+    tags: []const Handler.DiagnosticTag = &.{},
+    /// Lint-only: whole-unit policy refused this finding.
+    suppressed: bool = false,
 
     fn deinit(self: *Finding, gpa: Allocator) void {
         if (self.message.len > 0) gpa.free(self.message);
         if (self.spec_url.len > 0) gpa.free(self.spec_url);
         freeRelatedList(gpa, &self.related);
         Handler.Diagnostics.freeQuickFixHint(gpa, self.data);
+        freeFixCandidates(gpa, &self.fix_candidates);
         self.roots.deinit(gpa);
     }
 };
+
+fn freeFixCandidates(gpa: Allocator, list: *std.ArrayList(FixCandidate)) void {
+    for (list.items) |candidate| {
+        if (candidate.text.len > 0) gpa.free(candidate.text);
+    }
+    list.deinit(gpa);
+    list.* = .empty;
+}
+
+fn appendFixCandidate(
+    gpa: Allocator,
+    list: *std.ArrayList(FixCandidate),
+    candidate: ?FixCandidate,
+) !void {
+    const item = candidate orelse return;
+    list.append(gpa, item) catch |err| {
+        if (item.text.len > 0) gpa.free(item.text);
+        return err;
+    };
+}
+
+fn rangeEql(a: Handler.Range, b: Handler.Range) bool {
+    return std.meta.eql(a, b);
+}
+
+/// The one rewrite a finding may offer: every root must agree on both the
+/// range and the replacement text. A disagreement is a conflict, not a
+/// vote.
+fn selectedFix(finding: *const Finding) ?FixCandidate {
+    if (finding.fix_candidates.items.len == 0) return null;
+    const first = finding.fix_candidates.items[0];
+    for (finding.fix_candidates.items[1..]) |candidate| {
+        if (!rangeEql(candidate.range, first.range)) return null;
+        if (!std.mem.eql(u8, candidate.text, first.text)) return null;
+    }
+    return first;
+}
+
+fn isLivenessCode(code: []const u8) bool {
+    return std.mem.eql(u8, code, WgslDiagnostic.Code.lint_no_unused_vars) or
+        std.mem.eql(u8, code, WgslDiagnostic.Code.lint_no_dead_code) or
+        std.mem.eql(u8, code, WgslDiagnostic.Code.lint_no_unused_binding);
+}
 
 const ReportImpl = struct {
     gpa: Allocator,
@@ -246,6 +428,13 @@ const ReportImpl = struct {
     /// on identity (not a re-derived path string) keeps symlink/URI
     /// spelling from deciding which report a diagnostic belongs to.
     requested_parts: []const Pngine.OriginKey,
+    /// Distinct shader-module roots that reach the requested file. This is
+    /// the denominator for liveness intersection and the ambiguity test
+    /// for module-size findings.
+    request_roots: []const Pngine.RootId,
+    /// Request roots whose assembled module parsed, so the linter could
+    /// actually judge liveness in that context.
+    lint_roots: std.ArrayList(Pngine.RootId) = .empty,
     docs: std.AutoHashMapUnmanaged(Pngine.OriginKey, OriginDoc) = .empty,
     project_docs: std.AutoHashMapUnmanaged(Pngine.Types.ProgramId, *ProjectDoc) = .empty,
     findings: std.ArrayList(Finding) = .empty,
@@ -269,9 +458,19 @@ const ReportImpl = struct {
     ) ReportImpl {
         var requested_parts = std.ArrayList(Pngine.OriginKey).empty;
         defer requested_parts.deinit(gpa);
+        var request_roots = std.ArrayList(Pngine.RootId).empty;
+        defer request_roots.deinit(gpa);
         for (memberships) |membership| {
             if (!containsPart(requested_parts.items, membership.part)) {
                 requested_parts.append(gpa, membership.part) catch {};
+            }
+            for (membership.containing_roots) |index| {
+                const id: Pngine.RootId = .{ .program = membership.program, .index = index };
+                const part = store.part(id) orelse continue;
+                if (part.kind != .shader_module) continue;
+                if (!containsRoot(request_roots.items, id)) {
+                    request_roots.append(gpa, id) catch {};
+                }
             }
         }
         return .{
@@ -279,12 +478,15 @@ const ReportImpl = struct {
             .store = store,
             .requested_uri = requested_uri,
             .requested_parts = requested_parts.toOwnedSlice(gpa) catch &.{},
+            .request_roots = request_roots.toOwnedSlice(gpa) catch &.{},
         };
     }
 
     pub fn deinit(self: *ReportImpl) void {
         for (self.findings.items) |*finding| finding.deinit(self.gpa);
         self.findings.deinit(self.gpa);
+        self.lint_roots.deinit(self.gpa);
+        if (self.request_roots.len > 0) self.gpa.free(@constCast(self.request_roots));
         for (self.project_diags.items) |diag| Handler.Diagnostics.freeSingleDiagnostic(self.gpa, diag);
         self.project_diags.deinit(self.gpa);
         var it = self.docs.iterator();
@@ -301,7 +503,7 @@ const ReportImpl = struct {
 
     /// Task 2's single-root entry point, retained for the projection tests.
     pub fn add(self: *ReportImpl, assembled: *const Pngine.Assembled, entry: *const WgslDiagnostic.Entry) !void {
-        try self.addInternal(assembled, null, entry);
+        try self.addInternal(assembled, null, entry, .validator);
     }
 
     /// Composed entry point: records which root produced the finding so a
@@ -312,7 +514,32 @@ const ReportImpl = struct {
         root: Pngine.RootId,
         entry: *const WgslDiagnostic.Entry,
     ) !void {
-        try self.addInternal(assembled, root, entry);
+        try self.addInternal(assembled, root, entry, .validator);
+    }
+
+    /// Lint entry point: same projection and root attachment as validator
+    /// entries, plus the whole-unit liveness and fix-conflict policies.
+    pub fn addLintFromRoot(
+        self: *ReportImpl,
+        assembled: *const Pngine.Assembled,
+        root: Pngine.RootId,
+        entry: *const WgslDiagnostic.Entry,
+    ) !void {
+        try self.addInternal(assembled, root, entry, .lint);
+    }
+
+    /// Number of distinct shader-module roots that reach the requested
+    /// file. Zero for a synthetic report with no memberships.
+    pub fn requestRootCount(self: *const ReportImpl) usize {
+        return self.request_roots.len;
+    }
+
+    /// Record that `root` assembled into a module the linter could judge.
+    /// Only request roots participate in liveness intersection.
+    pub fn noteRootAnalyzed(self: *ReportImpl, root: Pngine.RootId, lint_capable: bool) !void {
+        if (!lint_capable) return;
+        if (!containsRoot(self.request_roots, root)) return;
+        try appendRoot(self.gpa, &self.lint_roots, root);
     }
 
     pub fn finish(self: *ReportImpl) ![]LspDiagnostic {
@@ -326,7 +553,12 @@ const ReportImpl = struct {
         try out.appendSlice(self.gpa, self.project_diags.items);
         self.project_diags.clearRetainingCapacity();
 
+        self.applyLintPolicy();
+        self.dropSuppressedFindings();
+        self.resolveFixConflicts();
+
         for (self.findings.items) |*finding| {
+            try self.finalizeLintFix(finding);
             try self.finalizeFinding(finding);
 
             const related_slice: []const LspRelatedInfo = if (finding.related.items.len > 0)
@@ -342,6 +574,7 @@ const ReportImpl = struct {
                 .code = finding.code,
                 .spec_url = finding.spec_url,
                 .related = related_slice,
+                .tags = finding.tags,
                 .data = finding.data,
             });
 
@@ -350,6 +583,8 @@ const ReportImpl = struct {
             finding.message = "";
             finding.spec_url = "";
             finding.data = .none;
+            finding.tags = &.{};
+            freeFixCandidates(self.gpa, &finding.fix_candidates);
             finding.roots.deinit(self.gpa);
             finding.roots = .empty;
         }
@@ -363,11 +598,88 @@ const ReportImpl = struct {
         return out.toOwnedSlice(self.gpa);
     }
 
+    /// Whole-unit policy. Liveness findings must hold in every root the
+    /// linter could judge; the module-size rule needs one root context.
+    fn applyLintPolicy(self: *ReportImpl) void {
+        for (self.findings.items) |*finding| {
+            if (finding.kind != .lint) continue;
+            if (isLivenessCode(finding.code)) {
+                if (!self.lintHoldsEverywhere(finding)) finding.suppressed = true;
+            } else if (std.mem.eql(u8, finding.code, code_minify_size)) {
+                if (self.request_roots.len > 1) finding.suppressed = true;
+            }
+        }
+    }
+
+    /// Remove refused findings before the first fallible emission step, so
+    /// a later OOM can neither emit one nor free its storage twice.
+    fn dropSuppressedFindings(self: *ReportImpl) void {
+        var kept: usize = 0;
+        for (self.findings.items) |finding| {
+            if (finding.suppressed) {
+                var doomed = finding;
+                doomed.deinit(self.gpa);
+                continue;
+            }
+            self.findings.items[kept] = finding;
+            kept += 1;
+        }
+        self.findings.shrinkRetainingCapacity(kept);
+    }
+
+    fn lintHoldsEverywhere(self: *const ReportImpl, finding: *const Finding) bool {
+        // A synthetic Report used by projection tests never records an
+        // analyzed root; there is nothing to disprove the finding.
+        if (self.lint_roots.items.len == 0) return true;
+        for (self.lint_roots.items) |root| {
+            if (!containsRoot(finding.roots.items, root)) return false;
+        }
+        return true;
+    }
+
+    /// Two roots may offer different rewrites for the same author range.
+    /// Neither may be applied blindly; drop both fixes and keep the
+    /// diagnostics. Every candidate participates, including one belonging
+    /// to a finding whose own roots already disagree, so an internally
+    /// conflicted finding cannot lend credibility to a different text.
+    fn resolveFixConflicts(self: *ReportImpl) void {
+        for (self.findings.items, 0..) |*finding, index| {
+            if (finding.kind != .lint) continue;
+            for (finding.fix_candidates.items) |mine| {
+                for (self.findings.items[index + 1 ..]) |*other| {
+                    if (other.kind != .lint) continue;
+                    for (other.fix_candidates.items) |theirs| {
+                        if (!rangeEql(mine.range, theirs.range)) continue;
+                        if (std.mem.eql(u8, mine.text, theirs.text)) continue;
+                        finding.fix_conflicted = true;
+                        other.fix_conflicted = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn finalizeLintFix(self: *ReportImpl, finding: *Finding) !void {
+        if (finding.kind != .lint or finding.fix_conflicted) return;
+        // A rule-supplied payload (`unused_symbol`) drives its own quick
+        // fix; never replace it with a generic rewrite.
+        if (finding.data != .none) return;
+        const candidate = selectedFix(finding) orelse return;
+        finding.data = .{ .lint_fix = .{
+            .start_line = candidate.range.start.line,
+            .start_character = candidate.range.start.character,
+            .end_line = candidate.range.end.line,
+            .end_character = candidate.range.end.character,
+            .text = try dupeOrEmpty(self.gpa, candidate.text),
+        } };
+    }
+
     fn addInternal(
         self: *ReportImpl,
         assembled: *const Pngine.Assembled,
         root: ?Pngine.RootId,
         entry: *const WgslDiagnostic.Entry,
+        kind: FindingKind,
     ) !void {
         const mapped = assembled.toOrigin(.{
             .start = entry.range.start.offset,
@@ -393,8 +705,12 @@ const ReportImpl = struct {
         const message = try dupeOrEmpty(self.gpa, entry.message);
         errdefer if (message.len > 0) self.gpa.free(message);
 
-        if (self.findFinding(range, entry.code, message)) |finding| {
+        if (self.findFinding(range, entry.code, message, kind)) |finding| {
             if (root) |id| try appendRoot(self.gpa, &finding.roots, id);
+            if (kind == .lint) if (entry.fix) |fix| {
+                const candidate = try self.projectFixCandidate(assembled, fix);
+                try appendFixCandidate(self.gpa, &finding.fix_candidates, candidate);
+            };
             if (message.len > 0) self.gpa.free(message);
             return;
         }
@@ -405,14 +721,29 @@ const ReportImpl = struct {
         const spec_url = try buildSpecUrl(self.gpa, entry);
         errdefer if (spec_url.len > 0) self.gpa.free(spec_url);
 
-        const data = try self.projectData(assembled, entry);
+        const data = if (kind == .lint) blk: {
+            break :blk switch (entry.data) {
+                // A rule-emitted `.lint_fix` payload without byte ranges
+                // cannot be verified against the assembled unit.
+                .lint_fix => WgslDiagnostic.QuickFixHint.none,
+                else => Handler.Diagnostics.dupeQuickFixHint(self.gpa, entry.data),
+            };
+        } else try self.projectData(assembled, entry);
         errdefer Handler.Diagnostics.freeQuickFixHint(self.gpa, data);
+
+        var fix_candidates: std.ArrayList(FixCandidate) = .empty;
+        errdefer freeFixCandidates(self.gpa, &fix_candidates);
+        if (kind == .lint) if (entry.fix) |fix| {
+            const candidate = try self.projectFixCandidate(assembled, fix);
+            try appendFixCandidate(self.gpa, &fix_candidates, candidate);
+        };
 
         var roots: std.ArrayList(Pngine.RootId) = .empty;
         errdefer roots.deinit(self.gpa);
         if (root) |id| try roots.append(self.gpa, id);
 
         try self.findings.append(self.gpa, .{
+            .kind = kind,
             .range = range,
             .severity = switch (entry.severity) {
                 .@"error" => .@"error",
@@ -427,11 +758,20 @@ const ReportImpl = struct {
             .related = related,
             .data = data,
             .roots = roots,
+            .fix_candidates = fix_candidates,
+            .tags = if (kind == .lint) Diagnostics.tagsForCode(entry.code) else &.{},
         });
     }
 
-    fn findFinding(self: *ReportImpl, range: Handler.Range, code: []const u8, message: []const u8) ?*Finding {
+    fn findFinding(
+        self: *ReportImpl,
+        range: Handler.Range,
+        code: []const u8,
+        message: []const u8,
+        kind: FindingKind,
+    ) ?*Finding {
         for (self.findings.items) |*finding| {
+            if (finding.kind != kind) continue;
             if (!std.meta.eql(finding.range, range)) continue;
             if (!std.mem.eql(u8, finding.code, code)) continue;
             if (!std.mem.eql(u8, finding.message, message)) continue;
@@ -924,6 +1264,26 @@ const ReportImpl = struct {
             .end_character = range.end.character,
             .text = text,
         } };
+    }
+
+    /// Project a lint fix into author coordinates without committing to it.
+    /// The caller collects one candidate per root and only emits a
+    /// `.lint_fix` after every candidate agrees. A range that leaves the
+    /// requested file, enters inline `:code`, or crosses a part boundary
+    /// has no safe author representation and yields null.
+    fn projectFixCandidate(
+        self: *ReportImpl,
+        assembled: *const Pngine.Assembled,
+        fix: *const WgslDiagnostic.Fix,
+    ) !?FixCandidate {
+        const mapped = assembled.toOrigin(.{
+            .start = fix.range.start.offset,
+            .end = fix.range.end.offset,
+        }) orelse return null;
+        if (!self.isRequested(mapped.origin)) return null;
+        const doc = (try self.docFor(mapped.origin)) orelse return null;
+        const range = doc.mapper.range(mapped.range.start, mapped.range.end) orelse return null;
+        return .{ .range = range, .text = try dupeOrEmpty(self.gpa, fix.text) };
     }
 
     fn isRequested(self: *const ReportImpl, origin: Pngine.OriginKey) bool {

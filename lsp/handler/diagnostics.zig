@@ -234,7 +234,7 @@ fn validateDocumentInner(handler: *Handler, uri: []const u8, options: ValidateOp
 /// a shared rule id), falling back to `@wgslender/recommended` when
 /// neither layer configures one. `@wgslender/minify` is appended rather
 /// than run as a second, separate lint pass.
-fn buildExtendsList(
+pub fn buildExtendsList(
     handler: *const Handler,
     arena: std.mem.Allocator,
     lint_active: bool,
@@ -263,7 +263,7 @@ const lsp_severity_defaults = [_]struct { id: []const u8, severity: WgslDiagnost
     .{ .id = "no-dead-code", .severity = .hint },
 };
 
-fn buildRuleOverrides(
+pub fn buildRuleOverrides(
     handler: *const Handler,
     arena: std.mem.Allocator,
     eff: MinifySettings.Effective,
@@ -425,7 +425,7 @@ pub const wgsl_spec_base = "https://www.w3.org/TR/WGSL/#";
 /// underlined. Keyed by code so it applies however the diagnostic was
 /// produced — these three used to come from hand-coded passes that set
 /// the tag inline, and now come from the lint rules that superseded them.
-fn tagsForCode(code: []const u8) []const Handler.DiagnosticTag {
+pub fn tagsForCode(code: []const u8) []const Handler.DiagnosticTag {
     const unnecessary_codes = [_][]const u8{
         WgslDiagnostic.Code.lint_no_unused_vars, // W0001
         WgslDiagnostic.Code.lint_no_dead_code, // W0002

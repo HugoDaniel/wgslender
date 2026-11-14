@@ -946,6 +946,13 @@ pub fn build(b: *std.Build) void {
             w,
             .{ .name = "Handler", .module = handler_mod },
         });
+        // pngine whole-unit lint semantics (phase 03, Task 4): liveness
+        // intersection across containing roots, local style dedupe,
+        // unambiguous module-size findings and safe quick fixes.
+        _ = addTestStep(b, test_step, "tests/pngine_lint_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+        });
         // pngine composed push/pull diagnostics (phase 03, Task 5): sibling
         // republish fanout, pull freshness/result ids, standalone parity,
         // capability advertisement and watched-change refresh requests.
