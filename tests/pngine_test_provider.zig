@@ -39,6 +39,12 @@ pub const FakeProvider = struct {
     files: std.StringHashMapUnmanaged([]u8) = .{},
     fail_reads: std.StringHashMapUnmanaged(void) = .{},
     read_calls: usize = 0,
+    /// Reads whose path names a `.sjon` document. A warm WGSL keystroke must
+    /// not re-parse a project graph, and this is the observable the perf
+    /// gate asserts against.
+    sjon_read_calls: usize = 0,
+    /// Reads whose path does not name a `.sjon` document (WGSL sources).
+    wgsl_read_calls: usize = 0,
     candidate_calls: usize = 0,
 
     pub fn init(gpa: std.mem.Allocator) FakeProvider {
@@ -107,6 +113,11 @@ pub const FakeProvider = struct {
     fn readText(context: *anyopaque, allocator: std.mem.Allocator, path: []const u8) anyerror![]u8 {
         const self: *FakeProvider = @ptrCast(@alignCast(context));
         self.read_calls += 1;
+        if (std.mem.endsWith(u8, path, ".sjon")) {
+            self.sjon_read_calls += 1;
+        } else {
+            self.wgsl_read_calls += 1;
+        }
         if (self.fail_reads.contains(path)) return error.FileNotFound;
         const text = self.files.get(path) orelse return error.FileNotFound;
         return allocator.dupe(u8, text);

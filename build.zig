@@ -962,6 +962,72 @@ pub fn build(b: *std.Build) void {
             .{ .name = "lsp", .module = lsp_mod },
             .{ .name = "NativeServer", .module = native_server_mod },
         });
+        // pngine warm-keystroke budget (phase 03, Task 6). After a warm
+        // discovery and root analysis, 200 buffer edits must perform zero
+        // discovery scans, zero project provider reads, zero `.sjon` reads
+        // and zero unrelated-root analyses. The test prints the counters,
+        // so a green run states exactly what it observed.
+        _ = addTestStep(b, test_step, "tests/pngine_perf_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+        });
+
+        // pngine corpus acceptance (phase 03, Task 6) — opt-in, like the
+        // tint tier. The inercia checkout is a read-only sibling input;
+        // without `-Dinercia=<path>` the step prints a plain skip line and
+        // exits 0, and the ordinary `test` step never depends on it. The
+        // native filesystem provider is the same one `NativeServer` binds,
+        // so the gate reads the corpus exactly as the editor does.
+        const inercia_path = b.option(
+            []const u8,
+            "inercia",
+            "Path to an inercia-2026 checkout for the opt-in pngine-corpus-test step",
+        );
+        const corpus_step = b.step(
+            "pngine-corpus-test",
+            "Run the opt-in pngine diagnostics corpus gate (-Dinercia=<path>)",
+        );
+        if (inercia_path) |path| {
+            if (hasFile(b, "tests/pngine_corpus_test.zig")) {
+                const corpus_options = b.addOptions();
+                corpus_options.addOption([]const u8, "inercia_root", b.pathFromRoot(path));
+                const native_source_provider_mod = b.addModule("native_source_provider", .{
+                    .root_source_file = b.path("lsp/native/source_provider.zig"),
+                    .target = target,
+                    .optimize = optimize,
+                    .imports = &.{
+                        .{ .name = "wgslender", .module = wgslender_mod },
+                    },
+                });
+                const corpus_test = b.addTest(.{
+                    .root_module = b.createModule(.{
+                        .root_source_file = b.path("tests/pngine_corpus_test.zig"),
+                        .target = target,
+                        .optimize = optimize,
+                        .imports = &.{
+                            w,
+                            .{ .name = "Handler", .module = handler_mod },
+                            .{ .name = "native_source_provider", .module = native_source_provider_mod },
+                            .{ .name = "corpus_config", .module = corpus_options.createModule() },
+                        },
+                    }),
+                });
+                const run_corpus = b.addRunArtifact(corpus_test);
+                corpus_step.dependOn(&run_corpus.step);
+            } else {
+                const skip = b.addSystemCommand(&.{
+                    "echo",
+                    "pngine corpus gate skipped: tests/pngine_corpus_test.zig is absent",
+                });
+                corpus_step.dependOn(&skip.step);
+            }
+        } else {
+            const skip = b.addSystemCommand(&.{
+                "echo",
+                "pngine corpus gate skipped: pass -Dinercia=<path> to enable it",
+            });
+            corpus_step.dependOn(&skip.step);
+        }
     }
     // Code action integration tests
     _ = addTestStep(b, test_step, "tests/code_action_test.zig", target, optimize, &.{ w, .{ .name = "Handler", .module = handler_mod } });
