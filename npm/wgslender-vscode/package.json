@@ -364,6 +364,7 @@
     "compile-tests": "tsc -p ./src/test/tsconfig.json",
     "pretest": "npm run compile-tests && npm run build",
     "test": "node ./out/test/runTest.js",
+    "test:unit": "node --test test/pngine-parts.test.ts",
     "test:web-host": "node scripts/web-host-smoke.mjs"
   },
   "devDependencies": {
