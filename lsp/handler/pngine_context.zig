@@ -167,7 +167,54 @@ pub fn contextsForPart(
     }
 }
 
-/// Release a slice returned by `contextsAt` or `contextsForPart`.
+/// Completion is a between-bytes request: the editor asks at the byte
+/// position just after the text it is completing. A trailing `@` or `.` at
+/// the end of a part therefore has no covered author byte, and the strict
+/// `contextsAt` mapping (hover/definition) rightly refuses it. Completion
+/// retries the previous author byte as the mapping anchor; callers decide
+/// the trigger from the real author offset and text. Every root context is
+/// still real — no offset is fabricated inside the assembly.
+pub fn contextsForCompletion(
+    handler: *Handler,
+    uri: []const u8,
+    position: Handler.Position,
+) ![]RequestContext {
+    const contexts = try contextsAt(handler, uri, position);
+    if (contexts.len > 0) return contexts;
+    if (comptime pngine_support) {
+        if (position.character > 0) {
+            return contextsAt(handler, uri, .{
+                .line = position.line,
+                .character = position.character - 1,
+            });
+        }
+    }
+    return contexts;
+}
+
+/// The part-addressed counterpart of `contextsForCompletion`: an inline
+/// `:code` part has no URI, and a trailing trigger at its end anchors on
+/// its last author byte.
+pub fn contextsForPartCompletion(
+    handler: *Handler,
+    part: OriginKey,
+    position: Handler.Position,
+) ![]RequestContext {
+    const contexts = try contextsForPart(handler, part, position);
+    if (contexts.len > 0) return contexts;
+    if (comptime pngine_support) {
+        if (position.character > 0) {
+            return contextsForPart(handler, part, .{
+                .line = position.line,
+                .character = position.character - 1,
+            });
+        }
+    }
+    return contexts;
+}
+
+/// Release a slice returned by `contextsAt`, `contextsForPart`,
+/// `contextsForCompletion`, or `contextsForPartCompletion`.
 pub fn freeContexts(handler: *Handler, contexts: []RequestContext) void {
     if (contexts.len > 0) handler.gpa.free(contexts);
 }
@@ -294,6 +341,27 @@ pub fn toAuthorRange(context: *const RequestContext, start: u32, end: u32) ?Byte
         const origin = context.origin orelse return null;
         if (mapped.origin.program != origin.program or mapped.origin.index != origin.index) return null;
         return mapped.range;
+    } else {
+        return null;
+    }
+}
+
+/// Map an author-local offset in `context`'s origin to the assembled offset
+/// the root analysis must be queried at. A standalone context is already in
+/// author coordinates, so the offset passes through unchanged. A composed
+/// byte with no semantic copy (blanked duplicate, past EOF, synthetic
+/// terminator) returns `null` rather than clamping into a neighbouring part.
+pub fn assembledOffsetFor(context: *const RequestContext, author_offset: u32) ?u32 {
+    if (!context.isComposed()) return author_offset;
+    if (comptime pngine_support) {
+        const analysis = context.analysis orelse return null;
+        const origin = context.origin orelse return null;
+        const assembled = analysis.assembled.offsetFromOrigin(.{
+            .origin = origin,
+            .offset = author_offset,
+        }) orelse return null;
+        if (!isAuthoredByte(analysis.assembled, origin, author_offset, assembled)) return null;
+        return assembled;
     } else {
         return null;
     }

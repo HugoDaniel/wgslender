@@ -966,6 +966,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "native_navigation", .module = native_navigation_mod },
             .{ .name = "native_symbols", .module = native_symbols_mod },
         });
+        // pngine composed completion and member resolution (phase 04,
+        // Task 4): imported/root/inline module scope, assembled-offset
+        // locals, shadowing, root type conflicts, sibling member bases and
+        // the error-recovery name fallback's compatibility bound.
+        _ = addTestStep(b, test_step, "tests/pngine_completion_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+        });
         // pngine composed diagnostic projection (phase 03, Task 2): mapped
         // validator ranges, hoisted directives, part boundaries, related
         // information on another file, EOF fallback and quick-fix safety.

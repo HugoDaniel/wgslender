@@ -4,13 +4,17 @@
 
 const std = @import("std");
 const wgslender = @import("wgslender");
+const build_options = @import("build_options");
 
 const Handler = @import("../Handler.zig");
+const PngineContext = @import("pngine_context.zig");
 const NodeAtOffset = @import("node_at_offset.zig");
 const Position = Handler.Position;
 const Builtins = wgslender.Builtins;
 const Lexer = wgslender.Lexer;
 const Ast = wgslender.Ast;
+
+const pngine_support = build_options.pngine_support;
 
 pub const CompletionItem = struct {
     label: []const u8,
@@ -42,6 +46,39 @@ const wgsl_attributes = [_][]const u8{
 };
 
 pub fn computeCompletion(handler: *Handler, uri: []const u8, position: Position) ![]CompletionItem {
+    // Project members answer from every containing root's assembled unit
+    // (pngine-shaders phase 04, Task 4). A standalone document — and a
+    // member whose root cannot honestly map this position — keeps the
+    // original single-document path byte-for-byte.
+    if (comptime pngine_support) {
+        const contexts = try PngineContext.contextsForCompletion(handler, uri, position);
+        defer Handler.freeContexts(handler, contexts);
+        if (contexts.len > 0 and contexts[0].isComposed()) {
+            return composedCompletion(handler, contexts, position);
+        }
+    }
+    return standaloneCompletion(handler, uri, position);
+}
+
+/// Complete at a position in a part-addressed document (an inline `:code`
+/// part). There is no request URI and no virtual document yet, so only the
+/// label/kind/detail items exist — no location is invented for them.
+pub fn computeCompletionForPart(
+    handler: *Handler,
+    part: PngineContext.OriginKey,
+    position: Position,
+) ![]CompletionItem {
+    if (comptime pngine_support) {
+        const contexts = try PngineContext.contextsForPartCompletion(handler, part, position);
+        defer Handler.freeContexts(handler, contexts);
+        if (contexts.len == 0) return &.{};
+        return composedCompletion(handler, contexts, position);
+    } else {
+        return error.PngineUnsupported;
+    }
+}
+
+fn standaloneCompletion(handler: *Handler, uri: []const u8, position: Position) ![]CompletionItem {
     const doc = handler.documents.getPtr(uri) orelse return &.{};
     const source = doc.source;
     const offset: u32 = @intCast(Handler.lspPositionToOffset(source, position) orelse return &.{});
@@ -56,6 +93,34 @@ pub fn computeCompletion(handler: *Handler, uri: []const u8, position: Position)
     }
 
     return generalCompletion(handler, uri, offset);
+}
+
+/// Completion for one or more composed contexts. The trigger and cursor are
+/// read from the request document's own text; the payload is assembled per
+/// root. `position` may sit one byte past the part text (a just-typed
+/// trailing `@`/`.`), in which case the contexts anchored on the previous
+/// author byte but the trigger offset is still the real cursor.
+fn composedCompletion(
+    handler: *Handler,
+    contexts: []Handler.RequestContext,
+    position: Position,
+) ![]CompletionItem {
+    std.debug.assert(contexts.len > 0);
+
+    var author = try PngineContext.authorText(handler, &contexts[0]);
+    defer author.deinit(handler.gpa);
+    const source = author.text;
+    const offset_usize = Handler.lspPositionToOffset(source, position) orelse return &.{};
+    if (offset_usize > std.math.maxInt(u32)) return &.{};
+    const offset: u32 = @intCast(offset_usize);
+
+    if (offset > 0 and source[offset - 1] == '@') {
+        return attributeCompletion(handler);
+    }
+    if (offset > 0 and source[offset - 1] == '.') {
+        return composedMemberCompletion(handler, contexts, source, offset);
+    }
+    return composedGeneralCompletion(handler, contexts);
 }
 
 fn attributeCompletion(handler: *Handler) ![]CompletionItem {
@@ -118,18 +183,366 @@ fn memberCompletion(handler: *Handler, uri: []const u8, source: []const u8, dot_
             },
             .vector => {
                 // Vector swizzle components
-                const swizzles = [_][]const u8{ "x", "y", "z", "w", "r", "g", "b", "a" };
-                const items = try handler.gpa.alloc(CompletionItem, swizzles.len);
-                for (swizzles, 0..) |s, i| {
-                    items[i] = .{ .label = s, .kind = .field };
-                }
-                return items;
+                return swizzleCompletion(handler);
             },
             else => {},
         }
     }
 
     return &.{};
+}
+
+fn swizzleCompletion(handler: *Handler) ![]CompletionItem {
+    const swizzles = [_][]const u8{ "x", "y", "z", "w", "r", "g", "b", "a" };
+    const items = try handler.gpa.alloc(CompletionItem, swizzles.len);
+    for (swizzles, 0..) |s, i| {
+        items[i] = .{ .label = s, .kind = .field };
+    }
+    return items;
+}
+
+/// Member completion across every containing root. Each context first
+/// resolves the base through the mapped AST/symbol. Only when error
+/// recovery dropped the statement does the name fallback run — and then it
+/// considers active, visible symbols only, requires one compatible type per
+/// root, and requires the roots to agree on that type's fields. A
+/// disagreement returns no fields at all; picking the first root's symbol
+/// is never an option (N30).
+fn composedMemberCompletion(
+    handler: *Handler,
+    contexts: []Handler.RequestContext,
+    source: []const u8,
+    dot_offset: u32,
+) ![]CompletionItem {
+    // Find the identifier before the dot, exactly as the standalone path.
+    var start = dot_offset - 1;
+    if (start > 0 and source[start] == '.') start -= 1; // skip the dot
+    while (start > 0 and (std.ascii.isAlphanumeric(source[start - 1]) or source[start - 1] == '_')) start -= 1;
+    const base_name = source[start .. dot_offset - 1];
+    if (base_name.len == 0) return &.{};
+
+    var fields: ?*const wgslender.Types.Struct = null;
+    var swizzle = false;
+    var non_member = false;
+    var conflict = false;
+
+    for (contexts) |*context| {
+        const analysis = PngineContext.analysisFor(handler, context) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        const module = analysis.module orelse continue;
+
+        var base_type: ?wgslender.Types.Type = null;
+        var visible = VisibleLocals.collect(handler.gpa, module, context.assembled_offset);
+        defer visible.deinit(handler.gpa);
+        var module_level = collectModuleLevel(handler.gpa, module);
+        defer module_level.deinit(handler.gpa);
+
+        if (PngineContext.assembledOffsetFor(context, start)) |assembled_start| {
+            switch (NodeAtOffset.find(module, assembled_start)) {
+                .ident => |id| {
+                    // The AST binding is authoritative when it survived
+                    // parsing; error recovery otherwise leaves no node here
+                    // and the restricted name fallback below answers.
+                    if (id.ref.isValid()) {
+                        base_type = analysis.symbol_types.get(id.ref.index());
+                    }
+                },
+                else => {},
+            }
+        }
+
+        if (base_type == null) {
+            switch (fallbackMemberBase(analysis, module, base_name, &visible, &module_level)) {
+                .type => |typ| base_type = typ,
+                .none => continue,
+                .ambiguous => {
+                    conflict = true;
+                    continue;
+                },
+            }
+        }
+        const resolved = base_type.?;
+        switch (resolved) {
+            .@"struct" => |st| {
+                if (swizzle or non_member) {
+                    conflict = true;
+                    continue;
+                }
+                if (fields) |previous| {
+                    if (!structFieldsCompatible(previous, st)) conflict = true;
+                } else {
+                    fields = st;
+                }
+            },
+            .vector => {
+                if (fields != null or non_member) conflict = true;
+                swizzle = true;
+            },
+            else => {
+                // A root that names a non-member-bearing type disagrees
+                // with one that names fields; a lone such answer is simply
+                // empty, as in the standalone path.
+                if (fields != null or swizzle) conflict = true;
+                non_member = true;
+            },
+        }
+    }
+
+    if (conflict) return &.{};
+    if (fields) |st| return structFieldCompletion(handler, st);
+    if (swizzle) return swizzleCompletion(handler);
+    return &.{};
+}
+
+const MemberBase = union(enum) {
+    type: wgslender.Types.Type,
+    none,
+    ambiguous,
+};
+
+/// The error-recovery fallback: the base identifier did not survive
+/// parsing, so the module's active symbols carrying that name are the only
+/// evidence left. A visible local wins; module-scope candidates must agree
+/// on one member-bearing type. Incompatible active candidates make the
+/// answer ambiguous rather than order-dependent.
+fn fallbackMemberBase(
+    analysis: *const wgslender.Validator.AnalysisResult,
+    module: *const Ast.Module,
+    base_name: []const u8,
+    visible: *const VisibleLocals,
+    module_level: *const std.AutoHashMapUnmanaged(u32, void),
+) MemberBase {
+    var chosen: ?wgslender.Types.Type = null;
+    var chosen_is_local = false;
+    var ambiguous = false;
+
+    for (module.symbols.items, 0..) |sym, idx| {
+        // Tombstones share names with active replacement declarations and
+        // no longer have a type; they are never candidates.
+        if (sym.flags.is_retired) continue;
+        if (!std.mem.eql(u8, sym.original_name, base_name)) continue;
+
+        const symbol_index: u32 = @intCast(idx);
+        const is_local = switch (sym.kind) {
+            .parameter, .let, .@"var" => !module_level.contains(symbol_index),
+            else => false,
+        };
+        if (is_local and !visible.contains(symbol_index)) continue;
+
+        const type_info = analysis.symbol_types.get(symbol_index);
+        if (is_local) {
+            const member_bearing = if (type_info) |typ| switch (typ) {
+                .@"struct", .vector => true,
+                else => false,
+            } else false;
+            if (!member_bearing) {
+                // A visible local shadows an outer name even when it cannot
+                // yield fields. Falling through to a module declaration
+                // would complete a name the cursor cannot see.
+                chosen = null;
+                chosen_is_local = true;
+                ambiguous = false;
+                continue;
+            }
+            const typ = type_info.?;
+            // A visible local shadows every module-scope name.
+            if (chosen_is_local) {
+                if (chosen == null or !memberTypeCompatible(chosen.?, typ)) ambiguous = true;
+            } else {
+                chosen = typ;
+                chosen_is_local = true;
+                ambiguous = false;
+            }
+            continue;
+        }
+        if (chosen_is_local) continue;
+
+        const typ = type_info orelse continue;
+        switch (typ) {
+            .@"struct", .vector => {},
+            else => continue,
+        }
+        if (chosen) |existing| {
+            if (!memberTypeCompatible(existing, typ)) ambiguous = true;
+        } else {
+            chosen = typ;
+        }
+    }
+
+    if (ambiguous) return .ambiguous;
+    if (chosen) |typ| return .{ .type = typ };
+    return .none;
+}
+
+/// Two roots may name the same struct while defining different fields (a
+/// root-supplied hole). The name alone is not enough for a member answer.
+fn memberTypeCompatible(a: wgslender.Types.Type, b: wgslender.Types.Type) bool {
+    if (!a.eql(b)) return false;
+    return switch (a) {
+        .@"struct" => |sa| switch (b) {
+            .@"struct" => |sb| structFieldsCompatible(sa, sb),
+            else => false,
+        },
+        else => true,
+    };
+}
+
+fn structFieldsCompatible(a: *const wgslender.Types.Struct, b: *const wgslender.Types.Struct) bool {
+    if (a.fields.len != b.fields.len) return false;
+    for (a.fields, b.fields) |left, right| {
+        if (!std.mem.eql(u8, left.name, right.name)) return false;
+        if (!left.typ.eql(right.typ)) return false;
+    }
+    return true;
+}
+
+fn structFieldCompletion(handler: *Handler, st: *const wgslender.Types.Struct) ![]CompletionItem {
+    const items = try handler.gpa.alloc(CompletionItem, st.fields.len);
+    for (st.fields, 0..) |field, i| {
+        items[i] = .{ .label = field.name, .kind = .field, .detail = field.typ.string() };
+    }
+    return items;
+}
+
+const ScopedItem = struct {
+    label: []const u8,
+    kind: CompletionKind,
+    detail: []const u8,
+};
+
+const MergedItem = struct {
+    label: []const u8,
+    kind: CompletionKind,
+    detail: []const u8,
+    /// Two roots (or two active declarations) disagree on this label's
+    /// kind or non-empty type detail. The label is then not offered at all
+    /// rather than resolved by root/document order.
+    conflict: bool = false,
+};
+
+fn findMerged(items: []MergedItem, label: []const u8) ?*MergedItem {
+    for (items) |*item| {
+        if (std.mem.eql(u8, item.label, label)) return item;
+    }
+    return null;
+}
+
+/// Merge one completion group by label. Empty details are unknown and
+/// compatible with anything; two different non-empty details conflict.
+/// `shadowed_len` is the number of entries already owned by a higher
+/// priority group (visible locals): labels in that prefix are not duplicated
+/// or replaced by this group.
+fn mergeScopedItems(
+    gpa: std.mem.Allocator,
+    merged: *std.ArrayList(MergedItem),
+    items: []const ScopedItem,
+    shadowed_len: usize,
+) !void {
+    for (items) |item| {
+        if (findMerged(merged.items[0..shadowed_len], item.label) != null) continue;
+        if (findMerged(merged.items, item.label)) |existing| {
+            if (existing.conflict) continue;
+            if (existing.kind != item.kind) {
+                existing.conflict = true;
+                continue;
+            }
+            if (item.detail.len == 0) continue;
+            if (existing.detail.len == 0) {
+                existing.detail = item.detail;
+            } else if (!std.mem.eql(u8, existing.detail, item.detail)) {
+                existing.conflict = true;
+            }
+            continue;
+        }
+        try merged.append(gpa, .{ .label = item.label, .kind = item.kind, .detail = item.detail });
+    }
+}
+
+/// General completion over every containing root. `VisibleLocals` is
+/// collected per root at that root's assembled offset — the symbol indices
+/// are root-local and the offsets differ with assembly order. Locals merge
+/// first so a visible local shadows a library name with one label.
+fn composedGeneralCompletion(handler: *Handler, contexts: []Handler.RequestContext) ![]CompletionItem {
+    var locals: std.ArrayList(ScopedItem) = .empty;
+    defer locals.deinit(handler.gpa);
+    var globals: std.ArrayList(ScopedItem) = .empty;
+    defer globals.deinit(handler.gpa);
+
+    for (contexts) |*context| {
+        const analysis = PngineContext.analysisFor(handler, context) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        const module = analysis.module orelse continue;
+
+        var visible = VisibleLocals.collect(handler.gpa, module, context.assembled_offset);
+        defer visible.deinit(handler.gpa);
+        var module_level = collectModuleLevel(handler.gpa, module);
+        defer module_level.deinit(handler.gpa);
+
+        for (module.symbols.items, 0..) |sym, idx| {
+            // Detached declarations are not visible at any cursor.
+            if (sym.flags.is_retired) continue;
+            if (sym.original_name.len == 0) continue;
+
+            const symbol_index: u32 = @intCast(idx);
+            const detail = if (analysis.symbol_types.get(symbol_index)) |t| t.string() else "";
+            const label = sym.original_name;
+
+            switch (sym.kind) {
+                .function => try globals.append(handler.gpa, .{ .label = label, .kind = .function, .detail = detail }),
+                .@"struct" => try globals.append(handler.gpa, .{ .label = label, .kind = .struct_type, .detail = detail }),
+                .parameter, .let, .@"var" => {
+                    // Module-scope `var`s stay visible everywhere;
+                    // function-local names only where they're in scope at
+                    // this root's assembled cursor offset.
+                    if (module_level.contains(symbol_index)) {
+                        try globals.append(handler.gpa, .{ .label = label, .kind = .variable, .detail = detail });
+                    } else if (visible.contains(symbol_index)) {
+                        try locals.append(handler.gpa, .{ .label = label, .kind = .variable, .detail = detail });
+                    }
+                },
+                .@"const", .override => try globals.append(handler.gpa, .{ .label = label, .kind = .variable, .detail = detail }),
+                else => {},
+            }
+        }
+    }
+
+    var merged: std.ArrayList(MergedItem) = .empty;
+    defer merged.deinit(handler.gpa);
+    try mergeScopedItems(handler.gpa, &merged, locals.items, 0);
+    const local_labels = merged.items.len;
+    try mergeScopedItems(handler.gpa, &merged, globals.items, local_labels);
+
+    var items: std.ArrayList(CompletionItem) = .empty;
+    defer items.deinit(handler.gpa);
+    for (merged.items) |entry| {
+        if (entry.conflict) continue;
+        try items.append(handler.gpa, .{ .label = entry.label, .kind = entry.kind, .detail = entry.detail });
+    }
+    try appendStaticCompletions(handler, &items);
+    return try handler.gpa.dupe(CompletionItem, items.items);
+}
+
+/// The standalone inventories every completion path ends with, in the same
+/// order and with the same kinds/details.
+fn appendStaticCompletions(handler: *Handler, items: *std.ArrayList(CompletionItem)) !void {
+    // Builtin functions
+    for (Builtins.names()) |name| {
+        try items.append(handler.gpa, .{ .label = name, .kind = .builtin });
+    }
+
+    // Keywords
+    for (Lexer.keywords_map.keys()) |kw| {
+        try items.append(handler.gpa, .{ .label = kw, .kind = .keyword });
+    }
+
+    // Built-in type names
+    for (&wgsl_type_names) |tn| {
+        try items.append(handler.gpa, .{ .label = tn, .kind = .type_name });
+    }
 }
 
 /// The symbols a cursor can actually name, beyond the module-level ones.
@@ -272,20 +685,9 @@ fn generalCompletion(handler: *Handler, uri: []const u8, offset: u32) ![]Complet
         }
     } else |_| {}
 
-    // Builtin functions
-    for (Builtins.names()) |name| {
-        try items.append(handler.gpa, .{ .label = name, .kind = .builtin });
-    }
-
-    // Keywords
-    for (Lexer.keywords_map.keys()) |kw| {
-        try items.append(handler.gpa, .{ .label = kw, .kind = .keyword });
-    }
-
-    // Built-in type names
-    for (&wgsl_type_names) |tn| {
-        try items.append(handler.gpa, .{ .label = tn, .kind = .type_name });
-    }
+    // Builtin functions, keywords, and built-in type names — shared with
+    // the composed path so the inventories cannot drift.
+    try appendStaticCompletions(handler, &items);
 
     return try handler.gpa.dupe(CompletionItem, items.items);
 }

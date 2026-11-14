@@ -1101,6 +1101,7 @@ pub const Completion = @import("handler/completion.zig");
 pub const CompletionItem = Completion.CompletionItem;
 pub const CompletionKind = Completion.CompletionKind;
 pub const computeCompletion = Completion.computeCompletion;
+pub const computeCompletionForPart = Completion.computeCompletionForPart;
 
 // =========================================================================
 // LSP Feature: Signature Help — see lsp/handler/signature_help.zig
