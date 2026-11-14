@@ -31,6 +31,14 @@ pub const Extract = @import("Extract.zig");
 pub const Discovery = @import("Discovery.zig");
 /// Project store, reverse membership, overlays, and invalidation (Tasks 4–5).
 pub const Store = @import("Store.zig").Store;
+/// Pure fragment assembly and its line/byte tables (phase 02, Tasks 1–3).
+pub const Assemble = @import("Assemble.zig");
+/// An assembled module: author text, pngine-compatible rows, byte segments.
+pub const Assembled = Assemble.Assembled;
+/// A contributing part's stable identity, used by the origin mapping.
+pub const OriginKey = Assemble.OriginKey;
+/// A root's stable identity: program slot plus source-order part index.
+pub const RootId = Assemble.RootId;
 
 /// True when any top-level form in the SJON document `source` has head
 /// `head` (e.g. "wgsl", "shader-module", "pass").

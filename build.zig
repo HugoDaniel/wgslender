@@ -75,6 +75,16 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Pure fragment assembler (pngine-shaders phase 02, Tasks 1–2). No
+    // SJON, no `build_options`, no Store, so the module is also what
+    // pngine's own test process compiles in Task 5. Declared here so the
+    // standalone assembly suite and the native `wgslender` graph share it.
+    const pngine_assemble_mod = b.addModule("pngine_assemble", .{
+        .root_source_file = b.path("src/pngine/Assemble.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Core library module
     const wgslender_mod = b.addModule("wgslender", .{
         .root_source_file = b.path("src/root.zig"),
@@ -870,6 +880,17 @@ pub fn build(b: *std.Build) void {
     _ = addTestStep(b, test_step, "tests/pngine_path_test.zig", target, optimize, &.{
         .{ .name = "pngine_path", .module = pngine_path_mod },
     });
+    // pngine fragment assembly (pngine-shaders phase 02, Tasks 1–2). Pure
+    // library code; runs on the null lazy-dependency pass too.
+    const pngine_assemble_run = addTestStep(b, test_step, "tests/pngine_assemble_test.zig", target, optimize, &.{
+        .{ .name = "pngine_assemble", .module = pngine_assemble_mod },
+    });
+    // Temporary single-suite step for reds and mutation checks; removed
+    // before the phase gate.
+    if (pngine_assemble_run) |run| {
+        const only = b.step("test-pngine-assemble", "Run only the pngine assembly suite");
+        only.dependOn(run);
+    }
     // pngine strict extraction (pngine-shaders phase 01, Task 3). The
     // extractor imports SJON, so the module and the suite exist only
     // when the lazy dependency resolved.
