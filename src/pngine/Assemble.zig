@@ -28,6 +28,7 @@
 const std = @import("std");
 
 const types = @import("Types.zig");
+const directives = @import("Directives.zig");
 
 const Allocator = std.mem.Allocator;
 
@@ -46,6 +47,10 @@ pub const MAX_IMPORTS: u32 = 64;
 /// Depth of the assembly walk. The root's own text is not a depth level;
 /// a chain of 64 fragments is accepted, 65 is refused.
 pub const MAX_DEPTH: u32 = 64;
+
+/// Module-scope directives hoisted into one assembled module. pngine's
+/// `MAX_DIRECTIVES`; duplicates count against the bound.
+pub const MAX_DIRECTIVES: u32 = directives.MAX_DIRECTIVES;
 
 /// A root's stable identity: `(program slot, source-order part index)`.
 pub const RootId = types.PartId;
@@ -123,6 +128,19 @@ pub const Assembled = struct {
         if (self.segments.len > 0) gpa.free(@constCast(self.segments));
         self.* = undefined;
     }
+};
+
+/// One hoisted directive plus the part position it came from. Internal:
+/// callers see only the resulting rows and segments.
+const Hoisted = struct {
+    /// Position in the post-order fragment list, or `order.len` for the
+    /// root's own text.
+    part: u32,
+    directive: directives.Directive,
+    /// False when an identical directive was already hoisted from an
+    /// earlier part. It is still blanked where it was written, but it
+    /// contributes no line to the hoist block.
+    first: bool,
 };
 
 /// Bounds for one assembly. The defaults are pngine's published limits;
@@ -228,7 +246,36 @@ pub fn assembleWithLimits(
 
     var order: std.ArrayList(u32) = .empty;
     defer order.deinit(gpa);
-    try postOrder(gpa, program, sources, root, root_part.imports, limits, &order, failure);
+    try postOrder(gpa, program, root, root_part.imports, limits, &order, failure);
+
+    // THE DIRECTIVE HOIST, first half: scan every reached part's leading
+    // region in walk order, before a byte is written. A part whose text is
+    // missing fails here, so no partial unit is returned.
+    var hoisted: std.ArrayList(Hoisted) = .empty;
+    defer hoisted.deinit(gpa);
+    var part_directives: std.ArrayList(directives.Directive) = .empty;
+    defer part_directives.deinit(gpa);
+    for (order.items, 0..) |part_index, position| {
+        const text = sourceAt(sources, part_index) orelse {
+            if (failure) |f| f.at = partId(root, part_index);
+            return error.MissingSource;
+        };
+        try scanPart(gpa, text, @intCast(position), part_index, &part_directives, &hoisted, root, failure);
+    }
+    const root_text = sourceAt(sources, root.index) orelse {
+        if (failure) |f| f.at = root;
+        return error.MissingSource;
+    };
+    try scanPart(
+        gpa,
+        root_text,
+        @intCast(order.items.len),
+        root.index,
+        &part_directives,
+        &hoisted,
+        root,
+        failure,
+    );
 
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(gpa);
@@ -238,16 +285,49 @@ pub fn assembleWithLimits(
     errdefer segments.deinit(gpa);
 
     var line: u32 = 1;
-    for (order.items) |part_index| {
+
+    // The hoist block, in the order the parts were walked. WGSL lets the
+    // three directive kinds interleave, so nothing is sorted: what the
+    // author wrote is what ships, minus the repeats.
+    for (hoisted.items) |h| {
+        if (!h.first) continue;
+        const part_index = if (h.part == order.items.len) root.index else order.items[h.part];
+        const origin = partId(root, part_index);
         const part = program.parts[part_index];
-        const text = sourceAt(sources, part_index) orelse {
-            if (failure) |f| f.at = .{ .program = root.program, .index = part_index };
-            return error.MissingSource;
-        };
-        try appendBody(gpa, &out, &segments, partId(root, part_index), text);
-        const count = lineCount(text);
+        const start: u32 = @intCast(out.items.len);
+        out.appendSlice(gpa, h.directive.text) catch return error.OutOfMemory;
+        out.append(gpa, '\n') catch return error.OutOfMemory;
+        const text_end: u32 = @intCast(out.items.len - 1);
         try rows.append(gpa, .{
-            .origin = partId(root, part_index),
+            .origin = origin,
+            .name = part.name,
+            .first_line = line,
+            .line_count = h.directive.lines,
+            .src_line = h.directive.line,
+            .is_root = part.isRoot(),
+        });
+        try segments.append(gpa, .{
+            .assembled = .{ .start = start, .end = text_end },
+            .origin = origin,
+            .source = .{ .start = @intCast(h.directive.start), .end = @intCast(h.directive.end) },
+            .kind = .hoisted,
+        });
+        try segments.append(gpa, .{
+            .assembled = .{ .start = text_end, .end = text_end + 1 },
+            .origin = origin,
+            .source = .{ .start = @intCast(h.directive.end), .end = @intCast(h.directive.end) },
+            .kind = .terminator,
+        });
+        line += h.directive.lines;
+    }
+
+    for (order.items, 0..) |part_index, position| {
+        const part = program.parts[part_index];
+        const text = sourceAt(sources, part_index).?;
+        const origin = partId(root, part_index);
+        const count = try appendPart(gpa, &out, &segments, origin, text, hoisted.items, @intCast(position));
+        try rows.append(gpa, .{
+            .origin = origin,
             .name = part.name,
             .first_line = line,
             .line_count = count,
@@ -256,16 +336,20 @@ pub fn assembleWithLimits(
         line += count;
     }
 
-    const root_text = sourceAt(sources, root.index) orelse {
-        if (failure) |f| f.at = root;
-        return error.MissingSource;
-    };
-    try appendBody(gpa, &out, &segments, root, root_text);
+    const count = try appendPart(
+        gpa,
+        &out,
+        &segments,
+        root,
+        root_text,
+        hoisted.items,
+        @intCast(order.items.len),
+    );
     try rows.append(gpa, .{
         .origin = root,
         .name = root_part.name,
         .first_line = line,
-        .line_count = lineCount(root_text),
+        .line_count = count,
         .is_root = true,
     });
 
@@ -313,22 +397,135 @@ fn fastPath(
     };
 }
 
-fn appendBody(
+/// Scan one part's leading directives into `part_directives`, then merge
+/// them into the global `hoisted` list with pngine's deduplication.
+/// `limit` is the global remaining capacity, so a part cannot push the
+/// total past `MAX_DIRECTIVES`.
+fn scanPart(
+    gpa: Allocator,
+    text: []const u8,
+    position: u32,
+    part_index: u32,
+    part_directives: *std.ArrayList(directives.Directive),
+    hoisted: *std.ArrayList(Hoisted),
+    root: RootId,
+    failure: ?*Failure,
+) Error!void {
+    part_directives.clearRetainingCapacity();
+    const remaining: u32 = MAX_DIRECTIVES - @as(u32, @intCast(hoisted.items.len));
+    directives.scan(gpa, text, part_directives, remaining) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.TooManyDirectives => {
+            if (failure) |f| f.at = partId(root, part_index);
+            return error.TooDeep;
+        },
+    };
+
+    for (part_directives.items) |directive| {
+        var first = true;
+        for (hoisted.items) |previous| {
+            if (directives.eql(previous.directive.text, directive.text)) {
+                first = false;
+                break;
+            }
+        }
+        hoisted.append(gpa, .{
+            .part = position,
+            .directive = directive,
+            .first = first,
+        }) catch return error.OutOfMemory;
+    }
+}
+
+/// Append one part with its hoisted directives blanked out, guaranteeing
+/// the output ends on a newline, and return how many assembled lines it
+/// occupies. Mirrors pngine's `appendTerminated` / `appendBlanked`.
+///
+/// Blanking writes a space over every non-newline byte of a directive
+/// and keeps its newlines, so the part occupies the same lines AND the
+/// same columns it did before the hoist. A part with no trailing newline
+/// gets one appended, so the next part cannot share its last line.
+fn appendPart(
     gpa: Allocator,
     out: *std.ArrayList(u8),
     segments: *std.ArrayList(Segment),
     origin: OriginKey,
     text: []const u8,
+    hoisted: []const Hoisted,
+    part_position: u32,
+) Error!u32 {
+    if (text.len == 0) {
+        const start: u32 = @intCast(out.items.len);
+        out.append(gpa, '\n') catch return error.OutOfMemory;
+        try segments.append(gpa, .{
+            .assembled = .{ .start = start, .end = start + 1 },
+            .origin = origin,
+            .source = .{ .start = 0, .end = 0 },
+            .kind = .terminator,
+        });
+        return 1;
+    }
+
+    var cursor: usize = 0;
+    for (hoisted) |h| {
+        if (h.part != part_position) continue;
+        const directive = h.directive;
+        std.debug.assert(directive.start >= cursor); // scanned left to right, once
+        std.debug.assert(directive.end <= text.len);
+        if (directive.start > cursor) {
+            try appendRange(gpa, out, segments, origin, text, cursor, directive.start, .body);
+        }
+        const out_start: u32 = @intCast(out.items.len);
+        for (text[directive.start..directive.end]) |c| {
+            out.append(gpa, if (c == '\n') '\n' else ' ') catch return error.OutOfMemory;
+        }
+        try segments.append(gpa, .{
+            .assembled = .{ .start = out_start, .end = @intCast(out.items.len) },
+            .origin = origin,
+            .source = .{ .start = @intCast(directive.start), .end = @intCast(directive.end) },
+            .kind = .blanked,
+        });
+        cursor = directive.end;
+    }
+    if (cursor < text.len) {
+        try appendRange(gpa, out, segments, origin, text, cursor, text.len, .body);
+    }
+
+    // Counted from the part text, not from what was appended: blanking is
+    // length- and newline-preserving, so the two agree by construction.
+    const lines = lineCount(text);
+    if (text[text.len - 1] != '\n') {
+        const start: u32 = @intCast(out.items.len);
+        out.append(gpa, '\n') catch return error.OutOfMemory;
+        try segments.append(gpa, .{
+            .assembled = .{ .start = start, .end = start + 1 },
+            .origin = origin,
+            .source = .{ .start = @intCast(text.len), .end = @intCast(text.len) },
+            .kind = .terminator,
+        });
+    }
+    return lines;
+}
+
+fn appendRange(
+    gpa: Allocator,
+    out: *std.ArrayList(u8),
+    segments: *std.ArrayList(Segment),
+    origin: OriginKey,
+    text: []const u8,
+    from: usize,
+    to: usize,
+    kind: SegmentKind,
 ) Error!void {
-    if (text.len == 0) return;
+    if (from == to) return;
     const start: u32 = @intCast(out.items.len);
-    out.appendSlice(gpa, text) catch return error.OutOfMemory;
-    segments.append(gpa, .{
+    out.appendSlice(gpa, text[from..to]) catch return error.OutOfMemory;
+    try segments.append(gpa, .{
         .assembled = .{ .start = start, .end = @intCast(out.items.len) },
         .origin = origin,
-        .source = .{ .start = 0, .end = @intCast(text.len) },
-        .kind = .body,
-    }) catch return error.OutOfMemory;
+        .source = .{ .start = @intCast(from), .end = @intCast(to) },
+        .kind = kind,
+    });
 }
 
 /// How many assembled lines `text` occupies, counting like pngine's
@@ -358,15 +555,12 @@ fn partId(root: RootId, part_index: u32) types.PartId {
 fn postOrder(
     gpa: Allocator,
     program: *const types.Program,
-    sources: []const ?[]const u8,
     root: RootId,
     root_imports: []const types.ImportRef,
     limits: Limits,
     out: *std.ArrayList(u32),
     failure: ?*Failure,
 ) Error!void {
-    _ = sources;
-
     const Frame = struct {
         part: u32,
         /// Index into that part's `imports` of the next child to descend.
@@ -401,11 +595,12 @@ fn postOrder(
         stack[0] = .{ .part = start, .next = 0 };
         on_path.append(gpa, start) catch return error.OutOfMemory;
 
-        // pngine's loop bound: every frame consumes at most `max_imports`
-        // iterations, and at most `max_depth` frames are live at once.
-        const max_steps: u64 = @as(u64, limits.max_depth) *
-            @as(u64, limits.max_imports) *
-            @as(u64, limits.max_imports);
+        // Loop guard: each reached fragment is pushed at most once, and
+        // each frame advances at most `max_imports` child slots plus the
+        // final emit. pngine uses `MAX_DEPTH * MAX_IMPORTS * MAX_IMPORTS`;
+        // this form stays correct when a caller lowers the limits.
+        const max_steps: u64 = @as(u64, limits.max_fragments) *
+            (@as(u64, limits.max_imports) + 1) + 1;
         var steps: u64 = 0;
 
         while (depth > 0) {

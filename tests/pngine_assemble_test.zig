@@ -465,33 +465,456 @@ test "assemble: an unreferenced part with no source is ignored" {
     try testing.expectEqual(@as(usize, 0), std.mem.count(u8, assembled.text, "fn unused()"));
 }
 
-test "assemble: allocation failure while walking or writing frees every partial" {
-    var f = Fixture.init(testing.allocator);
+fn assembleDiamondUnderOom(gpa: std.mem.Allocator) !void {
+    var f = Fixture.init(gpa);
     defer f.deinit();
 
-    const shared = try f.add(.wgsl, "shared", "fn shared() {}\n", &.{});
+    _ = try f.add(.wgsl, "shared", "fn shared() {}\n", &.{});
     _ = try f.add(.wgsl, "left", "fn left() {}\n", &.{"shared"});
     _ = try f.add(.wgsl, "right", "fn right() {}\n", &.{"shared"});
     const root = try f.addRoot("root", "fn root() {}\n", &.{ "left", "right" });
-    _ = shared;
 
     var program = f.program();
-    var succeeded = false;
-    for (0..96) |fail_index| {
-        var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = fail_index });
-        if (assemble.assemble(
-            failing.allocator(),
-            &program,
-            f.sources.items,
-            f.rootId(root),
-            null,
-        )) |assembled_value| {
-            var assembled = assembled_value;
-            assembled.deinit(failing.allocator());
-            succeeded = true;
-        } else |err| {
-            try testing.expectEqual(assemble.Error.OutOfMemory, err);
+    var assembled = try assemble.assemble(gpa, &program, f.sources.items, f.rootId(root), null);
+    assembled.deinit(gpa);
+}
+
+test "assemble: allocation failure while walking or writing frees every partial" {
+    try std.testing.checkAllAllocationFailures(testing.allocator, assembleDiamondUnderOom, .{});
+}
+
+// =========================================================================
+// Task 2: directive hoist and byte-exact text
+// =========================================================================
+
+fn repeatDirective(gpa: std.mem.Allocator, count: usize) ![]const u8 {
+    var text: std.ArrayList(u8) = .empty;
+    errdefer text.deinit(gpa);
+    for (0..count) |_| try text.appendSlice(gpa, "enable f16;\n");
+    try text.appendSlice(gpa, "fn root() {}");
+    return text.toOwnedSlice(gpa);
+}
+
+test "hoist: a root that opens with a directive can import after all" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    const frag = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const root = try f.addRoot("root", "enable f16;\nfn root() {}", &.{"a"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        "enable f16;\n" ++
+            "fn a() {}\n" ++
+            "           \n" ++
+            "fn root() {}\n",
+        assembled.text,
+    );
+
+    try testing.expectEqual(@as(usize, 3), assembled.rows.len);
+    try testing.expectEqual(f.rootId(root), assembled.rows[0].origin);
+    try testing.expectEqualStrings("root", assembled.rows[0].name);
+    try testing.expectEqual(@as(u32, 1), assembled.rows[0].first_line);
+    try testing.expectEqual(@as(u32, 1), assembled.rows[0].line_count);
+    try testing.expectEqual(@as(u32, 1), assembled.rows[0].src_line);
+    try testing.expect(assembled.rows[0].is_root);
+
+    try expectRow(assembled.rows[1], f.rootId(frag), "a", 2, 1, false);
+    try expectRow(assembled.rows[2], f.rootId(root), "root", 3, 2, true);
+}
+
+test "hoist: every directive kind, fragment then root, in walk order" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    const frag = try f.add(
+        .wgsl,
+        "a",
+        "requires readonly_and_readwrite_storage_textures;\nfn a() {}",
+        &.{},
+    );
+    const root = try f.addRoot(
+        "root",
+        "diagnostic(off, derivative_uniformity);\nfn root() {}",
+        &.{"a"},
+    );
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        "requires readonly_and_readwrite_storage_textures;\n" ++
+            "diagnostic(off, derivative_uniformity);\n" ++
+            "                                                 \nfn a() {}\n" ++
+            "                                       \nfn root() {}\n",
+        assembled.text,
+    );
+
+    try testing.expectEqual(@as(usize, 4), assembled.rows.len);
+    try testing.expectEqual(f.rootId(frag), assembled.rows[0].origin);
+    try testing.expectEqual(@as(u32, 1), assembled.rows[0].first_line);
+    try testing.expectEqual(@as(u32, 1), assembled.rows[0].src_line);
+    try testing.expect(assembled.rows[0].is_root == false);
+
+    try testing.expectEqual(f.rootId(root), assembled.rows[1].origin);
+    try testing.expectEqual(@as(u32, 2), assembled.rows[1].first_line);
+    try testing.expectEqual(@as(u32, 1), assembled.rows[1].src_line);
+    try testing.expect(assembled.rows[1].is_root);
+
+    try expectRow(assembled.rows[2], f.rootId(frag), "a", 3, 2, false);
+    try expectRow(assembled.rows[3], f.rootId(root), "root", 5, 2, true);
+}
+
+test "hoist: one copy of a directive spelled with different whitespace, all originals blanked" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "enable f16;\nfn a() {}", &.{});
+    _ = try f.add(.wgsl, "b", "enable  f16;\nfn b() {}", &.{});
+    const root = try f.addRoot("root", "enable f16;\nfn root() {}", &.{ "a", "b" });
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        "enable f16;\n" ++
+            "           \nfn a() {}\n" ++
+            "            \nfn b() {}\n" ++
+            "           \nfn root() {}\n",
+        assembled.text,
+    );
+    // One hoist row, three body rows.
+    try testing.expectEqual(@as(usize, 4), assembled.rows.len);
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, assembled.text, "enable"));
+}
+
+test "hoist: directives differing only by a comment are not equal" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "enable /* a */ f16;\nfn a() {}", &.{});
+    _ = try f.add(.wgsl, "b", "enable /* b */ f16;\nfn b() {}", &.{});
+    const root = try f.addRoot("root", "fn root() {}", &.{ "a", "b" });
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expect(std.mem.startsWith(
+        u8,
+        assembled.text,
+        "enable /* a */ f16;\nenable /* b */ f16;\n",
+    ));
+    try testing.expectEqual(@as(usize, 2), std.mem.count(u8, assembled.text, "enable /*"));
+    // Two hoist rows plus the three part rows.
+    try testing.expectEqual(@as(usize, 5), assembled.rows.len);
+}
+
+test "hoist: a directive after a declaration is left exactly where it is" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const root = try f.addRoot("root", "fn root() {}\nenable f16;", &.{"a"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        "fn a() {}\nfn root() {}\nenable f16;\n",
+        assembled.text,
+    );
+    try testing.expectEqual(@as(usize, 2), assembled.rows.len);
+}
+
+test "hoist: an unterminated directive is left alone" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const root = try f.addRoot("root", "enable f16", &.{"a"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("fn a() {}\nenable f16\n", assembled.text);
+    try testing.expectEqual(@as(usize, 2), assembled.rows.len);
+}
+
+test "hoist: a semicolon inside a line comment does not end the directive" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const directive = "enable // ; not the end\nf16;";
+    const root = try f.addRoot(
+        "root",
+        directive ++ "\nfn root() {}",
+        &.{"a"},
+    );
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expect(std.mem.startsWith(
+        u8,
+        assembled.text,
+        directive ++ "\n",
+    ));
+    // The directive spans two authored lines, which the row records.
+    try testing.expectEqual(@as(u32, 2), assembled.rows[0].line_count);
+    try testing.expectEqual(@as(u32, 1), assembled.rows[0].src_line);
+}
+
+test "hoist: nested leading comments are trivia and a nested comment's semicolon is skipped" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const root = try f.addRoot(
+        "root",
+        "/* outer /* inner ; */ outer */ enable /* ; */ f16;\nfn root() {}",
+        &.{"a"},
+    );
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    // The leading comment stays where it was written; the directive is
+    // lifted out from below it, with its own inner comment intact.
+    try testing.expect(std.mem.startsWith(
+        u8,
+        assembled.text,
+        "enable /* ; */ f16;\n",
+    ));
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, assembled.text, "enable"));
+}
+
+test "hoist: an unterminated leading block comment swallows the would-be directive" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const source = "/* enable f16;\nfn root() {}";
+    const root = try f.addRoot("root", source, &.{"a"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("fn a() {}\n" ++ source ++ "\n", assembled.text);
+}
+
+test "hoist: directive-looking text in a comment is not hoisted" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    const frag = try f.add(.wgsl, "a", "// enable f16;\nfn a() {}", &.{});
+    const root = try f.addRoot("root", "fn root() {}", &.{"a"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        "// enable f16;\nfn a() {}\nfn root() {}\n",
+        assembled.text,
+    );
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, assembled.text, "enable"));
+    try expectRow(assembled.rows[0], f.rootId(frag), "a", 1, 2, false);
+}
+
+test "hoist: a directive and a declaration on one line keep the declaration's column" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const root = try f.addRoot("root", "enable f16; fn root() {}", &.{"a"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        "enable f16;\n" ++
+            "fn a() {}\n" ++
+            "            fn root() {}\n",
+        assembled.text,
+    );
+    // The replacement line is exactly as wide as the author's, so the
+    // declaration still starts in column 13.
+    const body_line = "            fn root() {}";
+    try testing.expectEqual(
+        "enable f16; fn root() {}".len,
+        body_line.len,
+    );
+}
+
+test "hoist: a multiline directive hoists with its full line count" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    const frag = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const root = try f.addRoot("root", "enable\n    f16;\nfn root() {}", &.{"a"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        "enable\n" ++
+            "    f16;\n" ++
+            "fn a() {}\n" ++
+            "      \n" ++
+            "        \n" ++
+            "fn root() {}\n",
+        assembled.text,
+    );
+    try testing.expectEqual(@as(u32, 1), assembled.rows[0].first_line);
+    try testing.expectEqual(@as(u32, 2), assembled.rows[0].line_count);
+    try testing.expectEqual(@as(u32, 1), assembled.rows[0].src_line);
+    try expectRow(assembled.rows[1], f.rootId(frag), "a", 3, 1, false);
+    try expectRow(assembled.rows[2], f.rootId(root), "root", 4, 3, true);
+}
+
+test "hoist: a hoisted row remembers the author's line below leading trivia" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const root = try f.addRoot("root", "// c\nenable f16;\nfn root() {}", &.{"a"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(u32, 2), assembled.rows[0].src_line);
+    try testing.expectEqual(@as(u32, 3), assembled.rows[2].line_count);
+}
+
+test "assemble: an empty fragment owns one output line and one row" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    const empty = try f.add(.wgsl, "empty", "", &.{});
+    const root = try f.addRoot("root", "fn root() {}", &.{"empty"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings("\nfn root() {}\n", assembled.text);
+    try testing.expectEqual(@as(usize, 2), assembled.rows.len);
+    try expectRow(assembled.rows[0], f.rootId(empty), "empty", 1, 1, false);
+    try expectRow(assembled.rows[1], f.rootId(root), "root", 2, 1, true);
+    try testing.expectEqual(@as(usize, 3), assembled.segments.len);
+    try testing.expectEqual(assemble.SegmentKind.terminator, assembled.segments[0].kind);
+    try testing.expectEqual(assemble.ByteRange{ .start = 0, .end = 0 }, assembled.segments[0].source);
+    try testing.expectEqual(assemble.SegmentKind.body, assembled.segments[1].kind);
+    try testing.expectEqual(assemble.SegmentKind.terminator, assembled.segments[2].kind);
+}
+
+test "assemble: every unterminated part starts the next on a fresh line" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    const a = try f.add(.wgsl, "a", "fn a() {}", &.{});
+    const b = try f.add(.wgsl, "b", "fn b() {}", &.{});
+    const root = try f.addRoot("root", "fn root() {}", &.{ "a", "b" });
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        "fn a() {}\nfn b() {}\nfn root() {}\n",
+        assembled.text,
+    );
+    try expectRow(assembled.rows[0], f.rootId(a), "a", 1, 1, false);
+    try expectRow(assembled.rows[1], f.rootId(b), "b", 2, 1, false);
+    try expectRow(assembled.rows[2], f.rootId(root), "root", 3, 1, true);
+
+    // body + synthetic terminator for each part.
+    try testing.expectEqual(@as(usize, 6), assembled.segments.len);
+    for (assembled.segments, 0..) |segment, i| {
+        const expected = if (i % 2 == 0) assemble.SegmentKind.body else assemble.SegmentKind.terminator;
+        try testing.expectEqual(expected, segment.kind);
+        if (segment.kind == .terminator) {
+            try testing.expectEqual(segment.source.start, segment.source.end);
         }
     }
-    try testing.expect(succeeded);
+}
+
+test "assemble: CRLF bytes survive; only the mandated newline is added" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    const a = try f.add(.wgsl, "a", "enable f16;\r\nfn a() {}\r\n", &.{});
+    const root = try f.addRoot("root", "fn root() {}\n", &.{"a"});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(
+        "enable f16;\n" ++
+            "           \r\nfn a() {}\r\n" ++
+            "fn root() {}\n",
+        assembled.text,
+    );
+    try testing.expectEqual(@as(u32, 1), assembled.rows[0].line_count);
+    try expectRow(assembled.rows[1], f.rootId(a), "a", 2, 2, false);
+    try expectRow(assembled.rows[2], f.rootId(root), "root", 4, 1, true);
+}
+
+test "hoist: exactly MAX_DIRECTIVES fits; one more is TooDeep" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    _ = try f.add(.wgsl, "a", "fn a() {}", &.{});
+
+    const fits = try repeatDirective(f.arena.allocator(), assemble.MAX_DIRECTIVES);
+    const root_ok = try f.addRoot("root_ok", fits, &.{"a"});
+
+    var assembled = try run(&f, root_ok, null);
+    defer assembled.deinit(testing.allocator);
+
+    // All 64 spellings are the same directive: one line hoisted, 64
+    // originals blanked, so the root body still has 65 lines.
+    try testing.expectEqual(@as(usize, 1), std.mem.count(u8, assembled.text, "enable f16;"));
+    try testing.expectEqual(@as(usize, 3), assembled.rows.len);
+    try testing.expectEqual(@as(u32, 65), assembled.rows[2].line_count);
+
+    const overflow = try repeatDirective(f.arena.allocator(), assemble.MAX_DIRECTIVES + 1);
+    const root_bad = try f.addRoot("root_bad", overflow, &.{"a"});
+
+    var failure: assemble.Failure = undefined;
+    try testing.expectError(assemble.Error.TooDeep, run(&f, root_bad, &failure));
+    try testing.expectEqual(root_bad, failure.at.?.index);
+}
+
+test "hoist: the no-import fast path never hoists the single origin" {
+    var f = Fixture.init(testing.allocator);
+    defer f.deinit();
+
+    const source = "enable f16;\nfn root() {}";
+    const root = try f.addRoot("root", source, &.{});
+
+    var assembled = try run(&f, root, null);
+    defer assembled.deinit(testing.allocator);
+
+    try testing.expectEqualStrings(source, assembled.text);
+    try testing.expectEqual(@as(usize, 0), assembled.rows.len);
+}
+
+fn assembleHoistUnderOom(gpa: std.mem.Allocator) !void {
+    var f = Fixture.init(gpa);
+    defer f.deinit();
+
+    // Two spellings of the same directive force a duplicate blank plus a
+    // reallocating row list — the handoff window pngine found (§437).
+    _ = try f.add(.wgsl, "a", "enable f16;\nfn a() {}", &.{});
+    _ = try f.add(.wgsl, "b", "enable  f16;\nfn b() {}", &.{});
+    const root = try f.addRoot("root", "enable f16;\nfn root() {}", &.{ "a", "b" });
+
+    var program = f.program();
+    var assembled = try assemble.assemble(gpa, &program, f.sources.items, f.rootId(root), null);
+    assembled.deinit(gpa);
+}
+
+test "hoist: allocation failure across the text/rows handoff frees every partial" {
+    try std.testing.checkAllAllocationFailures(testing.allocator, assembleHoistUnderOom, .{});
 }

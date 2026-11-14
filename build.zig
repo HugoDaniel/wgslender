@@ -882,15 +882,9 @@ pub fn build(b: *std.Build) void {
     });
     // pngine fragment assembly (pngine-shaders phase 02, Tasks 1–2). Pure
     // library code; runs on the null lazy-dependency pass too.
-    const pngine_assemble_run = addTestStep(b, test_step, "tests/pngine_assemble_test.zig", target, optimize, &.{
+    _ = addTestStep(b, test_step, "tests/pngine_assemble_test.zig", target, optimize, &.{
         .{ .name = "pngine_assemble", .module = pngine_assemble_mod },
     });
-    // Temporary single-suite step for reds and mutation checks; removed
-    // before the phase gate.
-    if (pngine_assemble_run) |run| {
-        const only = b.step("test-pngine-assemble", "Run only the pngine assembly suite");
-        only.dependOn(run);
-    }
     // pngine strict extraction (pngine-shaders phase 01, Task 3). The
     // extractor imports SJON, so the module and the suite exist only
     // when the lazy dependency resolved.
