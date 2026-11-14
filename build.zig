@@ -924,6 +924,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "PngineSelection", .module = pngine_selection_mod },
             .{ .name = "PngineArtifacts", .module = pngine_artifacts_mod },
         });
+        // Author-origin source maps for composed minification (phase 05,
+        // Task 4): assembled→author translation, hoisted directives, names,
+        // inline virtual URIs, CRLF/UTF-16 columns, empty and dropped maps.
+        _ = addTestStep(b, test_step, "tests/pngine_sourcemap_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "PngineSelection", .module = pngine_selection_mod },
+            .{ .name = "PngineArtifacts", .module = pngine_artifacts_mod },
+        });
         // Flag-table tests live with the CLI so the private spec table is
         // testable without widening its visibility.
         _ = addTestStep(b, test_step, "cli/main.zig", target, optimize, &.{

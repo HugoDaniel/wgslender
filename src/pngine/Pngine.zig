@@ -35,6 +35,8 @@ pub const Store = @import("Store.zig").Store;
 pub const Assemble = @import("Assemble.zig");
 /// Bidirectional assembled↔author byte and line mapping (phase 02, Task 3).
 pub const Mapping = @import("Mapping.zig");
+/// Assembled→author source-map remapping (phase 05, Task 4).
+pub const SourceMaps = @import("SourceMaps.zig");
 /// Shared per-root analysis (phase 05, Task 2): assembled text to a retained
 /// validator/lint analysis. Used by the native LSP and the CLI.
 pub const Analysis = @import("Analysis.zig");

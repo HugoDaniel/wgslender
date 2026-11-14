@@ -20,19 +20,26 @@
 //! offsets and must never be relabelled as such; consumers that need
 //! author-local spans must translate them through the mapping layer.
 //!
+//! Minified source maps are author-facing as well: the minifier's map is
+//! decoded in assembled coordinates and re-encoded through the same
+//! segments by `pngine.SourceMaps`, so `sources[]` names the user's files
+//! (or inline virtual URIs) and every source position is author-local.
+//! Generated positions and names are preserved; a mapping with no honest
+//! origin is dropped with one warning naming the root.
+//!
 //! ## Suppression
 //!
 //! Parse/compile failures follow the artifact commands' failure policy:
 //! map the diagnostics, emit no artifact (no JSON, no minified text, no
-//! `.wasm`), and exit 1. Usage failures (more than one containing root, a
-//! pass root, or a source-map request before author-origin remapping
-//! exists) emit no artifact and exit 2.
+//! `.wasm`), and exit 1. Usage failures (more than one containing root or a
+//! pass root) emit no artifact and exit 2.
 
 const std = @import("std");
 const wgslender = @import("wgslender");
 const PngineSelection = @import("PngineSelection");
 
 const pngine = wgslender.Pngine;
+const SourceMaps = pngine.SourceMaps;
 const Allocator = std.mem.Allocator;
 const Diagnostic = wgslender.Diagnostic;
 
@@ -49,13 +56,18 @@ pub const Config = struct {
 /// One completed artifact run. `artifact` is the exact byte sequence the
 /// caller writes on success: reflection JSON (with its trailing newline),
 /// minified WGSL, or the `.wasm` binary. `diagnostics` is the fully
-/// rendered stderr text for a failure. Owns an internal arena.
+/// rendered stderr text for a failure, or the report-level warning for
+/// dropped source-map entries on an otherwise successful minify.
+/// `source_map` is present when minify generated a map; the caller writes
+/// the external file or appends the inline comment exactly as the
+/// single-source path does. Owns an internal arena.
 pub const Result = struct {
     artifact: []const u8 = &.{},
     diagnostics: []const u8 = &.{},
     exit_code: u8 = 0,
     original_size: usize = 0,
     wasm_size: usize = 0,
+    source_map: ?wgslender.SourceMap.Result = null,
     _arena: std.heap.ArenaAllocator,
 
     pub fn deinit(self: *Result, allocator: Allocator) void {
@@ -74,6 +86,7 @@ const Outcome = struct {
     exit_code: u8 = 0,
     original_size: usize = 0,
     wasm_size: usize = 0,
+    source_map: ?wgslender.SourceMap.Result = null,
 };
 
 /// Run one artifact command against `selected`. The selection may contain
@@ -99,6 +112,7 @@ pub fn run(
         .exit_code = outcome.exit_code,
         .original_size = outcome.original_size,
         .wasm_size = outcome.wasm_size,
+        .source_map = outcome.source_map,
         ._arena = arena,
     };
 }
@@ -129,13 +143,6 @@ fn runOutcome(
             alloc,
             "root '{s}' is a {s} root; reflect, minify, and compile require a shader-module root",
             .{ part.name, @tagName(part.kind) },
-        );
-    }
-
-    if (command == .minify and config.minify_options.generate_source_map) {
-        return usageFailure(
-            alloc,
-            "source maps for a selected pngine root are not available yet; author-origin remapping is phase 05 Task 4",
         );
     }
 
@@ -198,7 +205,86 @@ fn minify(
     if (result.errors.len > 0) {
         return parseFailure(alloc, store, root, assembled, result.errors);
     }
-    return .{ .artifact = result.code };
+
+    var outcome = Outcome{ .artifact = result.code };
+    if (result.source_map) |assembled_map| {
+        const map_sources = try collectMapSources(alloc, store, assembled);
+        const remapped = try SourceMaps.remap(
+            alloc,
+            assembled,
+            map_sources,
+            &assembled_map,
+            .{
+                .file = assembled_map.file,
+                .include_sources_content = config.minify_options.source_map_options.include_source,
+            },
+        );
+        outcome.source_map = remapped.map;
+        if (remapped.dropped > 0) {
+            outcome.diagnostics = try SourceMaps.warningLine(
+                alloc,
+                assembled.root_name,
+                remapped.dropped,
+            );
+        }
+    }
+    return outcome;
+}
+
+/// Name every origin the assembled unit can reference. File parts use the
+/// `:file` spelling exactly as the user wrote it; inline `:code` parts use
+/// the stable virtual URI. Author text is copied into the artifact arena so
+/// the map outlives the Store's own source buffers.
+fn collectMapSources(
+    alloc: Allocator,
+    store: *PngineSelection.Store,
+    assembled: *const pngine.Assembled,
+) ![]SourceMaps.Source {
+    var out: std.ArrayList(SourceMaps.Source) = .empty;
+    errdefer out.deinit(alloc);
+
+    for (assembled.segments) |segment| {
+        const origin = segment.origin;
+        var already = false;
+        for (out.items) |existing| {
+            if (existing.origin.program == origin.program and existing.origin.index == origin.index) {
+                already = true;
+                break;
+            }
+        }
+        if (already) continue;
+
+        const part = store.part(origin) orelse continue;
+        const program = store.program(origin.program) orelse continue;
+
+        var text = store.textForPart(origin) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        };
+        defer text.deinit(store.gpa);
+        const content = try alloc.dupe(u8, text.text);
+
+        const name = switch (part.origin) {
+            // The user's spelling, not the resolved path: a project's
+            // `:file` is relative to its document and is what the editor
+            // and the user call the file.
+            .file => |file| try alloc.dupe(u8, file.path),
+            .inline_code => try pngine.VirtualUri.encode(
+                alloc,
+                program.document_path,
+                origin.index,
+                pngine.Types.contentHash(content),
+            ),
+        };
+
+        try out.append(alloc, .{
+            .origin = origin,
+            .name = name,
+            .content = content,
+        });
+    }
+
+    return out.toOwnedSlice(alloc);
 }
 
 fn compile(

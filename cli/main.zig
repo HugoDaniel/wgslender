@@ -340,8 +340,49 @@ fn runProjectArtifact(
         const file = try std.Io.Dir.cwd().createFile(io, path, .{});
         defer file.close(io);
         try file.writeStreamingAll(io, result.artifact);
+        if (command == .minify and args.source_map_flags.source_map_inline) {
+            if (result.source_map) |sm| {
+                var comment_buf: std.ArrayList(u8) = .empty;
+                try comment_buf.append(arena, '\n');
+                try sm.toComment(&comment_buf, arena, true);
+                try file.writeStreamingAll(io, comment_buf.items);
+            }
+        }
     } else {
         try File.stdout().writeStreamingAll(io, result.artifact);
+        if (command == .minify and args.source_map_flags.source_map_inline) {
+            if (result.source_map) |sm| {
+                var comment_buf: std.ArrayList(u8) = .empty;
+                try comment_buf.append(arena, '\n');
+                try sm.toComment(&comment_buf, arena, true);
+                try File.stdout().writeStreamingAll(io, comment_buf.items);
+            }
+        }
+    }
+
+    // External map: same naming and channel as the single-source path.
+    if (command == .minify and
+        args.source_map_flags.source_map and
+        !args.source_map_flags.source_map_inline)
+    {
+        if (result.source_map) |sm| {
+            if (args.output_path) |path| {
+                var map_path_buf: std.ArrayList(u8) = .empty;
+                try map_path_buf.appendSlice(arena, path);
+                try map_path_buf.appendSlice(arena, ".map");
+
+                var json_buf: std.ArrayList(u8) = .empty;
+                try sm.toJson(&json_buf, arena);
+
+                const map_file = try std.Io.Dir.cwd().createFile(io, map_path_buf.items, .{});
+                defer map_file.close(io);
+                try map_file.writeStreamingAll(io, json_buf.items);
+
+                try File.stderr().writeStreamingAll(io, "Source map: ");
+                try File.stderr().writeStreamingAll(io, map_path_buf.items);
+                try File.stderr().writeStreamingAll(io, "\n");
+            }
+        }
     }
 
     if (command == .compile) {
