@@ -8,6 +8,7 @@ const build_options = @import("build_options");
 const wgslender = @import("wgslender");
 const PngineSelection = @import("PngineSelection");
 const PngineOutput = if (build_options.pngine_support) @import("PngineOutput") else struct {};
+const PngineArtifacts = if (build_options.pngine_support) @import("PngineArtifacts") else struct {};
 
 const pngine_support = build_options.pngine_support;
 
@@ -238,8 +239,28 @@ pub fn main(init: std.process.Init) !void {
                 args.input_path,
             );
         },
-        .reflect => try runReflect(arena, io, source, args.output_path, args.reflect_options.compact, args.reflect_options.reflect_format),
-        .compile => try runCompile(arena, io, source, args.output_path, args.input_path, args.options),
+        .reflect => {
+            if (comptime pngine_support) {
+                if (pngine_store) |*store| {
+                    if (pngine_selection) |*selected| {
+                        try runProjectArtifact(arena, io, store, selected, .reflect, args);
+                        return;
+                    }
+                }
+            }
+            try runReflect(arena, io, source, args.output_path, args.reflect_options.compact, args.reflect_options.reflect_format);
+        },
+        .compile => {
+            if (comptime pngine_support) {
+                if (pngine_store) |*store| {
+                    if (pngine_selection) |*selected| {
+                        try runProjectArtifact(arena, io, store, selected, .compile, args);
+                        return;
+                    }
+                }
+            }
+            try runCompile(arena, io, source, args.output_path, args.input_path, args.options);
+        },
         .lint => {
             if (comptime pngine_support) {
                 if (pngine_store) |*store| {
@@ -259,15 +280,79 @@ pub fn main(init: std.process.Init) !void {
                 args.lint_options,
             );
         },
-        .minify => try runMinify(
-            arena,
-            io,
-            source,
-            args.options,
-            args.output_path,
-            args.source_map_flags.source_map,
-            args.source_map_flags.source_map_inline,
-        ),
+        .minify => {
+            if (comptime pngine_support) {
+                if (pngine_store) |*store| {
+                    if (pngine_selection) |*selected| {
+                        try runProjectArtifact(arena, io, store, selected, .minify, args);
+                        return;
+                    }
+                }
+            }
+            try runMinify(
+                arena,
+                io,
+                source,
+                args.options,
+                args.output_path,
+                args.source_map_flags.source_map,
+                args.source_map_flags.source_map_inline,
+            );
+        },
+    }
+}
+
+/// Artifact command over one selected pngine root. `PngineArtifacts.run`
+/// owns the assembled→existing-pipeline bridge; this shell only routes the
+/// rendered diagnostics, the exit decision, and the artifact bytes to the
+/// same channels the single-source paths use.
+fn runProjectArtifact(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    store: *PngineSelection.Store,
+    selected: *const PngineSelection.ProjectSelection,
+    command: PngineArtifacts.Command,
+    args: CliArgs,
+) !void {
+    if (comptime !pngine_support) return;
+
+    const File = std.Io.File;
+    var result = try PngineArtifacts.run(
+        arena,
+        store,
+        selected,
+        args.input_path,
+        command,
+        .{
+            .reflect_compact = args.reflect_options.compact,
+            .reflect_version = args.reflect_options.reflect_format,
+            .minify_options = args.options,
+        },
+    );
+    defer result.deinit(arena);
+
+    if (result.diagnostics.len > 0) {
+        try File.stderr().writeStreamingAll(io, result.diagnostics);
+    }
+    if (result.exit_code != 0) std.process.exit(result.exit_code);
+
+    if (args.output_path) |path| {
+        const file = try std.Io.Dir.cwd().createFile(io, path, .{});
+        defer file.close(io);
+        try file.writeStreamingAll(io, result.artifact);
+    } else {
+        try File.stdout().writeStreamingAll(io, result.artifact);
+    }
+
+    if (command == .compile) {
+        var scratch: [64]u8 = undefined;
+        try File.stderr().writeStreamingAll(io, "Original: ");
+        var s = std.fmt.bufPrint(&scratch, "{d}", .{result.original_size}) catch "";
+        try File.stderr().writeStreamingAll(io, s);
+        try File.stderr().writeStreamingAll(io, " bytes -> WASM: ");
+        s = std.fmt.bufPrint(&scratch, "{d}", .{result.wasm_size}) catch "";
+        try File.stderr().writeStreamingAll(io, s);
+        try File.stderr().writeStreamingAll(io, " bytes\n");
     }
 }
 
@@ -1343,6 +1428,7 @@ fn printUsage(arena: std.mem.Allocator, io: std.Io) !void {
 
     try buf.appendSlice(arena, "\nProject selection:\n");
     try wgslender.OptionsSpec.printHelp(&buf, arena, &cli_pngine_specs, null);
+    try buf.appendSlice(arena, usage_pngine_note);
 
     try buf.appendSlice(arena, "\nValidate / lint:\n");
     try wgslender.OptionsSpec.printHelp(&buf, arena, &cli_validate_specs, null);
@@ -1372,6 +1458,12 @@ const usage_prologue =
     \\  -o, --output <path>               Output file
     \\  --config <path>                   Config file (JSON)
     \\  --no-config                       Ignore config files
+;
+
+const usage_pngine_note =
+    \\  reflect/minify/compile require exactly one root. Selected-root
+    \\  reflection span/offset fields use assembled-module coordinates.
+    \\
 ;
 
 const usage_minify_outliers =

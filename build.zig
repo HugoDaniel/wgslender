@@ -126,6 +126,19 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Artifact commands over one selected pngine root (phase 05, Task 3).
+    // Feeds `Assembled.text` through the existing reflect/minify/compile
+    // pipelines; imported by the native CLI and its focused tests only.
+    const pngine_artifacts_mod = b.addModule("PngineArtifacts", .{
+        .root_source_file = b.path("cli/PngineArtifacts.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "wgslender", .module = wgslender_mod },
+            .{ .name = "PngineSelection", .module = pngine_selection_mod },
+        },
+    });
+
     // Native CLI
     const exe = b.addExecutable(.{
         .name = "wgslender",
@@ -138,6 +151,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "build_options", .module = native_options_mod },
                 .{ .name = "PngineSelection", .module = pngine_selection_mod },
                 .{ .name = "PngineOutput", .module = pngine_output_mod },
+                .{ .name = "PngineArtifacts", .module = pngine_artifacts_mod },
             },
         }),
     });
@@ -904,6 +918,12 @@ pub fn build(b: *std.Build) void {
             .{ .name = "PngineSelection", .module = pngine_selection_mod },
             .{ .name = "PngineOutput", .module = pngine_output_mod },
         });
+        // Artifact commands over one selected pngine root (phase 05, Task 3).
+        _ = addTestStep(b, test_step, "tests/pngine_artifacts_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "PngineSelection", .module = pngine_selection_mod },
+            .{ .name = "PngineArtifacts", .module = pngine_artifacts_mod },
+        });
         // Flag-table tests live with the CLI so the private spec table is
         // testable without widening its visibility.
         _ = addTestStep(b, test_step, "cli/main.zig", target, optimize, &.{
@@ -911,6 +931,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = native_options_mod },
             .{ .name = "PngineSelection", .module = pngine_selection_mod },
             .{ .name = "PngineOutput", .module = pngine_output_mod },
+            .{ .name = "PngineArtifacts", .module = pngine_artifacts_mod },
         });
     }
 
