@@ -331,6 +331,39 @@ pub const Store = struct {
         try self.refreshWorkspace();
     }
 
+    /// Content-checked refresh at the LSP boundaries that exist even when
+    /// the client never sends `workspace/didChangeWatchedFiles` (D45):
+    /// `didOpen`, `didSave`, and explicit project selection. Re-reads every
+    /// known project document and every cached source through the provider
+    /// and rebuilds the memberships, so a sibling that changed on disk is
+    /// picked up at the boundary. Explicit selection itself is
+    /// `setWorkspaceRoots`; the first query for an unknown file is the
+    /// bounded ancestor walk below.
+    pub fn refreshAtBoundary(self: *Store, uri: []const u8) !void {
+        if (!self.enabled) return;
+
+        const key = try self.pathKey(uri);
+        defer self.gpa.free(key);
+
+        // D35: a non-file URI has no filesystem identity; only an exact
+        // overlay/membership match can ever name it, and the boundary
+        // refresh must not invent a path to walk.
+        if (!std.fs.path.isAbsolute(key)) return;
+
+        if (isDocumentPath(key)) {
+            try self.invalidatePathInner(key);
+            return;
+        }
+
+        if (!self.membership_index.contains(key)) {
+            try self.discoverAncestors(key);
+        }
+
+        try self.refreshKnownDocuments();
+        try self.rebuildIndexes();
+        try self.recomputeState();
+    }
+
     /// The reverse index query: every membership whose canonical file is
     /// `wgsl_uri`. The result is sorted by program document path, then part
     /// index. A missing result triggers the bounded ancestor walk.
@@ -457,6 +490,49 @@ pub const Store = struct {
         try self.recomputeState();
     }
 
+    /// Re-read every known project document and sync the ones whose content
+    /// hash changed. This is the document half of `refreshAtBoundary`; the
+    /// source half is `rebuildIndexes`, which refreshes every file-backed
+    /// part. Documents that disappeared from the provider are removed, which
+    /// drops their memberships (D29).
+    fn refreshKnownDocuments(self: *Store) !void {
+        var paths: std.ArrayList([]u8) = .empty;
+        defer {
+            for (paths.items) |path| self.gpa.free(path);
+            paths.deinit(self.gpa);
+        }
+
+        var it = self.document_slots.iterator();
+        while (it.next()) |entry| {
+            try paths.append(self.gpa, try self.gpa.dupe(u8, entry.key_ptr.*));
+        }
+
+        for (paths.items) |document_path| {
+            const external = if (self.document_slots.get(document_path)) |id|
+                if (self.programs.items[id]) |record| record.external else false
+            else
+                false;
+
+            const text = self.provider.readText(self.gpa, document_path) catch {
+                try self.removeDocument(document_path);
+                continue;
+            };
+            defer self.gpa.free(text);
+
+            const hash = types.contentHash(text);
+            if (self.document_slots.get(document_path)) |id| {
+                if (self.programs.items[id]) |record| {
+                    if (record.status == .ok) {
+                        if (record.program) |program_value| {
+                            if (std.mem.eql(u8, &program_value.document_hash, &hash)) continue;
+                        }
+                    }
+                }
+            }
+            try self.syncDocument(document_path, text, external);
+        }
+    }
+
     fn removeDocument(self: *Store, document_path: []const u8) !void {
         const removed = self.document_slots.fetchRemove(document_path) orelse return;
         const id = removed.value;
@@ -480,7 +556,7 @@ pub const Store = struct {
         }
         // An open/injected overlay is authoritative; an external disk change
         // must not invalidate roots whose analysis uses the overlay text.
-        const has_overlay = self.buffers.contains(source_path) or self.injected.contains(source_path);
+        const has_overlay = self.hasOverlayPath(source_path);
         if (refresh.changed and !has_overlay) {
             self.content_generation += 1;
             try self.bumpRootsForPath(source_path);
@@ -783,9 +859,16 @@ pub const Store = struct {
         var changed_it = refreshed.iterator();
         while (changed_it.next()) |entry| {
             if (!entry.value_ptr.changed) continue;
+            // An open/injected overlay is authoritative; a disk change must
+            // not invalidate roots whose analysis uses the overlay text.
+            if (self.hasOverlayPath(entry.key_ptr.*)) continue;
             self.content_generation += 1;
             try self.bumpRootsForPath(entry.key_ptr.*);
         }
+    }
+
+    fn hasOverlayPath(self: *const Store, source_path: []const u8) bool {
+        return self.buffers.contains(source_path) or self.injected.contains(source_path);
     }
 
     fn freeMemberships(self: *Store) void {
@@ -847,6 +930,11 @@ pub const Store = struct {
         return self.gpa.dupe(u32, values);
     }
 };
+
+fn isDocumentPath(path: []const u8) bool {
+    return std.mem.eql(u8, std.fs.path.basename(path), discovery.marker_name) or
+        std.mem.endsWith(u8, path, ".sjon");
+}
 
 fn resolveFile(allocator: Allocator, document_path: []const u8, relative: []const u8) ![]u8 {
     if (std.fs.path.isAbsolute(relative)) {

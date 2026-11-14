@@ -226,6 +226,16 @@ fn notifyPngineClosed(self: *Handler, uri: []const u8) void {
     }
 }
 
+/// D45 boundary refresh: `didOpen`/`didSave` are the content-checked
+/// refresh points that exist when the client never sends
+/// `workspace/didChangeWatchedFiles`. The store re-reads every known
+/// project document and source through its provider.
+fn notifyPngineBoundary(self: *Handler, uri: []const u8) void {
+    if (comptime pngine_support) {
+        if (self.pngine_store) |store| store.refreshAtBoundary(uri) catch {};
+    }
+}
+
 /// Frees all tracked documents and their sources.
 pub fn deinit(self: *Handler) void {
     var it = self.documents.iterator();
@@ -345,6 +355,7 @@ pub fn openDocument(self: *Handler, uri: []const u8, text: []const u8, version: 
     self.rebuildParse(gop.value_ptr);
     self.rebuildMagic(gop.value_ptr);
     self.notifyPngineBuffer(uri, gop.value_ptr.source);
+    self.notifyPngineBoundary(uri);
 }
 
 /// Replaces the source text of an already-open document.
@@ -403,11 +414,11 @@ pub fn currentResultId(self: *const Handler, uri: []const u8) ?u32 {
 
 /// Handles a `textDocument/didSave` notification. The client remains the
 /// authoritative source of text, so there is nothing to persist here — the
-/// transport layer re-publishes diagnostics on top of this call. Kept as an
-/// explicit hook point for future save-only behavior (e.g. format-on-save).
+/// transport layer re-publishes diagnostics on top of this call. The save
+/// is also a D45 boundary: the pngine store content-checks its project
+/// documents and sources without waiting for a watcher notification.
 pub fn handleDidSave(self: *Handler, uri: []const u8) void {
-    _ = self;
-    _ = uri;
+    self.notifyPngineBoundary(uri);
 }
 
 /// Walk parents from `start_dir` (or cwd when `null`) for a `wgslender.json`

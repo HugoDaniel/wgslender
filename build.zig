@@ -536,6 +536,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "build_options", .module = native_options_mod },
             .{ .name = "pngine_path", .module = pngine_path_mod },
             .{ .name = "wgslender", .module = wgslender_mod },
             .{ .name = "Handler", .module = handler_mod },
@@ -897,6 +898,16 @@ pub fn build(b: *std.Build) void {
         _ = addTestStep(b, test_step, "tests/pngine_store_test.zig", target, optimize, &.{
             w,
             .{ .name = "Handler", .module = handler_mod },
+        });
+        // pngine native transport (Task 6): watcher registration, watched
+        // create/change/delete routing, provider failure, open-buffer
+        // precedence and the D45 no-watcher boundaries. Drives the real
+        // NativeServer bodies with the in-memory provider.
+        _ = addTestStep(b, test_step, "tests/pngine_transport_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+            .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "NativeServer", .module = native_server_mod },
         });
     }
     // Code action integration tests

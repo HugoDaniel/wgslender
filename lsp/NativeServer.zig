@@ -32,6 +32,7 @@
 
 const std = @import("std");
 const lsp = @import("lsp");
+const build_options = @import("build_options");
 const wgslender = @import("wgslender");
 const Handler = @import("Handler");
 const bridge = @import("bridge");
@@ -46,6 +47,11 @@ const native_workspace_commands = @import("native_workspace_commands");
 const Debouncer = @import("Debouncer.zig");
 const uri_module = @import("uri.zig");
 
+const pngine_support = build_options.pngine_support;
+const PngineStore = if (pngine_support) wgslender.Pngine.Store else void;
+const PngineTypes = if (pngine_support) wgslender.Pngine.Types else void;
+const native_source_provider = if (pngine_support) @import("native/source_provider.zig") else struct {};
+
 const NativeServer = @This();
 
 handler: Handler,
@@ -58,6 +64,24 @@ client_supports_configuration: bool = false,
 next_request_id: i64 = 1,
 /// ID of the in-flight `workspace/configuration` request, if any.
 pending_config_id: ?i64 = null,
+
+/// True iff the client advertised
+/// `workspace.didChangeWatchedFiles.dynamicRegistration`. Gates the single
+/// `client/registerCapability` request `initialized` sends; nothing is
+/// registered when the client does not advertise it.
+client_watcher_dynamic_registration: bool = false,
+
+/// Pngine project store (pngine-shaders phase 01). Allocated by
+/// `initialize`, owned by this server, destroyed at shutdown/deinit. The
+/// native graph is the only graph that reaches these fields.
+pngine_store: if (pngine_support) ?*PngineStore else void = if (pngine_support) null else {},
+/// Provider injection seam. `null` selects the native filesystem provider;
+/// tests (and a future host that supplies text itself) bind an in-memory
+/// provider here before `initialize`.
+pngine_provider_override: if (pngine_support) ?PngineTypes.SourceProvider else void = if (pngine_support) null else {},
+/// The one native filesystem binding of `Types.SourceProvider`. No other
+/// LSP module opens a project path for reading.
+fs_provider: if (pngine_support) native_source_provider.FileProvider else void = if (pngine_support) native_source_provider.FileProvider{} else {},
 
 /// Serialises every access to `self.handler` and every transport write
 /// across {basic_server callback thread, timer thread}. Held for the
@@ -89,12 +113,14 @@ debounce_ms: i64 = 300,
 idle_tick_ns: u64 = 50 * std.time.ns_per_ms,
 
 pub fn init(allocator: std.mem.Allocator, transport: *lsp.Transport, io: std.Io) NativeServer {
-    return .{
+    var server: NativeServer = .{
         .handler = .init(allocator),
         .transport = transport,
         .io = io,
         .debouncer = Debouncer.init(allocator),
     };
+    if (comptime pngine_support) server.fs_provider = .{ .io = io };
+    return server;
 }
 
 /// Spawn the idle-debounce timer thread. Skipped by tests, which drive
@@ -110,6 +136,7 @@ pub fn deinit(self: *NativeServer) void {
     self.timer_thread = null;
     // Both threads have stopped by here; the mutex is uncontended.
     self.debouncer.deinit();
+    self.teardownPngineStoreLocked();
     self.handler.deinit();
 }
 
@@ -197,16 +224,23 @@ pub fn initialize(
 ) lsp.types.InitializeResult {
     self.lock();
     defer self.unlock();
+    self.client_watcher_dynamic_registration = false;
     if (params.capabilities.workspace) |ws| {
         if (ws.configuration orelse false) self.client_supports_configuration = true;
+        if (ws.didChangeWatchedFiles) |watched| {
+            self.client_watcher_dynamic_registration = watched.dynamicRegistration orelse false;
+        }
     }
     // Workspace-root precedence chain — see `pickWorkspaceRoot` doc.
     // The path string lives on the per-call arena and dies with the function.
+    // This first folder stays the config-discovery root only; the project
+    // store below receives every workspace folder.
     const start_dir: ?[]const u8 = pickWorkspaceRoot(arena, params);
     self.handler.discoverProjectConfig(self.io, start_dir);
     if (params.initializationOptions) |opts| {
         self.handler.applyClientConfig(opts);
     }
+    self.bindPngineStore(arena, params);
     return .{
         .serverInfo = native_lifecycle.server_info,
         .capabilities = native_lifecycle.server_capabilities,
@@ -250,10 +284,123 @@ fn pickWorkspaceRoot(
     return null;
 }
 
-/// No-op acknowledgement of the initialized notification.
-pub fn initialized(_: *NativeServer, _: std.mem.Allocator, _: lsp.types.InitializedParams) void {}
-/// Handles LSP shutdown; returns null (no pending work).
-pub fn shutdown(_: *NativeServer, _: std.mem.Allocator, _: void) ?void {
+/// Every workspace folder is a project root, not just the first. The
+/// `pickWorkspaceRoot` result remains the single config-discovery root.
+fn collectWorkspaceRoots(
+    arena: std.mem.Allocator,
+    params: lsp.types.InitializeParams,
+) ![]const []const u8 {
+    var roots: std.ArrayList([]const u8) = .empty;
+    if (params.workspaceFolders) |folders| {
+        for (folders) |folder| {
+            if (uri_module.fileUriToPath(arena, folder.uri) catch null) |path| {
+                try roots.append(arena, path);
+            }
+        }
+        if (roots.items.len > 0) return roots.toOwnedSlice(arena);
+    }
+    if (params.rootUri) |uri| {
+        if (uri_module.fileUriToPath(arena, uri) catch null) |path| {
+            try roots.append(arena, path);
+            return roots.toOwnedSlice(arena);
+        }
+    }
+    if (params.rootPath) |path| try roots.append(arena, path);
+    return roots.toOwnedSlice(arena);
+}
+
+/// Build the project store from the injected provider (native: the
+/// filesystem), point it at every workspace root, and hand it to the handler.
+/// Discovery failures leave the store bound with whatever roots were
+/// accepted; a failed initialize must never take the language server down.
+fn bindPngineStore(
+    self: *NativeServer,
+    arena: std.mem.Allocator,
+    params: lsp.types.InitializeParams,
+) void {
+    if (comptime pngine_support) {
+        self.teardownPngineStoreLocked();
+
+        const provider = self.pngine_provider_override orelse self.fs_provider.sourceProvider();
+        const store = self.handler.gpa.create(PngineStore) catch return;
+        store.* = PngineStore.init(self.handler.gpa, provider);
+        self.pngine_store = store;
+        // The resolved `lsp.pngine.enabled` rides the handler; discovery is
+        // still populated so a later workspace-config opt-in has roots.
+        self.handler.setPngineStore(store);
+
+        const roots = collectWorkspaceRoots(arena, params) catch return;
+        store.setWorkspaceRoots(roots) catch |err| {
+            std.log.warn("pngine workspace discovery failed: {s}", .{@errorName(err)});
+        };
+    } else {
+        // The native graph always resolves pngine support in a steady
+        // state; this branch only exists for the first lazy-dependency
+        // pass / `-Dlsp=false` compile check.
+    }
+}
+
+/// Release the project store. Called from `shutdown` and from `deinit`
+/// (idempotent; the second call is a no-op).
+fn teardownPngineStoreLocked(self: *NativeServer) void {
+    if (comptime pngine_support) {
+        if (self.pngine_store) |store| {
+            self.handler.setPngineStore(null);
+            store.deinit();
+            self.handler.gpa.destroy(store);
+            self.pngine_store = null;
+        }
+    }
+}
+
+/// Ask the client to watch every `.sjon` and `.wgsl` file when it advertised
+/// dynamic registration. The payload follows SJON's LSP precedent
+/// (`zig-pkg/sjon-1.7.0-*/src/lsp/main.zig:1948`); the response is ignored by
+/// `onResponse`, which only tracks `workspace/configuration` ids.
+pub fn initialized(self: *NativeServer, arena: std.mem.Allocator, _: lsp.types.InitializedParams) void {
+    self.lock();
+    defer self.unlock();
+    if (!self.client_watcher_dynamic_registration) return;
+    if (comptime !pngine_support) return;
+
+    const id = self.next_request_id;
+    self.next_request_id +%= 1;
+    const json = std.fmt.allocPrint(arena,
+        \\{{"jsonrpc":"2.0","id":{d},"method":"client/registerCapability","params":{{"registrations":[{{"id":"wgslender-pngine-watch","method":"workspace/didChangeWatchedFiles","registerOptions":{{"watchers":[{{"globPattern":"**/*.sjon"}},{{"globPattern":"**/*.wgsl"}}]}}}}]}}}}
+    , .{id}) catch return;
+    self.transport.writeJsonMessage(self.io, json) catch {};
+}
+
+/// Route `workspace/didChangeWatchedFiles` into the provider-backed store
+/// under the handler mutex, then arm every open document for the existing
+/// debounced diagnostics refresh. Nothing is published synchronously.
+pub fn @"workspace/didChangeWatchedFiles"(
+    self: *NativeServer,
+    arena: std.mem.Allocator,
+    params: lsp.types.workspace.did_change_watched_files.Params,
+) void {
+    self.lock();
+    defer self.unlock();
+    if (comptime pngine_support) {
+        const store = self.pngine_store orelse return;
+        for (params.changes) |event| {
+            const decoded = uri_module.fileUriToPath(arena, event.uri) catch null;
+            if (decoded) |path| store.invalidatePath(path);
+        }
+        // Reuse the Phase 7 debouncer + timer thread: any project edit can
+        // change the project context of any open member, so re-arm them all
+        // and let `tick` publish. No second timer, no synchronous refresh.
+        const deadline = self.nowMs() + self.debounce_ms;
+        var it = self.handler.documents.iterator();
+        while (it.next()) |entry| self.debouncer.arm(entry.key_ptr.*, deadline) catch {};
+    }
+}
+
+/// Handles LSP shutdown; releases the project store before the client exits.
+pub fn shutdown(self: *NativeServer, _: std.mem.Allocator, _: void) ?void {
+    self.lock();
+    defer self.unlock();
+    self.teardownPngineStoreLocked();
     return null;
 }
 /// No-op exit notification handler.
