@@ -4,12 +4,16 @@
 
 const std = @import("std");
 const wgslender = @import("wgslender");
+const build_options = @import("build_options");
 
 const Handler = @import("../Handler.zig");
+const PngineContext = @import("pngine_context.zig");
 const NodeAtOffset = @import("node_at_offset.zig");
 const Ast = wgslender.Ast;
 const Lexer = wgslender.Lexer;
 const Builtins = wgslender.Builtins;
+
+const pngine_support = build_options.pngine_support;
 
 // Token types: indices into the legend
 const SemanticTokenType = enum(u32) {
@@ -56,9 +60,83 @@ const wgsl_type_names = [_][]const u8{
 };
 
 pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
-    const doc = handler.documents.getPtr(uri) orelse return &.{};
-    const source = doc.source;
+    // A project member answers through every containing root's assembled
+    // module, but the token stream itself is still lexed from — and only
+    // covers — the requested file's own text. Standalone documents keep the
+    // original single-document path byte-for-byte.
+    if (comptime pngine_support) {
+        const contexts = try PngineContext.contextsForDocument(handler, uri);
+        defer Handler.freeContexts(handler, contexts);
+        if (contexts.len > 0 and contexts[0].isComposed()) {
+            return composedSemanticTokens(handler, contexts);
+        }
+    }
+    return standaloneSemanticTokens(handler, uri);
+}
 
+fn standaloneSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
+    const doc = handler.documents.getPtr(uri) orelse return &.{};
+    const analysis = handler.analyzeDocument(uri) catch null;
+    var cursor: DeclCursor = .{};
+    var resolver: Resolver = .{ .standalone = .{
+        .module = if (analysis) |a| a.module else null,
+        .cursor = &cursor,
+    } };
+    return emitSemanticTokens(handler, doc.source, &resolver);
+}
+
+/// A composed request resolves identifiers in every root that can map the
+/// token. Roots that resolve the token must agree on its classification;
+/// a root that cannot map or resolve it is a hole, not a disagreement.
+/// When two roots do disagree, the span gets no semantic token at all so
+/// the editor's lexical grammar is the conservative fallback (N37).
+fn composedSemanticTokens(handler: *Handler, contexts: []Handler.RequestContext) ![]u32 {
+    std.debug.assert(contexts.len > 0);
+
+    var author = try PngineContext.authorText(handler, &contexts[0]);
+    defer author.deinit(handler.gpa);
+
+    const modules = try handler.gpa.alloc(?*const Ast.Module, contexts.len);
+    defer handler.gpa.free(modules);
+    const cursors = try handler.gpa.alloc(DeclCursor, contexts.len);
+    defer handler.gpa.free(cursors);
+
+    for (contexts, 0..) |*context, index| {
+        modules[index] = null;
+        cursors[index] = .{};
+        const analysis = PngineContext.analysisFor(handler, context) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        modules[index] = analysis.module;
+    }
+
+    var resolver: Resolver = .{ .composed = .{
+        .contexts = contexts,
+        .modules = modules,
+        .cursors = cursors,
+    } };
+    return emitSemanticTokens(handler, author.text, &resolver);
+}
+
+const Classification = struct {
+    token_type: u32,
+    modifiers: u32,
+};
+
+const Resolver = union(enum) {
+    standalone: struct {
+        module: ?*const Ast.Module,
+        cursor: *DeclCursor,
+    },
+    composed: struct {
+        contexts: []const Handler.RequestContext,
+        modules: []const ?*const Ast.Module,
+        cursors: []DeclCursor,
+    },
+};
+
+fn emitSemanticTokens(handler: *Handler, source: []const u8, resolver: *Resolver) ![]u32 {
     // One line index for the whole request: this pass converts one offset
     // per token, and the from-byte-0 scan in `Handler.offsetToLspPosition`
     // made that quadratic (~224 ms on a 70 KB shader, per keystroke).
@@ -73,17 +151,12 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
     const tags = tokens_storage.items(.tag);
     const starts = tokens_storage.items(.start);
 
-    // Try to get analysis for symbol resolution
-    const analysis = handler.analyzeDocument(uri) catch null;
-    const module = if (analysis) |a| a.module else null;
-
     // Build semantic token data (groups of 5: deltaLine, deltaStartChar, length, tokenType, tokenModifiers)
     var data: std.ArrayList(u32) = .empty;
     defer data.deinit(handler.gpa);
 
     var prev_line: u32 = 0;
     var prev_char: u32 = 0;
-    var decl_cursor: DeclCursor = .{};
 
     // First, scan for comments and collect them
     var comment_ranges: std.ArrayList(struct { start: u32, end: u32 }) = .empty;
@@ -187,23 +260,22 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
                     continue;
                 }
 
-                // Try to resolve via AST
-                if (module) |m| {
-                    if (resolveIdentSymbol(m, &decl_cursor, tok_start, name)) |sym| {
-                        const tok_type: u32 = switch (sym.kind) {
-                            .function => @intFromEnum(SemanticTokenType.function),
-                            .@"struct" => @intFromEnum(SemanticTokenType.@"struct"),
-                            .parameter => @intFromEnum(SemanticTokenType.parameter),
-                            .@"const", .override => @intFromEnum(SemanticTokenType.variable),
-                            .let, .@"var" => @intFromEnum(SemanticTokenType.variable),
-                            else => @intFromEnum(SemanticTokenType.variable),
-                        };
-                        var mods: u32 = 0;
-                        if (sym.kind == .@"const" or sym.kind == .override) mods |= MOD_READONLY;
-                        if (sym.loc == tok_start) mods |= MOD_DECLARATION;
-                        emitSemanticToken(handler.gpa, &pm, &data, &prev_line, &prev_char, tok_start, tok_start + tok_len, tok_type, mods);
-                        continue;
-                    }
+                // Try to resolve via AST. Standalone keeps the historical
+                // name fallback for error-recovery; composed classification
+                // requires a bound symbol in every root that can answer.
+                if (classifyIdentifier(resolver, tok_start, name)) |classification| {
+                    emitSemanticToken(
+                        handler.gpa,
+                        &pm,
+                        &data,
+                        &prev_line,
+                        &prev_char,
+                        tok_start,
+                        tok_start + tok_len,
+                        classification.token_type,
+                        classification.modifiers,
+                    );
+                    continue;
                 }
 
                 // Check if it's a builtin type name
@@ -226,6 +298,67 @@ pub fn computeSemanticTokens(handler: *Handler, uri: []const u8) ![]u32 {
     }
 
     return try handler.gpa.dupe(u32, data.items);
+}
+
+/// Classify one identifier token. Standalone resolution keeps the historical
+/// name fallback; composed resolution must agree across every root that can
+/// map and resolve the token.
+fn classifyIdentifier(resolver: *Resolver, tok_start: u32, name: []const u8) ?Classification {
+    switch (resolver.*) {
+        .standalone => |*state| {
+            const module = state.module orelse return null;
+            const sym = resolveIdentSymbol(module, state.cursor, tok_start, name, true) orelse
+                return null;
+            return classificationOf(sym, tok_start);
+        },
+        .composed => |*state| {
+            var agreed: ?Classification = null;
+            var answered: usize = 0;
+            for (state.contexts, 0..) |*context, index| {
+                const module = state.modules[index] orelse continue;
+                const assembled_start = PngineContext.assembledOffsetFor(context, tok_start) orelse
+                    continue;
+                const sym = resolveIdentSymbol(
+                    module,
+                    &state.cursors[index],
+                    assembled_start,
+                    name,
+                    false,
+                ) orelse continue;
+                const classification = classificationOf(sym, assembled_start) orelse continue;
+                if (agreed) |existing| {
+                    if (existing.token_type != classification.token_type or
+                        existing.modifiers != classification.modifiers)
+                    {
+                        // Roots disagree: emit nothing for this span rather
+                        // than letting root order choose a presentation.
+                        return null;
+                    }
+                } else {
+                    agreed = classification;
+                }
+                answered += 1;
+            }
+            if (answered == 0) return null;
+            return agreed;
+        },
+    }
+}
+
+fn classificationOf(sym: Ast.Symbol, assembled_start: u32) ?Classification {
+    if (sym.flags.is_retired) return null;
+    const token_type: u32 = switch (sym.kind) {
+        .function => @intFromEnum(SemanticTokenType.function),
+        .@"struct" => @intFromEnum(SemanticTokenType.@"struct"),
+        .parameter => @intFromEnum(SemanticTokenType.parameter),
+        .@"const", .override => @intFromEnum(SemanticTokenType.variable),
+        .let, .@"var" => @intFromEnum(SemanticTokenType.variable),
+        else => @intFromEnum(SemanticTokenType.variable),
+    };
+    var modifiers: u32 = 0;
+    if (sym.kind == .@"const" or sym.kind == .override) modifiers |= MOD_READONLY;
+    if (sym.loc == assembled_start) modifiers |= MOD_DECLARATION;
+    return .{ .token_type = token_type, .modifiers = modifiers };
 }
 
 fn emitSemanticToken(
@@ -360,7 +493,13 @@ fn spanContains(span: Ast.Span, offset: u32) bool {
 /// recovery has dropped the half-typed statement containing this token —
 /// there the AST has no node at this offset and only the name is left to
 /// go on. Approximate coloring beats none while typing.
-fn resolveIdentSymbol(module: *const Ast.Module, cursor: *DeclCursor, loc: u32, name: []const u8) ?Ast.Symbol {
+fn resolveIdentSymbol(
+    module: *const Ast.Module,
+    cursor: *DeclCursor,
+    loc: u32,
+    name: []const u8,
+    allow_name_fallback: bool,
+) ?Ast.Symbol {
     const ref: Ast.SymbolIndex = switch (cursor.find(module, loc)) {
         // `findInExpr` already falls back to a by-name lookup for idents
         // whose `ref` never bound, so an invalid one here means the name
@@ -377,6 +516,7 @@ fn resolveIdentSymbol(module: *const Ast.Module, cursor: *DeclCursor, loc: u32, 
         .binary_expr, .none => .none,
     };
     if (ref.isValid()) return module.symbols.items[ref.index()];
+    if (!allow_name_fallback) return null;
 
     for (module.symbols.items) |sym| {
         // A tombstone shares the fresh declaration's name; coloring it would

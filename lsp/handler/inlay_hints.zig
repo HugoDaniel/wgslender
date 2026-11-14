@@ -4,12 +4,16 @@
 
 const std = @import("std");
 const wgslender = @import("wgslender");
+const build_options = @import("build_options");
 
 const Handler = @import("../Handler.zig");
+const PngineContext = @import("pngine_context.zig");
 const Position = Handler.Position;
 const Range = Handler.Range;
 const Ast = wgslender.Ast;
 const MinifySettings = wgslender.MinifySettings;
+
+const pngine_support = build_options.pngine_support;
 
 pub const InlayHintInfo = struct {
     position: Position,
@@ -24,6 +28,20 @@ pub const InlayHintInfo = struct {
 
 pub fn computeInlayHints(handler: *Handler, uri: []const u8, range: Range) ![]InlayHintInfo {
     if (!handler.inlayHintsEnabled()) return &.{};
+    // A project member collects hints from every containing root's
+    // assembled analysis, then maps each one back to the requested file.
+    // Standalone documents keep the original single-document path.
+    if (comptime pngine_support) {
+        const contexts = try PngineContext.contextsForDocument(handler, uri);
+        defer Handler.freeContexts(handler, contexts);
+        if (contexts.len > 0 and contexts[0].isComposed()) {
+            return composedInlayHints(handler, contexts, range);
+        }
+    }
+    return standaloneInlayHints(handler, uri, range);
+}
+
+fn standaloneInlayHints(handler: *Handler, uri: []const u8, range: Range) ![]InlayHintInfo {
     const analysis = handler.analyzeDocument(uri) catch return &.{};
     const module = analysis.module orelse return &.{};
     const source = module.source;
@@ -50,6 +68,221 @@ pub fn computeInlayHints(handler: *Handler, uri: []const u8, range: Range) ![]In
     }
 
     return try handler.gpa.dupe(InlayHintInfo, hints.items);
+}
+
+const HintGroup = struct {
+    position: Position,
+    kind: @FieldType(InlayHintInfo, "kind"),
+    hint: InlayHintInfo,
+    conflict: bool = false,
+};
+
+/// Collect one hint per `(position, kind, label)` across every containing
+/// root. A second root with a different label for the same position/kind
+/// marks the group as conflicting and the whole group is omitted; an equal
+/// label dedupes. Differing clickable definitions keep the label but drop
+/// the ambiguous `def_range`.
+fn addHintGroup(
+    gpa: std.mem.Allocator,
+    groups: *std.ArrayList(HintGroup),
+    hint: InlayHintInfo,
+) std.mem.Allocator.Error!void {
+    for (groups.items) |*group| {
+        if (group.position.line != hint.position.line or
+            group.position.character != hint.position.character) continue;
+        if (group.kind != hint.kind) continue;
+        if (!std.mem.eql(u8, group.hint.label, hint.label)) {
+            group.conflict = true;
+            return;
+        }
+        if (!optionalRangeEql(group.hint.def_range, hint.def_range)) {
+            group.hint.def_range = null;
+        }
+        return;
+    }
+    try groups.append(gpa, .{ .position = hint.position, .kind = hint.kind, .hint = hint });
+}
+
+fn optionalRangeEql(a: ?Range, b: ?Range) bool {
+    if (a == null or b == null) return a == null and b == null;
+    return std.meta.eql(a.?, b.?);
+}
+
+fn composedInlayHints(
+    handler: *Handler,
+    contexts: []Handler.RequestContext,
+    range: Range,
+) ![]InlayHintInfo {
+    std.debug.assert(contexts.len > 0);
+
+    var author = try PngineContext.authorText(handler, &contexts[0]);
+    defer author.deinit(handler.gpa);
+    var author_pm = try Handler.PositionMapper.init(handler.gpa, author.text);
+    defer author_pm.deinit(handler.gpa);
+
+    const range_start = author_pm.offsetOf(range.start) orelse 0;
+    const range_end = author_pm.offsetOf(range.end) orelse author.text.len;
+
+    var groups: std.ArrayList(HintGroup) = .empty;
+    defer groups.deinit(handler.gpa);
+
+    for (contexts) |*context| {
+        const root_analysis = context.analysis orelse continue;
+        const analysis = root_analysis.result;
+        const module = analysis.module orelse continue;
+        const label_alloc = if (analysis._arena) |*a| a.allocator() else handler.gpa;
+
+        var pm = try Handler.PositionMapper.init(handler.gpa, module.source);
+        defer pm.deinit(handler.gpa);
+
+        var raw: std.ArrayList(InlayHintInfo) = .empty;
+        defer raw.deinit(handler.gpa);
+
+        for (module.declarations.items) |decl| {
+            try collectInlayHintsFromDecl(
+                handler,
+                module,
+                analysis,
+                label_alloc,
+                &pm,
+                decl,
+                0,
+                module.source.len,
+                &raw,
+            );
+        }
+        if (analysis.valid) {
+            try collectComposedMinifyHints(handler, context.*, root_analysis, module, label_alloc, &pm, &raw);
+        }
+
+        for (raw.items) |hint| {
+            const mapped = mapHintToAuthor(
+                root_analysis,
+                &pm,
+                &author_pm,
+                context.*,
+                hint,
+                range_start,
+                range_end,
+            ) orelse continue;
+            try addHintGroup(handler.gpa, &groups, mapped);
+        }
+    }
+
+    // A whole-module byte count is a claim about one root. A shared part
+    // has no single module size, so the total hint is suppressed exactly as
+    // phase 03 suppresses M0500 for multiple containing roots. Per-decl
+    // hints above remain available when the roots agree.
+    if (contexts.len == 1) {
+        if (contexts[0].analysis) |root_analysis| {
+            const analysis = root_analysis.result;
+            if (analysis.valid) {
+                const label_alloc = if (analysis._arena) |*a| a.allocator() else handler.gpa;
+                if (singleRootTotalHint(handler, &contexts[0], root_analysis, label_alloc)) |hint| {
+                    try addHintGroup(handler.gpa, &groups, hint);
+                }
+            }
+        }
+    }
+
+    var out: std.ArrayList(InlayHintInfo) = .empty;
+    defer out.deinit(handler.gpa);
+    for (groups.items) |group| {
+        if (group.conflict) continue;
+        try out.append(handler.gpa, group.hint);
+    }
+    return try handler.gpa.dupe(InlayHintInfo, out.items);
+}
+
+fn collectComposedMinifyHints(
+    handler: *Handler,
+    context: Handler.RequestContext,
+    analysis: *const PngineContext.RootAnalysis,
+    module: *const wgslender.Ast.Module,
+    label_alloc: std.mem.Allocator,
+    pm: *const Handler.PositionMapper,
+    hints: *std.ArrayList(InlayHintInfo),
+) std.mem.Allocator.Error!void {
+    if (!analysis.result.valid) return;
+    const uri = context.request_uri orelse return;
+    const eff = handler.effectiveMinifyFor(uri);
+    if (!eff.insightsActive()) return;
+    const root = context.root orelse return;
+    const cached = handler.getRootMinifyEstimate(root, handler.estimatorOptionsFor(uri)) catch return;
+    try appendMinifyHints(handler, module, label_alloc, module.source, pm, cached, eff, false, hints);
+}
+
+fn singleRootTotalHint(
+    handler: *Handler,
+    context: *const Handler.RequestContext,
+    analysis: *const PngineContext.RootAnalysis,
+    label_alloc: std.mem.Allocator,
+) ?InlayHintInfo {
+    const uri = context.request_uri orelse return null;
+    const eff = handler.effectiveMinifyFor(uri);
+    if (!eff.insightsActive() or !eff.insights.total_size) return null;
+    const root = context.root orelse return null;
+    const cached = handler.getRootMinifyEstimate(root, handler.estimatorOptionsFor(uri)) catch return null;
+    const original: u32 = @intCast(analysis.assembled.text.len);
+    const label = formatMinifyLabel(label_alloc, original, cached.total_min, eff.insights.format) catch return null;
+    return .{
+        .position = .{ .line = 0, .character = 0 },
+        .label = label,
+        .kind = .minify_size,
+        .tooltip = minify_hint_tooltip,
+    };
+}
+
+/// Convert one assembled-coordinate hint to the requested author file.
+/// A hint whose position belongs to another part (or inline text) is
+/// dropped: an editor request for one file must never receive a position
+/// from another file's bytes.
+fn mapHintToAuthor(
+    analysis: *const PngineContext.RootAnalysis,
+    pm: *const Handler.PositionMapper,
+    author_pm: *const Handler.PositionMapper,
+    context: Handler.RequestContext,
+    hint: InlayHintInfo,
+    range_start: usize,
+    range_end: usize,
+) ?InlayHintInfo {
+    const origin = context.origin orelse return null;
+    const assembled_offset = pm.offsetOf(hint.position) orelse return null;
+    const mapped = analysis.assembled.offsetToOrigin(@intCast(assembled_offset)) orelse return null;
+    if (!originSame(mapped.origin, origin)) return null;
+
+    const author_position = author_pm.position(mapped.offset) orelse return null;
+    const author_offset = author_pm.offsetOf(author_position) orelse return null;
+    if (author_offset < range_start or author_offset > range_end) return null;
+
+    var out = hint;
+    out.position = author_position;
+    if (hint.def_range) |def_range| {
+        out.def_range = mapDefRange(analysis, pm, author_pm, origin, def_range);
+    }
+    return out;
+}
+
+fn mapDefRange(
+    analysis: *const PngineContext.RootAnalysis,
+    pm: *const Handler.PositionMapper,
+    author_pm: *const Handler.PositionMapper,
+    origin: PngineContext.OriginKey,
+    def_range: Range,
+) ?Range {
+    const start = pm.offsetOf(def_range.start) orelse return null;
+    const end = pm.offsetOf(def_range.end) orelse return null;
+    if (end <= start) return null;
+    const mapped = analysis.assembled.toOrigin(.{
+        .start = @intCast(start),
+        .end = @intCast(end),
+    }) orelse return null;
+    if (!originSame(mapped.origin, origin)) return null;
+    return author_pm.range(mapped.range.start, mapped.range.end);
+}
+
+fn originSame(a: PngineContext.OriginKey, b: PngineContext.OriginKey) bool {
+    return a.program == b.program and a.index == b.index;
 }
 
 /// Tooltip attached to every minify-size hint. Discloses that the number is
@@ -88,9 +321,21 @@ fn collectMinifyHints(
     // its declarations list — the cache only replaces the estimator's
     // arena, not the caller's traversal.
     const cached = handler.getMinifyEstimate(uri, handler.estimatorOptionsFor(uri)) catch return;
-    const result = cached;
+    try appendMinifyHints(handler, module, label_alloc, source, pm, cached, eff, true, hints);
+}
 
-    if (eff.insights.total_size) {
+fn appendMinifyHints(
+    handler: *Handler,
+    module: *const wgslender.Ast.Module,
+    label_alloc: std.mem.Allocator,
+    source: [:0]const u8,
+    pm: *const Handler.PositionMapper,
+    result: *const wgslender.MinifyEstimator.EstimateResult,
+    eff: MinifySettings.Effective,
+    include_total: bool,
+    hints: *std.ArrayList(InlayHintInfo),
+) std.mem.Allocator.Error!void {
+    if (include_total and eff.insights.total_size) {
         const original: u32 = @intCast(source.len);
         const label = formatMinifyLabel(label_alloc, original, result.total_min, eff.insights.format) catch return;
         try hints.append(handler.gpa, .{

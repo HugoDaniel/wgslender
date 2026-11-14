@@ -974,6 +974,14 @@ pub fn build(b: *std.Build) void {
             w,
             .{ .name = "Handler", .module = handler_mod },
         });
+        // pngine per-file editing views (phase 04, Task 5): semantic-token
+        // classification across parts with a local-only token stream,
+        // origin-filtered inlay hints, safe quick actions from mapped
+        // diagnostics, and the local formatting/outline boundaries.
+        _ = addTestStep(b, test_step, "tests/pngine_editing_test.zig", target, optimize, &.{
+            w,
+            .{ .name = "Handler", .module = handler_mod },
+        });
         // pngine composed diagnostic projection (phase 03, Task 2): mapped
         // validator ranges, hoisted directives, part boundaries, related
         // information on another file, EOF fallback and quick-fix safety.

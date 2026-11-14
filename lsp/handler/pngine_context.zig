@@ -150,6 +150,55 @@ pub fn contextsAt(handler: *Handler, uri: []const u8, position: Handler.Position
     }
 }
 
+/// Resolve a whole document to one context per containing root, without a
+/// request position. Whole-file features (semantic tokens, inlay hints)
+/// need every root's analysis and the requested part's identity, but no
+/// single assembled offset: each result is mapped through its own range.
+/// The `author_offset` and `assembled_offset` fields of the returned
+/// contexts are therefore zero and must not be used as request positions.
+///
+/// A project member with no usable root yields no context so the caller can
+/// keep the standalone path; a document with no project membership yields
+/// exactly the one identity context `contextsAt` would produce.
+pub fn contextsForDocument(handler: *Handler, uri: []const u8) ![]RequestContext {
+    if (comptime pngine_support) {
+        if (handler.pngine_store) |store| {
+            var memberships = try store.membershipsFor(uri);
+            defer memberships.deinit(handler.gpa);
+            if (memberships.items.len > 0) {
+                var contexts: std.ArrayList(RequestContext) = .empty;
+                errdefer contexts.deinit(handler.gpa);
+
+                for (memberships.items) |membership| {
+                    const origin: Pngine.OriginKey = .{
+                        .program = membership.program,
+                        .index = membership.part.index,
+                    };
+                    for (membership.containing_roots) |root_index| {
+                        const root: Pngine.RootId = .{
+                            .program = membership.program,
+                            .index = root_index,
+                        };
+                        const analysis = handler.analyzeRoot(root) catch |err| switch (err) {
+                            error.OutOfMemory => return err,
+                            else => continue,
+                        };
+                        try appendUnique(handler.gpa, &contexts, .{
+                            .request_uri = uri,
+                            .origin_uri = uri,
+                            .root = root,
+                            .analysis = analysis,
+                            .origin = origin,
+                        });
+                    }
+                }
+                return contexts.toOwnedSlice(handler.gpa);
+            }
+        }
+    }
+    return standaloneContext(handler, uri, .{ .line = 0, .character = 0 });
+}
+
 /// Resolve `position` in a known part without a URI. This is the entry point
 /// for an inline `:code` part, which has an author origin and no file URI
 /// yet. The returned contexts carry `request_uri == null`; file-backed

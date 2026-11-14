@@ -991,6 +991,7 @@ pub const producePullReport = Diagnostics.producePullReport;
 pub const CodeActions = @import("handler/code_actions.zig");
 pub const VertexReturnTarget = CodeActions.VertexReturnTarget;
 pub const computeCodeActions = CodeActions.computeCodeActions;
+pub const computeCodeActionsForDocument = CodeActions.computeCodeActionsForDocument;
 pub const freeCodeActions = CodeActions.freeCodeActions;
 pub const isSafeCastTarget = CodeActions.isSafeCastTarget;
 

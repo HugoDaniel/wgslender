@@ -82,20 +82,55 @@ pub fn computeCodeActions(
     handler: *Handler,
     diags: []const LspDiagnostic,
 ) ![]LspCodeAction {
+    return computeCodeActionsInternal(handler, null, diags);
+}
+
+/// Compute actions for diagnostics that belong to `uri`. The URI-aware
+/// variant is what the native adapter calls: an action that must read the
+/// offending expression (a cast or a struct-body insertion) reads *this*
+/// document, never whichever open document happens to be first in the map.
+/// `computeCodeActions` keeps the legacy first-document lookup for callers
+/// whose diagnostics carry no request document (the wasm single-source
+/// path).
+pub fn computeCodeActionsForDocument(
+    handler: *Handler,
+    uri: []const u8,
+    diags: []const LspDiagnostic,
+) ![]LspCodeAction {
+    return computeCodeActionsInternal(handler, uri, diags);
+}
+
+fn computeCodeActionsInternal(
+    handler: *Handler,
+    request_uri: ?[]const u8,
+    diags: []const LspDiagnostic,
+) ![]LspCodeAction {
     var actions: std.ArrayList(LspCodeAction) = .empty;
 
     for (diags) |diag| switch (diag.data) {
         .none => {},
         .did_you_mean => |suggestion| addDidYouMeanAction(handler, &actions, diag, suggestion),
-        .duplicate_location => |loc_val| addDuplicateLocationAction(handler, &actions, diag, loc_val),
-        .vertex_missing_builtin_position => addVertexMissingPositionActions(handler, &actions, diag),
-        .type_mismatch => |tm| addCastAction(handler, &actions, diag, tm),
+        .duplicate_location => |loc_val| addDuplicateLocationAction(handler, request_uri, &actions, diag, loc_val),
+        .vertex_missing_builtin_position => addVertexMissingPositionActions(handler, request_uri, &actions, diag),
+        .type_mismatch => |tm| addCastAction(handler, request_uri, &actions, diag, tm),
         .unused_symbol => |name| addUnusedSymbolActions(handler, &actions, diag, name),
         .feature_not_enabled => |feature| addFeatureNotEnabledAction(handler, &actions, diag, feature),
         .lint_fix => |lf| addLintFixAction(handler, &actions, diag, lf),
     };
 
     return actions.toOwnedSlice(handler.gpa) catch &.{};
+}
+
+/// The text a derived action must read: the requested document when the
+/// caller supplied one, otherwise the legacy first-open-document lookup.
+fn actionSource(handler: *Handler, request_uri: ?[]const u8) ?[]const u8 {
+    if (request_uri) |uri| {
+        const doc = handler.documents.getPtr(uri) orelse return null;
+        return doc.source;
+    }
+    var it = handler.documents.iterator();
+    while (it.next()) |entry| return entry.value_ptr.source;
+    return null;
 }
 
 /// The `Entry.fix` rewrite of a fixable lint rule, pre-converted to LSP
@@ -171,6 +206,7 @@ fn addDidYouMeanAction(
 
 fn addDuplicateLocationAction(
     handler: *Handler,
+    request_uri: ?[]const u8,
     actions: *std.ArrayList(LspCodeAction),
     diag: LspDiagnostic,
     loc_val: u32,
@@ -181,7 +217,7 @@ fn addDuplicateLocationAction(
         handler.gpa.free(title);
         return;
     };
-    const attr_range = findLocationAttrRange(handler, diag.range) orelse {
+    const attr_range = findLocationAttrRange(handler, request_uri, diag.range) orelse {
         handler.gpa.free(new_text);
         handler.gpa.free(title);
         return;
@@ -207,10 +243,11 @@ fn addDuplicateLocationAction(
 
 fn addVertexMissingPositionActions(
     handler: *Handler,
+    request_uri: ?[]const u8,
     actions: *std.ArrayList(LspCodeAction),
     diag: LspDiagnostic,
 ) void {
-    switch (findVertexReturnTarget(handler, diag.range)) {
+    switch (findVertexReturnTarget(handler, request_uri, diag.range)) {
         .plain => |range| {
             const title = handler.gpa.dupe(u8, "Add @builtin(position) to return type") catch return;
             const new_text = handler.gpa.dupe(u8, "@builtin(position) ") catch {
@@ -269,18 +306,13 @@ fn addVertexMissingPositionActions(
 /// sense for same-shape scalar/vector pairs.
 fn addCastAction(
     handler: *Handler,
+    request_uri: ?[]const u8,
     actions: *std.ArrayList(LspCodeAction),
     diag: LspDiagnostic,
     tm: WgslDiagnostic.QuickFixHint.TypeMismatch,
 ) void {
     if (!isSafeCastTarget(tm.actual, tm.expected)) return;
-    const source = blk: {
-        var it = handler.documents.iterator();
-        while (it.next()) |entry| {
-            break :blk entry.value_ptr.source;
-        }
-        break :blk null;
-    } orelse return;
+    const source = actionSource(handler, request_uri) orelse return;
     const start_off = Handler.lspPositionToOffset(source, diag.range.start) orelse return;
     const end_off = Handler.lspPositionToOffset(source, diag.range.end) orelse return;
     if (end_off <= start_off) return;
@@ -424,59 +456,85 @@ pub const VertexReturnTarget = union(enum) {
 /// Search the document source around a vertex-entry-point diagnostic to find where
 /// `@builtin(position)` should be inserted. See `VertexReturnTarget` for the two
 /// cases: plain return type or struct return type.
-fn findVertexReturnTarget(handler: *Handler, diag_range: Range) VertexReturnTarget {
+fn findVertexReturnTarget(
+    handler: *Handler,
+    request_uri: ?[]const u8,
+    diag_range: Range,
+) VertexReturnTarget {
+    if (request_uri) |uri| {
+        const doc = handler.documents.getPtr(uri) orelse return .none;
+        return findVertexReturnTargetIn(handler, uri, doc.source, diag_range);
+    }
+    // Legacy callers carry no request document: preserve the old
+    // first-document-that-fits search exactly.
     var it = handler.documents.iterator();
     while (it.next()) |entry| {
-        const source = entry.value_ptr.source;
-        // `analyzeDocument` mutates the document value in place, so the
-        // iterator stays valid. A failed analysis just means the struct
-        // lookup below falls back to scanning source text.
-        const module: ?*const Ast.Module = if (handler.analyzeDocument(entry.key_ptr.*)) |a|
-            a.module
-        else |_|
-            null;
-        const name_start = Handler.lspPositionToOffset(source, diag_range.start) orelse continue;
-        if (name_start >= source.len) continue;
-
-        // Scan forward from the function name for `->`, bounded to avoid running
-        // into the next top-level decl on malformed input.
-        const window_end = @min(source.len, name_start + 512);
-        const arrow_rel = std.mem.indexOf(u8, source[name_start..window_end], "->") orelse continue;
-        var off = name_start + arrow_rel + 2;
-
-        // Skip whitespace after `->`.
-        while (off < source.len and (source[off] == ' ' or source[off] == '\t' or
-            source[off] == '\n' or source[off] == '\r')) : (off += 1)
-        {}
-        if (off >= source.len) continue;
-
-        // Read an identifier token. If what follows `->` starts with `@` (an
-        // attribute like `@location(0) vec4f`), fall into the plain branch:
-        // prepending `@builtin(position) ` to the attribute list is still a
-        // reasonable best-effort fix.
-        const id_start = off;
-        while (off < source.len and isIdentChar(source[off])) : (off += 1) {}
-        const id_end = off;
-        if (id_end == id_start) {
-            // Starts with `@` or something else — use the plain insertion point.
-            return makePlainTarget(handler.gpa, source, id_start) orelse .none;
+        const target = findVertexReturnTargetIn(
+            handler,
+            entry.key_ptr.*,
+            entry.value_ptr.source,
+            diag_range,
+        );
+        switch (target) {
+            .none => continue,
+            else => return target,
         }
-        const type_name = source[id_start..id_end];
-
-        // Scalars and vectors take the plain branch; otherwise look for a struct
-        // declaration matching the identifier.
-        if (parseCastableType(type_name) != null) {
-            return makePlainTarget(handler.gpa, source, id_start) orelse .none;
-        }
-
-        if (findStructBodyInsertPoint(handler.gpa, module, source, type_name)) |insert_at| {
-            return .{ .struct_body = .{ .name = type_name, .insert_at = insert_at } };
-        }
-        // Fall through: unrecognized type name, no matching struct — best effort
-        // is to prepend `@builtin(position) ` before the identifier.
-        return makePlainTarget(handler.gpa, source, id_start) orelse .none;
     }
     return .none;
+}
+
+fn findVertexReturnTargetIn(
+    handler: *Handler,
+    uri: []const u8,
+    source: []const u8,
+    diag_range: Range,
+) VertexReturnTarget {
+    // A failed analysis just means the struct lookup below falls back to
+    // scanning source text.
+    const module: ?*const Ast.Module = if (handler.analyzeDocument(uri)) |a|
+        a.module
+    else |_|
+        null;
+    const name_start = Handler.lspPositionToOffset(source, diag_range.start) orelse return .none;
+    if (name_start >= source.len) return .none;
+
+    // Scan forward from the function name for `->`, bounded to avoid running
+    // into the next top-level decl on malformed input.
+    const window_end = @min(source.len, name_start + 512);
+    const arrow_rel = std.mem.indexOf(u8, source[name_start..window_end], "->") orelse return .none;
+    var off = name_start + arrow_rel + 2;
+
+    // Skip whitespace after `->`.
+    while (off < source.len and (source[off] == ' ' or source[off] == '\t' or
+        source[off] == '\n' or source[off] == '\r')) : (off += 1)
+    {}
+    if (off >= source.len) return .none;
+
+    // Read an identifier token. If what follows `->` starts with `@` (an
+    // attribute like `@location(0) vec4f`), fall into the plain branch:
+    // prepending `@builtin(position) ` to the attribute list is still a
+    // reasonable best-effort fix.
+    const id_start = off;
+    while (off < source.len and isIdentChar(source[off])) : (off += 1) {}
+    const id_end = off;
+    if (id_end == id_start) {
+        // Starts with `@` or something else — use the plain insertion point.
+        return makePlainTarget(handler.gpa, source, id_start) orelse .none;
+    }
+    const type_name = source[id_start..id_end];
+
+    // Scalars and vectors take the plain branch; otherwise look for a struct
+    // declaration matching the identifier.
+    if (parseCastableType(type_name) != null) {
+        return makePlainTarget(handler.gpa, source, id_start) orelse .none;
+    }
+
+    if (findStructBodyInsertPoint(handler.gpa, module, source, type_name)) |insert_at| {
+        return .{ .struct_body = .{ .name = type_name, .insert_at = insert_at } };
+    }
+    // Fall through: unrecognized type name, no matching struct — best effort
+    // is to prepend `@builtin(position) ` before the identifier.
+    return makePlainTarget(handler.gpa, source, id_start) orelse .none;
 }
 
 fn isIdentChar(c: u8) bool {
@@ -592,35 +650,43 @@ fn findStructBodyInsertPointByScan(gpa: std.mem.Allocator, source: []const u8, s
 
 /// Search the document source near a diagnostic range to find the actual
 /// @location(N) attribute range, so the edit replaces the whole annotation.
-fn findLocationAttrRange(handler: *Handler, diag_range: Range) ?Range {
-    // We need the source to scan for @location(...) near the diagnostic.
-    // Iterate all open documents to find one containing this range.
-    // (Code actions are always for the current document, so we check all.)
+fn findLocationAttrRange(handler: *Handler, request_uri: ?[]const u8, diag_range: Range) ?Range {
+    // The diagnostic belongs to the action's document. Reading another open
+    // document's text at the same coordinates would silently rewrite the
+    // wrong annotation.
+    if (request_uri) |uri| {
+        const doc = handler.documents.getPtr(uri) orelse return null;
+        return findLocationAttrIn(handler, doc.source, diag_range);
+    }
+    // Legacy callers: preserve the old first-document-that-fits search.
     var it = handler.documents.iterator();
     while (it.next()) |entry| {
-        const source = entry.value_ptr.source;
-        // Convert LSP 0-based line/col to byte offset in the source.
-        if (Handler.lspPositionToOffset(source, diag_range.start)) |start_offset| {
-            // Search backwards from the diagnostic start for @location(
-            const search_start = if (start_offset > 30) start_offset - 30 else 0;
-            const region = source[search_start..@min(source.len, start_offset + 50)];
-            if (std.mem.indexOf(u8, region, "@location(")) |rel_idx| {
-                const abs_start = search_start + rel_idx;
-                // Find the closing )
-                if (std.mem.indexOfPos(u8, source, abs_start, ")")) |close_paren| {
-                    const abs_end = close_paren + 1; // include the )
-                    // Convert back to LSP positions
-                    var line_index = WgslDiagnostic.LineIndex.init(handler.gpa, source) catch return null;
-                    // LineIndex is 0-based; LSP is also 0-based
-                    const s = line_index.byteOffsetToLineColumn(@intCast(abs_start));
-                    const e = line_index.byteOffsetToLineColumn(@intCast(abs_end));
-                    line_index.deinit(handler.gpa);
-                    return .{
-                        .start = .{ .line = s.line, .character = s.col },
-                        .end = .{ .line = e.line, .character = e.col },
-                    };
-                }
-            }
+        if (findLocationAttrIn(handler, entry.value_ptr.source, diag_range)) |range| return range;
+    }
+    return null;
+}
+
+fn findLocationAttrIn(handler: *Handler, source: []const u8, diag_range: Range) ?Range {
+    // Convert LSP 0-based line/col to byte offset in the source.
+    const start_offset = Handler.lspPositionToOffset(source, diag_range.start) orelse return null;
+    // Search backwards from the diagnostic start for @location(
+    const search_start = if (start_offset > 30) start_offset - 30 else 0;
+    const region = source[search_start..@min(source.len, start_offset + 50)];
+    if (std.mem.indexOf(u8, region, "@location(")) |rel_idx| {
+        const abs_start = search_start + rel_idx;
+        // Find the closing )
+        if (std.mem.indexOfPos(u8, source, abs_start, ")")) |close_paren| {
+            const abs_end = close_paren + 1; // include the )
+            // Convert back to LSP positions
+            var line_index = WgslDiagnostic.LineIndex.init(handler.gpa, source) catch return null;
+            // LineIndex is 0-based; LSP is also 0-based
+            const s = line_index.byteOffsetToLineColumn(@intCast(abs_start));
+            const e = line_index.byteOffsetToLineColumn(@intCast(abs_end));
+            line_index.deinit(handler.gpa);
+            return .{
+                .start = .{ .line = s.line, .character = s.col },
+                .end = .{ .line = e.line, .character = e.col },
+            };
         }
     }
     return null;
