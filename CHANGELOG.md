@@ -3,6 +3,107 @@
 All notable changes to wgslender are recorded here. The project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-11-15
+
+The native CLI and the native LSP learn about shader projects: a pngine
+program's WGSL lives in many files, and wgslender can now discover, assemble,
+diagnose and edit those files as one module. The WASM surface gains two
+experimental query APIs — `callShape` and `format` — and minify gains opt-in
+float shortening. Every wire change in this release is additive; the
+single-source package APIs keep their shape.
+
+### Added
+
+- **pngine projects: multi-file WGSL programs in the native CLI and native
+  LSP.** A pngine project is an SJON document naming a program's shader
+  modules and their parts. `--project` selects one document (a file, never a
+  directory), `--root` picks one root inside it, and `--no-project` forces the
+  old single-source reading. The CLI discovers the fragment graph, assembles
+  it in dependency order with the project's directive hoisting mirrored, and
+  the artifact commands (`minify`, `compile`, `reflect`) work on the selected
+  root while `validate` and `lint` check every shader-module root the document
+  contains, merging the composed diagnostics — a fragment lint is judged on
+  the assembled module, not the fragment text. Diagnostics and source maps
+  point back at the author's files, not the assembled text: minified output
+  maps to author origins through the assembly and through minification. In
+  the LSP, navigation, rename, completion and hover work across file parts,
+  inline parts open as virtual documents, each file keeps its own editing
+  view, and buffers overlay the project graph with assembled roots cached by
+  content; the `pngine.enabled` setting (default true) turns project context
+  off. Project support is compiled out of the WASM surfaces by design —
+  `wasm`, `lib` and `lsp-wasm` never resolve SJON, and a build without the
+  pngine dependency reports `--project` as unavailable instead of misreading
+  a single file. `--project`, `--root` and `--no-project` are CLI-only flags
+  that can never become config-file keys, so a config file cannot change
+  project identity. The experimental Zig API (`wgslender.Pngine`: `Store`,
+  `Program`, `Assembled`, `assembleRoot`, `mapDiagnostics`, `remapSourceMap`)
+  exposes discovery, assembly and mapping to library consumers; it is
+  documented in `docs/pngine-api.md` and gated on the inercia corpus.
+
+- **`callShape` — every call expression per function, with spans.**
+  Reflection records which functions a body calls, deliberately without
+  per-call offsets. Consumers that need to know which generated call an edit
+  landed in, and what bytes each argument occupies, get a dedicated query:
+  `callShapeToJson` on the native API and `wgslender_call_shape_json` on the
+  WASM exports, wrapped as `callShape(source, { function })` in every npm
+  package variant. Each call carries a `kind` (`user`, `builtin` or
+  `constructor`), the callee's name and span, the whole-call span and each
+  argument expression's span — nested calls included, all UTF-8 byte
+  offsets. **Stability class: experimental** — the JSON shape may shift
+  between versions. The parse-error discipline: functions the recovery
+  parser kept are always answered, with `error` carrying
+  `"parse errors: N"`; a total parse failure returns
+  `{"functions":[],"error":"parse error"}`. The Go package pins both new
+  guest exports in its ABI test.
+
+- **`format` — the LSP's printer, everywhere.** `formatToJson` on the native
+  API and the `wgslender_format_json` WASM export run the same
+  content-preserving printer the language server uses for Format Document:
+  whitespace and layout are normalized, nothing is tree-shaken, renamed or
+  respelled, and the options factory behind it is shared with the minifier's
+  formatting path. The npm wrapper is `format(source)` on every package
+  variant; a malformed document comes back as `code === input` with `error`
+  set, never an exception.
+
+- **Minify gains `--shorten-floats` (from PR
+  [#3](https://github.com/HugoDaniel/wgslender/pull/3), by 0xAozora).** Float
+  literals that type analysis proves are used as f32 are respelled to their
+  shortest round-trip digits. The option is opt-in and off by default, and it
+  reached every ecosystem in one release: the CLI flag, the `shorten_floats`
+  config key, npm's `configs.js`/`configs.d.ts`, Rust's `wgslender-core`
+  options (with the `wgslender-macros` parser), and Go's `Options`.
+  **Output bytes change** only for users who turn it on.
+
+### Changed
+
+- **Typing a comment or whitespace no longer re-lowers the enclosing block.**
+  The incremental driver now gates on an edit confined to one inter-token
+  trivia gap with an unchanged real-token stream: such an edit keeps the
+  previous module, CST and symbol table, retokenizes only the edited gap,
+  shifts spans behind a preflight pass and splices parse errors into a fresh
+  list. Any gate mismatch cascades to the anchor path and then a full parse,
+  so the shortcut is only ever taken when it is exact — the gate itself adds
+  no extra lexing. A 200-keystroke comment burst measures two lexer calls per
+  edit.
+
+### Fixed
+
+- **An edit inside a function body no longer reports the locals it replaced
+  as unused.** The splice path is append-only: re-lowering a statement left
+  the detached declarations in `module.symbols` with a use count of zero, and
+  the reporting predicates only tested the use count — so every non-zero-delta
+  edit inside a body flagged one W0001 per local, per keystroke, growing. The
+  replaced declarations are now marked retired, and every reader that
+  enumerates or looks up symbols filters the tombstones: the validator's
+  unused and entry-point scans, DCE liveness, the lint rules that scan
+  `module.symbols` directly, the minifier's slot allocation and name
+  reservation (a tombstone could otherwise consume a rename slot or reserve a
+  short name a live declaration needs), the rename estimator, stable ids,
+  find-references and rename edits, and the LSP's completion, semantic
+  tokens, inlay hints, code lens and call hierarchy. Tested in
+  `tests/incremental_retire_test.zig` and extensions to the incremental,
+  unused-warning and lint suites.
+
 ## [1.5.1] — 2026-09-29
 
 ### Fixed

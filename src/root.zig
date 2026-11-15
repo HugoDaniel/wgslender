@@ -13,7 +13,7 @@ const Allocator = std.mem.Allocator;
 // CLI/LSP/tests graph resolves it to true alongside the `sjon` import.
 const build_options = @import("build_options");
 
-pub const version = "1.5.1";
+pub const version = "1.6.0";
 
 // Re-exported modules, grouped by stability tier:
 //

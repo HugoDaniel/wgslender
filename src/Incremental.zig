@@ -413,25 +413,44 @@ fn tryTriviaOnlyShortcut(
     const trivia_threshold: usize = @max(trivia_floor, prev.source.len * 8);
     if (prev.arena.queryCapacity() > trivia_threshold) return error.ArenaWatermarkTripped;
 
-    const arena = prev.arena.allocator();
-    const owned = try arena.allocSentinel(u8, new_buf.len, 0);
-    @memcpy(owned, new_buf);
+    // Gate work is speculative: on a failed gate the anchor path below
+    // must still run against an untouched prev.arena, whose queryCapacity
+    // feeds the compaction watermark. Leftover speculative allocations
+    // (source copy plus the new source's full token stream — both scale
+    // with new_text) would trip that watermark and force a parseFull
+    // fallback on exactly the large-insert edits the anchor path handles
+    // fine. So the gate lexes into a scratch arena that dies with the
+    // scope, and only a passing gate adopts its findings into prev.arena.
+    var scratch = std.heap.ArenaAllocator.init(gpa);
+    defer scratch.deinit();
+    const owned_scratch = try scratch.allocator().allocSentinel(u8, new_buf.len, 0);
+    @memcpy(owned_scratch, new_buf);
 
     // ONE lossless lex of the new source serves BOTH the edit-aware gate
     // and the CST rebuild (B3: the gate must not lex again; the old
     // side's all-token stream is `prev.cst.tokens` — no lex at all).
-    // Both allocations are speculative on gate failure; the ruling allows
-    // them to remain in `prev.arena` until normal `prev.deinit`.
-    var new_all_tokens = try Lexer.tokenizeAll(arena, owned);
+    var new_all_tokens_scratch = try Lexer.tokenizeAll(scratch.allocator(), owned_scratch);
 
     // Edit-aware gate — pure over the two all-token streams.
-    const facts = Anchor.classifyTriviaEdit(prev.cst.source, &prev.cst.tokens, owned, &new_all_tokens, edit) orelse
+    const facts = Anchor.classifyTriviaEdit(prev.cst.source, &prev.cst.tokens, owned_scratch, &new_all_tokens_scratch, edit) orelse
         return error.NotTriviaConfined;
+
+    // The gate passed. Adopt the speculative state into prev.arena: the
+    // source copy always (the result's `source` and `module.source` point
+    // at it), the token stream only when the CST will be rebuilt from it —
+    // the identical-stream subcase below keeps prev's token arrays.
+    const arena = prev.arena.allocator();
+    const owned = try arena.allocSentinel(u8, new_buf.len, 0);
+    @memcpy(owned, owned_scratch);
 
     // Zero-delta subcase with an identical COMPLETE token stream (trivia
     // tags, counts, and ranges included): nothing moved anywhere; reuse
     // the old node/child arrays byte-for-byte.
-    const streams_identical = triviaStreamsIdentical(&prev.cst.tokens, &new_all_tokens);
+    const streams_identical = triviaStreamsIdentical(&prev.cst.tokens, &new_all_tokens_scratch);
+    const new_all_tokens = if (streams_identical)
+        new_all_tokens_scratch
+    else
+        try new_all_tokens_scratch.clone(arena);
 
     var new_tree: Cst.Tree = undefined;
     var new_errors: []Parser.ParseError = undefined;
