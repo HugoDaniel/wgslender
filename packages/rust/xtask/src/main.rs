@@ -32,11 +32,24 @@ const VENDOR_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../wgslender-sys/
 
 /// Everything `zig build lib` reads, and nothing else.
 ///
-/// Measured rather than assumed: these four paths build `libwgslender.a` in a
+/// Measured rather than assumed: these paths build `libwgslender.a` in a
 /// directory holding no others. `external/lsp-kit` is deliberately absent —
 /// `lsp_kit` is a lazy *URL* dependency that only the LSP steps ask for, so the
 /// library target never fetches it and a consumer never needs the network.
-const VENDORED_PATHS: &[&str] = &["build.zig", "build.zig.zon", "src", "include"];
+///
+/// The two `tests/` files are the pngine project-free proof: build.zig wires
+/// the check object into the `wasm`, `lsp-wasm` and `lib` steps themselves, so
+/// `zig build lib` does not merely run better with them — it fails without
+/// them. That failure is exactly what `cargo package`'s unpack-and-build
+/// exists to catch.
+const VENDORED_PATHS: &[&str] = &[
+    "build.zig",
+    "build.zig.zon",
+    "src",
+    "include",
+    "tests/pngine_project_free_check.zig",
+    "tests/pngine_api_surface.zig",
+];
 
 /// The directory the `EXAMPLES` table below claims to describe in full.
 const EXAMPLES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../wgslender/examples");
