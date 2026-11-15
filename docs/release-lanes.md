@@ -13,6 +13,7 @@ because a report or CI log is silent about it.
 |------|----|------------|
 | `obs-dev` | OpenBSD 7.9 | `zig` 0.16.0 (the only Zig on the network), `go`, `npm` |
 | `ai-linux` | Debian (Linux 6.12) | `node` 26 / `npm` 11, no `cargo`, no `zig` |
+| `PEGO-HUGO` | macOS (arm64) | `zig` 0.16.0 (zigup), `node` 26 / `npm` 11, `cargo` 1.92.0, `go` 1.27.4, `deno` 2.9.8 |
 
 All Zig lanes run on `obs-dev` through the `obs` wrapper with
 `ulimit -c 0`; Node lanes run on `ai-linux`.
@@ -32,6 +33,31 @@ All Zig lanes run on `obs-dev` through the `obs` wrapper with
 | `npm test` in `npm/wgslender-lsp` | `ai-linux` | 42 passed, 0 failed |
 | `npm test` in `packages/js-npm` (single-source API stays project-free) | `ai-linux` | 226 passed, 0 failed |
 | `npm run test:unit` in `npm/wgslender-vscode` (node runner, no Electron) | `ai-linux` | 7 passed, 0 failed |
+
+## Lanes verified (release 1.6.0, tree at `976f0da`, 2026-11-15)
+
+First host where every lane ran: `PEGO-HUGO` is the first release machine
+with `cargo`, and the only one able to launch the VS Code Electron suite.
+
+| Lane | Result |
+|------|--------|
+| `zig build test -j1` | all 385 steps green — including the exhaustive submodule suites, which the phase-05 hosts never ran (no submodule checkout) |
+| `zig build`, `zig build lsp`, `release-assets -Dlsp=false` | exit 0; committed WASM copies reproduced byte-for-byte |
+| Go package (`go test ./...`) | ok ×3 |
+| Rust packaging (`cargo xtask check`, `cargo xtask package`) | all green; the vendored-tarball proof caught a real gap on its first outing — `tests/pngine_project_free_check.zig` was missing from the vendored set (`46d2b64`) |
+| `npm test` in `packages/js-npm` | 226 passed × 4 runners (cjs/esm/browser-cjs/browser-esm), 0 failed |
+| `npm test` in `npm/wgslender-lsp` | 42 passed, 0 failed |
+| `npm test` in `npm/wgslender-vscode` (Electron) | 46 passing, exit 0 |
+| Full `./scripts/release.sh` | exit 0, tree clean afterwards — no `SKIP_FOREIGN` |
+
+Two latent failures surfaced here, both fixed in this release: the
+exhaustive submodule's corpus test violated `reparse`'s moved-from
+precondition once the any-delta trivia shortcut started taking the hot path
+(fixed in the submodule at `c3bc558`), and the trivia gate's speculative
+allocations tripped the anchor path's compaction watermark, forcing a full
+reparse after every large insert (`cfbb363`). The structural lesson: a host
+without `tests/exhaustive` checked out silently runs a narrower gate — the
+release gate is only as wide as the checkout.
 
 ## What the project-free artefacts contain
 
