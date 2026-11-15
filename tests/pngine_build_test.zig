@@ -17,7 +17,6 @@ const fixture = "(wgsl :name f :file \"a.wgsl\")";
 
 test "pngine module compiled in on the native graph" {
     try std.testing.expect(wgslender.Pngine != void);
-    try std.testing.expect(wgslender.Pngine.enabled);
 }
 
 test "wgsl form head, name, and file readable through SJON's public AST readers" {
@@ -62,10 +61,4 @@ test "wgsl form head, name, and file readable through SJON's public AST readers"
     }
     try std.testing.expect(saw_name);
     try std.testing.expect(saw_file);
-}
-
-test "Pngine.hasFormHead finds a present head and rejects an absent one" {
-    const a = std.testing.allocator;
-    try std.testing.expect(try wgslender.Pngine.hasFormHead(a, fixture, "wgsl"));
-    try std.testing.expect(!(try wgslender.Pngine.hasFormHead(a, fixture, "shader-module")));
 }

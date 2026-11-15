@@ -26,6 +26,7 @@
 
 const build_options = @import("build_options");
 const wgslender = @import("wgslender");
+const surface = @import("pngine_api_surface.zig");
 
 comptime {
     if (build_options.pngine_support) {
@@ -42,6 +43,11 @@ comptime {
                 "and that flag must be false here",
         );
     }
+    // The source-only ABI these graphs export must keep compiling with
+    // its existing text-only signatures (phase 05, Task 5: the ruling's
+    // compile-test matrix) — no path, provider, or `std.Io` parameter
+    // may appear on a single-source entry point.
+    _ = &surface.sourceOnlySurface;
     // Reference the namespace so the module import stays live even while
     // both assertions above hold.
     _ = wgslender;

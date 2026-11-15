@@ -165,6 +165,34 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the wgslender CLI");
     run_step.dependOn(&run_cmd.step);
 
+    // Native pngine API compile check (pngine-shaders phase 05, Task 5).
+    // Compiles the exact `wgslender` module the native CLI links — and,
+    // through the `lsp_step` dependency further down, the same module
+    // instance the native LSP graph compiles — and asserts the surface
+    // the phase-05 ruling settled: with SJON resolved every facade
+    // declaration exists with the documented signatures and the removed
+    // proof-of-life exports (`enabled`, `hasFormHead`) stay gone; with
+    // `-Dlsp=false` the same module compiles `Pngine` out to `void`.
+    // Source-only entry points must keep compiling unchanged in both
+    // graphs (tests/pngine_api_surface.zig). Wired into the default
+    // install step so plain `zig build` and `zig build -Dlsp=false`
+    // each prove their own graph. On a lazy-dependency null pass (SJON
+    // not yet fetched) the disabled branch holds and the runner re-runs
+    // build() after the fetch, exactly like the test registrations.
+    const native_api_check = b.addObject(.{
+        .name = "pngine-native-api-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/pngine_native_api_check.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "build_options", .module = native_options_mod },
+                .{ .name = "wgslender", .module = wgslender_mod },
+            },
+        }),
+    });
+    b.getInstallStep().dependOn(&native_api_check.step);
+
     // WASM build
     const wasm_target = b.resolveTargetQuery(.{
         .cpu_arch = .wasm32,
@@ -623,6 +651,10 @@ pub fn build(b: *std.Build) void {
     const install_lsp = b.addInstallArtifact(lsp_exe, .{});
     const lsp_step = b.step("lsp", "Build the WGSL LSP server");
     lsp_step.dependOn(&install_lsp.step);
+    // The native LSP compiles the same enabled `wgslender` module the CLI
+    // does; the shared API check object proves that graph sees the full
+    // facade (and gains no handler type of its own).
+    lsp_step.dependOn(&native_api_check.step);
 
     // Test data modules
     const validation_data_mod = b.addModule("validation_data", .{
@@ -906,6 +938,11 @@ pub fn build(b: *std.Build) void {
             w,
             .{ .name = "sjon", .module = m },
         });
+        // pngine public Zig API (phase 05, Task 5): drives discovery →
+        // assembleRoot → mapDiagnostics → remapSourceMap through the
+        // facade alone with an in-memory provider, and asserts the
+        // ownership and error contracts docs/pngine-api.md states.
+        _ = addTestStep(b, test_step, "tests/pngine_api_test.zig", target, optimize, &.{w});
         // Selection tests import the module defined beside the CLI exe.
         _ = addTestStep(b, test_step, "tests/pngine_cli_test.zig", target, optimize, &.{
             w,

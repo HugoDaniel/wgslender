@@ -355,6 +355,7 @@ Pre-built configs live in `configs/`: `compute.toys.json` for
 - [Why minify WGSL?](docs/why-minify-wgsl.md) · [Why pre-validate?](docs/why-pre-validate-wgsl.md) · [Why reflect?](docs/why-reflect-wgsl.md)
 - [Reflection output format](docs/reflect.md)
 - [C API reference](docs/C-API.md) · [worked examples in C and TypeScript](examples/README.md)
+- [pngine project API (experimental, Zig)](docs/pngine-api.md)
 - [Building with wgslender](BUILDING_WITH_WGSLENDER.md) — the integration guide
 - [Benchmarks](BENCHMARK.md) · [Changelog](CHANGELOG.md)
 
