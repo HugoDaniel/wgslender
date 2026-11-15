@@ -23,7 +23,7 @@ All Zig lanes run on `obs-dev` through the `obs` wrapper with
 |------|------|--------|
 | `zig build test -j1` | `obs-dev` | 361/361 steps, 4795/4795 tests |
 | `zig build`, `zig build lsp` | `obs-dev` | exit 0 |
-| `zig build -Dlsp=false`, `zig build wasm -Dlsp=false`, `zig build lib`, `zig build lsp-wasm` | `obs-dev` | exit 0; fresh `ZIG_GLOBAL_CACHE_DIR` probe resolved neither `lsp_kit` nor SJON and materialized nothing |
+| `zig build -Dlsp=false`, `zig build wasm -Dlsp=false`, `zig build lib -Dlsp=false`, `zig build lsp-wasm -Dlsp=false` | `obs-dev` | exit 0; fresh `ZIG_GLOBAL_CACHE_DIR` probe resolved neither `lsp_kit` nor SJON and materialized nothing. The flag is load-bearing: `zig build lib` and `zig build lsp-wasm` **without** it configure the native graph and do resolve both lazy dependencies, so only the flagged form is the project-free proof |
 | `zig build release-assets -Dlsp=false` | `obs-dev` | exit 0; committed asset copies reproduced byte-for-byte |
 | Tarball boundary (`wasm`/`lib`/`lsp-wasm`, no `../SJON`, empty SJON cache, network blackholed) | `obs-dev` | exit 0 ×3, zero SJON fetches, `zig-pkg/` never created |
 | Native tarball (`zig build`, `zig build lsp`; offline second build) | `obs-dev` | SJON resolved once by URL+hash into `zig-pkg/`; offline reruns exit 0 |
@@ -32,6 +32,16 @@ All Zig lanes run on `obs-dev` through the `obs` wrapper with
 | `npm test` in `npm/wgslender-lsp` | `ai-linux` | 42 passed, 0 failed |
 | `npm test` in `packages/js-npm` (single-source API stays project-free) | `ai-linux` | 226 passed, 0 failed |
 | `npm run test:unit` in `npm/wgslender-vscode` (node runner, no Electron) | `ai-linux` | 7 passed, 0 failed |
+
+## What the project-free artefacts contain
+
+Both shipped WASM modules contain no SJON code and no `sjon` strings, but each
+does carry the literal `pngine.enabled`: that is the LSP settings-schema key
+generated from the shared option-spec table (`src/options.zig`), not project
+functionality. The wasm LSP cannot act on it — it advertises no project
+capability and has no store — so the key is inert there. If a stricter boundary
+is ever wanted, the spec row has to become graph-specific, which trades schema
+uniformity for the guarantee; that trade has not been made.
 
 ## Lanes NOT run here
 
