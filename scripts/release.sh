@@ -58,7 +58,12 @@ step "Stamp the version and regenerate the npm mirrors"
 zig build gen-version gen-npm
 
 step "Rebuild both WASM modules into every package that ships one"
-zig build release-assets
+# -Dlsp=false: the asset step only packages the two project-free WASM
+# graphs (wasm + lsp-wasm), so it must not resolve — let alone fetch —
+# lsp_kit or SJON. Plain `zig build release-assets` configures the
+# native graph first, and merely configuring it asks for both lazy
+# dependencies (pngine-shaders phase 05, Task 6).
+zig build release-assets -Dlsp=false
 
 step "Build the native artefacts"
 zig build
