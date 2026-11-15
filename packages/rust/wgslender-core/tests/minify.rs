@@ -23,6 +23,9 @@ struct Case {
     check: fn(&str, &str),
 }
 
+// A row per scenario, so this only ever grows; the line count is the
+// table's, not logic's.
+#[allow(clippy::too_many_lines)]
 fn cases() -> Vec<Case> {
     vec![
         Case {
